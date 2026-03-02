@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 08:34:59 PM CET 2026
+Generated: Mon Mar  2 08:43:00 PM CET 2026
 
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
@@ -129,7 +129,7 @@ Generated: Mon Mar  2 08:34:59 PM CET 2026
 
 **Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
 
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
 
 <blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
 
