@@ -1,0 +1,6 @@
+make-check:0
+make-test:0
+make-test-bdd:0
+make-lint:0
+== markers in make-test.log == none
+== markers in make-lint.log == none

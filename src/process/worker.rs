@@ -956,6 +956,139 @@ mod tests {
         wait_for_outcome(ctx, &JobId(id.to_string()), timeout).await
     }
 
+    struct RealProcessFixture {
+        ctx: ProcessWorkerCtx,
+        tx: mpsc::UnboundedSender<ProcessJobRequest>,
+        subscriber: crate::state::StateSubscriber<ProcessState>,
+        _guard: NamespaceGuard,
+        data_dir: PathBuf,
+        socket_dir: PathBuf,
+        log_file: PathBuf,
+        port: u16,
+    }
+
+    impl RealProcessFixture {
+        async fn bootstrap_and_start(binaries: BinaryPaths, ns_name: &str) -> Result<Self, WorkerError> {
+            let guard = NamespaceGuard::new(ns_name)
+                .map_err(|err| WorkerError::Message(format!("namespace create failed: {err}")))?;
+            let namespace = guard
+                .namespace()
+                .map_err(|err| WorkerError::Message(format!("namespace lookup failed: {err}")))?
+                .clone();
+
+            let reservation = allocate_ports(1)
+                .map_err(|err| WorkerError::Message(format!("port allocation failed: {err}")))?;
+            let port = reservation.as_slice()[0];
+
+            let data_dir = namespace.child_dir("process/node-a/data");
+            let socket_dir = namespace.child_dir("process/node-a/socket");
+            let log_dir = namespace.child_dir("logs/process-node-a");
+            let log_file = log_dir.join("postgres.log");
+            fs::create_dir_all(&socket_dir)
+                .map_err(|err| WorkerError::Message(format!("socket dir create failed: {err}")))?;
+            fs::create_dir_all(&log_dir)
+                .map_err(|err| WorkerError::Message(format!("log dir create failed: {err}")))?;
+
+            let (ctx, tx, subscriber) = real_ctx(real_config(binaries));
+            let mut fixture = Self {
+                ctx,
+                tx,
+                subscriber,
+                _guard: guard,
+                data_dir,
+                socket_dir,
+                log_file,
+                port,
+            };
+
+            let bootstrap = fixture
+                .submit_job_and_wait(
+                    "bootstrap",
+                    ProcessJobKind::Bootstrap(BootstrapSpec {
+                        data_dir: fixture.data_dir.clone(),
+                        timeout_ms: Some(30_000),
+                    }),
+                    Duration::from_secs(40),
+                )
+                .await?;
+            if !matches!(bootstrap, JobOutcome::Success { .. }) {
+                return Err(WorkerError::Message(format!(
+                    "bootstrap setup failed: {bootstrap:?}"
+                )));
+            }
+
+            // Release the reserved port immediately before starting postgres so
+            // `pg_ctl` can bind the requested port.
+            drop(reservation);
+            let start = fixture
+                .submit_job_and_wait(
+                    "start",
+                    ProcessJobKind::StartPostgres(StartPostgresSpec {
+                        data_dir: fixture.data_dir.clone(),
+                        host: "127.0.0.1".to_string(),
+                        port: fixture.port,
+                        socket_dir: fixture.socket_dir.clone(),
+                        log_file: fixture.log_file.clone(),
+                        wait_seconds: Some(20),
+                        timeout_ms: Some(30_000),
+                    }),
+                    Duration::from_secs(40),
+                )
+                .await?;
+            if !matches!(start, JobOutcome::Success { .. }) {
+                return Err(WorkerError::Message(format!("start setup failed: {start:?}")));
+            }
+
+            Ok(fixture)
+        }
+
+        async fn submit_job_and_wait(
+            &mut self,
+            id: &str,
+            kind: ProcessJobKind,
+            timeout: Duration,
+        ) -> Result<JobOutcome, WorkerError> {
+            let expected_job = JobId(id.to_string());
+            self.tx
+                .send(ProcessJobRequest {
+                    id: expected_job.clone(),
+                    kind,
+                })
+                .map_err(|err| WorkerError::Message(format!("send process job failed: {err}")))?;
+
+            self.wait_for_outcome(&expected_job, timeout).await
+        }
+
+        async fn wait_for_outcome(
+            &mut self,
+            expected_job: &JobId,
+            timeout: Duration,
+        ) -> Result<JobOutcome, WorkerError> {
+            let start = Instant::now();
+            let mut last_snapshot = self.subscriber.latest();
+            while start.elapsed() < timeout {
+                let _before = self.subscriber.latest();
+                step_once(&mut self.ctx).await?;
+                last_snapshot = self.subscriber.latest();
+                if let ProcessState::Idle {
+                    last_outcome: Some(outcome),
+                    ..
+                } = &self.ctx.state
+                {
+                    if outcome_id(outcome) == expected_job {
+                        return Ok(outcome.clone());
+                    }
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+
+            Err(WorkerError::Message(format!(
+                "timed out waiting for process outcome for {} (last snapshot: {:?})",
+                expected_job.0, last_snapshot
+            )))
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn real_bootstrap_job_executes_initdb() {
         let binaries = pg16_binaries();
@@ -1032,312 +1165,240 @@ mod tests {
         }
     }
 
-    async fn bootstrap_and_start(
-        binaries: BinaryPaths,
-        ns_name: &str,
-    ) -> Result<
-        (
-            ProcessWorkerCtx,
-            mpsc::UnboundedSender<ProcessJobRequest>,
-            crate::state::StateSubscriber<ProcessState>,
-            NamespaceGuard,
-            PathBuf,
-            PathBuf,
-            PathBuf,
-            u16,
-        ),
-        WorkerError,
-    > {
-        let guard = NamespaceGuard::new(ns_name)
-            .map_err(|err| WorkerError::Message(format!("namespace create failed: {err}")))?;
-        let namespace = guard
-            .namespace()
-            .map_err(|err| WorkerError::Message(format!("namespace lookup failed: {err}")))?
-            .clone();
-
-        let reservation = allocate_ports(1)
-            .map_err(|err| WorkerError::Message(format!("port allocation failed: {err}")))?;
-        let port = reservation.as_slice()[0];
-
-        let data_dir = namespace.child_dir("process/node-a/data");
-        let socket_dir = namespace.child_dir("process/node-a/socket");
-        let log_dir = namespace.child_dir("logs/process-node-a");
-        let log_file = log_dir.join("postgres.log");
-        fs::create_dir_all(&socket_dir)
-            .map_err(|err| WorkerError::Message(format!("socket dir create failed: {err}")))?;
-        fs::create_dir_all(&log_dir)
-            .map_err(|err| WorkerError::Message(format!("log dir create failed: {err}")))?;
-
-        let (mut ctx, tx, sub) = real_ctx(real_config(binaries));
-
-        let bootstrap = submit_job_and_wait(
-            &tx,
-            &mut ctx,
-            "bootstrap",
-            ProcessJobKind::Bootstrap(BootstrapSpec {
-                data_dir: data_dir.clone(),
-                timeout_ms: Some(30_000),
-            }),
-            Duration::from_secs(40),
-        )
-        .await?;
-        if !matches!(bootstrap, JobOutcome::Success { .. }) {
-            return Err(WorkerError::Message(format!(
-                "bootstrap setup failed: {bootstrap:?}"
-            )));
-        }
-
-        // Release the reserved port immediately before starting postgres so
-        // `pg_ctl` can bind the requested port.
-        drop(reservation);
-        let start = submit_job_and_wait(
-            &tx,
-            &mut ctx,
-            "start",
-            ProcessJobKind::StartPostgres(StartPostgresSpec {
-                data_dir: data_dir.clone(),
-                host: "127.0.0.1".to_string(),
-                port,
-                socket_dir: socket_dir.clone(),
-                log_file: log_file.clone(),
-                wait_seconds: Some(20),
-                timeout_ms: Some(30_000),
-            }),
-            Duration::from_secs(40),
-        )
-        .await?;
-        if !matches!(start, JobOutcome::Success { .. }) {
-            return Err(WorkerError::Message(format!(
-                "start setup failed: {start:?}"
-            )));
-        }
-
-        Ok((ctx, tx, sub, guard, data_dir, socket_dir, log_file, port))
-    }
-
     #[tokio::test(flavor = "current_thread")]
-    async fn real_promote_job_executes_binary_path() {
+    async fn real_promote_job_executes_binary_path() -> Result<(), WorkerError> {
         let binaries = pg16_binaries();
+        let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-promote").await?;
 
-        let setup = bootstrap_and_start(binaries, "process-promote").await;
-        let (mut ctx, tx, _sub, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
-            Ok(v) => v,
-            Err(err) => panic!("promote setup failed: {err}"),
-        };
-
-        let promote = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let promote = fixture
+            .submit_job_and_wait(
             "promote",
             ProcessJobKind::Promote(PromoteSpec {
-                data_dir: data_dir.clone(),
+                data_dir: fixture.data_dir.clone(),
                 wait_seconds: Some(10),
                 timeout_ms: Some(10_000),
             }),
             Duration::from_secs(20),
         )
-        .await;
-
-        match promote {
-            Ok(JobOutcome::Success { .. }) | Ok(JobOutcome::Failure { .. }) => {}
-            Ok(other) => panic!("unexpected promote outcome: {other:?}"),
-            Err(err) => panic!("promote job failed: {err}"),
+        .await?;
+        if !matches!(promote, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
+            return Err(WorkerError::Message(format!(
+                "unexpected promote outcome: {promote:?}"
+            )));
         }
 
-        let stop = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let stop = fixture
+            .submit_job_and_wait(
             "stop-after-promote",
             ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir,
+                data_dir: fixture.data_dir.clone(),
                 mode: ShutdownMode::Fast,
                 timeout_ms: Some(10_000),
             }),
             Duration::from_secs(20),
         )
-        .await;
-        match stop {
-            Ok(JobOutcome::Success { .. }) | Ok(JobOutcome::Failure { .. }) => {}
-            Ok(other) => panic!("unexpected cleanup stop outcome: {other:?}"),
-            Err(err) => panic!("cleanup stop failed: {err}"),
+        .await?;
+        if !matches!(stop, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
+            return Err(WorkerError::Message(format!(
+                "unexpected cleanup stop outcome: {stop:?}"
+            )));
         }
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn real_demote_job_executes_binary_path() {
+    async fn real_demote_job_executes_binary_path() -> Result<(), WorkerError> {
         let binaries = pg16_binaries();
-        let setup = bootstrap_and_start(binaries, "process-demote").await;
-        let (mut ctx, tx, _sub, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
-            Ok(v) => v,
-            Err(err) => panic!("demote setup failed: {err}"),
-        };
+        let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-demote").await?;
 
-        let outcome = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let outcome = fixture
+            .submit_job_and_wait(
             "demote",
             ProcessJobKind::Demote(DemoteSpec {
-                data_dir: data_dir.clone(),
+                data_dir: fixture.data_dir.clone(),
                 mode: ShutdownMode::Fast,
                 timeout_ms: Some(10_000),
             }),
             Duration::from_secs(20),
         )
-        .await;
-
-        match outcome {
-            Ok(JobOutcome::Success { .. }) | Ok(JobOutcome::Failure { .. }) => {}
-            Ok(other) => panic!("unexpected demote outcome: {other:?}"),
-            Err(err) => panic!("demote job failed: {err}"),
+        .await?;
+        if !matches!(outcome, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
+            return Err(WorkerError::Message(format!(
+                "unexpected demote outcome: {outcome:?}"
+            )));
         }
 
-        let cleanup = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let cleanup = fixture
+            .submit_job_and_wait(
             "stop-after-demote",
             ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir,
+                data_dir: fixture.data_dir.clone(),
                 mode: ShutdownMode::Fast,
                 timeout_ms: Some(10_000),
             }),
             Duration::from_secs(20),
         )
-        .await;
-        match cleanup {
-            Ok(JobOutcome::Success { .. }) | Ok(JobOutcome::Failure { .. }) => {}
-            Ok(other) => panic!("unexpected demote cleanup outcome: {other:?}"),
-            Err(err) => panic!("demote cleanup failed: {err}"),
+        .await?;
+        if !matches!(cleanup, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
+            return Err(WorkerError::Message(format!(
+                "unexpected demote cleanup outcome: {cleanup:?}"
+            )));
         }
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn real_start_and_stop_jobs_execute_binary_paths() {
+    async fn real_start_and_stop_jobs_execute_binary_paths() -> Result<(), WorkerError> {
         let binaries = pg16_binaries();
+        let mut fixture =
+            RealProcessFixture::bootstrap_and_start(binaries, "process-start-stop").await?;
 
-        let setup = bootstrap_and_start(binaries, "process-start-stop").await;
-        let (mut ctx, tx, _sub, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
-            Ok(v) => v,
-            Err(err) => panic!("start/stop setup failed: {err}"),
-        };
-
-        let stop = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let stop = fixture
+            .submit_job_and_wait(
             "stop",
             ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir,
+                data_dir: fixture.data_dir.clone(),
                 mode: ShutdownMode::Fast,
                 timeout_ms: Some(10_000),
             }),
             Duration::from_secs(20),
         )
-        .await;
-
-        match stop {
-            Ok(JobOutcome::Success { .. }) => {}
-            Ok(other) => panic!("expected stop success, got: {other:?}"),
-            Err(err) => panic!("stop job failed: {err}"),
+        .await?;
+        if !matches!(stop, JobOutcome::Success { .. }) {
+            return Err(WorkerError::Message(format!(
+                "expected stop success, got: {stop:?}"
+            )));
         }
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn real_restart_job_executes_binary_path() {
+    async fn real_restart_job_executes_binary_path() -> Result<(), WorkerError> {
         let binaries = pg16_binaries();
+        let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-restart").await?;
 
-        let setup = bootstrap_and_start(binaries, "process-restart").await;
-        let (mut ctx, tx, _sub, _guard, data_dir, socket_dir, log_file, port) = match setup {
-            Ok(v) => v,
-            Err(err) => panic!("restart setup failed: {err}"),
-        };
-
-        let restart = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let restart = fixture
+            .submit_job_and_wait(
             "restart",
             ProcessJobKind::RestartPostgres(RestartPostgresSpec {
-                data_dir: data_dir.clone(),
+                data_dir: fixture.data_dir.clone(),
                 host: "127.0.0.1".to_string(),
-                port,
-                socket_dir,
-                log_file: log_file.clone(),
+                port: fixture.port,
+                socket_dir: fixture.socket_dir.clone(),
+                log_file: fixture.log_file.clone(),
                 mode: ShutdownMode::Fast,
                 wait_seconds: Some(20),
                 timeout_ms: Some(20_000),
             }),
             Duration::from_secs(30),
         )
-        .await;
-
-        match restart {
-            Ok(JobOutcome::Success { .. }) | Ok(JobOutcome::Failure { .. }) => {}
-            Ok(other) => panic!("unexpected restart outcome: {other:?}"),
-            Err(err) => panic!("restart job failed: {err}"),
+        .await?;
+        if !matches!(restart, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
+            return Err(WorkerError::Message(format!(
+                "unexpected restart outcome: {restart:?}"
+            )));
         }
 
-        let stop = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let stop = fixture
+            .submit_job_and_wait(
             "stop-after-restart",
             ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir,
+                data_dir: fixture.data_dir.clone(),
                 mode: ShutdownMode::Fast,
                 timeout_ms: Some(10_000),
             }),
             Duration::from_secs(20),
         )
-        .await;
-        match stop {
-            Ok(JobOutcome::Success { .. }) | Ok(JobOutcome::Failure { .. }) => {}
-            Ok(other) => panic!("unexpected stop-after-restart outcome: {other:?}"),
-            Err(err) => panic!("stop-after-restart failed: {err}"),
+        .await?;
+        if !matches!(stop, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
+            return Err(WorkerError::Message(format!(
+                "unexpected stop-after-restart outcome: {stop:?}"
+            )));
         }
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn real_fencing_job_executes_binary_path() {
+    async fn real_fencing_job_executes_binary_path() -> Result<(), WorkerError> {
         let binaries = pg16_binaries();
-        let setup = bootstrap_and_start(binaries, "process-fencing").await;
-        let (mut ctx, tx, _sub, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
-            Ok(v) => v,
-            Err(err) => panic!("fencing setup failed: {err}"),
-        };
+        let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-fencing").await?;
 
-        let outcome = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let outcome = fixture
+            .submit_job_and_wait(
             "fence",
             ProcessJobKind::Fencing(FencingSpec {
-                data_dir: data_dir.clone(),
+                data_dir: fixture.data_dir.clone(),
                 mode: ShutdownMode::Immediate,
                 timeout_ms: Some(10_000),
             }),
             Duration::from_secs(20),
         )
-        .await;
-
-        match outcome {
-            Ok(JobOutcome::Success { .. }) | Ok(JobOutcome::Failure { .. }) => {}
-            Ok(other) => panic!("unexpected fencing outcome: {other:?}"),
-            Err(err) => panic!("fencing job failed: {err}"),
+        .await?;
+        if !matches!(outcome, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
+            return Err(WorkerError::Message(format!(
+                "unexpected fencing outcome: {outcome:?}"
+            )));
         }
 
-        let cleanup = submit_job_and_wait(
-            &tx,
-            &mut ctx,
+        let cleanup = fixture
+            .submit_job_and_wait(
             "stop-after-fencing",
             ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir,
+                data_dir: fixture.data_dir.clone(),
                 mode: ShutdownMode::Fast,
                 timeout_ms: Some(10_000),
             }),
             Duration::from_secs(20),
         )
-        .await;
-        match cleanup {
-            Ok(JobOutcome::Success { .. }) | Ok(JobOutcome::Failure { .. }) => {}
-            Ok(other) => panic!("unexpected fencing cleanup outcome: {other:?}"),
-            Err(err) => panic!("fencing cleanup failed: {err}"),
+        .await?;
+        if !matches!(cleanup, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
+            return Err(WorkerError::Message(format!(
+                "unexpected fencing cleanup outcome: {cleanup:?}"
+            )));
         }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn start_job_returns_channel_closed_when_all_subscribers_are_dropped() {
+        let runner = FakeRunner {
+            spawn_results: VecDeque::from(vec![Ok(FakeHandle {
+                polls: VecDeque::from(vec![Ok(None)]),
+                cancel_result: Ok(()),
+            })]),
+        };
+        let initial = ProcessState::Idle {
+            worker: WorkerStatus::Starting,
+            last_outcome: None,
+        };
+        let (publisher, subscriber) = new_state_channel(initial.clone(), UnixMillis(0));
+        drop(subscriber);
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let mut ctx = ProcessWorkerCtx {
+            poll_interval: Duration::from_millis(10),
+            config: sample_config(),
+            state: initial,
+            publisher,
+            inbox: rx,
+            command_runner: Box::new(runner),
+            active_runtime: None,
+            last_rejection: None,
+            now: queued_clock(vec![1, 2]),
+        };
+
+        let result = start_job(
+            &mut ctx,
+            ProcessJobRequest {
+                id: JobId("job-no-subscriber".to_string()),
+                kind: ProcessJobKind::StartPostgres(sample_start_spec()),
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(WorkerError::Message(message)) if message.contains("state channel is closed")
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

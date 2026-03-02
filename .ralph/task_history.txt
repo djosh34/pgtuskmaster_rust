@@ -11,3 +11,4 @@
 .ralph/tasks/story-rust-system-harness/08-task-ha-worker-select-loop-and-action-dispatch.md
 .ralph/tasks/story-rust-system-harness/08-task-ha-worker-select-loop-and-action-dispatch.md
 .ralph/tasks/bugs/real-binary-tests-fail-when-port-allocation-is-blocked.md
+.ralph/tasks/bugs/process-worker-real-job-tests-state-channel-closed.md

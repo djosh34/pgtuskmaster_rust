@@ -1,6 +1,16 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 10:41:54 PM CET 2026
+Generated: Mon Mar  2 22:51:20 CET 2026
+
+**Path:** `.ralph/tasks/bugs/dcs-watch-refresh-errors-ignored.md`
+
+## Bug: DCS watch refresh errors are tracked but ignored <status>not_started</status> <passes>false</passes>
+
+<description>
+`refresh_from_etcd_watch` in [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs) records `had_errors` (for unknown keys or decode failures) but no caller uses it. In [src/dcs/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/worker.rs), `step_once` only checks for `Err`, so unknown/malformed watch events can be silently ignored while the worker still reports healthy state. Decide on the correct behavior (e.g., mark store unhealthy, emit faulted state, or log/telemetry), and wire `had_errors` into worker health so errors do not pass silently.
+</description>
+
+---
 
 **Path:** `.ralph/tasks/bugs/pginfo-standby-polling-test-configure-primary-db-error.md`
 
@@ -11,9 +21,19 @@ Generated: Mon Mar  2 10:41:54 PM CET 2026
 
 ---
 
+**Path:** `.ralph/tasks/bugs/process-worker-real-job-tests-accept-failure-outcomes.md`
+
+## Bug: Process worker real job tests accept failure outcomes <status>not_started</status> <passes>false</passes>
+
+<description>
+Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/worker.rs) accept failure outcomes, so they can pass even when the binary invocation or behavior is broken. Examples:
+- `real_promote_job_executes_binary_path`
+
+---
+
 **Path:** `.ralph/tasks/bugs/process-worker-real-job-tests-state-channel-closed.md`
 
-## Bug: Process worker real job tests fail with state channel closed <status>not_started</status> <passes>false</passes>
+## Bug: Process worker real job tests fail with state channel closed <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 `make test` failed while running real process worker job tests. Multiple tests panic because process state publish fails with `state channel is closed`.
@@ -26,6 +46,26 @@ Generated: Mon Mar  2 10:41:54 PM CET 2026
 
 <description>
 `make test` is not passing in the current environment because multiple tests panic when `allocate_ports(...)` returns `io error: Operation not permitted (os error 1)`.
+
+---
+
+**Path:** `.ralph/tasks/bugs/test-harness-binary-check-panics.md`
+
+## Bug: Test harness binary checks panic instead of returning errors <status>not_started</status> <passes>false</passes>
+
+<description>
+The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/test_harness/binaries.rs) uses `panic!` to report missing binaries. This conflicts with the project policy of no `panic`/`expect`/`unwrap` and makes tests fail via uncontrolled panics rather than structured errors. Refactor `require_binary` (and callers) to return a typed `HarnessError` instead of panicking, and update callers/tests to propagate or assert errors explicitly.
+</description>
+
+---
+
+**Path:** `.ralph/tasks/bugs/worker-contract-tests-assert-only-callability.md`
+
+## Bug: Worker contract tests only assert callability <status>not_started</status> <passes>false</passes>
+
+<description>
+[worker_contract_tests.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/worker_contract_tests.rs) primarily asserts that `step_once` functions are callable and return `Ok(())`, without validating resulting state changes or side effects. This means tests can pass even if core worker logic regresses or stops mutating state. Strengthen these tests with minimal behavioral assertions (state version bump, expected phase transitions, or expected publish effects), or split compile-time contract checks into non-test compile gates and add real behavioral tests.
+</description>
 
 ---
 
@@ -104,6 +144,15 @@ Generated: Mon Mar  2 10:41:54 PM CET 2026
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -128,15 +177,6 @@ Generated: Mon Mar  2 10:41:54 PM CET 2026
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
 
 ---
 
@@ -180,6 +220,16 @@ Generated: Mon Mar  2 10:41:54 PM CET 2026
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>not_started</status> <passes>false</passes> <priority>high</priority>
@@ -195,16 +245,6 @@ Generated: Mon Mar  2 10:41:54 PM CET 2026
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
 
 ---
 
@@ -265,4 +305,62 @@ Generated: Mon Mar  2 10:41:54 PM CET 2026
 <blocked_by>15-task-final-double-check-and-stop-gate</blocked_by>
 
 <description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/17-task-deep-skeptical-codebase-review-model-gated.md`
+
+## Task: Deep skeptical codebase review with strict model gate and task fanout <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+
+<description>
+**Goal:** Run a trust-nothing deep skeptical audit of the entire codebase quality and produce follow-up tasks for every finding, while enforcing model-profile switching rules.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md`
+
+## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes> <priority>ultra_high</priority>
+NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
+
+<description>
+This is a **RECURRING META-TASK**.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/19-task-do-meta-deep-skeptical-review-pass-1.md`
+
+## Task: Do meta-task 18 deep skeptical review pass 1 <status>not_started</status> <passes>false</passes>
+
+<blocked_by>18-task-recurring-meta-deep-skeptical-codebase-review</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md`
+
+## Task: Do meta-task 18 deep skeptical review pass 2 <status>not_started</status> <passes>false</passes>
+
+<blocked_by>19-task-do-meta-deep-skeptical-review-pass-1</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/21-task-do-meta-deep-skeptical-review-pass-3.md`
+
+## Task: Do meta-task 18 deep skeptical review pass 3 <status>not_started</status> <passes>false</passes>
+
+<blocked_by>20-task-do-meta-deep-skeptical-review-pass-2</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/task-real-ha-dcs-process-integration-tests.md`
+
+## Task: Add real HA+DCS+Process integration tests <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Build integration tests that wire real PG16 binaries, a real etcd-backed DCS store, the process worker, pginfo worker, and HA worker so failures cannot pass silently.
 
