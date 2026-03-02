@@ -47,3 +47,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - If a public config struct like `RuntimeConfig` contains schema subtypes, re-export those schema structs publicly (or you’ll be unable to construct configs in `tests/` integration crates).
 - `etcd-client` endpoint setup can be lazy; an unreachable endpoint may still let `Client::connect(...)` return `Ok`, so unreachable-path tests should assert first I/O operation failure (`put/get`) rather than constructor failure alone.
 - If test namespaces are RAII-cleaned via `NamespaceGuard`, failure-time artifacts under namespace paths can disappear before diagnosis; write timeline/debug artifacts to a stable workspace path (for example `.ralph/evidence/...`) before teardown.
+- For long-lived bug tasks, first verify the reported failure string still exists in current code/logs; if absent and stress + full gates pass, close as stale-with-evidence instead of forcing speculative code changes.

@@ -1,0 +1,630 @@
+=== iteration 1 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.91s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 2 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.67s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 3 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.87s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 4 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.82s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 5 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.92s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 6 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.83s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 7 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.73s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 8 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.76s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 9 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.77s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 10 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.78s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 11 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.74s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 12 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.85s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 13 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.71s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 14 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.83s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 15 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.84s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 16 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.79s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 17 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.76s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 18 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.74s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 19 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.63s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 20 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.65s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 21 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.66s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 22 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.76s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 23 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.75s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 24 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.65s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 25 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.75s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 26 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.65s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 27 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.79s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 28 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.67s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 29 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.75s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+=== iteration 30 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-8be19487e2988842)
+
+running 1 test
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.77s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-56e4f2a3b33fe7d5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-a42e64f857c30572)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+

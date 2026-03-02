@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 12:04:09 AM CET 2026
+Generated: Tue Mar  3 12:13:28 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -24,7 +24,7 @@ src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which viol
 
 **Path:** `.ralph/tasks/bugs/pginfo-standby-polling-test-configure-primary-db-error.md`
 
-## Bug: Pginfo standby polling test fails during primary configure with db error <status>not_started</status> <passes>false</passes>
+## Bug: Pginfo standby polling test fails during primary configure with db error <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 `make test` failed in `pginfo::worker::tests::step_once_maps_replica_when_polling_standby` with a runtime panic while preparing the primary postgres fixture.
