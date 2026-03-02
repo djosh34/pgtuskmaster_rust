@@ -157,63 +157,33 @@ mod tests {
 
     use super::{prepare_etcd_data_dir, spawn_etcd3, EtcdInstanceSpec};
     use crate::test_harness::binaries::require_etcd_bin;
-    use crate::test_harness::namespace::{cleanup_namespace, create_namespace};
+    use crate::test_harness::namespace::NamespaceGuard;
     use crate::test_harness::ports::allocate_ports;
+    use crate::test_harness::HarnessError;
 
     #[test]
-    fn prepare_etcd_data_dir_rejects_reuse() {
-        let ns = match create_namespace("prepare-etcd") {
-            Ok(ns) => ns,
-            Err(err) => panic!("namespace create failed: {err}"),
-        };
+    fn prepare_etcd_data_dir_rejects_reuse() -> Result<(), HarnessError> {
+        let guard = NamespaceGuard::new("prepare-etcd")?;
+        let ns = guard.namespace()?;
 
-        let first = match prepare_etcd_data_dir(&ns) {
-            Ok(path) => path,
-            Err(err) => {
-                if let Err(clean_err) = cleanup_namespace(ns) {
-                    panic!("prepare failed: {err}; cleanup failed: {clean_err}");
-                }
-                panic!("prepare etcd data failed: {err}");
-            }
-        };
+        let first = prepare_etcd_data_dir(ns)?;
         assert!(first.exists());
 
-        let second = prepare_etcd_data_dir(&ns);
+        let second = prepare_etcd_data_dir(ns);
         assert!(second.is_err());
-
-        if let Err(err) = cleanup_namespace(ns) {
-            panic!("cleanup failed: {err}");
-        }
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn spawn_etcd3_requires_binary_and_spawns() {
+    async fn spawn_etcd3_requires_binary_and_spawns() -> Result<(), HarnessError> {
         let etcd_bin = require_etcd_bin();
 
-        let ns = match create_namespace("spawn-etcd") {
-            Ok(ns) => ns,
-            Err(err) => panic!("namespace create failed: {err}"),
-        };
+        let guard = NamespaceGuard::new("spawn-etcd")?;
+        let ns = guard.namespace()?;
 
-        let data_dir = match prepare_etcd_data_dir(&ns) {
-            Ok(path) => path,
-            Err(err) => {
-                if let Err(clean_err) = cleanup_namespace(ns) {
-                    panic!("prepare failed: {err}; cleanup failed: {clean_err}");
-                }
-                panic!("prepare etcd data failed: {err}");
-            }
-        };
+        let data_dir = prepare_etcd_data_dir(ns)?;
 
-        let reservation = match allocate_ports(2) {
-            Ok(res) => res,
-            Err(err) => {
-                if let Err(clean_err) = cleanup_namespace(ns) {
-                    panic!("port alloc failed: {err}; cleanup failed: {clean_err}");
-                }
-                panic!("allocate ports failed: {err}");
-            }
-        };
+        let reservation = allocate_ports(2)?;
         let ports = reservation.as_slice();
         let client_port = ports[0];
         let peer_port = ports[1];
@@ -234,25 +204,8 @@ mod tests {
         // Release the reserved ports immediately before spawning etcd so the
         // child can bind them.
         drop(reservation);
-        let mut handle = match spawn_etcd3(spec).await {
-            Ok(handle) => handle,
-            Err(err) => {
-                if let Err(clean_err) = cleanup_namespace(ns) {
-                    panic!("spawn failed: {err}; cleanup failed: {clean_err}");
-                }
-                panic!("spawn etcd3 failed: {err}");
-            }
-        };
-
-        if let Err(err) = handle.shutdown().await {
-            if let Err(clean_err) = cleanup_namespace(ns) {
-                panic!("shutdown failed: {err}; cleanup failed: {clean_err}");
-            }
-            panic!("shutdown etcd3 failed: {err}");
-        }
-
-        if let Err(err) = cleanup_namespace(ns) {
-            panic!("cleanup failed: {err}");
-        }
+        let mut handle = spawn_etcd3(spec).await?;
+        handle.shutdown().await?;
+        Ok(())
     }
 }

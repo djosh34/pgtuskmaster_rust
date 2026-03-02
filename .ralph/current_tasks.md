@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 22:29:43 CET 2026
+Generated: Mon Mar  2 10:41:54 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/pginfo-standby-polling-test-configure-primary-db-error.md`
 
@@ -22,7 +22,7 @@ Generated: Mon Mar  2 22:29:43 CET 2026
 
 **Path:** `.ralph/tasks/bugs/real-binary-tests-fail-when-port-allocation-is-blocked.md`
 
-## Bug: Real-binary tests fail when port allocation is blocked <status>not_started</status> <passes>false</passes>
+## Bug: Real-binary tests fail when port allocation is blocked <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 `make test` is not passing in the current environment because multiple tests panic when `allocate_ports(...)` returns `io error: Operation not permitted (os error 1)`.
@@ -104,15 +104,6 @@ Generated: Mon Mar  2 22:29:43 CET 2026
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -128,6 +119,24 @@ Generated: Mon Mar  2 22:29:43 CET 2026
 
 <description>
 **Goal:** Perform a deep end-to-end review of current repository quality, test reality, and completion truthfulness of all tasks already marked done.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/05c-task-zero-panic-unwrap-expect-across-runtime-and-tests.md`
+
+## Task: Enforce zero panic/unwrap/expect across runtime and tests with proper Result handling <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+**Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
 
 ---
 
@@ -171,16 +180,6 @@ Generated: Mon Mar  2 22:29:43 CET 2026
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>not_started</status> <passes>false</passes> <priority>high</priority>
@@ -196,6 +195,16 @@ Generated: Mon Mar  2 22:29:43 CET 2026
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
 
 ---
 

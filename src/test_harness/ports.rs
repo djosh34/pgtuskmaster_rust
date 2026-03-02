@@ -61,7 +61,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use super::allocate_ports;
+    use super::{allocate_ports, HarnessError};
 
     #[test]
     fn allocate_ports_rejects_zero() {
@@ -70,19 +70,17 @@ mod tests {
     }
 
     #[test]
-    fn allocate_ports_returns_unique_ports() {
-        let reservation = match allocate_ports(8) {
-            Ok(res) => res,
-            Err(err) => panic!("allocate ports failed: {err}"),
-        };
+    fn allocate_ports_returns_unique_ports() -> Result<(), HarnessError> {
+        let reservation = allocate_ports(8)?;
 
         let ports = reservation.as_slice();
         let unique: BTreeSet<u16> = ports.iter().copied().collect();
         assert_eq!(unique.len(), ports.len());
+        Ok(())
     }
 
     #[test]
-    fn concurrent_allocations_do_not_collide_while_reserved() {
+    fn concurrent_allocations_do_not_collide_while_reserved() -> Result<(), HarnessError> {
         let workers = 24usize;
         let per_worker = 2usize;
 
@@ -98,32 +96,26 @@ mod tests {
 
             handles.push(thread::spawn(move || {
                 start_barrier.wait();
-                let reservation = match allocate_ports(per_worker) {
-                    Ok(res) => res,
-                    Err(err) => panic!("allocate ports failed in thread: {err}"),
-                };
+                let reservation = allocate_ports(per_worker)?;
 
                 {
-                    let lock = all_ports.lock();
-                    let mut lock = match lock {
-                        Ok(lock) => lock,
-                        Err(err) => panic!("mutex poisoned: {err}"),
-                    };
+                    let mut lock = all_ports.lock().map_err(|err| {
+                        HarnessError::InvalidInput(format!("mutex poisoned: {err}"))
+                    })?;
                     lock.extend(reservation.as_slice().iter().copied());
                 }
 
                 hold_barrier.wait();
                 drop(reservation);
+                Ok::<(), HarnessError>(())
             }));
         }
 
         loop {
             let len = {
-                let lock = all_ports.lock();
-                let lock = match lock {
-                    Ok(lock) => lock,
-                    Err(err) => panic!("mutex poisoned: {err}"),
-                };
+                let lock = all_ports
+                    .lock()
+                    .map_err(|err| HarnessError::InvalidInput(format!("mutex poisoned: {err}")))?;
                 lock.len()
             };
             if len == workers * per_worker {
@@ -133,11 +125,9 @@ mod tests {
         }
 
         {
-            let lock = all_ports.lock();
-            let lock = match lock {
-                Ok(lock) => lock,
-                Err(err) => panic!("mutex poisoned: {err}"),
-            };
+            let lock = all_ports
+                .lock()
+                .map_err(|err| HarnessError::InvalidInput(format!("mutex poisoned: {err}")))?;
             let unique: BTreeSet<u16> = lock.iter().copied().collect();
             assert_eq!(unique.len(), workers * per_worker);
         }
@@ -145,10 +135,11 @@ mod tests {
         hold_barrier.wait();
 
         for handle in handles {
-            match handle.join() {
-                Ok(()) => {}
-                Err(_) => panic!("thread panicked"),
-            }
+            let thread_result = handle
+                .join()
+                .map_err(|_| HarnessError::InvalidInput("thread panicked".to_string()))?;
+            thread_result?;
         }
+        Ok(())
     }
 }

@@ -1,0 +1,8 @@
+cargo clippy --all-targets --all-features -- -D warnings
+    Blocking waiting for file lock on build directory
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.10s
+# Runtime strict pass for non-test library builds.
+cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.99s

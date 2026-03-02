@@ -10,3 +10,4 @@
 .ralph/tasks/story-rust-system-harness/05b-task-deep-review-codebase-and-verify-done-work.md
 .ralph/tasks/story-rust-system-harness/08-task-ha-worker-select-loop-and-action-dispatch.md
 .ralph/tasks/story-rust-system-harness/08-task-ha-worker-select-loop-and-action-dispatch.md
+.ralph/tasks/bugs/real-binary-tests-fail-when-port-allocation-is-blocked.md
