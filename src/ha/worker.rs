@@ -378,8 +378,8 @@ mod tests {
             BinaryPaths, ProcessConfig, RuntimeConfig,
         },
         dcs::{
-            state::{DcsCache, DcsState, DcsTrust},
-            store::{DcsStore, DcsStoreError, WatchEvent},
+            state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
+            store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
         },
         ha::{
             actions::{ActionId, HaAction},
@@ -390,8 +390,11 @@ mod tests {
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::{
-            jobs::ShutdownMode,
-            state::{ProcessJobKind, ProcessJobRequest, ProcessState},
+            jobs::{
+                ProcessCommandRunner, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle,
+                ShutdownMode,
+            },
+            state::{JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx},
         },
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
@@ -413,11 +416,34 @@ mod tests {
             0
         }
 
+        fn has_write_path(&self, path: &str) -> bool {
+            if let Ok(guard) = self.writes.lock() {
+                return guard.iter().any(|(key, _)| key == path);
+            }
+            false
+        }
+
         fn deletes_len(&self) -> usize {
             if let Ok(guard) = self.deletes.lock() {
                 return guard.len();
             }
             0
+        }
+
+        fn has_delete_path(&self, path: &str) -> bool {
+            if let Ok(guard) = self.deletes.lock() {
+                return guard.iter().any(|key| key == path);
+            }
+            false
+        }
+
+        fn push_event(&self, event: WatchEvent) -> Result<(), WorkerError> {
+            let mut guard = self
+                .events
+                .lock()
+                .map_err(|_| WorkerError::Message("events lock poisoned".to_string()))?;
+            guard.push_back(event);
+            Ok(())
         }
 
         fn first_write_path(&self) -> Option<String> {
@@ -566,6 +592,20 @@ mod tests {
         }
     }
 
+    fn monotonic_clock(
+        start: u64,
+    ) -> Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send> {
+        let clock = Arc::new(Mutex::new(start));
+        Box::new(move || {
+            let mut guard = clock
+                .lock()
+                .map_err(|_| WorkerError::Message("clock lock poisoned".to_string()))?;
+            let now = *guard;
+            *guard = guard.saturating_add(1);
+            Ok(UnixMillis(now))
+        })
+    }
+
     struct BuiltContext {
         ctx: HaWorkerCtx,
         ha_subscriber: crate::state::StateSubscriber<HaState>,
@@ -608,15 +648,7 @@ mod tests {
         ctx.poll_interval = poll_interval;
         ctx.state = sample_ha_state();
         ctx.process_defaults = sample_process_defaults();
-        let clock = Arc::new(Mutex::new(10_u64));
-        ctx.now = Box::new(move || {
-            let mut guard = clock
-                .lock()
-                .map_err(|_| WorkerError::Message("clock lock poisoned".to_string()))?;
-            let now = *guard;
-            *guard = guard.saturating_add(1);
-            Ok(UnixMillis(now))
-        });
+        ctx.now = monotonic_clock(10);
 
         BuiltContext {
             ctx,
@@ -627,6 +659,287 @@ mod tests {
             _process_publisher: process_publisher,
             process_rx,
             store,
+        }
+    }
+
+    #[derive(Clone)]
+    struct ScriptedProcess {
+        polls: VecDeque<Result<Option<ProcessExit>, ProcessError>>,
+        cancel_result: Result<(), ProcessError>,
+    }
+
+    struct ScriptedHandle {
+        polls: VecDeque<Result<Option<ProcessExit>, ProcessError>>,
+        cancel_result: Result<(), ProcessError>,
+    }
+
+    impl ProcessHandle for ScriptedHandle {
+        fn poll_exit(&mut self) -> Result<Option<ProcessExit>, ProcessError> {
+            match self.polls.pop_front() {
+                Some(next) => next,
+                None => Ok(None),
+            }
+        }
+
+        fn cancel<'a>(
+            &'a mut self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), ProcessError>> + Send + 'a>,
+        > {
+            let result = self.cancel_result.clone();
+            Box::pin(async move { result })
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ScriptedRunner {
+        scripts: Arc<Mutex<VecDeque<Result<ScriptedProcess, ProcessError>>>>,
+        spawned_specs: Arc<Mutex<Vec<ProcessCommandSpec>>>,
+    }
+
+    impl ScriptedRunner {
+        fn queue_success_exit(&self) -> Result<(), WorkerError> {
+            let mut scripts = self
+                .scripts
+                .lock()
+                .map_err(|_| WorkerError::Message("scripts lock poisoned".to_string()))?;
+            scripts.push_back(Ok(ScriptedProcess {
+                polls: VecDeque::from(vec![Ok(Some(ProcessExit::Success))]),
+                cancel_result: Ok(()),
+            }));
+            Ok(())
+        }
+
+        fn spawn_count(&self) -> usize {
+            if let Ok(specs) = self.spawned_specs.lock() {
+                return specs.len();
+            }
+            0
+        }
+
+        fn any_spawn_contains_arg(&self, needle: &str) -> bool {
+            if let Ok(specs) = self.spawned_specs.lock() {
+                return specs
+                    .iter()
+                    .any(|spec| spec.args.iter().any(|arg| arg == needle));
+            }
+            false
+        }
+    }
+
+    impl ProcessCommandRunner for ScriptedRunner {
+        fn spawn(&mut self, spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError> {
+            {
+                let mut spawned = self
+                    .spawned_specs
+                    .lock()
+                    .map_err(|_| ProcessError::OperationFailed)?;
+                spawned.push(spec);
+            }
+            let scripted = {
+                let mut scripts = self
+                    .scripts
+                    .lock()
+                    .map_err(|_| ProcessError::OperationFailed)?;
+                match scripts.pop_front() {
+                    Some(next) => next,
+                    None => Err(ProcessError::UnsupportedInput(
+                        "scripted runner queue exhausted".to_string(),
+                    )),
+                }
+            }?;
+
+            Ok(Box::new(ScriptedHandle {
+                polls: scripted.polls,
+                cancel_result: scripted.cancel_result,
+            }))
+        }
+    }
+
+    struct IntegrationFixture {
+        store: RecordingStore,
+        runner: ScriptedRunner,
+        _config_publisher: crate::state::StatePublisher<RuntimeConfig>,
+        pg_publisher: crate::state::StatePublisher<PgInfoState>,
+        dcs_subscriber: crate::state::StateSubscriber<DcsState>,
+        process_subscriber: crate::state::StateSubscriber<ProcessState>,
+        ha_subscriber: crate::state::StateSubscriber<HaState>,
+        dcs_ctx: crate::dcs::state::DcsWorkerCtx,
+        process_ctx: ProcessWorkerCtx,
+        ha_ctx: HaWorkerCtx,
+        next_revision: i64,
+    }
+
+    impl IntegrationFixture {
+        fn new(initial_phase: HaPhase) -> Self {
+            let runtime_config = sample_runtime_config();
+            let store = RecordingStore::default();
+            let runner = ScriptedRunner::default();
+
+            let (config_publisher, config_subscriber) =
+                new_state_channel(runtime_config.clone(), UnixMillis(1));
+            let (pg_publisher, pg_subscriber) =
+                new_state_channel(sample_pg_state(SqlStatus::Healthy), UnixMillis(1));
+            let (dcs_publisher, dcs_subscriber) = new_state_channel(
+                sample_dcs_state(runtime_config.clone(), DcsTrust::NotTrusted),
+                UnixMillis(1),
+            );
+            let (process_publisher, process_subscriber) =
+                new_state_channel(sample_process_state(), UnixMillis(1));
+            let (ha_publisher, ha_subscriber) = new_state_channel(sample_ha_state(), UnixMillis(1));
+            let (process_tx, process_rx) = tokio::sync::mpsc::unbounded_channel();
+
+            let dcs_ctx = crate::dcs::state::DcsWorkerCtx {
+                self_id: MemberId("node-a".to_string()),
+                scope: "scope-a".to_string(),
+                poll_interval: Duration::from_millis(5),
+                pg_subscriber: pg_subscriber.clone(),
+                publisher: dcs_publisher,
+                store: Box::new(store.clone()),
+                cache: DcsCache {
+                    members: BTreeMap::new(),
+                    leader: None,
+                    switchover: None,
+                    config: runtime_config.clone(),
+                    init_lock: None,
+                },
+                last_published_pg_version: None,
+            };
+
+            let mut process_ctx =
+                ProcessWorkerCtx::contract_stub(runtime_config.process.clone(), process_publisher, process_rx);
+            process_ctx.poll_interval = Duration::from_millis(5);
+            process_ctx.command_runner = Box::new(runner.clone());
+            process_ctx.now = monotonic_clock(100);
+
+            let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
+                publisher: ha_publisher,
+                config_subscriber,
+                pg_subscriber,
+                dcs_subscriber: dcs_subscriber.clone(),
+                process_subscriber: process_subscriber.clone(),
+                process_inbox: process_tx,
+                dcs_store: Box::new(store.clone()),
+                scope: "scope-a".to_string(),
+                self_id: MemberId("node-a".to_string()),
+            });
+            ha_ctx.poll_interval = Duration::from_millis(5);
+            ha_ctx.process_defaults = sample_process_defaults();
+            ha_ctx.now = monotonic_clock(1_000);
+            ha_ctx.state = HaState {
+                worker: WorkerStatus::Running,
+                phase: initial_phase,
+                tick: 0,
+                pending: Vec::new(),
+                recent_action_ids: BTreeSet::new(),
+            };
+
+            Self {
+                store,
+                runner,
+                _config_publisher: config_publisher,
+                pg_publisher,
+                dcs_subscriber,
+                process_subscriber,
+                ha_subscriber,
+                dcs_ctx,
+                process_ctx,
+                ha_ctx,
+                next_revision: 1,
+            }
+        }
+
+        fn queue_process_success(&self) -> Result<(), WorkerError> {
+            self.runner.queue_success_exit()
+        }
+
+        fn publish_pg_sql(&self, status: SqlStatus, now: u64) -> Result<(), WorkerError> {
+            self.pg_publisher
+                .publish(sample_pg_state(status), UnixMillis(now))
+                .map(|_| ())
+                .map_err(|err| WorkerError::Message(format!("pg publish failed: {err}")))
+        }
+
+        fn push_member_event(&mut self, member_id: &str, role: MemberRole) -> Result<(), WorkerError> {
+            let record = sample_member_record(member_id, role);
+            let value = serde_json::to_string(&record)
+                .map_err(|err| WorkerError::Message(format!("member encode failed: {err}")))?;
+            let event = WatchEvent {
+                op: WatchOp::Put,
+                path: format!("/scope-a/member/{member_id}"),
+                value: Some(value),
+                revision: self.take_revision(),
+            };
+            self.store.push_event(event)
+        }
+
+        fn push_leader_event(&mut self, member_id: &str) -> Result<(), WorkerError> {
+            let record = LeaderRecord {
+                member_id: MemberId(member_id.to_string()),
+            };
+            let value = serde_json::to_string(&record)
+                .map_err(|err| WorkerError::Message(format!("leader encode failed: {err}")))?;
+            let event = WatchEvent {
+                op: WatchOp::Put,
+                path: "/scope-a/leader".to_string(),
+                value: Some(value),
+                revision: self.take_revision(),
+            };
+            self.store.push_event(event)
+        }
+
+        fn delete_leader_event(&mut self) -> Result<(), WorkerError> {
+            let event = WatchEvent {
+                op: WatchOp::Delete,
+                path: "/scope-a/leader".to_string(),
+                value: None,
+                revision: self.take_revision(),
+            };
+            self.store.push_event(event)
+        }
+
+        async fn step_dcs_and_ha(&mut self) -> Result<(), WorkerError> {
+            crate::dcs::worker::step_once(&mut self.dcs_ctx).await?;
+            step_once(&mut self.ha_ctx).await
+        }
+
+        async fn step_dcs_ha_process_ha(&mut self) -> Result<(), WorkerError> {
+            crate::dcs::worker::step_once(&mut self.dcs_ctx).await?;
+            step_once(&mut self.ha_ctx).await?;
+            crate::process::worker::step_once(&mut self.process_ctx).await?;
+            step_once(&mut self.ha_ctx).await
+        }
+
+        fn latest_ha(&self) -> HaState {
+            self.ha_subscriber.latest().value
+        }
+
+        fn latest_dcs(&self) -> DcsState {
+            self.dcs_subscriber.latest().value
+        }
+
+        fn latest_process(&self) -> ProcessState {
+            self.process_subscriber.latest().value
+        }
+
+        fn take_revision(&mut self) -> i64 {
+            let current = self.next_revision;
+            self.next_revision = self.next_revision.saturating_add(1);
+            current
+        }
+    }
+
+    fn sample_member_record(member_id: &str, role: MemberRole) -> MemberRecord {
+        MemberRecord {
+            member_id: MemberId(member_id.to_string()),
+            role,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            write_lsn: None,
+            replay_lsn: None,
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
         }
     }
 
@@ -743,6 +1056,152 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn integration_transitions_replica_candidate_primary_and_failsafe() {
+        let mut fixture = IntegrationFixture::new(HaPhase::WaitingDcsTrusted);
+
+        assert_eq!(fixture.publish_pg_sql(SqlStatus::Healthy, 10), Ok(()));
+        assert_eq!(
+            fixture.push_member_event("node-b", MemberRole::Primary),
+            Ok(())
+        );
+        assert_eq!(fixture.push_leader_event("node-b"), Ok(()));
+        assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
+
+        let replica = fixture.latest_ha();
+        assert_eq!(replica.phase, HaPhase::Replica);
+        assert_eq!(
+            replica.pending,
+            vec![HaAction::FollowLeader {
+                leader_member_id: "node-b".to_string(),
+            }]
+        );
+        assert_eq!(fixture.latest_dcs().trust, DcsTrust::FullQuorum);
+
+        assert_eq!(fixture.delete_leader_event(), Ok(()));
+        assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
+        let candidate = fixture.latest_ha();
+        assert_eq!(candidate.phase, HaPhase::CandidateLeader);
+        assert_eq!(candidate.pending, vec![HaAction::AcquireLeaderLease]);
+        assert!(fixture.store.has_write_path("/scope-a/leader"));
+
+        assert_eq!(fixture.push_leader_event("node-a"), Ok(()));
+        assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
+        let primary = fixture.latest_ha();
+        assert_eq!(primary.phase, HaPhase::Primary);
+        assert_eq!(primary.pending, vec![HaAction::PromoteToPrimary]);
+
+        assert_eq!(fixture.push_leader_event("node-z"), Ok(()));
+        assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
+        let failsafe = fixture.latest_ha();
+        assert_eq!(failsafe.phase, HaPhase::FailSafe);
+        assert!(
+            failsafe
+                .pending
+                .iter()
+                .any(|action| matches!(action, HaAction::SignalFailSafe))
+        );
+        assert!(fixture.store.has_delete_path("/scope-a/leader"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn integration_primary_unreachable_rewinds_then_returns_replica_on_success() {
+        let mut fixture = IntegrationFixture::new(HaPhase::Primary);
+
+        assert_eq!(fixture.publish_pg_sql(SqlStatus::Unreachable, 20), Ok(()));
+        assert_eq!(fixture.queue_process_success(), Ok(()));
+        assert_eq!(fixture.step_dcs_ha_process_ha().await, Ok(()));
+
+        let latest_ha = fixture.latest_ha();
+        assert_eq!(latest_ha.phase, HaPhase::Replica);
+        assert!(fixture.runner.any_spawn_contains_arg("--target-pgdata"));
+        assert!(matches!(
+            fixture.latest_process(),
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Success { .. }),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn integration_primary_split_brain_enters_fencing_and_process_feedback_advances() {
+        let mut fixture = IntegrationFixture::new(HaPhase::Primary);
+
+        assert_eq!(fixture.publish_pg_sql(SqlStatus::Healthy, 30), Ok(()));
+        assert_eq!(
+            fixture.push_member_event("node-b", MemberRole::Primary),
+            Ok(())
+        );
+        assert_eq!(fixture.push_leader_event("node-b"), Ok(()));
+        assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
+
+        let fencing = fixture.latest_ha();
+        assert_eq!(fencing.phase, HaPhase::Fencing);
+        assert_eq!(
+            fencing.pending,
+            vec![
+                HaAction::DemoteToReplica,
+                HaAction::ReleaseLeaderLease,
+                HaAction::FenceNode,
+            ]
+        );
+        assert!(fixture.store.has_delete_path("/scope-a/leader"));
+
+        assert_eq!(fixture.queue_process_success(), Ok(()));
+        let process_version_before = fixture.process_subscriber.latest().version;
+        assert_eq!(
+            crate::process::worker::step_once(&mut fixture.process_ctx).await,
+            Ok(())
+        );
+        assert_eq!(step_once(&mut fixture.ha_ctx).await, Ok(()));
+
+        let process_version_after = fixture.process_subscriber.latest().version;
+        assert_eq!(
+            process_version_after.0,
+            process_version_before.0.saturating_add(2)
+        );
+        assert!(matches!(
+            fixture.latest_process(),
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Success { .. }),
+                ..
+            }
+        ));
+        assert_eq!(fixture.latest_ha().phase, HaPhase::WaitingDcsTrusted);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn integration_start_postgres_dispatch_updates_process_state_versions() {
+        let mut fixture = IntegrationFixture::new(HaPhase::WaitingPostgresReachable);
+
+        assert_eq!(fixture.publish_pg_sql(SqlStatus::Unreachable, 40), Ok(()));
+        assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
+        let waiting = fixture.latest_ha();
+        assert_eq!(waiting.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(waiting.pending, vec![HaAction::StartPostgres]);
+
+        assert_eq!(fixture.queue_process_success(), Ok(()));
+        let process_version_before = fixture.process_subscriber.latest().version;
+        assert_eq!(
+            crate::process::worker::step_once(&mut fixture.process_ctx).await,
+            Ok(())
+        );
+        let process_version_after = fixture.process_subscriber.latest().version;
+        assert_eq!(
+            process_version_after.0,
+            process_version_before.0.saturating_add(2)
+        );
+        assert!(matches!(
+            fixture.latest_process(),
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Success { .. }),
+                ..
+            }
+        ));
+        assert!(fixture.runner.any_spawn_contains_arg("start"));
     }
 
     #[tokio::test(flavor = "current_thread")]

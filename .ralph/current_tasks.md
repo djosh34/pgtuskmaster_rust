@@ -1,6 +1,16 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 10:51:34 PM CET 2026
+Generated: Mon Mar  2 23:03:19 CET 2026
+
+**Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
+
+## Bug: Remove Clippy Allowances For Unwrap/Panic <status>not_started</status> <passes>false</passes>
+
+<description>
+src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which violates the repo rule against unwraps, panics, or expects anywhere. This hides violations in test harness code and makes it easy to slip new ones in. Investigate all test_harness code (and any other modules) for unwrap/expect/panic usage, replace with proper error handling, and remove the lint allow attributes.
+</description>
+
+---
 
 **Path:** `.ralph/tasks/bugs/dcs-watch-refresh-errors-ignored.md`
 
@@ -144,6 +154,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -168,15 +187,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
 
 ---
 
@@ -220,6 +230,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>not_started</status> <passes>false</passes> <priority>high</priority>
@@ -238,16 +258,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/11-task-typed-pg-config-and-conninfo-roundtrip-tests.md`
 
 ## Task: Implement typed postgres config and conninfo parser renderer <status>not_started</status> <passes>false</passes> <priority>high</priority>
@@ -260,7 +270,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-rust-system-harness/12-task-ha-loop-integration-tests-real-watchers-and-step-once.md`
 
-## Task: Build HA loop integration tests with real watchers and deterministic stepping <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+## Task: Build HA loop integration tests with real watchers and deterministic stepping <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
 
 <blocked_by>08-task-ha-worker-select-loop-and-action-dispatch,10-task-test-harness-namespace-ports-pg-etcd-spawners</blocked_by>
 
@@ -308,18 +318,9 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/17-task-deep-skeptical-codebase-review-model-gated.md`
-
-## Task: Deep skeptical codebase review with strict model gate and task fanout <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
-
-<description>
-**Goal:** Run a trust-nothing deep skeptical audit of the entire codebase quality and produce follow-up tasks for every finding, while enforcing model-profile switching rules.
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md`
 
-## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes> <priority>ultra_high</priority>
+## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes>
 NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
 
 <description>
