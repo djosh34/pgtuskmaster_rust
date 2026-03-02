@@ -23,7 +23,7 @@ ARCHIVE_DIR="$SCRIPT_DIR/archive"
 mkdir -p "$ARCHIVE_DIR"
 mkdir -p "$SCRIPT_DIR/progress"
 
-# Note: Email watcher is managed by ralph.sh / ralph-email-watcher.sh
+# Note: Progress email is sent directly by progress_append.sh
 # It is NOT stopped when ralph-worker exits (intentionally persists)
 
 

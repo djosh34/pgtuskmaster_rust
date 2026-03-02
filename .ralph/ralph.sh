@@ -17,11 +17,6 @@ EMAIL_WATCHER_UNIT="ralph-pgtuskmaster-progress-watcher.path"
 # Show current ralph services status
 echo ""
 echo "=== Ralph Services Status ==="
-if systemctl --user is-active "$EMAIL_WATCHER_UNIT" &>/dev/null; then
-  echo "  [ACTIVE]   $EMAIL_WATCHER_UNIT (email watcher)"
-else
-  echo "  [inactive] $EMAIL_WATCHER_UNIT (email watcher)"
-fi
 if systemctl --user is-active "$UNIT_NAME.service" &>/dev/null; then
   echo "  [ACTIVE]   $UNIT_NAME.service (worker)"
 else
@@ -29,14 +24,13 @@ else
 fi
 echo ""
 
-# Start email watcher if not running (but don't stop it when done)
-if ! systemctl --user is-active "$EMAIL_WATCHER_UNIT" &>/dev/null; then
-  echo "Starting email watcher..."
-  /bin/bash "$SCRIPT_DIR/ralph-email-watcher.sh" start
-  echo ""
-else
-  echo "WARNING: Email watcher was already running (leaving it on)"
-  echo ""
+# Disable old watcher model; progress_append.sh sends email directly now.
+if systemctl --user is-enabled "$EMAIL_WATCHER_UNIT" &>/dev/null; then
+  systemctl --user disable "$EMAIL_WATCHER_UNIT" >/dev/null 2>&1 || true
+fi
+if systemctl --user is-active "$EMAIL_WATCHER_UNIT" &>/dev/null; then
+  echo "Stopping legacy email watcher (direct email now handled by progress_append.sh)..."
+  systemctl --user stop "$EMAIL_WATCHER_UNIT" >/dev/null 2>&1 || true
 fi
 
 # If already running, attach to it. Otherwise start fresh.

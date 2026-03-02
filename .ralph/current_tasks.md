@@ -1,168 +1,197 @@
 # Current Tasks Summary
 
-Generated: Thu Feb 26 09:50:23 PM CET 2026
+Generated: Mon Mar  2 17:36:04 CET 2026
 
-**Path:** `.ralph/tasks/bugs/bug-e2e-product-behavior-failures.md`
+**Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
-## Bug: 5 e2e tests skipped due to product behavior issues <status>not_started</status> <passes>false</passes> <priority>medium</priority>
+## Task: Verify build and static quality gates <status>not_started</status> <passes>false</passes>
 
 <description>
-During the BDD-to-bun:test conversion (task 10), 5 e2e tests were found to consistently fail due to product behavior issues (not test conversion bugs). The test logic was verified line-by-line against the original BDD step definitions and is 100% identical. These tests were also failing in the original BDD form (all runs since Feb 24 exit=1).
+**Goal:** Validate the codebase can build and pass core static gates before deeper test execution.
 
 ---
 
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/01-task-shared-test-helpers.md`
+**Path:** `.ralph/tasks/story-full-verification/02-task-run-targeted-unit-and-integration-tests.md`
 
-## Task: Create shared Bun test helpers to replace Cucumber world/step infrastructure <status>done</status> <passes>true</passes> <priority>high</priority>
+## Task: Run targeted unit and integration test suites <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Build the shared helper layer that all converted tests will use — replacing Cucumber World types and the step definition pattern with simple, reusable TypeScript functions.
+**Goal:** Execute and validate non-e2e automated tests after static/build gates to identify functional regressions early.
 
 ---
 
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/02-task-convert-cluster-init-tests.md`
+**Path:** `.ralph/tasks/story-full-verification/03-task-run-full-suite-regression-pass.md`
 
-## Task: Convert cluster-init BDD test to Bun test <status>not_started</status> <passes>true</passes> <priority>high</priority>
+## Task: Run full regression suite end-to-end <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Convert `test/features/cluster-init.feature` and its step definitions into a plain `bun:test` file.
+**Goal:** Execute the entire validation suite in one pass to confirm holistic repository health.
 
 ---
 
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/03-task-convert-cluster-startup-tests.md`
+**Path:** `.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md`
 
-## Task: Convert cluster-startup BDD test to Bun test <status>done</status> <passing>true</passing> <priority>high</priority>
+## Task: Resolve discovered failures and revalidate full suite <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Convert `test/features/cluster-startup.feature` into a plain `bun:test` file.
+**Goal:** Drive failure resolution from created bug tasks and confirm full-suite green status after fixes.
 
 ---
 
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/04-task-convert-cluster-stop-tests.md`
+**Path:** `.ralph/tasks/story-rust-system-harness/01-task-core-types-time-errors-watch-channel.md`
 
-## Task: Convert cluster-stop BDD test to Bun test <status>done</status> <passing>true</passing> <priority>high</priority>
+## Task: Implement core ids time errors and typed watch channels <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
 
 <description>
-**Goal:** Convert `test/features/cluster-stop.feature` into a plain `bun:test` file.
+**Goal:** Build the foundational shared types and state-channel primitives used by every worker.
 
 ---
 
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/05-task-convert-cluster-connection-tests.md`
+**Path:** `.ralph/tasks/story-rust-system-harness/02-task-runtime-config-schema-defaults-parse-validate.md`
 
-## Task: Convert cluster-connection BDD test to Bun test <status>done</status> <passing>true</passing> <priority>high</priority>
+## Task: Implement runtime config schema defaults parser and validation <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
 
-<description>
-**Goal:** Convert `test/features/cluster-connection.feature` into a plain `bun:test` file.
-
----
-
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/06-task-convert-cluster-config-tests.md`
-
-## Task: Convert cluster-config BDD test to Bun test <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<description>
-**Goal:** Convert `test/features/cluster-config.feature` into a plain `bun:test` file.
-
----
-
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/07-task-convert-cluster-readiness-tests.md`
-
-## Task: Convert cluster-readiness BDD test to Bun test <status>done</status> <passing>true</passing> <priority>high</priority>
-
-<description>
-**Goal:** Convert `test/features/cluster-readiness.feature` into a plain `bun:test` file.
-
----
-
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/08-task-convert-cluster-controldata-tests.md`
-
-## Task: Convert cluster-controldata BDD test to Bun test <status>not_started</status> <passing>true</passing> <priority>high</priority>
-
-<description>
-**Goal:** Convert `test/features/cluster-controldata.feature` into a plain `bun:test` file.
-
----
-
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/09-task-convert-all-unit-integration-tests.md`
-
-## Task: Convert ALL unit/integration BDD tests to bun:test <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<description>
-**Goal:** Convert every remaining `test/features/**/*.feature` file into plain `bun:test`. This is a massive task covering 30 feature files, 100 scenarios, across 5 step-definition domains. Use 16+ subagents to research, verify, and execute in maximum parallelism.
-
----
-
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/10-task-convert-all-e2e-tests.md`
-
-## Task: Convert ALL e2e BDD tests to bun:test <status>not_started</status> <passes>true</passes> <priority>high</priority>
-
-<description>
-**Goal:** Convert every `test/e2e/features/**/*.feature` file into plain `bun:test`. This covers 11 feature files, 29 scenarios, across 2 step-definition files. Use 16+ subagents to research, verify, and execute in maximum parallelism.
-
----
-
-**Path:** `.ralph/tasks/story-bdd-to-bun-tests/11-task-cleanup-and-verify.md`
-
-## Task: Remove Cucumber infrastructure, update parallel runner, and final verification <status>done</status> <passing>true</passing> <priority>high</priority>
-
-<description>
-**Goal:** Remove all Cucumber-specific infrastructure, simplify the parallel runner, and do a final sweep to verify zero BDD/Cucumber remnants remain. Use 16+ subagents to research, verify, and execute in maximum parallelism.
-
----
-
-**Path:** `.ralph/tasks/story-docs-verification/01-meta-task-docs-deep-verification-and-improvement.md`
-
-## Task: Deep Docs Verification and Readability Improvement <status>not_started</status> <passes>meta-task</passes>
-NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
-
-<description>
-**This is a RECURRING META-TASK.** Every time this task is picked up, do a FRESH verification from scratch. Previous passes do not count. **NEVER set this task's passes to anything other than meta-task.**
-
----
-
-**Path:** `.ralph/tasks/story-event-to-logger-migration/01-task-rename-emit-engine-event.md`
-
-## Task: Rename emitEngineEvent to emitEvent across the codebase <status>done</status> <passes>true</passes>
-
-<description>
-**Goal:** Rename the `emitEngineEvent` function to `emitEvent` everywhere it appears — definition, imports, and call sites.
-
----
-
-**Path:** `.ralph/tasks/story-event-to-logger-migration/03-task-setup-logger-singletons.md`
-
-## Task: Setup logger singletons per module with unified LogTape <status>done</status> <passes>true</passes>
-
-<description>
-**Goal:** Establish a module-level logger singleton pattern so every source file that currently uses `eventBus.emit()` for logging can instead use a direct `logger.info()` / `logger.debug()` call. All loggers must funnel into the single LogTape setup — there must NEVER be multiple logger setups, not even in tests.
-
----
-
-**Path:** `.ralph/tasks/story-event-to-logger-migration/04-task-convert-all-eventbus-emit-to-logger.md`
-
-## Task: Convert ALL eventBus.emit calls to logger calls, delete ALL event type files, and trim EngineEventSchema <status>not_started</status> <passes>false</passes>
-
-<blocked_by>03-task-setup-logger-singletons</blocked_by>
+<blocked_by>01-task-core-types-time-errors-watch-channel</blocked_by>
 
 <description>
 
 ---
 
-**Path:** `.ralph/tasks/story-event-to-logger-migration/05-task-remove-global-eventbus-singleton.md`
+**Path:** `.ralph/tasks/story-rust-system-harness/03-task-worker-state-models-and-context-contracts.md`
 
-## Task: Remove global eventBus singleton, clean up events infrastructure, extract standalone poll utility <status>not_started</status> <passes>false</passes>
+## Task: Define worker state models and run step_once contracts <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
 
-<blocked_by>04-task-convert-all-eventbus-emit-to-logger</blocked_by>
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate</blocked_by>
 
 <description>
 
 ---
 
-**Path:** `.ralph/tasks/story-full-verification/01-meta-task-full-test-and-code-verification.md`
+**Path:** `.ralph/tasks/story-rust-system-harness/04-task-pginfo-worker-single-query-and-real-pg-tests.md`
 
-## Task: Full Test Verification and Code Smell Audit <status>not_started</status> <passes>meta-task</passes>
-NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
+## Task: Implement pginfo worker single-query polling and real PG tests <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
 
 <description>
-**This is a RECURRING META-TASK.** Every time this task is picked up, do a FRESH verification from scratch. Previous passes do not count. **NEVER set this task's passes to anything other than meta-task.**
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/06-task-process-worker-single-active-job-real-job-exec.md`
+
+## Task: Implement process worker single-active-job execution with real job tests <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/07-task-ha-decide-pure-matrix-idempotency-tests.md`
+
+## Task: Implement pure HA decide engine with exhaustive transition tests <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/08-task-ha-worker-select-loop-and-action-dispatch.md`
+
+## Task: Implement HA worker select loop and action dispatch wiring <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>04-task-pginfo-worker-single-query-and-real-pg-tests,05-task-dcs-worker-trust-cache-watch-member-publish,06-task-process-worker-single-active-job-real-job-exec,07-task-ha-decide-pure-matrix-idempotency-tests</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/09-task-api-debug-workers-and-snapshot-contracts.md`
+
+## Task: Implement API and Debug API workers with typed contracts <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>05-task-dcs-worker-trust-cache-watch-member-publish,08-task-ha-worker-select-loop-and-action-dispatch</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/11-task-typed-pg-config-and-conninfo-roundtrip-tests.md`
+
+## Task: Implement typed postgres config and conninfo parser renderer <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/12-task-ha-loop-integration-tests-real-watchers-and-step-once.md`
+
+## Task: Build HA loop integration tests with real watchers and deterministic stepping <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+
+<blocked_by>08-task-ha-worker-select-loop-and-action-dispatch,10-task-test-harness-namespace-ports-pg-etcd-spawners</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/13-task-e2e-multi-node-real-ha-loops-scenario-matrix.md`
+
+## Task: Implement e2e multi-node real HA-loop scenario matrix <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+
+<blocked_by>09-task-api-debug-workers-and-snapshot-contracts,10-task-test-harness-namespace-ports-pg-etcd-spawners,12-task-ha-loop-integration-tests-real-watchers-and-step-once</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/14-task-security-auth-tls-real-cluster-tests.md`
+
+## Task: Implement security auth TLS validation tests in real cluster runs <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>10-task-test-harness-namespace-ports-pg-etcd-spawners,13-task-e2e-multi-node-real-ha-loops-scenario-matrix</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md`
+
+## Task: Final double-check gate for real testing completeness <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+
+<blocked_by>13-task-e2e-multi-node-real-ha-loops-scenario-matrix,14-task-security-auth-tls-real-cluster-tests</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/16-task-debug-ui-verbose-state-actions-events-and-final-stop.md`
+
+## Task: Setup verbose debug UI and final STOP gate <status>not_started</status> <passes>false</passes> <priority>low</priority>
+
+<blocked_by>15-task-final-double-check-and-stop-gate</blocked_by>
+
+<description>
 
