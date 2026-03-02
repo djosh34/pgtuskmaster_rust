@@ -169,23 +169,33 @@ fn worker_contract_symbols_exist() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
+    let self_member_id = MemberId("node-a".to_string());
+
     let initial_pg = sample_pg_state();
     let (publisher, pg_subscriber) = new_state_channel(initial_pg.clone(), UnixMillis(1));
     let mut pg_ctx = PgInfoWorkerCtx {
-        self_id: MemberId("node-a".to_string()),
+        self_id: self_member_id.clone(),
         postgres_dsn: "host=127.0.0.1 port=1 user=postgres dbname=postgres".to_string(),
         poll_interval: Duration::from_millis(10),
         publisher,
     };
     crate::pginfo::worker::step_once(&mut pg_ctx).await?;
+    let pg_latest = pg_subscriber.latest();
+    assert_eq!(pg_latest.version, Version(1));
+    assert!(matches!(
+        &pg_latest.value,
+        PgInfoState::Unknown { common }
+            if common.worker == WorkerStatus::Running && common.sql == SqlStatus::Unreachable
+    ));
 
     let initial_dcs = sample_dcs_state(sample_runtime_config());
-    let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+    let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+    let dcs_pg_subscriber = pg_subscriber.clone();
     let mut dcs_ctx = DcsWorkerCtx {
-        self_id: MemberId("node-a".to_string()),
+        self_id: self_member_id.clone(),
         scope: "scope-a".to_string(),
         poll_interval: Duration::from_millis(10),
-        pg_subscriber,
+        pg_subscriber: dcs_pg_subscriber,
         publisher: dcs_publisher,
         store: Box::new(ContractStore),
         cache: DcsCache {
@@ -198,9 +208,14 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         last_published_pg_version: None,
     };
     crate::dcs::worker::step_once(&mut dcs_ctx).await?;
+    let dcs_latest = dcs_subscriber.latest();
+    assert_eq!(dcs_latest.version, Version(1));
+    assert!(dcs_latest.value.last_refresh_at.is_some());
+    assert_eq!(dcs_ctx.last_published_pg_version, Some(pg_latest.version));
+    assert!(dcs_ctx.cache.members.contains_key(&self_member_id));
 
     let initial_process = sample_process_state();
-    let (process_publisher, _process_subscriber) =
+    let (process_publisher, process_subscriber) =
         new_state_channel(initial_process, UnixMillis(1));
     let (_process_tx, process_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut process_ctx = ProcessWorkerCtx::contract_stub(
@@ -209,6 +224,24 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         process_rx,
     );
     process_worker::step_once(&mut process_ctx).await?;
+    assert!(matches!(&process_ctx.state, ProcessState::Idle { .. }));
+    assert!(process_ctx.state.running_job_id().is_none());
+    assert!(matches!(
+        &process_ctx.state,
+        ProcessState::Idle {
+            last_outcome: None,
+            ..
+        }
+    ));
+    let process_latest = process_subscriber.latest();
+    assert_eq!(process_latest.version, Version(0));
+    assert!(matches!(
+        &process_latest.value,
+        ProcessState::Idle {
+            worker: WorkerStatus::Starting,
+            last_outcome: None
+        }
+    ));
 
     let runtime_cfg = sample_runtime_config();
     let initial_ha = sample_ha_state();
@@ -234,9 +267,16 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         process_inbox: ha_process_tx,
         dcs_store: Box::new(ContractStore),
         scope: "scope-a".to_string(),
-        self_id: MemberId("node-a".to_string()),
+        self_id: self_member_id.clone(),
     });
     crate::ha::worker::step_once(&mut ha_ctx).await?;
+    assert_eq!(ha_ctx.state.phase, HaPhase::FailSafe);
+    assert_eq!(ha_ctx.state.tick, 1);
+    assert_eq!(ha_ctx.state.worker, WorkerStatus::Running);
+    let ha_latest = ha_subscriber.latest();
+    assert_eq!(ha_latest.version, Version(1));
+    assert_eq!(ha_latest.value, ha_ctx.state);
+    let debug_ha_subscriber = ha_subscriber.clone();
 
     let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -246,7 +286,10 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         api_cfg_subscriber,
         Box::new(ContractStore),
     );
+    let api_addr_before = api_ctx.local_addr()?;
     crate::api::worker::step_once(&mut api_ctx).await?;
+    let api_addr_after = api_ctx.local_addr()?;
+    assert_eq!(api_addr_before, api_addr_after);
 
     let initial_debug_snapshot = SystemSnapshot {
         app: AppLifecycle::Starting,
@@ -254,9 +297,9 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         pg: debug_pg_subscriber.latest(),
         dcs: debug_dcs_subscriber.latest(),
         process: debug_process_subscriber.latest(),
-        ha: ha_subscriber.latest(),
+        ha: debug_ha_subscriber.latest(),
     };
-    let (debug_publisher, _debug_subscriber) =
+    let (debug_publisher, debug_subscriber) =
         new_state_channel(initial_debug_snapshot, UnixMillis(1));
     let mut debug_ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {
         publisher: debug_publisher,
@@ -264,9 +307,13 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         pg_subscriber: debug_pg_subscriber,
         dcs_subscriber: debug_dcs_subscriber,
         process_subscriber: debug_process_subscriber,
-        ha_subscriber,
+        ha_subscriber: debug_ha_subscriber,
     });
     crate::debug_api::worker::step_once(&mut debug_ctx).await?;
+    let debug_latest = debug_subscriber.latest();
+    assert_eq!(debug_latest.version, Version(1));
+    assert_eq!(debug_latest.value.app, AppLifecycle::Starting);
+    assert_eq!(debug_latest.value.config.version, Version(0));
     Ok(())
 }
 

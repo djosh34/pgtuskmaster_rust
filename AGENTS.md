@@ -53,3 +53,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - In real `pg_ctl promote` tests bootstrapped from a standalone primary, expect either success or `EarlyExit(code=1)` ("not in standby"); treat only that specific failure as acceptable instead of blanket `JobOutcome::Failure`.
 - When converting tests from `.expect(...)` to `?`, make the test `Result` error type match the called API’s error (for example `DecideError` for `decide(...)`) to avoid unnecessary `From` glue and compile churn.
 - For stale bug reports about panic behavior, still add a direct missing-path contract test on the fallible helper; it turns “already fixed” claims into durable regression evidence.
+- `new_state_channel(...)` starts at `Version(0)`; in contract tests, a single successful `publish(...)` should assert `Version(1)`, while untouched channels should remain at `Version(0)`.
