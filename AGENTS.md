@@ -43,3 +43,5 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - In async real-binary tests, wrapping assertions in a `Result` flow and then running explicit shutdown cleanup after the main result helps avoid panic chains while preserving failure context when both test logic and teardown fail.
 - In async Rust tests, avoid relying on underscore-only bindings to keep critical resources alive; a fixture struct that owns subscriber + context + namespace guard makes lifetime intent explicit and reduces brittle publish-channel failures.
 - For HA integration tests, drive multi-worker progression with an explicit ordered cycle (`dcs step -> ha step -> process step -> ha step`) so process outcomes are visible to HA deterministically without relying on scheduler timing.
+- `tokio::net::TcpListener` does not always provide a `try_accept()` helper; use a tiny `tokio::time::timeout(...)` around `accept()` to keep `step_once()` non-blocking for contract tests.
+- If a public config struct like `RuntimeConfig` contains schema subtypes, re-export those schema structs publicly (or you’ll be unable to construct configs in `tests/` integration crates).

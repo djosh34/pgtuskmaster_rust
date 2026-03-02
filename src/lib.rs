@@ -9,9 +9,9 @@
     )
 )]
 
-pub(crate) mod api;
+pub mod api;
 pub mod config;
-pub(crate) mod dcs;
+pub mod dcs;
 pub(crate) mod debug_api;
 pub(crate) mod ha;
 pub(crate) mod pginfo;

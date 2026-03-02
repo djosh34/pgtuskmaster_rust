@@ -7,17 +7,17 @@ use super::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum WatchOp {
+pub enum WatchOp {
     Put,
     Delete,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WatchEvent {
-    pub(crate) op: WatchOp,
-    pub(crate) path: String,
-    pub(crate) value: Option<String>,
-    pub(crate) revision: i64,
+pub struct WatchEvent {
+    pub op: WatchOp,
+    pub path: String,
+    pub value: Option<String>,
+    pub revision: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub(crate) struct RefreshResult {
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub(crate) enum DcsStoreError {
+pub enum DcsStoreError {
     #[error("watch value missing for put event at `{0}`")]
     MissingValue(String),
     #[error("invalid key path: {0}")]
@@ -38,7 +38,7 @@ pub(crate) enum DcsStoreError {
     Io(String),
 }
 
-pub(crate) trait DcsStore: Send {
+pub trait DcsStore: Send {
     fn healthy(&self) -> bool;
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError>;
     fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError>;

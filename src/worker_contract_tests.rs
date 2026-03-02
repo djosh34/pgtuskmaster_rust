@@ -5,7 +5,10 @@ use crate::{
     config::{BinaryPaths, ProcessConfig, RuntimeConfig},
     dcs::state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx},
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
-    debug_api::{snapshot::SystemSnapshot, worker::DebugApiCtx},
+    debug_api::{
+        snapshot::{AppLifecycle, SystemSnapshot},
+        worker::{DebugApiContractStubInputs, DebugApiCtx},
+    },
     ha::{
         actions::HaAction,
         state::{HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, WorldSnapshot},
@@ -17,7 +20,7 @@ use crate::{
     },
     state::{
         new_state_channel, ClusterName, JobId, MemberId, UnixMillis, Version, Versioned,
-        WorkerStatus,
+        WorkerError, WorkerStatus,
     },
 };
 
@@ -165,7 +168,7 @@ fn worker_contract_symbols_exist() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn step_once_contracts_are_callable() {
+async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
     let initial_pg = sample_pg_state();
     let (publisher, pg_subscriber) = new_state_channel(initial_pg.clone(), UnixMillis(1));
     let mut pg_ctx = PgInfoWorkerCtx {
@@ -174,9 +177,7 @@ async fn step_once_contracts_are_callable() {
         poll_interval: Duration::from_millis(10),
         publisher,
     };
-    crate::pginfo::worker::step_once(&mut pg_ctx)
-        .await
-        .expect("pginfo step_once should be callable");
+    crate::pginfo::worker::step_once(&mut pg_ctx).await?;
 
     let initial_dcs = sample_dcs_state(sample_runtime_config());
     let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
@@ -196,9 +197,7 @@ async fn step_once_contracts_are_callable() {
         },
         last_published_pg_version: None,
     };
-    crate::dcs::worker::step_once(&mut dcs_ctx)
-        .await
-        .expect("dcs step_once should be callable");
+    crate::dcs::worker::step_once(&mut dcs_ctx).await?;
 
     let initial_process = sample_process_state();
     let (process_publisher, _process_subscriber) =
@@ -209,19 +208,22 @@ async fn step_once_contracts_are_callable() {
         process_publisher,
         process_rx,
     );
-    process_worker::step_once(&mut process_ctx)
-        .await
-        .expect("process step_once should be callable");
+    process_worker::step_once(&mut process_ctx).await?;
 
     let runtime_cfg = sample_runtime_config();
     let initial_ha = sample_ha_state();
-    let (ha_publisher, _ha_subscriber) = new_state_channel(initial_ha, UnixMillis(1));
+    let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha, UnixMillis(1));
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(runtime_cfg.clone(), UnixMillis(1));
+    let api_cfg_subscriber = cfg_subscriber.clone();
+    let debug_cfg_subscriber = cfg_subscriber.clone();
     let (_ha_pg_publisher, ha_pg_subscriber) = new_state_channel(sample_pg_state(), UnixMillis(1));
+    let debug_pg_subscriber = ha_pg_subscriber.clone();
     let (_ha_dcs_publisher, ha_dcs_subscriber) =
         new_state_channel(sample_dcs_state(runtime_cfg.clone()), UnixMillis(1));
+    let debug_dcs_subscriber = ha_dcs_subscriber.clone();
     let (_ha_process_publisher, ha_process_subscriber) =
         new_state_channel(sample_process_state(), UnixMillis(1));
+    let debug_process_subscriber = ha_process_subscriber.clone();
     let (ha_process_tx, _ha_process_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
         publisher: ha_publisher,
@@ -234,19 +236,38 @@ async fn step_once_contracts_are_callable() {
         scope: "scope-a".to_string(),
         self_id: MemberId("node-a".to_string()),
     });
-    crate::ha::worker::step_once(&mut ha_ctx)
-        .await
-        .expect("ha step_once should be callable");
+    crate::ha::worker::step_once(&mut ha_ctx).await?;
 
-    let mut api_ctx = crate::api::worker::ApiWorkerCtx;
-    crate::api::worker::step_once(&mut api_ctx)
+    let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("api step_once should be callable");
+        .map_err(|err| WorkerError::Message(format!("api bind failed: {err}")))?;
+    let mut api_ctx = crate::api::worker::ApiWorkerCtx::contract_stub(
+        api_listener,
+        api_cfg_subscriber,
+        Box::new(ContractStore),
+    );
+    crate::api::worker::step_once(&mut api_ctx).await?;
 
-    let mut debug_ctx = DebugApiCtx;
-    crate::debug_api::worker::step_once(&mut debug_ctx)
-        .await
-        .expect("debug_api step_once should be callable");
+    let initial_debug_snapshot = SystemSnapshot {
+        app: AppLifecycle::Starting,
+        config: debug_cfg_subscriber.latest(),
+        pg: debug_pg_subscriber.latest(),
+        dcs: debug_dcs_subscriber.latest(),
+        process: debug_process_subscriber.latest(),
+        ha: ha_subscriber.latest(),
+    };
+    let (debug_publisher, _debug_subscriber) =
+        new_state_channel(initial_debug_snapshot, UnixMillis(1));
+    let mut debug_ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {
+        publisher: debug_publisher,
+        config_subscriber: debug_cfg_subscriber,
+        pg_subscriber: debug_pg_subscriber,
+        dcs_subscriber: debug_dcs_subscriber,
+        process_subscriber: debug_process_subscriber,
+        ha_subscriber,
+    });
+    crate::debug_api::worker::step_once(&mut debug_ctx).await?;
+    Ok(())
 }
 
 #[test]

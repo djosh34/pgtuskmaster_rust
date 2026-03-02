@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 11:03:41 PM CET 2026
+Generated: Mon Mar  2 11:36:20 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -222,11 +222,10 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-rust-system-harness/09-task-api-debug-workers-and-snapshot-contracts.md`
 
-## Task: Implement API and Debug API workers with typed contracts <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Implement API and Debug API workers with typed contracts <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>05-task-dcs-worker-trust-cache-watch-member-publish,08-task-ha-worker-select-loop-and-action-dispatch</blocked_by>
-
-<description>
+<passing>true</passing>
 
 ---
 
@@ -364,4 +363,13 @@ This is a **RECURRING META-TASK**.
 
 <description>
 **Goal:** Build integration tests that wire real PG16 binaries, a real etcd-backed DCS store, the process worker, pginfo worker, and HA worker so failures cannot pass silently.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/task-typed-dcs-writes-and-encapsulation.md`
+
+## Task: Replace Stringly DCS Writes With Typed Writer API <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Eliminate raw path/string DCS writes from HA by introducing a typed DCS writer API and restricting access to low-level write/delete operations.
 

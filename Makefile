@@ -5,7 +5,7 @@ test:
 	cargo test --all-targets
 
 test-bdd:
-	cargo test --test bdd_state_watch
+	cargo test --test bdd_state_watch --test bdd_api_http
 
 lint:
 	cargo clippy --all-targets --all-features -- -D warnings

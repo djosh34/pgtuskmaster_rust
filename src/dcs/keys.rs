@@ -12,7 +12,7 @@ pub(crate) enum DcsKey {
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub(crate) enum DcsKeyParseError {
+pub enum DcsKeyParseError {
     #[error("path `{path}` does not start with scope prefix `{scope_prefix}`")]
     InvalidScopePrefix { path: String, scope_prefix: String },
     #[error("path `{0}` is malformed")]
