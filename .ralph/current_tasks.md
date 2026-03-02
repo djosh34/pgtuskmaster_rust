@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 06:21:51 PM CET 2026
+Generated: Mon Mar  2 08:34:59 PM CET 2026
 
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
@@ -99,7 +99,7 @@ Generated: Mon Mar  2 06:21:51 PM CET 2026
 
 **Path:** `.ralph/tasks/story-rust-system-harness/07-task-ha-decide-pure-matrix-idempotency-tests.md`
 
-## Task: Implement pure HA decide engine with exhaustive transition tests <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+## Task: Implement pure HA decide engine with exhaustive transition tests <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
 

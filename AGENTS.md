@@ -24,3 +24,4 @@ Please do not use unwraps anywhere, instead use proper error handling
 - Config defaulting is safer when required fields stay required in parse structs; optional-only defaults plus strict `deny_unknown_fields` avoids silent typo drift.
 - Keep `target/` ignored in Rust repos to avoid accidental large artifact commits during task-level `git add -A` workflows.
 - For contract-only skeleton tasks, avoid `pub(crate) use ...` re-export fanout in `mod.rs`; direct module paths keep clippy `unused_imports` clean while preserving minimal visibility.
+- Avoid running multiple top-level Cargo build/test commands in parallel within the same workspace; package-cache lock contention can surface misleading archive/object-file errors.

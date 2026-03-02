@@ -101,7 +101,7 @@ fn sample_ha_state() -> HaState {
         worker: WorkerStatus::Starting,
         phase: HaPhase::Init,
         tick: 0,
-        pending: vec![HaAction::Noop],
+        pending: vec![HaAction::SignalFailSafe],
         recent_action_ids: BTreeSet::new(),
     }
 }
