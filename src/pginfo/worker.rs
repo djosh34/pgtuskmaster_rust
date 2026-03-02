@@ -98,11 +98,13 @@ mod tests {
             startup_timeout: Duration::from_secs(20),
         };
 
+        // Release the reserved port immediately before spawning postgres so the
+        // child can bind the same port.
+        drop(reservation);
         let mut handle = match spawn_pg16(spec).await {
             Ok(handle) => handle,
             Err(err) => panic!("spawn pg16 failed: {err}"),
         };
-        drop(reservation);
 
         let dsn = format!("host=127.0.0.1 port={} user=postgres dbname=postgres", port);
 
@@ -218,16 +220,6 @@ mod tests {
             Err(err) => panic!("namespace create failed: {err}"),
         };
 
-        let reservation = match allocate_ports(2) {
-            Ok(res) => res,
-            Err(err) => {
-                let _ = cleanup_namespace(ns);
-                panic!("port allocation failed: {err}");
-            }
-        };
-        let primary_port = reservation.as_slice()[0];
-        let replica_port = reservation.as_slice()[1];
-
         let primary_data = match prepare_pgdata_dir(&ns, "primary") {
             Ok(path) => path,
             Err(err) => {
@@ -245,6 +237,16 @@ mod tests {
             let _ = cleanup_namespace(ns);
             panic!("primary log dir failed: {err}");
         }
+
+        let primary_reservation = match allocate_ports(1) {
+            Ok(res) => res,
+            Err(err) => {
+                let _ = cleanup_namespace(ns);
+                panic!("port allocation failed: {err}");
+            }
+        };
+        let primary_port = primary_reservation.as_slice()[0];
+        drop(primary_reservation);
 
         let mut primary = match spawn_pg16(PgInstanceSpec {
             postgres_bin: postgres_bin.to_path_buf(),
@@ -309,7 +311,11 @@ mod tests {
         }
 
         let replica_data = ns.child_dir("pg16/replica/data");
-        if let Err(err) = fs::create_dir_all(replica_data.parent().unwrap_or(&ns.root_dir)) {
+        let replica_parent = match replica_data.parent() {
+            Some(parent) => parent,
+            None => &ns.root_dir,
+        };
+        if let Err(err) = fs::create_dir_all(replica_parent) {
             let _ = primary.shutdown().await;
             let _ = cleanup_namespace(ns);
             panic!("replica parent dir failed: {err}");
@@ -355,6 +361,17 @@ mod tests {
             panic!("replica log dir failed: {err}");
         }
 
+        let replica_reservation = match allocate_ports(1) {
+            Ok(res) => res,
+            Err(err) => {
+                let _ = primary.shutdown().await;
+                let _ = cleanup_namespace(ns);
+                panic!("port allocation failed: {err}");
+            }
+        };
+        let replica_port = replica_reservation.as_slice()[0];
+        drop(replica_reservation);
+
         let mut replica = match spawn_pg16(PgInstanceSpec {
             postgres_bin: postgres_bin.to_path_buf(),
             initdb_bin: initdb_bin.to_path_buf(),
@@ -373,7 +390,6 @@ mod tests {
                 panic!("spawn replica failed: {err}");
             }
         };
-        drop(reservation);
 
         let replica_dsn = format!(
             "host=127.0.0.1 port={} user=postgres dbname=postgres",

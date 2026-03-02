@@ -279,7 +279,6 @@ mod tests {
             }
         };
         let port = reservation.as_slice()[0];
-        drop(reservation);
 
         let socket_dir = ns.child_dir("pg16/node-a/socket");
         let log_dir = ns.child_dir("logs/pg16-node-a");
@@ -294,6 +293,9 @@ mod tests {
             startup_timeout: Duration::from_secs(10),
         };
 
+        // Release the reserved port immediately before spawning postgres so the
+        // child can bind the requested port.
+        drop(reservation);
         let mut handle = match spawn_pg16(spec).await {
             Ok(handle) => handle,
             Err(err) => {

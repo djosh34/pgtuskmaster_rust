@@ -7,3 +7,4 @@
 .ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md
 .ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md
 .ralph/tasks/story-rust-system-harness/06-task-process-worker-single-active-job-real-job-exec.md
+.ralph/tasks/story-rust-system-harness/05b-task-deep-review-codebase-and-verify-done-work.md

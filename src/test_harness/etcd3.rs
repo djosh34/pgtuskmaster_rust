@@ -220,7 +220,6 @@ mod tests {
         let ports = reservation.as_slice();
         let client_port = ports[0];
         let peer_port = ports[1];
-        drop(reservation);
 
         let log_dir = ns.child_dir("logs/etcd3-node-a");
 
@@ -235,6 +234,9 @@ mod tests {
             startup_timeout: Duration::from_secs(10),
         };
 
+        // Release the reserved ports immediately before spawning etcd so the
+        // child can bind them.
+        drop(reservation);
         let mut handle = match spawn_etcd3(spec).await {
             Ok(handle) => handle,
             Err(err) => {

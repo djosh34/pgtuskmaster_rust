@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 21:23:50 CET 2026
+Generated: Mon Mar  2 21:45:45 CET 2026
 
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
@@ -97,7 +97,7 @@ Generated: Mon Mar  2 21:23:50 CET 2026
 
 **Path:** `.ralph/tasks/story-rust-system-harness/05b-task-deep-review-codebase-and-verify-done-work.md`
 
-## Task: Deep review codebase quality and verify done tasks are truly complete <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+## Task: Deep review codebase quality and verify done tasks are truly complete <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
 
 <description>
 **Goal:** Perform a deep end-to-end review of current repository quality, test reality, and completion truthfulness of all tasks already marked done.
@@ -151,6 +151,24 @@ Generated: Mon Mar  2 21:23:50 CET 2026
 <blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
 
 <description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
+
+## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+**Goal:** Ensure “real-system” tests actually exercise real PostgreSQL 16 and etcd3 binaries in at least one deterministic gate (CI and/or developer opt-in), instead of silently passing via early-return skips.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/10b-task-dcs-real-etcd3-store-adapter-and-tests.md`
+
+## Task: Implement real etcd3-backed DCS store adapter and integration tests <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+**Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
 
 ---
 

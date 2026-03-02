@@ -1114,6 +1114,9 @@ mod tests {
             )));
         }
 
+        // Release the reserved port immediately before starting postgres so
+        // `pg_ctl` can bind the requested port.
+        drop(reservation);
         let start = submit_job_and_wait(
             &tx,
             &mut ctx,
@@ -1136,7 +1139,6 @@ mod tests {
             )));
         }
 
-        drop(reservation);
         Ok((ctx, tx, guard, data_dir, socket_dir, log_file, port))
     }
 

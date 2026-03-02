@@ -2,6 +2,7 @@
 
 model_reasoning_summary = "detailed"
 model_verbosity = "high"
+model_supports_reasoning_summaries = true
 
 [profiles.normal_high]
 model = "gpt-5.3-codex"
