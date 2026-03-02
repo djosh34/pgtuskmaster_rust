@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 21:07:44 CET 2026
+Generated: Mon Mar  2 21:23:50 CET 2026
 
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
@@ -95,9 +95,18 @@ Generated: Mon Mar  2 21:07:44 CET 2026
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/05b-task-deep-review-codebase-and-verify-done-work.md`
+
+## Task: Deep review codebase quality and verify done tasks are truly complete <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+
+<description>
+**Goal:** Perform a deep end-to-end review of current repository quality, test reality, and completion truthfulness of all tasks already marked done.
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/06-task-process-worker-single-active-job-real-job-exec.md`
 
-## Task: Implement process worker single-active-job execution with real job tests <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Implement process worker single-active-job execution with real job tests <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
 

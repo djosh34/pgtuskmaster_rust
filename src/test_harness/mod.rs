@@ -27,7 +27,10 @@ pub(crate) enum HarnessError {
         source: std::io::Error,
     },
     #[error("{component} did not become ready within {timeout:?}")]
-    StartupTimeout { component: &'static str, timeout: Duration },
+    StartupTimeout {
+        component: &'static str,
+        timeout: Duration,
+    },
     #[error("{component} exited before readiness with status {status}")]
     EarlyExit {
         component: &'static str,

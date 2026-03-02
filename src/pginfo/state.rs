@@ -3,8 +3,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::query::PgPollData;
-use crate::state::{MemberId, TimelineId, UnixMillis, WalLsn, WorkerStatus};
 use crate::state::StatePublisher;
+use crate::state::{MemberId, TimelineId, UnixMillis, WalLsn, WorkerStatus};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SqlStatus {
@@ -145,12 +145,18 @@ mod tests {
 
     #[test]
     fn derive_readiness_maps_sql_and_signal() {
-        assert_eq!(derive_readiness(&SqlStatus::Unknown, false), Readiness::Unknown);
+        assert_eq!(
+            derive_readiness(&SqlStatus::Unknown, false),
+            Readiness::Unknown
+        );
         assert_eq!(
             derive_readiness(&SqlStatus::Unreachable, true),
             Readiness::NotReady
         );
-        assert_eq!(derive_readiness(&SqlStatus::Healthy, true), Readiness::Ready);
+        assert_eq!(
+            derive_readiness(&SqlStatus::Healthy, true),
+            Readiness::Ready
+        );
         assert_eq!(
             derive_readiness(&SqlStatus::Healthy, false),
             Readiness::NotReady
@@ -176,7 +182,10 @@ mod tests {
         );
         match state {
             PgInfoState::Primary {
-                wal_lsn, slots, common, ..
+                wal_lsn,
+                slots,
+                common,
+                ..
             } => {
                 assert_eq!(wal_lsn, WalLsn(42));
                 assert_eq!(slots.len(), 2);

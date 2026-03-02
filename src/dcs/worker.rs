@@ -3,7 +3,7 @@ use crate::state::WorkerError;
 use super::{
     keys::DcsKey,
     state::{
-        build_local_member_record, evaluate_trust, DcsState, DcsTrust, DcsWorkerCtx, DcsCache,
+        build_local_member_record, evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
         InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest,
     },
     store::{refresh_from_etcd_watch, write_local_member},
@@ -76,17 +76,11 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let mut store_healthy = ctx.store.healthy();
 
     if ctx.last_published_pg_version != Some(pg_snapshot.version) {
-        let local_member = build_local_member_record(
-            &ctx.self_id,
-            &pg_snapshot.value,
-            now,
-            pg_snapshot.version,
-        );
+        let local_member =
+            build_local_member_record(&ctx.self_id, &pg_snapshot.value, now, pg_snapshot.version);
         if write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member).is_ok() {
             ctx.last_published_pg_version = Some(pg_snapshot.version);
-            ctx.cache
-                .members
-                .insert(ctx.self_id.clone(), local_member);
+            ctx.cache.members.insert(ctx.self_id.clone(), local_member);
         } else {
             store_healthy = false;
         }
@@ -107,14 +101,16 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let worker = if store_healthy {
         crate::state::WorkerStatus::Running
     } else {
-        crate::state::WorkerStatus::Faulted(WorkerError::Message(
-            "dcs store unhealthy".to_string(),
-        ))
+        crate::state::WorkerStatus::Faulted(WorkerError::Message("dcs store unhealthy".to_string()))
     };
 
     let next = DcsState {
         worker,
-        trust: if store_healthy { trust } else { DcsTrust::NotTrusted },
+        trust: if store_healthy {
+            trust
+        } else {
+            DcsTrust::NotTrusted
+        },
         cache: ctx.cache.clone(),
         last_refresh_at: Some(now),
     };
@@ -354,14 +350,24 @@ mod tests {
                 key: DcsKey::Member(member_id.clone()),
             },
         );
-        apply_watch_update(&mut cache, DcsWatchUpdate::Delete { key: DcsKey::Leader });
+        apply_watch_update(
+            &mut cache,
+            DcsWatchUpdate::Delete {
+                key: DcsKey::Leader,
+            },
+        );
         apply_watch_update(
             &mut cache,
             DcsWatchUpdate::Delete {
                 key: DcsKey::Switchover,
             },
         );
-        apply_watch_update(&mut cache, DcsWatchUpdate::Delete { key: DcsKey::InitLock });
+        apply_watch_update(
+            &mut cache,
+            DcsWatchUpdate::Delete {
+                key: DcsKey::InitLock,
+            },
+        );
 
         assert!(!cache.members.contains_key(&member_id));
         assert!(cache.leader.is_none());

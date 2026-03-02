@@ -69,15 +69,13 @@ pub(crate) fn refresh_from_etcd_watch(
     for event in events {
         let key = match key_from_path(scope, &event.path) {
             Ok(parsed) => parsed,
-            Err(err) => {
-                match err {
-                    DcsKeyParseError::UnknownKey(_) => {
-                        had_errors = true;
-                        continue;
-                    }
-                    other => return Err(DcsStoreError::InvalidKey(other)),
+            Err(err) => match err {
+                DcsKeyParseError::UnknownKey(_) => {
+                    had_errors = true;
+                    continue;
                 }
-            }
+                other => return Err(DcsStoreError::InvalidKey(other)),
+            },
         };
 
         let update = match event.op {

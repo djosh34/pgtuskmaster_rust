@@ -3,7 +3,7 @@ use std::path::Path;
 use thiserror::Error;
 
 use super::defaults::apply_defaults;
-use super::schema::{RuntimeConfig, PartialRuntimeConfig};
+use super::schema::{PartialRuntimeConfig, RuntimeConfig};
 
 const MIN_TIMEOUT_MS: u64 = 1;
 const MAX_TIMEOUT_MS: u64 = 86_400_000;
@@ -23,7 +23,10 @@ pub enum ConfigError {
         source: toml::de::Error,
     },
     #[error("invalid config field `{field}`: {message}")]
-    Validation { field: &'static str, message: String },
+    Validation {
+        field: &'static str,
+        message: String,
+    },
 }
 
 pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfig, ConfigError> {
@@ -32,10 +35,11 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         source,
     })?;
 
-    let raw: PartialRuntimeConfig = toml::from_str(&contents).map_err(|source| ConfigError::Parse {
-        path: path.display().to_string(),
-        source,
-    })?;
+    let raw: PartialRuntimeConfig =
+        toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+            path: path.display().to_string(),
+            source,
+        })?;
 
     let cfg = apply_defaults(raw);
     validate_runtime_config(&cfg)?;
@@ -45,7 +49,10 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfig, ConfigError> {
 pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_non_empty_path("process.binaries.postgres", &cfg.process.binaries.postgres)?;
     validate_non_empty_path("process.binaries.pg_ctl", &cfg.process.binaries.pg_ctl)?;
-    validate_non_empty_path("process.binaries.pg_rewind", &cfg.process.binaries.pg_rewind)?;
+    validate_non_empty_path(
+        "process.binaries.pg_rewind",
+        &cfg.process.binaries.pg_rewind,
+    )?;
     validate_non_empty_path("process.binaries.initdb", &cfg.process.binaries.initdb)?;
     validate_non_empty_path("process.binaries.psql", &cfg.process.binaries.psql)?;
 
@@ -57,10 +64,7 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         "process.bootstrap_timeout_ms",
         cfg.process.bootstrap_timeout_ms,
     )?;
-    validate_timeout(
-        "process.fencing_timeout_ms",
-        cfg.process.fencing_timeout_ms,
-    )?;
+    validate_timeout("process.fencing_timeout_ms", cfg.process.fencing_timeout_ms)?;
 
     if cfg.dcs.endpoints.is_empty() {
         return Err(ConfigError::Validation {

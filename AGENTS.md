@@ -30,3 +30,4 @@ Please do not use unwraps anywhere, instead use proper error handling
 - When state caches use `BTreeMap<MemberId, ...>`, ensure `MemberId` derives `Ord`/`PartialOrd`; otherwise key operations fail at compile-time deep inside worker logic.
 - Clippy `large_enum_variant` is likely for watcher update enums that carry full runtime config payloads; boxing only the heavy variant preserves API shape while satisfying `-D warnings`.
 - To keep strict runtime clippy denies active under `--all-features`, prefer crate-root `cfg_attr(not(test), deny(...))` and isolate panic/expect allowances in `src/test_harness/mod.rs` instead of feature-gating deny policy off globally.
+- For real `pg_ctl` process-worker tests, keep `NamespaceGuard` alive for the entire job lifecycle; dropping it early can race cleanup against running postgres and cause non-deterministic follow-up job outcomes.

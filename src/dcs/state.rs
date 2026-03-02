@@ -7,8 +7,8 @@ use crate::{
     config::RuntimeConfig,
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     state::{
-        MemberId, StatePublisher, StateSubscriber, UnixMillis, Version, WorkerStatus, WalLsn,
-        TimelineId,
+        MemberId, StatePublisher, StateSubscriber, TimelineId, UnixMillis, Version, WalLsn,
+        WorkerStatus,
     },
 };
 
@@ -134,9 +134,7 @@ pub(crate) fn build_local_member_record(
             pg_version,
         },
         PgInfoState::Replica {
-            common,
-            replay_lsn,
-            ..
+            common, replay_lsn, ..
         } => MemberRecord {
             member_id: self_id.clone(),
             role: MemberRole::Replica,
@@ -226,7 +224,10 @@ mod tests {
         let self_id = MemberId("node-a".to_string());
         let mut cache = sample_cache();
 
-        assert_eq!(evaluate_trust(false, &cache, &self_id), DcsTrust::NotTrusted);
+        assert_eq!(
+            evaluate_trust(false, &cache, &self_id),
+            DcsTrust::NotTrusted
+        );
         assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FailSafe);
 
         cache.members.insert(

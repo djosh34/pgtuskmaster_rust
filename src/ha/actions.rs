@@ -31,7 +31,9 @@ impl HaAction {
         match self {
             Self::AcquireLeaderLease => ActionId::AcquireLeaderLease,
             Self::ReleaseLeaderLease => ActionId::ReleaseLeaderLease,
-            Self::FollowLeader { leader_member_id } => ActionId::FollowLeader(leader_member_id.clone()),
+            Self::FollowLeader { leader_member_id } => {
+                ActionId::FollowLeader(leader_member_id.clone())
+            }
             Self::StartRewind => ActionId::StartRewind,
             Self::RunBootstrap => ActionId::RunBootstrap,
             Self::FenceNode => ActionId::FenceNode,

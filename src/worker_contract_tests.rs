@@ -4,6 +4,7 @@ use std::time::Duration;
 use crate::{
     config::{BinaryPaths, ProcessConfig, RuntimeConfig},
     dcs::state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx},
+    dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     debug_api::{snapshot::SystemSnapshot, worker::DebugApiCtx},
     ha::{
         actions::HaAction,
@@ -14,8 +15,10 @@ use crate::{
         state::{JobOutcome, ProcessJobKind, ProcessState, ProcessWorkerCtx},
         worker as process_worker,
     },
-    dcs::store::{DcsStore, DcsStoreError, WatchEvent},
-    state::{new_state_channel, ClusterName, MemberId, Version, Versioned, WorkerStatus, UnixMillis, JobId},
+    state::{
+        new_state_channel, ClusterName, JobId, MemberId, UnixMillis, Version, Versioned,
+        WorkerStatus,
+    },
 };
 
 #[derive(Default)]
@@ -193,7 +196,15 @@ async fn step_once_contracts_are_callable() {
         .await
         .expect("dcs step_once should be callable");
 
-    let mut process_ctx = ProcessWorkerCtx { _private: () };
+    let initial_process = sample_process_state();
+    let (process_publisher, _process_subscriber) =
+        new_state_channel(initial_process, UnixMillis(1));
+    let (_process_tx, process_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut process_ctx = ProcessWorkerCtx::contract_stub(
+        sample_runtime_config().process.clone(),
+        process_publisher,
+        process_rx,
+    );
     process_worker::step_once(&mut process_ctx)
         .await
         .expect("process step_once should be callable");

@@ -7,6 +7,7 @@ set -euo pipefail
 
 DO_TASK_PROMPT="ralph-do-task.md"
 CHOOSE_TASK_PROMPT="ralph-choose-task.md"
+MODEL_PROFILE_FILE="model.txt"
 
 SOURCE_PATH="${BASH_SOURCE[0]}"
 SCRIPT_DIR="$(cd -P "$( dirname "$SOURCE_PATH" )" >/dev/null 2>&1 && pwd)"
@@ -167,6 +168,19 @@ while true; do
   echo "                                             "
   TEST_CYCLE=$(cat "$SCRIPT_DIR/test_cycle.txt" 2>/dev/null || echo "5")
 
+  CODEX_PROFILE="normal_medium"
+  if [[ -f "$SCRIPT_DIR/$MODEL_PROFILE_FILE" ]]; then
+    CODEX_PROFILE=$(head -n 1 "$SCRIPT_DIR/$MODEL_PROFILE_FILE" | tr -d '\r' | xargs)
+    if [[ -z "$CODEX_PROFILE" ]]; then
+      CODEX_PROFILE="normal_medium"
+      echo "model.txt is empty. Using default codex profile: $CODEX_PROFILE"
+    else
+      echo "Using codex profile from model.txt: $CODEX_PROFILE"
+    fi
+  else
+    echo "model.txt not found. Using default codex profile: $CODEX_PROFILE"
+  fi
+
   if (( $TEST_CYCLE != 0 )) && (( i % $TEST_CYCLE == 0 )); then
     SHOULD_DO_TEST_NEXT=1
     echo "This is iteration $i, so SHOULD_DO_TEST_NEXT set to 1"
@@ -256,6 +270,7 @@ while true; do
     codex exec - \
       --dangerously-bypass-approvals-and-sandbox \
       --json \
+      --profile "$CODEX_PROFILE" \
       --skip-git-repo-check \
       < "$SCRIPT_DIR/$PROMPT_NAME" | while read -r line; do
       process_line "$line"

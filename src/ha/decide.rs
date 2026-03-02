@@ -143,7 +143,9 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                     next.phase = HaPhase::Bootstrapping;
                     candidates.push(HaAction::RunBootstrap);
                 }
-                ProcessState::Idle { last_outcome: None, .. } => {
+                ProcessState::Idle {
+                    last_outcome: None, ..
+                } => {
                     candidates.push(HaAction::StartRewind);
                 }
             },
@@ -163,7 +165,9 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                     next.phase = HaPhase::Fencing;
                     candidates.push(HaAction::FenceNode);
                 }
-                ProcessState::Idle { last_outcome: None, .. } => {
+                ProcessState::Idle {
+                    last_outcome: None, ..
+                } => {
                     candidates.push(HaAction::RunBootstrap);
                 }
             },
@@ -183,7 +187,9 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                     next.phase = HaPhase::FailSafe;
                     candidates.push(HaAction::SignalFailSafe);
                 }
-                ProcessState::Idle { last_outcome: None, .. } => {
+                ProcessState::Idle {
+                    last_outcome: None, ..
+                } => {
                     candidates.push(HaAction::FenceNode);
                 }
             },
@@ -220,14 +226,23 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use crate::{
-        config::{schema::{ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig, SecurityConfig}, BinaryPaths, ProcessConfig, RuntimeConfig},
+        config::{
+            schema::{
+                ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
+                SecurityConfig,
+            },
+            BinaryPaths, ProcessConfig, RuntimeConfig,
+        },
         dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord},
         ha::{
             actions::{ActionId, HaAction},
             state::{DecideInput, HaPhase, HaState, WorldSnapshot},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        process::{jobs::ActiveJob, state::{JobOutcome, ProcessState}},
+        process::{
+            jobs::{ActiveJob, ActiveJobKind},
+            state::{JobOutcome, ProcessState},
+        },
         state::{JobId, MemberId, UnixMillis, Version, Versioned, WorkerStatus},
     };
 
@@ -426,13 +441,26 @@ mod tests {
                     pending: vec![],
                     recent_action_ids: case.recent_action_ids.clone(),
                 },
-                world: world(case.trust, case.pg.clone(), case.leader, case.process.clone()),
+                world: world(
+                    case.trust,
+                    case.pg.clone(),
+                    case.leader,
+                    case.process.clone(),
+                ),
             };
 
             let output = decide(input).expect("decision should succeed");
-            assert_eq!(output.next.phase, case.expected_phase, "case: {}", case.name);
+            assert_eq!(
+                output.next.phase, case.expected_phase,
+                "case: {}",
+                case.name
+            );
             assert_eq!(output.actions, case.expected_actions, "case: {}", case.name);
-            assert_eq!(output.next.pending, case.expected_actions, "case: {}", case.name);
+            assert_eq!(
+                output.next.pending, case.expected_actions,
+                "case: {}",
+                case.name
+            );
             assert_eq!(output.next.tick, 42, "case: {}", case.name);
         }
     }
@@ -545,6 +573,9 @@ mod tests {
             worker: WorkerStatus::Running,
             active: ActiveJob {
                 id: JobId("active-1".to_string()),
+                kind: ActiveJobKind::StartPostgres,
+                started_at: UnixMillis(1),
+                deadline_at: UnixMillis(2),
             },
         }
     }

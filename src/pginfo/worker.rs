@@ -14,18 +14,10 @@ pub(crate) async fn run(mut ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
 pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerError> {
     let now = now_unix_millis()?;
     let next_state = match poll_once(&ctx.postgres_dsn).await {
-        Ok(polled) => to_member_status(
-            WorkerStatus::Running,
-            SqlStatus::Healthy,
-            now,
-            Some(polled),
-        ),
-        Err(_) => to_member_status(
-            WorkerStatus::Running,
-            SqlStatus::Unreachable,
-            now,
-            None,
-        ),
+        Ok(polled) => {
+            to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))
+        }
+        Err(_) => to_member_status(WorkerStatus::Running, SqlStatus::Unreachable, now, None),
     };
 
     ctx.publisher
@@ -195,7 +187,9 @@ mod tests {
                 common,
             } => {
                 assert!(wal_lsn >= first_wal);
-                assert!(slots.iter().any(|slot| slot.name == "slot_pginfo_worker_test"));
+                assert!(slots
+                    .iter()
+                    .any(|slot| slot.name == "slot_pginfo_worker_test"));
                 assert_eq!(common.sql, SqlStatus::Healthy);
                 assert_eq!(common.readiness, Readiness::Ready);
             }
@@ -274,14 +268,15 @@ mod tests {
             "host=127.0.0.1 port={} user=postgres dbname=postgres",
             primary_port
         );
-        let (primary_client, primary_conn) = match tokio_postgres::connect(&primary_dsn, NoTls).await {
-            Ok(pair) => pair,
-            Err(err) => {
-                let _ = primary.shutdown().await;
-                let _ = cleanup_namespace(ns);
-                panic!("connect to primary failed: {err}");
-            }
-        };
+        let (primary_client, primary_conn) =
+            match tokio_postgres::connect(&primary_dsn, NoTls).await {
+                Ok(pair) => pair,
+                Err(err) => {
+                    let _ = primary.shutdown().await;
+                    let _ = cleanup_namespace(ns);
+                    panic!("connect to primary failed: {err}");
+                }
+            };
         let primary_conn_task = tokio::spawn(primary_conn);
 
         if let Err(err) = primary_client

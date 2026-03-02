@@ -6,3 +6,4 @@
 .ralph/tasks/story-rust-system-harness/04-task-pginfo-worker-single-query-and-real-pg-tests.md
 .ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md
 .ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md
+.ralph/tasks/story-rust-system-harness/06-task-process-worker-single-active-job-real-job-exec.md

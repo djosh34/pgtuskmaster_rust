@@ -122,8 +122,14 @@ mod tests {
         let cfg = apply_defaults(base_partial());
 
         assert_eq!(cfg.postgres.connect_timeout_s, DEFAULT_PG_CONNECT_TIMEOUT_S);
-        assert_eq!(cfg.process.pg_rewind_timeout_ms, DEFAULT_PG_REWIND_TIMEOUT_MS);
-        assert_eq!(cfg.process.bootstrap_timeout_ms, DEFAULT_BOOTSTRAP_TIMEOUT_MS);
+        assert_eq!(
+            cfg.process.pg_rewind_timeout_ms,
+            DEFAULT_PG_REWIND_TIMEOUT_MS
+        );
+        assert_eq!(
+            cfg.process.bootstrap_timeout_ms,
+            DEFAULT_BOOTSTRAP_TIMEOUT_MS
+        );
         assert_eq!(cfg.process.fencing_timeout_ms, DEFAULT_FENCING_TIMEOUT_MS);
         assert_eq!(cfg.api.listen_addr, DEFAULT_API_LISTEN_ADDR);
         assert!(!cfg.debug.enabled);

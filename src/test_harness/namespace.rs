@@ -57,7 +57,9 @@ pub(crate) fn create_namespace(test_name: &str) -> Result<TestNamespace, Harness
     let sanitized_name = sanitize_name(test_name);
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|err| HarnessError::InvalidInput(format!("system clock before unix epoch: {err}")))?
+        .map_err(|err| {
+            HarnessError::InvalidInput(format!("system clock before unix epoch: {err}"))
+        })?
         .as_millis();
     let pid = std::process::id();
     let counter = NAMESPACE_COUNTER.fetch_add(1, Ordering::Relaxed);

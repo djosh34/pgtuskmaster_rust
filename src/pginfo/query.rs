@@ -55,9 +55,9 @@ pub(crate) async fn poll_once(postgres_dsn: &str) -> Result<PgPollData, WorkerEr
 
     drop(client);
 
-    let connection_result = connection_task
-        .await
-        .map_err(|err| WorkerError::Message(format!("postgres connection task join failed: {err}")))?;
+    let connection_result = connection_task.await.map_err(|err| {
+        WorkerError::Message(format!("postgres connection task join failed: {err}"))
+    })?;
     if let Err(err) = connection_result {
         return Err(WorkerError::Message(format!(
             "postgres connection error after poll: {err}"
@@ -69,9 +69,10 @@ pub(crate) async fn poll_once(postgres_dsn: &str) -> Result<PgPollData, WorkerEr
         .map_err(|err| WorkerError::Message(format!("timeline decode failed: {err}")))?;
     let timeline = parse_timeline(timeline_raw)?;
 
-    let current_wal_lsn = parse_optional_lsn(row.try_get("current_wal_lsn").map_err(|err| {
-        WorkerError::Message(format!("current_wal_lsn decode failed: {err}"))
-    })?)?;
+    let current_wal_lsn =
+        parse_optional_lsn(row.try_get("current_wal_lsn").map_err(|err| {
+            WorkerError::Message(format!("current_wal_lsn decode failed: {err}"))
+        })?)?;
     let replay_lsn = parse_optional_lsn(
         row.try_get("replay_lsn")
             .map_err(|err| WorkerError::Message(format!("replay_lsn decode failed: {err}")))?,
@@ -112,10 +113,14 @@ pub(crate) fn parse_wal_lsn(raw: &str) -> Result<WalLsn, WorkerError> {
     };
 
     let left_num = u64::from_str_radix(left, 16).map_err(|err| {
-        WorkerError::Message(format!("invalid LSN '{trimmed}': high segment parse failed: {err}"))
+        WorkerError::Message(format!(
+            "invalid LSN '{trimmed}': high segment parse failed: {err}"
+        ))
     })?;
     let right_num = u64::from_str_radix(right, 16).map_err(|err| {
-        WorkerError::Message(format!("invalid LSN '{trimmed}': low segment parse failed: {err}"))
+        WorkerError::Message(format!(
+            "invalid LSN '{trimmed}': low segment parse failed: {err}"
+        ))
     })?;
 
     let shifted = left_num.checked_shl(32).ok_or_else(|| {

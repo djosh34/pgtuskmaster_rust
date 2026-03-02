@@ -63,13 +63,22 @@ mod tests {
             key_from_path("scope-a", "/scope-a/member/node-a"),
             Ok(DcsKey::Member(MemberId("node-a".to_string())))
         );
-        assert_eq!(key_from_path("scope-a", "/scope-a/leader"), Ok(DcsKey::Leader));
+        assert_eq!(
+            key_from_path("scope-a", "/scope-a/leader"),
+            Ok(DcsKey::Leader)
+        );
         assert_eq!(
             key_from_path("scope-a", "/scope-a/switchover"),
             Ok(DcsKey::Switchover)
         );
-        assert_eq!(key_from_path("scope-a", "/scope-a/config"), Ok(DcsKey::Config));
-        assert_eq!(key_from_path("scope-a", "/scope-a/init"), Ok(DcsKey::InitLock));
+        assert_eq!(
+            key_from_path("scope-a", "/scope-a/config"),
+            Ok(DcsKey::Config)
+        );
+        assert_eq!(
+            key_from_path("scope-a", "/scope-a/init"),
+            Ok(DcsKey::InitLock)
+        );
     }
 
     #[test]
