@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use crate::{
     config::{BinaryPaths, ProcessConfig, RuntimeConfig},
@@ -13,9 +14,7 @@ use crate::{
         state::{JobOutcome, ProcessJobKind, ProcessState, ProcessWorkerCtx},
         worker as process_worker,
     },
-    state::{
-        ClusterName, MemberId, Version, Versioned, WorkerStatus, UnixMillis, JobId,
-    },
+    state::{new_state_channel, ClusterName, MemberId, Version, Versioned, WorkerStatus, UnixMillis, JobId},
 };
 
 fn sample_runtime_config() -> RuntimeConfig {
@@ -142,8 +141,13 @@ fn worker_contract_symbols_exist() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn step_once_contracts_are_callable() {
+    let initial_pg = sample_pg_state();
+    let (publisher, _subscriber) = new_state_channel(initial_pg, UnixMillis(1));
     let mut pg_ctx = PgInfoWorkerCtx {
         self_id: MemberId("node-a".to_string()),
+        postgres_dsn: "host=127.0.0.1 port=1 user=postgres dbname=postgres".to_string(),
+        poll_interval: Duration::from_millis(10),
+        publisher,
     };
     crate::pginfo::worker::step_once(&mut pg_ctx)
         .await

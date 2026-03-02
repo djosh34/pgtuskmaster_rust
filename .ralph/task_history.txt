@@ -3,3 +3,4 @@
 .ralph/tasks/story-rust-system-harness/03-task-worker-state-models-and-context-contracts.md
 .ralph/tasks/story-rust-system-harness/07-task-ha-decide-pure-matrix-idempotency-tests.md
 .ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md
+.ralph/tasks/story-rust-system-harness/04-task-pginfo-worker-single-query-and-real-pg-tests.md

@@ -26,3 +26,4 @@ Please do not use unwraps anywhere, instead use proper error handling
 - For contract-only skeleton tasks, avoid `pub(crate) use ...` re-export fanout in `mod.rs`; direct module paths keep clippy `unused_imports` clean while preserving minimal visibility.
 - Avoid running multiple top-level Cargo build/test commands in parallel within the same workspace; package-cache lock contention can surface misleading archive/object-file errors.
 - For port-allocation tests, keep listener reservations alive for the whole assertion window; dropping reservations early makes legitimate OS port reuse look like a false collision.
+- Parallel `make` targets that each invoke Cargo can intermittently fail at link time with missing `*.rcgu.o` artifacts; rerun required gates sequentially for trustworthy pass/fail evidence.

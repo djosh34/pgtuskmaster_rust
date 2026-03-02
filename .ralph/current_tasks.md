@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 08:43:00 PM CET 2026
+Generated: Mon Mar  2 08:50:01 PM CET 2026
 
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
@@ -69,7 +69,7 @@ Generated: Mon Mar  2 08:43:00 PM CET 2026
 
 **Path:** `.ralph/tasks/story-rust-system-harness/04-task-pginfo-worker-single-query-and-real-pg-tests.md`
 
-## Task: Implement pginfo worker single-query polling and real PG tests <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Implement pginfo worker single-query polling and real PG tests <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
 
