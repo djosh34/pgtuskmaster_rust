@@ -275,18 +275,10 @@ mod tests {
             };
         let primary_conn_task = tokio::spawn(primary_conn);
 
-        if let Err(err) = primary_client
-            .batch_execute(
-                "ALTER SYSTEM SET wal_level = 'replica';
-                 ALTER SYSTEM SET max_wal_senders = '5';
-                 ALTER SYSTEM SET hot_standby = 'on';
-                 SELECT pg_reload_conf();",
-            )
-            .await
-        {
+        if let Err(err) = primary_client.simple_query("SELECT 1;").await {
             let _ = primary.shutdown().await;
             let _ = cleanup_namespace(ns);
-            panic!("configure primary failed: {err}");
+            panic!("verify primary connectivity failed: {err}");
         }
         drop(primary_client);
         let conn_result = primary_conn_task.await;
@@ -409,14 +401,30 @@ mod tests {
             publisher,
         };
 
-        if let Err(err) = step_once(&mut ctx).await {
-            let _ = replica.shutdown().await;
-            let _ = primary.shutdown().await;
-            let _ = cleanup_namespace(ns);
-            panic!("replica step_once failed: {err}");
-        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let snapshot = loop {
+            if let Err(err) = step_once(&mut ctx).await {
+                let _ = replica.shutdown().await;
+                let _ = primary.shutdown().await;
+                let _ = cleanup_namespace(ns);
+                panic!("replica step_once failed: {err}");
+            }
 
-        let snapshot = subscriber.latest().value;
+            let polled = subscriber.latest().value;
+            if matches!(polled, PgInfoState::Replica { .. }) {
+                break polled;
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                let _ = replica.shutdown().await;
+                let _ = primary.shutdown().await;
+                let _ = cleanup_namespace(ns);
+                panic!("timed out waiting for replica state, got: {polled:?}");
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
         match snapshot {
             PgInfoState::Replica { common, .. } => {
                 assert_eq!(common.sql, SqlStatus::Healthy);

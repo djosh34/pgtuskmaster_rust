@@ -1,6 +1,24 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 10:19:05 PM CET 2026
+Generated: Mon Mar  2 10:28:45 PM CET 2026
+
+**Path:** `.ralph/tasks/bugs/pginfo-standby-polling-test-configure-primary-db-error.md`
+
+## Bug: Pginfo standby polling test fails during primary configure with db error <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` failed in `pginfo::worker::tests::step_once_maps_replica_when_polling_standby` with a runtime panic while preparing the primary postgres fixture.
+
+---
+
+**Path:** `.ralph/tasks/bugs/process-worker-real-job-tests-state-channel-closed.md`
+
+## Bug: Process worker real job tests fail with state channel closed <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` failed while running real process worker job tests. Multiple tests panic because process state publish fails with `state channel is closed`.
+
+---
 
 **Path:** `.ralph/tasks/bugs/real-binary-tests-fail-when-port-allocation-is-blocked.md`
 
@@ -135,7 +153,7 @@ Generated: Mon Mar  2 10:19:05 PM CET 2026
 
 **Path:** `.ralph/tasks/story-rust-system-harness/08-task-ha-worker-select-loop-and-action-dispatch.md`
 
-## Task: Implement HA worker select loop and action dispatch wiring <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Implement HA worker select loop and action dispatch wiring <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
 
 <blocked_by>04-task-pginfo-worker-single-query-and-real-pg-tests,05-task-dcs-worker-trust-cache-watch-member-publish,06-task-process-worker-single-active-job-real-job-exec,07-task-ha-decide-pure-matrix-idempotency-tests</blocked_by>
 

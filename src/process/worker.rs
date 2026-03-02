@@ -1039,6 +1039,7 @@ mod tests {
         (
             ProcessWorkerCtx,
             mpsc::UnboundedSender<ProcessJobRequest>,
+            crate::state::StateSubscriber<ProcessState>,
             NamespaceGuard,
             PathBuf,
             PathBuf,
@@ -1067,7 +1068,7 @@ mod tests {
         fs::create_dir_all(&log_dir)
             .map_err(|err| WorkerError::Message(format!("log dir create failed: {err}")))?;
 
-        let (mut ctx, tx, _sub) = real_ctx(real_config(binaries));
+        let (mut ctx, tx, sub) = real_ctx(real_config(binaries));
 
         let bootstrap = submit_job_and_wait(
             &tx,
@@ -1111,7 +1112,7 @@ mod tests {
             )));
         }
 
-        Ok((ctx, tx, guard, data_dir, socket_dir, log_file, port))
+        Ok((ctx, tx, sub, guard, data_dir, socket_dir, log_file, port))
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1119,7 +1120,7 @@ mod tests {
         let binaries = pg16_binaries();
 
         let setup = bootstrap_and_start(binaries, "process-promote").await;
-        let (mut ctx, tx, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
+        let (mut ctx, tx, _sub, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
             Ok(v) => v,
             Err(err) => panic!("promote setup failed: {err}"),
         };
@@ -1166,7 +1167,7 @@ mod tests {
     async fn real_demote_job_executes_binary_path() {
         let binaries = pg16_binaries();
         let setup = bootstrap_and_start(binaries, "process-demote").await;
-        let (mut ctx, tx, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
+        let (mut ctx, tx, _sub, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
             Ok(v) => v,
             Err(err) => panic!("demote setup failed: {err}"),
         };
@@ -1214,7 +1215,7 @@ mod tests {
         let binaries = pg16_binaries();
 
         let setup = bootstrap_and_start(binaries, "process-start-stop").await;
-        let (mut ctx, tx, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
+        let (mut ctx, tx, _sub, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
             Ok(v) => v,
             Err(err) => panic!("start/stop setup failed: {err}"),
         };
@@ -1244,7 +1245,7 @@ mod tests {
         let binaries = pg16_binaries();
 
         let setup = bootstrap_and_start(binaries, "process-restart").await;
-        let (mut ctx, tx, _guard, data_dir, socket_dir, log_file, port) = match setup {
+        let (mut ctx, tx, _sub, _guard, data_dir, socket_dir, log_file, port) = match setup {
             Ok(v) => v,
             Err(err) => panic!("restart setup failed: {err}"),
         };
@@ -1296,7 +1297,7 @@ mod tests {
     async fn real_fencing_job_executes_binary_path() {
         let binaries = pg16_binaries();
         let setup = bootstrap_and_start(binaries, "process-fencing").await;
-        let (mut ctx, tx, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
+        let (mut ctx, tx, _sub, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
             Ok(v) => v,
             Err(err) => panic!("fencing setup failed: {err}"),
         };
