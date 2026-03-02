@@ -211,6 +211,10 @@ mod tests {
             Ok(())
         }
 
+        fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
+            Ok(())
+        }
+
         fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
             let mut guard = self
                 .events

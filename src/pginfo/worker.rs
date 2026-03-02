@@ -38,13 +38,13 @@ fn now_unix_millis() -> Result<UnixMillis, WorkerError> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
     use std::time::Duration;
 
     use tokio_postgres::NoTls;
 
     use crate::pginfo::state::{PgConfig, PgInfoCommon};
     use crate::state::{new_state_channel, MemberId, UnixMillis, WorkerStatus};
+    use crate::test_harness::binaries::require_pg16_bin;
     use crate::test_harness::namespace::{cleanup_namespace, create_namespace, NamespaceGuard};
     use crate::test_harness::pg16::{prepare_pgdata_dir, spawn_pg16, PgInstanceSpec};
     use crate::test_harness::ports::allocate_ports;
@@ -54,11 +54,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots() {
-        let postgres_bin = Path::new("/usr/lib/postgresql/16/bin/postgres");
-        let initdb_bin = Path::new("/usr/lib/postgresql/16/bin/initdb");
-        if !postgres_bin.exists() || !initdb_bin.exists() {
-            return;
-        }
+        let postgres_bin = require_pg16_bin("postgres");
+        let initdb_bin = require_pg16_bin("initdb");
 
         let guard = match NamespaceGuard::new("pginfo-primary-flow") {
             Ok(guard) => guard,
@@ -89,8 +86,8 @@ mod tests {
         }
 
         let spec = PgInstanceSpec {
-            postgres_bin: postgres_bin.to_path_buf(),
-            initdb_bin: initdb_bin.to_path_buf(),
+            postgres_bin,
+            initdb_bin,
             data_dir: data_dir.clone(),
             socket_dir: socket_dir.clone(),
             log_dir,
@@ -208,12 +205,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_maps_replica_when_polling_standby() {
-        let postgres_bin = Path::new("/usr/lib/postgresql/16/bin/postgres");
-        let initdb_bin = Path::new("/usr/lib/postgresql/16/bin/initdb");
-        let basebackup_bin = Path::new("/usr/lib/postgresql/16/bin/pg_basebackup");
-        if !postgres_bin.exists() || !initdb_bin.exists() || !basebackup_bin.exists() {
-            return;
-        }
+        let postgres_bin = require_pg16_bin("postgres");
+        let initdb_bin = require_pg16_bin("initdb");
+        let basebackup_bin = require_pg16_bin("pg_basebackup");
 
         let ns = match create_namespace("pginfo-replica-flow") {
             Ok(ns) => ns,
@@ -249,8 +243,8 @@ mod tests {
         drop(primary_reservation);
 
         let mut primary = match spawn_pg16(PgInstanceSpec {
-            postgres_bin: postgres_bin.to_path_buf(),
-            initdb_bin: initdb_bin.to_path_buf(),
+            postgres_bin: postgres_bin.clone(),
+            initdb_bin: initdb_bin.clone(),
             data_dir: primary_data.clone(),
             socket_dir: primary_socket.clone(),
             log_dir: primary_logs.clone(),
@@ -373,8 +367,8 @@ mod tests {
         drop(replica_reservation);
 
         let mut replica = match spawn_pg16(PgInstanceSpec {
-            postgres_bin: postgres_bin.to_path_buf(),
-            initdb_bin: initdb_bin.to_path_buf(),
+            postgres_bin,
+            initdb_bin,
             data_dir: replica_data.clone(),
             socket_dir: replica_socket,
             log_dir: replica_logs,

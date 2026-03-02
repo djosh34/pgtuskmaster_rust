@@ -41,6 +41,7 @@ pub(crate) enum DcsStoreError {
 pub(crate) trait DcsStore: Send {
     fn healthy(&self) -> bool;
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError>;
+    fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError>;
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError>;
 }
 
@@ -151,6 +152,7 @@ pub(crate) struct TestDcsStore {
     healthy: bool,
     events: VecDeque<WatchEvent>,
     writes: Vec<(String, String)>,
+    deletes: Vec<String>,
 }
 
 #[cfg(test)]
@@ -160,6 +162,7 @@ impl TestDcsStore {
             healthy,
             events: VecDeque::new(),
             writes: Vec::new(),
+            deletes: Vec::new(),
         }
     }
 
@@ -169,6 +172,10 @@ impl TestDcsStore {
 
     pub(crate) fn writes(&self) -> &[(String, String)] {
         &self.writes
+    }
+
+    pub(crate) fn deletes(&self) -> &[String] {
+        &self.deletes
     }
 }
 
@@ -180,6 +187,11 @@ impl DcsStore for TestDcsStore {
 
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
         self.writes.push((path.to_string(), value));
+        Ok(())
+    }
+
+    fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError> {
+        self.deletes.push(path.to_string());
         Ok(())
     }
 

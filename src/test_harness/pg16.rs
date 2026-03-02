@@ -213,10 +213,10 @@ fn sanitize_node_name(node_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::time::Duration;
 
     use super::{prepare_pgdata_dir, spawn_pg16, PgInstanceSpec};
+    use crate::test_harness::binaries::require_pg16_bin;
     use crate::test_harness::namespace::{cleanup_namespace, create_namespace};
     use crate::test_harness::ports::allocate_ports;
 
@@ -247,12 +247,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn spawn_pg16_is_skipped_when_binaries_missing() {
-        let postgres_bin = Path::new("/usr/lib/postgresql/16/bin/postgres");
-        let initdb_bin = Path::new("/usr/lib/postgresql/16/bin/initdb");
-        if !postgres_bin.exists() || !initdb_bin.exists() {
-            return;
-        }
+    async fn spawn_pg16_requires_binaries_and_spawns() {
+        let postgres_bin = require_pg16_bin("postgres");
+        let initdb_bin = require_pg16_bin("initdb");
 
         let ns = match create_namespace("spawn-pg16") {
             Ok(ns) => ns,
@@ -284,8 +281,8 @@ mod tests {
         let log_dir = ns.child_dir("logs/pg16-node-a");
 
         let spec = PgInstanceSpec {
-            postgres_bin: postgres_bin.to_path_buf(),
-            initdb_bin: initdb_bin.to_path_buf(),
+            postgres_bin,
+            initdb_bin,
             data_dir,
             socket_dir,
             log_dir,

@@ -18,3 +18,6 @@ log
 
 # rust build artifacts
 target/
+
+# local tool downloads/installations used by tests
+.tools/

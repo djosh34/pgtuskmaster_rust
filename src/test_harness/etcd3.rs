@@ -153,10 +153,10 @@ async fn wait_for_port(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::time::Duration;
 
     use super::{prepare_etcd_data_dir, spawn_etcd3, EtcdInstanceSpec};
+    use crate::test_harness::binaries::require_etcd_bin;
     use crate::test_harness::namespace::{cleanup_namespace, create_namespace};
     use crate::test_harness::ports::allocate_ports;
 
@@ -187,11 +187,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn spawn_etcd3_is_skipped_when_binary_missing() {
-        let etcd_bin = Path::new("/usr/bin/etcd");
-        if !etcd_bin.exists() {
-            return;
-        }
+    async fn spawn_etcd3_requires_binary_and_spawns() {
+        let etcd_bin = require_etcd_bin();
 
         let ns = match create_namespace("spawn-etcd") {
             Ok(ns) => ns,
@@ -224,7 +221,7 @@ mod tests {
         let log_dir = ns.child_dir("logs/etcd3-node-a");
 
         let spec = EtcdInstanceSpec {
-            etcd_bin: etcd_bin.to_path_buf(),
+            etcd_bin,
             namespace_id: ns.id.clone(),
             member_name: "node-a".to_string(),
             data_dir,

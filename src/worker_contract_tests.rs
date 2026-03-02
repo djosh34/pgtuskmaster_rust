@@ -8,7 +8,7 @@ use crate::{
     debug_api::{snapshot::SystemSnapshot, worker::DebugApiCtx},
     ha::{
         actions::HaAction,
-        state::{HaPhase, HaState, HaWorkerCtx, WorldSnapshot},
+        state::{HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, WorldSnapshot},
     },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, PgInfoWorkerCtx, Readiness, SqlStatus},
     process::{
@@ -30,6 +30,10 @@ impl DcsStore for ContractStore {
     }
 
     fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
+        Ok(())
+    }
+
+    fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
         Ok(())
     }
 
@@ -209,7 +213,27 @@ async fn step_once_contracts_are_callable() {
         .await
         .expect("process step_once should be callable");
 
-    let mut ha_ctx = HaWorkerCtx { _private: () };
+    let runtime_cfg = sample_runtime_config();
+    let initial_ha = sample_ha_state();
+    let (ha_publisher, _ha_subscriber) = new_state_channel(initial_ha, UnixMillis(1));
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(runtime_cfg.clone(), UnixMillis(1));
+    let (_ha_pg_publisher, ha_pg_subscriber) = new_state_channel(sample_pg_state(), UnixMillis(1));
+    let (_ha_dcs_publisher, ha_dcs_subscriber) =
+        new_state_channel(sample_dcs_state(runtime_cfg.clone()), UnixMillis(1));
+    let (_ha_process_publisher, ha_process_subscriber) =
+        new_state_channel(sample_process_state(), UnixMillis(1));
+    let (ha_process_tx, _ha_process_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
+        publisher: ha_publisher,
+        config_subscriber: cfg_subscriber,
+        pg_subscriber: ha_pg_subscriber,
+        dcs_subscriber: ha_dcs_subscriber,
+        process_subscriber: ha_process_subscriber,
+        process_inbox: ha_process_tx,
+        dcs_store: Box::new(ContractStore),
+        scope: "scope-a".to_string(),
+        self_id: MemberId("node-a".to_string()),
+    });
     crate::ha::worker::step_once(&mut ha_ctx)
         .await
         .expect("ha step_once should be callable");

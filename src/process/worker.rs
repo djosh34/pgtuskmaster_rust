@@ -503,12 +503,7 @@ fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), P
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::VecDeque,
-        fs,
-        path::{Path, PathBuf},
-        time::Duration,
-    };
+    use std::{collections::VecDeque, fs, path::PathBuf, time::Duration};
 
     use tokio::{
         sync::mpsc,
@@ -533,7 +528,10 @@ mod tests {
             },
         },
         state::{new_state_channel, JobId, UnixMillis, WorkerError, WorkerStatus},
-        test_harness::{namespace::NamespaceGuard, ports::allocate_ports},
+        test_harness::{
+            binaries::require_pg16_process_binaries, namespace::NamespaceGuard,
+            ports::allocate_ports,
+        },
     };
 
     struct FakeHandle {
@@ -873,28 +871,8 @@ mod tests {
         );
     }
 
-    fn pg16_binaries() -> Option<BinaryPaths> {
-        let root = Path::new("/usr/lib/postgresql/16/bin");
-        let postgres = root.join("postgres");
-        let pg_ctl = root.join("pg_ctl");
-        let pg_rewind = root.join("pg_rewind");
-        let initdb = root.join("initdb");
-        let psql = root.join("psql");
-        if !postgres.exists()
-            || !pg_ctl.exists()
-            || !pg_rewind.exists()
-            || !initdb.exists()
-            || !psql.exists()
-        {
-            return None;
-        }
-        Some(BinaryPaths {
-            postgres,
-            pg_ctl,
-            pg_rewind,
-            initdb,
-            psql,
-        })
+    fn pg16_binaries() -> BinaryPaths {
+        require_pg16_process_binaries()
     }
 
     fn real_config(binaries: BinaryPaths) -> ProcessConfig {
@@ -980,10 +958,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_bootstrap_job_executes_initdb() {
-        let binaries = match pg16_binaries() {
-            Some(paths) => paths,
-            None => return,
-        };
+        let binaries = pg16_binaries();
         let guard = match NamespaceGuard::new("process-bootstrap") {
             Ok(guard) => guard,
             Err(err) => panic!("namespace setup failed: {err}"),
@@ -1018,10 +993,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_pg_rewind_job_executes_binary_path() {
-        let binaries = match pg16_binaries() {
-            Some(paths) => paths,
-            None => return,
-        };
+        let binaries = pg16_binaries();
 
         let guard = match NamespaceGuard::new("process-rewind") {
             Ok(guard) => guard,
@@ -1144,10 +1116,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_promote_job_executes_binary_path() {
-        let binaries = match pg16_binaries() {
-            Some(paths) => paths,
-            None => return,
-        };
+        let binaries = pg16_binaries();
 
         let setup = bootstrap_and_start(binaries, "process-promote").await;
         let (mut ctx, tx, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
@@ -1195,10 +1164,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_demote_job_executes_binary_path() {
-        let binaries = match pg16_binaries() {
-            Some(paths) => paths,
-            None => return,
-        };
+        let binaries = pg16_binaries();
         let setup = bootstrap_and_start(binaries, "process-demote").await;
         let (mut ctx, tx, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
             Ok(v) => v,
@@ -1245,10 +1211,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_start_and_stop_jobs_execute_binary_paths() {
-        let binaries = match pg16_binaries() {
-            Some(paths) => paths,
-            None => return,
-        };
+        let binaries = pg16_binaries();
 
         let setup = bootstrap_and_start(binaries, "process-start-stop").await;
         let (mut ctx, tx, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
@@ -1278,10 +1241,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_restart_job_executes_binary_path() {
-        let binaries = match pg16_binaries() {
-            Some(paths) => paths,
-            None => return,
-        };
+        let binaries = pg16_binaries();
 
         let setup = bootstrap_and_start(binaries, "process-restart").await;
         let (mut ctx, tx, _guard, data_dir, socket_dir, log_file, port) = match setup {
@@ -1334,10 +1294,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_fencing_job_executes_binary_path() {
-        let binaries = match pg16_binaries() {
-            Some(paths) => paths,
-            None => return,
-        };
+        let binaries = pg16_binaries();
         let setup = bootstrap_and_start(binaries, "process-fencing").await;
         let (mut ctx, tx, _guard, data_dir, _socket_dir, _log_file, _port) = match setup {
             Ok(v) => v,
