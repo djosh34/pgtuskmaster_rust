@@ -1,1 +1,2 @@
 .ralph/tasks/story-rust-system-harness/01-task-core-types-time-errors-watch-channel.md
+.ralph/tasks/story-rust-system-harness/02-task-runtime-config-schema-defaults-parse-validate.md

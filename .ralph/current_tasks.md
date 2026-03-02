@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 06:09:10 PM CET 2026
+Generated: Mon Mar  2 18:15:14 CET 2026
 
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
@@ -49,7 +49,7 @@ Generated: Mon Mar  2 06:09:10 PM CET 2026
 
 **Path:** `.ralph/tasks/story-rust-system-harness/02-task-runtime-config-schema-defaults-parse-validate.md`
 
-## Task: Implement runtime config schema defaults parser and validation <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+## Task: Implement runtime config schema defaults parser and validation <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
 
 <blocked_by>01-task-core-types-time-errors-watch-channel</blocked_by>
 

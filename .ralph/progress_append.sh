@@ -33,6 +33,6 @@ if ! systemd-run --user --collect --wait \
     /bin/bash "$SCRIPT_DIR/email.sh"; then
   # Fallback for environments without user systemd bus access.
   if ! "$SCRIPT_DIR/email.sh"; then
-    echo "Warning: progress appended, but email send failed" >&2
+    echo "progress appended, but email send failed, which can happen due to sandboxing, and is ok" >&2
   fi
 fi

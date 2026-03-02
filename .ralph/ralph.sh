@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-export MODE="${1:-claude}"
+export MODE="${1:-codex}"
 #MODE="opencode"
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
@@ -50,7 +50,7 @@ else
     --unit="$UNIT_NAME" \
     --collect \
     --working-directory="$WORK_DIR" \
-    --setenv=PATH="$HOME/.local/bin:$HOME/go/bin:$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    --setenv=PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/go/bin:$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     --setenv=HOME="$HOME" \
     --property=TimeoutStopSec=10 \
     --property=KillMode=control-group \

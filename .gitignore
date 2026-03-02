@@ -15,3 +15,6 @@ log
 
 # btca local data
 .btca/
+
+# rust build artifacts
+target/

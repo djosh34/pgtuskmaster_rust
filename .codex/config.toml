@@ -1,0 +1,6 @@
+[otel]
+# Codex telemetry -> OpenObserve via OTLP/HTTP JSON
+environment = "pgtuskmaster_rust"
+log_user_prompt = true
+
+exporter = { otlp-grpc = { endpoint = "http://10.0.4.30:5081", headers = { "Authorization" = "Basic ZXhhbXBsZUBlbWFpbC5jb206OXdPdzNrSVBrYzRHc0Nrcw==", "stream-name" = "pgtuskmaster_rust", "organization" =  "default" } } }

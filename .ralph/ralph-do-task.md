@@ -25,6 +25,7 @@
     - [ ] commit with: `task finished [task name]: [insert text]`
         - [ ] include summary of what was done in commit message (evidence for tests completing, challenges faced during
           implementation)
-    - [ ] Write any learnings/surprises to CLAUDE.md
+        - [ ] Make sure to add all files, please do not forget commiting any file when completing a task, also the stuff in .ralph
+    - [ ] Write any learnings/surprises to AGENTS.md
     - [ ] QUIT IMMEDIATELY
 

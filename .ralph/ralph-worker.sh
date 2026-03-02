@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd -P "$( dirname "$SOURCE_PATH" )" >/dev/null 2>&1 && pwd)"
 echo "Running from $SCRIPT_DIR"
 
 
-MODE="${MODE:-claude}"
+MODE="${1:-${MODE:-claude}}"
 
 echo "Using MODE: $MODE (set MODE=opencode|claude|codex)"
 
@@ -40,24 +40,7 @@ echo "Starting from iteration $START (last completed: $LAST_ITERATION)"
 # 1. Enable telemetry
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
 
-# 2. Choose exporters (both are optional - configure only what you need)
-export OTEL_METRICS_EXPORTER=otlp       # Options: otlp, prometheus, console
-export OTEL_LOGS_EXPORTER=otlp          # Options: otlp, console
-
-# 3. Configure OTLP endpoint (for OTLP exporter)
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://10.0.4.30:5080/api/default
-
-# 4. Set authentication (if required)
-OTEL_AUTH_HEADER="Basic ZXhhbXBsZUBlbWFpbC5jb206OXdPdzNrSVBrYzRHc0Nrcw=="
-OTEL_STREAM_NAME="${OTEL_STREAM_NAME:-patroni}"
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=${OTEL_AUTH_HEADER},stream-name=${OTEL_STREAM_NAME}"
-
-# 5. For debugging: reduce export intervals
-export OTEL_METRIC_EXPORT_INTERVAL=1000  # 10 seconds (default: 60000ms)
-export OTEL_LOGS_EXPORT_INTERVAL=1000     # 5 seconds (default: 5000ms)
-
-export OTEL_LOG_USER_PROMPTS=1
+# Codex OpenTelemetry settings are configured in .codex/config.toml.
 
 
 export OPENCODE_CONFIG="$SCRIPT_DIR/.ralph/opencode_gpt.json"
@@ -270,14 +253,10 @@ while true; do
       ITERATION_ERRORED=1
     }
   elif [[ "$MODE" == "codex" ]]; then
-    CODEX_OTEL_NAME="${CODEX_OTEL_NAME:-pgtuskmaster_rust_codex}"
     codex exec - \
       --dangerously-bypass-approvals-and-sandbox \
       --json \
       --skip-git-repo-check \
-      -c "otel.environment=\"$CODEX_OTEL_NAME\"" \
-      -c "otel.log_user_prompt=true" \
-      -c "otel.exporter={otlp-http={endpoint=\"$OTEL_EXPORTER_OTLP_ENDPOINT\",protocol=\"json\",headers={Authorization=\"$OTEL_AUTH_HEADER\",\"stream-name\"=\"$CODEX_OTEL_NAME\"}}}" \
       < "$SCRIPT_DIR/$PROMPT_NAME" | while read -r line; do
       process_line "$line"
     done || {
