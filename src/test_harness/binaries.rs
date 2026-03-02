@@ -35,3 +35,27 @@ pub(crate) fn require_pg16_process_binaries() -> Result<BinaryPaths, HarnessErro
         psql: require_pg16_bin("psql")?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::require_binary;
+    use crate::test_harness::HarnessError;
+
+    #[test]
+    fn require_binary_missing_path_returns_invalid_input() {
+        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_millis(),
+            Err(_) => 0,
+        };
+        let missing = PathBuf::from(format!(
+            "/tmp/pgtuskmaster_missing_bin_{millis}_{}",
+            std::process::id()
+        ));
+
+        let result = require_binary(missing.as_path());
+        assert!(matches!(result, Err(HarnessError::InvalidInput(_))));
+    }
+}

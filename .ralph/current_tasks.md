@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 12:43:49 AM CET 2026
+Generated: Tue Mar  3 12:48:59 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -71,7 +71,7 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 
 **Path:** `.ralph/tasks/bugs/test-harness-binary-check-panics.md`
 
-## Bug: Test harness binary checks panic instead of returning errors <status>not_started</status> <passes>false</passes>
+## Bug: Test harness binary checks panic instead of returning errors <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/test_harness/binaries.rs) uses `panic!` to report missing binaries. This conflicts with the project policy of no `panic`/`expect`/`unwrap` and makes tests fail via uncontrolled panics rather than structured errors. Refactor `require_binary` (and callers) to return a typed `HarnessError` instead of panicking, and update callers/tests to propagate or assert errors explicitly.

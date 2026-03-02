@@ -52,3 +52,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - For DCS watch-path bug reports, add paired regressions at both `refresh_from_etcd_watch` (assert `had_errors`) and `step_once` (assert faulted/not-trusted publication) so stale-vs-fixed decisions are backed by explicit contract tests.
 - In real `pg_ctl promote` tests bootstrapped from a standalone primary, expect either success or `EarlyExit(code=1)` ("not in standby"); treat only that specific failure as acceptable instead of blanket `JobOutcome::Failure`.
 - When converting tests from `.expect(...)` to `?`, make the test `Result` error type match the called API’s error (for example `DecideError` for `decide(...)`) to avoid unnecessary `From` glue and compile churn.
+- For stale bug reports about panic behavior, still add a direct missing-path contract test on the fallible helper; it turns “already fixed” claims into durable regression evidence.
