@@ -1,17 +1,19 @@
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use super::query::PgPollData;
 use crate::state::{MemberId, TimelineId, UnixMillis, WalLsn, WorkerStatus};
 use crate::state::StatePublisher;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SqlStatus {
     Unknown,
     Healthy,
     Unreachable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Readiness {
     Unknown,
     Ready,

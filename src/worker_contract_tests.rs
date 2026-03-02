@@ -14,8 +14,26 @@ use crate::{
         state::{JobOutcome, ProcessJobKind, ProcessState, ProcessWorkerCtx},
         worker as process_worker,
     },
+    dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     state::{new_state_channel, ClusterName, MemberId, Version, Versioned, WorkerStatus, UnixMillis, JobId},
 };
+
+#[derive(Default)]
+struct ContractStore;
+
+impl DcsStore for ContractStore {
+    fn healthy(&self) -> bool {
+        true
+    }
+
+    fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
+        Ok(())
+    }
+
+    fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
+        Ok(Vec::new())
+    }
+}
 
 fn sample_runtime_config() -> RuntimeConfig {
     RuntimeConfig {
@@ -142,7 +160,7 @@ fn worker_contract_symbols_exist() {
 #[tokio::test(flavor = "current_thread")]
 async fn step_once_contracts_are_callable() {
     let initial_pg = sample_pg_state();
-    let (publisher, _subscriber) = new_state_channel(initial_pg, UnixMillis(1));
+    let (publisher, pg_subscriber) = new_state_channel(initial_pg.clone(), UnixMillis(1));
     let mut pg_ctx = PgInfoWorkerCtx {
         self_id: MemberId("node-a".to_string()),
         postgres_dsn: "host=127.0.0.1 port=1 user=postgres dbname=postgres".to_string(),
@@ -153,7 +171,24 @@ async fn step_once_contracts_are_callable() {
         .await
         .expect("pginfo step_once should be callable");
 
-    let mut dcs_ctx = DcsWorkerCtx { _private: () };
+    let initial_dcs = sample_dcs_state(sample_runtime_config());
+    let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+    let mut dcs_ctx = DcsWorkerCtx {
+        self_id: MemberId("node-a".to_string()),
+        scope: "scope-a".to_string(),
+        poll_interval: Duration::from_millis(10),
+        pg_subscriber,
+        publisher: dcs_publisher,
+        store: Box::new(ContractStore),
+        cache: DcsCache {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        },
+        last_published_pg_version: None,
+    };
     crate::dcs::worker::step_once(&mut dcs_ctx)
         .await
         .expect("dcs step_once should be callable");
