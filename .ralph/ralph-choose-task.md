@@ -6,10 +6,14 @@ We do this by completing one task at a time (or creating subtasks if too big), t
 
 Find the most logical task that you should do next, and write its path to .ralph/current_task.txt
 
+**BUG-FIRST RULE (MANDATORY):** If ANY bug task is not passing (`<passes>false</passes>` or `<passing>false</passing>`),
+you MUST pick a bug task before any non-bug task. Only when all bug tasks are passing may you consider other work.
+Within bugs, still follow `<priority>` tags (e.g. `ultra_high` before `high`).
+
 - [ ] first find all tasks available by reading .ralph/current_tasks.md
 - [ ] if there are still tasks with `<passes>false</passes>` or `<passing>false</passing>`
     - [ ] deeply think about which task has the highest priority to do next
-        - [ ] always prefer fixing bugs over other tasks
+        - [ ] always prefer fixing bugs over other tasks (bug-first rule)
     - [ ] this is almost never the first one in the list. Choose the one that has biggest prio to do next based on the
       current state of the codebase
     - [ ] one caveat: YOU MUST follow PRIORITY tags if they exist

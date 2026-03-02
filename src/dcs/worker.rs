@@ -93,8 +93,15 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             Vec::new()
         }
     };
-    if refresh_from_etcd_watch(&ctx.scope, &mut ctx.cache, events).is_err() {
-        store_healthy = false;
+    match refresh_from_etcd_watch(&ctx.scope, &mut ctx.cache, events) {
+        Ok(result) => {
+            if result.had_errors {
+                store_healthy = false;
+            }
+        }
+        Err(_) => {
+            store_healthy = false;
+        }
     }
 
     let trust = evaluate_trust(store_healthy, &ctx.cache, &ctx.self_id);
@@ -154,7 +161,7 @@ mod tests {
             worker::{apply_watch_update, DcsValue, DcsWatchUpdate},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        state::{new_state_channel, MemberId, UnixMillis, Version, WorkerStatus},
+        state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
 
     use super::step_once;
@@ -473,5 +480,45 @@ mod tests {
         let third = step_once(&mut ctx).await;
         assert_eq!(third, Ok(()));
         assert_eq!(store_probe.write_count(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_marks_store_unhealthy_when_watch_decode_fails() {
+        let initial_pg = sample_pg();
+        let (_pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let store = RecordingStore::new(true);
+        store.push_event(WatchEvent {
+            op: WatchOp::Put,
+            path: "/scope-a/leader".to_string(),
+            value: Some("{invalid-json".to_string()),
+            revision: 2,
+        });
+
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: Duration::from_millis(5),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+        };
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+        let latest = dcs_subscriber.latest();
+        assert_eq!(latest.value.trust, DcsTrust::NotTrusted);
+        assert!(matches!(
+            latest.value.worker,
+            WorkerStatus::Faulted(WorkerError::Message(_))
+        ));
     }
 }

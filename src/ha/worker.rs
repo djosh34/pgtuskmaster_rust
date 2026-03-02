@@ -100,6 +100,7 @@ pub(crate) fn dispatch_actions(
 ) -> Vec<ActionDispatchError> {
     let mut errors = Vec::new();
     let leader_key = leader_path(&ctx.scope);
+    let switchover_key = switchover_path(&ctx.scope);
     let runtime_config = ctx.config_subscriber.latest().value;
 
     for (index, action) in actions.iter().enumerate() {
@@ -132,6 +133,15 @@ pub(crate) fn dispatch_actions(
                     errors.push(ActionDispatchError::DcsDelete {
                         action: action.id(),
                         path: leader_key.clone(),
+                        message: dcs_error_message(err),
+                    });
+                }
+            }
+            HaAction::ClearSwitchover => {
+                if let Err(err) = ctx.dcs_store.delete_path(&switchover_key) {
+                    errors.push(ActionDispatchError::DcsDelete {
+                        action: action.id(),
+                        path: switchover_key.clone(),
                         message: dcs_error_message(err),
                     });
                 }
@@ -322,6 +332,10 @@ fn leader_path(scope: &str) -> String {
     format!("/{}/leader", scope.trim_matches('/'))
 }
 
+fn switchover_path(scope: &str) -> String {
+    format!("/{}/switchover", scope.trim_matches('/'))
+}
+
 fn process_job_id(action: &HaAction, index: usize, tick: u64, now_millis: u64) -> JobId {
     JobId(format!(
         "ha-{}-{}-{}-{}",
@@ -336,6 +350,7 @@ fn action_id_label(id: &ActionId) -> String {
     match id {
         ActionId::AcquireLeaderLease => "acquire_leader_lease".to_string(),
         ActionId::ReleaseLeaderLease => "release_leader_lease".to_string(),
+        ActionId::ClearSwitchover => "clear_switchover".to_string(),
         ActionId::FollowLeader(leader) => format!("follow_leader_{}", leader),
         ActionId::StartRewind => "start_rewind".to_string(),
         ActionId::RunBootstrap => "run_bootstrap".to_string(),
@@ -1056,6 +1071,21 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_actions_clears_switchover_key() {
+        let built = build_context(
+            RecordingStore::default(),
+            Duration::from_millis(100),
+            DcsTrust::FullQuorum,
+        );
+        let mut ctx = built.ctx;
+        let store = built.store;
+
+        let errors = dispatch_actions(&mut ctx, &[HaAction::ClearSwitchover]);
+        assert!(errors.is_empty());
+        assert!(store.has_delete_path("/scope-a/switchover"));
     }
 
     #[tokio::test(flavor = "current_thread")]

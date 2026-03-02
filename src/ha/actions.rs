@@ -2,6 +2,7 @@
 pub(crate) enum ActionId {
     AcquireLeaderLease,
     ReleaseLeaderLease,
+    ClearSwitchover,
     FollowLeader(String),
     StartRewind,
     RunBootstrap,
@@ -16,6 +17,7 @@ pub(crate) enum ActionId {
 pub(crate) enum HaAction {
     AcquireLeaderLease,
     ReleaseLeaderLease,
+    ClearSwitchover,
     FollowLeader { leader_member_id: String },
     StartRewind,
     RunBootstrap,
@@ -31,6 +33,7 @@ impl HaAction {
         match self {
             Self::AcquireLeaderLease => ActionId::AcquireLeaderLease,
             Self::ReleaseLeaderLease => ActionId::ReleaseLeaderLease,
+            Self::ClearSwitchover => ActionId::ClearSwitchover,
             Self::FollowLeader { leader_member_id } => {
                 ActionId::FollowLeader(leader_member_id.clone())
             }

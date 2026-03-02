@@ -28,6 +28,7 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
         .leader
         .as_ref()
         .map(|record| record.member_id.0.as_str());
+    let switchover_requested = world.dcs.value.cache.switchover.is_some();
     let i_am_leader = leader_member_id == Some(self_member_id);
     let has_other_leader = leader_member_id.is_some() && !i_am_leader;
     let pg_reachable = is_postgres_reachable(&world.pg.value);
@@ -111,7 +112,12 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                 }
             }
             HaPhase::Primary => {
-                if !pg_reachable {
+                if switchover_requested && i_am_leader {
+                    next.phase = HaPhase::Replica;
+                    candidates.push(HaAction::DemoteToReplica);
+                    candidates.push(HaAction::ReleaseLeaderLease);
+                    candidates.push(HaAction::ClearSwitchover);
+                } else if !pg_reachable {
                     next.phase = HaPhase::Rewinding;
                     candidates.push(HaAction::StartRewind);
                 } else if has_other_leader {
@@ -233,7 +239,7 @@ mod tests {
             },
             BinaryPaths, ProcessConfig, RuntimeConfig,
         },
-        dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord},
+        dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord, SwitchoverRequest},
         ha::{
             actions::{ActionId, HaAction},
             state::{DecideInput, HaPhase, HaState, WorldSnapshot},
@@ -559,6 +565,41 @@ mod tests {
         })
         .expect("decision should succeed");
         assert_eq!(recovered.next.phase, HaPhase::WaitingDcsTrusted);
+    }
+
+    #[test]
+    fn primary_with_switchover_demotes_releases_and_clears_request() {
+        let mut snapshot = world(
+            DcsTrust::FullQuorum,
+            pg_primary(SqlStatus::Healthy),
+            Some("node-a"),
+            process_idle(None),
+        );
+        snapshot.dcs.value.cache.switchover = Some(SwitchoverRequest {
+            requested_by: MemberId("node-b".to_string()),
+        });
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Primary,
+                tick: 10,
+                pending: vec![],
+                recent_action_ids: BTreeSet::new(),
+            },
+            world: snapshot,
+        })
+        .expect("decision should succeed");
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert_eq!(
+            output.actions,
+            vec![
+                HaAction::DemoteToReplica,
+                HaAction::ReleaseLeaderLease,
+                HaAction::ClearSwitchover,
+            ]
+        );
     }
 
     fn process_idle(last_outcome: Option<JobOutcome>) -> ProcessState {
