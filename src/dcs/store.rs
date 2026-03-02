@@ -221,8 +221,8 @@ mod tests {
     };
 
     use super::{
-        refresh_from_etcd_watch, write_local_member, DcsStore, DcsStoreError, TestDcsStore,
-        WatchEvent, WatchOp,
+        refresh_from_etcd_watch, write_local_member, DcsStore, DcsStoreError, RefreshResult,
+        TestDcsStore, WatchEvent, WatchOp,
     };
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -355,6 +355,43 @@ mod tests {
             Err(DcsStoreError::Decode { .. }) => {}
             other => panic!("expected decode error, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn refresh_sets_had_errors_for_unknown_keys_and_applies_known_updates() {
+        let mut cache = sample_cache();
+        let result = refresh_from_etcd_watch(
+            "scope-a",
+            &mut cache,
+            vec![
+                WatchEvent {
+                    op: WatchOp::Put,
+                    path: "/scope-a/not-a-real-key".to_string(),
+                    value: Some("{\"ignored\":true}".to_string()),
+                    revision: 1,
+                },
+                WatchEvent {
+                    op: WatchOp::Put,
+                    path: "/scope-a/leader".to_string(),
+                    value: Some("{\"member_id\":\"node-a\"}".to_string()),
+                    revision: 2,
+                },
+            ],
+        );
+
+        assert!(matches!(
+            result,
+            Ok(RefreshResult {
+                had_errors: true,
+                applied: 1
+            })
+        ));
+        assert_eq!(
+            cache.leader,
+            Some(crate::dcs::state::LeaderRecord {
+                member_id: MemberId("node-a".to_string())
+            })
+        );
     }
 
     #[test]

@@ -521,4 +521,44 @@ mod tests {
             WorkerStatus::Faulted(WorkerError::Message(_))
         ));
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_marks_store_unhealthy_when_watch_key_is_unknown() {
+        let initial_pg = sample_pg();
+        let (_pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let store = RecordingStore::new(true);
+        store.push_event(WatchEvent {
+            op: WatchOp::Put,
+            path: "/scope-a/not-a-real-key".to_string(),
+            value: Some("{\"ignored\":true}".to_string()),
+            revision: 2,
+        });
+
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: Duration::from_millis(5),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+        };
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+        let latest = dcs_subscriber.latest();
+        assert_eq!(latest.value.trust, DcsTrust::NotTrusted);
+        assert!(matches!(
+            latest.value.worker,
+            WorkerStatus::Faulted(WorkerError::Message(_))
+        ));
+    }
 }
