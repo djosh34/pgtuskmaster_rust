@@ -19,6 +19,10 @@
 - Last task provides a practical real-time observability UI and final completion gate for the entire system-harness story.
 
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
+
+**Note:**
+The vm you are in, does not have browser installed nor chrome. But we do expect a working ui.
+Please figure out how to validate it is working (by installing something?)
 </description>
 
 <acceptance_criteria>
