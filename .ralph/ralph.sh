@@ -2,7 +2,7 @@
 
 # ralph.sh — starts ralph-worker.sh as a systemd transient service.
 # Ctrl+C stops the service (systemd kills entire cgroup — no orphans ever).
-# Usage: /bin/bash ./ralph.sh <opencode|claude>
+# Usage: /bin/bash ./ralph.sh <opencode|claude|codex>
 
 set -euo pipefail
 

@@ -15,7 +15,7 @@ echo "Running from $SCRIPT_DIR"
 
 MODE="${MODE:-claude}"
 
-echo "Using MODE: $MODE (set MODE=opencode for OpenCode instead of Claude)"
+echo "Using MODE: $MODE (set MODE=opencode|claude|codex)"
 
 
 # Create archive directory if it doesn't exist (needed before finding max iteration)
@@ -49,7 +49,9 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://10.0.4.30:5080/api/default
 
 # 4. Set authentication (if required)
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ZXhhbXBsZUBlbWFpbC5jb206OXdPdzNrSVBrYzRHc0Nrcw==,stream-name=patroni"
+OTEL_AUTH_HEADER="Basic ZXhhbXBsZUBlbWFpbC5jb206OXdPdzNrSVBrYzRHc0Nrcw=="
+OTEL_STREAM_NAME="${OTEL_STREAM_NAME:-patroni}"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=${OTEL_AUTH_HEADER},stream-name=${OTEL_STREAM_NAME}"
 
 # 5. For debugging: reduce export intervals
 export OTEL_METRIC_EXPORT_INTERVAL=1000  # 10 seconds (default: 60000ms)
@@ -267,7 +269,25 @@ while true; do
       /bin/bash "$SCRIPT_DIR/email_crash.sh" "$EXIT_CODE" "$LAST_LINES" "$(backoff_status)" || true
       ITERATION_ERRORED=1
     }
-  else
+  elif [[ "$MODE" == "codex" ]]; then
+    CODEX_OTEL_NAME="${CODEX_OTEL_NAME:-pgtuskmaster_rust_codex}"
+    codex exec - \
+      --dangerously-bypass-approvals-and-sandbox \
+      --json \
+      --skip-git-repo-check \
+      -c "otel.environment=\"$CODEX_OTEL_NAME\"" \
+      -c "otel.log_user_prompt=true" \
+      -c "otel.exporter={otlp-http={endpoint=\"$OTEL_EXPORTER_OTLP_ENDPOINT\",protocol=\"json\",headers={Authorization=\"$OTEL_AUTH_HEADER\",\"stream-name\"=\"$CODEX_OTEL_NAME\"}}}" \
+      < "$SCRIPT_DIR/$PROMPT_NAME" | while read -r line; do
+      process_line "$line"
+    done || {
+      EXIT_CODE=$?
+      LAST_LINES=$(tail -600 "$OUTPUT_FILE" 2>/dev/null || echo "<no output>")
+      echo "codex exited with code $EXIT_CODE — continuing to next iteration"
+      /bin/bash "$SCRIPT_DIR/email_crash.sh" "$EXIT_CODE" "$LAST_LINES" "$(backoff_status)" || true
+      ITERATION_ERRORED=1
+    }
+  elif [[ "$MODE" == "claude" ]]; then
     claude -p "$(cat "$SCRIPT_DIR/$PROMPT_NAME")" --dangerously-skip-permissions --output-format stream-json --verbose --model opus | while read -r line; do
       # Check for STOP file after claude command completes
       if [[ -f "$SCRIPT_DIR/STOP" ]]; then
@@ -294,6 +314,10 @@ while true; do
       /bin/bash "$SCRIPT_DIR/email_crash.sh" "$EXIT_CODE" "$LAST_LINES" "$(backoff_status)" || true
       ITERATION_ERRORED=1
     }
+  else
+    echo "Unsupported MODE: $MODE"
+    echo "Supported modes: opencode, claude, codex"
+    exit 2
   fi
 
   if (( ITERATION_ERRORED )); then
