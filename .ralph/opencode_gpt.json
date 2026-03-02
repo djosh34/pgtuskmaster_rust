@@ -1,0 +1,60 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "github-copilot/gpt-5.3-codex",
+  "permission": {
+    "read": "allow",
+    "edit": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "bash": "allow",
+    "task": "allow",
+    "todowrite": "allow",
+    "todoread": "allow",
+    "question": "deny",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "codesearch": "allow",
+    "lsp": "allow",
+    "doom_loop": "deny",
+    "skill": "allow",
+    "external_directory": {
+      "/tmp/**": "allow",
+      "/home/joshazimullah.linux/work_mounts/patroni_rewrite/patroni_to_ts/patroni/**": "allow"
+    }
+  },
+  "provider": {
+    "github-copilot": {
+      "models": {
+        "gpt-5.3-codex": {
+          "variants": {
+            "thinking": {
+              "reasoningEffort": "high",
+              "textVerbosity": "high",
+              "reasoningSummary": "detailed"
+            },
+            "fast": {
+              "reasoningEffort": "low",
+              "textVerbosity": "high",
+              "reasoningSummary": "detailed"
+            }
+          }
+        }
+      }
+    }
+  },
+  "agent": {
+    "build": {
+      "model": "github-copilot/gpt-5.3-codex",
+      "variant": "thinking"
+    },
+    "explore": {
+      "model": "github-copilot/gpt-5.3-codex",
+      "variant": "fast",
+      "tools": {
+        "write": false,
+        "edit": false
+      }
+    }
+  }
+}

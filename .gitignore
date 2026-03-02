@@ -1,0 +1,17 @@
+
+# logs
+logs
+log
+
+# dotenv environment variable files
+.env
+.env*
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# btca local data
+.btca/
