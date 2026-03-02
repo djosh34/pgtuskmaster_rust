@@ -8,6 +8,13 @@
 - Zero `unwrap()` policy in production code.
 - Runtime behavior controlled by config only.
 
+## Strict Lint Policy
+- Runtime crate builds deny `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, `clippy::todo`, and `clippy::unimplemented` at the crate root.
+- `make lint` runs two passes:
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented`
+- Test harness helpers use narrowly scoped lint allowances in `src/test_harness/mod.rs` so test fixture ergonomics do not weaken runtime lint guarantees.
+
 ## Visibility Policy (`pub` vs private)
 - In Rust, `pub` means visible outside the current module scope (not automatically mutable).
 - Mutation still requires mutable access (`&mut`) or interior mutability.
@@ -533,4 +540,3 @@ pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, Ha
 7. Unit tests for pure logic.
 8. Real PG/etcd harness.
 9. Integration + e2e + auth/TLS suites.
-

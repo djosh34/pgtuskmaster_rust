@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+// Test harness setup/teardown tests intentionally panic on unrecoverable fixture failures.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 use std::time::Duration;

@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 09:01:11 PM CET 2026
+Generated: Mon Mar  2 21:07:44 CET 2026
 
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
@@ -77,21 +77,21 @@ Generated: Mon Mar  2 09:01:11 PM CET 2026
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
-
-## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
-
-<description>
-**Goal:** Install and enforce strict Rust linting with explicit denial of `unwrap`, `expect`, and panic-prone patterns in runtime code.
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
 
 ## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
 <passing>true</passing>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
+
+## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<description>
+**Goal:** Install and enforce strict Rust linting with explicit denial of `unwrap`, `expect`, and panic-prone patterns in runtime code.
 
 ---
 

@@ -9,3 +9,5 @@ test-bdd:
 
 lint:
 	cargo clippy --all-targets --all-features -- -D warnings
+	# Runtime strict pass for non-test library builds.
+	cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented

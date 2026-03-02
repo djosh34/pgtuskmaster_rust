@@ -29,3 +29,4 @@ Please do not use unwraps anywhere, instead use proper error handling
 - Parallel `make` targets that each invoke Cargo can intermittently fail at link time with missing `*.rcgu.o` artifacts; rerun required gates sequentially for trustworthy pass/fail evidence.
 - When state caches use `BTreeMap<MemberId, ...>`, ensure `MemberId` derives `Ord`/`PartialOrd`; otherwise key operations fail at compile-time deep inside worker logic.
 - Clippy `large_enum_variant` is likely for watcher update enums that carry full runtime config payloads; boxing only the heavy variant preserves API shape while satisfying `-D warnings`.
+- To keep strict runtime clippy denies active under `--all-features`, prefer crate-root `cfg_attr(not(test), deny(...))` and isolate panic/expect allowances in `src/test_harness/mod.rs` instead of feature-gating deny policy off globally.

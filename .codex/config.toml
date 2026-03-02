@@ -1,3 +1,21 @@
+
+
+model_reasoning_summary = "detailed"
+model_verbosity = "high"
+
+[profiles.normal_high]
+model = "gpt-5.3-codex"
+model_reasoning_effort = "high"
+
+[profiles.normal_medium]
+model = "gpt-5.3-codex"
+model_reasoning_effort = "high"
+
+[profiles.deep_review]
+model = "gpt-5.2"
+model_reasoning_effort = "high"
+
+
 [otel]
 # Codex telemetry -> OpenObserve via OTLP/HTTP JSON
 environment = "pgtuskmaster_rust"
