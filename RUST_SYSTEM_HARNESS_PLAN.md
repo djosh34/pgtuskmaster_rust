@@ -1,40 +1,29 @@
-# Pgtuskmaster Rust Harness Plan (Full System, Compiler-Driven)
+# Pgtuskmaster Rust System Harness Plan
 
-## Intent
-- Define the full system contract now: states, enums, function signatures, thread responsibilities, and module boundaries.
-- Defer real IO internals until interfaces compile.
-- Keep HA decisions pure and testable with injected dependencies.
-- Use `tokio::watch` state channels as primary state propagation mechanism.
-- Use minimal wake events only to avoid polling loops.
-
-## Non-Negotiables Captured
+## Design Goals
+- Compiler-driven development: define complete types + function signatures first.
+- Private-by-default module APIs; expose only minimal `pub(crate)` surfaces needed for wiring/tests.
+- Worker communication through typed `tokio::watch` state channels.
+- HA decision engine is pure and deterministic.
 - Zero `unwrap()` policy in production code.
-- All runtime behavior controlled by config (including binary paths and timeouts), not env vars.
-- Fields used by HA decisions must be strongly typed.
-- DCS/PG integration tests must run concurrently on same host with no collisions.
-- E2E scenario tests are first-class.
+- Runtime behavior controlled by config only.
 
-## High-Level Architecture
-```text
-PgInfo Worker  --publishes--> watch<PgInfoState> ----\
-DCS Worker     --publishes--> watch<DcsState> ------- \
-Process Worker --publishes--> watch<ProcessState> ---- > HA Worker (pure decide + action dispatch)
-API Worker     --publishes--> watch<ApiState> ------- /
-Config Worker  --publishes--> watch<RuntimeConfig> --/
+## Visibility Policy (`pub` vs private)
+- In Rust, `pub` means visible outside the current module scope (not automatically mutable).
+- Mutation still requires mutable access (`&mut`) or interior mutability.
+- Plan policy:
+  - `pub` only for crate root app entrypoints and wire types that must cross module boundaries.
+  - `pub(crate)` for internal cross-module contracts.
+  - private (`fn`, `struct` fields without `pub`) for worker internals.
 
-HA Worker -> sends typed commands to workers (mpsc)
-Workers -> send WakeReason::StateUpdated(Source) to HA (mpsc) after successful watch publish
+## Thread/Worker Model
+- Each worker owns one authoritative state.
+- Each worker publishes that state via one `watch::Sender<Versioned<State>>`.
+- Consumers subscribe via `watch::Receiver`.
+- No per-field event enums.
+- HA loop waits on `changed()` for multiple watchers plus periodic tick.
 
-Debug API reads all watchers and queue gauges to expose snapshots.
-```
-
-## Why `watch` + Wake Signal
-- `watch` carries full authoritative state snapshots.
-- Wake signal only means: "new version exists".
-- HA never depends on fragile per-field events.
-- Avoids bug class: forgetting to emit a specific event variant.
-
-## Module Plan
+## Module Layout
 ```text
 src/
   app/
@@ -45,13 +34,13 @@ src/
     mod.rs
     schema.rs
     defaults.rs
-    source.rs
+    parser.rs
   state/
     mod.rs
     ids.rs
     time.rs
     watch_state.rs
-    error.rs
+    errors.rs
   pginfo/
     mod.rs
     state.rs
@@ -62,7 +51,7 @@ src/
     keys.rs
     state.rs
     worker.rs
-    etcd_client.rs
+    store.rs
   process/
     mod.rs
     jobs.rs
@@ -79,7 +68,6 @@ src/
     controller.rs
     fallback.rs
     worker.rs
-    state.rs
   debug_api/
     mod.rs
     snapshot.rs
@@ -90,35 +78,25 @@ src/
     ports.rs
     pg16.rs
     etcd3.rs
+    tls.rs
+    auth.rs
 ```
 
-## Shared Foundation Types
+## Shared Core Types
 
-### IDs and Scalars
 ```rust
-pub struct MemberId(pub String);
-pub struct ClusterName(pub String);
-pub struct SwitchoverRequestId(pub String);
-pub struct JobId(pub String);
-pub struct TimelineId(pub u32);
-pub struct WalLsn(pub u64);
-pub struct SlotName(pub String);
-pub struct Version(pub u64);
-pub struct UnixMillis(pub u64);
+pub(crate) struct MemberId(String);
+pub(crate) struct ClusterName(String);
+pub(crate) struct SwitchoverRequestId(String);
+pub(crate) struct JobId(String);
+pub(crate) struct WalLsn(u64);
+pub(crate) struct TimelineId(u32);
+pub(crate) struct UnixMillis(u64);
+pub(crate) struct Version(u64);
 ```
 
-### App and Worker Lifecycle
 ```rust
-pub enum AppLifecycle {
-    Booting,
-    Starting,
-    Running,
-    Draining,
-    Stopped,
-    Faulted(AppError),
-}
-
-pub enum WorkerStatus {
+pub(crate) enum WorkerStatus {
     Starting,
     Running,
     Stopping,
@@ -127,493 +105,432 @@ pub enum WorkerStatus {
 }
 ```
 
-Note: no `Panic` variant. Any thread task failure is captured as `Faulted(...)` and bubbled through supervisors.
-
-### Typed Errors (No unwrap flow)
 ```rust
-pub enum AppError { Config(ConfigError), Wiring(WiringError), Runtime(RuntimeError) }
-pub enum WorkerError { Io(String), Timeout(String), Protocol(String), Invariant(String) }
-pub enum DecideError { InvalidInput(String) }
-pub enum ActionError { Dispatch(String), Validation(String) }
-```
-
-## Config Model (All Behavior From Config)
-```rust
-pub struct RuntimeConfig {
-    pub cluster: ClusterConfig,
-    pub pg: PgRuntimeConfig,
-    pub dcs: DcsRuntimeConfig,
-    pub ha: HaRuntimeConfig,
-    pub process: ProcessRuntimeConfig,
-    pub api: ApiRuntimeConfig,
-    pub debug_api: DebugApiRuntimeConfig,
-}
-
-pub struct ProcessRuntimeConfig {
-    pub pg_rewind_timeout_ms: u64,
-    pub bootstrap_timeout_ms: u64,
-    pub process_poll_interval_ms: u64,
-    pub binaries: BinaryPaths,
-}
-
-pub struct BinaryPaths {
-    pub postgres: String,
-    pub pg_ctl: String,
-    pub pg_rewind: String,
-    pub initdb: String,
+pub(crate) struct Versioned<T> {
+    version: Version,
+    updated_at: UnixMillis,
+    value: T,
 }
 ```
 
-Required functions:
+## `watch` Wrapper (Typed, Restricted)
+
 ```rust
-pub fn load_runtime_config(path: &std::path::Path) -> Result<RuntimeConfig, ConfigError>;
-pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError>;
-pub fn apply_defaults(cfg: PartialRuntimeConfig) -> RuntimeConfig;
+pub(crate) struct StatePublisher<T> {
+    tx: tokio::sync::watch::Sender<Versioned<T>>,
+}
+
+pub(crate) struct StateSubscriber<T> {
+    rx: tokio::sync::watch::Receiver<Versioned<T>>,
+}
 ```
 
-## `watch` Wrapper Contract
 ```rust
-pub struct Versioned<T> {
-    pub version: Version,
-    pub updated_at: UnixMillis,
-    pub value: T,
+pub(crate) fn new_state_channel<T: Clone>(
+    initial: T,
+    now: UnixMillis,
+) -> (StatePublisher<T>, StateSubscriber<T>);
+
+impl<T: Clone> StatePublisher<T> {
+    pub(crate) fn publish(&self, next: T, now: UnixMillis) -> Result<Version, StatePublishError>;
+    pub(crate) fn latest(&self) -> Versioned<T>;
 }
 
-pub struct StateTx<T> { tx: tokio::sync::watch::Sender<Versioned<T>> }
-pub struct StateRx<T> { rx: tokio::sync::watch::Receiver<Versioned<T>> }
+impl<T: Clone> StateSubscriber<T> {
+    pub(crate) fn latest(&self) -> Versioned<T>;
+    pub(crate) async fn changed(&mut self) -> Result<Versioned<T>, StateRecvError>;
+}
 ```
 
-Functions:
+## Config Model (All Runtime Inputs Typed)
+
 ```rust
-pub fn new_state_channel<T: Clone>(initial: T, now: UnixMillis) -> (StateTx<T>, StateRx<T>);
+pub(crate) struct RuntimeConfig {
+    cluster: ClusterConfig,
+    postgres: PostgresConfig,
+    dcs: DcsConfig,
+    ha: HaConfig,
+    process: ProcessConfig,
+    api: ApiConfig,
+    debug: DebugConfig,
+    security: SecurityConfig,
+}
+```
 
-impl<T: Clone> StateTx<T> {
-    pub fn publish(&self, next: T, now: UnixMillis) -> Result<Version, StatePublishError>;
-    pub fn current(&self) -> Versioned<T>;
+```rust
+pub(crate) struct ProcessConfig {
+    pg_rewind_timeout_ms: u64,
+    bootstrap_timeout_ms: u64,
+    fencing_timeout_ms: u64,
+    binaries: BinaryPaths,
 }
 
-impl<T: Clone> StateRx<T> {
-    pub fn latest(&self) -> Versioned<T>;
-    pub async fn changed(&mut self) -> Result<Versioned<T>, StateRecvError>;
+pub(crate) struct BinaryPaths {
+    postgres: std::path::PathBuf,
+    pg_ctl: std::path::PathBuf,
+    pg_rewind: std::path::PathBuf,
+    initdb: std::path::PathBuf,
+    psql: std::path::PathBuf,
 }
+```
+
+```rust
+pub(crate) fn load_runtime_config(path: &std::path::Path) -> Result<RuntimeConfig, ConfigError>;
+pub(crate) fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig;
+pub(crate) fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError>;
 ```
 
 ## PgInfo Worker
 
-### `PgInfo` Shape Decision: Variant Types
-Use variant payloads so primary/replica-only fields are encoded at type level.
-
+### State Shape With Extracted Common Fields
 ```rust
-pub enum PgInfoState {
-    Unknown(PgUnknownInfo),
-    Primary(PrimaryPgInfo),
-    Replica(ReplicaPgInfo),
+pub(crate) struct PgInfoCommon {
+    worker: WorkerStatus,
+    sql: SqlStatus,
+    readiness: Readiness,
+    timeline: Option<TimelineId>,
+    pg_config: PgConfig,
+    last_refresh_at: Option<UnixMillis>,
 }
 
-pub struct PgUnknownInfo {
-    pub worker: WorkerStatus,
-    pub readiness: Readiness,
-    pub sql: SqlStatus,
-    pub last_refresh_at: Option<UnixMillis>,
-}
-
-pub struct PrimaryPgInfo {
-    pub worker: WorkerStatus,
-    pub readiness: Readiness,
-    pub sql: SqlStatus,
-    pub wal_lsn: WalLsn,
-    pub slots: Vec<ReplicationSlotInfo>,
-    pub pg_config: TypedPgConfig,
-    pub last_refresh_at: UnixMillis,
-}
-
-pub struct ReplicaPgInfo {
-    pub worker: WorkerStatus,
-    pub readiness: Readiness,
-    pub sql: SqlStatus,
-    pub replay_lsn: WalLsn,
-    pub follow_lsn: Option<WalLsn>,
-    pub upstream: Option<UpstreamIdentity>,
-    pub pg_config: TypedPgConfig,
-    pub last_refresh_at: UnixMillis,
+pub(crate) enum PgInfoState {
+    Unknown { common: PgInfoCommon },
+    Primary { common: PgInfoCommon, wal_lsn: WalLsn, slots: Vec<ReplicationSlotInfo> },
+    Replica { common: PgInfoCommon, replay_lsn: WalLsn, follow_lsn: Option<WalLsn>, upstream: Option<UpstreamInfo> },
 }
 ```
 
-`last_poll` vs `last_change` decision:
-- Keep only `last_refresh_at` in state.
-- Change detection is already encoded by `Versioned<T>.version` from `watch`.
-- This removes duplicated time semantics.
+### Single Poll Query Requirement
+- PgInfo worker uses one SQL query returning all required HA fields each cycle.
 
-Functions:
 ```rust
-pub async fn run_pginfo_worker(ctx: PgInfoWorkerCtx) -> Result<(), WorkerError>;
-pub async fn poll_pginfo(client: &mut dyn PgSqlClient, cfg: &PgRuntimeConfig) -> Result<PgInfoState, PgPollError>;
-pub fn derive_readiness(info: &PgInfoState, cfg: &PgRuntimeConfig) -> Readiness;
-pub fn build_member_record(info: &PgInfoState, member_id: &MemberId) -> MemberRecord;
+pub(crate) const PGINFO_POLL_SQL: &str = "...single query text...";
 ```
 
-## DCS Worker (etcd3 owner)
-
-### Trust and Mode
+### Function Signatures
 ```rust
-pub enum DcsTrust {
+pub(crate) async fn run(ctx: PgInfoWorkerCtx) -> Result<(), WorkerError>;
+pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerError>; // test-focused inner loop
+
+fn poll_once(client: &mut dyn PgSqlClient, cfg: &PostgresConfig) -> Result<PgInfoState, PgPollError>;
+fn derive_readiness(info: &PgInfoState, cfg: &PostgresConfig) -> Readiness;
+fn to_member_status(info: &PgInfoState, self_id: &MemberId) -> MemberStatus;
+```
+
+## DCS Worker (Owns etcd3 + Member Publishing)
+
+### Trust Only (No Separate Mode)
+```rust
+pub(crate) enum DcsTrust {
     FullQuorum,
-    FailSafeNoQuorum,
+    FailSafe,
     NotTrusted,
 }
+```
 
-pub enum DcsMode {
-    EtcdAuthoritative,
-    FailSafe,
-    FallbackConsensusBacklog, // modeled, not implemented
+### State
+```rust
+pub(crate) struct DcsState {
+    worker: WorkerStatus,
+    trust: DcsTrust,
+    cache: DcsCache,
+    last_refresh_at: Option<UnixMillis>,
+}
+
+pub(crate) struct DcsCache {
+    members: std::collections::BTreeMap<MemberId, MemberRecord>,
+    leader: Option<LeaderRecord>,
+    switchover: Option<SwitchoverRequest>,
+    config: DcsConfigRecord,
+    init_lock: Option<InitLockRecord>,
 }
 ```
 
-### DCS State
-```rust
-pub struct DcsState {
-    pub worker: WorkerStatus,
-    pub trust: DcsTrust,
-    pub mode: DcsMode,
-    pub etcd: EtcdStatus,
-    pub cache: DcsCache,
-    pub last_refresh_at: Option<UnixMillis>,
-}
+### Ownership Rules
+- DCS worker subscribes to `watch<PgInfoState>` directly.
+- On PgInfo version change, DCS worker computes local member record and writes `/member/{self_id}`.
+- No external `upsert_member(...)` API exposed to other modules.
+- DCS key parsing is strongly typed and internal.
 
-pub struct DcsCache {
-    pub members: std::collections::BTreeMap<MemberId, MemberRecord>,
-    pub leader: Option<LeaderRecord>,
-    pub switchover: Option<SwitchoverRequest>,
-    pub config: DcsConfigRecord,
-    pub init_lock: Option<InitLockRecord>,
+### Function Signatures
+```rust
+pub(crate) async fn run(ctx: DcsWorkerCtx) -> Result<(), WorkerError>;
+pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>; // test-focused inner loop
+
+fn evaluate_trust(etcd: &EtcdStatus, quorum: QuorumStatus) -> DcsTrust;
+fn build_local_member_record(pg: &PgInfoState, self_id: &MemberId) -> MemberRecord;
+fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) -> Result<(), DcsStateError>;
+fn key_from_path(path: &str) -> Result<DcsKey, DcsKeyParseError>;
+
+async fn write_local_member(ctx: &mut DcsWorkerCtx, rec: MemberRecord) -> Result<(), DcsWriteError>;
+async fn refresh_from_etcd_watch(ctx: &mut DcsWorkerCtx) -> Result<(), DcsWatchError>;
+```
+
+## Process Worker (Single Active Long-Running Job)
+
+### No Queue, No History
+- Only one active job at a time.
+- HA decides next action; Process worker executes at most one.
+- State publishes active/idle + latest outcome.
+
+```rust
+pub(crate) enum ProcessState {
+    Idle { worker: WorkerStatus, last_outcome: Option<JobOutcome> },
+    Running { worker: WorkerStatus, active: ActiveJob },
 }
 ```
 
-Functions:
 ```rust
-pub async fn run_dcs_worker(ctx: DcsWorkerCtx) -> Result<(), WorkerError>;
-pub async fn upsert_member(client: &mut dyn DcsClient, member: MemberRecord) -> Result<(), DcsWriteError>;
-pub async fn refresh_cache_from_watch(client: &mut dyn DcsClient, prev: &DcsCache) -> Result<DcsCache, DcsWatchError>;
-pub fn evaluate_trust(etcd: &EtcdStatus, quorum: QuorumStatus) -> DcsTrust;
-pub fn map_key_to_enum(path: &str) -> Option<DcsKey>;
-```
-
-## Process Worker (Long-Running Operations)
-
-State:
-```rust
-pub struct ProcessState {
-    pub worker: WorkerStatus,
-    pub active: Option<ActiveJob>,
-    pub queued: std::collections::VecDeque<ProcessJob>,
-    pub history: Vec<JobResult>,
-}
-
-pub enum ProcessJob {
-    PgRewind(PgRewindSpec),
+pub(crate) enum ProcessJobKind {
     Bootstrap(BootstrapSpec),
+    PgRewind(PgRewindSpec),
+    Promote(PromoteSpec),
+    Demote(DemoteSpec),
+    StartPostgres(StartPostgresSpec),
+    StopPostgres(StopPostgresSpec),
+    RestartPostgres(RestartPostgresSpec),
+    Fencing(FencingSpec),
 }
+```
 
-pub enum JobResult {
-    Succeeded { id: JobId, finished_at: UnixMillis },
-    Failed { id: JobId, error: ProcessError, finished_at: UnixMillis },
-    TimedOut { id: JobId, finished_at: UnixMillis },
+```rust
+pub(crate) enum JobOutcome {
+    Success { id: JobId, finished_at: UnixMillis },
+    Failure { id: JobId, error: ProcessError, finished_at: UnixMillis },
+    Timeout { id: JobId, finished_at: UnixMillis },
     Cancelled { id: JobId, finished_at: UnixMillis },
 }
 ```
 
-Functions:
+### Function Signatures
 ```rust
-pub async fn run_process_worker(ctx: ProcessWorkerCtx) -> Result<(), WorkerError>;
-pub async fn start_job(deps: &ProcessDeps, cfg: &RuntimeConfig, job: ProcessJob) -> Result<ActiveJob, ProcessError>;
-pub async fn tick_active_job(deps: &ProcessDeps, cfg: &RuntimeConfig, active: &mut ActiveJob) -> Result<JobTickOutcome, ProcessError>;
-pub async fn stop_active_job(deps: &ProcessDeps, active: ActiveJob, reason: StopReason) -> Result<JobResult, ProcessError>;
+pub(crate) async fn run(ctx: ProcessWorkerCtx) -> Result<(), WorkerError>;
+pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError>; // test-focused inner loop
+
+fn can_accept_job(state: &ProcessState) -> bool;
+async fn start_job(ctx: &mut ProcessWorkerCtx, job: ProcessJobKind) -> Result<(), ProcessError>;
+async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<Option<JobOutcome>, ProcessError>;
+async fn cancel_active_job(ctx: &mut ProcessWorkerCtx, reason: CancelReason) -> Result<JobOutcome, ProcessError>;
 ```
 
-## HA Worker (Main Loop)
+## HA Worker (Pure Decision + Dispatch)
 
-State:
+### State
 ```rust
-pub struct HaState {
-    pub worker: WorkerStatus,
-    pub phase: HaPhase,
-    pub tick: u64,
-    pub pending: Vec<HaAction>,
-    pub last_error: Option<DecideError>,
-}
-
-pub enum HaPhase {
+pub(crate) enum HaPhase {
     Init,
-    WaitingPgReady,
+    WaitingPostgresReachable,
     WaitingDcsTrusted,
     Replica,
     CandidateLeader,
     Primary,
     Rewinding,
     Bootstrapping,
+    Fencing,
     FailSafe,
 }
-```
 
-No `DecisionSummary` struct needed initially; decision trace can be derived in debug builds from input + outcome.
-
-Decision and action interfaces:
-```rust
-pub struct WorldSnapshot {
-    pub config: Versioned<RuntimeConfig>,
-    pub pg: Versioned<PgInfoState>,
-    pub dcs: Versioned<DcsState>,
-    pub process: Versioned<ProcessState>,
-    pub api: Versioned<ApiState>,
-}
-
-pub enum WakeReason {
-    StateUpdated(StateSource),
-    Tick,
-    Shutdown,
-}
-
-pub enum StateSource { Config, PgInfo, Dcs, Process, Api }
-
-pub struct DecideInput {
-    pub current: HaState,
-    pub world: WorldSnapshot,
-    pub wake: WakeReason,
-}
-
-pub struct DecideOutput {
-    pub next: HaState,
-    pub actions: Vec<HaAction>,
-}
-
-pub fn decide(input: DecideInput) -> Result<DecideOutput, DecideError>;
-pub async fn run_ha_worker(ctx: HaWorkerCtx) -> Result<(), WorkerError>;
-pub async fn dispatch_action(action: HaAction, deps: &HaDispatchDeps) -> Result<(), ActionError>;
-```
-
-Idempotency requirement:
-```rust
-pub struct ActionId(pub String);
-
-pub enum HaAction {
-    PublishMember { id: ActionId },
-    ReconcilePgConfig { id: ActionId },
-    PromoteToLeader { id: ActionId },
-    DemoteFromPrimary { id: ActionId },
-    StartPgRewind { id: ActionId, spec: PgRewindSpec },
-    StartBootstrap { id: ActionId, spec: BootstrapSpec },
-    EnterFailSafe { id: ActionId, reason: String },
+pub(crate) struct HaState {
+    worker: WorkerStatus,
+    phase: HaPhase,
+    tick: u64,
+    pending: Vec<HaAction>,
+    recent_action_ids: std::collections::BTreeSet<ActionId>, // idempotency dedupe
 }
 ```
 
-`ActionId` dedupe cache should exist in HA worker state or dispatcher.
+### Snapshot Input (No ApiState)
+- HA decisions read only:
+  - config
+  - pginfo
+  - dcs
+  - process
+- API effects appear through DCS (`/switchover_request`) and config.
 
-## API Worker (Controller + Fallback)
-
-State:
 ```rust
-pub struct ApiState {
-    pub worker: WorkerStatus,
-    pub controller: ControllerApiState,
-    pub fallback: FallbackApiState,
+pub(crate) struct WorldSnapshot {
+    config: Versioned<RuntimeConfig>,
+    pg: Versioned<PgInfoState>,
+    dcs: Versioned<DcsState>,
+    process: Versioned<ProcessState>,
 }
 ```
 
-Functions:
+### Decision + Dispatch
 ```rust
-pub async fn run_api_worker(ctx: ApiWorkerCtx) -> Result<(), WorkerError>;
-pub async fn handle_post_switchover(req: SwitchoverRequestInput, deps: &ApiDeps) -> Result<AcceptedResponse, ApiError>;
-pub async fn handle_fallback_get_cluster(deps: &ApiDeps) -> Result<FallbackClusterView, ApiError>;
-pub async fn handle_fallback_post_heartbeat(req: HeartbeatInput, deps: &ApiDeps) -> Result<AcceptedResponse, ApiError>;
+pub(crate) struct DecideInput {
+    current: HaState,
+    world: WorldSnapshot,
+}
+
+pub(crate) struct DecideOutput {
+    next: HaState,
+    actions: Vec<HaAction>,
+}
+
+pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError>;
+pub(crate) async fn run(ctx: HaWorkerCtx) -> Result<(), WorkerError>;
+pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError>; // test-focused inner loop
+
+async fn dispatch_actions(ctx: &mut HaWorkerCtx, actions: Vec<HaAction>) -> Result<(), ActionError>;
 ```
 
-`SwitchoverRequest` includes request id:
+### Why No WakeReason
+- HA uses `tokio::select!` over:
+  - `pg_rx.changed()`
+  - `dcs_rx.changed()`
+  - `process_rx.changed()`
+  - `config_rx.changed()`
+  - periodic tick interval
+- This removes extra wake buses and duplicate signal paths.
+
+## API Worker
+- API worker handles HTTP only.
+- Controller endpoint writes typed `SwitchoverRequest` to DCS via internal DCS client adapter.
+- Fallback API endpoints are scoped and typed.
+
 ```rust
-pub struct SwitchoverRequest {
-    pub id: SwitchoverRequestId,
-    pub requested_at: UnixMillis,
-    pub requested_by: String,
-    pub target: Option<MemberId>,
-    pub reason: Option<String>,
-}
+pub(crate) async fn run(ctx: ApiWorkerCtx) -> Result<(), WorkerError>;
+pub(crate) async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError>; // test-focused inner loop
+
+async fn post_switchover(ctx: &ApiCtx, req: SwitchoverRequestInput) -> Result<AcceptedResponse, ApiError>;
+async fn get_fallback_cluster(ctx: &ApiCtx) -> Result<FallbackClusterView, ApiError>;
+async fn post_fallback_heartbeat(ctx: &ApiCtx, req: FallbackHeartbeatInput) -> Result<AcceptedResponse, ApiError>;
 ```
 
 ## Debug API Worker
+- Debug API reads current snapshots from all watchers.
+- Allowed to clone state for visibility.
 
-State and snapshot:
 ```rust
-pub struct DebugApiState {
-    pub worker: WorkerStatus,
-    pub last_snapshot_at: Option<UnixMillis>,
-}
-
-pub struct SystemSnapshot {
-    pub app: AppLifecycle,
-    pub config: Versioned<RuntimeConfig>,
-    pub pg: Versioned<PgInfoState>,
-    pub dcs: Versioned<DcsState>,
-    pub process: Versioned<ProcessState>,
-    pub ha: Versioned<HaState>,
-    pub api: Versioned<ApiState>,
-    pub queue_metrics: QueueMetrics,
+pub(crate) struct SystemSnapshot {
+    app: AppLifecycle,
+    config: Versioned<RuntimeConfig>,
+    pg: Versioned<PgInfoState>,
+    dcs: Versioned<DcsState>,
+    process: Versioned<ProcessState>,
+    ha: Versioned<HaState>,
 }
 ```
 
-Functions:
 ```rust
-pub async fn run_debug_api_worker(ctx: DebugApiCtx) -> Result<(), WorkerError>;
-pub fn build_system_snapshot(deps: &DebugSnapshotDeps, now: UnixMillis) -> SystemSnapshot;
+pub(crate) async fn run(ctx: DebugApiCtx) -> Result<(), WorkerError>;
+pub(crate) fn build_snapshot(ctx: &DebugSnapshotCtx, now: UnixMillis) -> SystemSnapshot;
 ```
 
-Debug requirement choice captured:
-- v1 returns full state snapshots + queue counts.
-- Full queued payload dumping is optional and can be gated behind debug flag.
-
-## Inter-Thread Connections (Explicit)
-
-### Commands (HA -> Workers)
-```rust
-pub enum PgInfoCommand { PollNow }
-pub enum DcsCommand { UpsertLocalMember(MemberRecord), SetLeader(LeaderRecord), SetSwitchover(SwitchoverRequest) }
-pub enum ProcessCommand { Enqueue(ProcessJob), Cancel(JobId) }
-pub enum ApiCommand { PublishSwitchoverAccepted(SwitchoverRequestId) }
-```
-
-### Wake Bus (Workers -> HA)
-```rust
-pub type WakeTx = tokio::sync::mpsc::Sender<WakeReason>;
-pub type WakeRx = tokio::sync::mpsc::Receiver<WakeReason>;
-```
-
-Contract:
-- Worker updates own state via `StateTx.publish`.
-- If publish success and version changed, worker sends `WakeReason::StateUpdated(source)` to HA.
-- HA reads latest state from all watchers before every `decide`.
-
-## Leader Semantics Captured
-- Authoritative intent key: `/leader`.
-- Node promotion condition (candidate node):
-  - local member id == `/leader` id
-  - local PG role currently replica
-  - no conflicting primary leader evidence in `/members`
-  - DCS trust is not `NotTrusted`
-- Node demotion condition (current primary):
-  - local member id != `/leader` id
-  - local PG role currently primary
-  - action: `DemoteFromPrimary`
-
-Represent as pure functions:
-```rust
-pub fn should_promote(world: &WorldSnapshot, self_id: &MemberId) -> bool;
-pub fn should_demote(world: &WorldSnapshot, self_id: &MemberId) -> bool;
-```
-
-## Typed PG Config Requirement
-
-Approach:
-- `TypedPgConfig` has explicit fields used by HA.
-- `extra: BTreeMap<String, String>` stores non-HA fields.
+## Typed PG Config (No Raw `String` for Decisive Fields)
 
 ```rust
-pub struct TypedPgConfig {
-    pub synchronous_standby_names: Option<String>,
-    pub max_wal_senders: u32,
-    pub wal_level: WalLevel,
-    pub hot_standby: bool,
-    pub primary_conninfo: Option<String>,
-    pub extra: std::collections::BTreeMap<String, String>,
+pub(crate) struct PgConfig {
+    synchronous_standby_names: SynchronousStandbyNames,
+    max_wal_senders: MaxWalSenders,
+    wal_level: WalLevel,
+    hot_standby: HotStandby,
+    primary_conninfo: Option<PgConnInfo>,
+    replication_slots: Vec<SlotConfig>,
+    extra: std::collections::BTreeMap<String, String>,
 }
 ```
 
-This satisfies:
-- HA decision fields are always typed and matched by compiler.
-- Long-tail keys are still represented and replicated.
-
-## Test Strategy (Detailed)
-
-### 1. Unit Tests (Pure and Fast)
-- `ha::decide` transition tests with table-driven inputs.
-- Action dedupe logic tests.
-- PgInfo parsing/derivation tests from query rows.
-- DCS trust evaluation tests.
-- Config validation/defaulting tests.
-
-### 2. Integration Tests (Real PG16 + Real etcd3)
-- Test each action against real dependencies.
-- Test each long-running process (`pg_rewind`, `bootstrap`) against real dependencies.
-- Test HA loop with dependency injection where adapters are real process-backed clients.
-
-### 3. E2E Scenario Tests
-- Full multi-worker app started in-process.
-- Scenarios:
-  - bootstrap new cluster
-  - leader crash and failover
-  - switchover request path
-  - no quorum enters fail-safe
-  - rewind then rejoin as replica
-
-## Parallel-Safe Test Harness Design
-
-### Namespace Isolation
-Every test acquires a unique namespace:
 ```rust
-pub struct TestNamespace {
-    pub id: String,               // e.g. testname + random suffix
-    pub root_dir: std::path::PathBuf,
-    pub port_pool: AllocatedPorts,
+pub(crate) struct PgConnInfo {
+    hosts: Vec<HostPort>,
+    user: PgUser,
+    dbname: PgDatabase,
+    ssl_mode: PgSslMode,
+    application_name: Option<String>,
+    connect_timeout_s: Option<u32>,
 }
 ```
 
-Functions:
 ```rust
-pub fn create_test_namespace(test_name: &str) -> Result<TestNamespace, HarnessError>;
-pub fn cleanup_test_namespace(ns: TestNamespace) -> Result<(), HarnessError>;
+fn parse_pg_conninfo(raw: &str) -> Result<PgConnInfo, PgConnInfoError>;
+fn render_pg_conninfo(ci: &PgConnInfo) -> String;
 ```
 
-### Port Allocation
-- Allocate free ports dynamically per test process.
-- Persist selected ports in namespace state to avoid reuse race.
+## Cross-Module Contracts (Minimal)
+- Workers expose only:
+  - `run(ctx)` for production runtime.
+  - `step_once(&mut ctx)` for deterministic tests.
+- All other helpers remain private.
+- `step_once` is `pub(crate)` only.
 
-Functions:
+## Test Strategy (Expanded, Real-System Heavy)
+
+## 1. Unit Tests
+- Exhaustive `ha::decide` transition matrix.
+- Action idempotency and dedupe.
+- DCS trust evaluation.
+- DCS key parsing and cache application.
+- Pg config parsing/rendering roundtrip.
+- Conninfo parser strict validation.
+
+## 2. PgInfo Real PG16 Tests
+- Single polling query against real PG16 primary.
+- Same query against real PG16 replica.
+- Transition tests: startup unavailable -> available.
+- WAL movement and slot fields verification.
+- Role switch validation.
+
+## 3. Action + Process Real Tests
+- Each HA action tested end-to-end with real PG16/etcd3.
+- Each process job kind real execution tests:
+  - bootstrap
+  - rewind
+  - promote/demote
+  - postgres start/stop/restart
+  - fencing flow
+
+## 4. HA Loop Integration Tests
+- Real watchers + injected IO adapters.
+- No mocks required for state channels.
+- Deterministic stepping via `step_once`.
+- Assert state transitions and dispatched actions.
+
+## 5. E2E Scenario Matrix
+- Cluster bootstrap from empty DCS.
+- Leader promotion path.
+- Controlled switchover.
+- Unplanned primary failure failover.
+- No quorum -> fail-safe behavior.
+- Rejoin old primary via rewind.
+- Fencing required before promotion.
+- Split-brain prevention checks.
+
+## 6. Security/Auth/TLS Tests
+- Node-to-node auth validation.
+- Client-to-server auth validation.
+- TLS required mode tests.
+- TLS optional/disabled mode tests.
+- Invalid cert / expired cert / wrong CA failures.
+- Role permission tests for API endpoints.
+
+## 7. Parallel-Safe Harness Requirements
+- Every test gets unique namespace id.
+- Unique etcd data dir per test.
+- Unique PGDATA dir per node per test.
+- Dynamic free-port allocation per test.
+- No shared socket directories.
+- Cleanup on success and failure.
+
 ```rust
-pub fn allocate_ports(count: usize) -> Result<AllocatedPorts, HarnessError>;
-pub fn reserve_port(port: u16) -> Result<(), HarnessError>;
+pub(crate) fn create_namespace(test_name: &str) -> Result<TestNamespace, HarnessError>;
+pub(crate) fn cleanup_namespace(ns: TestNamespace) -> Result<(), HarnessError>;
+pub(crate) fn allocate_ports(count: usize) -> Result<AllocatedPorts, HarnessError>;
+pub(crate) fn prepare_pgdata_dir(ns: &TestNamespace, node_name: &str) -> Result<std::path::PathBuf, HarnessError>;
+pub(crate) fn prepare_etcd_data_dir(ns: &TestNamespace) -> Result<std::path::PathBuf, HarnessError>;
+pub(crate) async fn spawn_pg16(spec: PgInstanceSpec) -> Result<PgHandle, HarnessError>;
+pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, HarnessError>;
 ```
 
-### Filesystem Isolation
-- Unique PGDATA per node per test namespace.
-- Unique etcd data dir per test namespace.
-- Unique unix socket dirs where needed.
+## Build Order
+1. Core IDs/errors/time/watch wrapper.
+2. Runtime config schema/defaults/validation.
+3. Worker state enums and context structs.
+4. Worker `run` + `step_once` signatures.
+5. HA `decide` signature and exhaustive phase enum.
+6. Wiring/bootstrap scaffold.
+7. Unit tests for pure logic.
+8. Real PG/etcd harness.
+9. Integration + e2e + auth/TLS suites.
 
-Functions:
-```rust
-pub fn prepare_pgdata_dir(ns: &TestNamespace, node: &str) -> Result<std::path::PathBuf, HarnessError>;
-pub fn prepare_etcd_data_dir(ns: &TestNamespace) -> Result<std::path::PathBuf, HarnessError>;
-```
-
-### Runtime Spawners
-```rust
-pub async fn spawn_pg16_instance(spec: PgInstanceSpec) -> Result<PgInstanceHandle, HarnessError>;
-pub async fn spawn_etcd3_instance(spec: EtcdInstanceSpec) -> Result<EtcdInstanceHandle, HarnessError>;
-pub async fn wait_pg_ready(handle: &PgInstanceHandle, timeout_ms: u64) -> Result<(), HarnessError>;
-pub async fn wait_etcd_ready(handle: &EtcdInstanceHandle, timeout_ms: u64) -> Result<(), HarnessError>;
-```
-
-## Compiler-Driven Build Order
-1. Create `state/*` foundational types and watch wrapper.
-2. Create `config/schema.rs` + defaults + validation.
-3. Add worker state structs and command enums for all modules.
-4. Add `ha::decide` signature and minimal exhaustive transition scaffold.
-5. Add worker context structs and `run_*_worker` loop signatures.
-6. Add wiring/bootstrap to instantiate channels/watchers/contexts.
-7. Add debug snapshot assembler.
-8. Add unit tests for pure functions.
-9. Add test harness namespace + real PG/etcd spawners.
-10. Add integration and e2e scenarios.
-
-## Immediate Output of This Plan
-After approval, next task should generate compile-only skeleton code for:
-- all enums/structs above,
-- all function signatures above returning `todo!()` or typed placeholder errors,
-- all module files wired into `mod.rs`,
-- a first compile pass (`cargo check`) to force missing type closure.
