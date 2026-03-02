@@ -696,11 +696,9 @@ mod tests {
         let stepped = step_once(&mut ctx).await;
         assert_eq!(stepped, Ok(()));
 
-        match &ctx.state {
-            ProcessState::Running { active, .. } => {
-                assert_eq!(active.id, JobId("job-1".to_string()));
-            }
-            other => panic!("expected running state, got: {other:?}"),
+        assert!(matches!(&ctx.state, ProcessState::Running { .. }));
+        if let ProcessState::Running { active, .. } = &ctx.state {
+            assert_eq!(active.id, JobId("job-1".to_string()));
         }
 
         let published = subscriber.latest();
@@ -724,7 +722,7 @@ mod tests {
             })
             .is_ok());
         assert_eq!(step_once(&mut ctx).await, Ok(()));
-        assert!(matches!(ctx.state, ProcessState::Running { .. }));
+        assert!(matches!(&ctx.state, ProcessState::Running { .. }));
 
         assert!(tx
             .send(ProcessJobRequest {
@@ -738,13 +736,12 @@ mod tests {
             .is_ok());
         assert_eq!(step_once(&mut ctx).await, Ok(()));
 
-        assert!(matches!(ctx.state, ProcessState::Running { .. }));
-        let rejection = match &ctx.last_rejection {
-            Some(rejection) => rejection,
-            None => panic!("expected rejection to be recorded"),
-        };
-        assert_eq!(rejection.id, JobId("job-b".to_string()));
-        assert_eq!(rejection.error, ProcessError::Busy);
+        assert!(matches!(&ctx.state, ProcessState::Running { .. }));
+        assert!(ctx.last_rejection.is_some());
+        if let Some(rejection) = &ctx.last_rejection {
+            assert_eq!(rejection.id, JobId("job-b".to_string()));
+            assert_eq!(rejection.error, ProcessError::Busy);
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -764,12 +761,19 @@ mod tests {
             })
             .is_ok());
         assert_eq!(step_once(&mut success_ctx).await, Ok(()));
-        match &success_ctx.state {
+        assert!(matches!(
+            &success_ctx.state,
             ProcessState::Idle {
-                last_outcome: Some(JobOutcome::Success { id, .. }),
+                last_outcome: Some(JobOutcome::Success { .. }),
                 ..
-            } => assert_eq!(id, &JobId("job-success".to_string())),
-            other => panic!("expected success outcome, got: {other:?}"),
+            }
+        ));
+        if let ProcessState::Idle {
+            last_outcome: Some(JobOutcome::Success { id, .. }),
+            ..
+        } = &success_ctx.state
+        {
+            assert_eq!(id, &JobId("job-success".to_string()));
         }
 
         let failure_runner = FakeRunner {
@@ -787,20 +791,29 @@ mod tests {
             })
             .is_ok());
         assert_eq!(step_once(&mut failure_ctx).await, Ok(()));
-        match &failure_ctx.state {
+        assert!(matches!(
+            &failure_ctx.state,
             ProcessState::Idle {
                 last_outcome:
                     Some(JobOutcome::Failure {
-                        id,
-                        error: ProcessError::EarlyExit { code },
+                        error: ProcessError::EarlyExit { .. },
                         ..
                     }),
                 ..
-            } => {
-                assert_eq!(id, &JobId("job-failure".to_string()));
-                assert_eq!(*code, Some(4));
             }
-            other => panic!("expected failure outcome, got: {other:?}"),
+        ));
+        if let ProcessState::Idle {
+            last_outcome:
+                Some(JobOutcome::Failure {
+                    id,
+                    error: ProcessError::EarlyExit { code },
+                    ..
+                }),
+            ..
+        } = &failure_ctx.state
+        {
+            assert_eq!(id, &JobId("job-failure".to_string()));
+            assert_eq!(*code, Some(4));
         }
 
         let timeout_runner = FakeRunner {
@@ -821,12 +834,19 @@ mod tests {
             })
             .is_ok());
         assert_eq!(step_once(&mut timeout_ctx).await, Ok(()));
-        match &timeout_ctx.state {
+        assert!(matches!(
+            &timeout_ctx.state,
             ProcessState::Idle {
-                last_outcome: Some(JobOutcome::Timeout { id, .. }),
+                last_outcome: Some(JobOutcome::Timeout { .. }),
                 ..
-            } => assert_eq!(id, &JobId("job-timeout".to_string())),
-            other => panic!("expected timeout outcome, got: {other:?}"),
+            }
+        ));
+        if let ProcessState::Idle {
+            last_outcome: Some(JobOutcome::Timeout { id, .. }),
+            ..
+        } = &timeout_ctx.state
+        {
+            assert_eq!(id, &JobId("job-timeout".to_string()));
         }
     }
 
@@ -857,12 +877,19 @@ mod tests {
             cancel_active_job(&mut ctx, CancelReason::Shutdown).await,
             Ok(())
         );
-        match &ctx.state {
+        assert!(matches!(
+            &ctx.state,
             ProcessState::Idle {
-                last_outcome: Some(JobOutcome::Cancelled { id, .. }),
+                last_outcome: Some(JobOutcome::Cancelled { .. }),
                 ..
-            } => assert_eq!(id, &JobId("job-direct".to_string())),
-            other => panic!("expected cancelled outcome, got: {other:?}"),
+            }
+        ));
+        if let ProcessState::Idle {
+            last_outcome: Some(JobOutcome::Cancelled { id, .. }),
+            ..
+        } = &ctx.state
+        {
+            assert_eq!(id, &JobId("job-direct".to_string()));
         }
 
         assert_eq!(

@@ -19,3 +19,4 @@
 .ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md
 .ralph/tasks/bugs/dcs-watch-refresh-errors-ignored.md
 .ralph/tasks/bugs/process-worker-real-job-tests-accept-failure-outcomes.md
+.ralph/tasks/bugs/remove-panics-expects-unwraps.md

@@ -298,10 +298,10 @@ mod tests {
     }
 
     #[test]
-    fn refresh_applies_member_put_and_delete() {
+    fn refresh_applies_member_put_and_delete() -> Result<(), Box<dyn std::error::Error>> {
         let mut cache = sample_cache();
         let mut store = TestDcsStore::new(true);
-        let value = serde_json::to_string(&MemberRecord {
+        let encoded = serde_json::to_string(&MemberRecord {
             member_id: MemberId("node-a".to_string()),
             role: MemberRole::Replica,
             sql: SqlStatus::Healthy,
@@ -311,11 +311,7 @@ mod tests {
             replay_lsn: None,
             updated_at: UnixMillis(10),
             pg_version: Version(1),
-        });
-        let encoded = match value {
-            Ok(v) => v,
-            Err(err) => panic!("member encoding failed: {err}"),
-        };
+        })?;
         store.push_event(WatchEvent {
             op: WatchOp::Put,
             path: "/scope-a/member/node-a".to_string(),
@@ -329,13 +325,11 @@ mod tests {
             revision: 2,
         });
 
-        let events = match store.drain_watch_events() {
-            Ok(v) => v,
-            Err(err) => panic!("drain watch events failed: {err}"),
-        };
+        let events = store.drain_watch_events()?;
         let refreshed = refresh_from_etcd_watch("scope-a", &mut cache, events);
         assert!(refreshed.is_ok());
         assert!(cache.members.is_empty());
+        Ok(())
     }
 
     #[test]
@@ -351,10 +345,7 @@ mod tests {
                 revision: 1,
             }],
         );
-        match result {
-            Err(DcsStoreError::Decode { .. }) => {}
-            other => panic!("expected decode error, got: {other:?}"),
-        }
+        assert!(matches!(result, Err(DcsStoreError::Decode { .. })));
     }
 
     #[test]

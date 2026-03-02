@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 12:33:36 AM CET 2026
+Generated: Tue Mar  3 12:43:49 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -61,7 +61,7 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 
 **Path:** `.ralph/tasks/bugs/remove-panics-expects-unwraps.md`
 
-## Bug: Remove panics/expects/unwraps in codebase <status>not_started</status> <passes>false</passes>
+## Bug: Remove panics/expects/unwraps in codebase <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 `rg -n "unwrap\(|expect\(|panic!" src tests` shows multiple occurrences (mostly in tests and some src modules like `src/process/worker.rs`, `src/pginfo/state.rs`, `src/pginfo/query.rs`, `src/dcs/worker.rs`, `src/dcs/store.rs`, `src/ha/worker.rs`, `tests/bdd_state_watch.rs`, `src/config/parser.rs`). Policy requires no unwraps/panics/expects anywhere; replace with proper error handling and remove any lint exemptions if present. Explore and confirm current behavior before changing.

@@ -252,7 +252,7 @@ mod tests {
         state::{JobId, MemberId, UnixMillis, Version, Versioned, WorkerStatus},
     };
 
-    use super::decide;
+    use super::{decide, DecideError};
 
     struct Case {
         name: &'static str,
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_matrix_cases() {
+    fn transition_matrix_cases() -> Result<(), DecideError> {
         let cases = vec![
             Case {
                 name: "init moves to waiting postgres",
@@ -455,7 +455,7 @@ mod tests {
                 ),
             };
 
-            let output = decide(input).expect("decision should succeed");
+            let output = decide(input)?;
             assert_eq!(
                 output.next.phase, case.expected_phase,
                 "case: {}",
@@ -469,10 +469,11 @@ mod tests {
             );
             assert_eq!(output.next.tick, 42, "case: {}", case.name);
         }
+        Ok(())
     }
 
     #[test]
-    fn idempotency_suppresses_duplicate_actions() {
+    fn idempotency_suppresses_duplicate_actions() -> Result<(), DecideError> {
         let current = HaState {
             worker: WorkerStatus::Running,
             phase: HaPhase::WaitingDcsTrusted,
@@ -490,20 +491,19 @@ mod tests {
         let first = decide(DecideInput {
             current: current.clone(),
             world: world.clone(),
-        })
-        .expect("first decision should succeed");
+        })?;
         assert_eq!(first.actions, vec![HaAction::AcquireLeaderLease]);
 
         let second = decide(DecideInput {
             current: first.next,
             world,
-        })
-        .expect("second decision should succeed");
+        })?;
         assert_eq!(second.actions, vec![]);
+        Ok(())
     }
 
     #[test]
-    fn idempotency_emits_only_new_mixed_actions() {
+    fn idempotency_emits_only_new_mixed_actions() -> Result<(), DecideError> {
         let mut known_ids = BTreeSet::new();
         known_ids.insert(ActionId::DemoteToReplica);
 
@@ -522,17 +522,17 @@ mod tests {
                 Some("node-b"),
                 process_idle(None),
             ),
-        })
-        .expect("decision should succeed");
+        })?;
 
         assert_eq!(
             output.actions,
             vec![HaAction::ReleaseLeaderLease, HaAction::FenceNode]
         );
+        Ok(())
     }
 
     #[test]
-    fn fail_safe_holds_without_quorum_and_exits_when_restored() {
+    fn fail_safe_holds_without_quorum_and_exits_when_restored() -> Result<(), DecideError> {
         let start = HaState {
             worker: WorkerStatus::Running,
             phase: HaPhase::FailSafe,
@@ -549,8 +549,7 @@ mod tests {
                 None,
                 process_idle(None),
             ),
-        })
-        .expect("decision should succeed");
+        })?;
         assert_eq!(held.next.phase, HaPhase::FailSafe);
         assert_eq!(held.actions, vec![HaAction::SignalFailSafe]);
 
@@ -562,13 +561,14 @@ mod tests {
                 None,
                 process_idle(None),
             ),
-        })
-        .expect("decision should succeed");
+        })?;
         assert_eq!(recovered.next.phase, HaPhase::WaitingDcsTrusted);
+        Ok(())
     }
 
     #[test]
-    fn primary_with_switchover_demotes_releases_and_clears_request() {
+    fn primary_with_switchover_demotes_releases_and_clears_request(
+    ) -> Result<(), DecideError> {
         let mut snapshot = world(
             DcsTrust::FullQuorum,
             pg_primary(SqlStatus::Healthy),
@@ -588,8 +588,7 @@ mod tests {
                 recent_action_ids: BTreeSet::new(),
             },
             world: snapshot,
-        })
-        .expect("decision should succeed");
+        })?;
 
         assert_eq!(output.next.phase, HaPhase::Replica);
         assert_eq!(
@@ -600,6 +599,7 @@ mod tests {
                 HaAction::ClearSwitchover,
             ]
         );
+        Ok(())
     }
 
     fn process_idle(last_outcome: Option<JobOutcome>) -> ProcessState {
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn rewinding_while_running_emits_nothing() {
+    fn rewinding_while_running_emits_nothing() -> Result<(), DecideError> {
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -745,10 +745,10 @@ mod tests {
                 Some("node-b"),
                 process_running(),
             ),
-        })
-        .expect("decision should succeed");
+        })?;
 
         assert_eq!(output.next.phase, HaPhase::Rewinding);
         assert!(output.actions.is_empty());
+        Ok(())
     }
 }

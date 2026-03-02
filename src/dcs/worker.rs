@@ -387,7 +387,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn step_once_publishes_and_writes_only_self_member() {
+    async fn step_once_publishes_and_writes_only_self_member(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let initial_pg = sample_pg();
         let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
         let _ = pg_publisher.publish(sample_pg(), UnixMillis(2));
@@ -400,13 +401,9 @@ mod tests {
         };
         let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
 
-        let leader_value = serde_json::to_string(&LeaderRecord {
+        let leader_json = serde_json::to_string(&LeaderRecord {
             member_id: MemberId("node-a".to_string()),
-        });
-        let leader_json = match leader_value {
-            Ok(v) => v,
-            Err(err) => panic!("leader encoding failed: {err}"),
-        };
+        })?;
         let store = RecordingStore::new(true);
         store.push_event(WatchEvent {
             op: WatchOp::Put,
@@ -442,6 +439,7 @@ mod tests {
             store_probe.first_write_path(),
             Some("/scope-a/member/node-a".to_string())
         );
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]

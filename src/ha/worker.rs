@@ -1023,16 +1023,14 @@ mod tests {
         );
 
         let request = process_rx.try_recv();
-        match request {
-            Ok(job) => match job.kind {
-                ProcessJobKind::StartPostgres(spec) => {
-                    assert_eq!(spec.data_dir, sample_runtime_config().postgres.data_dir);
-                    assert_eq!(spec.host, "127.0.0.1");
-                    assert_eq!(spec.port, 5432);
-                }
-                other => panic!("unexpected process job kind: {other:?}"),
-            },
-            Err(err) => panic!("expected process request, got: {err}"),
+        assert!(request.is_ok());
+        if let Ok(job) = request {
+            assert!(matches!(job.kind, ProcessJobKind::StartPostgres(_)));
+            if let ProcessJobKind::StartPostgres(spec) = job.kind {
+                assert_eq!(spec.data_dir, sample_runtime_config().postgres.data_dir);
+                assert_eq!(spec.host, "127.0.0.1");
+                assert_eq!(spec.port, 5432);
+            }
         }
     }
 

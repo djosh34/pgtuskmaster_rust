@@ -195,11 +195,14 @@ mod tests {
         let mut cfg = base_runtime_config();
         cfg.process.binaries.pg_ctl = PathBuf::new();
 
-        let err = validate_runtime_config(&cfg).expect_err("expected invalid binary path");
-        match err {
-            ConfigError::Validation { field, .. } => assert_eq!(field, "process.binaries.pg_ctl"),
-            _ => panic!("unexpected error variant"),
-        }
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "process.binaries.pg_ctl",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -207,13 +210,14 @@ mod tests {
         let mut cfg = base_runtime_config();
         cfg.process.bootstrap_timeout_ms = 0;
 
-        let err = validate_runtime_config(&cfg).expect_err("expected invalid timeout");
-        match err {
-            ConfigError::Validation { field, .. } => {
-                assert_eq!(field, "process.bootstrap_timeout_ms")
-            }
-            _ => panic!("unexpected error variant"),
-        }
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "process.bootstrap_timeout_ms",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -221,27 +225,32 @@ mod tests {
         let mut cfg = base_runtime_config();
         cfg.dcs.endpoints.clear();
 
-        let err = validate_runtime_config(&cfg).expect_err("expected missing endpoint validation");
-        match err {
-            ConfigError::Validation { field, .. } => assert_eq!(field, "dcs.endpoints"),
-            _ => panic!("unexpected error variant"),
-        }
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "dcs.endpoints",
+                ..
+            })
+        ));
 
         let mut cfg = base_runtime_config();
         cfg.ha.lease_ttl_ms = cfg.ha.loop_interval_ms;
 
-        let err = validate_runtime_config(&cfg).expect_err("expected ttl invariant validation");
-        match err {
-            ConfigError::Validation { field, .. } => assert_eq!(field, "ha.lease_ttl_ms"),
-            _ => panic!("unexpected error variant"),
-        }
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "ha.lease_ttl_ms",
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn load_runtime_config_roundtrip_and_defaults() {
+    fn load_runtime_config_roundtrip_and_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
+            .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!("runtime-config-{unique}.toml"));
 
@@ -265,21 +274,21 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", psql = "/usr/bin/psql" }
 "#;
 
-        std::fs::write(&path, toml).expect("should write temp config");
+        std::fs::write(&path, toml)?;
 
-        let cfg = load_runtime_config(&path).expect("config should parse");
+        let cfg = load_runtime_config(&path)?;
         assert_eq!(cfg.postgres.connect_timeout_s, 5);
         assert_eq!(cfg.process.pg_rewind_timeout_ms, 120_000);
         assert_eq!(cfg.api.listen_addr, "127.0.0.1:8080");
 
         let _ = std::fs::remove_file(path);
+        Ok(())
     }
 
     #[test]
-    fn load_runtime_config_rejects_invalid_file() {
+    fn load_runtime_config_rejects_invalid_file() -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
+            .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!("runtime-config-invalid-{unique}.toml"));
 
@@ -304,11 +313,12 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", psql = "/usr/bin/psql" }
 "#;
 
-        std::fs::write(&path, toml).expect("should write temp config");
+        std::fs::write(&path, toml)?;
 
-        let err = load_runtime_config(&path).expect_err("config parse should fail");
-        assert!(matches!(err, ConfigError::Parse { .. }));
+        let err = load_runtime_config(&path);
+        assert!(matches!(err, Err(ConfigError::Parse { .. })));
 
         let _ = std::fs::remove_file(path);
+        Ok(())
     }
 }

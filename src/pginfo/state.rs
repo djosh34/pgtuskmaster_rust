@@ -180,18 +180,17 @@ mod tests {
             UnixMillis(100),
             Some(poll),
         );
-        match state {
-            PgInfoState::Primary {
-                wal_lsn,
-                slots,
-                common,
-                ..
-            } => {
-                assert_eq!(wal_lsn, WalLsn(42));
-                assert_eq!(slots.len(), 2);
-                assert_eq!(common.readiness, Readiness::Ready);
-            }
-            other => panic!("expected primary, got: {other:?}"),
+        assert!(matches!(&state, PgInfoState::Primary { .. }));
+        if let PgInfoState::Primary {
+            wal_lsn,
+            slots,
+            common,
+            ..
+        } = &state
+        {
+            assert_eq!(*wal_lsn, WalLsn(42));
+            assert_eq!(slots.len(), 2);
+            assert_eq!(common.readiness, Readiness::Ready);
         }
     }
 
@@ -212,18 +211,17 @@ mod tests {
             UnixMillis(100),
             Some(poll),
         );
-        match state {
-            PgInfoState::Replica {
-                replay_lsn,
-                follow_lsn,
-                common,
-                ..
-            } => {
-                assert_eq!(replay_lsn, WalLsn(11));
-                assert_eq!(follow_lsn, Some(WalLsn(12)));
-                assert_eq!(common.readiness, Readiness::Ready);
-            }
-            other => panic!("expected replica, got: {other:?}"),
+        assert!(matches!(&state, PgInfoState::Replica { .. }));
+        if let PgInfoState::Replica {
+            replay_lsn,
+            follow_lsn,
+            common,
+            ..
+        } = &state
+        {
+            assert_eq!(*replay_lsn, WalLsn(11));
+            assert_eq!(*follow_lsn, Some(WalLsn(12)));
+            assert_eq!(common.readiness, Readiness::Ready);
         }
     }
 }

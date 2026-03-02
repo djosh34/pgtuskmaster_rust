@@ -90,39 +90,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn publish_increments_version_and_updates_timestamp() {
+    async fn publish_increments_version_and_updates_timestamp(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (publisher, subscriber) = new_state_channel("a".to_string(), UnixMillis(100));
 
-        let v1 = publisher
-            .publish("b".to_string(), UnixMillis(200))
-            .expect("publish should succeed");
+        let v1 = publisher.publish("b".to_string(), UnixMillis(200))?;
         assert_eq!(v1, Version(1));
         let latest = subscriber.latest();
         assert_eq!(latest.version, Version(1));
         assert_eq!(latest.updated_at, UnixMillis(200));
         assert_eq!(latest.value, "b");
 
-        let v2 = publisher
-            .publish("c".to_string(), UnixMillis(300))
-            .expect("publish should succeed");
+        let v2 = publisher.publish("c".to_string(), UnixMillis(300))?;
         assert_eq!(v2, Version(2));
         let latest = subscriber.latest();
         assert_eq!(latest.version, Version(2));
         assert_eq!(latest.updated_at, UnixMillis(300));
         assert_eq!(latest.value, "c");
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn changed_returns_latest_after_publish() {
+    async fn changed_returns_latest_after_publish() -> Result<(), Box<dyn std::error::Error>> {
         let (publisher, mut subscriber) = new_state_channel("ready".to_string(), UnixMillis(10));
-        publisher
-            .publish("running".to_string(), UnixMillis(20))
-            .expect("publish should succeed");
+        publisher.publish("running".to_string(), UnixMillis(20))?;
 
-        let changed = subscriber.changed().await.expect("changed should succeed");
+        let changed = subscriber.changed().await?;
         assert_eq!(changed.version, Version(1));
         assert_eq!(changed.updated_at, UnixMillis(20));
         assert_eq!(changed.value, "running");
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -135,12 +132,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn latest_matches_between_publisher_and_subscriber() {
+    async fn latest_matches_between_publisher_and_subscriber(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (publisher, subscriber) = new_state_channel("ready".to_string(), UnixMillis(10));
-        publisher
-            .publish("running".to_string(), UnixMillis(20))
-            .expect("publish should succeed");
+        publisher.publish("running".to_string(), UnixMillis(20))?;
 
         assert_eq!(publisher.latest(), subscriber.latest());
+        Ok(())
     }
 }

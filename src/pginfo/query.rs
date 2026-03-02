@@ -161,11 +161,11 @@ mod tests {
 
     #[test]
     fn parse_wal_lsn_accepts_valid_hex_format() {
-        let parsed = match parse_wal_lsn("16/B374D848") {
-            Ok(lsn) => lsn,
-            Err(err) => panic!("expected valid LSN parse, got error: {err}"),
-        };
-        assert_eq!(parsed.0, 0x16_0000_0000 + 0xB374D848);
+        let parsed = parse_wal_lsn("16/B374D848");
+        assert!(parsed.is_ok());
+        if let Ok(lsn) = parsed {
+            assert_eq!(lsn.0, 0x16_0000_0000 + 0xB374D848);
+        }
     }
 
     #[test]

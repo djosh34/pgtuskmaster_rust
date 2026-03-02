@@ -84,10 +84,10 @@ mod tests {
     #[test]
     fn rejects_wrong_scope() {
         let parsed = key_from_path("scope-a", "/scope-b/leader");
-        match parsed {
-            Err(DcsKeyParseError::InvalidScopePrefix { .. }) => {}
-            other => panic!("expected invalid scope prefix error, got: {other:?}"),
-        }
+        assert!(matches!(
+            parsed,
+            Err(DcsKeyParseError::InvalidScopePrefix { .. })
+        ));
     }
 
     #[test]
