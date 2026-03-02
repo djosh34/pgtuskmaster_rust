@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  2 17:36:04 CET 2026
+Generated: Mon Mar  2 06:09:10 PM CET 2026
 
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
@@ -40,7 +40,7 @@ Generated: Mon Mar  2 17:36:04 CET 2026
 
 **Path:** `.ralph/tasks/story-rust-system-harness/01-task-core-types-time-errors-watch-channel.md`
 
-## Task: Implement core ids time errors and typed watch channels <status>not_started</status> <passes>false</passes> <priority>ultra_high</priority>
+## Task: Implement core ids time errors and typed watch channels <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
 
 <description>
 **Goal:** Build the foundational shared types and state-channel primitives used by every worker.
