@@ -415,7 +415,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn etcd_store_round_trips_write_delete_and_events() -> TestResult {
-        let etcd_bin = require_etcd_bin();
+        let etcd_bin = require_etcd_bin()?;
         let guard = NamespaceGuard::new("dcs-etcd-store-roundtrip")?;
         let namespace = guard.namespace()?;
         let data_dir = prepare_etcd_data_dir(namespace)?;

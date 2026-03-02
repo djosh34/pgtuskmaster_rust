@@ -176,7 +176,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn spawn_etcd3_requires_binary_and_spawns() -> Result<(), HarnessError> {
-        let etcd_bin = require_etcd_bin();
+        let etcd_bin = require_etcd_bin()?;
 
         let guard = NamespaceGuard::new("spawn-etcd")?;
         let ns = guard.namespace()?;

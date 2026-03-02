@@ -871,8 +871,9 @@ mod tests {
         );
     }
 
-    fn pg16_binaries() -> BinaryPaths {
+    fn pg16_binaries() -> Result<BinaryPaths, WorkerError> {
         require_pg16_process_binaries()
+            .map_err(|err| WorkerError::Message(format!("pg16 binary lookup failed: {err}")))
     }
 
     fn real_config(binaries: BinaryPaths) -> ProcessConfig {
@@ -1090,16 +1091,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn real_bootstrap_job_executes_initdb() {
-        let binaries = pg16_binaries();
-        let guard = match NamespaceGuard::new("process-bootstrap") {
-            Ok(guard) => guard,
-            Err(err) => panic!("namespace setup failed: {err}"),
-        };
-        let namespace = match guard.namespace() {
-            Ok(ns) => ns,
-            Err(err) => panic!("namespace lookup failed: {err}"),
-        };
+    async fn real_bootstrap_job_executes_initdb() -> Result<(), WorkerError> {
+        let binaries = pg16_binaries()?;
+        let guard = NamespaceGuard::new("process-bootstrap")
+            .map_err(|err| WorkerError::Message(format!("namespace setup failed: {err}")))?;
+        let namespace = guard
+            .namespace()
+            .map_err(|err| WorkerError::Message(format!("namespace lookup failed: {err}")))?;
 
         let data_dir = namespace.child_dir("process/node-a/data");
         let (mut ctx, tx, _sub) = real_ctx(real_config(binaries));
@@ -1118,29 +1116,28 @@ mod tests {
         match outcome {
             Ok(JobOutcome::Success { .. }) => {
                 assert!(data_dir.join("PG_VERSION").exists());
+                Ok(())
             }
-            Ok(other) => panic!("expected bootstrap success, got: {other:?}"),
-            Err(err) => panic!("bootstrap job failed: {err}"),
+            Ok(other) => Err(WorkerError::Message(format!(
+                "expected bootstrap success, got: {other:?}"
+            ))),
+            Err(err) => Err(WorkerError::Message(format!("bootstrap job failed: {err}"))),
         }
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn real_pg_rewind_job_executes_binary_path() {
-        let binaries = pg16_binaries();
+    async fn real_pg_rewind_job_executes_binary_path() -> Result<(), WorkerError> {
+        let binaries = pg16_binaries()?;
 
-        let guard = match NamespaceGuard::new("process-rewind") {
-            Ok(guard) => guard,
-            Err(err) => panic!("namespace setup failed: {err}"),
-        };
-        let namespace = match guard.namespace() {
-            Ok(ns) => ns,
-            Err(err) => panic!("namespace lookup failed: {err}"),
-        };
+        let guard = NamespaceGuard::new("process-rewind")
+            .map_err(|err| WorkerError::Message(format!("namespace setup failed: {err}")))?;
+        let namespace = guard
+            .namespace()
+            .map_err(|err| WorkerError::Message(format!("namespace lookup failed: {err}")))?;
 
         let data_dir = namespace.child_dir("process/rewind/target");
-        if let Err(err) = fs::create_dir_all(&data_dir) {
-            panic!("create rewind data dir failed: {err}");
-        }
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("create rewind data dir failed: {err}")))?;
 
         let (mut ctx, tx, _sub) = real_ctx(real_config(binaries));
         let outcome = submit_job_and_wait(
@@ -1157,17 +1154,17 @@ mod tests {
         .await;
 
         match outcome {
-            Ok(JobOutcome::Failure { .. }) | Ok(JobOutcome::Timeout { .. }) => {}
-            Ok(other) => {
-                panic!("expected rewind non-success outcome for invalid source, got: {other:?}")
-            }
-            Err(err) => panic!("rewind job wait failed: {err}"),
+            Ok(JobOutcome::Failure { .. }) | Ok(JobOutcome::Timeout { .. }) => Ok(()),
+            Ok(other) => Err(WorkerError::Message(format!(
+                "expected rewind non-success outcome for invalid source, got: {other:?}"
+            ))),
+            Err(err) => Err(WorkerError::Message(format!("rewind job wait failed: {err}"))),
         }
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_promote_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries();
+        let binaries = pg16_binaries()?;
         let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-promote").await?;
 
         let promote = fixture
@@ -1208,7 +1205,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_demote_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries();
+        let binaries = pg16_binaries()?;
         let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-demote").await?;
 
         let outcome = fixture
@@ -1249,7 +1246,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_start_and_stop_jobs_execute_binary_paths() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries();
+        let binaries = pg16_binaries()?;
         let mut fixture =
             RealProcessFixture::bootstrap_and_start(binaries, "process-start-stop").await?;
 
@@ -1274,7 +1271,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_restart_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries();
+        let binaries = pg16_binaries()?;
         let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-restart").await?;
 
         let restart = fixture
@@ -1320,7 +1317,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_fencing_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries();
+        let binaries = pg16_binaries()?;
         let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-fencing").await?;
 
         let outcome = fixture

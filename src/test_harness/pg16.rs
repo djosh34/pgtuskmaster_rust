@@ -217,64 +217,33 @@ mod tests {
 
     use super::{prepare_pgdata_dir, spawn_pg16, PgInstanceSpec};
     use crate::test_harness::binaries::require_pg16_bin;
-    use crate::test_harness::namespace::{cleanup_namespace, create_namespace};
+    use crate::test_harness::namespace::NamespaceGuard;
     use crate::test_harness::ports::allocate_ports;
+    use crate::test_harness::HarnessError;
 
     #[test]
-    fn prepare_pgdata_dir_rejects_reuse() {
-        let ns = match create_namespace("prepare-pgdata") {
-            Ok(ns) => ns,
-            Err(err) => panic!("namespace create failed: {err}"),
-        };
+    fn prepare_pgdata_dir_rejects_reuse() -> Result<(), HarnessError> {
+        let guard = NamespaceGuard::new("prepare-pgdata")?;
+        let ns = guard.namespace()?;
 
-        let first = match prepare_pgdata_dir(&ns, "node-a") {
-            Ok(path) => path,
-            Err(err) => {
-                if let Err(clean_err) = cleanup_namespace(ns) {
-                    panic!("prepare failed: {err}; cleanup failed: {clean_err}");
-                }
-                panic!("prepare pgdata first failed: {err}");
-            }
-        };
+        let first = prepare_pgdata_dir(ns, "node-a")?;
         assert!(first.exists());
 
-        let second = prepare_pgdata_dir(&ns, "node-a");
+        let second = prepare_pgdata_dir(ns, "node-a");
         assert!(second.is_err());
-
-        if let Err(err) = cleanup_namespace(ns) {
-            panic!("cleanup failed: {err}");
-        }
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn spawn_pg16_requires_binaries_and_spawns() {
-        let postgres_bin = require_pg16_bin("postgres");
-        let initdb_bin = require_pg16_bin("initdb");
+    async fn spawn_pg16_requires_binaries_and_spawns() -> Result<(), HarnessError> {
+        let postgres_bin = require_pg16_bin("postgres")?;
+        let initdb_bin = require_pg16_bin("initdb")?;
 
-        let ns = match create_namespace("spawn-pg16") {
-            Ok(ns) => ns,
-            Err(err) => panic!("namespace create failed: {err}"),
-        };
+        let guard = NamespaceGuard::new("spawn-pg16")?;
+        let ns = guard.namespace()?;
 
-        let data_dir = match prepare_pgdata_dir(&ns, "node-a") {
-            Ok(path) => path,
-            Err(err) => {
-                if let Err(clean_err) = cleanup_namespace(ns) {
-                    panic!("prepare failed: {err}; cleanup failed: {clean_err}");
-                }
-                panic!("prepare pgdata failed: {err}");
-            }
-        };
-
-        let reservation = match allocate_ports(1) {
-            Ok(res) => res,
-            Err(err) => {
-                if let Err(clean_err) = cleanup_namespace(ns) {
-                    panic!("port alloc failed: {err}; cleanup failed: {clean_err}");
-                }
-                panic!("allocate ports failed: {err}");
-            }
-        };
+        let data_dir = prepare_pgdata_dir(ns, "node-a")?;
+        let reservation = allocate_ports(1)?;
         let port = reservation.as_slice()[0];
 
         let socket_dir = ns.child_dir("pg16/node-a/socket");
@@ -293,25 +262,8 @@ mod tests {
         // Release the reserved port immediately before spawning postgres so the
         // child can bind the requested port.
         drop(reservation);
-        let mut handle = match spawn_pg16(spec).await {
-            Ok(handle) => handle,
-            Err(err) => {
-                if let Err(clean_err) = cleanup_namespace(ns) {
-                    panic!("spawn failed: {err}; cleanup failed: {clean_err}");
-                }
-                panic!("spawn pg16 failed: {err}");
-            }
-        };
-
-        if let Err(err) = handle.shutdown().await {
-            if let Err(clean_err) = cleanup_namespace(ns) {
-                panic!("shutdown failed: {err}; cleanup failed: {clean_err}");
-            }
-            panic!("shutdown pg16 failed: {err}");
-        }
-
-        if let Err(err) = cleanup_namespace(ns) {
-            panic!("cleanup failed: {err}");
-        }
+        let mut handle = spawn_pg16(spec).await?;
+        handle.shutdown().await?;
+        Ok(())
     }
 }

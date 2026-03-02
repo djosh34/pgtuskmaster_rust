@@ -90,8 +90,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots() -> TestResult {
-        let postgres_bin = require_pg16_bin("postgres");
-        let initdb_bin = require_pg16_bin("initdb");
+        let postgres_bin = require_pg16_bin("postgres")?;
+        let initdb_bin = require_pg16_bin("initdb")?;
 
         let guard = NamespaceGuard::new("pginfo-primary-flow")?;
         let namespace = guard.namespace()?;
@@ -206,9 +206,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_maps_replica_when_polling_standby() -> TestResult {
-        let postgres_bin = require_pg16_bin("postgres");
-        let initdb_bin = require_pg16_bin("initdb");
-        let basebackup_bin = require_pg16_bin("pg_basebackup");
+        let postgres_bin = require_pg16_bin("postgres")?;
+        let initdb_bin = require_pg16_bin("initdb")?;
+        let basebackup_bin = require_pg16_bin("pg_basebackup")?;
 
         let guard = NamespaceGuard::new("pginfo-replica-flow")?;
         let ns = guard.namespace()?;

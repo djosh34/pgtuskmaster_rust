@@ -101,60 +101,42 @@ fn sanitize_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_harness::HarnessError;
+
     use super::{cleanup_namespace, create_namespace, NamespaceGuard};
 
     #[test]
-    fn create_namespace_is_unique() {
-        let ns_one = match create_namespace("alpha") {
-            Ok(ns) => ns,
-            Err(err) => panic!("create namespace one failed: {err}"),
-        };
-        let ns_two = match create_namespace("alpha") {
-            Ok(ns) => ns,
-            Err(err) => panic!("create namespace two failed: {err}"),
-        };
+    fn create_namespace_is_unique() -> Result<(), HarnessError> {
+        let ns_one = create_namespace("alpha")?;
+        let ns_two = create_namespace("alpha")?;
 
         assert_ne!(ns_one.id, ns_two.id);
         assert_ne!(ns_one.root_dir, ns_two.root_dir);
 
-        if let Err(err) = cleanup_namespace(ns_one) {
-            panic!("cleanup namespace one failed: {err}");
-        }
-        if let Err(err) = cleanup_namespace(ns_two) {
-            panic!("cleanup namespace two failed: {err}");
-        }
+        cleanup_namespace(ns_one)?;
+        cleanup_namespace(ns_two)?;
+        Ok(())
     }
 
     #[test]
-    fn cleanup_is_idempotent() {
-        let ns = match create_namespace("cleanup-idempotent") {
-            Ok(ns) => ns,
-            Err(err) => panic!("create namespace failed: {err}"),
-        };
+    fn cleanup_is_idempotent() -> Result<(), HarnessError> {
+        let ns = create_namespace("cleanup-idempotent")?;
         let clone = ns.clone();
 
-        if let Err(err) = cleanup_namespace(ns) {
-            panic!("first cleanup failed: {err}");
-        }
-        if let Err(err) = cleanup_namespace(clone) {
-            panic!("second cleanup failed: {err}");
-        }
+        cleanup_namespace(ns)?;
+        cleanup_namespace(clone)?;
+        Ok(())
     }
 
     #[test]
-    fn guard_cleans_up_on_drop() {
+    fn guard_cleans_up_on_drop() -> Result<(), HarnessError> {
         let path = {
-            let guard = match NamespaceGuard::new("drop-cleanup") {
-                Ok(guard) => guard,
-                Err(err) => panic!("guard create failed: {err}"),
-            };
-            let ns = match guard.namespace() {
-                Ok(ns) => ns,
-                Err(err) => panic!("namespace lookup failed: {err}"),
-            };
+            let guard = NamespaceGuard::new("drop-cleanup")?;
+            let ns = guard.namespace()?;
             ns.root_dir.clone()
         };
 
         assert!(!path.exists());
+        Ok(())
     }
 }

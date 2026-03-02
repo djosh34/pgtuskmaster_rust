@@ -1,10 +1,10 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 12:13:28 AM CET 2026
+Generated: Tue Mar  3 12:20:24 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
-## Bug: Remove Clippy Allowances For Unwrap/Panic <status>not_started</status> <passes>false</passes>
+## Bug: Remove Clippy Allowances For Unwrap/Panic <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which violates the repo rule against unwraps, panics, or expects anywhere. This hides violations in test harness code and makes it easy to slip new ones in. Investigate all test_harness code (and any other modules) for unwrap/expect/panic usage, replace with proper error handling, and remove the lint allow attributes.
