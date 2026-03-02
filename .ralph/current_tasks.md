@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 12:26:32 AM CET 2026
+Generated: Tue Mar  3 12:33:36 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -33,7 +33,7 @@ src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which viol
 
 **Path:** `.ralph/tasks/bugs/process-worker-real-job-tests-accept-failure-outcomes.md`
 
-## Bug: Process worker real job tests accept failure outcomes <status>not_started</status> <passes>false</passes>
+## Bug: Process worker real job tests accept failure outcomes <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/worker.rs) accept failure outcomes, so they can pass even when the binary invocation or behavior is broken. Examples:
@@ -56,6 +56,16 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 
 <description>
 `make test` is not passing in the current environment because multiple tests panic when `allocate_ports(...)` returns `io error: Operation not permitted (os error 1)`.
+
+---
+
+**Path:** `.ralph/tasks/bugs/remove-panics-expects-unwraps.md`
+
+## Bug: Remove panics/expects/unwraps in codebase <status>not_started</status> <passes>false</passes>
+
+<description>
+`rg -n "unwrap\(|expect\(|panic!" src tests` shows multiple occurrences (mostly in tests and some src modules like `src/process/worker.rs`, `src/pginfo/state.rs`, `src/pginfo/query.rs`, `src/dcs/worker.rs`, `src/dcs/store.rs`, `src/ha/worker.rs`, `tests/bdd_state_watch.rs`, `src/config/parser.rs`). Policy requires no unwraps/panics/expects anywhere; replace with proper error handling and remove any lint exemptions if present. Explore and confirm current behavior before changing.
+</description>
 
 ---
 

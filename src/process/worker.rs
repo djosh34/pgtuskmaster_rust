@@ -1090,6 +1090,52 @@ mod tests {
         }
     }
 
+    fn assert_success_outcome(label: &str, outcome: &JobOutcome) -> Result<(), WorkerError> {
+        match outcome {
+            JobOutcome::Success { .. } => Ok(()),
+            other => Err(WorkerError::Message(format!(
+                "expected {label} to succeed, got: {other:?}"
+            ))),
+        }
+    }
+
+    fn assert_promote_outcome(outcome: &JobOutcome) -> Result<(), WorkerError> {
+        match outcome {
+            JobOutcome::Success { .. } => Ok(()),
+            JobOutcome::Failure {
+                error: ProcessError::EarlyExit { code: Some(1) },
+                ..
+            } => Ok(()),
+            JobOutcome::Failure { error, .. } => Err(WorkerError::Message(format!(
+                "expected promote success or standby-state early-exit, got failure: {error:?}"
+            ))),
+            other => Err(WorkerError::Message(format!(
+                "expected promote success or standby-state early-exit, got: {other:?}"
+            ))),
+        }
+    }
+
+    fn assert_shutdown_cleanup_outcome(
+        label: &str,
+        outcome: &JobOutcome,
+    ) -> Result<(), WorkerError> {
+        match outcome {
+            JobOutcome::Success { .. } => Ok(()),
+            JobOutcome::Failure {
+                error: ProcessError::EarlyExit {
+                    code: Some(1) | Some(3),
+                },
+                ..
+            } => Ok(()),
+            JobOutcome::Failure { error, .. } => Err(WorkerError::Message(format!(
+                "{label} failure is not an expected already-stopped shutdown result: {error:?}"
+            ))),
+            other => Err(WorkerError::Message(format!(
+                "expected {label} cleanup success or already-stopped early-exit, got: {other:?}"
+            ))),
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn real_bootstrap_job_executes_initdb() -> Result<(), WorkerError> {
         let binaries = pg16_binaries()?;
@@ -1154,9 +1200,15 @@ mod tests {
         .await;
 
         match outcome {
-            Ok(JobOutcome::Failure { .. }) | Ok(JobOutcome::Timeout { .. }) => Ok(()),
+            Ok(JobOutcome::Failure {
+                error: ProcessError::EarlyExit { code: Some(_) },
+                ..
+            }) => Ok(()),
+            Ok(JobOutcome::Failure { error, .. }) => Err(WorkerError::Message(format!(
+                "expected rewind early-exit failure for invalid source, got failure: {error:?}"
+            ))),
             Ok(other) => Err(WorkerError::Message(format!(
-                "expected rewind non-success outcome for invalid source, got: {other:?}"
+                "expected rewind early-exit failure for invalid source, got: {other:?}"
             ))),
             Err(err) => Err(WorkerError::Message(format!("rewind job wait failed: {err}"))),
         }
@@ -1178,11 +1230,7 @@ mod tests {
             Duration::from_secs(20),
         )
         .await?;
-        if !matches!(promote, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
-            return Err(WorkerError::Message(format!(
-                "unexpected promote outcome: {promote:?}"
-            )));
-        }
+        assert_promote_outcome(&promote)?;
 
         let stop = fixture
             .submit_job_and_wait(
@@ -1195,11 +1243,7 @@ mod tests {
             Duration::from_secs(20),
         )
         .await?;
-        if !matches!(stop, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
-            return Err(WorkerError::Message(format!(
-                "unexpected cleanup stop outcome: {stop:?}"
-            )));
-        }
+        assert_success_outcome("stop-after-promote", &stop)?;
         Ok(())
     }
 
@@ -1219,11 +1263,7 @@ mod tests {
             Duration::from_secs(20),
         )
         .await?;
-        if !matches!(outcome, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
-            return Err(WorkerError::Message(format!(
-                "unexpected demote outcome: {outcome:?}"
-            )));
-        }
+        assert_success_outcome("demote", &outcome)?;
 
         let cleanup = fixture
             .submit_job_and_wait(
@@ -1236,11 +1276,7 @@ mod tests {
             Duration::from_secs(20),
         )
         .await?;
-        if !matches!(cleanup, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
-            return Err(WorkerError::Message(format!(
-                "unexpected demote cleanup outcome: {cleanup:?}"
-            )));
-        }
+        assert_shutdown_cleanup_outcome("stop-after-demote", &cleanup)?;
         Ok(())
     }
 
@@ -1290,11 +1326,7 @@ mod tests {
             Duration::from_secs(30),
         )
         .await?;
-        if !matches!(restart, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
-            return Err(WorkerError::Message(format!(
-                "unexpected restart outcome: {restart:?}"
-            )));
-        }
+        assert_success_outcome("restart", &restart)?;
 
         let stop = fixture
             .submit_job_and_wait(
@@ -1307,11 +1339,7 @@ mod tests {
             Duration::from_secs(20),
         )
         .await?;
-        if !matches!(stop, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
-            return Err(WorkerError::Message(format!(
-                "unexpected stop-after-restart outcome: {stop:?}"
-            )));
-        }
+        assert_success_outcome("stop-after-restart", &stop)?;
         Ok(())
     }
 
@@ -1331,11 +1359,7 @@ mod tests {
             Duration::from_secs(20),
         )
         .await?;
-        if !matches!(outcome, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
-            return Err(WorkerError::Message(format!(
-                "unexpected fencing outcome: {outcome:?}"
-            )));
-        }
+        assert_success_outcome("fence", &outcome)?;
 
         let cleanup = fixture
             .submit_job_and_wait(
@@ -1348,11 +1372,7 @@ mod tests {
             Duration::from_secs(20),
         )
         .await?;
-        if !matches!(cleanup, JobOutcome::Success { .. } | JobOutcome::Failure { .. }) {
-            return Err(WorkerError::Message(format!(
-                "unexpected fencing cleanup outcome: {cleanup:?}"
-            )));
-        }
+        assert_shutdown_cleanup_outcome("stop-after-fencing", &cleanup)?;
         Ok(())
     }
 

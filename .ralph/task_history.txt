@@ -18,3 +18,4 @@
 .ralph/tasks/bugs/pginfo-standby-polling-test-configure-primary-db-error.md
 .ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md
 .ralph/tasks/bugs/dcs-watch-refresh-errors-ignored.md
+.ralph/tasks/bugs/process-worker-real-job-tests-accept-failure-outcomes.md
