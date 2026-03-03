@@ -1,11 +1,11 @@
 ---
-## Bug: test-bdd full-suite command hangs in real HA e2e <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: test full-suite command hangs in real HA e2e <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
-After updating `make test-bdd` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets -- --include-ignored`, the verification run did not complete within an extended runtime window (over 15 minutes observed on 2026-03-03).
+After updating `make test` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets -- --include-ignored`, the verification run did not complete within an extended runtime window (over 15 minutes observed on 2026-03-03).
 
 Detection details:
-- `make test-bdd` started and progressed through unit + real-binary tests.
+- `make test` started and progressed through unit + real-binary tests.
 - Output stalled at `ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix has been running for over 60 seconds` and never completed during the observed window.
 - Active `etcd` and `postgres` child processes for the e2e namespace remained running until manual interruption.
 
@@ -16,7 +16,7 @@ Please explore and research the codebase first to identify whether this is a gen
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -56,7 +56,7 @@ Please explore and research the codebase first to identify whether this is a gen
 - Run and verify, in order:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - If all pass, update task checklist and `<passes>true</passes>`, then run task switch + commit with required message format.
 </execution_plan>

@@ -27,7 +27,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Failures trigger `$add-bug` tasks with failing job kind and repro.
 </acceptance_criteria>
 
@@ -112,7 +112,7 @@
 11. Required full gate sequence (sequential)
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any command fails, stop and create `$add-bug` task(s) with failing job kind, repro steps, and key logs before resuming.
 

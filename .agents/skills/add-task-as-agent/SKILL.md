@@ -45,7 +45,6 @@ This skill creates **focused, parallelizable tasks** from completed research. Us
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test-bdd` — all BDD features pass
+- [ ] `make test` — full regular suite passes (including BDD/ignored coverage now grouped in this target)
 </acceptance_criteria>
 ```
-

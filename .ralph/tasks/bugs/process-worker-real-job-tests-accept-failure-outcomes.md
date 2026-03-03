@@ -14,7 +14,7 @@ These tests currently treat `JobOutcome::Failure` as acceptable, which means reg
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <implementation_plan>
@@ -55,7 +55,7 @@ These tests currently treat `JobOutcome::Failure` as acceptable, which means reg
 4. Run required full gates sequentially.
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - Resolve failures and rerun until all four pass 100%.
 
@@ -83,6 +83,6 @@ These tests currently treat `JobOutcome::Failure` as acceptable, which means reg
 - Required gates passed sequentially:
   - `make check` passed.
   - `make test` passed.
-  - `make test-bdd` passed.
+  - `make test` passed.
   - `make lint` passed.
 </implementation_plan>

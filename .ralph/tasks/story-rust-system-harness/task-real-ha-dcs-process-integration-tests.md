@@ -29,7 +29,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -69,7 +69,7 @@
 - [x] Append one concrete learning from this task after final verification.
 
 5. `.ralph/evidence/task-real-ha-dcs-process-integration-tests/` (new)
-- [x] Save logs for mandatory gates: `make check`, `make test`, `make test-bdd`, `make lint`.
+- [x] Save logs for mandatory gates: `make check`, `make test`, `make lint`.
 - [x] Save grep artifacts for `make test` and `make lint` containing `congratulations` and `evaluation failed` checks.
 - [x] Save targeted enforced-real-binary test logs used to validate non-skipping behavior.
 
@@ -93,7 +93,7 @@
 4. Run mandatory repository gates sequentially
 - [x] `make check`
 - [x] `make test`
-- [x] `make test-bdd`
+- [x] `make test`
 - [x] `make lint`
 - [x] Capture all outputs under `.ralph/evidence/task-real-ha-dcs-process-integration-tests/`.
 - [x] Generate required grep marker artifacts for `make test` + `make lint`.

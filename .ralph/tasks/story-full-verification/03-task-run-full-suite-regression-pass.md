@@ -20,14 +20,14 @@
 </description>
 
 <acceptance_criteria>
-- [x] Run full suite in order: `make check`, `make test`, `make lint`, `make test-bdd`.
+- [x] Run full suite in order: `make check`, `make test`, `make lint`.
 - [x] Capture command outputs and summarize exact failing stages. (No failing stages observed.)
 - [x] For each failure found, use `$add-bug` skill to create bug task(s) in `.ralph/tasks/bugs/` including repro command, logs, and scope. (No failures found; no new bug tasks required.)
 - [x] If all commands pass, record full-suite pass evidence in the task update.
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <implementation_plan>
@@ -62,19 +62,19 @@
 - `make-check.log`
 - `make-test.log`
 - `make-lint.log`
-- `make-test-bdd.log`
+- `make-test.log`
 - `grep-make-test-markers.log`
 - `grep-make-lint-markers.log`
-- `make-test-bdd-failures.log`
+- `make-test-failures.log`
 
 2. Execute full suite in required order (single serial pass)
 - Execute:
 - `make check`
 - `make test`
 - `make lint`
-- `make test-bdd`
+- `make test`
 - After `make test` and `make lint`, grep logs for `congratulations|evaluation failed`; if absent, write explicit `not found`.
-- Extract BDD failure lines from `make-test-bdd.log` with `rg -n "FAILED|failures|error"`; if none, write explicit `not found`.
+- Extract BDD failure lines from `make-test.log` with `rg -n "FAILED|failures|error"`; if none, write explicit `not found`.
 
 3. Triage failures and create bug task(s) when needed
 - Summarize exact failing stage(s) with direct evidence log paths.
@@ -103,8 +103,8 @@ NOW EXECUTE
 - `make check`: pass (`make-check.log`)
 - `make test`: pass (`make-test.log`)
 - `make lint`: pass (`make-lint.log`)
-- `make test-bdd`: pass (`make-test-bdd.log`)
+- `make test`: pass (`make-test.log`)
 - Marker grep (`make test`): `not found: congratulations`, `not found: evaluation failed` (`grep-make-test-markers.log`)
 - Marker grep (`make lint`): `not found: congratulations`, `not found: evaluation failed` (`grep-make-lint-markers.log`)
-- BDD failure extract: `not found` (`make-test-bdd-failures.log`)
+- BDD failure extract: `not found` (`make-test-failures.log`)
 </execution_report>

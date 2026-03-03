@@ -22,12 +22,12 @@
 <acceptance_criteria>
 - [x] Pull all relevant bug tasks from `.ralph/tasks/bugs/` created by `$add-bug` in prior tasks.
 - [x] Implement fixes per bug task with targeted verification for each. (No active bug tasks remained; closure verified via `bug-inventory.log` and `bug-pending-status.log`.)
-- [x] Run full suite after fix batches: `make check`, `make test`, `make lint`, `make test-bdd`.
+- [x] Run full suite after fix batches: `make check`, `make test`, `make lint`.
 - [x] If new failures appear, create follow-up bug task(s) using `$add-bug` and continue triage. (No new failures appeared.)
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <implementation_plan>
@@ -79,13 +79,13 @@
 - Run gates with preserved exit codes and archived output:
 - `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make check | tee make-check.log'`
 - `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test | tee make-test.log'`
-- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test-bdd | tee make-test-bdd.log'`
+- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test | tee make-test.log'`
 - `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make lint | tee make-lint.log'`
 - Run marker-grep artifacts for policy tracking:
 - `grep-make-test-markers.log` from `make-test.log`
 - `grep-make-lint-markers.log` from `make-lint.log`
 - Record explicit `not found` lines when markers are absent.
-- Produce `make-test-bdd-failures.log` by extracting `FAILED|failures|error` lines, or explicit `not found`.
+- Produce `make-test-failures.log` by extracting `FAILED|failures|error` lines, or explicit `not found`.
 
 4. Triage any newly surfaced failures
 - For each distinct new failure behavior, create a new bug task using `$add-bug` with:
@@ -134,10 +134,10 @@ NOW EXECUTE
 - No active bug tasks were found, so targeted reruns under `targeted/` were not required.
 - `make check`: pass (`make-check.log`)
 - `make test`: pass (`make-test.log`)
-- `make test-bdd`: pass (`make-test-bdd.log`)
+- `make test`: pass (`make-test.log`)
 - `make lint`: pass (`make-lint.log`)
 - Marker grep (`make test`): `not found: congratulations`, `not found: evaluation failed` (`grep-make-test-markers.log`)
 - Marker grep (`make lint`): `not found: congratulations`, `not found: evaluation failed` (`grep-make-lint-markers.log`)
-- BDD failure extract: `not found` (`make-test-bdd-failures.log`)
+- BDD failure extract: `not found` (`make-test-failures.log`)
 - New bug tasks created in this run: none (no new failures surfaced).
 </execution_report>

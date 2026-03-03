@@ -28,7 +28,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -101,7 +101,7 @@
 - Required gates (must all pass):
 - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make check`
 - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test`
-- `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test-bdd`
+- `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test`
 - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make lint`
 - Required marker checks:
 - `make test` log must include `congratulations` and must not include `evaluation failed`.
@@ -112,7 +112,7 @@
 6. Completion checklist for execution run
 - [x] Implement fixture/test changes listed above with no `unwrap`/`expect`/`panic`.
 - [x] Validate adversarial matrix coverage includes wrong CA, wrong SAN, expired, and client-cert mismatch/missing.
-- [x] Complete all mandatory gates (`make check`, `make test`, `make test-bdd`, `make lint`) with passing results and marker checks for test/lint logs.
+- [x] Complete all mandatory gates (`make check`, `make test`, `make lint`) with passing results and marker checks for test/lint logs.
 - [x] Update task tags/checklists only after gate success, run task switch script, commit all files (including `.ralph`), push, and append durable learning to `AGENTS.md`.
 </execution_plan>
 
@@ -125,7 +125,7 @@ NOW EXECUTE
 - Required gates:
   - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make check` (log: `.ralph/evidence/story-rust-system-harness/29-task-e2e-tls-adversarial-cert-validation/gates/01-make-check.log`)
   - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test` (log: `.ralph/evidence/story-rust-system-harness/29-task-e2e-tls-adversarial-cert-validation/gates/02-make-test.log`)
-  - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test-bdd` (log: `.ralph/evidence/story-rust-system-harness/29-task-e2e-tls-adversarial-cert-validation/gates/03-make-test-bdd.log`)
+  - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test` (log: `.ralph/evidence/story-rust-system-harness/29-task-e2e-tls-adversarial-cert-validation/gates/03-make-test.log`)
   - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make lint` (log: `.ralph/evidence/story-rust-system-harness/29-task-e2e-tls-adversarial-cert-validation/gates/04-make-lint.log`)
 - Marker checks:
   - `make test`: `evaluation failed` not found; `congratulations` marker not emitted by current gate output.

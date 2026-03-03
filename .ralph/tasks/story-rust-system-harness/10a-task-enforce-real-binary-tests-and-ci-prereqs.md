@@ -33,12 +33,12 @@
 - [x] `src/pginfo/worker.rs` (primary + replica integration tests)
 - [x] `src/process/worker.rs` (real job tests)
 - [x] Add an explicit enforcement switch (env var) with clear naming and docs (example: `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1`).
-- [x] Add a `Makefile` target that enables enforcement (example: `make test-real`), and document when to use it.
+- [x] Add a `Makefile` target that enables enforcement (example: `make test`), and document when to use it.
 - [x] Document local prerequisites (package names / expected install paths) in `RUST_SYSTEM_HARNESS_PLAN.md` or a dedicated doc.
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Implementation Plan (Phase 1 Draft)
@@ -69,7 +69,7 @@
 - Keep all existing success/failure assertions unchanged once binaries are available.
 
 ### 4) Make deterministic enforcement gate explicit
-- Add `make test-real` target in `Makefile` that sets `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1` and runs the real-binary suites explicitly (harness spawn tests, pginfo real tests, process real tests, and HA multi-node e2e), so the gate is deterministic and auditable.
+- Add `make test` target in `Makefile` that sets `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1` and runs the real-binary suites explicitly (harness spawn tests, pginfo real tests, process real tests, and HA multi-node e2e), so the gate is deterministic and auditable.
 - Ensure target naming/docs explicitly communicate fail-fast behavior when binaries are missing.
 - Keep default `make test` behavior convenient (skip allowed only through shared helper).
 
@@ -77,15 +77,15 @@
 - Update `RUST_SYSTEM_HARNESS_PLAN.md` with:
 - required local binaries (PG16 toolchain + etcd),
 - expected repository paths (`.tools/postgres16/bin/*`, `.tools/etcd/bin/etcd`) and system-package mapping,
-- commands for optional/default flow (`make test`) vs strict enforced flow (`make test-real`).
+- commands for optional/default flow (`make test`) vs strict enforced flow (`make test`).
 
 ### 6) Verification and evidence capture
 - Run gates in sequence and retain logs under `.ralph/evidence/10a-enforce-real-binaries/`:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
-- additionally run `make test-real` to prove enforced mode behavior.
+- additionally run `make test` to prove enforced mode behavior.
 - For acceptance grep requirements, capture explicit grep artifacts for pass/fail phrases (`congratulations` / `evaluation failed`) even if absent in native output.
 
 ### 7) Task file + finish protocol (post-implementation)

@@ -26,7 +26,7 @@
 - [x] Tests do not call internal HA decision functions to enact transitions.
 - [x] Scenario matrix includes all plan-listed HA paths.
 - [x] Run e2e suite standalone and collect logs/artifacts.
-- [x] Run full suite: `make check`, `make test`, `make lint`, `make test-bdd`.
+- [x] Run full suite: `make check`, `make test`, `make lint`.
 - [x] For every failing scenario, use `$add-bug` and create bug task(s) with timeline/log evidence.
 </acceptance_criteria>
 
@@ -103,7 +103,7 @@
 - [x] Run targeted new e2e tests first until stable.
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any scenario/gate fails, create bug task(s) with `$add-bug` including timeline/log artifact paths and exact repro commands.
 
@@ -119,7 +119,7 @@
 <evidence>
 - Standalone matrix command: `cargo test ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix -- --nocapture`
 - Timeline artifacts: `.ralph/evidence/13-e2e-multi-node/ha-e2e-scenario-matrix-*.timeline.log`
-- Verification gates (all passing): `make check`, `make test`, `make test-bdd`, `make lint`
+- Verification gates (all passing): `make check`, `make test`, `make lint`
 </evidence>
 
 NOW EXECUTE

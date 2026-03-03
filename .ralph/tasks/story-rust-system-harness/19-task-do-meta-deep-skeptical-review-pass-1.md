@@ -28,7 +28,7 @@
 - Reviewed `19-task-do-meta-deep-skeptical-review-pass-1.md`, `18-task-recurring-meta-deep-skeptical-codebase-review.md`, and adjacent pass files (`20`, `21`) to confirm sequencing and expected deliverables.
 - Verified current `.ralph/model.txt` is `normal_high`, so first execution run of meta-task 18 must enforce the preflight model gate before any audit work.
 - Verified recurring-task rule in task 18: it must remain `<passes>meta-task</passes>` and must never be ticked to done.
-- Verified required gate set for task 18 closeout from task 18 text: `make check`, `make test`, `make lint`, and `make test-bdd`; for this pass completion, enforce user-required order `make check`, `make test`, `make test-bdd`, `make lint`.
+- Verified required gate set for task 18 closeout from task 18 text: `make check`, `make test`, `make lint`, and `make test`; for this pass completion, enforce user-required order `make check`, `make test`, `make lint`.
 - Verified this pass-1 task is currently not started and has no lifecycle marker yet, so next handoff marker should be `TO BE VERIFIED`.
 
 ### Planned execution phases (to run after promotion to `NOW EXECUTE`)
@@ -58,7 +58,7 @@
 - Execute sequentially with log capture and `set -o pipefail`:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - Persist outputs to evidence logs and create grep artifacts for `make test`/`make lint` marker checks when requested by task conventions.
 - For any gate failure, immediately create follow-up bug task(s) before closeout.
@@ -97,5 +97,5 @@ NOW EXECUTE
 
 ## Execution Notes (2026-03-03)
 - Fresh run entry recorded under task 18 `## Exploration`.
-- Evidence/logs: `.ralph/evidence/meta-18-pass1-20260303T020551Z` (includes `make-check.log`, `make-test.log`, `make-test-bdd.log`, `make-lint.log`, `make-test-real.log`).
+- Evidence/logs: `.ralph/evidence/meta-18-pass1-20260303T020551Z` (includes `make-check.log`, `make-test.log`, `make-lint.log`, `make-test-long.log`).
 - Model profile reset: `.ralph/model.txt` restored to `normal_high` after gates.

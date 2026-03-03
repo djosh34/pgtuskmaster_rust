@@ -26,14 +26,14 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <implementation_plan>
 ## Execution Plan (Draft 2, Skeptically Verified)
 
 ### Skeptical verification completed (16 parallel tracks)
-- Re-read `Makefile` and confirmed real command bodies for `check`, `test`, `test-bdd`, and `lint`.
+- Re-read `Makefile` and confirmed real command bodies for `check`, `test`, `test`, and `lint`.
 - Re-read this task for acceptance criteria and marker semantics.
 - Validated sibling story task names/paths (`02`, `03`, `04`) to avoid stale references.
 - Re-read `.agents/skills/add-bug/SKILL.md` for required bug-file schema and placement.
@@ -51,7 +51,7 @@
 - Verified gate sequencing should stay strictly serial for deterministic outcomes.
 
 ### Key amendment from skeptical review
-- Changed plan to remove redundant duplicate gate runs. Prior draft scheduled `make check`/`make lint` twice; revised plan runs one canonical serial suite (`make check`, `make test`, `make test-bdd`, `make lint`) and uses the same logs to satisfy both build/static and global acceptance requirements.
+- Changed plan to remove redundant duplicate gate runs. Prior draft scheduled `make check`/`make lint` twice; revised plan runs one canonical serial suite (`make check`, `make test`, `make lint`) and uses the same logs to satisfy both build/static and global acceptance requirements.
 
 ### Execution phases for `NOW EXECUTE`
 1. Prepare deterministic evidence capture
@@ -60,7 +60,7 @@
 - Write logs:
 - `make-check.log`
 - `make-test.log`
-- `make-test-bdd.log`
+- `make-test.log`
 - `make-lint.log`
 - `grep-make-test-markers.log`
 - `grep-make-lint-markers.log`
@@ -69,7 +69,7 @@
 - Execute in order:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - After `make test` and `make lint`, run marker greps for `congratulations|evaluation failed`; if absent, record explicit `not found` output to the grep logs.
 
@@ -104,7 +104,7 @@ NOW EXECUTE
 - Evidence directory: `.ralph/evidence/story-full-verification/01-task-verify-build-and-static-gates/`
 - `make check`: pass (`make-check.log`)
 - `make test`: pass (`make-test.log`)
-- `make test-bdd`: pass (`make-test-bdd.log`)
+- `make test`: pass (`make-test.log`)
 - `make lint`: pass (`make-lint.log`)
 - Marker grep (`make test`): `not found` (`grep-make-test-markers.log`)
 - Marker grep (`make lint`): `not found` (`grep-make-lint-markers.log`)

@@ -28,7 +28,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] If failing, create `$add-bug` tasks with endpoint payload and response evidence.
 </acceptance_criteria>
 
@@ -154,12 +154,12 @@ Rationale: keep dependencies light and preserve a meaningful `step_once()` by se
 - [x] Add a debug snapshot worker test:
   - [x] Start snapshot worker ctx with known state channel versions.
   - [x] Run `step_once` and assert subscriber sees a `SystemSnapshot` with expected versions and cloned values.
-- [x] Update `Makefile` `test-bdd` target to include the new BDD test binary (e.g., `cargo test --test bdd_state_watch --test bdd_api_http`) so CI runs it.
+- [x] Update `Makefile` `test` target to include the new BDD test binary (e.g., `cargo test --test bdd_state_watch --test bdd_api_http`) so CI runs it.
 
 ### 8) Verification gates (must be green before marking done)
 - [x] Run `make check`
 - [x] Run `make test`
-- [x] Run `make test-bdd` (note: required a `cargo clean` once due to a stale/corrupted `target/` archive error)
+- [x] Run `make test` (note: required a `cargo clean` once due to a stale/corrupted `target/` archive error)
 - [x] Run `make lint`
 - [x] If any fail, create `$add-bug` tasks with (N/A: all gates green):
   - [x] exact repro command

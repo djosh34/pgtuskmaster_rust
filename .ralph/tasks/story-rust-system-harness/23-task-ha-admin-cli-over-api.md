@@ -28,7 +28,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail) (`no marker found` in output; command exit 0)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail) (`no marker found` in output; command exit 0)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -41,7 +41,7 @@
 - Verified `src/api/mod.rs` response structs are `pub(crate)`, so external reuse from new CLI modules would force unnecessary visibility widening.
 - Verified there is no existing binary target in `src/bin/`.
 - Verified strict lint denies unwrap/expect/panic/todo/unimplemented globally.
-- Verified Make targets required by this task are exactly `check`, `test`, `test-bdd`, `lint`.
+- Verified Make targets required by this task are exactly `check`, `test`, `test`, `lint`.
 - Verified docs baseline: no dedicated CLI doc exists yet.
 
 ### Verification delta (mandatory plan changes)
@@ -136,7 +136,7 @@
 5. Required gates:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 
 ### Execution sequence

@@ -33,7 +33,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -41,7 +41,7 @@
 
 1. Baseline and scope lock
 - [x] Re-read this task and confirm it is the active item from `.ralph/current_task.txt`.
-- [x] Capture baseline with `make check`, `make test`, `make test-bdd`, and `make lint` (record failures before any edits).
+- [x] Capture baseline with `make check`, `make test`, and `make lint` (record failures before any edits).
 - [x] Confirm current lint wiring in `Makefile` and current crate root lint attributes in `src/lib.rs`.
 
 2. Exhaustive violation inventory (runtime vs test-only)
@@ -92,7 +92,7 @@
 8. Verification sequence (sequential, not parallel Cargo gate runs)
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any command fails, fix and rerun sequentially until all pass.
 

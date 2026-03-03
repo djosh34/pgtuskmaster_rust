@@ -28,7 +28,7 @@
 - [x] Run `make check` and capture result.
 - [x] Run `make test` and capture result.
 - [x] Run `make lint` and capture result.
-- [x] Run `make test-bdd` and capture result.
+- [x] Run `make test` and capture result.
 - [x] If any command fails, use `$add-bug` skill and create bug task(s) in `.ralph/tasks/bugs/` with repro command and logs.
 </acceptance_criteria>
 
@@ -110,11 +110,11 @@
 
 7. Verification command sequence (strict)
 - [x] Run targeted tests first for fast feedback (state/watch module only).
-- [x] Verify required commands exist and are wired in this repo (`make check`, `make test`, `make test-bdd`, `make lint`); if missing, treat as failure and file bug task(s) instead of silently skipping.
+- [x] Verify required commands exist and are wired in this repo (`make check`, `make test`, `make lint`); if missing, treat as failure and file bug task(s) instead of silently skipping.
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] If any failure occurs:
   - [x] collect failing command output
   - [x] use `$add-bug` skill to create bug task file(s) in `.ralph/tasks/bugs/` with repro and logs

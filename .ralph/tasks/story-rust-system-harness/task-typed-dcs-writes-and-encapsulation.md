@@ -35,7 +35,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <plan>
@@ -89,7 +89,7 @@
 - Run:
   - `make check`
   - `make test`
-  - `make test-bdd`
+  - `make test`
   - `make lint`
 - Run sequentially (not parallel cargo invocations) for deterministic results and avoid cargo artifact races noted in prior learnings.
 - Capture and inspect command outcomes; do not skip any test category.

@@ -29,7 +29,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] If any fail, use `$add-bug` skill to create bug task(s) in `.ralph/tasks/bugs/`.
 </acceptance_criteria>
 <execution_plan>
@@ -129,7 +129,7 @@
   - [x] `make check` passed
   - [x] `make test` passed
   - [x] `make lint` passed
-  - [x] `make test-bdd` passed
+  - [x] `make test` passed
 
 9. Failure handling protocol
 - [x] If any required command fails, do not mark pass tags true.

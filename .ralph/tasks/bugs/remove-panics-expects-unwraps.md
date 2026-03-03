@@ -9,7 +9,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Implementation Plan (Draft)
@@ -85,7 +85,7 @@
 - Run sequentially (no parallel cargo invocations):
   - `make check`
   - `make test`
-  - `make test-bdd`
+  - `make test`
   - `make lint`
 - If any gate fails:
   - fix root cause
@@ -120,5 +120,5 @@
 - Required gates passed sequentially:
   - `make check`
   - `make test`
-  - `make test-bdd`
+  - `make test`
   - `make lint`

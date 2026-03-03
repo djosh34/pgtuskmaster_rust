@@ -9,7 +9,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Implementation Plan (Draft)
@@ -56,7 +56,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 - Run exactly and in order:
   - `make check`
   - `make test`
-  - `make test-bdd`
+  - `make test`
   - `make lint`
 - If any gate fails, fix root cause and rerun full chain from the top.
 
@@ -85,7 +85,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 - Required gate chain passed in order:
   - `make check` passed.
   - `make test` passed (`94` unit/integration + BDD test binaries succeeded).
-  - `make test-bdd` passed (`3` API BDD + `1` state-watch BDD).
+  - `make test` passed (`3` API BDD + `1` state-watch BDD).
   - `make lint` passed (`clippy --all-targets --all-features -D warnings` and runtime strict clippy pass).
 
 DONE

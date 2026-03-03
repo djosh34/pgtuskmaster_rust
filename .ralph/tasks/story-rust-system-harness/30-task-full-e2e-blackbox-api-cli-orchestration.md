@@ -30,7 +30,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -104,7 +104,7 @@
 - Required gates (all must pass):
 - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make check`
 - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test`
-- `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test-bdd`
+- `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test`
 - `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make lint`
 
 - Supplemental marker evidence:

@@ -9,7 +9,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Implementation Plan (Detailed)
@@ -59,7 +59,7 @@
 - [x] Run required gates sequentially (no parallel cargo top-level commands):
   - [x] `make check`
   - [x] `make test`
-  - [x] `make test-bdd`
+  - [x] `make test`
   - [x] `make lint`
 - [x] Update this task file checkboxes and set `<passing>true</passing>` only after all required gates pass.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.

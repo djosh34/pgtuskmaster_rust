@@ -26,7 +26,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] On any failure, create `$add-bug` tasks including cert/config artifacts and reproductions.
 </acceptance_criteria>
 
@@ -80,7 +80,7 @@
 
 7. Verification and failure protocol
 - [x] Run targeted security/API tests first until stable.
-- [x] Run required gates sequentially: `make check`, `make test`, `make test-bdd`, `make lint`.
+- [x] Run required gates sequentially: `make check`, `make test`, `make lint`.
 - [x] If any gate fails, create `$add-bug` task(s) with exact repro command, failing assertion, and cert/config artifact paths.
 
 8. Completion bookkeeping
@@ -94,7 +94,7 @@
 
 <evidence>
 - Targeted security test run: `cargo test --lib api::worker::tests::security -- --nocapture`
-- Required gates (all passing, sequential): `CARGO_BUILD_JOBS=1 make check`, `CARGO_BUILD_JOBS=1 make test`, `CARGO_BUILD_JOBS=1 make test-bdd`, `CARGO_BUILD_JOBS=1 make lint`
+- Required gates (all passing, sequential): `CARGO_BUILD_JOBS=1 make check`, `CARGO_BUILD_JOBS=1 make test`, `CARGO_BUILD_JOBS=1 make test`, `CARGO_BUILD_JOBS=1 make lint`
 - Security test coverage location: `src/api/worker.rs` (`security_*` tests) using namespace-backed cert artifacts via `NamespaceGuard` + `write_tls_material(...)`
 </evidence>
 

@@ -23,7 +23,7 @@ Reality check from execution at 2026-03-02T23:11:59Z:
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Execution Plan (Verified)
@@ -70,7 +70,7 @@ Reality check from execution at 2026-03-02T23:11:59Z:
 - [x] Run required repository gates sequentially:
   - [x] `make check`
   - [x] `make test`
-  - [x] `make test-bdd`
+  - [x] `make test`
   - [x] `make lint`
 - [x] For `make test` and `make lint`, persist logs and grep for `congratulations` / `evaluation failed` per task rule.
 
@@ -102,7 +102,7 @@ Reality check from execution at 2026-03-02T23:11:59Z:
   - `make-test.repro.log` (pass)
   - `make-test.log` (pass)
   - `make-check.log` (pass)
-  - `make-test-bdd.log` (pass)
+  - `make-test.log` (pass)
   - `make-lint.log` (pass)
 - Targeted logs:
   - `cargo-test-step_once_maps_replica_when_polling_standby.log` (pass)

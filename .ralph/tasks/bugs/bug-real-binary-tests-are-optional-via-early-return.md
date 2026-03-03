@@ -13,7 +13,7 @@ The solution should preserve clear error messages about missing prerequisites an
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Research Findings (2026-03-03)
@@ -34,7 +34,7 @@ The solution should preserve clear error messages about missing prerequisites an
   - `src/ha/e2e_multi_node.rs`
 - Documentation currently states optional default behavior:
   - `RUST_SYSTEM_HARNESS_PLAN.md` section `Real-Binary Test Prerequisites`
-- `Makefile` currently uses env-enforced mode only for `test-real`/`test-bdd`, meaning default flows can still pass without executing real binaries.
+- `Makefile` currently uses env-enforced mode only for `test-long`/`test`, meaning default flows can still pass without executing real binaries.
 
 ## Full Implementation Plan (for execution when promoted)
 
@@ -69,11 +69,11 @@ The solution should preserve clear error messages about missing prerequisites an
 
 ### 3. Align build/test entry points with non-optional real-test policy
 - [x] Update `Makefile` so no target relies on skip-by-default semantics.
-- [x] Keep `make test-real` as a focused real-suite entry point, but remove unnecessary env toggles if helpers are always fail-fast.
-- [x] Expand `make test-real` to include all real-binary suites that were previously skippable, including:
+- [x] Keep `make test` as a focused real-suite entry point, but remove unnecessary env toggles if helpers are always fail-fast.
+- [x] Expand `make test` to include all real-binary suites that were previously skippable, including:
   - `dcs::etcd_store::tests::` real-etcd tests
   - both HA e2e real scenarios (`e2e_multi_node_unassisted_failover_sql_consistency` and `e2e_multi_node_real_ha_scenario_matrix`)
-- [x] Re-evaluate `make test-bdd` export of `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1`; remove if obsolete after helper refactor.
+- [x] Re-evaluate `make test` export of `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1`; remove if obsolete after helper refactor.
 
 ### 4. Update docs to reflect enforced behavior
 - [x] Update `RUST_SYSTEM_HARNESS_PLAN.md`:
@@ -94,7 +94,7 @@ The solution should preserve clear error messages about missing prerequisites an
 - [x] Run required gates and capture outputs under a new evidence directory:
   - `make check`
   - `make test`
-  - `make test-bdd`
+  - `make test`
   - `make lint`
 - [x] For acceptance criteria that mention grep pass/fail phrases, save command outputs and grep artifacts explicitly.
 - [x] If linker/object flake appears on this mount, use known mitigation:

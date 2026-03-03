@@ -31,7 +31,7 @@ Directly impacted usages discovered during investigation:
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Execution Plan (Draft 2 - Skeptical Verification Applied)
@@ -119,7 +119,7 @@ Directly impacted usages discovered during investigation:
 - [x] Run required gates and archive logs:
   - [x] `make check`
   - [x] `make test`
-  - [x] `make test-bdd`
+  - [x] `make test`
   - [x] `make lint`
 - [x] For `make test` and `make lint`, store grep evidence for `congratulations` and `evaluation failed`.
 

@@ -61,7 +61,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Execution Plan (Research Baseline: 2026-03-03)
@@ -108,7 +108,7 @@
 - Run exactly and sequentially:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - Use `set -o pipefail` if logging through `tee`, and archive logs under `.ralph/evidence/05c-zero-panic/gates/`.
 - For `make test` and `make lint`, also grep archived logs for acceptance phrases (`congratulations`/`evaluation failed`) and save grep outputs as explicit acceptance evidence.

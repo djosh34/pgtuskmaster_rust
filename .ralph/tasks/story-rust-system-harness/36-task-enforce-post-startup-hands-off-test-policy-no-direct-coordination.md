@@ -33,7 +33,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Detailed Implementation Plan (Draft 2, verified)
@@ -111,7 +111,7 @@ Post-start tests may not:
 - `cargo test --test policy_e2e_api_only -- --nocapture` (fast fail-first policy gate)
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 
 4. Task completion bookkeeping (only after all gates pass).

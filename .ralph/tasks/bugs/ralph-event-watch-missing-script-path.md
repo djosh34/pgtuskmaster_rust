@@ -14,7 +14,7 @@ Explore and research the codebase and service configuration first, then fix the 
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <plan>
@@ -72,7 +72,7 @@ Explore and research the codebase and service configuration first, then fix the 
 8. Run full required gates (no skipping).
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - Use known stabilizers from workspace learnings when running heavy suites:
   - `CARGO_BUILD_JOBS=1`

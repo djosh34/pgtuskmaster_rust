@@ -39,7 +39,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -200,7 +200,7 @@ Required gates (must be 100% green before marking `<passes>true</passes>`):
 - [x] `cargo clean` once (reduces mount/link flakes)
 - [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make check |& tee .ralph/evidence/task-32-architecture-docs/make-check.log`
 - [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test |& tee .ralph/evidence/task-32-architecture-docs/make-test.log`
-- [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test-bdd |& tee .ralph/evidence/task-32-architecture-docs/make-test-bdd.log`
+- [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test |& tee .ralph/evidence/task-32-architecture-docs/make-test.log`
 - [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make lint |& tee .ralph/evidence/task-32-architecture-docs/make-lint.log`
 - [x] Supplemental evidence (do not rely on grep as the source of truth; exit status is):
   - [x] `rg -n \"congratulations|evaluation failed\" .ralph/evidence/task-32-architecture-docs/make-test.log > .ralph/evidence/task-32-architecture-docs/make-test-markers.txt || true`

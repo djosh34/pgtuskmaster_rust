@@ -28,7 +28,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — log captured at `.ralph/evidence/story-rust-system-harness/28-task-e2e-network-partition-chaos-no-split-brain/gates/make-test.log`; no `evaluation failed` marker and command exited 0
 - [x] `make lint` — log captured at `.ralph/evidence/story-rust-system-harness/28-task-e2e-network-partition-chaos-no-split-brain/gates/make-lint.log`; no `evaluation failed` marker and command exited 0
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -70,7 +70,7 @@
 - Track 11: confirmed current e2e module wiring (`src/ha/mod.rs`) supports adding a dedicated partition test module under `#[cfg(test)]`.
 - Track 12: scanned for existing network tools (`proxy`, `copy_bidirectional`, tc/iptables wrappers) and found none; new harness code is required.
 - Track 13: validated no-unwrap/expect/panic lint policy and captured where new async proxy control APIs must return rich `Result` errors.
-- Track 14: confirmed required completion gates and order remain `make check`, `make test`, `make test-bdd`, `make lint`.
+- Track 14: confirmed required completion gates and order remain `make check`, `make test`, `make lint`.
 - Track 15: validated task lifecycle protocol for this file (`TO BE VERIFIED` -> skeptical delta -> `NOW EXECUTE`) and prepared this draft accordingly.
 
 ### Proposed architecture
@@ -134,7 +134,7 @@
 - Execute required gates in order:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - Capture marker grep evidence from `make test` and `make lint` logs (`congratulations` / `evaluation failed`) per acceptance criteria.
 

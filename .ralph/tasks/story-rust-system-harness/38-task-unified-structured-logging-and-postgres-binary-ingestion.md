@@ -55,7 +55,7 @@
   - rotation/cleanup behavior tests for collector lifecycle
 - Gate requirements:
   - no optional/skipped tests for real-binary logging paths
-  - `make check`, `make test`, `make lint`, and `make test-bdd` must pass
+  - `make check`, `make test`, `make lint`, and `make test` must pass
 
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
@@ -83,5 +83,5 @@
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test-bdd` — all BDD features pass
+- [ ] `make test` — all BDD features pass
 </acceptance_criteria>

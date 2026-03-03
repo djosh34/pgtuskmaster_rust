@@ -28,7 +28,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] If failures occur, add `$add-bug` tasks with namespace/port collision logs.
 </acceptance_criteria>
 <execution_plan>
@@ -85,7 +85,7 @@
 - [x] Run targeted harness tests first for rapid iteration.
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any failure indicates namespace/port conflict, create `$add-bug` task(s) with reproduction command, logs, and failing namespace identifiers.
 - [x] After successful implementation phase, tick acceptance criteria and update task tags to done/passing per workflow.

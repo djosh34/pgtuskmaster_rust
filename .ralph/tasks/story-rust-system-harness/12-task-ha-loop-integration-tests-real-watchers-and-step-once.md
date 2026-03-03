@@ -28,7 +28,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Any failure creates `$add-bug` tasks with snapshot/action traces.
 </acceptance_criteria>
 
@@ -102,7 +102,7 @@
 - [x] Run required gates sequentially and rerun after fixes until all pass:
 - [x] `make check`
 - [x] `make test`
-- [x] `make test-bdd`
+- [x] `make test`
 - [x] `make lint`
 
 11. Task bookkeeping after green gates

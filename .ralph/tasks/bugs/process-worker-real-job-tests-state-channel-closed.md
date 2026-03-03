@@ -27,7 +27,7 @@ Please explore and research the codebase first, then implement a fix. Focus on s
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Implementation Plan (Draft)
@@ -61,7 +61,7 @@ Please explore and research the codebase first, then implement a fix. Focus on s
 - [x] Run required full gates sequentially:
 - [x] `make check`
 - [x] `make test`
-- [x] `make test-bdd`
+- [x] `make test`
 - [x] `make lint`
 - [x] Capture gate outputs under a task-specific evidence directory and record pass/fail markers used by Ralph (`congratulations` / `evaluation failed` where applicable).
 - [x] Update this bug file with final root cause and fix summary.
@@ -75,4 +75,4 @@ Please explore and research the codebase first, then implement a fix. Focus on s
 - Root cause: Real process-worker tests relied on underscore subscriber bindings (`_sub`) plus tuple-based helpers, which made subscriber ownership implicit and brittle for async lifecycle reasoning. `StatePublisher::publish` fails by design when all receivers are dropped.
 - Fix: Introduced `RealProcessFixture` in `src/process/worker.rs` test module to own `ProcessWorkerCtx`, job sender, `StateSubscriber<ProcessState>`, and `NamespaceGuard` together; moved submit/wait logic onto fixture methods and added explicit subscriber snapshot reads during wait loops.
 - Regression coverage: Added `start_job_returns_channel_closed_when_all_subscribers_are_dropped` to prove channel-close behavior when no subscriber remains.
-- Evidence/logs: `.ralph/evidence/process-worker-real-job-tests-state-channel-closed-20260302/` (`make-check.log`, `make-test.log`, `make-test-bdd.log`, `make-lint.log`, `gate-status.txt`).
+- Evidence/logs: `.ralph/evidence/process-worker-real-job-tests-state-channel-closed-20260302/` (`make-check.log`, `make-test.log`, `make-lint.log`, `gate-status.txt`).

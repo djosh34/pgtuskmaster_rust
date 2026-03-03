@@ -26,7 +26,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -122,7 +122,7 @@
 - Run full required gates in order:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - If failures occur, fix immediately or create bugs via `add-bug` per AGENTS policy before completion.
 

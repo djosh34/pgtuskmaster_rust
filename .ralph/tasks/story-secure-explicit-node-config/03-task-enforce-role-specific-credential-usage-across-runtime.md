@@ -31,5 +31,5 @@
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test-bdd` — all BDD features pass
+- [ ] `make test` — all BDD features pass
 </acceptance_criteria>

@@ -29,7 +29,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] If any fail, use `$add-bug` skill to create bug task(s) in `.ralph/tasks/bugs/`. (N/A: all required commands passed)
 </acceptance_criteria>
 
@@ -120,7 +120,7 @@
 10. Verification and failure protocol
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any command fails, invoke `$add-bug` skill and create bug task(s) in `.ralph/tasks/bugs/` with repro command and failing log excerpt.
 

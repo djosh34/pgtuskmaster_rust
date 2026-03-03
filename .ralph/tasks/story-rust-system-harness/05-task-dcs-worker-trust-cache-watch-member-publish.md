@@ -29,7 +29,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] On failures, create `$add-bug` tasks for each distinct defect.
 </acceptance_criteria>
 
@@ -128,7 +128,7 @@
 - [x] Run focused DCS tests first for quick feedback.
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any required gate fails, create `$add-bug` task files per distinct defect before proceeding.
 

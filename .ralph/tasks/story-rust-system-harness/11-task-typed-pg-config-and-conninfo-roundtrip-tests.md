@@ -28,7 +28,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] On failure, create `$add-bug` tasks with failing input samples. (No failing gates remained after fixes.)
 </acceptance_criteria>
 
@@ -144,7 +144,7 @@
 5. Run mandatory gates sequentially (no parallel cargo invocations):
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 6. If any gate fails, create `$add-bug` task(s) with command, failing sample inputs, and observed errors.
 

@@ -34,7 +34,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -164,7 +164,7 @@ Notes:
   - [x] `cargo clean` once (reduces intermittent mount/link flakes)
   - [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make check |& tee .ralph/evidence/task-31-mdbook/make-check.log`
   - [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test |& tee .ralph/evidence/task-31-mdbook/make-test.log`
-  - [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test-bdd |& tee .ralph/evidence/task-31-mdbook/make-test-bdd.log`
+  - [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUST_TEST_THREADS=1 make test |& tee .ralph/evidence/task-31-mdbook/make-test.log`
   - [x] `set -o pipefail; CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 make lint |& tee .ralph/evidence/task-31-mdbook/make-lint.log`
   - [x] For `make test` + `make lint` logs, grep for markers (supplemental evidence only):
     - [x] `rg -n \"congratulations|evaluation failed\" .ralph/evidence/task-31-mdbook/make-test.log` (no matches; captured in `make-test-markers.txt`)
@@ -187,7 +187,7 @@ Evidence (logs + commands): `.ralph/evidence/task-31-mdbook/`
 - docs init + help: `mdbook-init.log`, `mdbook-init-help.txt`
 - docs build + serve: `docs-build.log`, `docs-serve.log`, `docs-tree-after-build.txt`
 - git hygiene proof: `git-hygiene.log`
-- gates: `make-docs-build.log`, `make-check.log`, `make-test.log`, `make-test-bdd.log`, `make-lint.log`
+- gates: `make-docs-build.log`, `make-check.log`, `make-test.log`, `make-lint.log`
 
 COMPLETED
 </execution_plan>

@@ -12,8 +12,9 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - Validate e2e/integration behavior comes from real implementation, not accidental effects.
 - Audit all code smells and broader quality concerns with nothing out of scope.
 - Create `$add-bug` tasks for small findings and `$add-task-as-agent` tasks for larger findings.
-- Final phase after findings/code-smell audit: run `make check`, `make test`, `make lint`, and `make test-bdd`.
+- Final phase after findings/code-smell audit: run `make check`, `make test`, `make lint`, and `make test-long`.
 - If any final-phase test gate fails, create bug task(s) with `$add-bug` for each failing area before closeout.
+- If `make test-long` fails, also create a follow-up task to add a shorter real-binary e2e regression that reproduces the same failure.
 - Only after the full review/fanout is complete, set `.ralph/model.txt` back to exactly `normal_high`.
 
 **NEVER set this task's passes to anything other than meta-task.**
@@ -26,7 +27,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - Files/modules audited:
   - No-panic/no-unwrap/no-expect scan across runtime and test surfaces (`src/config`, `src/dcs`, `src/ha`, `src/process`, `src/pginfo`, `src/api`, `src/test_harness`, `tests/`) using 16 parallel skeptical tracks.
   - Strict schema guards via `#[serde(deny_unknown_fields)]` coverage (`src/config/schema.rs`, `src/api/mod.rs`, `src/api/fallback.rs`).
-  - Real-binary enforcement path (`Makefile:test-real`, `src/test_harness/binaries.rs`) with explicit environment-gated enforcement.
+  - Real-binary enforcement path (`Makefile:test-long`, `src/test_harness/binaries.rs`) with explicit environment-gated enforcement.
   - etcd bootstrap/fault handling contracts (`src/dcs/etcd_store.rs`, `src/dcs/worker.rs`, `src/dcs/store.rs`) confirming snapshot+watch and unhealthy-path handling.
   - HA and BDD/integration realism surfaces (`src/ha/worker.rs`, `src/ha/e2e_multi_node.rs`, `tests/bdd_api_http.rs`, `tests/bdd_state_watch.rs`).
 - Findings summary:
@@ -38,8 +39,8 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - Gate outcomes:
   - `make check`: pass (`make-check.log`)
   - `make test`: pass (`make-test.log`)
-  - Real-binary enforcement gate: `make test-real`: pass (`make-test-real.log`)
-  - `make test-bdd`: pass (`make-test-bdd.log`)
+  - Real-binary enforcement gate: `make test-long`: pass (`make-test-long.log`)
+  - `make test`: pass (`make-test.log`)
   - `make lint`: pass (`make-lint.log`)
 - Closeout model reset to `normal_high`: done (after full review + gates).
 
@@ -59,7 +60,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - Files/modules audited:
   - Gate definitions + strict lint posture (`Makefile`, `src/lib.rs`)
   - Config schema/parser strictness (`src/config/schema.rs`, `src/config/parser.rs`)
-  - Real-binary enforcement policy (`src/test_harness/binaries.rs`, `Makefile:test-real`)
+  - Real-binary enforcement policy (`src/test_harness/binaries.rs`, `Makefile:test-long`)
   - DCS adapter/watch semantics + error handling (`src/dcs/etcd_store.rs`, `src/dcs/store.rs`, `src/dcs/worker.rs`)
   - HA decision + ordered multi-worker step discipline (`src/ha/decide.rs`, `src/ha/worker.rs`)
   - Process worker job lifecycle + timeouts (`src/process/worker.rs`)
@@ -71,15 +72,15 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - No `unwrap()`/`expect()`/`panic!()`/`todo!()`/`unimplemented!()` occurrences found in `src/` or `tests/`.
   - Config structs keep strict `#[serde(deny_unknown_fields)]` coverage in schema/API surfaces.
   - etcd watch bootstrap uses `get(prefix)` snapshot then `watch(prefix)` from `snapshot_revision + 1`, and treats canceled/compacted watch responses as unhealthy (forcing reconnect+resnapshot).
-  - Real-binary enforcement gate `make test-real` is available and passes with `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1`.
+  - Real-binary enforcement gate `make test-long` is available and passes with `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1`.
 - Small issues -> bug tasks: none for this pass.
 - Large issues -> agent tasks: none for this pass.
 - Gate outcomes:
   - `make check`: pass (`make-check.log`)
   - `make test`: pass (`make-test.log`)
-  - `make test-bdd`: pass (`make-test-bdd.log`)
+  - `make test-long`: pass (`make-test-long.log`)
   - `make lint`: pass (`make-lint.log`)
-  - Real-binary enforcement gate: `make test-real`: pass (`make-test-real.log`)
+  - Real-binary enforcement gate: `make test-long`: pass (`make-test-long.log`)
 - Closeout model reset to `normal_high`: done (after gates; see `.ralph/model.txt`)
 
 ### 2026-03-03 (fresh run, pass-2 preflight only)
@@ -104,16 +105,16 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - BDD tests (HTTP + state channel) (`tests/bdd_api_http.rs`, `tests/bdd_state_watch.rs`)
 - Findings summary:
   - No `unwrap()`/`expect()`/`panic!()`/`todo!()`/`unimplemented!()` occurrences found in `src/` or `tests/`.
-  - Real-binary tests are intentionally optional by default (skip when binaries missing), with deterministic enforcement available via `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1` and `make test-real` (verified by running it below).
+  - Real-binary tests are intentionally optional by default (skip when binaries missing), with deterministic enforcement available via `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1` and `make test-long` (verified by running it below).
   - etcd watch bootstrap uses `get(prefix)` snapshot then `watch(prefix)` from `snapshot_revision + 1`, and reconnects/resnapshots on canceled/compacted watch responses.
 - Small issues -> bug tasks: none for this pass (no issues found that required remediation tasks).
 - Large issues -> agent tasks: none for this pass.
 - Gate outcomes:
   - `make check`: pass (`make-check.log`)
   - `make test`: pass (`make-test.log`)
-  - `make test-bdd`: pass (`make-test-bdd.log`)
+  - `make test-long`: pass (`make-test-long.log`)
   - `make lint`: pass (`make-lint.log`)
-  - Real-binary enforcement gate: `make test-real`: pass (`make-test-real.log`)
+  - Real-binary enforcement gate: `make test-long`: pass (`make-test-long.log`)
 - Closeout model reset to `normal_high`: done (verified `.ralph/model.txt` is `normal_high`).
 
 ### 2026-03-03 (fresh run, pass-1 preflight only)
@@ -144,7 +145,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - [ ] Code smells and broader quality issues are audited across the full codebase.
 - [ ] Every small issue is turned into a bug task via `$add-bug`.
 - [ ] Every larger issue is turned into a task via `$add-task-as-agent`.
-- [ ] Final verification runs all gates: `make check`, `make test`, `make lint`, `make test-bdd`.
+- [ ] Final verification runs all gates: `make check`, `make test`, `make lint`, `make test-long`.
 - [ ] Every failing final-phase gate results in bug task(s) via `$add-bug` with actionable failure details.
 - [ ] Final closeout step sets `.ralph/model.txt` to exactly `normal_high`.
 - THIS TASK STAYS AS meta-task FOREVER

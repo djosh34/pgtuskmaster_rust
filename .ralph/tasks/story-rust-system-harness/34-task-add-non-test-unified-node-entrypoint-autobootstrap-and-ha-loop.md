@@ -33,7 +33,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Detailed Implementation Plan (Draft 1)
@@ -201,7 +201,7 @@ Phase 5: Integration coverage and gate hardening
 - [x] Config schema/default/parser updates complete (including external fixtures/examples/tests).
 - [x] `make check` passes.
 - [x] `make test` passes.
-- [x] `make test-bdd` passes.
+- [x] `make test` passes.
 - [x] `make lint` passes.
 
 ## Deep Skeptical Verification (Draft 2 Delta)

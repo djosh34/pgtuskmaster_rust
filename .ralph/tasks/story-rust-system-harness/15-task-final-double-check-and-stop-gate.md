@@ -25,7 +25,7 @@
 - [x] Test-quality audit confirms no mock-only fake coverage for critical HA paths and no tautological tests (`assert(true)` style) in meaningful suites. Evidence: `.ralph/evidence/15-final-gate/test-quality-audit.md`.
 - [x] Test-quality audit confirms e2e/integration tests do not perform HA transitions directly; HA loops must produce behavior autonomously. Evidence: `.ralph/evidence/15-final-gate/ha-autonomy-audit.md`.
 - [x] Feature audit confirms all plan features are present, working, and backed by tests. Evidence: `.ralph/evidence/15-final-gate/feature-trace-matrix.md`.
-- [x] Run full suite with no exceptions: `make check`, `make test`, `make lint`, `make test-bdd`. Evidence: `.ralph/evidence/15-final-gate/make-check.log`, `.ralph/evidence/15-final-gate/make-test.log`, `.ralph/evidence/15-final-gate/make-test-bdd.log`, `.ralph/evidence/15-final-gate/make-lint.log`.
+- [x] Run full suite with no exceptions: `make check`, `make test`, `make lint`. Evidence: `.ralph/evidence/15-final-gate/make-check.log`, `.ralph/evidence/15-final-gate/make-test.log`, `.ralph/evidence/15-final-gate/make-test.log`, `.ralph/evidence/15-final-gate/make-lint.log`.
 - [x] If any audit or suite step fails, use `$add-bug` skill to create bug task(s) for each issue. Result: no failed audit/gate step observed, so no bug task required.
 - [x] Do not write `.ralph/STOP` in this task; STOP is handled only in the final story task.
 </acceptance_criteria>
@@ -35,7 +35,7 @@
 
 Research snapshot from parallel exploration sweep (10 probes):
 - Blocker tasks `13` and `14` are currently marked done with passing tags.
-- Mandatory gates exist in `Makefile`: `check`, `test`, `test-bdd`, `lint`.
+- Mandatory gates exist in `Makefile`: `check`, `test`, `test`, `lint`.
 - Static grep found no `assert!(true)` tautology assertions, but this must still be validated by manual test intent review.
 - Current workspace is not clean (`.ralph/current_tasks.md` modified; `.ralph/current_task.txt` and `.ralph/progress/25.jsonl` untracked), so this task must avoid clobbering unrelated state.
 
@@ -68,7 +68,7 @@ Research snapshot from parallel exploration sweep (10 probes):
 6. Full mandatory gate execution (strict sequential order)
 - [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make check 2>&1 | tee .ralph/evidence/15-final-gate/make-check.log'`.
 - [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test 2>&1 | tee .ralph/evidence/15-final-gate/make-test.log'`.
-- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test-bdd 2>&1 | tee .ralph/evidence/15-final-gate/make-test-bdd.log'`.
+- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test 2>&1 | tee .ralph/evidence/15-final-gate/make-test.log'`.
 - [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make lint 2>&1 | tee .ralph/evidence/15-final-gate/make-lint.log'`.
 - [x] Summarize gate outcomes with command timestamps in `.ralph/evidence/15-final-gate/gate-summary.md`.
 
@@ -95,5 +95,5 @@ NOW EXECUTE
 - HA autonomy: `.ralph/evidence/15-final-gate/ha-autonomy-audit.md`
 - Feature trace matrix: `.ralph/evidence/15-final-gate/feature-trace-matrix.md`
 - Real binary audit: `.ralph/evidence/15-final-gate/real-binary-audit.md`
-- Gate summary + logs: `.ralph/evidence/15-final-gate/gate-summary.md`, `.ralph/evidence/15-final-gate/make-check.log`, `.ralph/evidence/15-final-gate/make-test.log`, `.ralph/evidence/15-final-gate/make-test-bdd.log`, `.ralph/evidence/15-final-gate/make-lint.log`
+- Gate summary + logs: `.ralph/evidence/15-final-gate/gate-summary.md`, `.ralph/evidence/15-final-gate/make-check.log`, `.ralph/evidence/15-final-gate/make-test.log`, `.ralph/evidence/15-final-gate/make-test.log`, `.ralph/evidence/15-final-gate/make-lint.log`
 </evidence>

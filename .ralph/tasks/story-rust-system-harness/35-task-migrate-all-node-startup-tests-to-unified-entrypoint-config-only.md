@@ -34,7 +34,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Detailed Implementation Plan (Draft 2 - Verified)
@@ -166,7 +166,7 @@ Phase 4: Run required verification gates
 - `make check --all-targets` (explicit per acceptance criteria)
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - Record and fix all failures until green.
 
@@ -205,7 +205,7 @@ Phase 5: Task bookkeeping after green
 - [x] `make check --all-targets` passes.
 - [x] `make check` passes.
 - [x] `make test` passes.
-- [x] `make test-bdd` passes.
+- [x] `make test` passes.
 - [x] `make lint` passes.
 
 NOW EXECUTE

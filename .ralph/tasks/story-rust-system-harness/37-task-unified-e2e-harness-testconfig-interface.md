@@ -231,7 +231,7 @@
 - Record artifacts under `.ralph/evidence/task-37-unified-e2e-harness-testconfig-interface/`:
   - interface comparison + final API summary
   - duplication reduction metrics (LOC / function count)
-  - logs for `make check`, `make test`, `make test-bdd`, `make lint` (100% passing required)
+  - logs for `make check`, `make test`, `make lint` (100% passing required)
 
 **Execution note:** `start_cluster` must run under a `LocalSet` (startup spawns runtime tasks via `spawn_local`); keep a shared `run_with_local_set` helper in `ha_e2e::util` and ensure both suites use it consistently.
 </description>
@@ -257,7 +257,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 NOW EXECUTE

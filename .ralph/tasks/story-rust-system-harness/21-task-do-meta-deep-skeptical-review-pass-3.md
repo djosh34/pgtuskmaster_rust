@@ -66,9 +66,9 @@
 - Execute sequentially:
 - `CARGO_BUILD_JOBS=1 make check`
 - `CARGO_BUILD_JOBS=1 make test`
-- `CARGO_BUILD_JOBS=1 make test-real`
-- `CARGO_BUILD_JOBS=1 make test-bdd`
+- `CARGO_BUILD_JOBS=1 make test`
 - `CARGO_BUILD_JOBS=1 make lint`
+- `CARGO_BUILD_JOBS=1 make test-long`
 - If any gate fails, create bug task(s) immediately before closeout.
 
 6. Meta-task 18 closeout actions
@@ -78,7 +78,7 @@
 
 7. Pass-3 task completion protocol
 - Mark this pass-3 task done only after task 18 is fully updated and gates are green.
-- Verify all expected gate logs exist in the evidence directory (`make-check.log`, `make-test.log`, `make-test-real.log`, `make-test-bdd.log`, `make-lint.log`) before setting completion tags.
+- Verify all expected gate logs exist in the evidence directory (`make-check.log`, `make-test.log`, `make-test-long.log`, `make-test.log`, `make-lint.log`) before setting completion tags.
 - Set `<passing>true</passing>` in this pass file at completion.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all tracked changes (including `.ralph/*`) using:
@@ -92,7 +92,7 @@
 
 ### Skeptical verification delta (2026-03-03)
 - Verified with 16 parallel tracks across meta-task contract text, pass sequencing files, gate definitions, model-state constraints, evidence conventions, and open bug/task inventory.
-- Alteration 1: moved `make test-real` earlier in the gate sequence (immediately after `make test`) to fail fast on real-binary/environment regressions.
+- Alteration 1: moved `make test` earlier in the gate sequence (immediately after `make test`) to fail fast on real-binary/environment regressions.
 - Alteration 2: added an explicit closeout artifact check requirement to ensure every gate log exists in the run evidence directory before setting pass status.
 - Rationale: these changes reduce false-green risk and make pass-3 evidence auditable without inference.
 
@@ -116,8 +116,8 @@ NOW EXECUTE
 - Gate results:
   - `CARGO_BUILD_JOBS=1 make check`: pass
   - `CARGO_BUILD_JOBS=1 make test`: pass
-  - `CARGO_BUILD_JOBS=1 make test-real`: pass
-  - `CARGO_BUILD_JOBS=1 make test-bdd`: pass
+  - `CARGO_BUILD_JOBS=1 make test`: pass
+  - `CARGO_BUILD_JOBS=1 make test`: pass
   - `CARGO_BUILD_JOBS=1 make lint`: pass
 - Gate log presence verified in `gate-log-presence.txt` for all required logs before completion tags were set.
 - Model reset after full closeout: `.ralph/model.txt` restored to `normal_high`.

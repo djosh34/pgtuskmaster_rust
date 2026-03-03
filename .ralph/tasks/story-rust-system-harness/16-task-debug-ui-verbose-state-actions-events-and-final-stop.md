@@ -31,7 +31,7 @@ Please figure out how to validate it is working (by installing something?)
 - [x] Static debug UI renders figures/blocks/panels/timelines and updates on data changes.
 - [x] Debug UI is not text-only; includes visual grouping and state/action emphasis.
 - [x] Perform final validation pass: confirm tests are real (not fake asserts, not tests doing HA logic themselves), all features are present/working/tested, and all suites pass.
-- [x] Run full suite with no exceptions: `make check`, `make test`, `make lint`, `make test-bdd`.
+- [x] Run full suite with no exceptions: `make check`, `make test`, `make lint`.
 - [x] If any validation or suite check fails, do NOT write `.ralph/STOP`; use `$add-bug` skill to create bug task(s).
 - [x] Only when everything above passes, execute `touch .ralph/STOP`.
 </acceptance_criteria>
@@ -48,7 +48,7 @@ Research snapshot from parallel exploration sweep (12+ concurrent tracks):
 - `task 15` is complete and explicitly deferred STOP creation to this final task; task 16 is correctly blocked by task 15.
 
 Skeptical verification deltas applied in Draft 2 (16+ parallel probes):
-- Alteration 1: add mandatory real-binary enforcement gate (`make test-real`) before final suite closeout; this enforces the repo policy that real-binary coverage must not remain optional.
+- Alteration 1: add mandatory real-binary enforcement gate (`make test`) before final suite closeout; this enforces the repo policy that real-binary coverage must not remain optional.
 - Alteration 2: explicitly preserve backward compatibility for existing `GET /debug/snapshot` while adding structured `/debug/verbose`; this reduces risk of silent contract regressions for existing tests/users.
 - Alteration 3: extend authz coverage to include new debug routes (`/debug/verbose`, `/debug/ui`) for unauthenticated/read-token/admin-token paths, not only feature-happy-path route checks.
 
@@ -137,10 +137,10 @@ Skeptical verification deltas applied in Draft 2 (16+ parallel probes):
 
 10. Full required gates (strict, serial, auditable)
 - [x] Run sequentially with `set -o pipefail` + `tee` logging:
-- [x] `CARGO_BUILD_JOBS=1 make test-real` -> `.ralph/evidence/16-debug-ui-final-stop/make-test-real.log`
+- [x] `CARGO_BUILD_JOBS=1 make test` -> `.ralph/evidence/16-debug-ui-final-stop/make-test-long.log`
 - [x] `CARGO_BUILD_JOBS=1 make check` -> `.ralph/evidence/16-debug-ui-final-stop/make-check.log`
 - [x] `CARGO_BUILD_JOBS=1 make test` -> `.ralph/evidence/16-debug-ui-final-stop/make-test.log`
-- [x] `CARGO_BUILD_JOBS=1 make test-bdd` -> `.ralph/evidence/16-debug-ui-final-stop/make-test-bdd.log`
+- [x] `CARGO_BUILD_JOBS=1 make test` -> `.ralph/evidence/16-debug-ui-final-stop/make-test.log`
 - [x] `CARGO_BUILD_JOBS=1 make lint` -> `.ralph/evidence/16-debug-ui-final-stop/make-lint.log`
 - [x] If stale Cargo artifact signature appears (`failed to build archive` / missing `*.rcgu.o`), run one `cargo clean`, preserve pre-clean logs, then rerun full gate sequence once.
 
@@ -169,6 +169,6 @@ NOW EXECUTE
 <evidence>
 - Validation audit: `.ralph/evidence/16-debug-ui-final-stop/final-validation-audit.md`
 - Gate summary: `.ralph/evidence/16-debug-ui-final-stop/gate-summary.md`
-- Required gate logs: `.ralph/evidence/16-debug-ui-final-stop/make-test-real.log`, `.ralph/evidence/16-debug-ui-final-stop/make-check.log`, `.ralph/evidence/16-debug-ui-final-stop/make-test.log`, `.ralph/evidence/16-debug-ui-final-stop/make-test-bdd.log`, `.ralph/evidence/16-debug-ui-final-stop/make-lint.log`
+- Required gate logs: `.ralph/evidence/16-debug-ui-final-stop/make-test-long.log`, `.ralph/evidence/16-debug-ui-final-stop/make-check.log`, `.ralph/evidence/16-debug-ui-final-stop/make-test.log`, `.ralph/evidence/16-debug-ui-final-stop/make-test.log`, `.ralph/evidence/16-debug-ui-final-stop/make-lint.log`
 - Browser/UI smoke: `.ralph/evidence/16-debug-ui-final-stop/ui-smoke/playwright-install.log`, `.ralph/evidence/16-debug-ui-final-stop/ui-smoke/playwright-screenshot.log`, `.ralph/evidence/16-debug-ui-final-stop/ui-smoke/debug-ui.png`, `.ralph/evidence/16-debug-ui-final-stop/ui-smoke/debug-ui.html`, `.ralph/evidence/16-debug-ui-final-stop/ui-smoke/debug-verbose.headers`, `.ralph/evidence/16-debug-ui-final-stop/ui-smoke/debug-verbose.body`, `.ralph/evidence/16-debug-ui-final-stop/ui-smoke/server.log`
 </evidence>

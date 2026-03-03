@@ -39,7 +39,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <implementation_plan>
@@ -97,7 +97,7 @@
 - When enforcement env is on, allow helper to fail-fast with `HarnessError::InvalidInput`.
 
 5. Run full required gates sequentially and capture evidence
-- Run `make check`, `make test`, `make test-bdd`, `make lint` sequentially (no parallel Cargo gate invocations).
+- Run `make check`, `make test`, `make lint` sequentially (no parallel Cargo gate invocations).
 - For `make test` and `make lint`, capture logs and grep for `congratulations` / `evaluation failed` as required by task text.
 - If archive/object-file corruption appears, perform deterministic recovery (`cargo clean`) then rerun full gates and record both runs.
 

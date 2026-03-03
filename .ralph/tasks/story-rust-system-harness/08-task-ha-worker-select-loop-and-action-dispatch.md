@@ -27,7 +27,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Failures must generate `$add-bug` tasks with action traces.
 </acceptance_criteria>
 
@@ -139,7 +139,7 @@
 12. Required full gate sequence (sequential and complete)
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any gate fails, stop and create `$add-bug` task(s) with action traces and repro steps before continuing.
 

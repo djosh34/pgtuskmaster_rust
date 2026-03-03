@@ -38,5 +38,5 @@
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test-bdd` — all BDD features pass
+- [ ] `make test-long` — ultra-long suite passes; if any failure appears here, create a new shorter real-binary e2e regression that reproduces it
 </acceptance_criteria>

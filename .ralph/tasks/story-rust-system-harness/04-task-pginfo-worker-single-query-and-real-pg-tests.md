@@ -28,7 +28,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] If failures occur, create `$add-bug` task(s) with logs and SQL/result evidence.
 </acceptance_criteria>
 
@@ -97,7 +97,7 @@
 - [x] Run targeted pginfo test selection first (unit + integration).
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 
 11. Failure handling and bug-task protocol

@@ -28,7 +28,7 @@
 - [x] Run `make check`.
 - [x] Run `make test`.
 - [x] Run `make lint`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] On failures, use `$add-bug` and include failing state snapshot fixture.
 </acceptance_criteria>
 <execution_plan>
@@ -86,7 +86,7 @@
 - [x] Run targeted HA tests first to shorten debug loop (e.g. `cargo test ha::decide -- --nocapture` or equivalent exact test path).
 - [x] Run `make check`.
 - [x] Run `make test`.
-- [x] Run `make test-bdd`.
+- [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any required command fails, create bug task(s) using `$add-bug` with failing snapshot fixture + repro command.
 

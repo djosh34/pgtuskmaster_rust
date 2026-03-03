@@ -29,7 +29,7 @@
 - [x] `make check` — passes cleanly (`.ralph/evidence/26-task-e2e-unassisted-failover-sql-consistency/make-check.log`)
 - [x] `make test` — passes cleanly (`.ralph/evidence/26-task-e2e-unassisted-failover-sql-consistency/make-test.log`); grep for `congratulations|evaluation failed` returned no matches.
 - [x] `make lint` — passes cleanly (`.ralph/evidence/26-task-e2e-unassisted-failover-sql-consistency/make-lint.log`); grep for `congratulations|evaluation failed` returned no matches.
-- [x] `make test-bdd` — all BDD features pass (`.ralph/evidence/26-task-e2e-unassisted-failover-sql-consistency/make-test-bdd.log`)
+- [x] `make test` — all BDD features pass (`.ralph/evidence/26-task-e2e-unassisted-failover-sql-consistency/make-test.log`)
 </acceptance_criteria>
 
 <execution_plan>
@@ -46,7 +46,7 @@
 - Track 8: verified `ClusterFixture` can already identify node-by-id and map ID/index; extending it with port-aware SQL helpers will be straightforward.
 - Track 9: verified no reusable helper in `src/test_harness/pg16.rs` for running SQL against a port.
 - Track 10: verified task acceptance requires explicit before/after SQL write-read continuity proof and no post-failure control interventions beyond API reads.
-- Track 11: verified required gate order from `Makefile` remains `make check` -> `make test` -> `make test-bdd` -> `make lint`.
+- Track 11: verified required gate order from `Makefile` remains `make check` -> `make test` -> `make test` -> `make lint`.
 - Track 12: verified existing timeline artifact directory pattern under `.ralph/evidence/13-e2e-multi-node` should be reused or extended for this scenario’s forensic trace.
 - Track 13: verified `ClusterFixture` currently has no node postgres port in `NodeFixture`; SQL against elected primary cannot be implemented without adding this field.
 - Track 14: verified API-only path can still prove demotion/promotion by capturing per-node `ha_phase` history and asserting concrete transitions over time.
@@ -115,7 +115,7 @@
 2. Run required full gates in exact order:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 3. Persist logs under task-specific evidence directory and grep `make test`/`make lint` logs for `congratulations` and `evaluation failed`.
 4. Update task checklist and tags only after all gates pass.

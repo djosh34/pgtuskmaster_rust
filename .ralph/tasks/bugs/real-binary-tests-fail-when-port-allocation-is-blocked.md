@@ -38,7 +38,7 @@ Please explore and research the test harness and real-binary test code paths fir
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 ## Implementation Plan (Verified Draft)
@@ -83,7 +83,7 @@ Please explore and research the test harness and real-binary test code paths fir
 - [x] Run required gates sequentially once all targeted checks are stable:
   - [x] `make check`
   - [x] `make test`
-  - [x] `make test-bdd`
+  - [x] `make test`
   - [x] `make lint`
 
 ### 5) Task bookkeeping and closeout

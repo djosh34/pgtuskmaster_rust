@@ -26,7 +26,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
 - [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test-bdd` — all BDD features pass
+- [x] `make test` — all BDD features pass
 </acceptance_criteria>
 
 <execution_plan>
@@ -45,7 +45,7 @@
 - Track 10: re-checked `src/test_harness/mod.rs`/error surfaces; no panic-based path is required for cluster orchestration errors.
 - Track 11: re-checked readiness call sites and verified only port-open waits exist for etcd currently; cluster-level readiness is absent.
 - Track 12: re-checked no-quorum + timeline lines in e2e for artifact semantics; timeline already captures scenario steps and should include which etcd members are stopped.
-- Track 13: re-checked `Makefile` gates and confirmed required sequence remains `make check`, `make test`, `make test-bdd`, `make lint`.
+- Track 13: re-checked `Makefile` gates and confirmed required sequence remains `make check`, `make test`, `make lint`.
 - Track 14: checked workspace status and confirmed current task file is mutable and in-progress.
 - Track 15: scanned task/story files for acceptance marker behavior (`congratulations`/`evaluation failed`) and captured that marker greps must still be recorded.
 - Track 16: re-validated lifecycle protocol for this task file (`TO BE VERIFIED` -> skeptical delta -> `NOW EXECUTE`).
@@ -116,7 +116,7 @@
 - Run mandatory gates in order:
 - `make check`
 - `make test`
-- `make test-bdd`
+- `make test`
 - `make lint`
 - Capture marker checks for `make test` and `make lint` outputs (`congratulations` / `evaluation failed`) as required by task acceptance language.
 
