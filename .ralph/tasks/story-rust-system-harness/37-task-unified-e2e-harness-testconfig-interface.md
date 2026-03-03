@@ -1,5 +1,5 @@
 ---
-## Task: Unify HA E2E Harness Behind Stable `TestConfig` Interface <status>not_started</status> <passes>false</passes>
+## Task: Unify HA E2E Harness Behind Stable `TestConfig` Interface <status>completed</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Design and implement one stable, shared HA e2e harness interface driven by a single `TestConfig` input that initializes the requested cluster topology + pre-test setup, returns a full test handle, and removes duplicated setup/wait/process glue from scenario files.
@@ -80,115 +80,184 @@
 - Future e2e additions can be created by editing `TestConfig` and scenario logic, not re-creating setup scaffolding.
 
 **Implementation plan (precise, file + line anchors):**
-1. **Research gate inside task**
-- Add a dedicated “interface comparison” artifact documenting A/B/C scores and decision rationale before code edits.
-- Include concrete mapping from current call sites:
-  - multi-node startup at `src/ha/e2e_multi_node.rs:293-495`
-  - partition startup at `src/ha/e2e_partition_chaos.rs:72-363`
+0. **Research gate (must be done before code edits)**
+- Create an interface-comparison artifact at:
+  - `.ralph/evidence/task-37-unified-e2e-harness-testconfig-interface/interface-comparison.md`
+- Compare at least 3 interfaces and score them (1–5) across:
+  - reuse across future suites
+  - readability of scenario code
+  - policy compatibility (post-start hands-off)
+  - migration churn risk
+  - tokio constraints (current_thread + LocalSet + non-Send join handles)
+  - type/system complexity (trait-heavy vs concrete handle)
+- Candidates to compare (minimum):
+  - **A**: monolithic `run_ha_scenario(TestConfig, scenario_fn)` wrapper
+  - **B**: trait-heavy `trait HaEnv` / generic scenario layer
+  - **C**: config-driven `start_cluster(TestConfig) -> TestClusterHandle` (baseline)
+- Include a concrete “mapping table” from today’s fixtures:
+  - multi-node startup: `src/ha/e2e_multi_node.rs:293`
+  - partition startup: `src/ha/e2e_partition_chaos.rs:72`
+- Decision rule: adopt a superior interface if it is materially higher reuse + lower churn than C; otherwise commit to C and treat it as the stable API.
 
-2. **Introduce shared HA e2e harness module**
-- Edit `src/test_harness/mod.rs` to export new module(s) (near module list at `8-15`).
-- Add:
-  - `src/test_harness/ha_e2e/mod.rs`
-  - `src/test_harness/ha_e2e/config.rs`
-  - `src/test_harness/ha_e2e/cluster.rs`
-  - `src/test_harness/ha_e2e/ops.rs`
-  - `src/test_harness/ha_e2e/faults.rs`
-  - `src/test_harness/ha_e2e/util.rs`
+0.5 **Skeptical “policy-safe naming” contract (do before migrating any e2e file)**
+- `tests/policy_e2e_api_only.rs` uses raw substring scanning of the full *source text* for `src/ha/e2e_*.rs`, so forbidden tokens can be introduced accidentally via:
+  - helper names
+  - import paths / aliases
+  - comments
+  - string literals / URLs
+- Establish a hard rule for this task:
+  - keep all “risky” names and strings in `src/test_harness/ha_e2e/*`, and expose only neutral wrapper names in `src/ha/e2e_*.rs`
+  - preserve existing scenario-facing callsites where possible, especially `.run_sql_on_node(` and `.run_sql_on_node_with_retry(`
+- Add a fast feedback loop:
+  - after each migration (multi-node first, partition second), run `cargo test --test policy_e2e_api_only` immediately to catch lexical regressions early.
 
-3. **Move duplicated generic helpers into shared util**
-- Port from:
-  - multi-node `1615-2164`
-  - partition `886-1248`
-- Ensure one canonical implementation for:
-  - API readiness probe
-  - bootstrap primary wait
-  - process child wait/kill timeout
-  - `psql` execution helper and parsers
-  - timestamp and scenario utility helpers
-  - local-set runner
+1. **Lock the stable public harness API surface (low churn)**
+- Implement interface **C** unless research clearly overturns it:
+  - `TestConfig` as the single entrypoint input
+  - `TestClusterHandle` as the single returned handle
+  - nested config blocks to match existing harness style (`*Spec` + `*Handle`)
+- Keep scenario-facing method names close to existing fixture methods to minimize refactors and preserve policy-safe tokens in `src/ha/e2e_*.rs`:
+  - `get_ha_state` polling (plus TCP fallback when HTTP transport errors occur)
+  - `run_sql_on_node`, `run_sql_on_node_with_retry`
+  - `wait_for_bootstrap_primary`, `wait_for_stable_primary`, `assert_no_dual_primary_window`
+  - switchover via CLI/API surface (no direct DCS mutation)
+  - fault injection only via external process/network operations
 
-4. **Implement `TestConfig -> TestClusterHandle` startup path**
-- Use existing harness components (no reinvention):
-  - `prepare_pgdata_dir` (`src/test_harness/pg16.rs:57`)
-  - `spawn_etcd3_cluster` (`src/test_harness/etcd3.rs:188`)
-  - `TcpProxyLink` (`src/test_harness/net_proxy.rs:55`)
-- Consolidate current duplicated startup logic:
-  - from multi-node `293-495`
-  - from partition `72-363`
-- Provide optional proxy topology driven only by `TestConfig.mode`.
+2. **Add shared module family under `src/test_harness/ha_e2e/`**
+- Export module from `src/test_harness/mod.rs` (near the module list at `src/test_harness/mod.rs:8`).
+- Add modules (exact names may be adjusted if research demands, but keep responsibilities stable):
+  - `src/test_harness/ha_e2e/mod.rs` (top-level API + reexports)
+  - `src/test_harness/ha_e2e/config.rs` (`TestConfig`, `Mode`, defaults, validation)
+  - `src/test_harness/ha_e2e/handle.rs` (`TestClusterHandle`, node descriptors, timelines)
+  - `src/test_harness/ha_e2e/startup.rs` (build ports, etcd, proxies, runtime tasks)
+  - `src/test_harness/ha_e2e/ops.rs` (HA observation, waits, SQL helpers)
+  - `src/test_harness/ha_e2e/faults.rs` (proxy-backed faults + no-op/unsupported behavior)
+  - `src/test_harness/ha_e2e/util.rs` (shared helpers: log tail, child wait/kill, local-set runner, psql parsing, unix time)
+- **Runtime boundary contract (non-negotiable):**
+  - shared startup must always run within a `tokio::task::LocalSet` because runtime tasks use `spawn_local`
+  - keep `TestClusterHandle` intentionally non-`Send`/non-`Sync` (avoid `tokio::spawn` APIs that would force `Send + 'static`)
+  - preserve `TcpProxyLink`’s dedicated-thread runtime model (do not move proxy listeners onto the test’s current-thread runtime)
+  - provide a single canonical entry helper (likely `ha_e2e::run_with_local_set`) and make both suites use it.
 
-5. **Provide high-level operations on returned handle**
+3. **Centralize duplicated helper blocks verbatim first (reduce risk)**
+- Port duplicated helpers into `ha_e2e::util` with minimal edits (error handling preserved; no `unwrap`/`expect`/`panic` additions).
+- Source anchors to consolidate:
+  - multi-node helpers: `src/ha/e2e_multi_node.rs:1615` and below
+  - partition helpers: `src/ha/e2e_partition_chaos.rs:903` and below
+- Canonical helpers to unify:
+  - `wait_for_node_api_ready_or_task_exit` + `read_log_tail`
+  - `wait_for_bootstrap_primary`
+  - `wait_for_child_exit_with_timeout` + pg_ctl stop helpers
+  - `run_psql_statement` + parsers (`parse_psql_rows`, `parse_single_u64`)
+  - `unix_now`
+  - `run_with_local_set` (required because startup uses `spawn_local`)
+
+4. **Implement transactional startup (`TestConfig -> TestClusterHandle`)**
+- Add a cross-resource `StartupGuard` (or similarly named) in `ha_e2e::startup` that records owned resources as they come up and guarantees best-effort rollback on error:
+  - etcd handle(s)
+  - proxy links (if enabled)
+  - runtime task join handles / child processes
+  - any namespace paths created
+- On startup failure: perform reverse-order cleanup and return an error that includes both the startup failure and any cleanup failure details.
+- On success: convert guard into `TestClusterHandle` via `into_handle()` to prevent double-shutdown and keep lifecycle explicit.
+- Reuse existing harness primitives (no reinvention):
+  - etcd: `spawn_etcd3_cluster` (`src/test_harness/etcd3.rs:188`)
+  - postgres data dir: `prepare_pgdata_dir` (`src/test_harness/pg16.rs:57`)
+  - proxy links: `TcpProxyLink` (`src/test_harness/net_proxy.rs:55`)
+  - binary resolution: `require_pg16_bin_for_real_tests`, `require_etcd_bin_for_real_tests` (`src/test_harness/binaries.rs`)
+- Support two startup modes via `TestConfig.mode`:
+  - `Plain`: direct endpoints and addresses (like current multi-node)
+  - `PartitionProxy`: per-node proxy topology (like current partition chaos)
+    - rewrite each node’s DCS endpoints to proxy URLs at startup (no runtime config mutation post-boot)
+    - maintain `BTreeMap<String, TcpProxyLink>` for `etcd_proxies`, `api_proxies`, `pg_proxies`
+- Preserve layered timeout model from current suites (keep defaults identical to existing constants unless explicitly overridden by config).
+- Add up-front validation in `TestConfig` (fail early before spawning anything):
+  - unique node IDs / unique etcd member names
+  - mode-specific requirements fully satisfied
+  - artifact/log root path strategy is explicit and deterministic
+  - all postgres data dirs go through `prepare_pgdata_dir` (permissions invariants)
+
+5. **Provide high-level operations on `TestClusterHandle`**
 - Unify common operations currently duplicated:
-  - HA observation/poll:
-    - multi-node `1291-1451`
-    - partition `457-612`
-  - SQL/waits:
-    - multi-node `529-672`, `880-952`
-    - partition `614-744`
-  - No-split-brain assertions:
-    - multi-node `1435-1450`
-    - partition `564-586`
-- Keep scenario-specific stress-only logic (workload stats/summary) local to multi-node unless reused.
+  - HA observation + polling:
+    - multi-node: `src/ha/e2e_multi_node.rs:1291`
+    - partition: `src/ha/e2e_partition_chaos.rs:457`
+  - Waits/assertions:
+    - `wait_for_stable_primary` / `assert_no_dual_primary_window` (stability-based, not one-shot leader reads)
+  - SQL helpers + retry loops:
+    - multi-node: `src/ha/e2e_multi_node.rs:529` and `:880`
+    - partition: `src/ha/e2e_partition_chaos.rs:614`
+- Provide compatibility helpers to avoid scenario code reaching into internal vectors/maps:
+  - `node_ids()` / `node_ids_except(primary_id)`
+  - `api_addr(node_id)` / `pg_port(node_id)` accessors
+- Keep scenario-specific multi-node stress workload logic local unless it becomes a third consumer.
 
-6. **Migrate e2e suites to new shared interface**
-- `src/ha/e2e_multi_node.rs`
-  - Replace `ClusterFixture` setup internals and duplicated helper block with harness handle usage.
-  - Keep scenario behavior and assertions identical.
-  - Refactor repeated finalize match at `2317-2343` and `2416-...` to shared finalize helper.
-- `src/ha/e2e_partition_chaos.rs`
-  - Replace `PartitionFixture` setup internals and duplicated helper block with harness handle usage.
-  - Keep fault-injection semantics and scenario timelines unchanged.
+6. **Migrate `src/ha/e2e_multi_node.rs` to shared harness**
+- Replace bespoke `ClusterFixture` startup graph with `TestConfig` + `TestClusterHandle`:
+  - map `node_count`, timeouts, artifact dir, and runtime defaults into `TestConfig`
+  - ensure startup still uses `crate::runtime::run_node_from_config` unchanged
+- Replace duplicated helper block (`1615+`) with imports from `crate::test_harness::ha_e2e`.
+- Remove direct `fixture.nodes` iteration by using `handle.node_ids_except(...)`.
+- Keep scenario behavior and assertions identical.
 
-7. **Policy compatibility verification**
-- Recheck `tests/policy_e2e_api_only.rs:3-35` constraints after migration.
-- If helper names in e2e files change, keep allowed controls unchanged:
-  - observation via `/ha/state` path
-  - switchover via CLI/API client surface
-  - SQL via fixture methods
-  - external fault injection only
-- Update policy token list only if required and justified by equivalent semantics.
+7. **Migrate `src/ha/e2e_partition_chaos.rs` to shared harness**
+- Replace bespoke `PartitionFixture` startup graph with `TestConfig(mode=PartitionProxy)` + `TestClusterHandle`.
+- Preserve fault-injection semantics exactly:
+  - `partition_node_from_etcd` / `partition_primary_from_etcd`: block etcd link(s)
+  - `isolate_api_path`: block only API proxy
+  - `heal_all_network_faults`: restore all proxy modes to pass-through
+- Replace duplicated helper block (`903+`) with shared harness methods.
 
-8. **Contract tests for new interface**
-- Add focused tests under `src/test_harness/ha_e2e/*` for:
-  - `TestConfig` validation and defaults
-  - startup returns usable handle for plain mode
-  - startup returns usable handle for partition-proxy mode
-  - deterministic shutdown behavior and resource cleanup
-  - major wait/operation helpers error-path quality
+8. **Policy compatibility verification**
+- Ensure `src/ha/e2e_*.rs` do not gain forbidden lexical tokens from `tests/policy_e2e_api_only.rs:3` (including via comments/strings/import aliases).
+- Keep post-start control paths limited to:
+  - GET `/ha/state` observation (plus TCP fallback)
+  - switchover via CLI/API surface
+  - SQL reads/writes for scenario intent
+  - external process/network fault injection only
+- Update policy lists only if strictly required and justified by semantic equivalence.
+- Run `cargo test --test policy_e2e_api_only` immediately after each e2e file migration (before running the full `make` gates).
 
-9. **Migration safety checks**
-- Ensure no production runtime behavior changes in:
-  - `src/runtime/node.rs`
-- This task is test-harness/e2e orchestration refactor, not runtime logic rewrite.
+9. **Harness-level tests (contract + lifecycle)**
+- Add new tests under `src/test_harness/ha_e2e/*`:
+  - `TestConfig` validation + defaults (pure unit tests)
+- Add at least one regression test that exercises the **LocalSet boundary** explicitly:
+  - `#[tokio::test(flavor = "current_thread")]` + `ha_e2e::run_with_local_set(...)` + start + shutdown
+- Optional if it stays stable and does not duplicate coverage excessively:
+  - a minimal partition-proxy-mode start/shutdown smoke test (proxy-heavy tests can be flaky if startup leaks resources; only keep if it remains deterministic under `RUST_TEST_THREADS=1`)
+- Tests must not be optional/skipped; missing binaries should fail loudly with actionable errors (use existing `require_*_for_real_tests` helpers).
 
-10. **Evidence and final verification**
-- Record interface comparison artifact + final chosen API summary.
-- Record before/after duplication reduction (function count/LOC) for moved helpers.
+10. **Evidence + final verification**
+- Record artifacts under `.ralph/evidence/task-37-unified-e2e-harness-testconfig-interface/`:
+  - interface comparison + final API summary
+  - duplication reduction metrics (LOC / function count)
+  - logs for `make check`, `make test`, `make test-bdd`, `make lint` (100% passing required)
 
-**Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
+**Execution note:** `start_cluster` must run under a `LocalSet` (startup spawns runtime tasks via `spawn_local`); keep a shared `run_with_local_set` helper in `ha_e2e::util` and ensure both suites use it consistently.
 </description>
 
 <acceptance_criteria>
-- [ ] Interface research artifact compares at least 3 candidate interfaces (A/B/C above or better) with explicit scoring and final choice rationale
-- [ ] Task honors user requirement: one stable shared interface based on `TestConfig`; if research finds a better higher-reuse interface, that interface is implemented instead
-- [ ] New shared module(s) added under `src/test_harness/ha_e2e/` and exported from `src/test_harness/mod.rs`
-- [ ] Duplicated helper logic removed from both:
-- [ ] `src/ha/e2e_multi_node.rs` helper block (`1615-2164`) migrated to shared harness or reduced to thin wrappers
-- [ ] `src/ha/e2e_partition_chaos.rs` helper block (`886-1248`) migrated to shared harness or reduced to thin wrappers
-- [ ] Startup interface in both suites now uses the same `TestConfig`-driven entrypoint:
-- [ ] `src/ha/e2e_multi_node.rs` no longer owns bespoke startup graph from `293-495`
-- [ ] `src/ha/e2e_partition_chaos.rs` no longer owns bespoke startup graph from `72-363`
-- [ ] Shared return handle includes everything required by scenario code (node metadata, clients, task handles, etcd/proxy handles where applicable, and unified ops)
-- [ ] Fault-injection behavior remains available for partition scenarios via the shared interface (proxy-backed mode)
-- [ ] Scenario behavior parity retained for all HA e2e tests:
-- [ ] `e2e_multi_node_*` tests preserve semantics and assertions
-- [ ] `e2e_partition_*` tests preserve semantics and assertions
-- [ ] Policy guard still passes or is updated minimally with justified equivalence:
-- [ ] `tests/policy_e2e_api_only.rs` remains semantically aligned with post-start hands-off rules
-- [ ] New harness-level tests cover `TestConfig` validation/defaults and handle lifecycle
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test-bdd` — all BDD features pass
+- [x] Interface research artifact compares at least 3 candidate interfaces (A/B/C above or better) with explicit scoring and final choice rationale
+- [x] Task honors user requirement: one stable shared interface based on `TestConfig`; if research finds a better higher-reuse interface, that interface is implemented instead
+- [x] New shared module(s) added under `src/test_harness/ha_e2e/` and exported from `src/test_harness/mod.rs`
+- [x] Duplicated helper logic removed from both:
+- [x] `src/ha/e2e_multi_node.rs` helper block (`1615-2164`) migrated to shared harness or reduced to thin wrappers
+- [x] `src/ha/e2e_partition_chaos.rs` helper block (`886-1248`) migrated to shared harness or reduced to thin wrappers
+- [x] Startup interface in both suites now uses the same `TestConfig`-driven entrypoint:
+- [x] `src/ha/e2e_multi_node.rs` no longer owns bespoke startup graph from `293-495`
+- [x] `src/ha/e2e_partition_chaos.rs` no longer owns bespoke startup graph from `72-363`
+- [x] Shared return handle includes everything required by scenario code (node metadata, clients, task handles, etcd/proxy handles where applicable, and unified ops)
+- [x] Fault-injection behavior remains available for partition scenarios via the shared interface (proxy-backed mode)
+- [x] Scenario behavior parity retained for all HA e2e tests:
+- [x] `e2e_multi_node_*` tests preserve semantics and assertions
+- [x] `e2e_partition_*` tests preserve semantics and assertions
+- [x] Policy guard still passes or is updated minimally with justified equivalence:
+- [x] `tests/policy_e2e_api_only.rs` remains semantically aligned with post-start hands-off rules
+- [x] New harness-level tests cover `TestConfig` validation/defaults and handle lifecycle
+- [x] `make check` — passes cleanly
+- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
+- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
+- [x] `make test-bdd` — all BDD features pass
 </acceptance_criteria>
+
+NOW EXECUTE

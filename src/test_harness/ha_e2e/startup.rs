@@ -1,0 +1,522 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use tokio::task::JoinHandle;
+
+use crate::cli::client::CliApiClient;
+use crate::config::{
+    schema::{
+        ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig, SecurityConfig,
+    },
+    BinaryPaths, ProcessConfig, RuntimeConfig,
+};
+use crate::state::WorkerError;
+use crate::test_harness::binaries::{
+    require_etcd_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
+};
+use crate::test_harness::etcd3::{
+    prepare_etcd_member_data_dir, spawn_etcd3_cluster, EtcdClusterHandle, EtcdClusterMemberSpec,
+    EtcdClusterSpec,
+};
+use crate::test_harness::namespace::NamespaceGuard;
+use crate::test_harness::net_proxy::{ProxyLinkSpec, TcpProxyLink};
+use crate::test_harness::pg16::prepare_pgdata_dir;
+use crate::test_harness::ports::allocate_ha_topology_ports;
+
+use super::config::{Mode, TestConfig};
+use super::handle::{NodeHandle, TestClusterHandle};
+use super::util::{
+    allocate_non_overlapping_ports, http_timeout_ms, parse_http_endpoint, parse_loopback_socket,
+    wait_for_bootstrap_primary, wait_for_node_api_ready_or_task_exit,
+};
+
+struct StartupGuard {
+    guard: NamespaceGuard,
+    scope: String,
+    cluster_name: String,
+    mode: Mode,
+    binaries: BinaryPaths,
+    etcd: Option<EtcdClusterHandle>,
+    nodes: Vec<NodeHandle>,
+    api_clients: Vec<CliApiClient>,
+    tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
+    timeline: Vec<String>,
+    artifact_root: Option<PathBuf>,
+    etcd_links_by_node: BTreeMap<String, Vec<String>>,
+    etcd_proxies: BTreeMap<String, TcpProxyLink>,
+    api_proxies: BTreeMap<String, TcpProxyLink>,
+    pg_proxies: BTreeMap<String, TcpProxyLink>,
+    timeouts: super::config::TimeoutConfig,
+}
+
+impl StartupGuard {
+    async fn cleanup_best_effort(&mut self) -> Result<(), WorkerError> {
+        let mut failures = Vec::new();
+
+        for task in &self.tasks {
+            task.abort();
+        }
+        while let Some(task) = self.tasks.pop() {
+            let _ = task.await;
+        }
+
+        for node in &self.nodes {
+            if let Err(err) = super::util::pg_ctl_stop_immediate(
+                self.binaries.pg_ctl.as_path(),
+                node.data_dir.as_path(),
+                self.timeouts.command_timeout,
+                self.timeouts.command_kill_wait_timeout,
+            )
+            .await
+            {
+                failures.push(format!("postgres stop {} failed: {err}", node.id));
+            }
+        }
+
+        let etcd_proxy_map = std::mem::take(&mut self.etcd_proxies);
+        for (name, proxy) in etcd_proxy_map {
+            if let Err(err) = proxy.shutdown().await {
+                failures.push(format!("etcd proxy {name} shutdown failed: {err}"));
+            }
+        }
+
+        let api_proxy_map = std::mem::take(&mut self.api_proxies);
+        for (name, proxy) in api_proxy_map {
+            if let Err(err) = proxy.shutdown().await {
+                failures.push(format!("api proxy {name} shutdown failed: {err}"));
+            }
+        }
+
+        let pg_proxy_map = std::mem::take(&mut self.pg_proxies);
+        for (name, proxy) in pg_proxy_map {
+            if let Err(err) = proxy.shutdown().await {
+                failures.push(format!("postgres proxy {name} shutdown failed: {err}"));
+            }
+        }
+
+        if let Some(etcd) = self.etcd.as_mut() {
+            if let Err(err) = etcd.shutdown_all().await {
+                failures.push(format!("etcd shutdown failed: {err}"));
+            }
+        }
+        self.etcd = None;
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(WorkerError::Message(format!(
+                "startup cleanup failures: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
+    fn into_handle(self) -> TestClusterHandle {
+        TestClusterHandle {
+            guard: self.guard,
+            scope: self.scope,
+            cluster_name: self.cluster_name,
+            mode: self.mode,
+            timeouts: self.timeouts,
+            binaries: self.binaries,
+            etcd: self.etcd,
+            nodes: self.nodes,
+            api_clients: self.api_clients,
+            tasks: self.tasks,
+            timeline: self.timeline,
+            artifact_root: self.artifact_root,
+            etcd_links_by_node: self.etcd_links_by_node,
+            etcd_proxies: self.etcd_proxies,
+            api_proxies: self.api_proxies,
+            pg_proxies: self.pg_proxies,
+        }
+    }
+}
+
+pub(crate) async fn start_cluster(config: TestConfig) -> Result<TestClusterHandle, WorkerError> {
+    config.validate()?;
+
+    let namespace_guard = NamespaceGuard::new(config.test_name.as_str())?;
+
+    let binaries = require_pg16_process_binaries_for_real_tests()?;
+    let etcd_bin = require_etcd_bin_for_real_tests()?;
+
+    let mut guard = StartupGuard {
+        guard: namespace_guard,
+        scope: config.scope.clone(),
+        cluster_name: config.cluster_name.clone(),
+        mode: config.mode,
+        binaries: binaries.clone(),
+        etcd: None,
+        nodes: Vec::new(),
+        api_clients: Vec::new(),
+        tasks: Vec::new(),
+        timeline: Vec::new(),
+        artifact_root: config.artifact_root.clone(),
+        etcd_links_by_node: BTreeMap::new(),
+        etcd_proxies: BTreeMap::new(),
+        api_proxies: BTreeMap::new(),
+        pg_proxies: BTreeMap::new(),
+        timeouts: config.timeouts.clone(),
+    };
+
+    match start_cluster_inner(&mut guard, config, etcd_bin, binaries).await {
+        Ok(()) => Ok(guard.into_handle()),
+        Err(start_err) => {
+            let cleanup_result = guard.cleanup_best_effort().await;
+            match cleanup_result {
+                Ok(()) => Err(start_err),
+                Err(cleanup_err) => Err(WorkerError::Message(format!(
+                    "{start_err}; cleanup failed: {cleanup_err}"
+                ))),
+            }
+        }
+    }
+}
+
+async fn start_cluster_inner(
+    guard: &mut StartupGuard,
+    config: TestConfig,
+    etcd_bin: PathBuf,
+    binaries: BinaryPaths,
+) -> Result<(), WorkerError> {
+    let namespace = guard.guard.namespace()?.clone();
+    let etcd_member_count = config.etcd_members.len();
+    let reservation = allocate_ha_topology_ports(config.node_count, etcd_member_count)?;
+    let topology = reservation.into_layout();
+    let node_ports = topology.node_ports;
+
+    let mut forbidden_ports: BTreeSet<u16> = topology
+        .etcd_client_ports
+        .iter()
+        .chain(topology.etcd_peer_ports.iter())
+        .chain(node_ports.iter())
+        .copied()
+        .collect();
+
+    let mut members = Vec::with_capacity(etcd_member_count);
+    for (index, member_name) in config.etcd_members.iter().enumerate() {
+        let data_dir = prepare_etcd_member_data_dir(&namespace, member_name)?;
+        let log_dir = namespace.child_dir(format!("logs/{member_name}"));
+        let client_port = *topology.etcd_client_ports.get(index).ok_or_else(|| {
+            WorkerError::Message(format!("missing etcd client port for {member_name}"))
+        })?;
+        let peer_port = *topology.etcd_peer_ports.get(index).ok_or_else(|| {
+            WorkerError::Message(format!("missing etcd peer port for {member_name}"))
+        })?;
+
+        members.push(EtcdClusterMemberSpec {
+            member_name: member_name.clone(),
+            data_dir,
+            log_dir,
+            client_port,
+            peer_port,
+        });
+    }
+
+    let cluster_spec = EtcdClusterSpec {
+        etcd_bin,
+        namespace_id: namespace.id.clone(),
+        startup_timeout: Duration::from_secs(15),
+        members,
+    };
+
+    let etcd = spawn_etcd3_cluster(cluster_spec).await?;
+    let endpoints = etcd.client_endpoints().to_vec();
+    let endpoint_count = endpoints.len();
+    if endpoint_count == 0 {
+        return Err(WorkerError::Message(
+            "etcd cluster returned no endpoints".to_string(),
+        ));
+    }
+    guard.etcd = Some(etcd);
+
+    let api_ports = allocate_non_overlapping_ports(config.node_count, &forbidden_ports)?;
+    if api_ports.len() != config.node_count {
+        return Err(WorkerError::Message(format!(
+            "api port reservation mismatch: expected {}, got {}",
+            config.node_count,
+            api_ports.len()
+        )));
+    }
+    for port in &api_ports {
+        forbidden_ports.insert(*port);
+    }
+
+    let rewind_source_port = *node_ports.first().ok_or_else(|| {
+        WorkerError::Message("missing postgres ports for cluster startup".to_string())
+    })?;
+
+    let mut cursor = 0usize;
+    let (dcs_endpoints_by_node, proxy_ports) = match config.mode {
+        Mode::Plain => (None, Vec::new()),
+        Mode::PartitionProxy => {
+            let total_proxy_ports = config
+                .node_count
+                .checked_mul(3)
+                .ok_or_else(|| {
+                    WorkerError::Message("proxy port count overflow for partition mode".to_string())
+                })?;
+            let proxy_ports = allocate_non_overlapping_ports(total_proxy_ports, &forbidden_ports)?;
+            let dcs_endpoints_by_node = spawn_partition_etcd_proxies(
+                guard,
+                config.node_count,
+                &endpoints,
+                proxy_ports.as_slice(),
+                &mut cursor,
+            )
+            .await?;
+            (Some(dcs_endpoints_by_node), proxy_ports)
+        }
+    };
+
+    let next_proxy_port = |ports: &[u16], cursor_ref: &mut usize| -> Result<u16, WorkerError> {
+        if *cursor_ref >= ports.len() {
+            return Err(WorkerError::Message(
+                "proxy port allocation cursor out of bounds".to_string(),
+            ));
+        }
+        let selected = ports[*cursor_ref];
+        *cursor_ref = cursor_ref.saturating_add(1);
+        Ok(selected)
+    };
+
+    let http_timeout_ms = http_timeout_ms(config.timeouts.http_step_timeout)?;
+
+    for (index, (pg_port, api_port)) in node_ports.into_iter().zip(api_ports).enumerate() {
+        let node_id = format!("node-{}", index.saturating_add(1));
+        let data_dir = prepare_pgdata_dir(&namespace, &node_id)?;
+        let socket_dir = namespace.child_dir(format!("run/{node_id}"));
+        let log_file = namespace.child_dir(format!("logs/{node_id}/postgres.log"));
+        if let Some(parent) = log_file.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                WorkerError::Message(format!(
+                    "create postgres log dir failed for node {node_id}: {err}"
+                ))
+            })?;
+        }
+
+        let api_addr: SocketAddr = format!("127.0.0.1:{api_port}")
+            .parse()
+            .map_err(|err| WorkerError::Message(format!("parse api addr failed: {err}")))?;
+
+        let (api_observe_addr, sql_port) = match config.mode {
+            Mode::Plain => (api_addr, pg_port),
+            Mode::PartitionProxy => {
+                let api_proxy_port = next_proxy_port(proxy_ports.as_slice(), &mut cursor)?;
+                let api_proxy = TcpProxyLink::spawn(ProxyLinkSpec {
+                    name: format!("{node_id}-api-proxy"),
+                    listen_addr: parse_loopback_socket(api_proxy_port)?,
+                    target_addr: api_addr,
+                })
+                .await?;
+                let api_proxy_addr = api_proxy.listen_addr();
+                guard.api_proxies.insert(node_id.clone(), api_proxy);
+
+                let pg_proxy_port = next_proxy_port(proxy_ports.as_slice(), &mut cursor)?;
+                let pg_target_addr = parse_loopback_socket(pg_port)?;
+                let pg_proxy = TcpProxyLink::spawn(ProxyLinkSpec {
+                    name: format!("{node_id}-pg-proxy"),
+                    listen_addr: parse_loopback_socket(pg_proxy_port)?,
+                    target_addr: pg_target_addr,
+                })
+                .await?;
+                let pg_proxy_addr = pg_proxy.listen_addr();
+                guard.pg_proxies.insert(node_id.clone(), pg_proxy);
+
+                (api_proxy_addr, pg_proxy_addr.port())
+            }
+        };
+
+        let dcs_endpoints = match (config.mode, &dcs_endpoints_by_node) {
+            (Mode::Plain, _) => endpoints.clone(),
+            (Mode::PartitionProxy, Some(map)) => map.get(node_id.as_str()).cloned().ok_or_else(|| {
+                WorkerError::Message(format!(
+                    "missing proxy DCS endpoints for node runtime config: {node_id}"
+                ))
+            })?,
+            (Mode::PartitionProxy, None) => {
+                return Err(WorkerError::Message(
+                    "partition mode missing DCS endpoints map".to_string(),
+                ));
+            }
+        };
+
+        let api_client = CliApiClient::new(
+            format!("http://{api_observe_addr}"),
+            http_timeout_ms,
+            None,
+            None,
+        )
+        .map_err(|err| {
+            WorkerError::Message(format!(
+                "build CliApiClient failed for startup node {node_id}: {err}"
+            ))
+        })?;
+
+        let runtime_cfg = RuntimeConfig {
+            cluster: ClusterConfig {
+                name: config.cluster_name.clone(),
+                member_id: node_id.clone(),
+            },
+            postgres: PostgresConfig {
+                data_dir: data_dir.clone(),
+                connect_timeout_s: 2,
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: pg_port,
+                socket_dir,
+                log_file: log_file.clone(),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port,
+            },
+            dcs: DcsConfig {
+                endpoints: dcs_endpoints,
+                scope: config.scope.clone(),
+            },
+            ha: HaConfig {
+                loop_interval_ms: 100,
+                lease_ttl_ms: 2_000,
+            },
+            process: ProcessConfig {
+                pg_rewind_timeout_ms: 5_000,
+                bootstrap_timeout_ms: 30_000,
+                fencing_timeout_ms: 5_000,
+                binaries: binaries.clone(),
+            },
+            api: ApiConfig {
+                listen_addr: api_addr.to_string(),
+                read_auth_token: None,
+                admin_auth_token: None,
+            },
+            debug: DebugConfig { enabled: false },
+            security: SecurityConfig {
+                tls_enabled: false,
+                auth_token: None,
+            },
+        };
+
+        let task_node_id = node_id.clone();
+        guard.tasks.push(tokio::task::spawn_local(async move {
+            match crate::runtime::run_node_from_config(runtime_cfg).await {
+                Ok(()) => Ok(()),
+                Err(err) => Err(WorkerError::Message(format!(
+                    "runtime node {task_node_id} exited with error: {err}"
+                ))),
+            }
+        }));
+
+        guard.nodes.push(NodeHandle {
+            id: node_id.clone(),
+            pg_port,
+            sql_port,
+            api_addr,
+            api_observe_addr,
+            data_dir,
+            log_file: log_file.clone(),
+        });
+        guard.api_clients.push(api_client);
+
+        let task_handle = guard.tasks.last_mut().ok_or_else(|| {
+            WorkerError::Message("missing runtime task after node spawn".to_string())
+        })?;
+
+        wait_for_node_api_ready_or_task_exit(
+            api_observe_addr,
+            node_id.as_str(),
+            log_file.as_path(),
+            task_handle,
+            config.timeouts.http_step_timeout,
+            config.timeouts.api_readiness_timeout,
+        )
+        .await?;
+
+        if index == 0 {
+            let expected_member_id = format!("node-{}", index.saturating_add(1));
+            wait_for_bootstrap_primary(
+                api_observe_addr,
+                expected_member_id.as_str(),
+                config.timeouts.http_step_timeout,
+                config.timeouts.bootstrap_primary_timeout,
+            )
+            .await?;
+        }
+    }
+
+    if config.mode == Mode::PartitionProxy && cursor != proxy_ports.len() {
+        return Err(WorkerError::Message(format!(
+            "proxy port cursor mismatch: used={cursor} allocated={}",
+            proxy_ports.len()
+        )));
+    }
+
+    Ok(())
+}
+
+async fn spawn_partition_etcd_proxies(
+    guard: &mut StartupGuard,
+    node_count: usize,
+    endpoints: &[String],
+    proxy_ports: &[u16],
+    cursor: &mut usize,
+) -> Result<BTreeMap<String, Vec<String>>, WorkerError> {
+    let member_names = guard
+        .etcd
+        .as_ref()
+        .ok_or_else(|| WorkerError::Message("missing etcd cluster handle".to_string()))?
+        .member_names();
+    if member_names.len() != endpoints.len() {
+        return Err(WorkerError::Message(format!(
+            "etcd members/endpoints mismatch: members={} endpoints={}",
+            member_names.len(),
+            endpoints.len()
+        )));
+    }
+
+    let next_port = |ports: &[u16], cursor_ref: &mut usize| -> Result<u16, WorkerError> {
+        if *cursor_ref >= ports.len() {
+            return Err(WorkerError::Message(
+                "proxy port allocation cursor out of bounds".to_string(),
+            ));
+        }
+        let selected = ports[*cursor_ref];
+        *cursor_ref = cursor_ref.saturating_add(1);
+        Ok(selected)
+    };
+
+    let mut dcs_endpoints_by_node: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for node_index in 0..node_count {
+        let node_id = format!("node-{}", node_index.saturating_add(1));
+        let endpoint_index = node_index % endpoints.len();
+        let member_name = member_names.get(endpoint_index).ok_or_else(|| {
+            WorkerError::Message(format!(
+                "missing etcd member name for endpoint index {endpoint_index}"
+            ))
+        })?;
+        let endpoint = endpoints.get(endpoint_index).ok_or_else(|| {
+            WorkerError::Message(format!("missing etcd endpoint for index {endpoint_index}"))
+        })?;
+        let proxy_port = next_port(proxy_ports, cursor)?;
+        let target_addr = parse_http_endpoint(endpoint.as_str())?;
+        let link_name = format!("{node_id}-to-{member_name}-etcd");
+        let listen_addr = parse_loopback_socket(proxy_port)?;
+        let link = TcpProxyLink::spawn(ProxyLinkSpec {
+            name: link_name.clone(),
+            listen_addr,
+            target_addr,
+        })
+        .await?;
+
+        let proxy_url = format!("http://{}", link.listen_addr());
+        guard.etcd_proxies.insert(link_name.clone(), link);
+        guard
+            .etcd_links_by_node
+            .entry(node_id.clone())
+            .or_default()
+            .push(link_name);
+        dcs_endpoints_by_node.insert(node_id, vec![proxy_url]);
+    }
+
+    Ok(dcs_endpoints_by_node)
+}

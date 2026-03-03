@@ -1,39 +1,16 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
-    net::SocketAddr,
     path::{Path, PathBuf},
-    process::{ExitStatus, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
-use tokio::{
-    io::AsyncReadExt,
-    process::{Child, Command},
-    task::JoinHandle,
-};
+use tokio::task::JoinHandle;
 
 use crate::{
     cli::client::{CliApiClient, HaStateResponse},
-    config::{
-        schema::{
-            ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
-            SecurityConfig,
-        },
-        BinaryPaths, ProcessConfig, RuntimeConfig,
-    },
-    state::{UnixMillis, WorkerError},
-    test_harness::{
-        binaries::{require_etcd_bin_for_real_tests, require_pg16_bin_for_real_tests},
-        etcd3::{
-            prepare_etcd_member_data_dir, spawn_etcd3_cluster, EtcdClusterHandle,
-            EtcdClusterMemberSpec, EtcdClusterSpec,
-        },
-        namespace::NamespaceGuard,
-        net_proxy::{ProxyLinkSpec, ProxyMode, TcpProxyLink},
-        pg16::prepare_pgdata_dir,
-        ports::{allocate_ha_topology_ports, allocate_ports},
-    },
+    state::WorkerError,
+    test_harness::{ha_e2e, net_proxy::ProxyMode},
 };
 
 const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -43,327 +20,61 @@ const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(60);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(360);
 const PARTITION_ARTIFACT_DIR: &str = ".ralph/evidence/28-e2e-network-partition-chaos";
 
-struct NodeFixture {
-    id: String,
-    pg_port: u16,
-    pg_proxy_addr: SocketAddr,
-    api_addr: SocketAddr,
-    api_proxy_addr: SocketAddr,
-    data_dir: PathBuf,
-    log_file: PathBuf,
-}
-
 struct PartitionFixture {
-    _guard: NamespaceGuard,
-    _scope: String,
+    _guard: crate::test_harness::namespace::NamespaceGuard,
     pg_ctl_bin: PathBuf,
     psql_bin: PathBuf,
-    etcd: Option<EtcdClusterHandle>,
-    nodes: Vec<NodeFixture>,
+    etcd: Option<crate::test_harness::etcd3::EtcdClusterHandle>,
+    nodes: Vec<ha_e2e::NodeHandle>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
     etcd_links_by_node: BTreeMap<String, Vec<String>>,
-    etcd_proxies: BTreeMap<String, TcpProxyLink>,
-    api_proxies: BTreeMap<String, TcpProxyLink>,
-    pg_proxies: BTreeMap<String, TcpProxyLink>,
+    etcd_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
+    api_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
+    pg_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
     timeline: Vec<String>,
 }
 
 impl PartitionFixture {
     async fn start(
         node_count: usize,
-        binaries: BinaryPaths,
-        etcd_bin: PathBuf,
     ) -> Result<Self, WorkerError> {
-        let guard = NamespaceGuard::new("ha-e2e-partition")
-            .map_err(|err| WorkerError::Message(format!("namespace create failed: {err}")))?;
-        let namespace = guard
-            .namespace()
-            .map_err(|err| WorkerError::Message(format!("namespace lookup failed: {err}")))?;
-        let scope = "scope-ha-e2e-partition".to_string();
-
-        let reservation = allocate_ha_topology_ports(node_count, 3)
-            .map_err(|err| WorkerError::Message(format!("allocate ports failed: {err}")))?;
-        let topology = reservation.into_layout();
-        let node_ports = topology.node_ports;
-
-        let mut forbidden_ports: BTreeSet<u16> = topology
-            .etcd_client_ports
-            .iter()
-            .chain(topology.etcd_peer_ports.iter())
-            .chain(node_ports.iter())
-            .copied()
-            .collect();
-
-        let etcd_members = ["etcd-a", "etcd-b", "etcd-c"];
-        let mut members = Vec::with_capacity(etcd_members.len());
-        for (index, member_name) in etcd_members.iter().enumerate() {
-            let data_dir = prepare_etcd_member_data_dir(namespace, member_name).map_err(|err| {
-                WorkerError::Message(format!("prepare etcd data dir failed: {err}"))
-            })?;
-            let log_dir = namespace.child_dir(format!("logs/{member_name}"));
-            members.push(EtcdClusterMemberSpec {
-                member_name: (*member_name).to_string(),
-                data_dir,
-                log_dir,
-                client_port: topology.etcd_client_ports[index],
-                peer_port: topology.etcd_peer_ports[index],
-            });
-        }
-        let cluster_spec = EtcdClusterSpec {
-            etcd_bin,
-            namespace_id: namespace.id.clone(),
-            startup_timeout: Duration::from_secs(15),
-            members,
+        let config = ha_e2e::TestConfig {
+            test_name: "ha-e2e-partition".to_string(),
+            cluster_name: "cluster-e2e-partition".to_string(),
+            scope: "scope-ha-e2e-partition".to_string(),
+            node_count,
+            etcd_members: vec!["etcd-a".to_string(), "etcd-b".to_string(), "etcd-c".to_string()],
+            mode: ha_e2e::Mode::PartitionProxy,
+            timeouts: ha_e2e::TimeoutConfig {
+                command_timeout: E2E_COMMAND_TIMEOUT,
+                command_kill_wait_timeout: E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                http_step_timeout: E2E_HTTP_STEP_TIMEOUT,
+                api_readiness_timeout: Duration::from_secs(120),
+                bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
+                scenario_timeout: E2E_SCENARIO_TIMEOUT,
+            },
+            artifact_root: None,
         };
 
-        let etcd = spawn_etcd3_cluster(cluster_spec)
-            .await
-            .map_err(|err| WorkerError::Message(format!("spawn etcd failed: {err}")))?;
-        let endpoints = etcd.client_endpoints().to_vec();
-        let member_names = etcd.member_names();
-
-        if endpoints.is_empty() {
-            return Err(WorkerError::Message(
-                "etcd cluster returned no endpoints".to_string(),
-            ));
-        }
-        if member_names.len() != endpoints.len() {
-            return Err(WorkerError::Message(format!(
-                "etcd members/endpoints mismatch: members={} endpoints={}",
-                member_names.len(),
-                endpoints.len()
-            )));
-        }
-
-        let api_ports = allocate_non_overlapping_ports(node_count, &forbidden_ports)?;
-        for port in &api_ports {
-            forbidden_ports.insert(*port);
-        }
-
-        let total_proxy_ports = node_count
-            .checked_add(node_count)
-            .and_then(|value| value.checked_add(node_count))
-            .ok_or_else(|| {
-                WorkerError::Message("proxy port count overflow for partition fixture".to_string())
-            })?;
-        let proxy_ports = allocate_non_overlapping_ports(total_proxy_ports, &forbidden_ports)?;
-
-        let mut cursor = 0usize;
-        let next_port = |ports: &[u16], cursor_ref: &mut usize| -> Result<u16, WorkerError> {
-            if *cursor_ref >= ports.len() {
-                return Err(WorkerError::Message(
-                    "proxy port allocation cursor out of bounds".to_string(),
-                ));
-            }
-            let selected = ports[*cursor_ref];
-            *cursor_ref = cursor_ref.saturating_add(1);
-            Ok(selected)
-        };
-
-        let mut etcd_proxies: BTreeMap<String, TcpProxyLink> = BTreeMap::new();
-        let mut etcd_links_by_node: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut dcs_endpoints_by_node: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for node_index in 0..node_count {
-            let node_id = format!("node-{}", node_index.saturating_add(1));
-            let mut proxy_urls = Vec::with_capacity(1);
-            let mut link_keys = Vec::with_capacity(1);
-            let endpoint_index = node_index % endpoints.len();
-            let member_name = member_names.get(endpoint_index).ok_or_else(|| {
-                WorkerError::Message(format!(
-                    "missing etcd member name for endpoint index {endpoint_index}"
-                ))
-            })?;
-            let endpoint = endpoints.get(endpoint_index).ok_or_else(|| {
-                WorkerError::Message(format!("missing etcd endpoint for index {endpoint_index}"))
-            })?;
-            let proxy_port = next_port(proxy_ports.as_slice(), &mut cursor)?;
-            let target_addr = parse_http_endpoint(endpoint.as_str())?;
-            let link_name = format!("{node_id}-to-{member_name}-etcd");
-            let listen_addr = parse_loopback_socket(proxy_port)?;
-            let link = TcpProxyLink::spawn(ProxyLinkSpec {
-                name: link_name.clone(),
-                listen_addr,
-                target_addr,
-            })
-            .await
-            .map_err(|err| {
-                WorkerError::Message(format!("spawn etcd proxy {link_name} failed: {err}"))
-            })?;
-            let proxy_url = format!("http://{}", link.listen_addr());
-            proxy_urls.push(proxy_url);
-            link_keys.push(link_name.clone());
-            etcd_proxies.insert(link_name, link);
-            dcs_endpoints_by_node.insert(node_id.clone(), proxy_urls);
-            etcd_links_by_node.insert(node_id, link_keys);
-        }
-
-        let mut api_proxies: BTreeMap<String, TcpProxyLink> = BTreeMap::new();
-        let mut pg_proxies: BTreeMap<String, TcpProxyLink> = BTreeMap::new();
-        let pg_ctl_bin = binaries.pg_ctl.clone();
-        let psql_bin = binaries.psql.clone();
-        let mut tasks = Vec::new();
-        let mut nodes = Vec::new();
-        let rewind_source_port = *node_ports.first().ok_or_else(|| {
-            WorkerError::Message("missing postgres ports for cluster startup".to_string())
-        })?;
-
-        for (index, (pg_port, api_port)) in node_ports.into_iter().zip(api_ports).enumerate() {
-            let node_id = format!("node-{}", index.saturating_add(1));
-            let data_dir = prepare_pgdata_dir(namespace, &node_id).map_err(|err| {
-                WorkerError::Message(format!("prepare pg data dir failed: {err}"))
-            })?;
-            let socket_dir = namespace.child_dir(format!("run/{node_id}"));
-            let log_file = namespace.child_dir(format!("logs/{node_id}/postgres.log"));
-            let api_addr: SocketAddr = format!("127.0.0.1:{api_port}")
-                .parse()
-                .map_err(|err| WorkerError::Message(format!("parse api addr failed: {err}")))?;
-
-            let api_proxy_port = next_port(proxy_ports.as_slice(), &mut cursor)?;
-            let api_proxy_name = format!("{node_id}-api-proxy");
-            let api_proxy = TcpProxyLink::spawn(ProxyLinkSpec {
-                name: api_proxy_name,
-                listen_addr: parse_loopback_socket(api_proxy_port)?,
-                target_addr: api_addr,
-            })
-            .await
-            .map_err(|err| {
-                WorkerError::Message(format!("spawn API proxy for {node_id} failed: {err}"))
-            })?;
-            let api_proxy_addr = api_proxy.listen_addr();
-            api_proxies.insert(node_id.clone(), api_proxy);
-
-            let pg_proxy_port = next_port(proxy_ports.as_slice(), &mut cursor)?;
-            let pg_proxy_name = format!("{node_id}-pg-proxy");
-            let pg_target_addr = parse_loopback_socket(pg_port)?;
-            let pg_proxy = TcpProxyLink::spawn(ProxyLinkSpec {
-                name: pg_proxy_name,
-                listen_addr: parse_loopback_socket(pg_proxy_port)?,
-                target_addr: pg_target_addr,
-            })
-            .await
-            .map_err(|err| {
-                WorkerError::Message(format!("spawn postgres proxy for {node_id} failed: {err}"))
-            })?;
-            let pg_proxy_addr = pg_proxy.listen_addr();
-            pg_proxies.insert(node_id.clone(), pg_proxy);
-
-            let dcs_endpoints = dcs_endpoints_by_node
-                .get(node_id.as_str())
-                .cloned()
-                .ok_or_else(|| {
-                    WorkerError::Message(format!(
-                        "missing proxy DCS endpoints for node runtime config: {node_id}"
-                    ))
-                })?;
-
-            let runtime_cfg = RuntimeConfig {
-                cluster: ClusterConfig {
-                    name: "cluster-e2e-partition".to_string(),
-                    member_id: node_id.clone(),
-                },
-                postgres: PostgresConfig {
-                    data_dir: data_dir.clone(),
-                    connect_timeout_s: 2,
-                    listen_host: "127.0.0.1".to_string(),
-                    listen_port: pg_port,
-                    socket_dir,
-                    log_file: log_file.clone(),
-                    rewind_source_host: "127.0.0.1".to_string(),
-                    rewind_source_port,
-                },
-                dcs: DcsConfig {
-                    endpoints: dcs_endpoints,
-                    scope: scope.clone(),
-                },
-                ha: HaConfig {
-                    loop_interval_ms: 100,
-                    lease_ttl_ms: 2_000,
-                },
-                process: ProcessConfig {
-                    pg_rewind_timeout_ms: 5_000,
-                    bootstrap_timeout_ms: 30_000,
-                    fencing_timeout_ms: 5_000,
-                    binaries: binaries.clone(),
-                },
-                api: ApiConfig {
-                    listen_addr: api_addr.to_string(),
-                    read_auth_token: None,
-                    admin_auth_token: None,
-                },
-                debug: DebugConfig { enabled: false },
-                security: SecurityConfig {
-                    tls_enabled: false,
-                    auth_token: None,
-                },
-            };
-
-            let task_node_id = node_id.clone();
-            tasks.push(tokio::task::spawn_local(async move {
-                match crate::runtime::run_node_from_config(runtime_cfg).await {
-                    Ok(()) => Ok(()),
-                    Err(err) => Err(WorkerError::Message(format!(
-                        "runtime node {task_node_id} exited with error: {err}"
-                    ))),
-                }
-            }));
-
-            nodes.push(NodeFixture {
-                id: node_id.clone(),
-                pg_port,
-                pg_proxy_addr,
-                api_addr,
-                api_proxy_addr,
-                data_dir,
-                log_file: log_file.clone(),
-            });
-
-            let task_handle = tasks.last_mut().ok_or_else(|| {
-                WorkerError::Message("missing runtime task after node spawn".to_string())
-            })?;
-            wait_for_node_api_ready_or_task_exit(
-                api_proxy_addr,
-                node_id.as_str(),
-                log_file.as_path(),
-                task_handle,
-                Duration::from_secs(120),
-            )
-            .await?;
-            if index == 0 {
-                let expected_member_id = format!("node-{}", index.saturating_add(1));
-                wait_for_bootstrap_primary(
-                    api_proxy_addr,
-                    expected_member_id.as_str(),
-                    E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
-                )
-                .await?;
-            }
-        }
-
-        if cursor != proxy_ports.len() {
-            return Err(WorkerError::Message(format!(
-                "proxy port cursor mismatch: used={cursor} allocated={}",
-                proxy_ports.len()
-            )));
-        }
+        let handle = ha_e2e::start_cluster(config).await?;
 
         Ok(Self {
-            _guard: guard,
-            _scope: scope,
-            pg_ctl_bin,
-            psql_bin,
-            etcd: Some(etcd),
-            nodes,
-            tasks,
-            etcd_links_by_node,
-            etcd_proxies,
-            api_proxies,
-            pg_proxies,
-            timeline: Vec::new(),
+            _guard: handle.guard,
+            pg_ctl_bin: handle.binaries.pg_ctl.clone(),
+            psql_bin: handle.binaries.psql.clone(),
+            etcd: handle.etcd,
+            nodes: handle.nodes,
+            tasks: handle.tasks,
+            etcd_links_by_node: handle.etcd_links_by_node,
+            etcd_proxies: handle.etcd_proxies,
+            api_proxies: handle.api_proxies,
+            pg_proxies: handle.pg_proxies,
+            timeline: handle.timeline,
         })
     }
 
     fn record(&mut self, message: impl Into<String>) {
-        let now = match unix_now() {
+        let now = match ha_e2e::util::unix_now() {
             Ok(value) => value.0,
             Err(_) => 0,
         };
@@ -381,7 +92,7 @@ impl PartitionFixture {
             .ok_or_else(|| WorkerError::Message("no nodes available".to_string()))
     }
 
-    fn node_by_id(&self, node_id: &str) -> Option<&NodeFixture> {
+    fn node_by_id(&self, node_id: &str) -> Option<&ha_e2e::NodeHandle> {
         self.nodes.iter().find(|node| node.id == node_id)
     }
 
@@ -462,7 +173,7 @@ impl PartitionFixture {
             WorkerError::Message("e2e HTTP timeout does not fit into u64".to_string())
         })?;
         let client = CliApiClient::new(
-            format!("http://{}", node.api_proxy_addr),
+            format!("http://{}", node.api_observe_addr),
             timeout_ms,
             None,
             None,
@@ -615,7 +326,14 @@ impl PartitionFixture {
         let node = self
             .node_by_id(node_id)
             .ok_or_else(|| WorkerError::Message(format!("unknown node for SQL: {node_id}")))?;
-        run_psql_statement(self.psql_bin.as_path(), node.pg_proxy_addr.port(), sql).await
+        ha_e2e::util::run_psql_statement(
+            self.psql_bin.as_path(),
+            node.sql_port,
+            sql,
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+        )
+        .await
     }
 
     async fn run_sql_on_node_with_retry(
@@ -652,7 +370,7 @@ impl PartitionFixture {
         loop {
             let observation = match self.run_sql_on_node(node_id, sql).await {
                 Ok(output) => {
-                    let rows = parse_psql_rows(output.as_str());
+                    let rows = ha_e2e::util::parse_psql_rows(output.as_str());
                     if rows == expected_rows {
                         return Ok(());
                     }
@@ -712,11 +430,11 @@ impl PartitionFixture {
                         break;
                     }
                 };
-                let digest = parse_psql_rows(digest_raw.as_str())
+                let digest = ha_e2e::util::parse_psql_rows(digest_raw.as_str())
                     .first()
                     .cloned()
                     .unwrap_or_default();
-                let row_count = parse_single_u64(count_raw.as_str())?;
+                let row_count = ha_e2e::util::parse_single_u64(count_raw.as_str())?;
                 digests.insert(node_id.clone(), digest);
                 row_counts.insert(node_id.clone(), row_count);
             }
@@ -747,7 +465,7 @@ impl PartitionFixture {
         let artifact_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(PARTITION_ARTIFACT_DIR);
         fs::create_dir_all(&artifact_dir)
             .map_err(|err| WorkerError::Message(format!("create artifact dir failed: {err}")))?;
-        let stamp = unix_now()?.0;
+        let stamp = ha_e2e::util::unix_now()?.0;
         let safe_scenario = sanitize_component(scenario);
         let artifact_path = artifact_dir.join(format!("{safe_scenario}-{stamp}.timeline.log"));
         fs::write(&artifact_path, self.timeline.join("\n"))
@@ -799,7 +517,14 @@ impl PartitionFixture {
         }
 
         for node in &self.nodes {
-            if let Err(err) = pg_ctl_stop_immediate(&self.pg_ctl_bin, &node.data_dir).await {
+            if let Err(err) = ha_e2e::util::pg_ctl_stop_immediate(
+                &self.pg_ctl_bin,
+                &node.data_dir,
+                E2E_COMMAND_TIMEOUT,
+                E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            )
+            .await
+            {
                 failures.push(format!("postgres stop {} failed: {err}", node.id));
             }
         }
@@ -843,46 +568,6 @@ impl PartitionFixture {
     }
 }
 
-fn parse_loopback_socket(port: u16) -> Result<SocketAddr, WorkerError> {
-    format!("127.0.0.1:{port}")
-        .parse::<SocketAddr>()
-        .map_err(|err| WorkerError::Message(format!("parse socket failed for port={port}: {err}")))
-}
-
-fn parse_http_endpoint(endpoint: &str) -> Result<SocketAddr, WorkerError> {
-    let host_port = endpoint.strip_prefix("http://").ok_or_else(|| {
-        WorkerError::Message(format!(
-            "unsupported endpoint format for proxy target: {endpoint}"
-        ))
-    })?;
-    host_port.parse::<SocketAddr>().map_err(|err| {
-        WorkerError::Message(format!("parse endpoint socket failed: {endpoint} ({err})"))
-    })
-}
-
-fn allocate_non_overlapping_ports(
-    count: usize,
-    forbidden: &BTreeSet<u16>,
-) -> Result<Vec<u16>, WorkerError> {
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-
-    for _attempt in 0..30 {
-        let candidate = allocate_ports(count)
-            .map_err(|err| WorkerError::Message(format!("allocate ports failed: {err}")))?
-            .into_vec();
-        let overlaps = candidate.iter().any(|port| forbidden.contains(port));
-        if !overlaps {
-            return Ok(candidate);
-        }
-    }
-
-    Err(WorkerError::Message(format!(
-        "failed to allocate {count} non-overlapping ports after retries"
-    )))
-}
-
 fn sanitize_component(raw: &str) -> String {
     let mut safe: String = raw
         .chars()
@@ -898,309 +583,6 @@ fn sanitize_component(raw: &str) -> String {
         safe = "unknown".to_string();
     }
     safe
-}
-
-async fn wait_for_node_api_ready_or_task_exit(
-    node_addr: SocketAddr,
-    node_id: &str,
-    postgres_log_file: &Path,
-    task: &mut JoinHandle<Result<(), WorkerError>>,
-    timeout: Duration,
-) -> Result<(), WorkerError> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let client = reqwest::Client::builder()
-        .timeout(E2E_HTTP_STEP_TIMEOUT)
-        .build()
-        .map_err(|err| WorkerError::Message(format!("build reqwest client failed: {err}")))?;
-
-    loop {
-        if task.is_finished() {
-            let joined = task.await.map_err(|err| {
-                WorkerError::Message(format!("runtime task join failed for {node_id}: {err}"))
-            })?;
-            return match joined {
-                Ok(()) => Err(WorkerError::Message(format!(
-                    "runtime task exited unexpectedly for {node_id} before API became ready"
-                ))),
-                Err(err) => Err(WorkerError::Message(format!(
-                    "runtime task failed for {node_id} before API became ready: {err}; postgres_log_tail={}",
-                    read_log_tail(postgres_log_file, 40)
-                ))),
-            };
-        }
-
-        let url = format!("http://{node_addr}/ha/state");
-        let observation = match client.get(url.as_str()).send().await {
-            Ok(response) if response.status() == reqwest::StatusCode::OK => return Ok(()),
-            Ok(response) => {
-                let status = response.status();
-                let body = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "<body read failed>".to_string());
-                format!("status={status} body={}", body.trim())
-            }
-            Err(err) => err.to_string(),
-        };
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(WorkerError::Message(format!(
-                "timed out waiting for api readiness for {node_id} at {node_addr}; last_observation={observation}; postgres_log_tail={}",
-                read_log_tail(postgres_log_file, 40)
-            )));
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-fn read_log_tail(path: &Path, max_lines: usize) -> String {
-    let content = match fs::read_to_string(path) {
-        Ok(value) => value,
-        Err(err) => return format!("log-read-failed: {err}"),
-    };
-    let mut lines = content.lines().collect::<Vec<_>>();
-    if lines.is_empty() {
-        return "empty".to_string();
-    }
-    if lines.len() > max_lines {
-        let start = lines.len().saturating_sub(max_lines);
-        lines = lines[start..].to_vec();
-    }
-    lines.join(" | ")
-}
-
-async fn wait_for_bootstrap_primary(
-    node_addr: SocketAddr,
-    expected_member_id: &str,
-    timeout: Duration,
-) -> Result<(), WorkerError> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let client = reqwest::Client::builder()
-        .timeout(E2E_HTTP_STEP_TIMEOUT)
-        .build()
-        .map_err(|err| WorkerError::Message(format!("build reqwest client failed: {err}")))?;
-
-    loop {
-        let url = format!("http://{node_addr}/ha/state");
-        let observation = match client.get(url.as_str()).send().await {
-            Ok(response) if response.status() == reqwest::StatusCode::OK => {
-                let state = response.json::<HaStateResponse>().await.map_err(|err| {
-                    WorkerError::Message(format!("decode /ha/state response failed: {err}"))
-                })?;
-                let is_expected_primary =
-                    state.self_member_id == expected_member_id && state.ha_phase == "Primary";
-                if is_expected_primary {
-                    return Ok(());
-                }
-                let leader = state.leader.as_deref().unwrap_or("none");
-                format!(
-                    "member={} phase={} leader={leader}",
-                    state.self_member_id, state.ha_phase
-                )
-            }
-            Ok(response) => {
-                let status = response.status();
-                let body = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "<body read failed>".to_string());
-                format!("status={status} body={}", body.trim())
-            }
-            Err(err) => err.to_string(),
-        };
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(WorkerError::Message(format!(
-                "timed out waiting for bootstrap primary {expected_member_id} at {node_addr}; last_observation={observation}"
-            )));
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-fn resolve_pg_binaries_for_real_tests() -> Result<BinaryPaths, WorkerError> {
-    let postgres = require_pg16_bin_for_real_tests("postgres")
-        .map_err(|err| WorkerError::Message(format!("postgres binary lookup failed: {err}")))?;
-    let pg_ctl = require_pg16_bin_for_real_tests("pg_ctl")
-        .map_err(|err| WorkerError::Message(format!("pg_ctl binary lookup failed: {err}")))?;
-    let pg_rewind = require_pg16_bin_for_real_tests("pg_rewind")
-        .map_err(|err| WorkerError::Message(format!("pg_rewind binary lookup failed: {err}")))?;
-    let initdb = require_pg16_bin_for_real_tests("initdb")
-        .map_err(|err| WorkerError::Message(format!("initdb binary lookup failed: {err}")))?;
-    let psql = require_pg16_bin_for_real_tests("psql")
-        .map_err(|err| WorkerError::Message(format!("psql binary lookup failed: {err}")))?;
-    Ok(BinaryPaths {
-        postgres,
-        pg_ctl,
-        pg_rewind,
-        initdb,
-        pg_basebackup: require_pg16_bin_for_real_tests("pg_basebackup").map_err(|err| {
-            WorkerError::Message(format!("pg_basebackup binary lookup failed: {err}"))
-        })?,
-        psql,
-    })
-}
-
-fn resolve_etcd_bin_for_real_tests() -> Result<PathBuf, WorkerError> {
-    require_etcd_bin_for_real_tests()
-        .map_err(|err| WorkerError::Message(format!("etcd binary lookup failed: {err}")))
-}
-
-fn unix_now() -> Result<UnixMillis, WorkerError> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| WorkerError::Message(format!("system time before epoch: {err}")))?;
-    let millis = u64::try_from(elapsed.as_millis())
-        .map_err(|err| WorkerError::Message(format!("millis conversion failed: {err}")))?;
-    Ok(UnixMillis(millis))
-}
-
-async fn pg_ctl_stop_immediate(pg_ctl: &Path, data_dir: &Path) -> Result<(), WorkerError> {
-    let pid_file = data_dir.join("postmaster.pid");
-    if !pid_file.exists() {
-        return Ok(());
-    }
-
-    let mut child = Command::new(pg_ctl)
-        .arg("-D")
-        .arg(data_dir)
-        .arg("stop")
-        .arg("-m")
-        .arg("immediate")
-        .arg("-w")
-        .spawn()
-        .map_err(|err| WorkerError::Message(format!("pg_ctl stop spawn failed: {err}")))?;
-    let label = format!("pg_ctl stop for {}", data_dir.display());
-    let status = wait_for_child_exit_with_timeout(&label, &mut child, E2E_COMMAND_TIMEOUT).await?;
-
-    if status.success() || !pid_file.exists() {
-        Ok(())
-    } else {
-        Err(WorkerError::Message(format!(
-            "pg_ctl stop exited unsuccessfully with status {status} for {}",
-            data_dir.display()
-        )))
-    }
-}
-
-async fn wait_for_child_exit_with_timeout(
-    label: &str,
-    child: &mut Child,
-    timeout: Duration,
-) -> Result<ExitStatus, WorkerError> {
-    match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(wait_result) => {
-            wait_result.map_err(|err| WorkerError::Message(format!("{label} wait failed: {err}")))
-        }
-        Err(_) => {
-            child.start_kill().map_err(|err| {
-                WorkerError::Message(format!(
-                    "{label} timed out after {}s and kill failed: {err}",
-                    timeout.as_secs()
-                ))
-            })?;
-            match tokio::time::timeout(E2E_COMMAND_KILL_WAIT_TIMEOUT, child.wait()).await {
-                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
-            }
-            Err(WorkerError::Message(format!(
-                "{label} timed out after {}s and was killed",
-                timeout.as_secs()
-            )))
-        }
-    }
-}
-
-async fn run_psql_statement(psql: &Path, port: u16, sql: &str) -> Result<String, WorkerError> {
-    let mut command = Command::new(psql);
-    command
-        .arg("-h")
-        .arg("127.0.0.1")
-        .arg("-p")
-        .arg(port.to_string())
-        .arg("-U")
-        .arg("postgres")
-        .arg("-d")
-        .arg("postgres")
-        .arg("-v")
-        .arg("ON_ERROR_STOP=1")
-        .arg("-AXqt")
-        .arg("-c")
-        .arg(sql)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = command
-        .spawn()
-        .map_err(|err| WorkerError::Message(format!("psql spawn failed: {err}")))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| WorkerError::Message("psql stdout pipe unavailable".to_string()))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| WorkerError::Message("psql stderr pipe unavailable".to_string()))?;
-
-    let stdout_task = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        stdout
-            .read_to_end(&mut buffer)
-            .await
-            .map(|_| buffer)
-            .map_err(|err| WorkerError::Message(format!("psql stdout read failed: {err}")))
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        stderr
-            .read_to_end(&mut buffer)
-            .await
-            .map(|_| buffer)
-            .map_err(|err| WorkerError::Message(format!("psql stderr read failed: {err}")))
-    });
-
-    let label = format!("psql port={port}");
-    let status = wait_for_child_exit_with_timeout(&label, &mut child, E2E_COMMAND_TIMEOUT).await?;
-    let stdout_bytes = stdout_task
-        .await
-        .map_err(|err| WorkerError::Message(format!("psql stdout join failed: {err}")))??;
-    let stderr_bytes = stderr_task
-        .await
-        .map_err(|err| WorkerError::Message(format!("psql stderr join failed: {err}")))??;
-
-    let stdout_text = String::from_utf8(stdout_bytes)
-        .map_err(|err| WorkerError::Message(format!("psql stdout utf8 decode failed: {err}")))?;
-    if status.success() {
-        return Ok(stdout_text);
-    }
-
-    let stderr_text = String::from_utf8(stderr_bytes)
-        .map_err(|err| WorkerError::Message(format!("psql stderr utf8 decode failed: {err}")))?;
-    Err(WorkerError::Message(format!(
-        "psql exited unsuccessfully with status {status}; stderr={}",
-        stderr_text.trim()
-    )))
-}
-
-fn parse_psql_rows(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn parse_single_u64(output: &str) -> Result<u64, WorkerError> {
-    let rows = parse_psql_rows(output);
-    if rows.len() != 1 {
-        return Err(WorkerError::Message(format!(
-            "expected one scalar row, got {} rows: {rows:?}",
-            rows.len()
-        )));
-    }
-    rows[0].parse::<u64>().map_err(|err| {
-        WorkerError::Message(format!("parse scalar u64 from '{}' failed: {err}", rows[0]))
-    })
 }
 
 async fn finalize_partition_scenario(
@@ -1240,19 +622,10 @@ async fn finalize_partition_scenario(
     }
 }
 
-async fn run_with_local_set<F>(future: F) -> Result<(), WorkerError>
-where
-    F: std::future::Future<Output = Result<(), WorkerError>>,
-{
-    tokio::task::LocalSet::new().run_until(future).await
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-        let binaries = resolve_pg_binaries_for_real_tests()?;
-        let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-        let mut fixture = PartitionFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = PartitionFixture::start(3).await?;
         let scenario_name = "ha-e2e-partition-minority-isolation";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -1345,10 +718,8 @@ async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<(), 
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-        let binaries = resolve_pg_binaries_for_real_tests()?;
-        let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-        let mut fixture = PartitionFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = PartitionFixture::start(3).await?;
         let scenario_name = "ha-e2e-partition-primary-isolation";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -1443,10 +814,8 @@ async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result<(),
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-        let binaries = resolve_pg_binaries_for_real_tests()?;
-        let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-        let mut fixture = PartitionFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = PartitionFixture::start(3).await?;
         let scenario_name = "ha-e2e-partition-api-path-isolation";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -1532,10 +901,8 @@ async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), Work
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-        let binaries = resolve_pg_binaries_for_real_tests()?;
-        let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-        let mut fixture = PartitionFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = PartitionFixture::start(3).await?;
         let scenario_name = "ha-e2e-partition-mixed-faults-heal";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {

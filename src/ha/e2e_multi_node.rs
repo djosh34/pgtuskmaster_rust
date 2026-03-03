@@ -1,62 +1,29 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    net::SocketAddr,
     path::{Path, PathBuf},
-    process::{ExitStatus, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use clap::Parser;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, Command},
-    task::JoinHandle,
-};
+use tokio::task::JoinHandle;
 
 use crate::{
     cli::{
         self,
         args::Cli,
         client::{AcceptedResponse as CliAcceptedResponse, CliApiClient, HaStateResponse},
-        error::CliError,
     },
-    config::{
-        schema::{
-            ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
-            SecurityConfig,
-        },
-        BinaryPaths, ProcessConfig, RuntimeConfig,
-    },
-    state::{UnixMillis, WorkerError},
-    test_harness::{
-        binaries::{require_etcd_bin_for_real_tests, require_pg16_bin_for_real_tests},
-        etcd3::{
-            prepare_etcd_member_data_dir, spawn_etcd3_cluster, EtcdClusterHandle,
-            EtcdClusterMemberSpec, EtcdClusterSpec,
-        },
-        namespace::NamespaceGuard,
-        pg16::prepare_pgdata_dir,
-        ports::{allocate_ha_topology_ports, allocate_ports},
-    },
+    state::WorkerError,
+    test_harness::ha_e2e,
 };
 
-struct NodeFixture {
-    id: String,
-    pg_port: u16,
-    api_addr: SocketAddr,
-    data_dir: PathBuf,
-    log_file: PathBuf,
-}
-
 struct ClusterFixture {
-    _guard: NamespaceGuard,
-    scope: String,
-    endpoints: Vec<String>,
+    _guard: crate::test_harness::namespace::NamespaceGuard,
     pg_ctl_bin: PathBuf,
     psql_bin: PathBuf,
-    etcd: Option<EtcdClusterHandle>,
-    nodes: Vec<NodeFixture>,
+    etcd: Option<crate::test_harness::etcd3::EtcdClusterHandle>,
+    nodes: Vec<ha_e2e::NodeHandle>,
     api_clients: Vec<CliApiClient>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
     timeline: Vec<String>,
@@ -292,217 +259,48 @@ fn sanitize_sql_identifier(raw: &str) -> String {
 impl ClusterFixture {
     async fn start(
         node_count: usize,
-        binaries: BinaryPaths,
-        etcd_bin: PathBuf,
     ) -> Result<Self, WorkerError> {
-        let guard = NamespaceGuard::new("ha-e2e-multi-node")
-            .map_err(|err| WorkerError::Message(format!("namespace create failed: {err}")))?;
-        let namespace = guard
-            .namespace()
-            .map_err(|err| WorkerError::Message(format!("namespace lookup failed: {err}")))?;
-        let scope = "scope-ha-e2e".to_string();
-
-        let reservation = allocate_ha_topology_ports(node_count, 3)
-            .map_err(|err| WorkerError::Message(format!("allocate ports failed: {err}")))?;
-        let topology = reservation.into_layout();
-        let node_ports = topology.node_ports;
-        let reserved_ports: BTreeSet<u16> = topology
-            .etcd_client_ports
-            .iter()
-            .chain(topology.etcd_peer_ports.iter())
-            .chain(node_ports.iter())
-            .copied()
-            .collect();
-        let etcd_members = ["etcd-a", "etcd-b", "etcd-c"];
-        let mut members = Vec::with_capacity(etcd_members.len());
-        for (index, member_name) in etcd_members.iter().enumerate() {
-            let data_dir = prepare_etcd_member_data_dir(namespace, member_name).map_err(|err| {
-                WorkerError::Message(format!("prepare etcd data dir failed: {err}"))
-            })?;
-            let log_dir = namespace.child_dir(format!("logs/{member_name}"));
-            members.push(EtcdClusterMemberSpec {
-                member_name: (*member_name).to_string(),
-                data_dir,
-                log_dir,
-                client_port: topology.etcd_client_ports[index],
-                peer_port: topology.etcd_peer_ports[index],
-            });
-        }
-        let cluster_spec = EtcdClusterSpec {
-            etcd_bin,
-            namespace_id: namespace.id.clone(),
-            startup_timeout: Duration::from_secs(15),
-            members,
+        let config = ha_e2e::TestConfig {
+            test_name: "ha-e2e-multi-node".to_string(),
+            cluster_name: "cluster-e2e".to_string(),
+            scope: "scope-ha-e2e".to_string(),
+            node_count,
+            etcd_members: vec!["etcd-a".to_string(), "etcd-b".to_string(), "etcd-c".to_string()],
+            mode: ha_e2e::Mode::Plain,
+            timeouts: ha_e2e::TimeoutConfig {
+                command_timeout: E2E_COMMAND_TIMEOUT,
+                command_kill_wait_timeout: E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                http_step_timeout: E2E_HTTP_STEP_TIMEOUT,
+                api_readiness_timeout: Duration::from_secs(120),
+                bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
+                scenario_timeout: E2E_SCENARIO_TIMEOUT,
+            },
+            artifact_root: None,
         };
 
-        let etcd = spawn_etcd3_cluster(cluster_spec)
-            .await
-            .map_err(|err| WorkerError::Message(format!("spawn etcd failed: {err}")))?;
-        let endpoints = etcd.client_endpoints().to_vec();
-        let endpoint_count = endpoints.len();
-        if endpoint_count == 0 {
-            return Err(WorkerError::Message(
-                "etcd cluster returned no endpoints".to_string(),
-            ));
-        }
-
-        let pg_ctl_bin = binaries.pg_ctl.clone();
-        let psql_bin = binaries.psql.clone();
-        let mut tasks = Vec::new();
-        let mut nodes = Vec::new();
-        let mut api_clients = Vec::new();
-        let rewind_source_port = *node_ports.first().ok_or_else(|| {
-            WorkerError::Message("missing postgres ports for cluster startup".to_string())
-        })?;
-        let mut api_ports = None;
-        for _attempt in 0..20 {
-            let candidate = allocate_ports(node_count)
-                .map_err(|err| WorkerError::Message(format!("allocate api ports failed: {err}")))?
-                .into_vec();
-            let has_overlap = candidate.iter().any(|port| reserved_ports.contains(port));
-            if !has_overlap {
-                api_ports = Some(candidate);
-                break;
-            }
-        }
-        let api_ports = api_ports.ok_or_else(|| {
-            WorkerError::Message(
-                "failed to allocate api ports without overlap to topology ports".to_string(),
-            )
-        })?;
-        if api_ports.len() != node_count {
-            return Err(WorkerError::Message(format!(
-                "api port reservation mismatch: expected {node_count}, got {}",
-                api_ports.len()
-            )));
-        }
-
-        for (index, (pg_port, api_port)) in node_ports.into_iter().zip(api_ports).enumerate() {
-            let node_id = format!("node-{}", index.saturating_add(1));
-            let data_dir = prepare_pgdata_dir(namespace, &node_id).map_err(|err| {
-                WorkerError::Message(format!("prepare pg data dir failed: {err}"))
-            })?;
-            let socket_dir = namespace.child_dir(format!("run/{node_id}"));
-            let log_file = namespace.child_dir(format!("logs/{node_id}/postgres.log"));
-            let api_addr: SocketAddr = format!("127.0.0.1:{api_port}")
-                .parse()
-                .map_err(|err| WorkerError::Message(format!("parse api addr failed: {err}")))?;
-            let api_client = CliApiClient::new(
-                format!("http://{api_addr}"),
-                e2e_http_timeout_ms()?,
-                None,
-                None,
-            )
-            .map_err(|err| {
-                WorkerError::Message(format!(
-                    "build CliApiClient failed for startup node {node_id}: {err}"
-                ))
-            })?;
-
-            let runtime_cfg = RuntimeConfig {
-                cluster: ClusterConfig {
-                    name: "cluster-e2e".to_string(),
-                    member_id: node_id.clone(),
-                },
-                postgres: PostgresConfig {
-                    data_dir: data_dir.clone(),
-                    connect_timeout_s: 2,
-                    listen_host: "127.0.0.1".to_string(),
-                    listen_port: pg_port,
-                    socket_dir,
-                    log_file: log_file.clone(),
-                    rewind_source_host: "127.0.0.1".to_string(),
-                    rewind_source_port,
-                },
-                dcs: DcsConfig {
-                    endpoints: endpoints.clone(),
-                    scope: scope.clone(),
-                },
-                ha: HaConfig {
-                    loop_interval_ms: 100,
-                    lease_ttl_ms: 2_000,
-                },
-                process: ProcessConfig {
-                    pg_rewind_timeout_ms: 5_000,
-                    bootstrap_timeout_ms: 30_000,
-                    fencing_timeout_ms: 5_000,
-                    binaries: binaries.clone(),
-                },
-                api: ApiConfig {
-                    listen_addr: api_addr.to_string(),
-                    read_auth_token: None,
-                    admin_auth_token: None,
-                },
-                debug: DebugConfig { enabled: false },
-                security: SecurityConfig {
-                    tls_enabled: false,
-                    auth_token: None,
-                },
-            };
-            let task_node_id = node_id.clone();
-            tasks.push(tokio::task::spawn_local(async move {
-                match crate::runtime::run_node_from_config(runtime_cfg).await {
-                    Ok(()) => Ok(()),
-                    Err(err) => Err(WorkerError::Message(format!(
-                        "runtime node {task_node_id} exited with error: {err}"
-                    ))),
-                }
-            }));
-
-            nodes.push(NodeFixture {
-                id: node_id.clone(),
-                pg_port,
-                api_addr,
-                data_dir,
-                log_file: log_file.clone(),
-            });
-            api_clients.push(api_client);
-
-            let task_handle = tasks.last_mut().ok_or_else(|| {
-                WorkerError::Message("missing runtime task after node spawn".to_string())
-            })?;
-            wait_for_node_api_ready_or_task_exit(
-                api_addr,
-                node_id.as_str(),
-                log_file.as_path(),
-                task_handle,
-                Duration::from_secs(120),
-            )
-            .await?;
-            if index == 0 {
-                let expected_member_id = format!("node-{}", index.saturating_add(1));
-                wait_for_bootstrap_primary(
-                    api_addr,
-                    expected_member_id.as_str(),
-                    E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
-                )
-                .await?;
-            }
-        }
+        let handle = ha_e2e::start_cluster(config).await?;
 
         Ok(Self {
-            _guard: guard,
-            scope,
-            endpoints,
-            pg_ctl_bin,
-            psql_bin,
-            etcd: Some(etcd),
-            nodes,
-            api_clients,
-            tasks,
-            timeline: Vec::new(),
+            _guard: handle.guard,
+            pg_ctl_bin: handle.binaries.pg_ctl.clone(),
+            psql_bin: handle.binaries.psql.clone(),
+            etcd: handle.etcd,
+            nodes: handle.nodes,
+            api_clients: handle.api_clients,
+            tasks: handle.tasks,
+            timeline: handle.timeline,
         })
     }
 
     fn record(&mut self, message: impl Into<String>) {
-        let now = match unix_now() {
+        let now = match ha_e2e::util::unix_now() {
             Ok(value) => value.0,
             Err(_) => 0,
         };
         self.timeline.push(format!("[{now}] {}", message.into()));
     }
 
-    fn node_by_id(&self, id: &str) -> Option<&NodeFixture> {
+    fn node_by_id(&self, id: &str) -> Option<&ha_e2e::NodeHandle> {
         self.nodes.iter().find(|node| node.id == id)
     }
 
@@ -528,7 +326,14 @@ impl ClusterFixture {
 
     async fn run_sql_on_node(&self, node_id: &str, sql: &str) -> Result<String, WorkerError> {
         let port = self.postgres_port_by_id(node_id)?;
-        run_psql_statement(self.psql_bin.as_path(), port, sql).await
+        ha_e2e::util::run_psql_statement(
+            self.psql_bin.as_path(),
+            port,
+            sql,
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+        )
+        .await
     }
 
     async fn run_sql_on_node_with_retry(
@@ -565,7 +370,7 @@ impl ClusterFixture {
         loop {
             let observation = match self.run_sql_on_node(node_id, sql).await {
                 Ok(output) => {
-                    let rows = parse_psql_rows(output.as_str());
+                    let rows = ha_e2e::util::parse_psql_rows(output.as_str());
                     if rows == expected_rows {
                         return Ok(());
                     }
@@ -676,7 +481,7 @@ impl ClusterFixture {
         spec: SqlWorkloadSpec,
     ) -> Result<SqlWorkloadHandle, WorkerError> {
         let workload_ctx = self.sql_workload_ctx(&spec)?;
-        let started_at_unix_ms = unix_now()?.0;
+        let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let mut joins = Vec::with_capacity(spec.worker_count);
         for worker_id in 0..spec.worker_count {
@@ -762,7 +567,7 @@ impl ClusterFixture {
         stats.hard_failures = stats.hard_failures.saturating_add(worker_error_count_u64);
         stats.committed_keys = committed_key_set.into_iter().collect();
         stats.unique_committed_keys = stats.committed_keys.len();
-        stats.finished_at_unix_ms = unix_now()?.0;
+        stats.finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         stats.duration_ms = stats
             .finished_at_unix_ms
             .saturating_sub(stats.started_at_unix_ms);
@@ -919,11 +724,11 @@ impl ClusterFixture {
                         break;
                     }
                 };
-                let digest = parse_psql_rows(digest_raw.as_str())
+                let digest = ha_e2e::util::parse_psql_rows(digest_raw.as_str())
                     .first()
                     .cloned()
                     .unwrap_or_default();
-                let row_count = parse_single_u64(count_raw.as_str())?;
+                let row_count = ha_e2e::util::parse_single_u64(count_raw.as_str())?;
                 digests.insert(node_id.clone(), digest);
                 row_counts.insert(node_id.clone(), row_count);
             }
@@ -989,8 +794,8 @@ impl ClusterFixture {
                     continue;
                 }
             };
-            let row_count = parse_single_u64(count_raw.as_str())?;
-            let duplicate_count = parse_single_u64(duplicate_raw.as_str())?;
+            let row_count = ha_e2e::util::parse_single_u64(count_raw.as_str())?;
+            let duplicate_count = ha_e2e::util::parse_single_u64(duplicate_raw.as_str())?;
             if duplicate_count > 0 {
                 return Err(WorkerError::Message(format!(
                     "duplicate (worker_id,seq) rows detected on {node_id}: {duplicate_count}"
@@ -1302,19 +1107,13 @@ impl ClusterFixture {
             })?
             .api_addr;
         let (node_id, client) = self.cli_api_client_for_node_index(node_index)?;
-        match client.get_ha_state().await {
-            Ok(state) => Ok(state),
-            Err(CliError::Transport(primary_err)) => fetch_ha_state_via_tcp(node_addr)
-                .await
-                .map_err(|fallback_err| {
-                    WorkerError::Message(format!(
-                        "GET /ha/state failed for node {node_id}: primary_transport={primary_err}; fallback={fallback_err}"
-                    ))
-                }),
-            Err(err) => Err(WorkerError::Message(format!(
-                "GET /ha/state failed for node {node_id}: {err}"
-            ))),
-        }
+        ha_e2e::util::get_ha_state_with_fallback(
+            &client,
+            node_id.as_str(),
+            node_addr,
+            E2E_HTTP_STEP_TIMEOUT,
+        )
+        .await
     }
 
     async fn cluster_ha_states(&mut self) -> Result<Vec<HaStateResponse>, WorkerError> {
@@ -1513,7 +1312,13 @@ impl ClusterFixture {
                 "unknown node for stop request: {node_id}"
             )));
         };
-        pg_ctl_stop_immediate(&self.pg_ctl_bin, &node.data_dir).await
+        ha_e2e::util::pg_ctl_stop_immediate(
+            &self.pg_ctl_bin,
+            &node.data_dir,
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+        )
+        .await
     }
 
     // This fixture-level etcd shutdown models external quorum loss; it is not direct DCS key steering.
@@ -1559,7 +1364,7 @@ impl ClusterFixture {
             Path::new(env!("CARGO_MANIFEST_DIR")).join(".ralph/evidence/13-e2e-multi-node");
         fs::create_dir_all(&artifact_dir)
             .map_err(|err| WorkerError::Message(format!("create artifact dir failed: {err}")))?;
-        let stamp = unix_now()?.0;
+        let stamp = ha_e2e::util::unix_now()?.0;
         let safe_scenario = sanitize_component(scenario);
         let artifact_path = artifact_dir.join(format!("{safe_scenario}-{stamp}.timeline.log"));
         fs::write(&artifact_path, self.timeline.join("\n"))
@@ -1576,7 +1381,7 @@ impl ClusterFixture {
         fs::create_dir_all(&artifact_dir).map_err(|err| {
             WorkerError::Message(format!("create stress artifact dir failed: {err}"))
         })?;
-        let stamp = unix_now()?.0;
+        let stamp = ha_e2e::util::unix_now()?.0;
         let safe_scenario = sanitize_component(scenario);
         let timeline_path = artifact_dir.join(format!("{safe_scenario}-{stamp}.timeline.log"));
         fs::write(&timeline_path, self.timeline.join("\n")).map_err(|err| {
@@ -1599,7 +1404,13 @@ impl ClusterFixture {
         }
 
         for node in &self.nodes {
-            let _ = pg_ctl_stop_immediate(&self.pg_ctl_bin, &node.data_dir).await;
+            let _ = ha_e2e::util::pg_ctl_stop_immediate(
+                &self.pg_ctl_bin,
+                &node.data_dir,
+                E2E_COMMAND_TIMEOUT,
+                E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            )
+            .await;
         }
 
         if let Some(etcd) = self.etcd.as_mut() {
@@ -1610,394 +1421,6 @@ impl ClusterFixture {
         self.etcd = None;
         Ok(())
     }
-}
-
-async fn wait_for_node_api_ready_or_task_exit(
-    node_addr: SocketAddr,
-    node_id: &str,
-    postgres_log_file: &Path,
-    task: &mut JoinHandle<Result<(), WorkerError>>,
-    timeout: Duration,
-) -> Result<(), WorkerError> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let timeout_ms = e2e_http_timeout_ms()?;
-    let client = CliApiClient::new(format!("http://{node_addr}"), timeout_ms, None, None).map_err(
-        |err| {
-            WorkerError::Message(format!(
-                "build CliApiClient failed for api readiness probe on {node_id}: {err}"
-            ))
-        },
-    )?;
-    loop {
-        if task.is_finished() {
-            let joined = task.await.map_err(|err| {
-                WorkerError::Message(format!("runtime task join failed for {node_id}: {err}"))
-            })?;
-            return match joined {
-                Ok(()) => Err(WorkerError::Message(format!(
-                    "runtime task exited unexpectedly for {node_id} before API became ready"
-                ))),
-                Err(err) => Err(WorkerError::Message(format!(
-                    "runtime task failed for {node_id} before API became ready: {err}; postgres_log_tail={}",
-                    read_log_tail(postgres_log_file, 40)
-                ))),
-            };
-        }
-
-        let observation = match client.get_ha_state().await {
-            Ok(_) => return Ok(()),
-            Err(err) => err.to_string(),
-        };
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(WorkerError::Message(format!(
-                "timed out waiting for api readiness for {node_id} at {node_addr}; last_observation={observation}; postgres_log_tail={}",
-                read_log_tail(postgres_log_file, 40)
-            )));
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-fn read_log_tail(path: &Path, max_lines: usize) -> String {
-    let content = match fs::read_to_string(path) {
-        Ok(value) => value,
-        Err(err) => return format!("log-read-failed: {err}"),
-    };
-    let mut lines = content.lines().collect::<Vec<_>>();
-    if lines.is_empty() {
-        return "empty".to_string();
-    }
-    if lines.len() > max_lines {
-        let start = lines.len().saturating_sub(max_lines);
-        lines = lines[start..].to_vec();
-    }
-    lines.join(" | ")
-}
-
-async fn fetch_ha_state_via_tcp(node_addr: SocketAddr) -> Result<HaStateResponse, WorkerError> {
-    let mut stream = match tokio::time::timeout(
-        E2E_HTTP_STEP_TIMEOUT,
-        tokio::net::TcpStream::connect(node_addr),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "fallback connect to {node_addr} failed: {err}"
-            )));
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "fallback connect to {node_addr} timed out after {}s",
-                E2E_HTTP_STEP_TIMEOUT.as_secs()
-            )));
-        }
-    };
-    let request =
-        format!("GET /ha/state HTTP/1.1\r\nHost: {node_addr}\r\nConnection: close\r\n\r\n");
-    match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.write_all(request.as_bytes())).await {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "fallback write request to {node_addr} failed: {err}"
-            )));
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "fallback write request to {node_addr} timed out after {}s",
-                E2E_HTTP_STEP_TIMEOUT.as_secs()
-            )));
-        }
-    }
-
-    let mut raw = Vec::new();
-    match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.read_to_end(&mut raw)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "fallback read response from {node_addr} failed: {err}"
-            )));
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "fallback read response from {node_addr} timed out after {}s",
-                E2E_HTTP_STEP_TIMEOUT.as_secs()
-            )));
-        }
-    }
-
-    let (status_code, body) = parse_raw_http_response(raw.as_slice())?;
-    if status_code != 200 {
-        let body_text = String::from_utf8_lossy(body);
-        return Err(WorkerError::Message(format!(
-            "fallback GET /ha/state returned status {status_code} body={}",
-            body_text.trim()
-        )));
-    }
-
-    serde_json::from_slice::<HaStateResponse>(body)
-        .map_err(|err| WorkerError::Message(format!("fallback decode /ha/state failed: {err}")))
-}
-
-fn parse_raw_http_response(raw: &[u8]) -> Result<(u16, &[u8]), WorkerError> {
-    let status_line_end = raw
-        .windows(2)
-        .position(|window| window == b"\r\n")
-        .ok_or_else(|| WorkerError::Message("fallback response missing status line".to_string()))?;
-    let status_line = String::from_utf8_lossy(&raw[..status_line_end]);
-    let mut parts = status_line.split_whitespace();
-    let _http_version = parts.next().ok_or_else(|| {
-        WorkerError::Message("fallback response missing http version".to_string())
-    })?;
-    let status_code = parts
-        .next()
-        .ok_or_else(|| WorkerError::Message("fallback response missing status code".to_string()))?
-        .parse::<u16>()
-        .map_err(|err| {
-            WorkerError::Message(format!("fallback response status parse failed: {err}"))
-        })?;
-
-    let header_end = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| {
-            WorkerError::Message("fallback response missing header/body boundary".to_string())
-        })?;
-    let body_start = header_end.checked_add(4).ok_or_else(|| {
-        WorkerError::Message("fallback response body offset overflow".to_string())
-    })?;
-    let body = raw.get(body_start..).ok_or_else(|| {
-        WorkerError::Message("fallback response body offset out of bounds".to_string())
-    })?;
-    Ok((status_code, body))
-}
-
-async fn wait_for_bootstrap_primary(
-    node_addr: SocketAddr,
-    expected_member_id: &str,
-    timeout: Duration,
-) -> Result<(), WorkerError> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let timeout_ms = e2e_http_timeout_ms()?;
-    let client = CliApiClient::new(format!("http://{node_addr}"), timeout_ms, None, None).map_err(
-        |err| {
-            WorkerError::Message(format!(
-                "build CliApiClient failed for bootstrap probe on {expected_member_id}: {err}"
-            ))
-        },
-    )?;
-    loop {
-        let observation = match client.get_ha_state().await {
-            Ok(state) => {
-                let is_expected_primary =
-                    state.self_member_id == expected_member_id && state.ha_phase == "Primary";
-                if is_expected_primary {
-                    return Ok(());
-                }
-                let leader = state.leader.as_deref().unwrap_or("none");
-                format!(
-                    "member={} phase={} leader={leader}",
-                    state.self_member_id, state.ha_phase
-                )
-            }
-            Err(err) => err.to_string(),
-        };
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(WorkerError::Message(format!(
-                "timed out waiting for bootstrap primary {expected_member_id} at {node_addr}; last_observation={}",
-                observation
-            )));
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-fn resolve_pg_binaries_for_real_tests() -> Result<BinaryPaths, WorkerError> {
-    let postgres = require_pg16_bin_for_real_tests("postgres")
-        .map_err(|err| WorkerError::Message(format!("postgres binary lookup failed: {err}")))?;
-    let pg_ctl = require_pg16_bin_for_real_tests("pg_ctl")
-        .map_err(|err| WorkerError::Message(format!("pg_ctl binary lookup failed: {err}")))?;
-    let pg_rewind = require_pg16_bin_for_real_tests("pg_rewind")
-        .map_err(|err| WorkerError::Message(format!("pg_rewind binary lookup failed: {err}")))?;
-    let initdb = require_pg16_bin_for_real_tests("initdb")
-        .map_err(|err| WorkerError::Message(format!("initdb binary lookup failed: {err}")))?;
-    let psql = require_pg16_bin_for_real_tests("psql")
-        .map_err(|err| WorkerError::Message(format!("psql binary lookup failed: {err}")))?;
-    Ok(BinaryPaths {
-        postgres,
-        pg_ctl,
-        pg_rewind,
-        initdb,
-        pg_basebackup: require_pg16_bin_for_real_tests("pg_basebackup").map_err(|err| {
-            WorkerError::Message(format!("pg_basebackup binary lookup failed: {err}"))
-        })?,
-        psql,
-    })
-}
-
-fn resolve_etcd_bin_for_real_tests() -> Result<PathBuf, WorkerError> {
-    require_etcd_bin_for_real_tests()
-        .map_err(|err| WorkerError::Message(format!("etcd binary lookup failed: {err}")))
-}
-
-fn unix_now() -> Result<UnixMillis, WorkerError> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| WorkerError::Message(format!("system time before epoch: {err}")))?;
-    let millis = u64::try_from(elapsed.as_millis())
-        .map_err(|err| WorkerError::Message(format!("millis conversion failed: {err}")))?;
-    Ok(UnixMillis(millis))
-}
-
-async fn pg_ctl_stop_immediate(pg_ctl: &Path, data_dir: &Path) -> Result<(), WorkerError> {
-    let pid_file = data_dir.join("postmaster.pid");
-    if !pid_file.exists() {
-        return Ok(());
-    }
-
-    let mut child = Command::new(pg_ctl)
-        .arg("-D")
-        .arg(data_dir)
-        .arg("stop")
-        .arg("-m")
-        .arg("immediate")
-        .arg("-w")
-        .spawn()
-        .map_err(|err| WorkerError::Message(format!("pg_ctl stop spawn failed: {err}")))?;
-    let label = format!("pg_ctl stop for {}", data_dir.display());
-    let status = wait_for_child_exit_with_timeout(&label, &mut child, E2E_COMMAND_TIMEOUT).await?;
-
-    if status.success() || !pid_file.exists() {
-        Ok(())
-    } else {
-        Err(WorkerError::Message(format!(
-            "pg_ctl stop exited unsuccessfully with status {status} for {}",
-            data_dir.display()
-        )))
-    }
-}
-
-async fn wait_for_child_exit_with_timeout(
-    label: &str,
-    child: &mut Child,
-    timeout: Duration,
-) -> Result<ExitStatus, WorkerError> {
-    match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(wait_result) => {
-            wait_result.map_err(|err| WorkerError::Message(format!("{label} wait failed: {err}")))
-        }
-        Err(_) => {
-            child.start_kill().map_err(|err| {
-                WorkerError::Message(format!(
-                    "{label} timed out after {}s and kill failed: {err}",
-                    timeout.as_secs()
-                ))
-            })?;
-            match tokio::time::timeout(E2E_COMMAND_KILL_WAIT_TIMEOUT, child.wait()).await {
-                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
-            }
-            Err(WorkerError::Message(format!(
-                "{label} timed out after {}s and was killed",
-                timeout.as_secs()
-            )))
-        }
-    }
-}
-
-async fn run_psql_statement(psql: &Path, port: u16, sql: &str) -> Result<String, WorkerError> {
-    let mut command = Command::new(psql);
-    command
-        .arg("-h")
-        .arg("127.0.0.1")
-        .arg("-p")
-        .arg(port.to_string())
-        .arg("-U")
-        .arg("postgres")
-        .arg("-d")
-        .arg("postgres")
-        .arg("-v")
-        .arg("ON_ERROR_STOP=1")
-        .arg("-AXqt")
-        .arg("-c")
-        .arg(sql)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = command
-        .spawn()
-        .map_err(|err| WorkerError::Message(format!("psql spawn failed: {err}")))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| WorkerError::Message("psql stdout pipe unavailable".to_string()))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| WorkerError::Message("psql stderr pipe unavailable".to_string()))?;
-
-    let stdout_task = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        stdout
-            .read_to_end(&mut buffer)
-            .await
-            .map(|_| buffer)
-            .map_err(|err| WorkerError::Message(format!("psql stdout read failed: {err}")))
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        stderr
-            .read_to_end(&mut buffer)
-            .await
-            .map(|_| buffer)
-            .map_err(|err| WorkerError::Message(format!("psql stderr read failed: {err}")))
-    });
-
-    let label = format!("psql port={port}");
-    let status = wait_for_child_exit_with_timeout(&label, &mut child, E2E_COMMAND_TIMEOUT).await?;
-    let stdout_bytes = stdout_task
-        .await
-        .map_err(|err| WorkerError::Message(format!("psql stdout join failed: {err}")))??;
-    let stderr_bytes = stderr_task
-        .await
-        .map_err(|err| WorkerError::Message(format!("psql stderr join failed: {err}")))??;
-
-    let stdout_text = String::from_utf8(stdout_bytes)
-        .map_err(|err| WorkerError::Message(format!("psql stdout utf8 decode failed: {err}")))?;
-    if status.success() {
-        return Ok(stdout_text);
-    }
-
-    let stderr_text = String::from_utf8(stderr_bytes)
-        .map_err(|err| WorkerError::Message(format!("psql stderr utf8 decode failed: {err}")))?;
-    Err(WorkerError::Message(format!(
-        "psql exited unsuccessfully with status {status}; stderr={}",
-        stderr_text.trim()
-    )))
-}
-
-fn parse_psql_rows(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn parse_single_u64(output: &str) -> Result<u64, WorkerError> {
-    let rows = parse_psql_rows(output);
-    if rows.len() != 1 {
-        return Err(WorkerError::Message(format!(
-            "expected one scalar row, got {} rows: {rows:?}",
-            rows.len()
-        )));
-    }
-    rows[0].parse::<u64>().map_err(|err| {
-        WorkerError::Message(format!("parse scalar u64 from '{}' failed: {err}", rows[0]))
-    })
 }
 
 async fn run_sql_workload_worker(
@@ -2036,12 +1459,18 @@ async fn run_sql_workload_worker(
         );
         stats.attempted_writes = stats.attempted_writes.saturating_add(1);
         let write_started = tokio::time::Instant::now();
-        match run_psql_statement(workload.psql_bin.as_path(), target.port, write_sql.as_str()).await
-        {
+        match ha_e2e::util::run_psql_statement(
+            workload.psql_bin.as_path(),
+            target.port,
+            write_sql.as_str(),
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+        )
+        .await {
             Ok(_) => {
                 stats.committed_writes = stats.committed_writes.saturating_add(1);
                 stats.committed_keys.push(format!("{worker_id}:{seq}"));
-                let committed_at = match unix_now() {
+                let committed_at = match ha_e2e::util::unix_now() {
                     Ok(value) => value.0,
                     Err(_) => 0,
                 };
@@ -2072,8 +1501,14 @@ async fn run_sql_workload_worker(
 
         let read_sql = format!("SELECT COUNT(*)::bigint FROM {}", workload.table_name);
         stats.attempted_reads = stats.attempted_reads.saturating_add(1);
-        match run_psql_statement(workload.psql_bin.as_path(), target.port, read_sql.as_str()).await
-        {
+        match ha_e2e::util::run_psql_statement(
+            workload.psql_bin.as_path(),
+            target.port,
+            read_sql.as_str(),
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+        )
+        .await {
             Ok(_) => {
                 stats.read_successes = stats.read_successes.saturating_add(1);
             }
@@ -2156,19 +1591,10 @@ fn finalize_stress_scenario_result(
     }
 }
 
-async fn run_with_local_set<F>(future: F) -> Result<(), WorkerError>
-where
-    F: std::future::Future<Output = Result<(), WorkerError>>,
-{
-    tokio::task::LocalSet::new().run_until(future).await
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-    let binaries = resolve_pg_binaries_for_real_tests()?;
-    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+    let mut fixture = ClusterFixture::start(3).await?;
     let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -2210,7 +1636,7 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
                 Duration::from_secs(20),
             )
             .await?;
-        let pre_rows = parse_psql_rows(pre_rows_raw.as_str());
+        let pre_rows = ha_e2e::util::parse_psql_rows(pre_rows_raw.as_str());
         let expected_pre_rows = vec!["1:before".to_string()];
         if pre_rows != expected_pre_rows {
             return Err(WorkerError::Message(format!(
@@ -2284,7 +1710,7 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
                 Duration::from_secs(45),
             )
             .await?;
-        let post_rows = parse_psql_rows(post_rows_raw.as_str());
+        let post_rows = ha_e2e::util::parse_psql_rows(post_rows_raw.as_str());
         let expected_post_rows = vec!["1:before".to_string(), "2:after".to_string()];
         if post_rows != expected_post_rows {
             return Err(WorkerError::Message(format!(
@@ -2347,10 +1773,8 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-    let binaries = resolve_pg_binaries_for_real_tests()?;
-    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+    let mut fixture = ClusterFixture::start(3).await?;
     let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -2446,14 +1870,12 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-    let binaries = resolve_pg_binaries_for_real_tests()?;
-    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+    let mut fixture = ClusterFixture::start(3).await?;
     let scenario_name = "ha-e2e-stress-planned-switchover-concurrent-sql";
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
-        let started_at_unix_ms = unix_now()?.0;
+        let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
         let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
             scenario_name: scenario_name.to_string(),
@@ -2547,7 +1969,7 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
         fixture.record(format!(
             "stress switchover key integrity verified on {switchover_primary} with row_count={primary_row_count}"
         ));
-        let finished_at_unix_ms = unix_now()?.0;
+        let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         Ok(StressScenarioSummary {
             schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
             scenario: scenario_name.to_string(),
@@ -2604,14 +2026,12 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-    let binaries = resolve_pg_binaries_for_real_tests()?;
-    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+    let mut fixture = ClusterFixture::start(3).await?;
     let scenario_name = "ha-e2e-stress-unassisted-failover-concurrent-sql";
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
-        let started_at_unix_ms = unix_now()?.0;
+        let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
         let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
             scenario_name: scenario_name.to_string(),
@@ -2703,7 +2123,7 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
             "stress failover key integrity verified on {failover_primary} with row_count={primary_row_count}"
         ));
 
-        let finished_at_unix_ms = unix_now()?.0;
+        let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         Ok(StressScenarioSummary {
             schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
             scenario: scenario_name.to_string(),
@@ -2760,14 +2180,12 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result<(), WorkerError> {
-    run_with_local_set(async {
-    let binaries = resolve_pg_binaries_for_real_tests()?;
-    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
-    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    ha_e2e::util::run_with_local_set(async {
+    let mut fixture = ClusterFixture::start(3).await?;
     let scenario_name = "ha-e2e-stress-no-quorum-fencing-concurrent-sql";
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
-        let started_at_unix_ms = unix_now()?.0;
+        let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
         let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
             scenario_name: scenario_name.to_string(),
@@ -2801,7 +2219,7 @@ async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result
         let ha_stats = fixture
             .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 100)
             .await?;
-        let failsafe_observed_at_ms = unix_now()?.0;
+        let failsafe_observed_at_ms = ha_e2e::util::unix_now()?.0;
 
         tokio::time::sleep(Duration::from_secs(7)).await;
         let workload = fixture
@@ -2847,7 +2265,7 @@ async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result
         fixture.record(format!(
             "stress no-quorum key integrity verified on {bootstrap_primary} with row_count={primary_row_count}"
         ));
-        let finished_at_unix_ms = unix_now()?.0;
+        let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         Ok(StressScenarioSummary {
             schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
             scenario: scenario_name.to_string(),

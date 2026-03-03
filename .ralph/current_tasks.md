@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 09:56:31 PM CET 2026
+Generated: Tue Mar  3 11:40:47 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -549,7 +549,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/37-task-unified-e2e-harness-testconfig-interface.md`
 
-## Task: Unify HA E2E Harness Behind Stable `TestConfig` Interface <status>not_started</status> <passes>false</passes>
+## Task: Unify HA E2E Harness Behind Stable `TestConfig` Interface <status>completed</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Design and implement one stable, shared HA e2e harness interface driven by a single `TestConfig` input that initializes the requested cluster topology + pre-test setup, returns a full test handle, and removes duplicated setup/wait/process glue from scenario files.
