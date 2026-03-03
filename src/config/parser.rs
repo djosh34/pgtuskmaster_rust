@@ -47,6 +47,20 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfig, ConfigError> {
 }
 
 pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    validate_non_empty_path("postgres.data_dir", &cfg.postgres.data_dir)?;
+    validate_non_empty("postgres.listen_host", cfg.postgres.listen_host.as_str())?;
+    validate_port("postgres.listen_port", cfg.postgres.listen_port)?;
+    validate_non_empty_path("postgres.socket_dir", &cfg.postgres.socket_dir)?;
+    validate_non_empty_path("postgres.log_file", &cfg.postgres.log_file)?;
+    validate_non_empty(
+        "postgres.rewind_source_host",
+        cfg.postgres.rewind_source_host.as_str(),
+    )?;
+    validate_port(
+        "postgres.rewind_source_port",
+        cfg.postgres.rewind_source_port,
+    )?;
+
     validate_non_empty_path("process.binaries.postgres", &cfg.process.binaries.postgres)?;
     validate_non_empty_path("process.binaries.pg_ctl", &cfg.process.binaries.pg_ctl)?;
     validate_non_empty_path(
@@ -140,6 +154,26 @@ fn validate_timeout(field: &'static str, value: u64) -> Result<(), ConfigError> 
     Ok(())
 }
 
+fn validate_port(field: &'static str, value: u16) -> Result<(), ConfigError> {
+    if value == 0 {
+        return Err(ConfigError::Validation {
+            field,
+            message: "must be greater than zero".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_non_empty(field: &'static str, value: &str) -> Result<(), ConfigError> {
+    if value.trim().is_empty() {
+        return Err(ConfigError::Validation {
+            field,
+            message: "must not be empty".to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn validate_optional_non_empty(
     field: &'static str,
     value: Option<&str>,
@@ -174,6 +208,12 @@ mod tests {
             postgres: PostgresConfig {
                 data_dir: PathBuf::from("/var/lib/postgresql/data"),
                 connect_timeout_s: 5,
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 5432,
+                socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
+                log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port: 5432,
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
@@ -240,6 +280,31 @@ mod tests {
             err,
             Err(ConfigError::Validation {
                 field: "process.bootstrap_timeout_ms",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_invalid_postgres_runtime_fields() {
+        let mut cfg = base_runtime_config();
+        cfg.postgres.listen_host = " ".to_string();
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.listen_host",
+                ..
+            })
+        ));
+
+        let mut cfg = base_runtime_config();
+        cfg.postgres.listen_port = 0;
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.listen_port",
                 ..
             })
         ));
@@ -313,6 +378,12 @@ member_id = "member-a"
 
 [postgres]
 data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]
@@ -330,6 +401,12 @@ binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewi
 
         let cfg = load_runtime_config(&path)?;
         assert_eq!(cfg.postgres.connect_timeout_s, 5);
+        assert_eq!(cfg.postgres.listen_host, "127.0.0.1");
+        assert_eq!(cfg.postgres.listen_port, 5432);
+        assert_eq!(cfg.postgres.socket_dir, PathBuf::from("/tmp/pgtuskmaster/socket"));
+        assert_eq!(cfg.postgres.log_file, PathBuf::from("/tmp/pgtuskmaster/postgres.log"));
+        assert_eq!(cfg.postgres.rewind_source_host, "127.0.0.1");
+        assert_eq!(cfg.postgres.rewind_source_port, 5432);
         assert_eq!(cfg.process.pg_rewind_timeout_ms, 120_000);
         assert_eq!(cfg.api.listen_addr, "127.0.0.1:8080");
 
@@ -351,6 +428,12 @@ member_id = "member-a"
 
 [postgres]
 data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
 unknown = 10
 
 [dcs]

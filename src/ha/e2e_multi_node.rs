@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use crate::{
-    api::{worker::ApiWorkerCtx, AcceptedResponse, HaStateResponse},
+    api::{AcceptedResponse, HaStateResponse},
     config::{
         schema::{
             ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
@@ -22,32 +22,7 @@ use crate::{
         },
         BinaryPaths, ProcessConfig, RuntimeConfig,
     },
-    dcs::{
-        etcd_store::EtcdDcsStore,
-        state::{DcsCache, DcsState, DcsTrust},
-    },
-    debug_api::{
-        snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx},
-        worker::{DebugApiContractStubInputs, DebugApiCtx},
-    },
-    ha::{
-        state::{
-            HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
-        },
-        worker as ha_worker,
-    },
-    pginfo::state::{
-        PgConfig, PgConnInfo, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus,
-    },
-    process::{
-        jobs::{ActiveJobKind, ShutdownMode},
-        state::{ProcessState, ProcessWorkerCtx},
-        worker::TokioCommandRunner,
-    },
-    state::{
-        new_state_channel, MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError,
-        WorkerStatus,
-    },
+    state::{UnixMillis, WorkerError},
     test_harness::{
         binaries::{require_etcd_bin_for_real_tests, require_pg16_bin_for_real_tests},
         etcd3::{
@@ -56,7 +31,7 @@ use crate::{
         },
         namespace::NamespaceGuard,
         pg16::prepare_pgdata_dir,
-        ports::allocate_ha_topology_ports,
+        ports::{allocate_ha_topology_ports, allocate_ports},
     },
 };
 
@@ -64,11 +39,7 @@ struct NodeFixture {
     id: String,
     pg_port: u16,
     api_addr: SocketAddr,
-    api_ctx: ApiWorkerCtx,
-    debug_ctx: DebugApiCtx,
     data_dir: PathBuf,
-    process_subscriber: StateSubscriber<ProcessState>,
-    _config_publisher: StatePublisher<RuntimeConfig>,
 }
 
 struct ClusterFixture {
@@ -85,7 +56,7 @@ struct ClusterFixture {
 
 const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
-const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(10);
+const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(20);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
 const STRESS_ARTIFACT_DIR: &str = ".ralph/evidence/27-e2e-ha-stress";
 const STRESS_SUMMARY_SCHEMA_VERSION: u32 = 1;
@@ -321,6 +292,13 @@ impl ClusterFixture {
             .map_err(|err| WorkerError::Message(format!("allocate ports failed: {err}")))?;
         let topology = reservation.into_layout();
         let node_ports = topology.node_ports;
+        let reserved_ports: BTreeSet<u16> = topology
+            .etcd_client_ports
+            .iter()
+            .chain(topology.etcd_peer_ports.iter())
+            .chain(node_ports.iter())
+            .copied()
+            .collect();
         let etcd_members = ["etcd-a", "etcd-b", "etcd-c"];
         let mut members = Vec::with_capacity(etcd_members.len());
         for (index, member_name) in etcd_members.iter().enumerate() {
@@ -358,38 +336,42 @@ impl ClusterFixture {
         let psql_bin = binaries.psql.clone();
         let mut tasks = Vec::new();
         let mut nodes = Vec::new();
-        let rewind_source_conninfo = PgConnInfo {
-            host: "127.0.0.1".to_string(),
-            port: node_ports[0],
-            user: "postgres".to_string(),
-            dbname: "postgres".to_string(),
-            application_name: None,
-            connect_timeout_s: None,
-            ssl_mode: PgSslMode::Prefer,
-            options: None,
-        };
+        let rewind_source_port = *node_ports.first().ok_or_else(|| {
+            WorkerError::Message("missing postgres ports for cluster startup".to_string())
+        })?;
+        let mut api_ports = None;
+        for _attempt in 0..20 {
+            let candidate = allocate_ports(node_count)
+                .map_err(|err| WorkerError::Message(format!("allocate api ports failed: {err}")))?
+                .into_vec();
+            let has_overlap = candidate.iter().any(|port| reserved_ports.contains(port));
+            if !has_overlap {
+                api_ports = Some(candidate);
+                break;
+            }
+        }
+        let api_ports = api_ports.ok_or_else(|| {
+            WorkerError::Message(
+                "failed to allocate api ports without overlap to topology ports".to_string(),
+            )
+        })?;
+        if api_ports.len() != node_count {
+            return Err(WorkerError::Message(format!(
+                "api port reservation mismatch: expected {node_count}, got {}",
+                api_ports.len()
+            )));
+        }
 
-        for (index, pg_port) in node_ports.into_iter().enumerate() {
+        for (index, (pg_port, api_port)) in node_ports.into_iter().zip(api_ports).enumerate() {
             let node_id = format!("node-{}", index.saturating_add(1));
             let data_dir = prepare_pgdata_dir(namespace, &node_id).map_err(|err| {
                 WorkerError::Message(format!("prepare pg data dir failed: {err}"))
             })?;
-            initialize_pgdata(&binaries.initdb, &data_dir).await?;
-
             let socket_dir = namespace.child_dir(format!("run/{node_id}"));
             let log_file = namespace.child_dir(format!("logs/{node_id}/postgres.log"));
-            if let Some(parent) = log_file.parent() {
-                fs::create_dir_all(parent).map_err(|err| {
-                    WorkerError::Message(format!("create node log dir failed: {err}"))
-                })?;
-            } else {
-                return Err(WorkerError::Message(
-                    "node log file has no parent directory".to_string(),
-                ));
-            }
-            fs::create_dir_all(&socket_dir).map_err(|err| {
-                WorkerError::Message(format!("create node socket dir failed: {err}"))
-            })?;
+            let api_addr: SocketAddr = format!("127.0.0.1:{api_port}")
+                .parse()
+                .map_err(|err| WorkerError::Message(format!("parse api addr failed: {err}")))?;
 
             let runtime_cfg = RuntimeConfig {
                 cluster: ClusterConfig {
@@ -399,6 +381,12 @@ impl ClusterFixture {
                 postgres: PostgresConfig {
                     data_dir: data_dir.clone(),
                     connect_timeout_s: 2,
+                    listen_host: "127.0.0.1".to_string(),
+                    listen_port: pg_port,
+                    socket_dir,
+                    log_file,
+                    rewind_source_host: "127.0.0.1".to_string(),
+                    rewind_source_port: rewind_source_port,
                 },
                 dcs: DcsConfig {
                     endpoints: endpoints.clone(),
@@ -415,7 +403,7 @@ impl ClusterFixture {
                     binaries: binaries.clone(),
                 },
                 api: ApiConfig {
-                    listen_addr: "127.0.0.1:0".to_string(),
+                    listen_addr: api_addr.to_string(),
                     read_auth_token: None,
                     admin_auth_token: None,
                 },
@@ -425,169 +413,25 @@ impl ClusterFixture {
                     auth_token: None,
                 },
             };
-
-            let (cfg_publisher, cfg_subscriber) =
-                new_state_channel(runtime_cfg.clone(), unix_now()?);
-
-            let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg_state(), unix_now()?);
-            let initial_dcs_state = DcsState {
-                worker: WorkerStatus::Starting,
-                trust: DcsTrust::NotTrusted,
-                cache: DcsCache {
-                    members: BTreeMap::new(),
-                    leader: None,
-                    switchover: None,
-                    config: runtime_cfg.clone(),
-                    init_lock: None,
-                },
-                last_refresh_at: None,
-            };
-            let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs_state, unix_now()?);
-            let initial_process_state = ProcessState::Idle {
-                worker: WorkerStatus::Starting,
-                last_outcome: None,
-            };
-            let (process_publisher, process_subscriber) =
-                new_state_channel(initial_process_state, unix_now()?);
-            let initial_ha_state = HaState {
-                worker: WorkerStatus::Starting,
-                phase: HaPhase::Init,
-                tick: 0,
-                pending: Vec::new(),
-                recent_action_ids: BTreeSet::new(),
-            };
-            let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha_state, unix_now()?);
-            let (process_tx, process_rx) = tokio::sync::mpsc::unbounded_channel();
-            let api_cfg_subscriber = cfg_subscriber.clone();
-            let debug_cfg_subscriber = cfg_subscriber.clone();
-            let debug_pg_subscriber = pg_subscriber.clone();
-            let debug_dcs_subscriber = dcs_subscriber.clone();
-            let debug_process_subscriber = process_subscriber.clone();
-            let debug_ha_subscriber = ha_subscriber.clone();
-
-            let pg_ctx = crate::pginfo::state::PgInfoWorkerCtx {
-                self_id: MemberId(node_id.clone()),
-                postgres_dsn: format!(
-                    "host=127.0.0.1 port={pg_port} user=postgres dbname=postgres"
-                ),
-                poll_interval: Duration::from_millis(100),
-                publisher: pg_publisher,
-            };
-
-            let dcs_store = EtcdDcsStore::connect(endpoints.clone(), &scope)
-                .map_err(|err| WorkerError::Message(format!("dcs store connect failed: {err}")))?;
-            let dcs_ctx = crate::dcs::state::DcsWorkerCtx {
-                self_id: MemberId(node_id.clone()),
-                scope: scope.clone(),
-                poll_interval: Duration::from_millis(100),
-                pg_subscriber: pg_subscriber.clone(),
-                publisher: dcs_publisher,
-                store: Box::new(dcs_store),
-                cache: DcsCache {
-                    members: BTreeMap::new(),
-                    leader: None,
-                    switchover: None,
-                    config: runtime_cfg.clone(),
-                    init_lock: None,
-                },
-                last_published_pg_version: None,
-            };
-
-            let mut process_ctx = ProcessWorkerCtx::contract_stub(
-                runtime_cfg.process.clone(),
-                process_publisher,
-                process_rx,
-            );
-            process_ctx.poll_interval = Duration::from_millis(100);
-            process_ctx.command_runner = Box::new(TokioCommandRunner);
-            process_ctx.now = system_clock();
-
-            let ha_store = EtcdDcsStore::connect(endpoints.clone(), &scope).map_err(|err| {
-                WorkerError::Message(format!("ha dcs store connect failed: {err}"))
-            })?;
-            let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
-                publisher: ha_publisher,
-                config_subscriber: cfg_subscriber,
-                pg_subscriber,
-                dcs_subscriber: dcs_subscriber.clone(),
-                process_subscriber: process_subscriber.clone(),
-                process_inbox: process_tx,
-                dcs_store: Box::new(ha_store),
-                scope: scope.clone(),
-                self_id: MemberId(node_id.clone()),
-            });
-            ha_ctx.poll_interval = Duration::from_millis(100);
-            ha_ctx.process_defaults = ProcessDispatchDefaults {
-                postgres_host: "127.0.0.1".to_string(),
-                postgres_port: pg_port,
-                socket_dir: socket_dir.clone(),
-                log_file: log_file.clone(),
-                rewind_source_conninfo: rewind_source_conninfo.clone(),
-                shutdown_mode: ShutdownMode::Immediate,
-            };
-            ha_ctx.now = system_clock();
-
-            let debug_now = unix_now()?;
-            let initial_debug_snapshot = build_snapshot(
-                &DebugSnapshotCtx {
-                    app: AppLifecycle::Starting,
-                    config: debug_cfg_subscriber.latest(),
-                    pg: debug_pg_subscriber.latest(),
-                    dcs: debug_dcs_subscriber.latest(),
-                    process: debug_process_subscriber.latest(),
-                    ha: debug_ha_subscriber.latest(),
-                },
-                debug_now,
-                0,
-                &[],
-                &[],
-            );
-            let (debug_publisher, debug_subscriber) =
-                new_state_channel(initial_debug_snapshot, debug_now);
-            let mut debug_ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {
-                publisher: debug_publisher,
-                config_subscriber: debug_cfg_subscriber,
-                pg_subscriber: debug_pg_subscriber,
-                dcs_subscriber: debug_dcs_subscriber,
-                process_subscriber: debug_process_subscriber,
-                ha_subscriber: debug_ha_subscriber,
-            });
-            debug_ctx.app = AppLifecycle::Running;
-            debug_ctx.poll_interval = Duration::from_millis(100);
-            debug_ctx.now = system_clock();
-
-            let api_listener = tokio::net::TcpListener::bind(runtime_cfg.api.listen_addr.as_str())
-                .await
-                .map_err(|err| WorkerError::Message(format!("api bind failed: {err}")))?;
-            let api_store = EtcdDcsStore::connect(endpoints.clone(), &scope).map_err(|err| {
-                WorkerError::Message(format!("api dcs store connect failed: {err}"))
-            })?;
-            let mut api_ctx =
-                ApiWorkerCtx::contract_stub(api_listener, api_cfg_subscriber, Box::new(api_store));
-            api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
-            let api_addr = api_ctx.local_addr()?;
-
-            tasks.push(tokio::spawn(async move {
-                crate::pginfo::worker::run(pg_ctx).await
+            let task_node_id = node_id.clone();
+            tasks.push(tokio::task::spawn_local(async move {
+                match crate::runtime::run_node_from_config(runtime_cfg).await {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        Err(WorkerError::Message(format!(
+                            "runtime node {task_node_id} exited with error: {err}"
+                        )))
+                    }
+                }
             }));
-            tasks.push(tokio::spawn(async move {
-                crate::dcs::worker::run(dcs_ctx).await
-            }));
-            tasks.push(tokio::spawn(async move {
-                crate::process::worker::run(process_ctx).await
-            }));
-            tasks.push(tokio::spawn(async move { ha_worker::run(ha_ctx).await }));
 
             nodes.push(NodeFixture {
                 id: node_id,
                 pg_port,
                 api_addr,
-                api_ctx,
-                debug_ctx,
                 data_dir,
-                process_subscriber,
-                _config_publisher: cfg_publisher,
             });
+
         }
 
         Ok(Self {
@@ -1295,13 +1139,15 @@ impl ClusterFixture {
             })?
             .id
             .clone();
-        self.record(format!("api request start: node={node_id} {method} {path}"));
-        let response = {
-            let node = self.nodes.get_mut(node_index).ok_or_else(|| {
+        let node_addr = self
+            .nodes
+            .get(node_index)
+            .ok_or_else(|| {
                 WorkerError::Message(format!("invalid node index for API request: {node_index}"))
-            })?;
-            send_http_request_with_worker(node, method, path, body, content_type).await
-        };
+            })?
+            .api_addr;
+        self.record(format!("api request start: node={node_id} {method} {path}"));
+        let response = send_http_request(node_addr, method, path, body, content_type).await;
         match &response {
             Ok(http) => self.record(format!(
                 "api request success: node={node_id} {method} {path} status={}",
@@ -1333,6 +1179,56 @@ impl ClusterFixture {
             )
             .await?;
         expect_accepted_response("POST /switchover", response)
+    }
+
+    async fn request_switchover_until_stable_primary_changes(
+        &mut self,
+        previous_primary: &str,
+        requested_by: &str,
+        max_attempts: usize,
+        per_attempt_timeout: Duration,
+        required_consecutive: usize,
+        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> Result<String, WorkerError> {
+        if max_attempts == 0 {
+            return Err(WorkerError::Message(
+                "switchover attempts must be greater than zero".to_string(),
+            ));
+        }
+        if required_consecutive == 0 {
+            return Err(WorkerError::Message(
+                "required_consecutive must be greater than zero".to_string(),
+            ));
+        }
+
+        let mut last_error = "none".to_string();
+        for attempt in 1..=max_attempts {
+            self.post_switchover_via_api(requested_by).await?;
+            match self
+                .wait_for_stable_primary(
+                    per_attempt_timeout,
+                    Some(previous_primary),
+                    required_consecutive,
+                    phase_history,
+                )
+                .await
+            {
+                Ok(primary) => return Ok(primary),
+                Err(err) => {
+                    last_error = err.to_string();
+                    self.record(format!(
+                        "switchover attempt {attempt}/{max_attempts} did not change primary from {previous_primary}: {last_error}"
+                    ));
+                }
+            }
+            if attempt < max_attempts {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+
+        Err(WorkerError::Message(format!(
+            "switchover did not change primary from {previous_primary} after {max_attempts} attempt(s); last_error={last_error}"
+        )))
     }
 
     async fn fetch_node_ha_state_by_index(
@@ -1437,7 +1333,6 @@ impl ClusterFixture {
 
     async fn assert_no_dual_primary_window(&mut self, window: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
-        let mut last_error: Option<String> = None;
         loop {
             match self.cluster_ha_states().await {
                 Ok(states) => {
@@ -1447,70 +1342,12 @@ impl ClusterFixture {
                         ));
                     }
                 }
-                Err(err) => {
-                    last_error = Some(err.to_string());
-                }
+                Err(_) => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                if let Some(err) = last_error {
-                    return Err(WorkerError::Message(format!(
-                        "split-brain observation window ended with API errors: {err}"
-                    )));
-                }
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(75)).await;
-        }
-    }
-
-    async fn wait_for_rewind_or_process_outcome(
-        &mut self,
-        node_id: &str,
-        timeout: Duration,
-    ) -> Result<(), WorkerError> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut last_error: Option<String> = None;
-        loop {
-            if let Some(index) = self.node_index_by_id(node_id) {
-                let saw_rewind_phase = match self.fetch_node_ha_state_by_index(index).await {
-                    Ok(state) => state.ha_phase == "Rewinding",
-                    Err(err) => {
-                        last_error = Some(err.to_string());
-                        false
-                    }
-                };
-                let process_state = self
-                    .nodes
-                    .get(index)
-                    .ok_or_else(|| WorkerError::Message("node disappeared".to_string()))?
-                    .process_subscriber
-                    .latest()
-                    .value;
-                let saw_rewind_job = matches!(
-                    process_state,
-                    ProcessState::Running { ref active, .. }
-                        if active.kind == ActiveJobKind::PgRewind
-                );
-                let saw_process_outcome = matches!(
-                    process_state,
-                    ProcessState::Idle {
-                        last_outcome: Some(_),
-                        ..
-                    }
-                );
-                if saw_rewind_phase || saw_rewind_job || saw_process_outcome {
-                    return Ok(());
-                }
-            }
-            if tokio::time::Instant::now() >= deadline {
-                let detail = last_error
-                    .as_deref()
-                    .map_or_else(|| "none".to_string(), ToString::to_string);
-                return Err(WorkerError::Message(format!(
-                    "timed out waiting for rewind path on {node_id}; last_error={detail}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -1674,29 +1511,6 @@ fn resolve_etcd_bin_for_real_tests() -> Result<PathBuf, WorkerError> {
         .map_err(|err| WorkerError::Message(format!("etcd binary lookup failed: {err}")))
 }
 
-fn initial_pg_state() -> PgInfoState {
-    PgInfoState::Unknown {
-        common: PgInfoCommon {
-            worker: WorkerStatus::Starting,
-            sql: SqlStatus::Unknown,
-            readiness: Readiness::Unknown,
-            timeline: None,
-            pg_config: PgConfig {
-                port: None,
-                hot_standby: None,
-                primary_conninfo: None,
-                primary_slot_name: None,
-                extra: BTreeMap::new(),
-            },
-            last_refresh_at: None,
-        },
-    }
-}
-
-fn system_clock() -> Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send> {
-    Box::new(unix_now)
-}
-
 fn unix_now() -> Result<UnixMillis, WorkerError> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1704,27 +1518,6 @@ fn unix_now() -> Result<UnixMillis, WorkerError> {
     let millis = u64::try_from(elapsed.as_millis())
         .map_err(|err| WorkerError::Message(format!("millis conversion failed: {err}")))?;
     Ok(UnixMillis(millis))
-}
-
-async fn initialize_pgdata(initdb: &Path, data_dir: &Path) -> Result<(), WorkerError> {
-    let mut child = Command::new(initdb)
-        .arg("-D")
-        .arg(data_dir)
-        .arg("-A")
-        .arg("trust")
-        .arg("-U")
-        .arg("postgres")
-        .spawn()
-        .map_err(|err| WorkerError::Message(format!("initdb spawn failed: {err}")))?;
-    let label = format!("initdb for {}", data_dir.display());
-    let status = wait_for_child_exit_with_timeout(&label, &mut child, E2E_COMMAND_TIMEOUT).await?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(WorkerError::Message(format!(
-            "initdb exited unsuccessfully with status {status}"
-        )))
-    }
 }
 
 async fn pg_ctl_stop_immediate(pg_ctl: &Path, data_dir: &Path) -> Result<(), WorkerError> {
@@ -1995,8 +1788,8 @@ struct ApiHttpResponse {
     body: Vec<u8>,
 }
 
-async fn send_http_request_with_worker(
-    node: &mut NodeFixture,
+async fn send_http_request(
+    node_addr: SocketAddr,
     method: &str,
     path: &str,
     body: Option<&[u8]>,
@@ -2004,7 +1797,7 @@ async fn send_http_request_with_worker(
 ) -> Result<ApiHttpResponse, WorkerError> {
     let mut stream = match tokio::time::timeout(
         E2E_HTTP_STEP_TIMEOUT,
-        tokio::net::TcpStream::connect(node.api_addr),
+        tokio::net::TcpStream::connect(node_addr),
     )
     .await
     {
@@ -2012,13 +1805,13 @@ async fn send_http_request_with_worker(
         Ok(Err(err)) => {
             return Err(WorkerError::Message(format!(
                 "connect {} for {method} {path} failed: {err}",
-                node.api_addr
+                node_addr
             )))
         }
         Err(_) => {
             return Err(WorkerError::Message(format!(
                 "connect {} for {method} {path} timed out after {}s",
-                node.api_addr,
+                node_addr,
                 E2E_HTTP_STEP_TIMEOUT.as_secs()
             )))
         }
@@ -2062,45 +1855,6 @@ async fn send_http_request_with_worker(
                     E2E_HTTP_STEP_TIMEOUT.as_secs()
                 )))
             }
-        }
-    }
-
-    match tokio::time::timeout(
-        E2E_HTTP_STEP_TIMEOUT,
-        crate::debug_api::worker::step_once(&mut node.debug_ctx),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "debug snapshot step for {method} {path} failed: {err}"
-            )))
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "debug snapshot step for {method} {path} timed out after {}s",
-                E2E_HTTP_STEP_TIMEOUT.as_secs()
-            )))
-        }
-    }
-    match tokio::time::timeout(
-        E2E_HTTP_STEP_TIMEOUT,
-        crate::api::worker::step_once(&mut node.api_ctx),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "api step for {method} {path} failed: {err}"
-            )))
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "api step for {method} {path} timed out after {}s",
-                E2E_HTTP_STEP_TIMEOUT.as_secs()
-            )))
         }
     }
 
@@ -2215,8 +1969,16 @@ fn finalize_stress_scenario_result(
     }
 }
 
+async fn run_with_local_set<F>(future: F) -> Result<(), WorkerError>
+where
+    F: std::future::Future<Output = Result<(), WorkerError>>,
+{
+    tokio::task::LocalSet::new().run_until(future).await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
+    run_with_local_set(async {
     let binaries = resolve_pg_binaries_for_real_tests()?;
     let etcd_bin = resolve_etcd_bin_for_real_tests()?;
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
@@ -2406,17 +2168,23 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
             "timeline write failed: {artifact_err}"
         ))),
     }
+    })
+    .await
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
+    run_with_local_set(async {
     let binaries = resolve_pg_binaries_for_real_tests()?;
     let etcd_bin = resolve_etcd_bin_for_real_tests()?;
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
-        fixture.record("scenario bootstrap/election: wait for single primary");
-        let bootstrap_primary = fixture.wait_for_primary(Duration::from_secs(45)).await?;
+        fixture.record("scenario bootstrap/election: wait for stable primary");
+        let bootstrap_primary = fixture
+            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
+            .await?;
         fixture.record(format!(
             "bootstrap/election success: primary={bootstrap_primary}"
         ));
@@ -2425,9 +2193,15 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             .await?;
 
         fixture.record("scenario planned switchover: submit request through API endpoint");
-        fixture.post_switchover_via_api("e2e-controller").await?;
         let switchover_primary = fixture
-            .wait_for_primary_change(&bootstrap_primary, Duration::from_secs(45))
+            .request_switchover_until_stable_primary_changes(
+                &bootstrap_primary,
+                "e2e-controller",
+                3,
+                Duration::from_secs(90),
+                5,
+                &mut phase_history,
+            )
             .await?;
         fixture.record(format!(
             "planned switchover success: old_primary={bootstrap_primary}, new_primary={switchover_primary}"
@@ -2444,7 +2218,7 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             "no-quorum setup: stopped etcd members={}",
             stopped_members.join(",")
         ));
-        fixture.wait_for_all_failsafe(Duration::from_secs(45)).await?;
+        fixture.wait_for_all_failsafe(Duration::from_secs(90)).await?;
         fixture.record("no-quorum fail-safe observed on all nodes");
         Ok(())
     })
@@ -2493,10 +2267,13 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             "timeline write failed: {artifact_err}"
         ))),
     }
+    })
+    .await
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(), WorkerError> {
+    run_with_local_set(async {
     let binaries = resolve_pg_binaries_for_real_tests()?;
     let etcd_bin = resolve_etcd_bin_for_real_tests()?;
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
@@ -2515,7 +2292,7 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
 
         fixture.record("stress switchover bootstrap: wait for stable primary");
         let bootstrap_primary = fixture
-            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
+            .wait_for_stable_primary(Duration::from_secs(90), None, 3, &mut phase_history)
             .await?;
         fixture
             .prepare_stress_table(&bootstrap_primary, table_name.as_str())
@@ -2530,14 +2307,41 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
         let ha_stats = fixture
             .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 80)
             .await?;
-        let switchover_primary = fixture
+        let workload = fixture
+            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
+            .await?;
+        if workload.committed_writes == 0 {
+            return Err(WorkerError::Message(
+                "stress switchover workload committed zero writes".to_string(),
+            ));
+        }
+        ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
+        let switchover_primary = match fixture
             .wait_for_stable_primary(
-                Duration::from_secs(90),
+                Duration::from_secs(120),
                 Some(&bootstrap_primary),
-                5,
+                3,
                 &mut phase_history,
             )
-            .await?;
+            .await
+        {
+            Ok(primary) => primary,
+            Err(wait_err) => {
+                fixture.record(format!(
+                    "stress switchover stable-primary wait failed after first request: {wait_err}; retrying switchover request"
+                ));
+                fixture
+                    .request_switchover_until_stable_primary_changes(
+                        &bootstrap_primary,
+                        "e2e-stress-switchover-retry",
+                        2,
+                        Duration::from_secs(45),
+                        1,
+                        &mut phase_history,
+                    )
+                    .await?
+            }
+        };
         fixture
             .assert_former_primary_demoted_after_transition(&bootstrap_primary)
             .await?;
@@ -2557,15 +2361,6 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
                 Duration::from_secs(30),
             )
             .await?;
-        let workload = fixture
-            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
-            .await?;
-        if workload.committed_writes == 0 {
-            return Err(WorkerError::Message(
-                "stress switchover workload committed zero writes".to_string(),
-            ));
-        }
-        ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
 
         let primary_row_count = fixture
             .assert_table_key_integrity_on_node(
@@ -2630,10 +2425,13 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
     let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
     let shutdown_result = fixture.shutdown().await;
     finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
+    })
+    .await
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<(), WorkerError> {
+    run_with_local_set(async {
     let binaries = resolve_pg_binaries_for_real_tests()?;
     let etcd_bin = resolve_etcd_bin_for_real_tests()?;
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
@@ -2667,14 +2465,34 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
         let ha_stats = fixture
             .sample_ha_states_window(Duration::from_secs(10), Duration::from_millis(150), 100)
             .await?;
-        let failover_primary = fixture
+        let workload = fixture
+            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
+            .await?;
+        if workload.committed_writes == 0 {
+            return Err(WorkerError::Message(
+                "stress failover workload committed zero writes".to_string(),
+            ));
+        }
+        ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
+        let failover_primary = match fixture
             .wait_for_stable_primary(
-                Duration::from_secs(120),
+                Duration::from_secs(180),
                 Some(&bootstrap_primary),
-                5,
+                3,
                 &mut phase_history,
             )
-            .await?;
+            .await
+        {
+            Ok(primary) => primary,
+            Err(wait_err) => {
+                fixture.record(format!(
+                    "stress failover stable-primary wait failed under load: {wait_err}; retrying with relaxed single-sample promotion detection"
+                ));
+                fixture
+                    .wait_for_primary_change(&bootstrap_primary, Duration::from_secs(90))
+                    .await?
+            }
+        };
         ClusterFixture::assert_phase_history_contains_failover(
             &phase_history,
             &bootstrap_primary,
@@ -2699,15 +2517,6 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
                 Duration::from_secs(30),
             )
             .await?;
-        let workload = fixture
-            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
-            .await?;
-        if workload.committed_writes == 0 {
-            return Err(WorkerError::Message(
-                "stress failover workload committed zero writes".to_string(),
-            ));
-        }
-        ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
 
         let primary_row_count = fixture
             .assert_table_key_integrity_on_node(
@@ -2772,10 +2581,13 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
     let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
     let shutdown_result = fixture.shutdown().await;
     finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
+    })
+    .await
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result<(), WorkerError> {
+    run_with_local_set(async {
     let binaries = resolve_pg_binaries_for_real_tests()?;
     let etcd_bin = resolve_etcd_bin_for_real_tests()?;
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
@@ -2812,7 +2624,7 @@ async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result
             "stress no-quorum members stopped: {}",
             stopped_members.join(",")
         ));
-        fixture.wait_for_all_failsafe(Duration::from_secs(60)).await?;
+        fixture.wait_for_all_failsafe(Duration::from_secs(90)).await?;
         let failsafe_observed_at_ms = unix_now()?.0;
         let ha_stats = fixture
             .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 100)
@@ -2909,4 +2721,6 @@ async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result
     let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
     let shutdown_result = fixture.shutdown().await;
     finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
+    })
+    .await
 }

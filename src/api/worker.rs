@@ -135,7 +135,9 @@ impl ApiWorkerCtx {
 
 pub async fn run(mut ctx: ApiWorkerCtx) -> Result<(), WorkerError> {
     loop {
-        step_once(&mut ctx).await?;
+        if let Err(_err) = step_once(&mut ctx).await {
+            // Keep serving future requests even if a single connection cycle fails.
+        }
         tokio::time::sleep(ctx.poll_interval).await;
     }
 }
@@ -1081,6 +1083,12 @@ mod tests {
             postgres: PostgresConfig {
                 data_dir: "/tmp/pgdata".into(),
                 connect_timeout_s: 5,
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 5432,
+                socket_dir: "/tmp/pgtuskmaster/socket".into(),
+                log_file: "/tmp/pgtuskmaster/postgres.log".into(),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port: 5432,
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],

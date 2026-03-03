@@ -1,3 +1,0 @@
-   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.11s
-     Running `target/debug/examples/debug_ui_smoke_server`

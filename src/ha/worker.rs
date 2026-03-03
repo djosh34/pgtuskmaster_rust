@@ -506,6 +506,12 @@ mod tests {
             postgres: PostgresConfig {
                 data_dir: "/tmp/pgdata".into(),
                 connect_timeout_s: 5,
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 5432,
+                socket_dir: "/tmp/pgtuskmaster/socket".into(),
+                log_file: "/tmp/pgtuskmaster/postgres.log".into(),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port: 5432,
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],

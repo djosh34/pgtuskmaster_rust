@@ -26,6 +26,12 @@ pub struct ClusterConfig {
 pub struct PostgresConfig {
     pub data_dir: PathBuf,
     pub connect_timeout_s: u32,
+    pub listen_host: String,
+    pub listen_port: u16,
+    pub socket_dir: PathBuf,
+    pub log_file: PathBuf,
+    pub rewind_source_host: String,
+    pub rewind_source_port: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -101,6 +107,12 @@ pub struct PartialRuntimeConfig {
 pub struct PartialPostgresConfig {
     pub data_dir: PathBuf,
     pub connect_timeout_s: Option<u32>,
+    pub listen_host: Option<String>,
+    pub listen_port: Option<u16>,
+    pub socket_dir: Option<PathBuf>,
+    pub log_file: Option<PathBuf>,
+    pub rewind_source_host: Option<String>,
+    pub rewind_source_port: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

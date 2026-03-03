@@ -1,2 +1,0 @@
-cargo check --all-targets
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.50s

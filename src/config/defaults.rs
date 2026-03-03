@@ -4,6 +4,12 @@ use super::schema::{
 };
 
 const DEFAULT_PG_CONNECT_TIMEOUT_S: u32 = 5;
+const DEFAULT_PG_LISTEN_HOST: &str = "127.0.0.1";
+const DEFAULT_PG_LISTEN_PORT: u16 = 5432;
+const DEFAULT_PG_SOCKET_DIR: &str = "/tmp/pgtuskmaster/socket";
+const DEFAULT_PG_LOG_FILE: &str = "/tmp/pgtuskmaster/postgres.log";
+const DEFAULT_PG_REWIND_SOURCE_HOST: &str = "127.0.0.1";
+const DEFAULT_PG_REWIND_SOURCE_PORT: u16 = 5432;
 const DEFAULT_PG_REWIND_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_FENCING_TIMEOUT_MS: u64 = 30_000;
@@ -18,6 +24,30 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
             .postgres
             .connect_timeout_s
             .unwrap_or(DEFAULT_PG_CONNECT_TIMEOUT_S),
+        listen_host: raw
+            .postgres
+            .listen_host
+            .unwrap_or_else(|| DEFAULT_PG_LISTEN_HOST.to_string()),
+        listen_port: raw
+            .postgres
+            .listen_port
+            .unwrap_or(DEFAULT_PG_LISTEN_PORT),
+        socket_dir: raw
+            .postgres
+            .socket_dir
+            .unwrap_or_else(|| DEFAULT_PG_SOCKET_DIR.into()),
+        log_file: raw
+            .postgres
+            .log_file
+            .unwrap_or_else(|| DEFAULT_PG_LOG_FILE.into()),
+        rewind_source_host: raw
+            .postgres
+            .rewind_source_host
+            .unwrap_or_else(|| DEFAULT_PG_REWIND_SOURCE_HOST.to_string()),
+        rewind_source_port: raw
+            .postgres
+            .rewind_source_port
+            .unwrap_or(DEFAULT_PG_REWIND_SOURCE_PORT),
     };
 
     let process = ProcessConfig {
@@ -93,6 +123,12 @@ mod tests {
             postgres: PartialPostgresConfig {
                 data_dir: PathBuf::from("/var/lib/postgresql/data"),
                 connect_timeout_s: None,
+                listen_host: None,
+                listen_port: None,
+                socket_dir: None,
+                log_file: None,
+                rewind_source_host: None,
+                rewind_source_port: None,
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
@@ -126,6 +162,18 @@ mod tests {
         let cfg = apply_defaults(base_partial());
 
         assert_eq!(cfg.postgres.connect_timeout_s, DEFAULT_PG_CONNECT_TIMEOUT_S);
+        assert_eq!(cfg.postgres.listen_host, DEFAULT_PG_LISTEN_HOST);
+        assert_eq!(cfg.postgres.listen_port, DEFAULT_PG_LISTEN_PORT);
+        assert_eq!(cfg.postgres.socket_dir, PathBuf::from(DEFAULT_PG_SOCKET_DIR));
+        assert_eq!(cfg.postgres.log_file, PathBuf::from(DEFAULT_PG_LOG_FILE));
+        assert_eq!(
+            cfg.postgres.rewind_source_host,
+            DEFAULT_PG_REWIND_SOURCE_HOST
+        );
+        assert_eq!(
+            cfg.postgres.rewind_source_port,
+            DEFAULT_PG_REWIND_SOURCE_PORT
+        );
         assert_eq!(
             cfg.process.pg_rewind_timeout_ms,
             DEFAULT_PG_REWIND_TIMEOUT_MS
@@ -147,6 +195,12 @@ mod tests {
     fn apply_defaults_preserves_caller_values() {
         let mut raw = base_partial();
         raw.postgres.connect_timeout_s = Some(42);
+        raw.postgres.listen_host = Some("0.0.0.0".to_string());
+        raw.postgres.listen_port = Some(6000);
+        raw.postgres.socket_dir = Some(PathBuf::from("/tmp/custom-sock"));
+        raw.postgres.log_file = Some(PathBuf::from("/tmp/custom.log"));
+        raw.postgres.rewind_source_host = Some("10.0.0.10".to_string());
+        raw.postgres.rewind_source_port = Some(7000);
         raw.process.pg_rewind_timeout_ms = Some(2_000);
         raw.process.bootstrap_timeout_ms = Some(3_000);
         raw.process.fencing_timeout_ms = Some(4_000);
@@ -166,6 +220,12 @@ mod tests {
         let cfg = apply_defaults(raw);
 
         assert_eq!(cfg.postgres.connect_timeout_s, 42);
+        assert_eq!(cfg.postgres.listen_host, "0.0.0.0");
+        assert_eq!(cfg.postgres.listen_port, 6000);
+        assert_eq!(cfg.postgres.socket_dir, PathBuf::from("/tmp/custom-sock"));
+        assert_eq!(cfg.postgres.log_file, PathBuf::from("/tmp/custom.log"));
+        assert_eq!(cfg.postgres.rewind_source_host, "10.0.0.10");
+        assert_eq!(cfg.postgres.rewind_source_port, 7000);
         assert_eq!(cfg.process.pg_rewind_timeout_ms, 2_000);
         assert_eq!(cfg.process.bootstrap_timeout_ms, 3_000);
         assert_eq!(cfg.process.fencing_timeout_ms, 4_000);

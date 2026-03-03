@@ -8,6 +8,16 @@ const FORBIDDEN_PATTERNS: &[&str] = &[
     "\"/ha/leader\"",
     "post_set_leader_via_api",
     "delete_leader_via_api",
+    "ProcessWorkerCtx::contract_stub(",
+    "HaWorkerCtx::contract_stub(",
+    "ApiWorkerCtx::contract_stub(",
+    "DebugApiCtx::contract_stub(",
+    "crate::pginfo::worker::run(",
+    "crate::dcs::worker::run(",
+    "ha_worker::run(",
+    "crate::api::worker::step_once(",
+    "crate::debug_api::worker::step_once(",
+    "initialize_pgdata(",
 ];
 
 #[test]

@@ -78,11 +78,22 @@ pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> 
 pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError> {
     validate_runtime_config(&cfg)?;
 
-    let process_defaults = ProcessDispatchDefaults::contract_stub();
+    let process_defaults = process_defaults_from_config(&cfg);
     let startup_mode = plan_startup(&cfg, &process_defaults)?;
     execute_startup(&cfg, &process_defaults, &startup_mode).await?;
 
     run_workers(cfg, process_defaults).await
+}
+
+fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults {
+    let mut defaults = ProcessDispatchDefaults::contract_stub();
+    defaults.postgres_host = cfg.postgres.listen_host.clone();
+    defaults.postgres_port = cfg.postgres.listen_port;
+    defaults.socket_dir = cfg.postgres.socket_dir.clone();
+    defaults.log_file = cfg.postgres.log_file.clone();
+    defaults.rewind_source_conninfo.host = cfg.postgres.rewind_source_host.clone();
+    defaults.rewind_source_conninfo.port = cfg.postgres.rewind_source_port;
+    defaults
 }
 
 fn plan_startup(
@@ -573,6 +584,12 @@ mod tests {
             postgres: PostgresConfig {
                 data_dir: PathBuf::from("/tmp/pgtuskmaster-test-data"),
                 connect_timeout_s: 5,
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 5432,
+                socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
+                log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port: 5432,
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],

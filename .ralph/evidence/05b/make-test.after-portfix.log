@@ -1,7 +1,0 @@
-cargo test --all-targets
-   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
-error: failed to build archive at `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/target/debug/deps/libpgtuskmaster_rust-87ab9b79970aa841.rlib`: failed to open object file: No such file or directory (os error 2)
-
-error: could not compile `pgtuskmaster_rust` (lib) due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
-make: *** [Makefile:5: test] Error 101
