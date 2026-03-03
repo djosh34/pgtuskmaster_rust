@@ -126,7 +126,10 @@ fn run_worker_loop(
         let mut cache = BTreeMap::<String, String>::new();
 
         if let Some(active_client) = client.as_mut() {
-            if refresh_events(active_client, &scope_prefix, &mut cache, &events).await.is_err() {
+            if refresh_events(active_client, &scope_prefix, &mut cache, &events)
+                .await
+                .is_err()
+            {
                 healthy.store(false, Ordering::SeqCst);
                 client = None;
             }
@@ -456,8 +459,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn etcd_store_write_reports_unreachable_endpoint() -> TestResult {
-        let mut store =
-            EtcdDcsStore::connect(vec!["http://127.0.0.1:1".to_string()], "scope-a")?;
+        let mut store = EtcdDcsStore::connect(vec!["http://127.0.0.1:1".to_string()], "scope-a")?;
         match store.write_path("/scope-a/member/node-a", "{}".to_string()) {
             Ok(_) => Err(boxed_error(
                 "expected write against unreachable endpoint to fail",

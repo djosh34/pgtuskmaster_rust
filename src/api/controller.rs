@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{ApiError, ApiResult, AcceptedResponse},
+    api::{AcceptedResponse, ApiError, ApiResult},
     dcs::{state::SwitchoverRequest, store::DcsStore},
     state::MemberId,
 };
@@ -41,7 +41,10 @@ mod tests {
 
     use crate::{
         api::controller::{post_switchover, SwitchoverRequestInput},
-        dcs::{state::SwitchoverRequest, store::{DcsStore, DcsStoreError, WatchEvent}},
+        dcs::{
+            state::SwitchoverRequest,
+            store::{DcsStore, DcsStoreError, WatchEvent},
+        },
         state::MemberId,
     };
 
@@ -94,9 +97,9 @@ mod tests {
         )?;
         assert!(response.accepted);
 
-        let (path, raw) = store.pop_write().ok_or_else(|| {
-            crate::api::ApiError::internal("expected one DCS write".to_string())
-        })?;
+        let (path, raw) = store
+            .pop_write()
+            .ok_or_else(|| crate::api::ApiError::internal("expected one DCS write".to_string()))?;
         assert_eq!(path, "/scope-a/switchover");
         let decoded = serde_json::from_str::<SwitchoverRequest>(&raw)
             .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;

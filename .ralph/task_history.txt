@@ -22,3 +22,4 @@
 .ralph/tasks/bugs/remove-panics-expects-unwraps.md
 .ralph/tasks/bugs/test-harness-binary-check-panics.md
 .ralph/tasks/bugs/worker-contract-tests-assert-only-callability.md
+.ralph/tasks/story-rust-system-harness/14-task-security-auth-tls-real-cluster-tests.md

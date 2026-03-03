@@ -74,9 +74,9 @@ pub(crate) async fn step_once(ctx: &mut DebugApiCtx) -> Result<(), WorkerError> 
         ha: ctx.ha_subscriber.latest(),
     };
     let snapshot = build_snapshot(&snapshot_ctx, now);
-    ctx.publisher.publish(snapshot, now).map_err(|err| {
-        WorkerError::Message(format!("debug_api publish failed: {err}"))
-    })?;
+    ctx.publisher
+        .publish(snapshot, now)
+        .map_err(|err| WorkerError::Message(format!("debug_api publish failed: {err}")))?;
     Ok(())
 }
 

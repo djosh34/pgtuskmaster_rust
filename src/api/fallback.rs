@@ -22,7 +22,9 @@ pub(crate) fn get_fallback_cluster(cfg: &RuntimeConfig) -> FallbackClusterView {
     }
 }
 
-pub(crate) fn post_fallback_heartbeat(input: FallbackHeartbeatInput) -> ApiResult<AcceptedResponse> {
+pub(crate) fn post_fallback_heartbeat(
+    input: FallbackHeartbeatInput,
+) -> ApiResult<AcceptedResponse> {
     if input.source.trim().is_empty() {
         return Err(ApiError::bad_request("source must be non-empty"));
     }

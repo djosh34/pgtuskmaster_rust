@@ -215,8 +215,7 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
     assert!(dcs_ctx.cache.members.contains_key(&self_member_id));
 
     let initial_process = sample_process_state();
-    let (process_publisher, process_subscriber) =
-        new_state_channel(initial_process, UnixMillis(1));
+    let (process_publisher, process_subscriber) = new_state_channel(initial_process, UnixMillis(1));
     let (_process_tx, process_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut process_ctx = ProcessWorkerCtx::contract_stub(
         sample_runtime_config().process.clone(),

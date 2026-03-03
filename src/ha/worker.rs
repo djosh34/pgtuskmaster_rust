@@ -409,7 +409,9 @@ mod tests {
                 ProcessCommandRunner, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle,
                 ShutdownMode,
             },
-            state::{JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx},
+            state::{
+                JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
+            },
         },
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
@@ -607,9 +609,7 @@ mod tests {
         }
     }
 
-    fn monotonic_clock(
-        start: u64,
-    ) -> Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send> {
+    fn monotonic_clock(start: u64) -> Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send> {
         let clock = Arc::new(Mutex::new(start));
         Box::new(move || {
             let mut guard = clock
@@ -743,7 +743,10 @@ mod tests {
     }
 
     impl ProcessCommandRunner for ScriptedRunner {
-        fn spawn(&mut self, spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError> {
+        fn spawn(
+            &mut self,
+            spec: ProcessCommandSpec,
+        ) -> Result<Box<dyn ProcessHandle>, ProcessError> {
             {
                 let mut spawned = self
                     .spawned_specs
@@ -821,8 +824,11 @@ mod tests {
                 last_published_pg_version: None,
             };
 
-            let mut process_ctx =
-                ProcessWorkerCtx::contract_stub(runtime_config.process.clone(), process_publisher, process_rx);
+            let mut process_ctx = ProcessWorkerCtx::contract_stub(
+                runtime_config.process.clone(),
+                process_publisher,
+                process_rx,
+            );
             process_ctx.poll_interval = Duration::from_millis(5);
             process_ctx.command_runner = Box::new(runner.clone());
             process_ctx.now = monotonic_clock(100);
@@ -875,7 +881,11 @@ mod tests {
                 .map_err(|err| WorkerError::Message(format!("pg publish failed: {err}")))
         }
 
-        fn push_member_event(&mut self, member_id: &str, role: MemberRole) -> Result<(), WorkerError> {
+        fn push_member_event(
+            &mut self,
+            member_id: &str,
+            role: MemberRole,
+        ) -> Result<(), WorkerError> {
             let record = sample_member_record(member_id, role);
             let value = serde_json::to_string(&record)
                 .map_err(|err| WorkerError::Message(format!("member encode failed: {err}")))?;
@@ -1125,12 +1135,10 @@ mod tests {
         assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
         let failsafe = fixture.latest_ha();
         assert_eq!(failsafe.phase, HaPhase::FailSafe);
-        assert!(
-            failsafe
-                .pending
-                .iter()
-                .any(|action| matches!(action, HaAction::SignalFailSafe))
-        );
+        assert!(failsafe
+            .pending
+            .iter()
+            .any(|action| matches!(action, HaAction::SignalFailSafe)));
         assert!(fixture.store.has_delete_path("/scope-a/leader"));
     }
 

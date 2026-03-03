@@ -567,8 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_with_switchover_demotes_releases_and_clears_request(
-    ) -> Result<(), DecideError> {
+    fn primary_with_switchover_demotes_releases_and_clears_request() -> Result<(), DecideError> {
         let mut snapshot = world(
             DcsTrust::FullQuorum,
             pg_primary(SqlStatus::Healthy),

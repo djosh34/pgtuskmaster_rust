@@ -22,7 +22,9 @@ use crate::{
         store::DcsStore,
     },
     ha::{
-        state::{HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults},
+        state::{
+            HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
+        },
         worker as ha_worker,
     },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
@@ -111,8 +113,9 @@ impl ClusterFixture {
 
         for (index, pg_port) in node_ports.into_iter().enumerate() {
             let node_id = format!("node-{}", index.saturating_add(1));
-            let data_dir = prepare_pgdata_dir(namespace, &node_id)
-                .map_err(|err| WorkerError::Message(format!("prepare pg data dir failed: {err}")))?;
+            let data_dir = prepare_pgdata_dir(namespace, &node_id).map_err(|err| {
+                WorkerError::Message(format!("prepare pg data dir failed: {err}"))
+            })?;
             initialize_pgdata(&binaries.initdb, &data_dir).await?;
 
             let socket_dir = namespace.child_dir(format!("run/{node_id}"));
@@ -166,8 +169,7 @@ impl ClusterFixture {
             let (cfg_publisher, cfg_subscriber) =
                 new_state_channel(runtime_cfg.clone(), unix_now()?);
 
-            let (pg_publisher, pg_subscriber) =
-                new_state_channel(initial_pg_state(), unix_now()?);
+            let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg_state(), unix_now()?);
             let initial_dcs_state = DcsState {
                 worker: WorkerStatus::Starting,
                 trust: DcsTrust::NotTrusted,
@@ -199,7 +201,9 @@ impl ClusterFixture {
 
             let pg_ctx = crate::pginfo::state::PgInfoWorkerCtx {
                 self_id: MemberId(node_id.clone()),
-                postgres_dsn: format!("host=127.0.0.1 port={pg_port} user=postgres dbname=postgres"),
+                postgres_dsn: format!(
+                    "host=127.0.0.1 port={pg_port} user=postgres dbname=postgres"
+                ),
                 poll_interval: Duration::from_millis(100),
                 publisher: pg_publisher,
             };
@@ -232,8 +236,10 @@ impl ClusterFixture {
             process_ctx.command_runner = Box::new(TokioCommandRunner);
             process_ctx.now = system_clock();
 
-            let ha_store = EtcdDcsStore::connect(vec![endpoint.clone()], &scope)
-                .map_err(|err| WorkerError::Message(format!("ha dcs store connect failed: {err}")))?;
+            let ha_store =
+                EtcdDcsStore::connect(vec![endpoint.clone()], &scope).map_err(|err| {
+                    WorkerError::Message(format!("ha dcs store connect failed: {err}"))
+                })?;
             let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
                 publisher: ha_publisher,
                 config_subscriber: cfg_subscriber,
@@ -256,9 +262,15 @@ impl ClusterFixture {
             };
             ha_ctx.now = system_clock();
 
-            tasks.push(tokio::spawn(async move { crate::pginfo::worker::run(pg_ctx).await }));
-            tasks.push(tokio::spawn(async move { crate::dcs::worker::run(dcs_ctx).await }));
-            tasks.push(tokio::spawn(async move { crate::process::worker::run(process_ctx).await }));
+            tasks.push(tokio::spawn(async move {
+                crate::pginfo::worker::run(pg_ctx).await
+            }));
+            tasks.push(tokio::spawn(async move {
+                crate::dcs::worker::run(dcs_ctx).await
+            }));
+            tasks.push(tokio::spawn(async move {
+                crate::process::worker::run(process_ctx).await
+            }));
             tasks.push(tokio::spawn(async move { ha_worker::run(ha_ctx).await }));
 
             nodes.push(NodeFixture {
@@ -439,8 +451,13 @@ impl ClusterFixture {
                     ProcessState::Running { ref active, .. }
                         if active.kind == ActiveJobKind::PgRewind
                 );
-                let saw_process_outcome =
-                    matches!(process_state, ProcessState::Idle { last_outcome: Some(_), .. });
+                let saw_process_outcome = matches!(
+                    process_state,
+                    ProcessState::Idle {
+                        last_outcome: Some(_),
+                        ..
+                    }
+                );
                 if saw_rewind_phase || saw_rewind_job || saw_process_outcome {
                     return Ok(());
                 }
@@ -483,12 +500,13 @@ impl ClusterFixture {
     }
 
     fn write_timeline_artifact(&self) -> Result<PathBuf, WorkerError> {
-        let artifact_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(".ralph/evidence/13-e2e-multi-node");
+        let artifact_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(".ralph/evidence/13-e2e-multi-node");
         fs::create_dir_all(&artifact_dir)
             .map_err(|err| WorkerError::Message(format!("create artifact dir failed: {err}")))?;
         let stamp = unix_now()?.0;
-        let artifact_path = artifact_dir.join(format!("ha-e2e-scenario-matrix-{stamp}.timeline.log"));
+        let artifact_path =
+            artifact_dir.join(format!("ha-e2e-scenario-matrix-{stamp}.timeline.log"));
         fs::write(&artifact_path, self.timeline.join("\n"))
             .map_err(|err| WorkerError::Message(format!("write timeline failed: {err}")))?;
         Ok(artifact_path)
@@ -621,8 +639,7 @@ async fn pg_ctl_stop_immediate(pg_ctl: &Path, data_dir: &Path) -> Result<(), Wor
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let already_stopped =
-            stderr.contains("PID file") && stderr.contains("does not exist");
+        let already_stopped = stderr.contains("PID file") && stderr.contains("does not exist");
         if already_stopped {
             Ok(())
         } else {
@@ -642,8 +659,9 @@ fn leader_path(scope: &str) -> String {
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
     let mut fixture = ClusterFixture::start(3).await?;
-    let mut control_store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)
-        .map_err(|err| WorkerError::Message(format!("control store connect failed: {err}")))?;
+    let mut control_store =
+        EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)
+            .map_err(|err| WorkerError::Message(format!("control store connect failed: {err}")))?;
 
     let run_result: Result<(), WorkerError> = async {
         fixture.record("scenario bootstrap/election: wait for single primary");
@@ -769,11 +787,9 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             "{run_err}; shutdown failed: {shutdown_err}; timeline: {}",
             path.display()
         ))),
-        (Err(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(
-            format!(
-                "{run_err}; timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
-            ),
-        )),
+        (Err(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+        ))),
         (Ok(()), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
             "timeline write failed: {artifact_err}"
         ))),

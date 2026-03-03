@@ -794,11 +794,10 @@ mod tests {
         assert!(matches!(
             &failure_ctx.state,
             ProcessState::Idle {
-                last_outcome:
-                    Some(JobOutcome::Failure {
-                        error: ProcessError::EarlyExit { .. },
-                        ..
-                    }),
+                last_outcome: Some(JobOutcome::Failure {
+                    error: ProcessError::EarlyExit { .. },
+                    ..
+                }),
                 ..
             }
         ));
@@ -996,7 +995,10 @@ mod tests {
     }
 
     impl RealProcessFixture {
-        async fn bootstrap_and_start(binaries: BinaryPaths, ns_name: &str) -> Result<Self, WorkerError> {
+        async fn bootstrap_and_start(
+            binaries: BinaryPaths,
+            ns_name: &str,
+        ) -> Result<Self, WorkerError> {
             let guard = NamespaceGuard::new(ns_name)
                 .map_err(|err| WorkerError::Message(format!("namespace create failed: {err}")))?;
             let namespace = guard
@@ -1064,7 +1066,9 @@ mod tests {
                 )
                 .await?;
             if !matches!(start, JobOutcome::Success { .. }) {
-                return Err(WorkerError::Message(format!("start setup failed: {start:?}")));
+                return Err(WorkerError::Message(format!(
+                    "start setup failed: {start:?}"
+                )));
             }
 
             Ok(fixture)
@@ -1149,9 +1153,10 @@ mod tests {
         match outcome {
             JobOutcome::Success { .. } => Ok(()),
             JobOutcome::Failure {
-                error: ProcessError::EarlyExit {
-                    code: Some(1) | Some(3),
-                },
+                error:
+                    ProcessError::EarlyExit {
+                        code: Some(1) | Some(3),
+                    },
                 ..
             } => Ok(()),
             JobOutcome::Failure { error, .. } => Err(WorkerError::Message(format!(
@@ -1237,39 +1242,42 @@ mod tests {
             Ok(other) => Err(WorkerError::Message(format!(
                 "expected rewind early-exit failure for invalid source, got: {other:?}"
             ))),
-            Err(err) => Err(WorkerError::Message(format!("rewind job wait failed: {err}"))),
+            Err(err) => Err(WorkerError::Message(format!(
+                "rewind job wait failed: {err}"
+            ))),
         }
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_promote_job_executes_binary_path() -> Result<(), WorkerError> {
         let binaries = pg16_binaries()?;
-        let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-promote").await?;
+        let mut fixture =
+            RealProcessFixture::bootstrap_and_start(binaries, "process-promote").await?;
 
         let promote = fixture
             .submit_job_and_wait(
-            "promote",
-            ProcessJobKind::Promote(PromoteSpec {
-                data_dir: fixture.data_dir.clone(),
-                wait_seconds: Some(10),
-                timeout_ms: Some(10_000),
-            }),
-            Duration::from_secs(20),
-        )
-        .await?;
+                "promote",
+                ProcessJobKind::Promote(PromoteSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    wait_seconds: Some(10),
+                    timeout_ms: Some(10_000),
+                }),
+                Duration::from_secs(20),
+            )
+            .await?;
         assert_promote_outcome(&promote)?;
 
         let stop = fixture
             .submit_job_and_wait(
-            "stop-after-promote",
-            ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir: fixture.data_dir.clone(),
-                mode: ShutdownMode::Fast,
-                timeout_ms: Some(10_000),
-            }),
-            Duration::from_secs(20),
-        )
-        .await?;
+                "stop-after-promote",
+                ProcessJobKind::StopPostgres(StopPostgresSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    mode: ShutdownMode::Fast,
+                    timeout_ms: Some(10_000),
+                }),
+                Duration::from_secs(20),
+            )
+            .await?;
         assert_success_outcome("stop-after-promote", &stop)?;
         Ok(())
     }
@@ -1277,32 +1285,33 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn real_demote_job_executes_binary_path() -> Result<(), WorkerError> {
         let binaries = pg16_binaries()?;
-        let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-demote").await?;
+        let mut fixture =
+            RealProcessFixture::bootstrap_and_start(binaries, "process-demote").await?;
 
         let outcome = fixture
             .submit_job_and_wait(
-            "demote",
-            ProcessJobKind::Demote(DemoteSpec {
-                data_dir: fixture.data_dir.clone(),
-                mode: ShutdownMode::Fast,
-                timeout_ms: Some(10_000),
-            }),
-            Duration::from_secs(20),
-        )
-        .await?;
+                "demote",
+                ProcessJobKind::Demote(DemoteSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    mode: ShutdownMode::Fast,
+                    timeout_ms: Some(10_000),
+                }),
+                Duration::from_secs(20),
+            )
+            .await?;
         assert_success_outcome("demote", &outcome)?;
 
         let cleanup = fixture
             .submit_job_and_wait(
-            "stop-after-demote",
-            ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir: fixture.data_dir.clone(),
-                mode: ShutdownMode::Fast,
-                timeout_ms: Some(10_000),
-            }),
-            Duration::from_secs(20),
-        )
-        .await?;
+                "stop-after-demote",
+                ProcessJobKind::StopPostgres(StopPostgresSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    mode: ShutdownMode::Fast,
+                    timeout_ms: Some(10_000),
+                }),
+                Duration::from_secs(20),
+            )
+            .await?;
         assert_shutdown_cleanup_outcome("stop-after-demote", &cleanup)?;
         Ok(())
     }
@@ -1315,15 +1324,15 @@ mod tests {
 
         let stop = fixture
             .submit_job_and_wait(
-            "stop",
-            ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir: fixture.data_dir.clone(),
-                mode: ShutdownMode::Fast,
-                timeout_ms: Some(10_000),
-            }),
-            Duration::from_secs(20),
-        )
-        .await?;
+                "stop",
+                ProcessJobKind::StopPostgres(StopPostgresSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    mode: ShutdownMode::Fast,
+                    timeout_ms: Some(10_000),
+                }),
+                Duration::from_secs(20),
+            )
+            .await?;
         if !matches!(stop, JobOutcome::Success { .. }) {
             return Err(WorkerError::Message(format!(
                 "expected stop success, got: {stop:?}"
@@ -1335,37 +1344,38 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn real_restart_job_executes_binary_path() -> Result<(), WorkerError> {
         let binaries = pg16_binaries()?;
-        let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-restart").await?;
+        let mut fixture =
+            RealProcessFixture::bootstrap_and_start(binaries, "process-restart").await?;
 
         let restart = fixture
             .submit_job_and_wait(
-            "restart",
-            ProcessJobKind::RestartPostgres(RestartPostgresSpec {
-                data_dir: fixture.data_dir.clone(),
-                host: "127.0.0.1".to_string(),
-                port: fixture.port,
-                socket_dir: fixture.socket_dir.clone(),
-                log_file: fixture.log_file.clone(),
-                mode: ShutdownMode::Fast,
-                wait_seconds: Some(20),
-                timeout_ms: Some(20_000),
-            }),
-            Duration::from_secs(30),
-        )
-        .await?;
+                "restart",
+                ProcessJobKind::RestartPostgres(RestartPostgresSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    host: "127.0.0.1".to_string(),
+                    port: fixture.port,
+                    socket_dir: fixture.socket_dir.clone(),
+                    log_file: fixture.log_file.clone(),
+                    mode: ShutdownMode::Fast,
+                    wait_seconds: Some(20),
+                    timeout_ms: Some(20_000),
+                }),
+                Duration::from_secs(30),
+            )
+            .await?;
         assert_success_outcome("restart", &restart)?;
 
         let stop = fixture
             .submit_job_and_wait(
-            "stop-after-restart",
-            ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir: fixture.data_dir.clone(),
-                mode: ShutdownMode::Fast,
-                timeout_ms: Some(10_000),
-            }),
-            Duration::from_secs(20),
-        )
-        .await?;
+                "stop-after-restart",
+                ProcessJobKind::StopPostgres(StopPostgresSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    mode: ShutdownMode::Fast,
+                    timeout_ms: Some(10_000),
+                }),
+                Duration::from_secs(20),
+            )
+            .await?;
         assert_success_outcome("stop-after-restart", &stop)?;
         Ok(())
     }
@@ -1373,32 +1383,33 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn real_fencing_job_executes_binary_path() -> Result<(), WorkerError> {
         let binaries = pg16_binaries()?;
-        let mut fixture = RealProcessFixture::bootstrap_and_start(binaries, "process-fencing").await?;
+        let mut fixture =
+            RealProcessFixture::bootstrap_and_start(binaries, "process-fencing").await?;
 
         let outcome = fixture
             .submit_job_and_wait(
-            "fence",
-            ProcessJobKind::Fencing(FencingSpec {
-                data_dir: fixture.data_dir.clone(),
-                mode: ShutdownMode::Immediate,
-                timeout_ms: Some(10_000),
-            }),
-            Duration::from_secs(20),
-        )
-        .await?;
+                "fence",
+                ProcessJobKind::Fencing(FencingSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    mode: ShutdownMode::Immediate,
+                    timeout_ms: Some(10_000),
+                }),
+                Duration::from_secs(20),
+            )
+            .await?;
         assert_success_outcome("fence", &outcome)?;
 
         let cleanup = fixture
             .submit_job_and_wait(
-            "stop-after-fencing",
-            ProcessJobKind::StopPostgres(StopPostgresSpec {
-                data_dir: fixture.data_dir.clone(),
-                mode: ShutdownMode::Fast,
-                timeout_ms: Some(10_000),
-            }),
-            Duration::from_secs(20),
-        )
-        .await?;
+                "stop-after-fencing",
+                ProcessJobKind::StopPostgres(StopPostgresSpec {
+                    data_dir: fixture.data_dir.clone(),
+                    mode: ShutdownMode::Fast,
+                    timeout_ms: Some(10_000),
+                }),
+                Duration::from_secs(20),
+            )
+            .await?;
         assert_shutdown_cleanup_outcome("stop-after-fencing", &cleanup)?;
         Ok(())
     }
