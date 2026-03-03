@@ -1,14 +1,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    net::SocketAddr,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use tokio::{process::Command, task::JoinHandle};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
+    task::JoinHandle,
+};
 
 use crate::{
-    api::controller::{post_switchover, SwitchoverRequestInput},
+    api::{worker::ApiWorkerCtx, AcceptedResponse, HaStateResponse},
     config::{
         schema::{
             ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
@@ -19,7 +24,10 @@ use crate::{
     dcs::{
         etcd_store::EtcdDcsStore,
         state::{DcsCache, DcsState, DcsTrust},
-        store::DcsStore,
+    },
+    debug_api::{
+        snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx},
+        worker::{DebugApiContractStubInputs, DebugApiCtx},
     },
     ha::{
         state::{
@@ -53,9 +61,10 @@ use crate::{
 
 struct NodeFixture {
     id: String,
+    api_addr: SocketAddr,
+    api_ctx: ApiWorkerCtx,
+    debug_ctx: DebugApiCtx,
     data_dir: PathBuf,
-    ha_subscriber: StateSubscriber<HaState>,
-    dcs_subscriber: StateSubscriber<DcsState>,
     process_subscriber: StateSubscriber<ProcessState>,
     _config_publisher: StatePublisher<RuntimeConfig>,
 }
@@ -224,6 +233,12 @@ impl ClusterFixture {
             };
             let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha_state, unix_now()?);
             let (process_tx, process_rx) = tokio::sync::mpsc::unbounded_channel();
+            let api_cfg_subscriber = cfg_subscriber.clone();
+            let debug_cfg_subscriber = cfg_subscriber.clone();
+            let debug_pg_subscriber = pg_subscriber.clone();
+            let debug_dcs_subscriber = dcs_subscriber.clone();
+            let debug_process_subscriber = process_subscriber.clone();
+            let debug_ha_subscriber = ha_subscriber.clone();
 
             let pg_ctx = crate::pginfo::state::PgInfoWorkerCtx {
                 self_id: MemberId(node_id.clone()),
@@ -287,6 +302,45 @@ impl ClusterFixture {
             };
             ha_ctx.now = system_clock();
 
+            let debug_now = unix_now()?;
+            let initial_debug_snapshot = build_snapshot(
+                &DebugSnapshotCtx {
+                    app: AppLifecycle::Starting,
+                    config: debug_cfg_subscriber.latest(),
+                    pg: debug_pg_subscriber.latest(),
+                    dcs: debug_dcs_subscriber.latest(),
+                    process: debug_process_subscriber.latest(),
+                    ha: debug_ha_subscriber.latest(),
+                },
+                debug_now,
+                0,
+                &[],
+                &[],
+            );
+            let (debug_publisher, debug_subscriber) =
+                new_state_channel(initial_debug_snapshot, debug_now);
+            let mut debug_ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {
+                publisher: debug_publisher,
+                config_subscriber: debug_cfg_subscriber,
+                pg_subscriber: debug_pg_subscriber,
+                dcs_subscriber: debug_dcs_subscriber,
+                process_subscriber: debug_process_subscriber,
+                ha_subscriber: debug_ha_subscriber,
+            });
+            debug_ctx.app = AppLifecycle::Running;
+            debug_ctx.poll_interval = Duration::from_millis(100);
+            debug_ctx.now = system_clock();
+
+            let api_listener = tokio::net::TcpListener::bind(runtime_cfg.api.listen_addr.as_str())
+                .await
+                .map_err(|err| WorkerError::Message(format!("api bind failed: {err}")))?;
+            let api_store = EtcdDcsStore::connect(endpoints.clone(), &scope)
+                .map_err(|err| WorkerError::Message(format!("api dcs store connect failed: {err}")))?;
+            let mut api_ctx =
+                ApiWorkerCtx::contract_stub(api_listener, api_cfg_subscriber, Box::new(api_store));
+            api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
+            let api_addr = api_ctx.local_addr()?;
+
             tasks.push(tokio::spawn(async move {
                 crate::pginfo::worker::run(pg_ctx).await
             }));
@@ -300,9 +354,10 @@ impl ClusterFixture {
 
             nodes.push(NodeFixture {
                 id: node_id,
+                api_addr,
+                api_ctx,
+                debug_ctx,
                 data_dir,
-                ha_subscriber,
-                dcs_subscriber,
                 process_subscriber,
                 _config_publisher: cfg_publisher,
             });
@@ -328,104 +383,248 @@ impl ClusterFixture {
         self.timeline.push(format!("[{now}] {}", message.into()));
     }
 
-    fn current_primary(&self) -> Option<String> {
-        for node in &self.nodes {
-            if node.ha_subscriber.latest().value.phase == HaPhase::Primary {
-                return Some(node.id.clone());
-            }
-        }
-        None
-    }
-
-    fn primary_count(&self) -> usize {
-        self.nodes
-            .iter()
-            .filter(|node| node.ha_subscriber.latest().value.phase == HaPhase::Primary)
-            .count()
-    }
-
     fn node_by_id(&self, id: &str) -> Option<&NodeFixture> {
         self.nodes.iter().find(|node| node.id == id)
     }
 
-    async fn wait_for_primary(&self, timeout: Duration) -> Result<String, WorkerError> {
+    fn control_node_index(&self) -> Result<usize, WorkerError> {
+        if self.nodes.is_empty() {
+            return Err(WorkerError::Message(
+                "no nodes available for API control".to_string(),
+            ));
+        }
+        Ok(0)
+    }
+
+    fn node_index_by_id(&self, id: &str) -> Option<usize> {
+        self.nodes.iter().position(|node| node.id == id)
+    }
+
+    async fn send_node_request(
+        &mut self,
+        node_index: usize,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        content_type: Option<&str>,
+    ) -> Result<ApiHttpResponse, WorkerError> {
+        let node = self.nodes.get_mut(node_index).ok_or_else(|| {
+            WorkerError::Message(format!("invalid node index for API request: {node_index}"))
+        })?;
+        send_http_request_with_worker(node, method, path, body, content_type).await
+    }
+
+    async fn post_switchover_via_api(&mut self, requested_by: &str) -> Result<(), WorkerError> {
+        #[derive(serde::Serialize)]
+        struct SwitchoverBody<'a> {
+            requested_by: &'a str,
+        }
+
+        let body = serde_json::to_vec(&SwitchoverBody { requested_by }).map_err(|err| {
+            WorkerError::Message(format!("encode switchover request failed: {err}"))
+        })?;
+        let response = self
+            .send_node_request(
+                self.control_node_index()?,
+                "POST",
+                "/switchover",
+                Some(&body),
+                Some("application/json"),
+            )
+            .await?;
+        expect_accepted_response("POST /switchover", response)
+    }
+
+    async fn post_set_leader_via_api(&mut self, member_id: &str) -> Result<(), WorkerError> {
+        #[derive(serde::Serialize)]
+        struct SetLeaderBody<'a> {
+            member_id: &'a str,
+        }
+
+        let body = serde_json::to_vec(&SetLeaderBody { member_id })
+            .map_err(|err| WorkerError::Message(format!("encode set leader request failed: {err}")))?;
+        let response = self
+            .send_node_request(
+                self.control_node_index()?,
+                "POST",
+                "/ha/leader",
+                Some(&body),
+                Some("application/json"),
+            )
+            .await?;
+        expect_accepted_response("POST /ha/leader", response)
+    }
+
+    async fn delete_leader_via_api(&mut self) -> Result<(), WorkerError> {
+        let response = self
+            .send_node_request(
+                self.control_node_index()?,
+                "DELETE",
+                "/ha/leader",
+                None,
+                None,
+            )
+            .await?;
+        expect_accepted_response("DELETE /ha/leader", response)
+    }
+
+    async fn fetch_node_ha_state_by_index(
+        &mut self,
+        node_index: usize,
+    ) -> Result<HaStateResponse, WorkerError> {
+        let response = self
+            .send_node_request(node_index, "GET", "/ha/state", None, None)
+            .await?;
+        if response.status_code != 200 {
+            let body = String::from_utf8_lossy(&response.body);
+            return Err(WorkerError::Message(format!(
+                "GET /ha/state returned status {} body={}",
+                response.status_code,
+                body.trim()
+            )));
+        }
+        serde_json::from_slice::<HaStateResponse>(&response.body)
+            .map_err(|err| WorkerError::Message(format!("decode /ha/state response failed: {err}")))
+    }
+
+    async fn cluster_ha_states(&mut self) -> Result<Vec<HaStateResponse>, WorkerError> {
+        let mut states = Vec::with_capacity(self.nodes.len());
+        let node_count = self.nodes.len();
+        for index in 0..node_count {
+            states.push(self.fetch_node_ha_state_by_index(index).await?);
+        }
+        Ok(states)
+    }
+
+    fn primary_members(states: &[HaStateResponse]) -> Vec<String> {
+        states
+            .iter()
+            .filter(|state| state.ha_phase == "Primary")
+            .map(|state| state.self_member_id.clone())
+            .collect()
+    }
+
+    async fn wait_for_primary(&mut self, timeout: Duration) -> Result<String, WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_error: Option<String> = None;
         loop {
-            if self.primary_count() == 1 {
-                if let Some(primary) = self.current_primary() {
-                    return Ok(primary);
+            match self.cluster_ha_states().await {
+                Ok(states) => {
+                    let primaries = Self::primary_members(&states);
+                    if primaries.len() == 1 {
+                        if let Some(primary) = primaries.into_iter().next() {
+                            return Ok(primary);
+                        }
+                    }
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
                 }
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(WorkerError::Message(
-                    "timed out waiting for single primary".to_string(),
-                ));
+                let detail = last_error
+                    .as_deref()
+                    .map_or_else(|| "none".to_string(), ToString::to_string);
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for single primary via API; last_error={detail}"
+                )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
     async fn wait_for_primary_change(
-        &self,
+        &mut self,
         previous: &str,
         timeout: Duration,
     ) -> Result<String, WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_error: Option<String> = None;
         loop {
-            if self.primary_count() == 1 {
-                if let Some(primary) = self.current_primary() {
-                    if primary != previous {
-                        return Ok(primary);
+            match self.cluster_ha_states().await {
+                Ok(states) => {
+                    let primaries = Self::primary_members(&states);
+                    if primaries.len() == 1 {
+                        if let Some(primary) = primaries.into_iter().next() {
+                            if primary != previous {
+                                return Ok(primary);
+                            }
+                        }
                     }
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
                 }
             }
             if tokio::time::Instant::now() >= deadline {
+                let detail = last_error
+                    .as_deref()
+                    .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for primary change from {previous}"
+                    "timed out waiting for primary change from {previous} via API; last_error={detail}"
                 )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
-    async fn wait_for_dcs_leader_target(
-        &self,
+    async fn wait_for_api_leader_target(
+        &mut self,
         target: &str,
         timeout: Duration,
     ) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_error: Option<String> = None;
         loop {
-            let leader_seen = self.nodes.iter().any(|node| {
-                node.dcs_subscriber
-                    .latest()
-                    .value
-                    .cache
-                    .leader
-                    .as_ref()
-                    .map(|leader| leader.member_id.0.as_str() == target)
-                    .unwrap_or(false)
-            });
-            if leader_seen {
-                return Ok(());
+            match self.cluster_ha_states().await {
+                Ok(states) => {
+                    let leaders_match =
+                        !states.is_empty()
+                            && states
+                                .iter()
+                                .all(|state| state.leader.as_deref() == Some(target));
+                    if leaders_match {
+                        return Ok(());
+                    }
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                }
             }
             if tokio::time::Instant::now() >= deadline {
+                let detail = last_error
+                    .as_deref()
+                    .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for DCS leader target {target}"
+                    "timed out waiting for API leader target {target}; last_error={detail}"
                 )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
-    async fn assert_no_dual_primary_window(&self, window: Duration) -> Result<(), WorkerError> {
+    async fn assert_no_dual_primary_window(&mut self, window: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
+        let mut last_error: Option<String> = None;
         loop {
-            if self.primary_count() > 1 {
-                return Err(WorkerError::Message(
-                    "split-brain detected: more than one primary".to_string(),
-                ));
+            match self.cluster_ha_states().await {
+                Ok(states) => {
+                    if Self::primary_members(&states).len() > 1 {
+                        return Err(WorkerError::Message(
+                            "split-brain detected: more than one primary".to_string(),
+                        ));
+                    }
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                }
             }
             if tokio::time::Instant::now() >= deadline {
+                if let Some(err) = last_error {
+                    return Err(WorkerError::Message(format!(
+                        "split-brain observation window ended with API errors: {err}"
+                    )));
+                }
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(75)).await;
@@ -433,28 +632,44 @@ impl ClusterFixture {
     }
 
     async fn wait_for_fencing_signal(
-        &self,
+        &mut self,
         node_id: &str,
         timeout: Duration,
     ) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_error: Option<String> = None;
         loop {
-            if let Some(node) = self.node_by_id(node_id) {
-                let phase = node.ha_subscriber.latest().value.phase.clone();
-                let process_state = node.process_subscriber.latest().value;
+            if let Some(index) = self.node_index_by_id(node_id) {
+                let phase_is_fencing = match self.fetch_node_ha_state_by_index(index).await {
+                    Ok(state) => state.ha_phase == "Fencing",
+                    Err(err) => {
+                        last_error = Some(err.to_string());
+                        false
+                    }
+                };
+                let process_state = self
+                    .nodes
+                    .get(index)
+                    .ok_or_else(|| WorkerError::Message("node disappeared".to_string()))?
+                    .process_subscriber
+                    .latest()
+                    .value;
                 let has_fencing_job = matches!(
                     process_state,
                     ProcessState::Running { ref active, .. }
                         if active.kind == ActiveJobKind::Fencing
                             || active.kind == ActiveJobKind::Demote
                 );
-                if phase == HaPhase::Fencing || has_fencing_job {
+                if phase_is_fencing || has_fencing_job {
                     return Ok(());
                 }
             }
             if tokio::time::Instant::now() >= deadline {
+                let detail = last_error
+                    .as_deref()
+                    .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for fencing signal on {node_id}"
+                    "timed out waiting for fencing signal on {node_id}; last_error={detail}"
                 )));
             }
             tokio::time::sleep(Duration::from_millis(75)).await;
@@ -462,16 +677,28 @@ impl ClusterFixture {
     }
 
     async fn wait_for_rewind_or_process_outcome(
-        &self,
+        &mut self,
         node_id: &str,
         timeout: Duration,
     ) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_error: Option<String> = None;
         loop {
-            if let Some(node) = self.node_by_id(node_id) {
-                let phase = node.ha_subscriber.latest().value.phase.clone();
-                let process_state = node.process_subscriber.latest().value;
-                let saw_rewind_phase = phase == HaPhase::Rewinding;
+            if let Some(index) = self.node_index_by_id(node_id) {
+                let saw_rewind_phase = match self.fetch_node_ha_state_by_index(index).await {
+                    Ok(state) => state.ha_phase == "Rewinding",
+                    Err(err) => {
+                        last_error = Some(err.to_string());
+                        false
+                    }
+                };
+                let process_state = self
+                    .nodes
+                    .get(index)
+                    .ok_or_else(|| WorkerError::Message("node disappeared".to_string()))?
+                    .process_subscriber
+                    .latest()
+                    .value;
                 let saw_rewind_job = matches!(
                     process_state,
                     ProcessState::Running { ref active, .. }
@@ -489,28 +716,40 @@ impl ClusterFixture {
                 }
             }
             if tokio::time::Instant::now() >= deadline {
+                let detail = last_error
+                    .as_deref()
+                    .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for rewind path on {node_id}"
+                    "timed out waiting for rewind path on {node_id}; last_error={detail}"
                 )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
-    async fn wait_for_all_failsafe(&self, timeout: Duration) -> Result<(), WorkerError> {
+    async fn wait_for_all_failsafe(&mut self, timeout: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_error: Option<String> = None;
         loop {
-            let all_failsafe = self
-                .nodes
-                .iter()
-                .all(|node| node.ha_subscriber.latest().value.phase == HaPhase::FailSafe);
-            if all_failsafe {
-                return Ok(());
+            match self.cluster_ha_states().await {
+                Ok(states) => {
+                    let all_failsafe =
+                        !states.is_empty() && states.iter().all(|state| state.ha_phase == "FailSafe");
+                    if all_failsafe {
+                        return Ok(());
+                    }
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                }
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(WorkerError::Message(
-                    "timed out waiting for all nodes to enter fail-safe".to_string(),
-                ));
+                let detail = last_error
+                    .as_deref()
+                    .map_or_else(|| "none".to_string(), ToString::to_string);
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for all nodes to enter fail-safe via API; last_error={detail}"
+                )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -742,8 +981,112 @@ async fn pg_ctl_stop_immediate(pg_ctl: &Path, data_dir: &Path) -> Result<(), Wor
     }
 }
 
-fn leader_path(scope: &str) -> String {
-    format!("/{}/leader", scope.trim_matches('/'))
+struct ApiHttpResponse {
+    status_code: u16,
+    body: Vec<u8>,
+}
+
+async fn send_http_request_with_worker(
+    node: &mut NodeFixture,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    content_type: Option<&str>,
+) -> Result<ApiHttpResponse, WorkerError> {
+    let mut stream = tokio::net::TcpStream::connect(node.api_addr).await.map_err(|err| {
+        WorkerError::Message(format!(
+            "connect {} for {method} {path} failed: {err}",
+            node.api_addr
+        ))
+    })?;
+
+    let payload = body.unwrap_or(&[]);
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
+    );
+    if !payload.is_empty() {
+        let ct = content_type.unwrap_or("application/json");
+        request.push_str(&format!("Content-Type: {ct}\r\n"));
+        request.push_str(&format!("Content-Length: {}\r\n", payload.len()));
+    }
+    request.push_str("\r\n");
+
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("write request headers failed: {err}")))?;
+    if !payload.is_empty() {
+        stream
+            .write_all(payload)
+            .await
+            .map_err(|err| WorkerError::Message(format!("write request body failed: {err}")))?;
+    }
+
+    crate::debug_api::worker::step_once(&mut node.debug_ctx)
+        .await
+        .map_err(|err| WorkerError::Message(format!("debug snapshot step failed: {err}")))?;
+    crate::api::worker::step_once(&mut node.api_ctx)
+        .await
+        .map_err(|err| WorkerError::Message(format!("api step failed: {err}")))?;
+
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .await
+        .map_err(|err| WorkerError::Message(format!("read response failed: {err}")))?;
+    parse_http_response(raw.as_slice())
+}
+
+fn parse_http_response(raw: &[u8]) -> Result<ApiHttpResponse, WorkerError> {
+    let status_line_end = raw
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .ok_or_else(|| WorkerError::Message("missing status line terminator".to_string()))?;
+    let status_line = String::from_utf8_lossy(&raw[..status_line_end]);
+    let mut parts = status_line.split_whitespace();
+    let _http_version = parts
+        .next()
+        .ok_or_else(|| WorkerError::Message("missing http version".to_string()))?;
+    let status_code = parts
+        .next()
+        .ok_or_else(|| WorkerError::Message("missing status code".to_string()))?
+        .parse::<u16>()
+        .map_err(|err| WorkerError::Message(format!("invalid status code: {err}")))?;
+
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| WorkerError::Message("missing header/body separator".to_string()))?;
+    let body_start = header_end
+        .checked_add(4)
+        .ok_or_else(|| WorkerError::Message("response body offset overflow".to_string()))?;
+    let body = raw
+        .get(body_start..)
+        .ok_or_else(|| WorkerError::Message("response body slice out of bounds".to_string()))?
+        .to_vec();
+
+    Ok(ApiHttpResponse { status_code, body })
+}
+
+fn expect_accepted_response(action: &str, response: ApiHttpResponse) -> Result<(), WorkerError> {
+    if response.status_code != 202 {
+        let body = String::from_utf8_lossy(&response.body);
+        return Err(WorkerError::Message(format!(
+            "{action} returned status {} body={}",
+            response.status_code,
+            body.trim()
+        )));
+    }
+
+    let decoded = serde_json::from_slice::<AcceptedResponse>(&response.body).map_err(|err| {
+        WorkerError::Message(format!("{action} decode accepted response failed: {err}"))
+    })?;
+    if !decoded.accepted {
+        return Err(WorkerError::Message(format!(
+            "{action} response accepted=false"
+        )));
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -757,8 +1100,6 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
         None => return Ok(()),
     };
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
-    let mut control_store = EtcdDcsStore::connect(fixture.endpoints.clone(), &fixture.scope)
-        .map_err(|err| WorkerError::Message(format!("control store connect failed: {err}")))?;
 
     let run_result: Result<(), WorkerError> = async {
         fixture.record("scenario bootstrap/election: wait for single primary");
@@ -770,15 +1111,8 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             .assert_no_dual_primary_window(Duration::from_secs(3))
             .await?;
 
-        fixture.record("scenario planned switchover: submit request through API controller");
-        post_switchover(
-            &fixture.scope,
-            &mut control_store,
-            SwitchoverRequestInput {
-                requested_by: MemberId("e2e-controller".to_string()),
-            },
-        )
-        .map_err(|err| WorkerError::Message(format!("post switchover failed: {err}")))?;
+        fixture.record("scenario planned switchover: submit request through API endpoint");
+        fixture.post_switchover_via_api("e2e-controller").await?;
         let switchover_primary = fixture
             .wait_for_primary_change(&bootstrap_primary, Duration::from_secs(45))
             .await?;
@@ -793,13 +1127,7 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             .find(|node| node.id != switchover_primary)
             .map(|node| node.id.clone())
             .ok_or_else(|| WorkerError::Message("no conflict target node found".to_string()))?;
-        let leader_payload = serde_json::to_string(&crate::dcs::state::LeaderRecord {
-            member_id: MemberId(conflict_target.clone()),
-        })
-        .map_err(|err| WorkerError::Message(format!("leader encode failed: {err}")))?;
-        control_store
-            .write_path(&leader_path(&fixture.scope), leader_payload)
-            .map_err(|err| WorkerError::Message(format!("inject leader key failed: {err}")))?;
+        fixture.post_set_leader_via_api(&conflict_target).await?;
         fixture
             .wait_for_fencing_signal(&switchover_primary, Duration::from_secs(30))
             .await?;
@@ -810,29 +1138,21 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             "fencing-before-promotion observed on {switchover_primary}"
         ));
 
-        fixture.record("scenario failover: stop current primary and remove stale leader key");
+        fixture.record("scenario failover: stop current primary and clear stale leader through API");
         fixture.stop_postgres_for_node(&switchover_primary).await?;
-        control_store
-            .delete_path(&leader_path(&fixture.scope))
-            .map_err(|err| WorkerError::Message(format!("delete leader key failed: {err}")))?;
+        fixture.delete_leader_via_api().await?;
         let failover_primary = fixture
             .nodes
             .iter()
             .find(|node| node.id != switchover_primary)
             .map(|node| node.id.clone())
             .ok_or_else(|| WorkerError::Message("no failover target found".to_string()))?;
-        let failover_payload = serde_json::to_string(&crate::dcs::state::LeaderRecord {
-            member_id: MemberId(failover_primary.clone()),
-        })
-        .map_err(|err| WorkerError::Message(format!("failover leader encode failed: {err}")))?;
-        control_store
-            .write_path(&leader_path(&fixture.scope), failover_payload)
-            .map_err(|err| WorkerError::Message(format!("set failover leader failed: {err}")))?;
+        fixture.post_set_leader_via_api(&failover_primary).await?;
         fixture
-            .wait_for_dcs_leader_target(&failover_primary, Duration::from_secs(45))
+            .wait_for_api_leader_target(&failover_primary, Duration::from_secs(45))
             .await?;
         fixture.record(format!(
-            "failover signal observed: failed_primary={switchover_primary}, dcs_leader={failover_primary}"
+            "failover signal observed: failed_primary={switchover_primary}, api_leader={failover_primary}"
         ));
 
         fixture.record("scenario rewind path: verify former primary enters rewind/process recovery path");

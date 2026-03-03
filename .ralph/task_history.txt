@@ -40,3 +40,4 @@
 .ralph/tasks/story-rust-system-harness/16-task-debug-ui-verbose-state-actions-events-and-final-stop.md
 .ralph/tasks/story-rust-system-harness/22-task-ha-admin-api-read-write-surface.md
 .ralph/tasks/story-rust-system-harness/24-task-real-e2e-harness-3nodes-3etcd.md
+.ralph/tasks/story-rust-system-harness/25-task-enforce-e2e-api-only-control-no-direct-dcs.md

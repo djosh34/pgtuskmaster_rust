@@ -13,7 +13,7 @@ test-real:
 	PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix
 
 test-bdd:
-	cargo test --test bdd_state_watch --test bdd_api_http
+	PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets -- --include-ignored
 
 lint:
 	cargo clippy --all-targets --all-features -- -D warnings

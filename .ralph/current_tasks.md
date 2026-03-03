@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 08:40:25 AM CET 2026
+Generated: Tue Mar  3 08:59:18 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -397,7 +397,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/25-task-enforce-e2e-api-only-control-no-direct-dcs.md`
 
-## Task: Enforce API-only control in e2e and ban direct DCS mutations <status>not_started</status> <passes>false</passes>
+## Task: Enforce API-only control in e2e and ban direct DCS mutations <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
