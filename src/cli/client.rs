@@ -48,12 +48,6 @@ struct SwitchoverRequestInput {
     requested_by: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SetLeaderRequestInput {
-    member_id: String,
-}
-
 impl CliApiClient {
     pub fn new(
         base_url: String,
@@ -79,28 +73,6 @@ impl CliApiClient {
     pub async fn get_ha_state(&self) -> Result<HaStateResponse, CliError> {
         self.send_json_no_body(Method::GET, "/ha/state", AuthRole::Read, StatusCode::OK)
             .await
-    }
-
-    pub async fn post_set_leader(&self, member_id: String) -> Result<AcceptedResponse, CliError> {
-        let body = SetLeaderRequestInput { member_id };
-        self.send_json_with_body(
-            Method::POST,
-            "/ha/leader",
-            AuthRole::Admin,
-            &body,
-            StatusCode::ACCEPTED,
-        )
-        .await
-    }
-
-    pub async fn delete_leader(&self) -> Result<AcceptedResponse, CliError> {
-        self.send_json_no_body(
-            Method::DELETE,
-            "/ha/leader",
-            AuthRole::Admin,
-            StatusCode::ACCEPTED,
-        )
-        .await
     }
 
     pub async fn delete_switchover(&self) -> Result<AcceptedResponse, CliError> {
@@ -239,7 +211,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use crate::cli::client::{AcceptedResponse, CliApiClient, CliError};
+    use crate::cli::client::{CliApiClient, CliError};
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedRequest {
@@ -285,30 +257,6 @@ mod tests {
 
         let request = handle_request(handle).await?;
         assert_header(&request.headers, "authorization", "Bearer admin-token")?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn set_leader_posts_expected_path_and_payload() -> Result<(), CliError> {
-        let (addr, handle) = spawn_server(http_response(202, r#"{"accepted":true}"#)).await?;
-        let client = CliApiClient::new(
-            format!("http://{addr}"),
-            5_000,
-            Some("reader".to_string()),
-            Some("admin".to_string()),
-        )?;
-
-        let response = client.post_set_leader("node-b".to_string()).await?;
-        assert_eq!(response, AcceptedResponse { accepted: true });
-
-        let request = handle_request(handle).await?;
-        assert_eq!(request.method, "POST");
-        assert_eq!(request.path, "/ha/leader");
-        assert_header(&request.headers, "authorization", "Bearer admin")?;
-
-        let body_text = String::from_utf8(request.body)
-            .map_err(|err| CliError::Decode(format!("body utf8 decode failed: {err}")))?;
-        assert_eq!(body_text, r#"{"member_id":"node-b"}"#);
         Ok(())
     }
 

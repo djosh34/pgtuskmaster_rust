@@ -44,3 +44,4 @@
 .ralph/tasks/story-rust-system-harness/23-task-ha-admin-cli-over-api.md
 .ralph/tasks/bugs/bug-test-bdd-full-suite-hangs.md
 .ralph/tasks/story-rust-system-harness/26-task-e2e-unassisted-failover-sql-consistency.md
+.ralph/tasks/bugs/bug-remove-writable-ha-leader-api-and-ha-loop-test-steering.md

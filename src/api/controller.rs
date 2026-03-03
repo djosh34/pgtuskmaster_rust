@@ -16,12 +16,6 @@ pub(crate) struct SwitchoverRequestInput {
     pub(crate) requested_by: MemberId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SetLeaderRequestInput {
-    pub(crate) member_id: MemberId,
-}
-
 pub(crate) fn post_switchover(
     scope: &str,
     store: &mut dyn DcsStore,
@@ -42,26 +36,6 @@ pub(crate) fn post_switchover(
         .write_path(&path, encoded)
         .map_err(|err| ApiError::DcsStore(err.to_string()))?;
 
-    Ok(AcceptedResponse { accepted: true })
-}
-
-pub(crate) fn post_set_leader(
-    scope: &str,
-    store: &mut dyn DcsStore,
-    input: SetLeaderRequestInput,
-) -> ApiResult<AcceptedResponse> {
-    if input.member_id.0.trim().is_empty() {
-        return Err(ApiError::bad_request("member_id must be non-empty"));
-    }
-
-    DcsHaWriter::write_leader_lease(store, scope, &input.member_id)
-        .map_err(|err| ApiError::DcsStore(err.to_string()))?;
-
-    Ok(AcceptedResponse { accepted: true })
-}
-
-pub(crate) fn delete_leader(scope: &str, store: &mut dyn DcsStore) -> ApiResult<AcceptedResponse> {
-    DcsHaWriter::delete_leader(store, scope).map_err(|err| ApiError::DcsStore(err.to_string()))?;
     Ok(AcceptedResponse { accepted: true })
 }
 
@@ -109,12 +83,9 @@ mod tests {
     use std::collections::VecDeque;
 
     use crate::{
-        api::controller::{
-            delete_leader, delete_switchover, post_set_leader, post_switchover,
-            SetLeaderRequestInput, SwitchoverRequestInput,
-        },
+        api::controller::{delete_switchover, post_switchover, SwitchoverRequestInput},
         dcs::{
-            state::{LeaderRecord, SwitchoverRequest},
+            state::SwitchoverRequest,
             store::{DcsStore, DcsStoreError, WatchEvent},
         },
         state::MemberId,
@@ -196,57 +167,6 @@ mod tests {
             },
         );
         assert!(matches!(result, Err(crate::api::ApiError::BadRequest(_))));
-    }
-
-    #[test]
-    fn set_leader_input_denies_unknown_fields() {
-        let raw = r#"{"member_id":"node-a","extra":1}"#;
-        let parsed = serde_json::from_str::<SetLeaderRequestInput>(raw);
-        assert!(parsed.is_err());
-    }
-
-    #[test]
-    fn post_set_leader_writes_typed_record_to_expected_key() -> Result<(), crate::api::ApiError> {
-        let mut store = RecordingStore::default();
-        let response = post_set_leader(
-            "scope-a",
-            &mut store,
-            SetLeaderRequestInput {
-                member_id: MemberId("node-a".to_string()),
-            },
-        )?;
-        assert!(response.accepted);
-
-        let (path, raw) = store
-            .pop_write()
-            .ok_or_else(|| crate::api::ApiError::internal("expected one DCS write".to_string()))?;
-        assert_eq!(path, "/scope-a/leader");
-        let decoded = serde_json::from_str::<LeaderRecord>(&raw)
-            .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
-        assert_eq!(decoded.member_id, MemberId("node-a".to_string()));
-        Ok(())
-    }
-
-    #[test]
-    fn post_set_leader_rejects_empty_member_id() {
-        let mut store = RecordingStore::default();
-        let result = post_set_leader(
-            "scope-a",
-            &mut store,
-            SetLeaderRequestInput {
-                member_id: MemberId("".to_string()),
-            },
-        );
-        assert!(matches!(result, Err(crate::api::ApiError::BadRequest(_))));
-    }
-
-    #[test]
-    fn delete_leader_deletes_expected_key() -> Result<(), crate::api::ApiError> {
-        let mut store = RecordingStore::default();
-        let response = delete_leader("scope-a", &mut store)?;
-        assert!(response.accepted);
-        assert_eq!(store.pop_delete().as_deref(), Some("/scope-a/leader"));
-        Ok(())
     }
 
     #[test]

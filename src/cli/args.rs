@@ -38,26 +38,7 @@ pub struct HaArgs {
 #[derive(Clone, Debug, Subcommand)]
 pub enum HaCommand {
     State,
-    Leader(LeaderArgs),
     Switchover(SwitchoverArgs),
-}
-
-#[derive(Clone, Debug, Args)]
-pub struct LeaderArgs {
-    #[command(subcommand)]
-    pub command: LeaderCommand,
-}
-
-#[derive(Clone, Debug, Subcommand)]
-pub enum LeaderCommand {
-    Set(SetLeaderArgs),
-    Clear,
-}
-
-#[derive(Clone, Debug, Args)]
-pub struct SetLeaderArgs {
-    #[arg(long)]
-    pub member_id: String,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -82,9 +63,7 @@ pub struct RequestSwitchoverArgs {
 mod tests {
     use clap::Parser;
 
-    use crate::cli::args::{
-        Cli, Command, HaCommand, LeaderCommand, OutputFormat, SwitchoverCommand,
-    };
+    use crate::cli::args::{Cli, Command, HaCommand, OutputFormat, SwitchoverCommand};
 
     #[test]
     fn parse_ha_state_with_defaults() -> Result<(), String> {
@@ -104,19 +83,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_requires_member_id_for_leader_set() {
-        let parsed = Cli::try_parse_from(["pgtuskmasterctl", "ha", "leader", "set"]);
-        assert!(parsed.is_err(), "member-id is required");
-    }
-
-    #[test]
     fn parse_requires_requested_by_for_switchover_request() {
         let parsed = Cli::try_parse_from(["pgtuskmasterctl", "ha", "switchover", "request"]);
         assert!(parsed.is_err(), "requested-by is required");
     }
 
     #[test]
-    fn parse_full_write_commands() -> Result<(), String> {
+    fn parse_full_switchover_write_command() -> Result<(), String> {
         let cli = Cli::try_parse_from([
             "pgtuskmasterctl",
             "--base-url",
@@ -126,9 +99,9 @@ mod tests {
             "--output",
             "text",
             "ha",
-            "leader",
-            "set",
-            "--member-id",
+            "switchover",
+            "request",
+            "--requested-by",
             "node-a",
         ])
         .map_err(|err| format!("parse should succeed: {err}"))?;
@@ -139,14 +112,14 @@ mod tests {
 
         match cli.command {
             Command::Ha(ha) => match ha.command {
-                HaCommand::Leader(leader) => match leader.command {
-                    LeaderCommand::Set(set) => {
-                        assert_eq!(set.member_id, "node-a");
+                HaCommand::Switchover(switchover) => match switchover.command {
+                    SwitchoverCommand::Request(request) => {
+                        assert_eq!(request.requested_by, "node-a");
                         Ok(())
                     }
-                    _ => Err("expected leader set".to_string()),
+                    _ => Err("expected switchover request".to_string()),
                 },
-                _ => Err("expected leader command".to_string()),
+                _ => Err("expected switchover command".to_string()),
             },
         }
     }

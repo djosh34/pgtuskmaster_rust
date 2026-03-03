@@ -167,7 +167,6 @@ pub(crate) fn build_verbose_payload(
                 "/fallback/cluster",
                 "/switchover",
                 "/ha/state",
-                "/ha/leader",
                 "/ha/switchover",
             ],
         },

@@ -5,6 +5,9 @@ const FORBIDDEN_PATTERNS: &[&str] = &[
     ".delete_path(",
     "api::controller::",
     "post_switchover(",
+    "\"/ha/leader\"",
+    "post_set_leader_via_api",
+    "delete_leader_via_api",
 ];
 
 #[test]

@@ -7,10 +7,7 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 use crate::{
     api::{
-        controller::{
-            delete_leader, delete_switchover, get_ha_state, post_set_leader, post_switchover,
-            SetLeaderRequestInput, SwitchoverRequestInput,
-        },
+        controller::{delete_switchover, get_ha_state, post_switchover, SwitchoverRequestInput},
         fallback::{get_fallback_cluster, post_fallback_heartbeat, FallbackHeartbeatInput},
         ApiError,
     },
@@ -208,22 +205,6 @@ fn route_request(
                 Err(err) => api_error_to_http(err),
             }
         }
-        ("POST", "/ha/leader") => {
-            let input = match serde_json::from_slice::<SetLeaderRequestInput>(&request.body) {
-                Ok(parsed) => parsed,
-                Err(err) => {
-                    return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
-                }
-            };
-            match post_set_leader(&ctx.scope, &mut *ctx.dcs_store, input) {
-                Ok(value) => HttpResponse::json(202, "Accepted", &value),
-                Err(err) => api_error_to_http(err),
-            }
-        }
-        ("DELETE", "/ha/leader") => match delete_leader(&ctx.scope, &mut *ctx.dcs_store) {
-            Ok(value) => HttpResponse::json(202, "Accepted", &value),
-            Err(err) => api_error_to_http(err),
-        },
         ("DELETE", "/ha/switchover") => match delete_switchover(&ctx.scope, &mut *ctx.dcs_store) {
             Ok(value) => HttpResponse::json(202, "Accepted", &value),
             Err(err) => api_error_to_http(err),
@@ -613,8 +594,6 @@ fn endpoint_role(request: &HttpRequest) -> EndpointRole {
     match (request.method.as_str(), path) {
         ("POST", "/switchover")
         | ("POST", "/fallback/heartbeat")
-        | ("POST", "/ha/leader")
-        | ("DELETE", "/ha/leader")
         | ("DELETE", "/ha/switchover") => EndpointRole::Admin,
         _ => EndpointRole::Read,
     }
@@ -1689,8 +1668,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn ha_leader_routes_mutate_expected_dcs_keys() -> Result<(), WorkerError> {
-        let _guard = NamespaceGuard::new("api-ha-leader-routes")?;
+    async fn ha_leader_routes_are_not_found_and_do_not_mutate_dcs_keys() -> Result<(), WorkerError>
+    {
+        let _guard = NamespaceGuard::new("api-ha-leader-routes-removed")?;
         let (mut ctx, store) = build_ctx(None).await?;
 
         let body = br#"{"member_id":"node-b"}"#.to_vec();
@@ -1700,32 +1680,28 @@ mod tests {
             Some(body),
         )
         .await?;
-        assert!(status.contains("202"), "expected 202, got: {status}");
+        assert!(status.contains("404"), "expected 404, got: {status}");
 
         let (status, _body) =
             send_plain_request(&mut ctx, format_delete("/ha/leader", None), None).await?;
-        assert!(status.contains("202"), "expected 202, got: {status}");
+        assert!(status.contains("404"), "expected 404, got: {status}");
 
         let (status, _body) =
             send_plain_request(&mut ctx, format_delete("/ha/switchover", None), None).await?;
         assert!(status.contains("202"), "expected 202, got: {status}");
 
-        let writes = store.writes()?;
-        assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].0, "/scope-a/leader");
-        let encoded: serde_json::Value = serde_json::from_str(&writes[0].1)
-            .map_err(|err| WorkerError::Message(format!("decode leader payload failed: {err}")))?;
-        assert_eq!(encoded["member_id"], "node-b");
+        assert_eq!(store.write_count()?, 0);
 
-        assert_eq!(store.delete_count()?, 2);
+        assert_eq!(store.delete_count()?, 1);
         let deletes = store.deletes()?;
-        assert_eq!(deletes, vec!["/scope-a/leader", "/scope-a/switchover"]);
+        assert_eq!(deletes, vec!["/scope-a/switchover"]);
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn security_role_permissions_cover_new_ha_routes() -> Result<(), WorkerError> {
-        let _guard = NamespaceGuard::new("api-ha-authz-roles")?;
+    async fn security_role_permissions_handle_removed_ha_leader_routes() -> Result<(), WorkerError>
+    {
+        let _guard = NamespaceGuard::new("api-ha-authz-removed-leader-routes")?;
         let (mut ctx, _store) = build_ctx(None).await?;
         let roles = ApiRoleTokens::new("read-token", "admin-token")?;
         ctx.configure_role_tokens(
@@ -1756,7 +1732,7 @@ mod tests {
             Some(body),
         )
         .await?;
-        assert!(status.contains("403"), "expected 403, got: {status}");
+        assert!(status.contains("404"), "expected 404, got: {status}");
 
         let body = br#"{"member_id":"node-b"}"#.to_vec();
         let (status, _body) = send_plain_request(
@@ -1769,7 +1745,7 @@ mod tests {
             Some(body),
         )
         .await?;
-        assert!(status.contains("202"), "expected 202, got: {status}");
+        assert!(status.contains("404"), "expected 404, got: {status}");
         Ok(())
     }
 

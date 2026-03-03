@@ -1,6 +1,16 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 10:14:40 AM CET 2026
+Generated: Tue Mar  3 10:42:40 AM CET 2026
+
+**Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
+
+## Bug: Real Binary Tests Become Optional Via Early Return <status>not_started</status> <passes>false</passes>
+
+<description>
+Several real-binary test paths silently return `Ok(())` when required binaries are not discovered (for example `None => return Ok(())`).
+This makes critical runtime coverage optional and can mask regressions in HA/bootstrap/process behavior.
+
+---
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -14,7 +24,7 @@ src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which viol
 
 **Path:** `.ralph/tasks/bugs/bug-remove-writable-ha-leader-api-and-ha-loop-test-steering.md`
 
-## Bug: Remove writable HA leader API control path and enforce HA-loop-only leadership transitions <status>not_started</status> <passes>false</passes>
+## Bug: Remove writable HA leader API control path and enforce HA-loop-only leadership transitions <status>completed</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 Investigation found that writable `/ha/leader` was introduced by task `22-task-ha-admin-api-read-write-surface` as part of a "full HA admin API read and write surface". In runtime code, `src/api/worker.rs` routes `POST /ha/leader` and `DELETE /ha/leader` to controller handlers in `src/api/controller.rs` that call `DcsHaWriter::write_leader_lease` / `delete_leader`, so external callers can directly mutate the leader key outside autonomous HA-loop decision flow.

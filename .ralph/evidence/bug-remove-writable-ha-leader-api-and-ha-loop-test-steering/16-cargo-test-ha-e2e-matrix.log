@@ -1,0 +1,123 @@
+### cargo test --all-targets ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix
+   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.18s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-4ed2729427fd503c)
+
+running 1 test
+The files belonging to this database system will be owned by user "joshazimullah".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "C.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772530473680-641620-1/pg16/node-1/data ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting default time zone ... Europe/Amsterdam
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... ok
+syncing data to disk ... ok
+
+Success. You can now start the database server using:
+
+    /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.tools/postgres16/bin/pg_ctl -D /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772530473680-641620-1/pg16/node-1/data -l logfile start
+
+The files belonging to this database system will be owned by user "joshazimullah".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "C.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772530473680-641620-1/pg16/node-2/data ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting default time zone ... Europe/Amsterdam
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... ok
+syncing data to disk ... ok
+
+Success. You can now start the database server using:
+
+    /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.tools/postgres16/bin/pg_ctl -D /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772530473680-641620-1/pg16/node-2/data -l logfile start
+
+The files belonging to this database system will be owned by user "joshazimullah".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "C.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772530473680-641620-1/pg16/node-3/data ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting default time zone ... Europe/Amsterdam
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... ok
+syncing data to disk ... ok
+
+Success. You can now start the database server using:
+
+    /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.tools/postgres16/bin/pg_ctl -D /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772530473680-641620-1/pg16/node-3/data -l logfile start
+
+test ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix has been running for over 60 seconds
+waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+test ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 93.54s
+
+     Running unittests src/bin/pgtuskmasterctl.rs (target/debug/deps/pgtuskmasterctl-81e05ce685b75e06)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-f4d18ea9efe1db1a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-9d1fbb66be0b1f0b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/cli_binary.rs (target/debug/deps/cli_binary-76c8086b14314154)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/policy_e2e_api_only.rs (target/debug/deps/policy_e2e_api_only-365813fa4ea6e083)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running unittests examples/debug_ui_smoke_server.rs (target/debug/examples/debug_ui_smoke_server-b567b868d9915c79)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

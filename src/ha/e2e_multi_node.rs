@@ -672,40 +672,6 @@ impl ClusterFixture {
         expect_accepted_response("POST /switchover", response)
     }
 
-    async fn post_set_leader_via_api(&mut self, member_id: &str) -> Result<(), WorkerError> {
-        #[derive(serde::Serialize)]
-        struct SetLeaderBody<'a> {
-            member_id: &'a str,
-        }
-
-        let body = serde_json::to_vec(&SetLeaderBody { member_id }).map_err(|err| {
-            WorkerError::Message(format!("encode set leader request failed: {err}"))
-        })?;
-        let response = self
-            .send_node_request(
-                self.control_node_index()?,
-                "POST",
-                "/ha/leader",
-                Some(&body),
-                Some("application/json"),
-            )
-            .await?;
-        expect_accepted_response("POST /ha/leader", response)
-    }
-
-    async fn delete_leader_via_api(&mut self) -> Result<(), WorkerError> {
-        let response = self
-            .send_node_request(
-                self.control_node_index()?,
-                "DELETE",
-                "/ha/leader",
-                None,
-                None,
-            )
-            .await?;
-        expect_accepted_response("DELETE /ha/leader", response)
-    }
-
     async fn fetch_node_ha_state_by_index(
         &mut self,
         node_index: usize,
@@ -806,40 +772,6 @@ impl ClusterFixture {
         }
     }
 
-    async fn wait_for_api_leader_target(
-        &mut self,
-        target: &str,
-        timeout: Duration,
-    ) -> Result<(), WorkerError> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut last_error: Option<String> = None;
-        loop {
-            match self.cluster_ha_states().await {
-                Ok(states) => {
-                    let leaders_match = !states.is_empty()
-                        && states
-                            .iter()
-                            .all(|state| state.leader.as_deref() == Some(target));
-                    if leaders_match {
-                        return Ok(());
-                    }
-                }
-                Err(err) => {
-                    last_error = Some(err.to_string());
-                }
-            }
-            if tokio::time::Instant::now() >= deadline {
-                let detail = last_error
-                    .as_deref()
-                    .map_or_else(|| "none".to_string(), ToString::to_string);
-                return Err(WorkerError::Message(format!(
-                    "timed out waiting for API leader target {target}; last_error={detail}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
     async fn assert_no_dual_primary_window(&mut self, window: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
         let mut last_error: Option<String> = None;
@@ -863,51 +795,6 @@ impl ClusterFixture {
                     )));
                 }
                 return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(75)).await;
-        }
-    }
-
-    async fn wait_for_fencing_signal(
-        &mut self,
-        node_id: &str,
-        timeout: Duration,
-    ) -> Result<(), WorkerError> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut last_error: Option<String> = None;
-        loop {
-            if let Some(index) = self.node_index_by_id(node_id) {
-                let phase_is_fencing = match self.fetch_node_ha_state_by_index(index).await {
-                    Ok(state) => state.ha_phase == "Fencing",
-                    Err(err) => {
-                        last_error = Some(err.to_string());
-                        false
-                    }
-                };
-                let process_state = self
-                    .nodes
-                    .get(index)
-                    .ok_or_else(|| WorkerError::Message("node disappeared".to_string()))?
-                    .process_subscriber
-                    .latest()
-                    .value;
-                let has_fencing_job = matches!(
-                    process_state,
-                    ProcessState::Running { ref active, .. }
-                        if active.kind == ActiveJobKind::Fencing
-                            || active.kind == ActiveJobKind::Demote
-                );
-                if phase_is_fencing || has_fencing_job {
-                    return Ok(());
-                }
-            }
-            if tokio::time::Instant::now() >= deadline {
-                let detail = last_error
-                    .as_deref()
-                    .map_or_else(|| "none".to_string(), ToString::to_string);
-                return Err(WorkerError::Message(format!(
-                    "timed out waiting for fencing signal on {node_id}; last_error={detail}"
-                )));
             }
             tokio::time::sleep(Duration::from_millis(75)).await;
         }
@@ -1748,50 +1635,7 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             "planned switchover success: old_primary={bootstrap_primary}, new_primary={switchover_primary}"
         ));
 
-        fixture.record("scenario fencing-before-promotion: inject conflicting leader");
-        let conflict_target = fixture
-            .nodes
-            .iter()
-            .find(|node| node.id != switchover_primary)
-            .map(|node| node.id.clone())
-            .ok_or_else(|| WorkerError::Message("no conflict target node found".to_string()))?;
-        fixture.post_set_leader_via_api(&conflict_target).await?;
-        fixture
-            .wait_for_fencing_signal(&switchover_primary, Duration::from_secs(30))
-            .await?;
-        fixture
-            .assert_no_dual_primary_window(Duration::from_secs(3))
-            .await?;
-        fixture.record(format!(
-            "fencing-before-promotion observed on {switchover_primary}"
-        ));
-
-        fixture.record("scenario failover: stop current primary and clear stale leader through API");
-        fixture.stop_postgres_for_node(&switchover_primary).await?;
-        fixture.delete_leader_via_api().await?;
-        let failover_primary = fixture
-            .nodes
-            .iter()
-            .find(|node| node.id != switchover_primary)
-            .map(|node| node.id.clone())
-            .ok_or_else(|| WorkerError::Message("no failover target found".to_string()))?;
-        fixture.post_set_leader_via_api(&failover_primary).await?;
-        fixture
-            .wait_for_api_leader_target(&failover_primary, Duration::from_secs(45))
-            .await?;
-        fixture.record(format!(
-            "failover signal observed: failed_primary={switchover_primary}, api_leader={failover_primary}"
-        ));
-
-        fixture.record("scenario rewind path: verify former primary enters rewind/process recovery path");
-        fixture
-            .wait_for_rewind_or_process_outcome(&switchover_primary, Duration::from_secs(45))
-            .await?;
-        fixture.record(format!(
-            "rewind/recovery path observed for former primary {switchover_primary}"
-        ));
-
-        fixture.record("scenario split-brain prevention: ensure no dual primary after failover");
+        fixture.record("scenario split-brain prevention: ensure no dual primary after switchover");
         fixture
             .assert_no_dual_primary_window(Duration::from_secs(5))
             .await?;

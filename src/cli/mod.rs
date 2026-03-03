@@ -3,7 +3,7 @@ pub mod client;
 pub mod error;
 pub mod output;
 
-use args::{Cli, Command, HaCommand, LeaderCommand, SwitchoverCommand};
+use args::{Cli, Command, HaCommand, SwitchoverCommand};
 use client::{AcceptedResponse, CliApiClient, HaStateResponse};
 use error::CliError;
 
@@ -25,12 +25,6 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
     let command_output = match command {
         Command::Ha(ha) => match ha.command {
             HaCommand::State => CommandOutput::HaState(client.get_ha_state().await?),
-            HaCommand::Leader(leader) => match leader.command {
-                LeaderCommand::Set(input) => {
-                    CommandOutput::Accepted(client.post_set_leader(input.member_id).await?)
-                }
-                LeaderCommand::Clear => CommandOutput::Accepted(client.delete_leader().await?),
-            },
             HaCommand::Switchover(switchover) => match switchover.command {
                 SwitchoverCommand::Clear => {
                     CommandOutput::Accepted(client.delete_switchover().await?)

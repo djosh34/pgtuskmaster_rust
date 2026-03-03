@@ -174,7 +174,7 @@ async fn bdd_api_post_switchover_writes_dcs_key() -> Result<(), WorkerError> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn bdd_api_ha_routes_mutate_dcs_and_expose_state_contract() -> Result<(), WorkerError> {
+async fn bdd_api_removed_ha_leader_routes_and_ha_state_contract() -> Result<(), WorkerError> {
     let cfg = sample_runtime_config(None);
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
 
@@ -211,8 +211,8 @@ async fn bdd_api_ha_routes_mutate_dcs_and_expose_state_contract() -> Result<(), 
         .map_err(|err| WorkerError::Message(format!("post read failed: {err}")))?;
     let (post_status, _) = extract_status_and_body(&post_raw)?;
     assert!(
-        post_status.contains("202"),
-        "expected 202, got: {post_status}"
+        post_status.contains("404"),
+        "expected 404, got: {post_status}"
     );
 
     let mut delete_leader_client = tokio::net::TcpStream::connect(addr)
@@ -230,8 +230,8 @@ async fn bdd_api_ha_routes_mutate_dcs_and_expose_state_contract() -> Result<(), 
         .map_err(|err| WorkerError::Message(format!("delete leader read failed: {err}")))?;
     let (delete_leader_status, _) = extract_status_and_body(&delete_leader_raw)?;
     assert!(
-        delete_leader_status.contains("202"),
-        "expected 202, got: {delete_leader_status}"
+        delete_leader_status.contains("404"),
+        "expected 404, got: {delete_leader_status}"
     );
 
     let mut delete_switchover_client = tokio::net::TcpStream::connect(addr)
@@ -276,15 +276,14 @@ async fn bdd_api_ha_routes_mutate_dcs_and_expose_state_contract() -> Result<(), 
     assert!(state_text.contains("snapshot unavailable"));
 
     let writes = store.writes()?;
-    assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0].0, "/scope-a/leader");
+    assert_eq!(writes.len(), 0);
     let deletes = store.deletes()?;
-    assert_eq!(deletes, vec!["/scope-a/leader", "/scope-a/switchover"]);
+    assert_eq!(deletes, vec!["/scope-a/switchover"]);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn bdd_api_ha_admin_routes_require_legacy_auth_token() -> Result<(), WorkerError> {
+async fn bdd_api_removed_ha_leader_routes_require_legacy_auth_token() -> Result<(), WorkerError> {
     let cfg = sample_runtime_config(Some("secret".to_string()));
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
 
@@ -348,8 +347,8 @@ async fn bdd_api_ha_admin_routes_require_legacy_auth_token() -> Result<(), Worke
         .map_err(|err| WorkerError::Message(format!("allowed read failed: {err}")))?;
     let (allowed_status, _) = extract_status_and_body(&allowed_raw)?;
     assert!(
-        allowed_status.contains("202"),
-        "expected 202, got: {allowed_status}"
+        allowed_status.contains("404"),
+        "expected 404, got: {allowed_status}"
     );
 
     let mut state_client = tokio::net::TcpStream::connect(addr)
@@ -372,6 +371,11 @@ async fn bdd_api_ha_admin_routes_require_legacy_auth_token() -> Result<(), Worke
         state_status.contains("503"),
         "expected 503, got: {state_status}"
     );
+
+    let writes = store.writes()?;
+    assert_eq!(writes.len(), 0);
+    let deletes = store.deletes()?;
+    assert_eq!(deletes.len(), 0);
     Ok(())
 }
 
