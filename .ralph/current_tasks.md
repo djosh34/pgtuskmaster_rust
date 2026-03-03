@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 17:47:39 CET 2026
+Generated: Tue Mar  3 18:14:01 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -472,7 +472,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/29-task-e2e-tls-adversarial-cert-validation.md`
 
-## Task: Expand TLS adversarial e2e tests for certificate validation hardening <status>not_started</status> <passes>false</passes>
+## Task: Expand TLS adversarial e2e tests for certificate validation hardening <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
 

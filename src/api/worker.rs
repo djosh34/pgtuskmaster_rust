@@ -946,14 +946,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
 
-    use rcgen::{
-        date_time_ymd, BasicConstraints, CertificateParams, DistinguishedName, DnType,
-        ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose,
-    };
-    use rustls::{
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
-        ClientConfig, RootCertStore, ServerConfig,
-    };
+    use rustls::{pki_types::ServerName, ClientConfig};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
@@ -979,7 +972,10 @@ mod tests {
         test_harness::{
             auth::ApiRoleTokens,
             namespace::NamespaceGuard,
-            tls::{write_tls_material, TlsMode},
+            tls::{
+                build_adversarial_tls_fixture, build_client_config, build_server_config,
+                build_server_config_with_client_auth, write_tls_material, TlsMode,
+            },
         },
     };
 
@@ -1049,29 +1045,6 @@ mod tests {
         fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
             Ok(Vec::new())
         }
-    }
-
-    #[derive(Clone)]
-    struct GeneratedCert {
-        cert_der: Vec<u8>,
-        key_der: Vec<u8>,
-        cert_pem: String,
-        key_pem: String,
-    }
-
-    impl GeneratedCert {
-        fn cert_der(&self) -> CertificateDer<'static> {
-            CertificateDer::from(self.cert_der.clone())
-        }
-
-        fn key_der(&self) -> PrivateKeyDer<'static> {
-            PrivateKeyDer::from(PrivatePkcs8KeyDer::from(self.key_der.clone()))
-        }
-    }
-
-    struct GeneratedCa {
-        cert: GeneratedCert,
-        issuer: Issuer<'static, KeyPair>,
     }
 
     fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
@@ -1372,174 +1345,6 @@ mod tests {
                 }
             }
             Err(_) => Ok(()),
-        }
-    }
-
-    fn generate_ca(common_name: &str) -> Result<GeneratedCa, WorkerError> {
-        let mut params = CertificateParams::new(Vec::new())
-            .map_err(|err| WorkerError::Message(format!("create ca params failed: {err}")))?;
-        let mut dn = DistinguishedName::new();
-        dn.push(DnType::CommonName, common_name.to_string());
-        params.distinguished_name = dn;
-        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-        params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-        params.key_usages.push(KeyUsagePurpose::CrlSign);
-        params.not_before = date_time_ymd(2024, 1, 1);
-        params.not_after = date_time_ymd(2034, 1, 1);
-
-        let key_pair = KeyPair::generate()
-            .map_err(|err| WorkerError::Message(format!("generate ca key failed: {err}")))?;
-        let cert = params
-            .self_signed(&key_pair)
-            .map_err(|err| WorkerError::Message(format!("self-sign ca failed: {err}")))?;
-
-        Ok(GeneratedCa {
-            cert: GeneratedCert {
-                cert_der: cert.der().to_vec(),
-                key_der: key_pair.serialize_der(),
-                cert_pem: cert.pem(),
-                key_pem: key_pair.serialize_pem(),
-            },
-            issuer: Issuer::new(params, key_pair),
-        })
-    }
-
-    fn generate_leaf_cert(
-        common_name: &str,
-        dns_name: &str,
-        expired: bool,
-        issuer: &Issuer<'static, KeyPair>,
-        is_client_cert: bool,
-    ) -> Result<GeneratedCert, WorkerError> {
-        let mut params = CertificateParams::new(vec![dns_name.to_string()])
-            .map_err(|err| WorkerError::Message(format!("create leaf params failed: {err}")))?;
-        let mut dn = DistinguishedName::new();
-        dn.push(DnType::CommonName, common_name.to_string());
-        params.distinguished_name = dn;
-        params.is_ca = IsCa::NoCa;
-        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-        if is_client_cert {
-            params
-                .extended_key_usages
-                .push(ExtendedKeyUsagePurpose::ClientAuth);
-        } else {
-            params
-                .extended_key_usages
-                .push(ExtendedKeyUsagePurpose::ServerAuth);
-        }
-        if expired {
-            params.not_before = date_time_ymd(2018, 1, 1);
-            params.not_after = date_time_ymd(2019, 1, 1);
-        } else {
-            params.not_before = date_time_ymd(2024, 1, 1);
-            params.not_after = date_time_ymd(2034, 1, 1);
-        }
-
-        let key_pair = KeyPair::generate()
-            .map_err(|err| WorkerError::Message(format!("generate leaf key failed: {err}")))?;
-        let cert = params
-            .signed_by(&key_pair, issuer)
-            .map_err(|err| WorkerError::Message(format!("sign leaf cert failed: {err}")))?;
-
-        Ok(GeneratedCert {
-            cert_der: cert.der().to_vec(),
-            key_der: key_pair.serialize_der(),
-            cert_pem: cert.pem(),
-            key_pem: key_pair.serialize_pem(),
-        })
-    }
-
-    fn build_server_config(
-        server: &GeneratedCert,
-        server_ca: &GeneratedCert,
-    ) -> Result<Arc<ServerConfig>, WorkerError> {
-        ensure_crypto_provider_installed()?;
-        let config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![server.cert_der(), server_ca.cert_der()],
-                server.key_der(),
-            )
-            .map_err(|err| WorkerError::Message(format!("build server config failed: {err}")))?;
-        Ok(Arc::new(config))
-    }
-
-    fn build_server_config_with_client_auth(
-        server: &GeneratedCert,
-        server_ca: &GeneratedCert,
-        trusted_client_ca: &GeneratedCert,
-    ) -> Result<Arc<ServerConfig>, WorkerError> {
-        ensure_crypto_provider_installed()?;
-        let mut roots = RootCertStore::empty();
-        roots.add(trusted_client_ca.cert_der()).map_err(|err| {
-            WorkerError::Message(format!("add trusted client root failed: {err}"))
-        })?;
-
-        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-            .build()
-            .map_err(|err| {
-                WorkerError::Message(format!("build client cert verifier failed: {err}"))
-            })?;
-
-        let config = ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
-            .with_single_cert(
-                vec![server.cert_der(), server_ca.cert_der()],
-                server.key_der(),
-            )
-            .map_err(|err| {
-                WorkerError::Message(format!("build mTLS server config failed: {err}"))
-            })?;
-
-        Ok(Arc::new(config))
-    }
-
-    fn build_client_config(
-        trusted_server_ca: &GeneratedCert,
-        identity: Option<&GeneratedCert>,
-        identity_ca: Option<&GeneratedCert>,
-    ) -> Result<Arc<ClientConfig>, WorkerError> {
-        ensure_crypto_provider_installed()?;
-        let mut roots = RootCertStore::empty();
-        roots.add(trusted_server_ca.cert_der()).map_err(|err| {
-            WorkerError::Message(format!("add trusted server root failed: {err}"))
-        })?;
-
-        let builder = ClientConfig::builder().with_root_certificates(roots);
-        let config = match identity {
-            Some(cert) => builder
-                .with_client_auth_cert(
-                    vec![
-                        cert.cert_der(),
-                        identity_ca.map(GeneratedCert::cert_der).ok_or_else(|| {
-                            WorkerError::Message(
-                                "identity_ca is required when identity is configured".to_string(),
-                            )
-                        })?,
-                    ],
-                    cert.key_der(),
-                )
-                .map_err(|err| {
-                    WorkerError::Message(format!("build mTLS client config failed: {err}"))
-                })?,
-            None => builder.with_no_client_auth(),
-        };
-
-        Ok(Arc::new(config))
-    }
-
-    fn ensure_crypto_provider_installed() -> Result<(), WorkerError> {
-        if rustls::crypto::CryptoProvider::get_default().is_none() {
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        }
-
-        if rustls::crypto::CryptoProvider::get_default().is_some() {
-            Ok(())
-        } else {
-            Err(WorkerError::Message(
-                "rustls crypto provider is unavailable".to_string(),
-            ))
         }
     }
 
@@ -1940,21 +1745,14 @@ mod tests {
     async fn security_tls_disabled_accepts_plain_rejects_tls() -> Result<(), WorkerError> {
         let guard = NamespaceGuard::new("api-tls-disabled")?;
         let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
 
-        let server_ca = generate_ca("server-ca-disabled")?;
-        let server = generate_leaf_cert(
-            "server-disabled",
-            "localhost",
-            false,
-            &server_ca.issuer,
-            false,
-        )?;
         let _material = write_tls_material(
             namespace,
             "disabled",
-            Some(server_ca.cert.cert_pem.as_bytes()),
-            Some(server.cert_pem.as_bytes()),
-            Some(server.key_pem.as_bytes()),
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
         )?;
 
         let (mut ctx, _store) = build_ctx(None).await?;
@@ -1963,7 +1761,7 @@ mod tests {
             send_plain_request(&mut ctx, format_get("/fallback/cluster", None), None).await?;
         assert!(status.contains("200"), "expected 200, got: {status}");
 
-        let trusted_client = build_client_config(&server_ca.cert, None, None)?;
+        let trusted_client = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         expect_tls_handshake_failure(&mut ctx, trusted_client, "localhost").await?;
         Ok(())
     }
@@ -1972,34 +1770,30 @@ mod tests {
     async fn security_tls_optional_accepts_plain_and_tls() -> Result<(), WorkerError> {
         let guard = NamespaceGuard::new("api-tls-optional")?;
         let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
 
-        let server_ca = generate_ca("server-ca-optional")?;
-        let server = generate_leaf_cert(
-            "server-optional",
-            "localhost",
-            false,
-            &server_ca.issuer,
-            false,
-        )?;
         let _material = write_tls_material(
             namespace,
             "optional",
-            Some(server_ca.cert.cert_pem.as_bytes()),
-            Some(server.cert_pem.as_bytes()),
-            Some(server.key_pem.as_bytes()),
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
         )?;
 
         let (mut ctx, _store) = build_ctx(None).await?;
         ctx.configure_tls(
             ApiTlsMode::Optional,
-            Some(build_server_config(&server, &server_ca.cert)?),
+            Some(build_server_config(
+                &fixture.valid_server,
+                &fixture.valid_server_ca.cert,
+            )?),
         )?;
 
         let (status, _body) =
             send_plain_request(&mut ctx, format_get("/fallback/cluster", None), None).await?;
         assert!(status.contains("200"), "expected 200, got: {status}");
 
-        let client_cfg = build_client_config(&server_ca.cert, None, None)?;
+        let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         let (status, _body) = send_tls_request(
             &mut ctx,
             client_cfg,
@@ -2016,30 +1810,26 @@ mod tests {
     async fn security_tls_required_accepts_tls_rejects_plain() -> Result<(), WorkerError> {
         let guard = NamespaceGuard::new("api-tls-required")?;
         let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
 
-        let server_ca = generate_ca("server-ca-required")?;
-        let server = generate_leaf_cert(
-            "server-required",
-            "localhost",
-            false,
-            &server_ca.issuer,
-            false,
-        )?;
         let _material = write_tls_material(
             namespace,
             "required",
-            Some(server_ca.cert.cert_pem.as_bytes()),
-            Some(server.cert_pem.as_bytes()),
-            Some(server.key_pem.as_bytes()),
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
         )?;
 
         let (mut ctx, _store) = build_ctx(None).await?;
         ctx.configure_tls(
             ApiTlsMode::Required,
-            Some(build_server_config(&server, &server_ca.cert)?),
+            Some(build_server_config(
+                &fixture.valid_server,
+                &fixture.valid_server_ca.cert,
+            )?),
         )?;
 
-        let client_cfg = build_client_config(&server_ca.cert, None, None)?;
+        let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         let (status, _body) = send_tls_request(
             &mut ctx,
             client_cfg,
@@ -2076,51 +1866,54 @@ mod tests {
     async fn security_tls_wrong_ca_and_hostname_and_expiry_failures() -> Result<(), WorkerError> {
         let guard = NamespaceGuard::new("api-tls-failures")?;
         let namespace = guard.namespace()?;
-
-        let valid_ca = generate_ca("server-valid-ca")?;
-        let wrong_ca = generate_ca("wrong-ca")?;
-        let valid_server =
-            generate_leaf_cert("server-valid", "localhost", false, &valid_ca.issuer, false)?;
-        let expired_server =
-            generate_leaf_cert("server-expired", "localhost", true, &valid_ca.issuer, false)?;
+        let fixture = build_adversarial_tls_fixture()?;
 
         let _material_valid = write_tls_material(
             namespace,
             "valid-server",
-            Some(valid_ca.cert.cert_pem.as_bytes()),
-            Some(valid_server.cert_pem.as_bytes()),
-            Some(valid_server.key_pem.as_bytes()),
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
         )?;
         let _material_expired = write_tls_material(
             namespace,
             "expired-server",
-            Some(valid_ca.cert.cert_pem.as_bytes()),
-            Some(expired_server.cert_pem.as_bytes()),
-            Some(expired_server.key_pem.as_bytes()),
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.expired_server.cert_pem.as_bytes()),
+            Some(fixture.expired_server.key_pem.as_bytes()),
         )?;
 
         let (mut ctx_wrong_ca, _store) = build_ctx(None).await?;
         ctx_wrong_ca.configure_tls(
             ApiTlsMode::Required,
-            Some(build_server_config(&valid_server, &valid_ca.cert)?),
+            Some(build_server_config(
+                &fixture.valid_server,
+                &fixture.valid_server_ca.cert,
+            )?),
         )?;
-        let client_wrong_ca = build_client_config(&wrong_ca.cert, None, None)?;
+        let client_wrong_ca = build_client_config(&fixture.wrong_server_ca.cert, None, None)?;
         expect_tls_handshake_failure(&mut ctx_wrong_ca, client_wrong_ca, "localhost").await?;
 
         let (mut ctx_hostname, _store) = build_ctx(None).await?;
         ctx_hostname.configure_tls(
             ApiTlsMode::Required,
-            Some(build_server_config(&valid_server, &valid_ca.cert)?),
+            Some(build_server_config(
+                &fixture.valid_server,
+                &fixture.valid_server_ca.cert,
+            )?),
         )?;
-        let client_hostname = build_client_config(&valid_ca.cert, None, None)?;
+        let client_hostname = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         expect_tls_handshake_failure(&mut ctx_hostname, client_hostname, "not-localhost").await?;
 
         let (mut ctx_expired, _store) = build_ctx(None).await?;
         ctx_expired.configure_tls(
             ApiTlsMode::Required,
-            Some(build_server_config(&expired_server, &valid_ca.cert)?),
+            Some(build_server_config(
+                &fixture.expired_server,
+                &fixture.valid_server_ca.cert,
+            )?),
         )?;
-        let client_expired = build_client_config(&valid_ca.cert, None, None)?;
+        let client_expired = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         expect_tls_handshake_failure(&mut ctx_expired, client_expired, "localhost").await?;
 
         Ok(())
@@ -2130,47 +1923,28 @@ mod tests {
     async fn security_mtls_node_auth_allows_trusted_client_only() -> Result<(), WorkerError> {
         let guard = NamespaceGuard::new("api-mtls-node-auth")?;
         let namespace = guard.namespace()?;
-
-        let server_ca = generate_ca("mtls-server-ca")?;
-        let trusted_client_ca = generate_ca("mtls-trusted-client-ca")?;
-        let untrusted_client_ca = generate_ca("mtls-untrusted-client-ca")?;
-        let server =
-            generate_leaf_cert("mtls-server", "localhost", false, &server_ca.issuer, false)?;
-        let trusted_client = generate_leaf_cert(
-            "trusted-client",
-            "localhost",
-            false,
-            &trusted_client_ca.issuer,
-            true,
-        )?;
-        let untrusted_client = generate_leaf_cert(
-            "untrusted-client",
-            "localhost",
-            false,
-            &untrusted_client_ca.issuer,
-            true,
-        )?;
+        let fixture = build_adversarial_tls_fixture()?;
 
         let _material_server = write_tls_material(
             namespace,
             "mtls-server",
-            Some(server_ca.cert.cert_pem.as_bytes()),
-            Some(server.cert_pem.as_bytes()),
-            Some(server.key_pem.as_bytes()),
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
         )?;
         let _material_trusted = write_tls_material(
             namespace,
             "mtls-trusted-client",
-            Some(trusted_client_ca.cert.cert_pem.as_bytes()),
-            Some(trusted_client.cert_pem.as_bytes()),
-            Some(trusted_client.key_pem.as_bytes()),
+            Some(fixture.trusted_client_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.trusted_client.cert_pem.as_bytes()),
+            Some(fixture.trusted_client.key_pem.as_bytes()),
         )?;
         let _material_untrusted = write_tls_material(
             namespace,
             "mtls-untrusted-client",
-            Some(untrusted_client_ca.cert.cert_pem.as_bytes()),
-            Some(untrusted_client.cert_pem.as_bytes()),
-            Some(untrusted_client.key_pem.as_bytes()),
+            Some(fixture.untrusted_client_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.untrusted_client.cert_pem.as_bytes()),
+            Some(fixture.untrusted_client.key_pem.as_bytes()),
         )?;
 
         let mode = TlsMode::Required;
@@ -2180,17 +1954,17 @@ mod tests {
         ctx.configure_tls(
             ApiTlsMode::Required,
             Some(build_server_config_with_client_auth(
-                &server,
-                &server_ca.cert,
-                &trusted_client_ca.cert,
+                &fixture.valid_server,
+                &fixture.valid_server_ca.cert,
+                &fixture.trusted_client_ca.cert,
             )?),
         )?;
         ctx.set_require_client_cert(true);
 
         let trusted_cfg = build_client_config(
-            &server_ca.cert,
-            Some(&trusted_client),
-            Some(&trusted_client_ca.cert),
+            &fixture.valid_server_ca.cert,
+            Some(&fixture.trusted_client),
+            Some(&fixture.trusted_client_ca.cert),
         )?;
         let (status, _body) = send_tls_request(
             &mut ctx,
@@ -2202,13 +1976,13 @@ mod tests {
         .await?;
         assert!(status.contains("200"), "expected 200, got: {status}");
 
-        let missing_client_cert_cfg = build_client_config(&server_ca.cert, None, None)?;
+        let missing_client_cert_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         expect_tls_request_rejected(&mut ctx, missing_client_cert_cfg, "localhost").await?;
 
         let untrusted_client_cfg = build_client_config(
-            &server_ca.cert,
-            Some(&untrusted_client),
-            Some(&untrusted_client_ca.cert),
+            &fixture.valid_server_ca.cert,
+            Some(&fixture.untrusted_client),
+            Some(&fixture.untrusted_client_ca.cert),
         )?;
         expect_tls_request_rejected(&mut ctx, untrusted_client_cfg, "localhost").await?;
 
