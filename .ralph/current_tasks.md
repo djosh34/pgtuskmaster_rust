@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 09:36:58 AM CET 2026
+Generated: Tue Mar  3 10:14:40 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -9,6 +9,15 @@ Generated: Tue Mar  3 09:36:58 AM CET 2026
 <description>
 src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which violates the repo rule against unwraps, panics, or expects anywhere. This hides violations in test harness code and makes it easy to slip new ones in. Investigate all test_harness code (and any other modules) for unwrap/expect/panic usage, replace with proper error handling, and remove the lint allow attributes.
 </description>
+
+---
+
+**Path:** `.ralph/tasks/bugs/bug-remove-writable-ha-leader-api-and-ha-loop-test-steering.md`
+
+## Bug: Remove writable HA leader API control path and enforce HA-loop-only leadership transitions <status>not_started</status> <passes>false</passes>
+
+<description>
+Investigation found that writable `/ha/leader` was introduced by task `22-task-ha-admin-api-read-write-surface` as part of a "full HA admin API read and write surface". In runtime code, `src/api/worker.rs` routes `POST /ha/leader` and `DELETE /ha/leader` to controller handlers in `src/api/controller.rs` that call `DcsHaWriter::write_leader_lease` / `delete_leader`, so external callers can directly mutate the leader key outside autonomous HA-loop decision flow.
 
 ---
 
@@ -415,7 +424,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/26-task-e2e-unassisted-failover-sql-consistency.md`
 
-## Task: Add unassisted failover e2e with before/after SQL consistency proof <status>not_started</status> <passes>false</passes>
+## Task: Add unassisted failover e2e with before/after SQL consistency proof <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
 <blocked_by>25-task-enforce-e2e-api-only-control-no-direct-dcs</blocked_by>

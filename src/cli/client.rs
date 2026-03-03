@@ -61,9 +61,8 @@ impl CliApiClient {
         read_token: Option<String>,
         admin_token: Option<String>,
     ) -> Result<Self, CliError> {
-        let base_url = Url::parse(base_url.trim()).map_err(|err| {
-            CliError::RequestBuild(format!("invalid --base-url value: {err}"))
-        })?;
+        let base_url = Url::parse(base_url.trim())
+            .map_err(|err| CliError::RequestBuild(format!("invalid --base-url value: {err}")))?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
@@ -188,10 +187,7 @@ impl CliApiClient {
 
     fn token_for(&self, role: AuthRole) -> Option<&str> {
         match role {
-            AuthRole::Read => self
-                .read_token
-                .as_deref()
-                .or(self.admin_token.as_deref()),
+            AuthRole::Read => self.read_token.as_deref().or(self.admin_token.as_deref()),
             AuthRole::Admin => self.admin_token.as_deref(),
         }
     }
@@ -419,10 +415,13 @@ mod tests {
 
     async fn spawn_server(
         response: String,
-    ) -> Result<(
-        SocketAddr,
-        tokio::task::JoinHandle<Result<RecordedRequest, CliError>>,
-    ), CliError> {
+    ) -> Result<
+        (
+            SocketAddr,
+            tokio::task::JoinHandle<Result<RecordedRequest, CliError>>,
+        ),
+        CliError,
+    > {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|err| CliError::Transport(format!("bind failed: {err}")))?;

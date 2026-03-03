@@ -111,8 +111,7 @@ mod tests {
 
     #[test]
     fn parse_requires_requested_by_for_switchover_request() {
-        let parsed =
-            Cli::try_parse_from(["pgtuskmasterctl", "ha", "switchover", "request"]);
+        let parsed = Cli::try_parse_from(["pgtuskmasterctl", "ha", "switchover", "request"]);
         assert!(parsed.is_err(), "requested-by is required");
     }
 

@@ -37,7 +37,10 @@ fn help_exits_success() -> Result<(), String> {
 
     let stdout = String::from_utf8(output.stdout)
         .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
-    assert!(stdout.contains("ha"), "help output should include ha command");
+    assert!(
+        stdout.contains("ha"),
+        "help output should include ha command"
+    );
     Ok(())
 }
 
@@ -60,8 +63,8 @@ fn missing_required_subcommand_arg_exits_usage_code() -> Result<(), String> {
 #[test]
 fn state_command_maps_connection_refused_to_exit_3() -> Result<(), String> {
     let bin = cli_bin_path()?;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|err| format!("bind failed: {err}"))?;
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").map_err(|err| format!("bind failed: {err}"))?;
     let addr = listener
         .local_addr()
         .map_err(|err| format!("local_addr failed: {err}"))?;

@@ -28,9 +28,20 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
         .leader
         .as_ref()
         .map(|record| record.member_id.0.as_str());
+    let leader_is_available = is_available_primary_leader(&world, leader_member_id);
+    let active_leader_member_id = if leader_is_available {
+        leader_member_id
+    } else {
+        None
+    };
     let switchover_requested = world.dcs.value.cache.switchover.is_some();
     let i_am_leader = leader_member_id == Some(self_member_id);
-    let has_other_leader = leader_member_id.is_some() && !i_am_leader;
+    let has_other_leader_record = leader_member_id
+        .map(|leader| leader != self_member_id)
+        .unwrap_or(false);
+    let has_available_other_leader = active_leader_member_id
+        .map(|leader| leader != self_member_id)
+        .unwrap_or(false);
     let pg_reachable = is_postgres_reachable(&world.pg.value);
 
     let mut next = current.clone();
@@ -61,7 +72,7 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                 if !pg_reachable {
                     next.phase = HaPhase::WaitingPostgresReachable;
                     candidates.push(HaAction::StartPostgres);
-                } else if let Some(leader) = leader_member_id {
+                } else if let Some(leader) = active_leader_member_id {
                     if leader == self_member_id {
                         next.phase = HaPhase::Primary;
                     } else {
@@ -79,7 +90,7 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                 if !pg_reachable {
                     next.phase = HaPhase::WaitingPostgresReachable;
                     candidates.push(HaAction::StartPostgres);
-                } else if let Some(leader) = leader_member_id {
+                } else if let Some(leader) = active_leader_member_id {
                     if leader == self_member_id {
                         next.phase = HaPhase::Primary;
                         candidates.push(HaAction::PromoteToPrimary);
@@ -100,9 +111,9 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                 } else if i_am_leader {
                     next.phase = HaPhase::Primary;
                     candidates.push(HaAction::PromoteToPrimary);
-                } else if has_other_leader {
+                } else if has_available_other_leader {
                     next.phase = HaPhase::Replica;
-                    if let Some(leader) = leader_member_id {
+                    if let Some(leader) = active_leader_member_id {
                         candidates.push(HaAction::FollowLeader {
                             leader_member_id: leader.to_string(),
                         });
@@ -120,7 +131,7 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                 } else if !pg_reachable {
                     next.phase = HaPhase::Rewinding;
                     candidates.push(HaAction::StartRewind);
-                } else if has_other_leader {
+                } else if has_other_leader_record {
                     next.phase = HaPhase::Fencing;
                     candidates.push(HaAction::DemoteToReplica);
                     candidates.push(HaAction::ReleaseLeaderLease);
@@ -134,7 +145,7 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
                     ..
                 } => {
                     next.phase = HaPhase::Replica;
-                    if let Some(leader) = leader_member_id {
+                    if let Some(leader) = active_leader_member_id {
                         if leader != self_member_id {
                             candidates.push(HaAction::FollowLeader {
                                 leader_member_id: leader.to_string(),
@@ -227,6 +238,29 @@ fn is_postgres_reachable(state: &PgInfoState) -> bool {
     matches!(sql, SqlStatus::Healthy)
 }
 
+fn is_available_primary_leader(
+    world: &super::state::WorldSnapshot,
+    leader_member_id: Option<&str>,
+) -> bool {
+    let Some(leader_id) = leader_member_id else {
+        return false;
+    };
+
+    let leader_record = world
+        .dcs
+        .value
+        .cache
+        .members
+        .values()
+        .find(|member| member.member_id.0 == leader_id);
+    let Some(member) = leader_record else {
+        // Preserve current behavior when leader member metadata is not yet observed.
+        return true;
+    };
+
+    matches!(member.sql, SqlStatus::Healthy)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -239,7 +273,9 @@ mod tests {
             },
             BinaryPaths, ProcessConfig, RuntimeConfig,
         },
-        dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord, SwitchoverRequest},
+        dcs::state::{
+            DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
+        },
         ha::{
             actions::{ActionId, HaAction},
             state::{DecideInput, HaPhase, HaState, WorldSnapshot},
@@ -754,6 +790,45 @@ mod tests {
 
         assert_eq!(output.next.phase, HaPhase::Rewinding);
         assert!(output.actions.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn replica_with_unhealthy_leader_becomes_candidate() -> Result<(), DecideError> {
+        let mut snapshot = world(
+            DcsTrust::FullQuorum,
+            pg_replica(SqlStatus::Healthy),
+            Some("node-b"),
+            process_idle(None),
+        );
+        snapshot.dcs.value.cache.members.insert(
+            MemberId("node-b".to_string()),
+            MemberRecord {
+                member_id: MemberId("node-b".to_string()),
+                role: MemberRole::Unknown,
+                sql: SqlStatus::Unreachable,
+                readiness: Readiness::NotReady,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Replica,
+                tick: 11,
+                pending: vec![],
+                recent_action_ids: BTreeSet::new(),
+            },
+            world: snapshot,
+        })?;
+
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(output.actions, vec![HaAction::AcquireLeaderLease]);
         Ok(())
     }
 }

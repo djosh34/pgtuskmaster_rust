@@ -3,7 +3,7 @@ use std::{
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
-    process::ExitStatus,
+    process::{ExitStatus, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -62,6 +62,7 @@ use crate::{
 
 struct NodeFixture {
     id: String,
+    pg_port: u16,
     api_addr: SocketAddr,
     api_ctx: ApiWorkerCtx,
     debug_ctx: DebugApiCtx,
@@ -75,6 +76,7 @@ struct ClusterFixture {
     scope: String,
     endpoints: Vec<String>,
     pg_ctl_bin: PathBuf,
+    psql_bin: PathBuf,
     etcd: Option<EtcdClusterHandle>,
     nodes: Vec<NodeFixture>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
@@ -137,6 +139,7 @@ impl ClusterFixture {
         }
 
         let pg_ctl_bin = binaries.pg_ctl.clone();
+        let psql_bin = binaries.psql.clone();
         let mut tasks = Vec::new();
         let mut nodes = Vec::new();
         let rewind_source_conninfo = PgConnInfo {
@@ -340,8 +343,9 @@ impl ClusterFixture {
             let api_listener = tokio::net::TcpListener::bind(runtime_cfg.api.listen_addr.as_str())
                 .await
                 .map_err(|err| WorkerError::Message(format!("api bind failed: {err}")))?;
-            let api_store = EtcdDcsStore::connect(endpoints.clone(), &scope)
-                .map_err(|err| WorkerError::Message(format!("api dcs store connect failed: {err}")))?;
+            let api_store = EtcdDcsStore::connect(endpoints.clone(), &scope).map_err(|err| {
+                WorkerError::Message(format!("api dcs store connect failed: {err}"))
+            })?;
             let mut api_ctx =
                 ApiWorkerCtx::contract_stub(api_listener, api_cfg_subscriber, Box::new(api_store));
             api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
@@ -360,6 +364,7 @@ impl ClusterFixture {
 
             nodes.push(NodeFixture {
                 id: node_id,
+                pg_port,
                 api_addr,
                 api_ctx,
                 debug_ctx,
@@ -374,6 +379,7 @@ impl ClusterFixture {
             scope,
             endpoints,
             pg_ctl_bin,
+            psql_bin,
             etcd: Some(etcd),
             nodes,
             tasks,
@@ -406,6 +412,210 @@ impl ClusterFixture {
         self.nodes.iter().position(|node| node.id == id)
     }
 
+    fn postgres_port_by_id(&self, id: &str) -> Result<u16, WorkerError> {
+        let node = self.node_by_id(id).ok_or_else(|| {
+            WorkerError::Message(format!("unknown node id for postgres port lookup: {id}"))
+        })?;
+        Ok(node.pg_port)
+    }
+
+    async fn run_sql_on_node(&self, node_id: &str, sql: &str) -> Result<String, WorkerError> {
+        let port = self.postgres_port_by_id(node_id)?;
+        run_psql_statement(self.psql_bin.as_path(), port, sql).await
+    }
+
+    async fn run_sql_on_node_with_retry(
+        &self,
+        node_id: &str,
+        sql: &str,
+        timeout: Duration,
+    ) -> Result<String, WorkerError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match self.run_sql_on_node(node_id, sql).await {
+                Ok(output) => return Ok(output),
+                Err(err) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(WorkerError::Message(format!(
+                            "timed out running SQL on {node_id}; last_error={err}"
+                        )));
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+    }
+
+    async fn wait_for_rows_on_node(
+        &self,
+        node_id: &str,
+        sql: &str,
+        expected_rows: &[String],
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            let observation = match self.run_sql_on_node(node_id, sql).await {
+                Ok(output) => {
+                    let rows = parse_psql_rows(output.as_str());
+                    if rows == expected_rows {
+                        return Ok(());
+                    }
+                    format!("rows={rows:?}")
+                }
+                Err(err) => err.to_string(),
+            };
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for expected rows on {node_id}; expected={expected_rows:?}; last_observation={observation}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    fn update_phase_history(
+        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+        states: &[HaStateResponse],
+    ) {
+        for state in states {
+            phase_history
+                .entry(state.self_member_id.clone())
+                .or_default()
+                .insert(state.ha_phase.clone());
+        }
+    }
+
+    fn format_phase_history(phase_history: &BTreeMap<String, BTreeSet<String>>) -> String {
+        let mut node_entries = Vec::with_capacity(phase_history.len());
+        for (node_id, phases) in phase_history {
+            let phase_list: Vec<&str> = phases.iter().map(String::as_str).collect();
+            node_entries.push(format!("{node_id}:{}", phase_list.join("|")));
+        }
+        node_entries.join(",")
+    }
+
+    async fn wait_for_stable_primary(
+        &mut self,
+        timeout: Duration,
+        excluded_primary: Option<&str>,
+        required_consecutive: usize,
+        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> Result<String, WorkerError> {
+        if required_consecutive == 0 {
+            return Err(WorkerError::Message(
+                "required_consecutive must be greater than zero".to_string(),
+            ));
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_error = "none".to_string();
+        let mut last_candidate: Option<String> = None;
+        let mut last_state_summary: Option<String> = None;
+        let mut stable_count = 0usize;
+
+        loop {
+            match self.cluster_ha_states().await {
+                Ok(states) => {
+                    Self::update_phase_history(phase_history, states.as_slice());
+                    let state_summary = states
+                        .iter()
+                        .map(|state| {
+                            let leader = state.leader.as_deref().unwrap_or("none");
+                            format!(
+                                "{}:{}:leader={}",
+                                state.self_member_id, state.ha_phase, leader
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if last_state_summary
+                        .as_deref()
+                        .map(|prior| prior != state_summary.as_str())
+                        .unwrap_or(true)
+                    {
+                        self.record(format!("stable-primary poll states: {state_summary}"));
+                        last_state_summary = Some(state_summary);
+                    }
+                    let primaries = Self::primary_members(states.as_slice());
+                    if primaries.len() == 1 {
+                        if let Some(primary) = primaries.into_iter().next() {
+                            let excluded = excluded_primary
+                                .map(|excluded_id| excluded_id == primary)
+                                .unwrap_or(false);
+                            if !excluded {
+                                if last_candidate.as_deref() == Some(primary.as_str()) {
+                                    stable_count = stable_count.saturating_add(1);
+                                } else {
+                                    stable_count = 1;
+                                    last_candidate = Some(primary.clone());
+                                }
+                                if stable_count >= required_consecutive {
+                                    return Ok(primary);
+                                }
+                            } else {
+                                stable_count = 0;
+                                last_candidate = None;
+                            }
+                        }
+                    } else {
+                        stable_count = 0;
+                        last_candidate = None;
+                    }
+                }
+                Err(err) => {
+                    stable_count = 0;
+                    last_candidate = None;
+                    last_error = err.to_string();
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for stable primary via API; last_error={last_error}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    fn assert_phase_history_contains_failover(
+        phase_history: &BTreeMap<String, BTreeSet<String>>,
+        former_primary: &str,
+        new_primary: &str,
+    ) -> Result<(), WorkerError> {
+        let former_phases = phase_history.get(former_primary).ok_or_else(|| {
+            WorkerError::Message(format!(
+                "missing phase history for former primary {former_primary}"
+            ))
+        })?;
+        if !former_phases.contains("Primary") {
+            return Err(WorkerError::Message(format!(
+                "former primary {former_primary} never observed in Primary phase"
+            )));
+        }
+        if !former_phases.iter().any(|phase| phase != "Primary") {
+            return Err(WorkerError::Message(format!(
+                "former primary {former_primary} never observed leaving Primary phase"
+            )));
+        }
+
+        let promoted_phases = phase_history.get(new_primary).ok_or_else(|| {
+            WorkerError::Message(format!(
+                "missing phase history for promoted primary {new_primary}"
+            ))
+        })?;
+        if !promoted_phases.contains("Primary") {
+            return Err(WorkerError::Message(format!(
+                "new primary {new_primary} never observed in Primary phase"
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn send_node_request(
         &mut self,
         node_index: usize,
@@ -422,9 +632,7 @@ impl ClusterFixture {
             })?
             .id
             .clone();
-        self.record(format!(
-            "api request start: node={node_id} {method} {path}"
-        ));
+        self.record(format!("api request start: node={node_id} {method} {path}"));
         let response = {
             let node = self.nodes.get_mut(node_index).ok_or_else(|| {
                 WorkerError::Message(format!("invalid node index for API request: {node_index}"))
@@ -470,8 +678,9 @@ impl ClusterFixture {
             member_id: &'a str,
         }
 
-        let body = serde_json::to_vec(&SetLeaderBody { member_id })
-            .map_err(|err| WorkerError::Message(format!("encode set leader request failed: {err}")))?;
+        let body = serde_json::to_vec(&SetLeaderBody { member_id }).map_err(|err| {
+            WorkerError::Message(format!("encode set leader request failed: {err}"))
+        })?;
         let response = self
             .send_node_request(
                 self.control_node_index()?,
@@ -607,11 +816,10 @@ impl ClusterFixture {
         loop {
             match self.cluster_ha_states().await {
                 Ok(states) => {
-                    let leaders_match =
-                        !states.is_empty()
-                            && states
-                                .iter()
-                                .all(|state| state.leader.as_deref() == Some(target));
+                    let leaders_match = !states.is_empty()
+                        && states
+                            .iter()
+                            .all(|state| state.leader.as_deref() == Some(target));
                     if leaders_match {
                         return Ok(());
                     }
@@ -762,8 +970,8 @@ impl ClusterFixture {
         loop {
             match self.cluster_ha_states().await {
                 Ok(states) => {
-                    let all_failsafe =
-                        !states.is_empty() && states.iter().all(|state| state.ha_phase == "FailSafe");
+                    let all_failsafe = !states.is_empty()
+                        && states.iter().all(|state| state.ha_phase == "FailSafe");
                     if all_failsafe {
                         return Ok(());
                     }
@@ -830,14 +1038,23 @@ impl ClusterFixture {
         Ok(stopped)
     }
 
-    fn write_timeline_artifact(&self) -> Result<PathBuf, WorkerError> {
+    fn write_timeline_artifact(&self, scenario: &str) -> Result<PathBuf, WorkerError> {
         let artifact_dir =
             Path::new(env!("CARGO_MANIFEST_DIR")).join(".ralph/evidence/13-e2e-multi-node");
         fs::create_dir_all(&artifact_dir)
             .map_err(|err| WorkerError::Message(format!("create artifact dir failed: {err}")))?;
         let stamp = unix_now()?.0;
-        let artifact_path =
-            artifact_dir.join(format!("ha-e2e-scenario-matrix-{stamp}.timeline.log"));
+        let safe_scenario: String = scenario
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let artifact_path = artifact_dir.join(format!("{safe_scenario}-{stamp}.timeline.log"));
         fs::write(&artifact_path, self.timeline.join("\n"))
             .map_err(|err| WorkerError::Message(format!("write timeline failed: {err}")))?;
         Ok(artifact_path)
@@ -1037,6 +1254,86 @@ async fn wait_for_child_exit_with_timeout(
     }
 }
 
+async fn run_psql_statement(psql: &Path, port: u16, sql: &str) -> Result<String, WorkerError> {
+    let mut command = Command::new(psql);
+    command
+        .arg("-h")
+        .arg("127.0.0.1")
+        .arg("-p")
+        .arg(port.to_string())
+        .arg("-U")
+        .arg("postgres")
+        .arg("-d")
+        .arg("postgres")
+        .arg("-v")
+        .arg("ON_ERROR_STOP=1")
+        .arg("-AXqt")
+        .arg("-c")
+        .arg(sql)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| WorkerError::Message(format!("psql spawn failed: {err}")))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| WorkerError::Message("psql stdout pipe unavailable".to_string()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| WorkerError::Message("psql stderr pipe unavailable".to_string()))?;
+
+    let stdout_task = tokio::spawn(async move {
+        let mut buffer = Vec::new();
+        stdout
+            .read_to_end(&mut buffer)
+            .await
+            .map(|_| buffer)
+            .map_err(|err| WorkerError::Message(format!("psql stdout read failed: {err}")))
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut buffer = Vec::new();
+        stderr
+            .read_to_end(&mut buffer)
+            .await
+            .map(|_| buffer)
+            .map_err(|err| WorkerError::Message(format!("psql stderr read failed: {err}")))
+    });
+
+    let label = format!("psql port={port}");
+    let status = wait_for_child_exit_with_timeout(&label, &mut child, E2E_COMMAND_TIMEOUT).await?;
+    let stdout_bytes = stdout_task
+        .await
+        .map_err(|err| WorkerError::Message(format!("psql stdout join failed: {err}")))??;
+    let stderr_bytes = stderr_task
+        .await
+        .map_err(|err| WorkerError::Message(format!("psql stderr join failed: {err}")))??;
+
+    let stdout_text = String::from_utf8(stdout_bytes)
+        .map_err(|err| WorkerError::Message(format!("psql stdout utf8 decode failed: {err}")))?;
+    if status.success() {
+        return Ok(stdout_text);
+    }
+
+    let stderr_text = String::from_utf8(stderr_bytes)
+        .map_err(|err| WorkerError::Message(format!("psql stderr utf8 decode failed: {err}")))?;
+    Err(WorkerError::Message(format!(
+        "psql exited unsuccessfully with status {status}; stderr={}",
+        stderr_text.trim()
+    )))
+}
+
+fn parse_psql_rows(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 struct ApiHttpResponse {
     status_code: u16,
     body: Vec<u8>,
@@ -1072,9 +1369,8 @@ async fn send_http_request_with_worker(
     };
 
     let payload = body.unwrap_or(&[]);
-    let mut request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
-    );
+    let mut request =
+        format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
     if !payload.is_empty() {
         let ct = content_type.unwrap_or("application/json");
         request.push_str(&format!("Content-Type: {ct}\r\n"));
@@ -1223,6 +1519,205 @@ fn expect_accepted_response(action: &str, response: ApiHttpResponse) -> Result<(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
+    let binaries = match resolve_pg_binaries_for_real_tests()? {
+        Some(paths) => paths,
+        None => return Ok(()),
+    };
+    let etcd_bin = match resolve_etcd_bin_for_real_tests()? {
+        Some(path) => path,
+        None => return Ok(()),
+    };
+    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+        fixture.record("unassisted failover bootstrap: wait for stable primary");
+        let bootstrap_primary = fixture
+            .wait_for_stable_primary(
+                Duration::from_secs(60),
+                None,
+                5,
+                &mut phase_history,
+            )
+            .await?;
+        fixture.record(format!(
+            "unassisted failover bootstrap success: primary={bootstrap_primary}"
+        ));
+        fixture
+            .assert_no_dual_primary_window(Duration::from_secs(3))
+            .await?;
+
+        fixture.record("unassisted failover SQL pre-check: create table and insert pre-failure row");
+        fixture
+            .run_sql_on_node_with_retry(
+                &bootstrap_primary,
+                "CREATE TABLE IF NOT EXISTS ha_unassisted_failover_proof (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
+                Duration::from_secs(20),
+            )
+            .await?;
+        fixture
+            .run_sql_on_node_with_retry(
+                &bootstrap_primary,
+                "INSERT INTO ha_unassisted_failover_proof (id, payload) VALUES (1, 'before') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+                Duration::from_secs(20),
+            )
+            .await?;
+        let pre_rows_raw = fixture
+            .run_sql_on_node_with_retry(
+                &bootstrap_primary,
+                "SELECT id::text || ':' || payload FROM ha_unassisted_failover_proof ORDER BY id",
+                Duration::from_secs(20),
+            )
+            .await?;
+        let pre_rows = parse_psql_rows(pre_rows_raw.as_str());
+        let expected_pre_rows = vec!["1:before".to_string()];
+        if pre_rows != expected_pre_rows {
+            return Err(WorkerError::Message(format!(
+                "pre-failure SQL rows mismatch: expected {:?}, got {:?}",
+                expected_pre_rows, pre_rows
+            )));
+        }
+        let replica_ids: Vec<String> = fixture
+            .nodes
+            .iter()
+            .filter(|node| node.id != bootstrap_primary)
+            .map(|node| node.id.clone())
+            .collect();
+        for replica_id in replica_ids {
+            fixture
+                .run_sql_on_node_with_retry(
+                    &replica_id,
+                    "CREATE TABLE IF NOT EXISTS ha_unassisted_failover_proof (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
+                    Duration::from_secs(20),
+                )
+                .await?;
+            fixture
+                .run_sql_on_node_with_retry(
+                    &replica_id,
+                    "INSERT INTO ha_unassisted_failover_proof (id, payload) VALUES (1, 'before') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+                    Duration::from_secs(20),
+                )
+                .await?;
+            fixture
+                .wait_for_rows_on_node(
+                    &replica_id,
+                    "SELECT id::text || ':' || payload FROM ha_unassisted_failover_proof ORDER BY id",
+                    expected_pre_rows.as_slice(),
+                    Duration::from_secs(20),
+                )
+                .await?;
+            fixture.record(format!(
+                "unassisted failover SQL pre-check seeded/validated on replica={replica_id}"
+            ));
+        }
+        fixture.record("unassisted failover SQL pre-check succeeded");
+
+        fixture.record(format!(
+            "unassisted failover failure injection: stop postgres on {bootstrap_primary}"
+        ));
+        fixture.stop_postgres_for_node(&bootstrap_primary).await?;
+
+        fixture.record("unassisted failover recovery: API-only polling for new stable primary");
+        let failover_primary = fixture
+            .wait_for_stable_primary(
+                Duration::from_secs(90),
+                Some(&bootstrap_primary),
+                5,
+                &mut phase_history,
+            )
+            .await?;
+        fixture
+            .assert_no_dual_primary_window(Duration::from_secs(5))
+            .await?;
+        ClusterFixture::assert_phase_history_contains_failover(
+            &phase_history,
+            &bootstrap_primary,
+            &failover_primary,
+        )?;
+        fixture.record(format!(
+            "unassisted failover recovery success: former_primary={bootstrap_primary}, new_primary={failover_primary}"
+        ));
+        fixture.record(format!(
+            "phase history evidence: {}",
+            ClusterFixture::format_phase_history(&phase_history)
+        ));
+
+        fixture.record("unassisted failover SQL post-check: insert post-failure row");
+        fixture
+            .run_sql_on_node_with_retry(
+                &failover_primary,
+                "INSERT INTO ha_unassisted_failover_proof (id, payload) VALUES (2, 'after') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+                Duration::from_secs(45),
+            )
+            .await?;
+        let post_rows_raw = fixture
+            .run_sql_on_node_with_retry(
+                &failover_primary,
+                "SELECT id::text || ':' || payload FROM ha_unassisted_failover_proof ORDER BY id",
+                Duration::from_secs(45),
+            )
+            .await?;
+        let post_rows = parse_psql_rows(post_rows_raw.as_str());
+        let expected_post_rows = vec!["1:before".to_string(), "2:after".to_string()];
+        if post_rows != expected_post_rows {
+            return Err(WorkerError::Message(format!(
+                "post-failure SQL rows mismatch: expected {:?}, got {:?}",
+                expected_post_rows, post_rows
+            )));
+        }
+        fixture.record("unassisted failover SQL continuity proof succeeded");
+        Ok(())
+    })
+    .await
+    {
+        Ok(run_result) => run_result,
+        Err(_) => {
+            fixture.record(format!(
+                "unassisted failover scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ));
+            Err(WorkerError::Message(format!(
+                "unassisted failover scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            )))
+        }
+    };
+
+    let artifact_path =
+        fixture.write_timeline_artifact("ha-e2e-unassisted-failover-sql-consistency");
+    let shutdown_result = fixture.shutdown().await;
+
+    match (run_result, artifact_path, shutdown_result) {
+        (Ok(()), Ok(_), Ok(())) => Ok(()),
+        (Err(run_err), Ok(path), Ok(())) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline: {}",
+            path.display()
+        ))),
+        (Err(run_err), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline write failed: {artifact_err}"
+        ))),
+        (Ok(()), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "shutdown failed: {shutdown_err}; timeline: {}",
+            path.display()
+        ))),
+        (Ok(()), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+        ))),
+        (Err(run_err), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "{run_err}; shutdown failed: {shutdown_err}; timeline: {}",
+            path.display()
+        ))),
+        (Err(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+        ))),
+        (Ok(()), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+            "timeline write failed: {artifact_err}"
+        ))),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
     let binaries = match resolve_pg_binaries_for_real_tests()? {
         Some(paths) => paths,
@@ -1326,7 +1821,7 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
         }
     };
 
-    let artifact_path = fixture.write_timeline_artifact();
+    let artifact_path = fixture.write_timeline_artifact("ha-e2e-scenario-matrix");
     let shutdown_result = fixture.shutdown().await;
 
     match (run_result, artifact_path, shutdown_result) {

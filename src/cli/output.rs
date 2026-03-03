@@ -7,7 +7,10 @@ use crate::cli::{
     CommandOutput,
 };
 
-pub fn render_output(command_output: &CommandOutput, format: OutputFormat) -> Result<String, CliError> {
+pub fn render_output(
+    command_output: &CommandOutput,
+    format: OutputFormat,
+) -> Result<String, CliError> {
     match format {
         OutputFormat::Json => render_json(command_output),
         OutputFormat::Text => Ok(render_text(command_output)),
@@ -36,10 +39,7 @@ fn render_text(command_output: &CommandOutput) -> String {
         CommandOutput::Accepted(value) => format!("accepted={}", value.accepted),
         CommandOutput::HaState(value) => {
             let leader = value.leader.as_deref().unwrap_or("<none>");
-            let switchover = value
-                .switchover_requested_by
-                .as_deref()
-                .unwrap_or("<none>");
+            let switchover = value.switchover_requested_by.as_deref().unwrap_or("<none>");
             [
                 format!("cluster_name={}", value.cluster_name),
                 format!("scope={}", value.scope),
