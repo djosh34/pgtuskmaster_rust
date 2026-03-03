@@ -1,0 +1,242 @@
+[1772526722167] scenario bootstrap/election: wait for single primary
+[1772526722167] api request start: node=node-1 GET /ha/state
+[1772526722579] api request success: node=node-1 GET /ha/state status=200
+[1772526722579] api request start: node=node-2 GET /ha/state
+[1772526722580] api request success: node=node-2 GET /ha/state status=200
+[1772526722580] api request start: node=node-3 GET /ha/state
+[1772526722580] api request success: node=node-3 GET /ha/state status=200
+[1772526722580] bootstrap/election success: primary=node-1
+[1772526722580] api request start: node=node-1 GET /ha/state
+[1772526722580] api request success: node=node-1 GET /ha/state status=200
+[1772526722580] api request start: node=node-2 GET /ha/state
+[1772526722580] api request success: node=node-2 GET /ha/state status=200
+[1772526722580] api request start: node=node-3 GET /ha/state
+[1772526722580] api request success: node=node-3 GET /ha/state status=200
+[1772526722656] api request start: node=node-1 GET /ha/state
+[1772526722657] api request success: node=node-1 GET /ha/state status=200
+[1772526722657] api request start: node=node-2 GET /ha/state
+[1772526722657] api request success: node=node-2 GET /ha/state status=200
+[1772526722657] api request start: node=node-3 GET /ha/state
+[1772526722657] api request success: node=node-3 GET /ha/state status=200
+[1772526723350] api request start: node=node-1 GET /ha/state
+[1772526723351] api request success: node=node-1 GET /ha/state status=200
+[1772526723351] api request start: node=node-2 GET /ha/state
+[1772526723351] api request success: node=node-2 GET /ha/state status=200
+[1772526723351] api request start: node=node-3 GET /ha/state
+[1772526723351] api request success: node=node-3 GET /ha/state status=200
+[1772526723427] api request start: node=node-1 GET /ha/state
+[1772526723428] api request success: node=node-1 GET /ha/state status=200
+[1772526723428] api request start: node=node-2 GET /ha/state
+[1772526723428] api request success: node=node-2 GET /ha/state status=200
+[1772526723428] api request start: node=node-3 GET /ha/state
+[1772526723428] api request success: node=node-3 GET /ha/state status=200
+[1772526723555] api request start: node=node-1 GET /ha/state
+[1772526723771] api request success: node=node-1 GET /ha/state status=200
+[1772526723771] api request start: node=node-2 GET /ha/state
+[1772526723772] api request success: node=node-2 GET /ha/state status=200
+[1772526723772] api request start: node=node-3 GET /ha/state
+[1772526723772] api request success: node=node-3 GET /ha/state status=200
+[1772526723848] api request start: node=node-1 GET /ha/state
+[1772526723849] api request success: node=node-1 GET /ha/state status=200
+[1772526723849] api request start: node=node-2 GET /ha/state
+[1772526723849] api request success: node=node-2 GET /ha/state status=200
+[1772526723849] api request start: node=node-3 GET /ha/state
+[1772526723849] api request success: node=node-3 GET /ha/state status=200
+[1772526725253] api request start: node=node-1 GET /ha/state
+[1772526725256] api request success: node=node-1 GET /ha/state status=200
+[1772526725256] api request start: node=node-2 GET /ha/state
+[1772526725257] api request success: node=node-2 GET /ha/state status=200
+[1772526725257] api request start: node=node-3 GET /ha/state
+[1772526725258] api request success: node=node-3 GET /ha/state status=200
+[1772526725333] api request start: node=node-1 GET /ha/state
+[1772526725334] api request success: node=node-1 GET /ha/state status=200
+[1772526725334] api request start: node=node-2 GET /ha/state
+[1772526725334] api request success: node=node-2 GET /ha/state status=200
+[1772526725334] api request start: node=node-3 GET /ha/state
+[1772526725334] api request success: node=node-3 GET /ha/state status=200
+[1772526725457] api request start: node=node-1 GET /ha/state
+[1772526725674] api request success: node=node-1 GET /ha/state status=200
+[1772526725674] api request start: node=node-2 GET /ha/state
+[1772526725674] api request success: node=node-2 GET /ha/state status=200
+[1772526725674] api request start: node=node-3 GET /ha/state
+[1772526725675] api request success: node=node-3 GET /ha/state status=200
+[1772526725675] scenario planned switchover: submit request through API endpoint
+[1772526725675] api request start: node=node-1 POST /switchover
+[1772526725784] api request success: node=node-1 POST /switchover status=202
+[1772526725784] api request start: node=node-1 GET /ha/state
+[1772526726216] api request success: node=node-1 GET /ha/state status=200
+[1772526726216] api request start: node=node-2 GET /ha/state
+[1772526726218] api request success: node=node-2 GET /ha/state status=200
+[1772526726218] api request start: node=node-3 GET /ha/state
+[1772526726219] api request success: node=node-3 GET /ha/state status=200
+[1772526726219] planned switchover success: old_primary=node-1, new_primary=node-3
+[1772526726219] scenario fencing-before-promotion: inject conflicting leader
+[1772526726219] api request start: node=node-1 POST /ha/leader
+[1772526726321] api request success: node=node-1 POST /ha/leader status=202
+[1772526726321] api request start: node=node-3 GET /ha/state
+[1772526726868] api request success: node=node-3 GET /ha/state status=200
+[1772526726868] api request start: node=node-1 GET /ha/state
+[1772526726870] api request success: node=node-1 GET /ha/state status=200
+[1772526726884] api request start: node=node-2 GET /ha/state
+[1772526726886] api request success: node=node-2 GET /ha/state status=200
+[1772526726886] api request start: node=node-3 GET /ha/state
+[1772526726886] api request success: node=node-3 GET /ha/state status=200
+[1772526726963] api request start: node=node-1 GET /ha/state
+[1772526727184] api request success: node=node-1 GET /ha/state status=200
+[1772526727184] api request start: node=node-2 GET /ha/state
+[1772526727511] api request success: node=node-2 GET /ha/state status=200
+[1772526727511] api request start: node=node-3 GET /ha/state
+[1772526727841] api request success: node=node-3 GET /ha/state status=200
+[1772526727950] api request start: node=node-1 GET /ha/state
+[1772526728280] api request success: node=node-1 GET /ha/state status=200
+[1772526728280] api request start: node=node-2 GET /ha/state
+[1772526728281] api request success: node=node-2 GET /ha/state status=200
+[1772526728281] api request start: node=node-3 GET /ha/state
+[1772526728282] api request success: node=node-3 GET /ha/state status=200
+[1772526728359] api request start: node=node-1 GET /ha/state
+[1772526728362] api request success: node=node-1 GET /ha/state status=200
+[1772526728362] api request start: node=node-2 GET /ha/state
+[1772526728363] api request success: node=node-2 GET /ha/state status=200
+[1772526728363] api request start: node=node-3 GET /ha/state
+[1772526728364] api request success: node=node-3 GET /ha/state status=200
+[1772526728601] api request start: node=node-1 GET /ha/state
+[1772526728927] api request success: node=node-1 GET /ha/state status=200
+[1772526728927] api request start: node=node-2 GET /ha/state
+[1772526729254] api request success: node=node-2 GET /ha/state status=200
+[1772526729254] api request start: node=node-3 GET /ha/state
+[1772526729689] api request success: node=node-3 GET /ha/state status=200
+[1772526729766] api request start: node=node-1 GET /ha/state
+[1772526729767] api request success: node=node-1 GET /ha/state status=200
+[1772526729767] api request start: node=node-2 GET /ha/state
+[1772526729767] api request success: node=node-2 GET /ha/state status=200
+[1772526729767] api request start: node=node-3 GET /ha/state
+[1772526729767] api request success: node=node-3 GET /ha/state status=200
+[1772526729908] api request start: node=node-1 GET /ha/state
+[1772526730344] api request success: node=node-1 GET /ha/state status=200
+[1772526730344] api request start: node=node-2 GET /ha/state
+[1772526730677] api request success: node=node-2 GET /ha/state status=200
+[1772526730677] api request start: node=node-3 GET /ha/state
+[1772526731226] api request success: node=node-3 GET /ha/state status=200
+[1772526731226] fencing-before-promotion observed on node-3
+[1772526731226] scenario failover: stop current primary and clear stale leader through API
+[1772526731226] api request start: node=node-1 DELETE /ha/leader
+[1772526731330] api request success: node=node-1 DELETE /ha/leader status=202
+[1772526731330] api request start: node=node-1 POST /ha/leader
+[1772526731863] api request success: node=node-1 POST /ha/leader status=202
+[1772526731863] api request start: node=node-1 GET /ha/state
+[1772526732321] api request success: node=node-1 GET /ha/state status=200
+[1772526732321] api request start: node=node-2 GET /ha/state
+[1772526732426] api request success: node=node-2 GET /ha/state status=200
+[1772526732426] api request start: node=node-3 GET /ha/state
+[1772526732426] api request success: node=node-3 GET /ha/state status=200
+[1772526732426] failover signal observed: failed_primary=node-3, api_leader=node-1
+[1772526732426] scenario rewind path: verify former primary enters rewind/process recovery path
+[1772526732426] api request start: node=node-3 GET /ha/state
+[1772526732427] api request success: node=node-3 GET /ha/state status=200
+[1772526732427] rewind/recovery path observed for former primary node-3
+[1772526732427] scenario split-brain prevention: ensure no dual primary after failover
+[1772526732427] api request start: node=node-1 GET /ha/state
+[1772526732427] api request success: node=node-1 GET /ha/state status=200
+[1772526732427] api request start: node=node-2 GET /ha/state
+[1772526732427] api request success: node=node-2 GET /ha/state status=200
+[1772526732427] api request start: node=node-3 GET /ha/state
+[1772526732428] api request success: node=node-3 GET /ha/state status=200
+[1772526732506] api request start: node=node-1 GET /ha/state
+[1772526732508] api request success: node=node-1 GET /ha/state status=200
+[1772526732508] api request start: node=node-2 GET /ha/state
+[1772526732509] api request success: node=node-2 GET /ha/state status=200
+[1772526732509] api request start: node=node-3 GET /ha/state
+[1772526732510] api request success: node=node-3 GET /ha/state status=200
+[1772526732857] api request start: node=node-1 GET /ha/state
+[1772526733080] api request success: node=node-1 GET /ha/state status=200
+[1772526733080] api request start: node=node-2 GET /ha/state
+[1772526733081] api request success: node=node-2 GET /ha/state status=200
+[1772526733081] api request start: node=node-3 GET /ha/state
+[1772526733081] api request success: node=node-3 GET /ha/state status=200
+[1772526733158] api request start: node=node-1 GET /ha/state
+[1772526733160] api request success: node=node-1 GET /ha/state status=200
+[1772526733160] api request start: node=node-2 GET /ha/state
+[1772526733161] api request success: node=node-2 GET /ha/state status=200
+[1772526733161] api request start: node=node-3 GET /ha/state
+[1772526733162] api request success: node=node-3 GET /ha/state status=200
+[1772526733287] api request start: node=node-1 GET /ha/state
+[1772526733728] api request success: node=node-1 GET /ha/state status=200
+[1772526733729] api request start: node=node-2 GET /ha/state
+[1772526734054] api request success: node=node-2 GET /ha/state status=200
+[1772526734055] api request start: node=node-3 GET /ha/state
+[1772526734500] api request success: node=node-3 GET /ha/state status=200
+[1772526734575] api request start: node=node-1 GET /ha/state
+[1772526734576] api request success: node=node-1 GET /ha/state status=200
+[1772526734576] api request start: node=node-2 GET /ha/state
+[1772526734577] api request success: node=node-2 GET /ha/state status=200
+[1772526734577] api request start: node=node-3 GET /ha/state
+[1772526734577] api request success: node=node-3 GET /ha/state status=200
+[1772526734706] api request start: node=node-1 GET /ha/state
+[1772526734939] api request success: node=node-1 GET /ha/state status=200
+[1772526734939] api request start: node=node-2 GET /ha/state
+[1772526734940] api request success: node=node-2 GET /ha/state status=200
+[1772526734940] api request start: node=node-3 GET /ha/state
+[1772526734941] api request success: node=node-3 GET /ha/state status=200
+[1772526735019] api request start: node=node-1 GET /ha/state
+[1772526735021] api request success: node=node-1 GET /ha/state status=200
+[1772526735021] api request start: node=node-2 GET /ha/state
+[1772526735051] api request success: node=node-2 GET /ha/state status=200
+[1772526735051] api request start: node=node-3 GET /ha/state
+[1772526735052] api request success: node=node-3 GET /ha/state status=200
+[1772526735130] api request start: node=node-1 GET /ha/state
+[1772526735132] api request success: node=node-1 GET /ha/state status=200
+[1772526735132] api request start: node=node-2 GET /ha/state
+[1772526735133] api request success: node=node-2 GET /ha/state status=200
+[1772526735133] api request start: node=node-3 GET /ha/state
+[1772526735134] api request success: node=node-3 GET /ha/state status=200
+[1772526735258] api request start: node=node-1 GET /ha/state
+[1772526735378] api request success: node=node-1 GET /ha/state status=200
+[1772526735379] api request start: node=node-2 GET /ha/state
+[1772526735379] api request success: node=node-2 GET /ha/state status=200
+[1772526735379] api request start: node=node-3 GET /ha/state
+[1772526735380] api request success: node=node-3 GET /ha/state status=200
+[1772526735457] api request start: node=node-1 GET /ha/state
+[1772526735459] api request success: node=node-1 GET /ha/state status=200
+[1772526735459] api request start: node=node-2 GET /ha/state
+[1772526735460] api request success: node=node-2 GET /ha/state status=200
+[1772526735460] api request start: node=node-3 GET /ha/state
+[1772526735461] api request success: node=node-3 GET /ha/state status=200
+[1772526735700] api request start: node=node-1 GET /ha/state
+[1772526735917] api request success: node=node-1 GET /ha/state status=200
+[1772526735917] api request start: node=node-2 GET /ha/state
+[1772526735918] api request success: node=node-2 GET /ha/state status=200
+[1772526735918] api request start: node=node-3 GET /ha/state
+[1772526735919] api request success: node=node-3 GET /ha/state status=200
+[1772526735996] api request start: node=node-1 GET /ha/state
+[1772526735998] api request success: node=node-1 GET /ha/state status=200
+[1772526735998] api request start: node=node-2 GET /ha/state
+[1772526735999] api request success: node=node-2 GET /ha/state status=200
+[1772526735999] api request start: node=node-3 GET /ha/state
+[1772526736000] api request success: node=node-3 GET /ha/state status=200
+[1772526736124] api request start: node=node-1 GET /ha/state
+[1772526736566] api request success: node=node-1 GET /ha/state status=200
+[1772526736566] api request start: node=node-2 GET /ha/state
+[1772526736888] api request success: node=node-2 GET /ha/state status=200
+[1772526736888] api request start: node=node-3 GET /ha/state
+[1772526737315] api request success: node=node-3 GET /ha/state status=200
+[1772526737393] api request start: node=node-1 GET /ha/state
+[1772526737394] api request success: node=node-1 GET /ha/state status=200
+[1772526737394] api request start: node=node-2 GET /ha/state
+[1772526737395] api request success: node=node-2 GET /ha/state status=200
+[1772526737395] api request start: node=node-3 GET /ha/state
+[1772526737395] api request success: node=node-3 GET /ha/state status=200
+[1772526737523] api request start: node=node-1 GET /ha/state
+[1772526737961] api request success: node=node-1 GET /ha/state status=200
+[1772526737961] api request start: node=node-2 GET /ha/state
+[1772526737964] api request success: node=node-2 GET /ha/state status=200
+[1772526737964] api request start: node=node-3 GET /ha/state
+[1772526737965] api request success: node=node-3 GET /ha/state status=200
+[1772526737965] scenario no-quorum fail-safe: shutdown etcd majority (2/3)
+[1772526749460] no-quorum setup: stopped etcd members=etcd-a,etcd-b
+[1772526749460] api request start: node=node-1 GET /ha/state
+[1772526759671] api request success: node=node-1 GET /ha/state status=200
+[1772526759671] api request start: node=node-2 GET /ha/state
+[1772526785370] api request success: node=node-2 GET /ha/state status=200
+[1772526785370] api request start: node=node-3 GET /ha/state
+[1772526806619] api request success: node=node-3 GET /ha/state status=200
+[1772526806620] no-quorum fail-safe observed on all nodes

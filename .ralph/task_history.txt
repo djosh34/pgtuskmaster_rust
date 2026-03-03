@@ -42,3 +42,4 @@
 .ralph/tasks/story-rust-system-harness/24-task-real-e2e-harness-3nodes-3etcd.md
 .ralph/tasks/story-rust-system-harness/25-task-enforce-e2e-api-only-control-no-direct-dcs.md
 .ralph/tasks/story-rust-system-harness/23-task-ha-admin-cli-over-api.md
+.ralph/tasks/bugs/bug-test-bdd-full-suite-hangs.md

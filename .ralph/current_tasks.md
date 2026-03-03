@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 09:23:10 AM CET 2026
+Generated: Tue Mar  3 09:36:23 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -14,7 +14,7 @@ src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which viol
 
 **Path:** `.ralph/tasks/bugs/bug-test-bdd-full-suite-hangs.md`
 
-## Bug: test-bdd full-suite command hangs in real HA e2e <status>not_started</status> <passes>false</passes>
+## Bug: test-bdd full-suite command hangs in real HA e2e <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 After updating `make test-bdd` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets -- --include-ignored`, the verification run did not complete within an extended runtime window (over 15 minutes observed on 2026-03-03).

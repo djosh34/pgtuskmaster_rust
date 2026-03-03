@@ -3,12 +3,13 @@ use std::{
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
+    process::ExitStatus,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::Command,
+    process::{Child, Command},
     task::JoinHandle,
 };
 
@@ -79,6 +80,11 @@ struct ClusterFixture {
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
     timeline: Vec<String>,
 }
+
+const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const E2E_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(10);
+const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl ClusterFixture {
     async fn start(
@@ -408,10 +414,33 @@ impl ClusterFixture {
         body: Option<&[u8]>,
         content_type: Option<&str>,
     ) -> Result<ApiHttpResponse, WorkerError> {
-        let node = self.nodes.get_mut(node_index).ok_or_else(|| {
-            WorkerError::Message(format!("invalid node index for API request: {node_index}"))
-        })?;
-        send_http_request_with_worker(node, method, path, body, content_type).await
+        let node_id = self
+            .nodes
+            .get(node_index)
+            .ok_or_else(|| {
+                WorkerError::Message(format!("invalid node index for API request: {node_index}"))
+            })?
+            .id
+            .clone();
+        self.record(format!(
+            "api request start: node={node_id} {method} {path}"
+        ));
+        let response = {
+            let node = self.nodes.get_mut(node_index).ok_or_else(|| {
+                WorkerError::Message(format!("invalid node index for API request: {node_index}"))
+            })?;
+            send_http_request_with_worker(node, method, path, body, content_type).await
+        };
+        match &response {
+            Ok(http) => self.record(format!(
+                "api request success: node={node_id} {method} {path} status={}",
+                http.status_code
+            )),
+            Err(err) => self.record(format!(
+                "api request failure: node={node_id} {method} {path} error={err}"
+            )),
+        }
+        response
     }
 
     async fn post_switchover_via_api(&mut self, requested_by: &str) -> Result<(), WorkerError> {
@@ -933,16 +962,17 @@ fn unix_now() -> Result<UnixMillis, WorkerError> {
 }
 
 async fn initialize_pgdata(initdb: &Path, data_dir: &Path) -> Result<(), WorkerError> {
-    let status = Command::new(initdb)
+    let mut child = Command::new(initdb)
         .arg("-D")
         .arg(data_dir)
         .arg("-A")
         .arg("trust")
         .arg("-U")
         .arg("postgres")
-        .status()
-        .await
+        .spawn()
         .map_err(|err| WorkerError::Message(format!("initdb spawn failed: {err}")))?;
+    let label = format!("initdb for {}", data_dir.display());
+    let status = wait_for_child_exit_with_timeout(&label, &mut child, E2E_COMMAND_TIMEOUT).await?;
     if status.success() {
         Ok(())
     } else {
@@ -953,29 +983,55 @@ async fn initialize_pgdata(initdb: &Path, data_dir: &Path) -> Result<(), WorkerE
 }
 
 async fn pg_ctl_stop_immediate(pg_ctl: &Path, data_dir: &Path) -> Result<(), WorkerError> {
-    let output = Command::new(pg_ctl)
+    let pid_file = data_dir.join("postmaster.pid");
+    if !pid_file.exists() {
+        return Ok(());
+    }
+
+    let mut child = Command::new(pg_ctl)
         .arg("-D")
         .arg(data_dir)
         .arg("stop")
         .arg("-m")
         .arg("immediate")
         .arg("-w")
-        .output()
-        .await
+        .spawn()
         .map_err(|err| WorkerError::Message(format!("pg_ctl stop spawn failed: {err}")))?;
+    let label = format!("pg_ctl stop for {}", data_dir.display());
+    let status = wait_for_child_exit_with_timeout(&label, &mut child, E2E_COMMAND_TIMEOUT).await?;
 
-    if output.status.success() {
+    if status.success() || !pid_file.exists() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let already_stopped = stderr.contains("PID file") && stderr.contains("does not exist");
-        if already_stopped {
-            Ok(())
-        } else {
+        Err(WorkerError::Message(format!(
+            "pg_ctl stop exited unsuccessfully with status {status} for {}",
+            data_dir.display()
+        )))
+    }
+}
+
+async fn wait_for_child_exit_with_timeout(
+    label: &str,
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<ExitStatus, WorkerError> {
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(wait_result) => {
+            wait_result.map_err(|err| WorkerError::Message(format!("{label} wait failed: {err}")))
+        }
+        Err(_) => {
+            child.start_kill().map_err(|err| {
+                WorkerError::Message(format!(
+                    "{label} timed out after {}s and kill failed: {err}",
+                    timeout.as_secs()
+                ))
+            })?;
+            match tokio::time::timeout(E2E_COMMAND_KILL_WAIT_TIMEOUT, child.wait()).await {
+                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
+            }
             Err(WorkerError::Message(format!(
-                "pg_ctl stop exited unsuccessfully with status {}; stderr: {}",
-                output.status,
-                stderr.trim()
+                "{label} timed out after {}s and was killed",
+                timeout.as_secs()
             )))
         }
     }
@@ -993,12 +1049,27 @@ async fn send_http_request_with_worker(
     body: Option<&[u8]>,
     content_type: Option<&str>,
 ) -> Result<ApiHttpResponse, WorkerError> {
-    let mut stream = tokio::net::TcpStream::connect(node.api_addr).await.map_err(|err| {
-        WorkerError::Message(format!(
-            "connect {} for {method} {path} failed: {err}",
-            node.api_addr
-        ))
-    })?;
+    let mut stream = match tokio::time::timeout(
+        E2E_HTTP_STEP_TIMEOUT,
+        tokio::net::TcpStream::connect(node.api_addr),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!(
+                "connect {} for {method} {path} failed: {err}",
+                node.api_addr
+            )))
+        }
+        Err(_) => {
+            return Err(WorkerError::Message(format!(
+                "connect {} for {method} {path} timed out after {}s",
+                node.api_addr,
+                E2E_HTTP_STEP_TIMEOUT.as_secs()
+            )))
+        }
+    };
 
     let payload = body.unwrap_or(&[]);
     let mut request = format!(
@@ -1011,29 +1082,91 @@ async fn send_http_request_with_worker(
     }
     request.push_str("\r\n");
 
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|err| WorkerError::Message(format!("write request headers failed: {err}")))?;
+    match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.write_all(request.as_bytes())).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!(
+                "write request headers for {method} {path} failed: {err}"
+            )))
+        }
+        Err(_) => {
+            return Err(WorkerError::Message(format!(
+                "write request headers for {method} {path} timed out after {}s",
+                E2E_HTTP_STEP_TIMEOUT.as_secs()
+            )))
+        }
+    }
     if !payload.is_empty() {
-        stream
-            .write_all(payload)
-            .await
-            .map_err(|err| WorkerError::Message(format!("write request body failed: {err}")))?;
+        match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.write_all(payload)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Err(WorkerError::Message(format!(
+                    "write request body for {method} {path} failed: {err}"
+                )))
+            }
+            Err(_) => {
+                return Err(WorkerError::Message(format!(
+                    "write request body for {method} {path} timed out after {}s",
+                    E2E_HTTP_STEP_TIMEOUT.as_secs()
+                )))
+            }
+        }
     }
 
-    crate::debug_api::worker::step_once(&mut node.debug_ctx)
-        .await
-        .map_err(|err| WorkerError::Message(format!("debug snapshot step failed: {err}")))?;
-    crate::api::worker::step_once(&mut node.api_ctx)
-        .await
-        .map_err(|err| WorkerError::Message(format!("api step failed: {err}")))?;
+    match tokio::time::timeout(
+        E2E_HTTP_STEP_TIMEOUT,
+        crate::debug_api::worker::step_once(&mut node.debug_ctx),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!(
+                "debug snapshot step for {method} {path} failed: {err}"
+            )))
+        }
+        Err(_) => {
+            return Err(WorkerError::Message(format!(
+                "debug snapshot step for {method} {path} timed out after {}s",
+                E2E_HTTP_STEP_TIMEOUT.as_secs()
+            )))
+        }
+    }
+    match tokio::time::timeout(
+        E2E_HTTP_STEP_TIMEOUT,
+        crate::api::worker::step_once(&mut node.api_ctx),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!(
+                "api step for {method} {path} failed: {err}"
+            )))
+        }
+        Err(_) => {
+            return Err(WorkerError::Message(format!(
+                "api step for {method} {path} timed out after {}s",
+                E2E_HTTP_STEP_TIMEOUT.as_secs()
+            )))
+        }
+    }
 
     let mut raw = Vec::new();
-    stream
-        .read_to_end(&mut raw)
-        .await
-        .map_err(|err| WorkerError::Message(format!("read response failed: {err}")))?;
+    match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.read_to_end(&mut raw)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!(
+                "read response for {method} {path} failed: {err}"
+            )))
+        }
+        Err(_) => {
+            return Err(WorkerError::Message(format!(
+                "read response for {method} {path} timed out after {}s",
+                E2E_HTTP_STEP_TIMEOUT.as_secs()
+            )))
+        }
+    }
     parse_http_response(raw.as_slice())
 }
 
@@ -1101,7 +1234,7 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
     };
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
 
-    let run_result: Result<(), WorkerError> = async {
+    let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
         fixture.record("scenario bootstrap/election: wait for single primary");
         let bootstrap_primary = fixture.wait_for_primary(Duration::from_secs(45)).await?;
         fixture.record(format!(
@@ -1177,8 +1310,21 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
         fixture.wait_for_all_failsafe(Duration::from_secs(45)).await?;
         fixture.record("no-quorum fail-safe observed on all nodes");
         Ok(())
-    }
-    .await;
+    })
+    .await
+    {
+        Ok(run_result) => run_result,
+        Err(_) => {
+            fixture.record(format!(
+                "scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ));
+            Err(WorkerError::Message(format!(
+                "scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            )))
+        }
+    };
 
     let artifact_path = fixture.write_timeline_artifact();
     let shutdown_result = fixture.shutdown().await;
