@@ -1147,6 +1147,8 @@ impl ClusterFixture {
         Ok(())
     }
 
+    // Post-start hands-off policy: only use external HTTP routes as control/observation inputs.
+    // Do not steer cluster state through internal workers or direct DCS mutation calls.
     async fn send_node_request(
         &mut self,
         node_index: usize,
@@ -1184,6 +1186,7 @@ impl ClusterFixture {
         response
     }
 
+    // Switchover is an allowed admin API control action in post-start scenarios.
     async fn post_switchover_via_api(&mut self, requested_by: &str) -> Result<(), WorkerError> {
         #[derive(serde::Serialize)]
         struct SwitchoverBody<'a> {
@@ -1255,6 +1258,7 @@ impl ClusterFixture {
         )))
     }
 
+    // /ha/state polling is the canonical post-start observation path.
     async fn fetch_node_ha_state_by_index(
         &mut self,
         node_index: usize,
@@ -1434,6 +1438,7 @@ impl ClusterFixture {
         }
     }
 
+    // Process/network failures are allowed external stimuli for HA behavior validation.
     async fn stop_postgres_for_node(&self, node_id: &str) -> Result<(), WorkerError> {
         let Some(node) = self.node_by_id(node_id) else {
             return Err(WorkerError::Message(format!(
@@ -1443,6 +1448,7 @@ impl ClusterFixture {
         pg_ctl_stop_immediate(&self.pg_ctl_bin, &node.data_dir).await
     }
 
+    // This fixture-level etcd shutdown models external quorum loss; it is not direct DCS key steering.
     async fn stop_etcd_majority(&mut self, stop_count: usize) -> Result<Vec<String>, WorkerError> {
         let Some(etcd_cluster) = self.etcd.as_mut() else {
             return Err(WorkerError::Message(

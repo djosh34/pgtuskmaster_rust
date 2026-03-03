@@ -4,7 +4,6 @@ const FORBIDDEN_PATTERNS: &[&str] = &[
     ".write_path(",
     ".delete_path(",
     "api::controller::",
-    "post_switchover(",
     "\"/ha/leader\"",
     "post_set_leader_via_api",
     "delete_leader_via_api",
@@ -15,17 +14,29 @@ const FORBIDDEN_PATTERNS: &[&str] = &[
     "crate::pginfo::worker::run(",
     "crate::dcs::worker::run(",
     "ha_worker::run(",
+    "crate::ha::worker::step_once(",
+    "crate::dcs::worker::step_once(",
     "crate::api::worker::step_once(",
     "crate::debug_api::worker::step_once(",
+    "EtcdDcsStore::connect(",
+    "refresh_from_etcd_watch(",
     "initialize_pgdata(",
 ];
 
+const ALLOWED_POST_START_PATTERNS: &[&str] = &[
+    "\"/switchover\"",
+    ".run_sql_on_node(",
+    ".run_sql_on_node_with_retry(",
+];
+
 #[test]
-fn e2e_sources_must_use_api_only_control_paths() -> Result<(), Box<dyn std::error::Error>> {
+fn e2e_sources_must_use_post_start_hands_off_control_paths()
+-> Result<(), Box<dyn std::error::Error>> {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let ha_dir = repo_root.join("src/ha");
 
     let mut matched_files = 0usize;
+    let mut scanned_files: Vec<String> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
 
     for entry in fs::read_dir(&ha_dir)? {
@@ -43,6 +54,7 @@ fn e2e_sources_must_use_api_only_control_paths() -> Result<(), Box<dyn std::erro
         }
 
         matched_files = matched_files.saturating_add(1);
+        scanned_files.push(path.display().to_string());
         let source = fs::read_to_string(&path)?;
         for pattern in FORBIDDEN_PATTERNS {
             if source.contains(pattern) {
@@ -63,8 +75,21 @@ fn e2e_sources_must_use_api_only_control_paths() -> Result<(), Box<dyn std::erro
     }
 
     Err(format!(
-        "e2e API-only policy violations detected:\n{}",
+        "post-start hands-off policy violations detected in src/ha/e2e_*.rs.\nallowed post-start controls: GET /ha/state observation, admin switchover API requests, SQL reads/writes for scenario intent, and external process/network fault injection.\nforbidden: direct DCS writes/deletes and internal worker/controller steering after startup.\nscanned_files={}:\n{}\nviolations:\n{}",
+        matched_files,
+        scanned_files.join("\n"),
         violations.join("\n")
     )
     .into())
+}
+
+#[test]
+fn e2e_policy_documents_allowed_post_start_actions() {
+    let policy = FORBIDDEN_PATTERNS.join("\n");
+    for allowed in ALLOWED_POST_START_PATTERNS {
+        assert!(
+            !policy.contains(allowed),
+            "allowed post-start action token `{allowed}` must not be listed as forbidden"
+        );
+    }
 }

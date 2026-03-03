@@ -50,3 +50,4 @@
 .ralph/tasks/bugs/ralph-event-watch-missing-script-path.md
 .ralph/tasks/story-rust-system-harness/34-task-add-non-test-unified-node-entrypoint-autobootstrap-and-ha-loop.md
 .ralph/tasks/story-rust-system-harness/35-task-migrate-all-node-startup-tests-to-unified-entrypoint-config-only.md
+.ralph/tasks/story-rust-system-harness/36-task-enforce-post-startup-hands-off-test-policy-no-direct-coordination.md

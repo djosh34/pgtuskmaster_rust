@@ -1,0 +1,7 @@
+
+running 2 tests
+test e2e_policy_documents_allowed_post_start_actions ... ok
+test e2e_sources_must_use_post_start_hands_off_control_paths ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
