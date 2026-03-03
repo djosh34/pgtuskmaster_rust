@@ -1,0 +1,4 @@
+[1772553713751] mixed faults: wait for initial stable primary
+[1772553715578] mixed faults: initial primary=node-1
+[1772553715622] network fault: partition current primary from etcd node=node-1
+[1772553715622] network fault: isolate API path for node=node-2

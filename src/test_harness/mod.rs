@@ -8,6 +8,7 @@ use thiserror::Error;
 pub(crate) mod auth;
 pub(crate) mod binaries;
 pub(crate) mod etcd3;
+pub(crate) mod net_proxy;
 pub(crate) mod namespace;
 pub(crate) mod pg16;
 pub(crate) mod ports;
