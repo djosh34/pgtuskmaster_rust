@@ -19,6 +19,40 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 **NEVER set this task's passes to anything other than meta-task.**
 
 ## Exploration
+### 2026-03-03 (fresh run, pass-1 full review in progress)
+- Reviewer: codex
+- Evidence directory: `.ralph/evidence/meta-18-pass1-20260303T020551Z`
+- Preflight model check result: `.ralph/model.txt` was already `deep_review` (precondition satisfied).
+- Files/modules audited:
+  - Strict lint policy (`src/lib.rs`, `Makefile`)
+  - Config schema/parser validation (`src/config/schema.rs`, `src/config/parser.rs`)
+  - Real-binary enforcement policy (`src/test_harness/binaries.rs`)
+  - Real etcd store adapter/watch semantics (`src/dcs/etcd_store.rs`)
+  - HA e2e multi-node test fixture + port reservation discipline (`src/ha/e2e_multi_node.rs`, `src/test_harness/ports.rs`)
+  - BDD tests (HTTP + state channel) (`tests/bdd_api_http.rs`, `tests/bdd_state_watch.rs`)
+- Findings summary:
+  - No `unwrap()`/`expect()`/`panic!()`/`todo!()`/`unimplemented!()` occurrences found in `src/` or `tests/`.
+  - Real-binary tests are intentionally optional by default (skip when binaries missing), with deterministic enforcement available via `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1` and `make test-real` (verified by running it below).
+  - etcd watch bootstrap uses `get(prefix)` snapshot then `watch(prefix)` from `snapshot_revision + 1`, and reconnects/resnapshots on canceled/compacted watch responses.
+- Small issues -> bug tasks: none for this pass (no issues found that required remediation tasks).
+- Large issues -> agent tasks: none for this pass.
+- Gate outcomes:
+  - `make check`: pass (`make-check.log`)
+  - `make test`: pass (`make-test.log`)
+  - `make test-bdd`: pass (`make-test-bdd.log`)
+  - `make lint`: pass (`make-lint.log`)
+  - Real-binary enforcement gate: `make test-real`: pass (`make-test-real.log`)
+- Closeout model reset to `normal_high`: done (verified `.ralph/model.txt` is `normal_high`).
+
+### 2026-03-03 (fresh run, pass-1 preflight only)
+- Reviewer: codex
+- Preflight model check result: `.ralph/model.txt` was `normal_high` (mismatch), updated to `deep_review` to satisfy run precondition.
+- Files/modules audited: none yet (execution halted at preflight by task contract).
+- Findings summary: no code findings yet; this entry only documents mandatory model gate enforcement.
+- Small issues -> bug tasks: none (not started due preflight halt).
+- Large issues -> agent tasks: none (not started due preflight halt).
+- Closeout model reset to `normal_high`: not applicable yet; full review not started.
+
 ### YYYY-MM-DD (fresh run)
 - Reviewer:
 - Preflight model check result:

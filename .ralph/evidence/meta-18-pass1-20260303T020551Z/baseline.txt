@@ -1,0 +1,4 @@
+timestamp_utc=20260303T020551Z
+pwd=/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust
+current_task=.ralph/tasks/story-rust-system-harness/19-task-do-meta-deep-skeptical-review-pass-1.md
+model=deep_review
