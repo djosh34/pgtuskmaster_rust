@@ -969,68 +969,29 @@ impl ClusterFixture {
     }
 }
 
-fn resolve_pg_binaries_for_real_tests() -> Result<Option<BinaryPaths>, WorkerError> {
-    let postgres = match require_pg16_bin_for_real_tests("postgres") {
-        Ok(Some(path)) => path,
-        Ok(None) => return Ok(None),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "postgres binary lookup failed: {err}"
-            )))
-        }
-    };
-    let pg_ctl = match require_pg16_bin_for_real_tests("pg_ctl") {
-        Ok(Some(path)) => path,
-        Ok(None) => return Ok(None),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "pg_ctl binary lookup failed: {err}"
-            )))
-        }
-    };
-    let pg_rewind = match require_pg16_bin_for_real_tests("pg_rewind") {
-        Ok(Some(path)) => path,
-        Ok(None) => return Ok(None),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "pg_rewind binary lookup failed: {err}"
-            )))
-        }
-    };
-    let initdb = match require_pg16_bin_for_real_tests("initdb") {
-        Ok(Some(path)) => path,
-        Ok(None) => return Ok(None),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "initdb binary lookup failed: {err}"
-            )))
-        }
-    };
-    let psql = match require_pg16_bin_for_real_tests("psql") {
-        Ok(Some(path)) => path,
-        Ok(None) => return Ok(None),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "psql binary lookup failed: {err}"
-            )))
-        }
-    };
-    Ok(Some(BinaryPaths {
+fn resolve_pg_binaries_for_real_tests() -> Result<BinaryPaths, WorkerError> {
+    let postgres = require_pg16_bin_for_real_tests("postgres")
+        .map_err(|err| WorkerError::Message(format!("postgres binary lookup failed: {err}")))?;
+    let pg_ctl = require_pg16_bin_for_real_tests("pg_ctl")
+        .map_err(|err| WorkerError::Message(format!("pg_ctl binary lookup failed: {err}")))?;
+    let pg_rewind = require_pg16_bin_for_real_tests("pg_rewind")
+        .map_err(|err| WorkerError::Message(format!("pg_rewind binary lookup failed: {err}")))?;
+    let initdb = require_pg16_bin_for_real_tests("initdb")
+        .map_err(|err| WorkerError::Message(format!("initdb binary lookup failed: {err}")))?;
+    let psql = require_pg16_bin_for_real_tests("psql")
+        .map_err(|err| WorkerError::Message(format!("psql binary lookup failed: {err}")))?;
+    Ok(BinaryPaths {
         postgres,
         pg_ctl,
         pg_rewind,
         initdb,
         psql,
-    }))
+    })
 }
 
-fn resolve_etcd_bin_for_real_tests() -> Result<Option<PathBuf>, WorkerError> {
-    match require_etcd_bin_for_real_tests() {
-        Ok(path) => Ok(path),
-        Err(err) => Err(WorkerError::Message(format!(
-            "etcd binary lookup failed: {err}"
-        ))),
-    }
+fn resolve_etcd_bin_for_real_tests() -> Result<PathBuf, WorkerError> {
+    require_etcd_bin_for_real_tests()
+        .map_err(|err| WorkerError::Message(format!("etcd binary lookup failed: {err}")))
 }
 
 fn initial_pg_state() -> PgInfoState {
@@ -1407,14 +1368,8 @@ fn expect_accepted_response(action: &str, response: ApiHttpResponse) -> Result<(
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
-    let binaries = match resolve_pg_binaries_for_real_tests()? {
-        Some(paths) => paths,
-        None => return Ok(()),
-    };
-    let etcd_bin = match resolve_etcd_bin_for_real_tests()? {
-        Some(path) => path,
-        None => return Ok(()),
-    };
+    let binaries = resolve_pg_binaries_for_real_tests()?;
+    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
     let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
@@ -1606,14 +1561,8 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
-    let binaries = match resolve_pg_binaries_for_real_tests()? {
-        Some(paths) => paths,
-        None => return Ok(()),
-    };
-    let etcd_bin = match resolve_etcd_bin_for_real_tests()? {
-        Some(path) => path,
-        None => return Ok(()),
-    };
+    let binaries = resolve_pg_binaries_for_real_tests()?;
+    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {

@@ -522,11 +522,8 @@ mod tests {
     }
 
     impl RealEtcdFixture {
-        async fn spawn(test_name: &str, scope: &str) -> Result<Option<Self>, HarnessError> {
-            let etcd_bin = match require_etcd_bin_for_real_tests()? {
-                Some(path) => path,
-                None => return Ok(None),
-            };
+        async fn spawn(test_name: &str, scope: &str) -> Result<Self, HarnessError> {
+            let etcd_bin = require_etcd_bin_for_real_tests()?;
 
             let guard = NamespaceGuard::new(test_name)?;
             let namespace = guard.namespace()?;
@@ -551,12 +548,12 @@ mod tests {
             })
             .await?;
 
-            Ok(Some(Self {
+            Ok(Self {
                 _guard: guard,
                 handle,
                 endpoint: format!("http://127.0.0.1:{client_port}"),
                 scope: scope.to_string(),
-            }))
+            })
         }
 
         async fn shutdown(&mut self) -> Result<(), HarnessError> {
@@ -705,10 +702,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn etcd_store_round_trips_write_delete_and_events() -> TestResult {
-        let fixture = match RealEtcdFixture::spawn("dcs-etcd-store-roundtrip", "scope-a").await? {
-            Some(fixture) => fixture,
-            None => return Ok(()),
-        };
+        let fixture = RealEtcdFixture::spawn("dcs-etcd-store-roundtrip", "scope-a").await?;
 
         let fixture = fixture;
         let result: TestResult = async {
@@ -741,10 +735,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_consumes_real_etcd_watch_path_without_mocking() -> TestResult {
-        let fixture = match RealEtcdFixture::spawn("dcs-etcd-store-step-once", "scope-b").await? {
-            Some(fixture) => fixture,
-            None => return Ok(()),
-        };
+        let fixture = RealEtcdFixture::spawn("dcs-etcd-store-step-once", "scope-b").await?;
 
         let fixture = fixture;
         let result: TestResult = async {
@@ -818,11 +809,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_marks_store_unhealthy_on_real_decode_failure() -> TestResult {
-        let fixture =
-            match RealEtcdFixture::spawn("dcs-etcd-store-decode-failure", "scope-c").await? {
-                Some(fixture) => fixture,
-                None => return Ok(()),
-            };
+        let fixture = RealEtcdFixture::spawn("dcs-etcd-store-decode-failure", "scope-c").await?;
 
         let fixture = fixture;
         let result: TestResult = async {

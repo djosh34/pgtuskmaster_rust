@@ -1,10 +1,10 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 10:42:40 AM CET 2026
+Generated: Tue Mar  3 11:02:18 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
-## Bug: Real Binary Tests Become Optional Via Early Return <status>not_started</status> <passes>false</passes>
+## Bug: Real Binary Tests Become Optional Via Early Return <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 Several real-binary test paths silently return `Ok(())` when required binaries are not discovered (for example `None => return Ok(())`).

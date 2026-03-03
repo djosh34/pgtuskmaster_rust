@@ -236,14 +236,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn spawn_pg16_requires_binaries_and_spawns() -> Result<(), HarnessError> {
-        let postgres_bin = match require_pg16_bin_for_real_tests("postgres")? {
-            Some(path) => path,
-            None => return Ok(()),
-        };
-        let initdb_bin = match require_pg16_bin_for_real_tests("initdb")? {
-            Some(path) => path,
-            None => return Ok(()),
-        };
+        let postgres_bin = require_pg16_bin_for_real_tests("postgres")?;
+        let initdb_bin = require_pg16_bin_for_real_tests("initdb")?;
 
         let guard = NamespaceGuard::new("spawn-pg16")?;
         let ns = guard.namespace()?;

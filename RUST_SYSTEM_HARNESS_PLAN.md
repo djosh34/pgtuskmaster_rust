@@ -19,12 +19,11 @@
 - Real-system tests resolve binaries from repository-local paths:
   - PostgreSQL 16 tools: `.tools/postgres16/bin/{postgres,pg_ctl,pg_rewind,initdb,psql,pg_basebackup}`
   - etcd: `.tools/etcd/bin/etcd`
-- Optional default flow: `make test`
-  - Missing binaries are treated as "skip real-binary tests" unless enforcement is enabled.
-- Enforced flow: `make test-real`
-  - Runs only real-binary suites with `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1`.
-  - Missing binaries fail fast with an explicit prerequisite error.
-- CI should install/copy binaries into those `.tools/...` paths before running `make test-real`.
+- Required default flow: `make test`
+  - Missing real-test binaries now fail fast with explicit prerequisite errors.
+- Focused real-only flow: `make test-real`
+  - Runs the real-binary suites directly and also fails fast if prerequisites are missing.
+- CI should install/copy binaries into those `.tools/...` paths before running `make test` or `make test-real`.
 - Example package sources (distribution-dependent):
   - PostgreSQL 16 binaries from `postgresql-16` / official PostgreSQL apt/yum packages.
   - etcd binary from `etcd-server` package or official etcd release artifact.

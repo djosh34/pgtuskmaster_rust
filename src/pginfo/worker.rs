@@ -90,14 +90,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots() -> TestResult {
-        let postgres_bin = match require_pg16_bin_for_real_tests("postgres")? {
-            Some(path) => path,
-            None => return Ok(()),
-        };
-        let initdb_bin = match require_pg16_bin_for_real_tests("initdb")? {
-            Some(path) => path,
-            None => return Ok(()),
-        };
+        let postgres_bin = require_pg16_bin_for_real_tests("postgres")?;
+        let initdb_bin = require_pg16_bin_for_real_tests("initdb")?;
 
         let guard = NamespaceGuard::new("pginfo-primary-flow")?;
         let namespace = guard.namespace()?;
@@ -216,18 +210,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_maps_replica_when_polling_standby() -> TestResult {
-        let postgres_bin = match require_pg16_bin_for_real_tests("postgres")? {
-            Some(path) => path,
-            None => return Ok(()),
-        };
-        let initdb_bin = match require_pg16_bin_for_real_tests("initdb")? {
-            Some(path) => path,
-            None => return Ok(()),
-        };
-        let basebackup_bin = match require_pg16_bin_for_real_tests("pg_basebackup")? {
-            Some(path) => path,
-            None => return Ok(()),
-        };
+        let postgres_bin = require_pg16_bin_for_real_tests("postgres")?;
+        let initdb_bin = require_pg16_bin_for_real_tests("initdb")?;
+        let basebackup_bin = require_pg16_bin_for_real_tests("pg_basebackup")?;
 
         let guard = NamespaceGuard::new("pginfo-replica-flow")?;
         let ns = guard.namespace()?;

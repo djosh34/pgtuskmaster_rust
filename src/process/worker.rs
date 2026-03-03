@@ -907,7 +907,7 @@ mod tests {
         );
     }
 
-    fn pg16_binaries() -> Result<Option<BinaryPaths>, WorkerError> {
+    fn pg16_binaries() -> Result<BinaryPaths, WorkerError> {
         require_pg16_process_binaries_for_real_tests()
             .map_err(|err| WorkerError::Message(format!("pg16 binary lookup failed: {err}")))
     }
@@ -1180,10 +1180,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_bootstrap_job_executes_initdb() -> Result<(), WorkerError> {
-        let binaries = match pg16_binaries()? {
-            Some(paths) => paths,
-            None => return Ok(()),
-        };
+        let binaries = pg16_binaries()?;
         let guard = NamespaceGuard::new("process-bootstrap")
             .map_err(|err| WorkerError::Message(format!("namespace setup failed: {err}")))?;
         let namespace = guard
@@ -1218,10 +1215,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_pg_rewind_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = match pg16_binaries()? {
-            Some(paths) => paths,
-            None => return Ok(()),
-        };
+        let binaries = pg16_binaries()?;
 
         let guard = NamespaceGuard::new("process-rewind")
             .map_err(|err| WorkerError::Message(format!("namespace setup failed: {err}")))?;
@@ -1266,10 +1260,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_promote_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = match pg16_binaries()? {
-            Some(paths) => paths,
-            None => return Ok(()),
-        };
+        let binaries = pg16_binaries()?;
         let mut fixture =
             RealProcessFixture::bootstrap_and_start(binaries, "process-promote").await?;
 
@@ -1303,10 +1294,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_demote_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = match pg16_binaries()? {
-            Some(paths) => paths,
-            None => return Ok(()),
-        };
+        let binaries = pg16_binaries()?;
         let mut fixture =
             RealProcessFixture::bootstrap_and_start(binaries, "process-demote").await?;
 
@@ -1340,10 +1328,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_start_and_stop_jobs_execute_binary_paths() -> Result<(), WorkerError> {
-        let binaries = match pg16_binaries()? {
-            Some(paths) => paths,
-            None => return Ok(()),
-        };
+        let binaries = pg16_binaries()?;
         let mut fixture =
             RealProcessFixture::bootstrap_and_start(binaries, "process-start-stop").await?;
 
@@ -1368,10 +1353,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_restart_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = match pg16_binaries()? {
-            Some(paths) => paths,
-            None => return Ok(()),
-        };
+        let binaries = pg16_binaries()?;
         let mut fixture =
             RealProcessFixture::bootstrap_and_start(binaries, "process-restart").await?;
 
@@ -1410,10 +1392,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn real_fencing_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = match pg16_binaries()? {
-            Some(paths) => paths,
-            None => return Ok(()),
-        };
+        let binaries = pg16_binaries()?;
         let mut fixture =
             RealProcessFixture::bootstrap_and_start(binaries, "process-fencing").await?;
 
