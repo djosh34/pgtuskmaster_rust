@@ -1,1 +1,0 @@
-85:        let reservation = allocate_ports(ports_needed)

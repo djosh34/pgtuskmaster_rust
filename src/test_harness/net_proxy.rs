@@ -166,11 +166,12 @@ impl TcpProxyLink {
         let joined = tokio::task::spawn_blocking(move || join.join())
             .await
             .map_err(|err| {
-                HarnessError::InvalidInput(format!("proxy listener join blocking task failed: {err}"))
+                HarnessError::InvalidInput(format!(
+                    "proxy listener join blocking task failed: {err}"
+                ))
             })?;
-        joined.map_err(|_| {
-            HarnessError::InvalidInput("proxy listener thread panicked".to_string())
-        })?
+        joined
+            .map_err(|_| HarnessError::InvalidInput("proxy listener thread panicked".to_string()))?
     }
 }
 
@@ -267,12 +268,12 @@ async fn proxy_connection(
         Direction::Downstream,
     ));
 
-    let upstream_result = upstream_task.await.map_err(|err| {
-        HarnessError::InvalidInput(format!("upstream pump join failed: {err}"))
-    })?;
-    let downstream_result = downstream_task.await.map_err(|err| {
-        HarnessError::InvalidInput(format!("downstream pump join failed: {err}"))
-    })?;
+    let upstream_result = upstream_task
+        .await
+        .map_err(|err| HarnessError::InvalidInput(format!("upstream pump join failed: {err}")))?;
+    let downstream_result = downstream_task
+        .await
+        .map_err(|err| HarnessError::InvalidInput(format!("downstream pump join failed: {err}")))?;
 
     upstream_result?;
     downstream_result?;
@@ -320,7 +321,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::{Duration, Instant}};
+    use std::{
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
 
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -330,12 +334,15 @@ mod tests {
     };
 
     use super::{ProxyLinkSpec, ProxyMode, TcpProxyLink};
+    use crate::test_harness::HarnessError;
     use crate::test_harness::{
         binaries::require_etcd_bin_for_real_tests,
-        etcd3::{prepare_etcd_member_data_dir, spawn_etcd3_cluster, EtcdClusterMemberSpec, EtcdClusterSpec},
+        etcd3::{
+            prepare_etcd_member_data_dir, spawn_etcd3_cluster, EtcdClusterMemberSpec,
+            EtcdClusterSpec,
+        },
         namespace::NamespaceGuard,
     };
-    use crate::test_harness::HarnessError;
 
     struct EchoServer {
         addr: std::net::SocketAddr,
@@ -407,9 +414,9 @@ mod tests {
         let server = EchoServer::spawn().await?;
         let proxy = TcpProxyLink::spawn(ProxyLinkSpec {
             name: "passthrough".to_string(),
-            listen_addr: "127.0.0.1:0"
-                .parse()
-                .map_err(|err| HarnessError::InvalidInput(format!("parse listen addr failed: {err}")))?,
+            listen_addr: "127.0.0.1:0".parse().map_err(|err| {
+                HarnessError::InvalidInput(format!("parse listen addr failed: {err}"))
+            })?,
             target_addr: server.addr,
         })
         .await?;
@@ -436,9 +443,9 @@ mod tests {
         let server = EchoServer::spawn().await?;
         let proxy = TcpProxyLink::spawn(ProxyLinkSpec {
             name: "blocked".to_string(),
-            listen_addr: "127.0.0.1:0"
-                .parse()
-                .map_err(|err| HarnessError::InvalidInput(format!("parse listen addr failed: {err}")))?,
+            listen_addr: "127.0.0.1:0".parse().map_err(|err| {
+                HarnessError::InvalidInput(format!("parse listen addr failed: {err}"))
+            })?,
             target_addr: server.addr,
         })
         .await?;
@@ -449,7 +456,8 @@ mod tests {
         proxy.set_mode(ProxyMode::Blocked).await?;
 
         let mut existing_buf = vec![0_u8; 8];
-        let read_existing = tokio::time::timeout(Duration::from_secs(3), client.read(&mut existing_buf)).await;
+        let read_existing =
+            tokio::time::timeout(Duration::from_secs(3), client.read(&mut existing_buf)).await;
         match read_existing {
             Ok(Ok(0)) => {}
             Ok(Ok(read_bytes)) => {
@@ -487,7 +495,8 @@ mod tests {
         }
 
         let mut blocked_buf = vec![0_u8; 8];
-        let blocked_read = tokio::time::timeout(Duration::from_secs(3), new_client.read(&mut blocked_buf)).await;
+        let blocked_read =
+            tokio::time::timeout(Duration::from_secs(3), new_client.read(&mut blocked_buf)).await;
         match blocked_read {
             Ok(Ok(0)) => {}
             Ok(Ok(read_bytes)) => {
@@ -522,9 +531,9 @@ mod tests {
         let server = EchoServer::spawn().await?;
         let proxy = TcpProxyLink::spawn(ProxyLinkSpec {
             name: "latency".to_string(),
-            listen_addr: "127.0.0.1:0"
-                .parse()
-                .map_err(|err| HarnessError::InvalidInput(format!("parse listen addr failed: {err}")))?,
+            listen_addr: "127.0.0.1:0".parse().map_err(|err| {
+                HarnessError::InvalidInput(format!("parse listen addr failed: {err}"))
+            })?,
             target_addr: server.addr,
         })
         .await?;
@@ -598,15 +607,19 @@ mod tests {
             .ok_or_else(|| HarnessError::InvalidInput("missing etcd endpoint".to_string()))?;
         let target_addr: std::net::SocketAddr = direct_endpoint
             .strip_prefix("http://")
-            .ok_or_else(|| HarnessError::InvalidInput(format!("invalid etcd endpoint: {direct_endpoint}")))?
+            .ok_or_else(|| {
+                HarnessError::InvalidInput(format!("invalid etcd endpoint: {direct_endpoint}"))
+            })?
             .parse()
-            .map_err(|err| HarnessError::InvalidInput(format!("parse etcd endpoint failed: {err}")))?;
+            .map_err(|err| {
+                HarnessError::InvalidInput(format!("parse etcd endpoint failed: {err}"))
+            })?;
 
         let proxy = TcpProxyLink::spawn(ProxyLinkSpec {
             name: "etcd-proxy".to_string(),
-            listen_addr: "127.0.0.1:0"
-                .parse()
-                .map_err(|err| HarnessError::InvalidInput(format!("parse listen addr failed: {err}")))?,
+            listen_addr: "127.0.0.1:0".parse().map_err(|err| {
+                HarnessError::InvalidInput(format!("parse listen addr failed: {err}"))
+            })?,
             target_addr,
         })
         .await?;
@@ -614,15 +627,18 @@ mod tests {
         let proxied_endpoint = format!("http://{}", proxy.listen_addr());
         let mut client = etcd_client::Client::connect(vec![proxied_endpoint.clone()], None)
             .await
-            .map_err(|err| HarnessError::InvalidInput(format!("connect etcd via proxy failed: {err}")))?;
+            .map_err(|err| {
+                HarnessError::InvalidInput(format!("connect etcd via proxy failed: {err}"))
+            })?;
         client
             .put("/proxy-check/key", "value", None)
             .await
-            .map_err(|err| HarnessError::InvalidInput(format!("etcd put via proxy failed: {err}")))?;
-        let response = client
-            .get("/proxy-check/key", None)
-            .await
-            .map_err(|err| HarnessError::InvalidInput(format!("etcd get via proxy failed: {err}")))?;
+            .map_err(|err| {
+                HarnessError::InvalidInput(format!("etcd put via proxy failed: {err}"))
+            })?;
+        let response = client.get("/proxy-check/key", None).await.map_err(|err| {
+            HarnessError::InvalidInput(format!("etcd get via proxy failed: {err}"))
+        })?;
         if response.count() != 1 {
             return Err(HarnessError::InvalidInput(format!(
                 "unexpected etcd get count via proxy endpoint {proxied_endpoint}: {}",

@@ -28,10 +28,7 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
             .postgres
             .listen_host
             .unwrap_or_else(|| DEFAULT_PG_LISTEN_HOST.to_string()),
-        listen_port: raw
-            .postgres
-            .listen_port
-            .unwrap_or(DEFAULT_PG_LISTEN_PORT),
+        listen_port: raw.postgres.listen_port.unwrap_or(DEFAULT_PG_LISTEN_PORT),
         socket_dir: raw
             .postgres
             .socket_dir
@@ -164,7 +161,10 @@ mod tests {
         assert_eq!(cfg.postgres.connect_timeout_s, DEFAULT_PG_CONNECT_TIMEOUT_S);
         assert_eq!(cfg.postgres.listen_host, DEFAULT_PG_LISTEN_HOST);
         assert_eq!(cfg.postgres.listen_port, DEFAULT_PG_LISTEN_PORT);
-        assert_eq!(cfg.postgres.socket_dir, PathBuf::from(DEFAULT_PG_SOCKET_DIR));
+        assert_eq!(
+            cfg.postgres.socket_dir,
+            PathBuf::from(DEFAULT_PG_SOCKET_DIR)
+        );
         assert_eq!(cfg.postgres.log_file, PathBuf::from(DEFAULT_PG_LOG_FILE));
         assert_eq!(
             cfg.postgres.rewind_source_host,

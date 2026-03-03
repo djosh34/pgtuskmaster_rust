@@ -403,8 +403,14 @@ binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewi
         assert_eq!(cfg.postgres.connect_timeout_s, 5);
         assert_eq!(cfg.postgres.listen_host, "127.0.0.1");
         assert_eq!(cfg.postgres.listen_port, 5432);
-        assert_eq!(cfg.postgres.socket_dir, PathBuf::from("/tmp/pgtuskmaster/socket"));
-        assert_eq!(cfg.postgres.log_file, PathBuf::from("/tmp/pgtuskmaster/postgres.log"));
+        assert_eq!(
+            cfg.postgres.socket_dir,
+            PathBuf::from("/tmp/pgtuskmaster/socket")
+        );
+        assert_eq!(
+            cfg.postgres.log_file,
+            PathBuf::from("/tmp/pgtuskmaster/postgres.log")
+        );
         assert_eq!(cfg.postgres.rewind_source_host, "127.0.0.1");
         assert_eq!(cfg.postgres.rewind_source_port, 5432);
         assert_eq!(cfg.process.pg_rewind_timeout_ms, 120_000);

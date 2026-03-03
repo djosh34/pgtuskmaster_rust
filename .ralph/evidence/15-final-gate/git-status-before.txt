@@ -1,5 +1,0 @@
- M .ralph/current_tasks.md
- M .ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md
-?? .ralph/current_task.txt
-?? .ralph/evidence/15-final-gate/
-?? .ralph/progress/25.jsonl

@@ -85,6 +85,7 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
     run_workers(cfg, process_defaults).await
 }
 
+// ?!?!?! WHY LIKE THIS?
 fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults {
     let mut defaults = ProcessDispatchDefaults::contract_stub();
     defaults.postgres_host = cfg.postgres.listen_host.clone();
@@ -328,11 +329,7 @@ async fn run_startup_job(cfg: &RuntimeConfig, job: ProcessJobKind) -> Result<(),
     let command = build_command(&cfg.process, &job).map_err(|err| {
         RuntimeError::StartupExecution(format!("startup command build failed: {err}"))
     })?;
-    let command_display = format!(
-        "{} {}",
-        command.program.display(),
-        command.args.join(" ")
-    );
+    let command_display = format!("{} {}", command.program.display(), command.args.join(" "));
 
     let mut handle = runner.spawn(command).map_err(|err| {
         RuntimeError::StartupExecution(format!(

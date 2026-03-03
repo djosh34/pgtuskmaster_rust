@@ -1,5 +1,0 @@
-make test marker check:
-PASS: no evaluation failed marker; make test exited 0
-
-make lint marker check:
-PASS: no evaluation failed marker; make lint exited 0

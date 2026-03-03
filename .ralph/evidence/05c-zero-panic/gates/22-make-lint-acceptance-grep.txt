@@ -1,2 +1,0 @@
-no acceptance phrase found in .ralph/evidence/05c-zero-panic/gates/14-make-lint-retry.log
-grep pattern: congratulations|evaluation failed

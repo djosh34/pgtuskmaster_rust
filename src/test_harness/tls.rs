@@ -271,7 +271,10 @@ pub(crate) fn build_server_config(
     ensure_crypto_provider_installed()?;
     let config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(vec![server.cert_der(), server_ca.cert_der()], server.key_der())
+        .with_single_cert(
+            vec![server.cert_der(), server_ca.cert_der()],
+            server.key_der(),
+        )
         .map_err(|err| HarnessError::InvalidInput(format!("build server config failed: {err}")))?;
     Ok(Arc::new(config))
 }
@@ -296,7 +299,10 @@ pub(crate) fn build_server_config_with_client_auth(
 
     let config = ServerConfig::builder()
         .with_client_cert_verifier(verifier)
-        .with_single_cert(vec![server.cert_der(), server_ca.cert_der()], server.key_der())
+        .with_single_cert(
+            vec![server.cert_der(), server_ca.cert_der()],
+            server.key_der(),
+        )
         .map_err(|err| {
             HarnessError::InvalidInput(format!("build mTLS server config failed: {err}"))
         })?;
@@ -399,7 +405,10 @@ mod tests {
             fixture.valid_server_ca.cert.cert_pem,
             fixture.wrong_server_ca.cert.cert_pem
         );
-        assert_ne!(fixture.valid_server.cert_pem, fixture.expired_server.cert_pem);
+        assert_ne!(
+            fixture.valid_server.cert_pem,
+            fixture.expired_server.cert_pem
+        );
         assert_ne!(
             fixture.trusted_client_ca.cert.cert_pem,
             fixture.untrusted_client_ca.cert.cert_pem
@@ -417,7 +426,8 @@ mod tests {
     fn tls_builders_accept_fixture_material() -> Result<(), HarnessError> {
         let fixture = build_adversarial_tls_fixture()?;
 
-        let _server_cfg = build_server_config(&fixture.valid_server, &fixture.valid_server_ca.cert)?;
+        let _server_cfg =
+            build_server_config(&fixture.valid_server, &fixture.valid_server_ca.cert)?;
         let _mtls_server_cfg = build_server_config_with_client_auth(
             &fixture.valid_server,
             &fixture.valid_server_ca.cert,

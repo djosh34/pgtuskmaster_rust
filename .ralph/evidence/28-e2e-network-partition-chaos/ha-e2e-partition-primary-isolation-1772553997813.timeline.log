@@ -1,3 +1,0 @@
-[1772553874812] primary isolation: wait for initial stable primary
-[1772553877011] primary isolation: initial primary=node-1
-[1772553877557] network fault: partition current primary from etcd node=node-1

@@ -1,4 +1,0 @@
-[1772555718034] api-path isolation: wait for initial stable primary
-[1772555720203] api-path isolation: initial primary=node-1
-[1772555720203] network fault: isolate API path for node=node-2
-[1772555732529] network heal: reset all proxy links to pass-through

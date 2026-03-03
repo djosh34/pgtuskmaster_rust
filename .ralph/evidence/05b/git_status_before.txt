@@ -1,7 +1,0 @@
- M .codex/config.toml
- M .ralph/current_tasks.md
- M .ralph/model.txt
- M .ralph/progress/9.jsonl
- M .ralph/tasks/story-rust-system-harness/05b-task-deep-review-codebase-and-verify-done-work.md
-?? .ralph/current_task.txt
-?? .ralph/evidence/

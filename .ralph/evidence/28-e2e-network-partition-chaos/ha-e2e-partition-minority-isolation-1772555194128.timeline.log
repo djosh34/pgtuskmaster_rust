@@ -1,5 +1,0 @@
-[1772555172010] minority isolation: wait for initial stable primary
-[1772555173853] minority isolation: initial primary=node-1
-[1772555174319] network fault: partition node from etcd majority node=node-2
-[1772555186454] network heal: reset all proxy links to pass-through
-[1772555188222] minority isolation: healed primary=node-1

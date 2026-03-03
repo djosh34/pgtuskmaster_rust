@@ -1,7 +1,0 @@
- M .ralph/current_tasks.md
- M .ralph/model.txt
- M .ralph/progress/36.jsonl
- M .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
- M .ralph/tasks/story-rust-system-harness/19-task-do-meta-deep-skeptical-review-pass-1.md
-?? .ralph/current_task.txt
-?? .ralph/evidence/meta-18-pass1-20260303T020551Z/

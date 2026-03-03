@@ -1976,7 +1976,8 @@ mod tests {
         .await?;
         assert!(status.contains("200"), "expected 200, got: {status}");
 
-        let missing_client_cert_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        let missing_client_cert_cfg =
+            build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         expect_tls_request_rejected(&mut ctx, missing_client_cert_cfg, "localhost").await?;
 
         let untrusted_client_cfg = build_client_config(

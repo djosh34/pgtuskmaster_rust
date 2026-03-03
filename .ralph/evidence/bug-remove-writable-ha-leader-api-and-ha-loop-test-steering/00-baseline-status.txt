@@ -1,7 +1,0 @@
-# git status --short
- M .ralph/current_tasks.md
- M .ralph/progress/46.jsonl
- M .ralph/tasks/bugs/bug-remove-writable-ha-leader-api-and-ha-loop-test-steering.md
-?? .ralph/current_task.txt
-?? .ralph/evidence/bug-remove-writable-ha-leader-api-and-ha-loop-test-steering/
-?? .ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md

@@ -1,7 +1,0 @@
-● ralph-event-watch.service - Event Watcher for PGTuskMaster Ralph
-     Loaded: loaded (/home/joshazimullah.linux/.config/systemd/user/ralph-event-watch.service; enabled; preset: disabled)
-     Active: activating (auto-restart) (Result: exit-code) since Tue 2026-03-03 12:41:08 CET; 3s ago
-       Docs: https://opencode.ai
-    Process: 735381 ExecStart=/bin/bash /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh (code=exited, status=127)
-   Main PID: 735381 (code=exited, status=127)
-        CPU: 5ms

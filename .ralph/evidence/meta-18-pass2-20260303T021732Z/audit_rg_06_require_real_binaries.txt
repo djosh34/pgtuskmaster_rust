@@ -1,7 +1,0 @@
-Makefile:8:	PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets test_harness::pg16::tests::spawn_pg16_requires_binaries_and_spawns
-Makefile:9:	PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets test_harness::etcd3::tests::spawn_etcd3_requires_binary_and_spawns
-Makefile:10:	PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets pginfo::worker::tests::step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots
-Makefile:11:	PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets pginfo::worker::tests::step_once_maps_replica_when_polling_standby
-Makefile:12:	PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets process::worker::tests::real_
-Makefile:13:	PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix
-src/test_harness/binaries.rs:9:pub(crate) const REQUIRE_REAL_BINARIES_ENV: &str = "PGTUSKMASTER_REQUIRE_REAL_BINARIES";

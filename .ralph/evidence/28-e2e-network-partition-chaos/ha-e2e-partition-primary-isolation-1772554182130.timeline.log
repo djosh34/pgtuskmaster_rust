@@ -1,6 +1,0 @@
-[1772554160699] primary isolation: wait for initial stable primary
-[1772554162684] primary isolation: initial primary=node-1
-[1772554162735] network fault: partition current primary from etcd node=node-1
-[1772554163469] primary isolation: isolated primary entered FailSafe node=node-1
-[1772554173790] network heal: reset all proxy links to pass-through
-[1772554176408] primary isolation: healed primary=node-1
