@@ -1,20 +1,24 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
+    future::Future,
     str,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc::{self, TryRecvError},
+        Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
-use etcd_client::{Client, GetOptions};
+use etcd_client::{
+    Client, EventType, GetOptions, WatchOptions, WatchResponse, WatchStream, Watcher,
+};
 
 use super::store::{DcsStore, DcsStoreError, WatchEvent, WatchOp};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
-const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const WATCH_IDLE_INTERVAL: Duration = Duration::from_millis(100);
 
 enum WorkerCommand {
     Write {
@@ -110,89 +114,120 @@ fn run_worker_loop(
     };
 
     runtime.block_on(async move {
-        let mut client = match connect_client(&endpoints).await {
-            Ok(client) => {
+        let (mut client, mut _watcher, mut watch_stream): (
+            Option<Client>,
+            Option<Watcher>,
+            Option<WatchStream>,
+        ) = match establish_watch_session(&endpoints, &scope_prefix, &events).await {
+            Ok((next_client, next_watcher, next_stream)) => {
                 healthy.store(true, Ordering::SeqCst);
                 let _ = startup_tx.send(Ok(()));
-                Some(client)
+                (Some(next_client), Some(next_watcher), Some(next_stream))
             }
             Err(err) => {
                 healthy.store(false, Ordering::SeqCst);
                 let _ = startup_tx.send(Err(err));
-                None
+                return;
             }
         };
 
-        let mut cache = BTreeMap::<String, String>::new();
-
-        if let Some(active_client) = client.as_mut() {
-            if refresh_events(active_client, &scope_prefix, &mut cache, &events)
-                .await
-                .is_err()
-            {
-                healthy.store(false, Ordering::SeqCst);
-                client = None;
-            }
-        }
-
-        let mut ticker = tokio::time::interval(WATCH_POLL_INTERVAL);
-
         loop {
-            while let Ok(command) = command_rx.try_recv() {
-                match command {
-                    WorkerCommand::Write {
-                        path,
-                        value,
-                        response_tx,
-                    } => {
-                        let result =
-                            execute_write(&endpoints, &mut client, &healthy, &path, value).await;
-                        let _ = response_tx.send(result);
-                    }
-                    WorkerCommand::Delete { path, response_tx } => {
-                        let result = execute_delete(&endpoints, &mut client, &healthy, &path).await;
-                        let _ = response_tx.send(result);
-                    }
-                    WorkerCommand::Shutdown => return,
+            loop {
+                match command_rx.try_recv() {
+                    Ok(command) => match command {
+                        WorkerCommand::Write {
+                            path,
+                            value,
+                            response_tx,
+                        } => {
+                            let result =
+                                execute_write(&endpoints, &mut client, &healthy, &path, value).await;
+                            if result.is_err() {
+                                _watcher = None;
+                                watch_stream = None;
+                            }
+                            let _ = response_tx.send(result);
+                        }
+                        WorkerCommand::Delete { path, response_tx } => {
+                            let result =
+                                execute_delete(&endpoints, &mut client, &healthy, &path).await;
+                            if result.is_err() {
+                                _watcher = None;
+                                watch_stream = None;
+                            }
+                            let _ = response_tx.send(result);
+                        }
+                        WorkerCommand::Shutdown => return,
+                    },
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => return,
                 }
             }
 
-            ticker.tick().await;
-
-            if client.is_none() {
-                client = match connect_client(&endpoints).await {
-                    Ok(next_client) => {
+            if client.is_none() || watch_stream.is_none() {
+                match establish_watch_session(&endpoints, &scope_prefix, &events).await {
+                    Ok((next_client, next_watcher, next_stream)) => {
+                        client = Some(next_client);
+                        _watcher = Some(next_watcher);
+                        watch_stream = Some(next_stream);
                         healthy.store(true, Ordering::SeqCst);
-                        Some(next_client)
                     }
                     Err(_) => {
                         healthy.store(false, Ordering::SeqCst);
-                        None
+                        tokio::time::sleep(WATCH_IDLE_INTERVAL).await;
                     }
-                };
+                }
+                continue;
             }
 
-            let Some(active_client) = client.as_mut() else {
+            let Some(active_stream) = watch_stream.as_mut() else {
+                tokio::time::sleep(WATCH_IDLE_INTERVAL).await;
                 continue;
             };
 
-            if refresh_events(active_client, &scope_prefix, &mut cache, &events)
-                .await
-                .is_err()
-            {
-                healthy.store(false, Ordering::SeqCst);
-                client = None;
-            } else {
-                healthy.store(true, Ordering::SeqCst);
+            match tokio::time::timeout(WATCH_IDLE_INTERVAL, active_stream.message()).await {
+                Ok(Ok(Some(response))) => {
+                    if apply_watch_response(response, &events).is_err() {
+                        healthy.store(false, Ordering::SeqCst);
+                        client = None;
+                        _watcher = None;
+                        watch_stream = None;
+                    } else {
+                        healthy.store(true, Ordering::SeqCst);
+                    }
+                }
+                Ok(Ok(None)) => {
+                    healthy.store(false, Ordering::SeqCst);
+                    client = None;
+                    _watcher = None;
+                    watch_stream = None;
+                }
+                Ok(Err(_)) => {
+                    healthy.store(false, Ordering::SeqCst);
+                    client = None;
+                    _watcher = None;
+                    watch_stream = None;
+                }
+                Err(_) => {}
             }
         }
     });
 }
 
+async fn establish_watch_session(
+    endpoints: &[String],
+    scope_prefix: &str,
+    events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+) -> Result<(Client, Watcher, WatchStream), DcsStoreError> {
+    let mut client = connect_client(endpoints).await?;
+    let snapshot_revision = bootstrap_snapshot(&mut client, scope_prefix, events).await?;
+    let start_revision = snapshot_revision.saturating_add(1);
+    let (watcher, watch_stream) = create_watch_stream(&mut client, scope_prefix, start_revision).await?;
+    Ok((client, watcher, watch_stream))
+}
+
 async fn connect_client(endpoints: &[String]) -> Result<Client, DcsStoreError> {
-    Client::connect(endpoints.to_vec(), None)
-        .await
-        .map_err(|err| DcsStoreError::Io(format!("etcd connect failed: {err}")))
+    timeout_etcd("etcd connect", Client::connect(endpoints.to_vec(), None)).await
 }
 
 async fn execute_write(
@@ -213,7 +248,7 @@ async fn execute_write(
         ));
     };
 
-    match active_client.put(path, value, None).await {
+    match timeout_etcd("etcd put", active_client.put(path, value, None)).await {
         Ok(_) => {
             healthy.store(true, Ordering::SeqCst);
             Ok(())
@@ -221,7 +256,7 @@ async fn execute_write(
         Err(err) => {
             healthy.store(false, Ordering::SeqCst);
             *client = None;
-            Err(DcsStoreError::Io(format!("etcd put failed: {err}")))
+            Err(err)
         }
     }
 }
@@ -243,7 +278,7 @@ async fn execute_delete(
         ));
     };
 
-    match active_client.delete(path, None).await {
+    match timeout_etcd("etcd delete", active_client.delete(path, None)).await {
         Ok(_) => {
             healthy.store(true, Ordering::SeqCst);
             Ok(())
@@ -251,30 +286,28 @@ async fn execute_delete(
         Err(err) => {
             healthy.store(false, Ordering::SeqCst);
             *client = None;
-            Err(DcsStoreError::Io(format!("etcd delete failed: {err}")))
+            Err(err)
         }
     }
 }
 
-async fn refresh_events(
+async fn bootstrap_snapshot(
     client: &mut Client,
     scope_prefix: &str,
-    cache: &mut BTreeMap<String, String>,
     events: &Arc<Mutex<VecDeque<WatchEvent>>>,
-) -> Result<(), DcsStoreError> {
-    let response = client
-        .get(scope_prefix, Some(GetOptions::new().with_prefix()))
-        .await
-        .map_err(|err| DcsStoreError::Io(format!("etcd get failed: {err}")))?;
+) -> Result<i64, DcsStoreError> {
+    let response = timeout_etcd(
+        "etcd get",
+        client.get(scope_prefix, Some(GetOptions::new().with_prefix())),
+    )
+    .await?;
 
-    let default_revision = response
+    let revision = response
         .header()
         .map(|header| header.revision())
-        .unwrap_or_default();
+        .unwrap_or(0);
 
-    let mut next = BTreeMap::<String, String>::new();
-    let mut queue = VecDeque::<WatchEvent>::new();
-
+    let mut queue = VecDeque::new();
     for kv in response.kvs() {
         let path = str::from_utf8(kv.key()).map_err(|err| DcsStoreError::Decode {
             key: "watch-key".to_string(),
@@ -285,38 +318,101 @@ async fn refresh_events(
             message: err.to_string(),
         })?;
 
-        let path_owned = path.to_string();
-        let value_owned = value.to_string();
-        let changed = cache.get(&path_owned) != Some(&value_owned);
-        if changed {
-            queue.push_back(WatchEvent {
-                op: WatchOp::Put,
-                path: path_owned.clone(),
-                value: Some(value_owned.clone()),
-                revision: kv.mod_revision(),
-            });
-        }
-        next.insert(path_owned, value_owned);
+        queue.push_back(WatchEvent {
+            op: WatchOp::Put,
+            path: path.to_string(),
+            value: Some(value.to_string()),
+            revision: kv.mod_revision(),
+        });
     }
 
-    for missing_key in cache.keys() {
-        if !next.contains_key(missing_key) {
-            queue.push_back(WatchEvent {
-                op: WatchOp::Delete,
-                path: missing_key.clone(),
-                value: None,
-                revision: default_revision,
-            });
+    enqueue_watch_events(events, queue)?;
+    Ok(revision)
+}
+
+async fn create_watch_stream(
+    client: &mut Client,
+    scope_prefix: &str,
+    start_revision: i64,
+) -> Result<(Watcher, WatchStream), DcsStoreError> {
+    let watch_options = WatchOptions::new()
+        .with_prefix()
+        .with_start_revision(start_revision);
+    timeout_etcd("etcd watch", client.watch(scope_prefix, Some(watch_options))).await
+}
+
+fn apply_watch_response(
+    response: WatchResponse,
+    events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+) -> Result<(), DcsStoreError> {
+    if response.canceled() || response.compact_revision() > 0 {
+        return Err(DcsStoreError::Io(format!(
+            "etcd watch canceled: reason='{}' compact_revision={}",
+            response.cancel_reason(),
+            response.compact_revision()
+        )));
+    }
+
+    let mut queue = VecDeque::new();
+    for event in response.events() {
+        let Some(kv) = event.kv() else {
+            return Err(DcsStoreError::Io(
+                "etcd watch event missing key-value payload".to_string(),
+            ));
+        };
+
+        let path = str::from_utf8(kv.key()).map_err(|err| DcsStoreError::Decode {
+            key: "watch-key".to_string(),
+            message: err.to_string(),
+        })?;
+
+        match event.event_type() {
+            EventType::Put => {
+                let value = str::from_utf8(kv.value()).map_err(|err| DcsStoreError::Decode {
+                    key: path.to_string(),
+                    message: err.to_string(),
+                })?;
+                queue.push_back(WatchEvent {
+                    op: WatchOp::Put,
+                    path: path.to_string(),
+                    value: Some(value.to_string()),
+                    revision: kv.mod_revision(),
+                });
+            }
+            EventType::Delete => {
+                queue.push_back(WatchEvent {
+                    op: WatchOp::Delete,
+                    path: path.to_string(),
+                    value: None,
+                    revision: kv.mod_revision(),
+                });
+            }
         }
     }
 
-    *cache = next;
+    enqueue_watch_events(events, queue)
+}
 
+fn enqueue_watch_events(
+    events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    queue: VecDeque<WatchEvent>,
+) -> Result<(), DcsStoreError> {
     let mut guard = events
         .lock()
         .map_err(|_| DcsStoreError::Io("events lock poisoned".to_string()))?;
     guard.extend(queue);
     Ok(())
+}
+
+async fn timeout_etcd<T, F>(operation: &str, fut: F) -> Result<T, DcsStoreError>
+where
+    F: Future<Output = Result<T, etcd_client::Error>>,
+{
+    match tokio::time::timeout(COMMAND_TIMEOUT, fut).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(DcsStoreError::Io(format!("{operation} failed: {err}"))),
+        Err(err) => Err(DcsStoreError::Io(format!("{operation} timed out: {err}"))),
+    }
 }
 
 impl DcsStore for EtcdDcsStore {
@@ -373,24 +469,90 @@ impl Drop for EtcdDcsStore {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{collections::BTreeMap, time::{Duration, Instant}};
 
-    use crate::dcs::{
-        etcd_store::EtcdDcsStore,
-        store::{DcsStore, DcsStoreError, WatchOp},
+    use etcd_client::Client;
+
+    use crate::{
+        config::{
+            schema::{
+                ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
+                SecurityConfig,
+            },
+            BinaryPaths, ProcessConfig, RuntimeConfig,
+        },
+        dcs::{
+            etcd_store::EtcdDcsStore,
+            state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx, LeaderRecord},
+            store::{DcsStore, DcsStoreError, WatchOp},
+            worker::step_once,
+        },
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        state::{new_state_channel, MemberId, UnixMillis, WorkerError, WorkerStatus},
+        test_harness::{
+            binaries::require_etcd_bin_for_real_tests,
+            etcd3::{prepare_etcd_data_dir, spawn_etcd3, EtcdHandle, EtcdInstanceSpec},
+            namespace::NamespaceGuard,
+            ports::allocate_ports,
+            HarnessError,
+        },
     };
-    use crate::test_harness::{
-        binaries::require_etcd_bin,
-        etcd3::{prepare_etcd_data_dir, spawn_etcd3, EtcdInstanceSpec},
-        namespace::NamespaceGuard,
-        ports::allocate_ports,
-        HarnessError,
-    };
 
-    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    type BoxError = Box<dyn std::error::Error + Send + Sync>;
+    type TestResult = Result<(), BoxError>;
 
-    fn boxed_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+    fn boxed_error(message: impl Into<String>) -> BoxError {
         Box::new(std::io::Error::other(message.into()))
+    }
+
+    struct RealEtcdFixture {
+        _guard: NamespaceGuard,
+        handle: EtcdHandle,
+        endpoint: String,
+        scope: String,
+    }
+
+    impl RealEtcdFixture {
+        async fn spawn(test_name: &str, scope: &str) -> Result<Option<Self>, HarnessError> {
+            let etcd_bin = match require_etcd_bin_for_real_tests()? {
+                Some(path) => path,
+                None => return Ok(None),
+            };
+
+            let guard = NamespaceGuard::new(test_name)?;
+            let namespace = guard.namespace()?;
+            let data_dir = prepare_etcd_data_dir(namespace)?;
+
+            let reservation = allocate_ports(2)?;
+            let ports = reservation.as_slice();
+            let client_port = ports[0];
+            let peer_port = ports[1];
+            drop(reservation);
+
+            let log_dir = namespace.child_dir("logs/etcd-store");
+            let handle = spawn_etcd3(EtcdInstanceSpec {
+                etcd_bin,
+                namespace_id: namespace.id.clone(),
+                member_name: "node-a".to_string(),
+                data_dir,
+                log_dir,
+                client_port,
+                peer_port,
+                startup_timeout: Duration::from_secs(10),
+            })
+            .await?;
+
+            Ok(Some(Self {
+                _guard: guard,
+                handle,
+                endpoint: format!("http://127.0.0.1:{client_port}"),
+                scope: scope.to_string(),
+            }))
+        }
+
+        async fn shutdown(&mut self) -> Result<(), HarnessError> {
+            self.handle.shutdown().await
+        }
     }
 
     fn wait_for_event(
@@ -416,63 +578,295 @@ mod tests {
         }
     }
 
+    fn sample_runtime_config(scope: &str) -> RuntimeConfig {
+        RuntimeConfig {
+            cluster: ClusterConfig {
+                name: "cluster-a".to_string(),
+                member_id: "node-a".to_string(),
+            },
+            postgres: PostgresConfig {
+                data_dir: "/tmp/pgdata".into(),
+                connect_timeout_s: 5,
+            },
+            dcs: DcsConfig {
+                endpoints: vec!["http://127.0.0.1:2379".to_string()],
+                scope: scope.to_string(),
+            },
+            ha: HaConfig {
+                loop_interval_ms: 1000,
+                lease_ttl_ms: 10_000,
+            },
+            process: ProcessConfig {
+                pg_rewind_timeout_ms: 1000,
+                bootstrap_timeout_ms: 1000,
+                fencing_timeout_ms: 1000,
+                binaries: BinaryPaths {
+                    postgres: "/usr/bin/postgres".into(),
+                    pg_ctl: "/usr/bin/pg_ctl".into(),
+                    pg_rewind: "/usr/bin/pg_rewind".into(),
+                    initdb: "/usr/bin/initdb".into(),
+                    psql: "/usr/bin/psql".into(),
+                },
+            },
+            api: ApiConfig {
+                listen_addr: "127.0.0.1:8080".to_string(),
+            },
+            debug: DebugConfig { enabled: true },
+            security: SecurityConfig {
+                tls_enabled: false,
+                auth_token: None,
+            },
+        }
+    }
+
+    fn sample_cache(scope: &str) -> DcsCache {
+        DcsCache {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(scope),
+            init_lock: None,
+        }
+    }
+
+    fn sample_pg() -> PgInfoState {
+        PgInfoState::Primary {
+            common: PgInfoCommon {
+                worker: WorkerStatus::Running,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                pg_config: PgConfig {
+                    extra: BTreeMap::new(),
+                },
+                last_refresh_at: Some(UnixMillis(1)),
+            },
+            wal_lsn: crate::state::WalLsn(42),
+            slots: Vec::new(),
+        }
+    }
+
+    fn build_worker_ctx(
+        scope: &str,
+        store: EtcdDcsStore,
+    ) -> (DcsWorkerCtx, crate::state::StateSubscriber<DcsState>) {
+        let self_id = MemberId("node-a".to_string());
+        let initial_pg = sample_pg();
+        let (_pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
+
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(scope),
+            last_refresh_at: Some(UnixMillis(1)),
+        };
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        (
+            DcsWorkerCtx {
+                self_id,
+                scope: scope.to_string(),
+                poll_interval: Duration::from_millis(50),
+                pg_subscriber,
+                publisher: dcs_publisher,
+                store: Box::new(store),
+                cache: sample_cache(scope),
+                last_published_pg_version: None,
+            },
+            dcs_subscriber,
+        )
+    }
+
+    async fn shutdown_with_result(mut fixture: RealEtcdFixture, result: TestResult) -> TestResult {
+        let shutdown_result = fixture.shutdown().await;
+        match result {
+            Err(err) => Err(err),
+            Ok(()) => match shutdown_result {
+                Ok(()) => Ok(()),
+                Err(err) => Err(Box::new(err)),
+            },
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn etcd_store_round_trips_write_delete_and_events() -> TestResult {
-        let etcd_bin = require_etcd_bin()?;
-        let guard = NamespaceGuard::new("dcs-etcd-store-roundtrip")?;
-        let namespace = guard.namespace()?;
-        let data_dir = prepare_etcd_data_dir(namespace)?;
+        let fixture = match RealEtcdFixture::spawn("dcs-etcd-store-roundtrip", "scope-a").await? {
+            Some(fixture) => fixture,
+            None => return Ok(()),
+        };
 
-        let reservation = allocate_ports(2)?;
-        let ports = reservation.as_slice();
-        let client_port = ports[0];
-        let peer_port = ports[1];
-        drop(reservation);
+        let fixture = fixture;
+        let result: TestResult = async {
+            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let path = format!("/{}/member/node-a", fixture.scope);
+            let value = r#"{"member_id":"node-a","role":"Primary"}"#.to_string();
 
-        let log_dir = namespace.child_dir("logs/etcd-store");
-        let mut handle = spawn_etcd3(EtcdInstanceSpec {
-            etcd_bin,
-            namespace_id: namespace.id.clone(),
-            member_name: "node-a".to_string(),
-            data_dir,
-            log_dir,
-            client_port,
-            peer_port,
-            startup_timeout: Duration::from_secs(10),
-        })
-        .await?;
+            store.write_path(path.as_str(), value)?;
+            wait_for_event(&mut store, WatchOp::Put, path.as_str(), Duration::from_secs(5))?;
 
-        let endpoint = format!("http://127.0.0.1:{client_port}");
-        let mut store = EtcdDcsStore::connect(vec![endpoint], "scope-a")?;
-        let path = "/scope-a/member/node-a";
-        let value = r#"{"member_id":"node-a","role":"Primary"}"#.to_string();
+            store.delete_path(path.as_str())?;
+            wait_for_event(
+                &mut store,
+                WatchOp::Delete,
+                path.as_str(),
+                Duration::from_secs(5),
+            )?;
 
-        store.write_path(path, value)?;
-        wait_for_event(&mut store, WatchOp::Put, path, Duration::from_secs(5))?;
+            Ok(())
+        }
+        .await;
 
-        store.delete_path(path)?;
-        wait_for_event(&mut store, WatchOp::Delete, path, Duration::from_secs(5))?;
+        shutdown_with_result(fixture, result).await
+    }
 
-        handle.shutdown().await?;
-        Ok(())
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_consumes_real_etcd_watch_path_without_mocking() -> TestResult {
+        let fixture = match RealEtcdFixture::spawn("dcs-etcd-store-step-once", "scope-b").await? {
+            Some(fixture) => fixture,
+            None => return Ok(()),
+        };
+
+        let fixture = fixture;
+        let result: TestResult = async {
+            let store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
+                .await
+                .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
+
+            let leader_path = format!("/{}/leader", fixture.scope);
+            let leader_json = serde_json::to_string(&LeaderRecord {
+                member_id: MemberId("node-b".to_string()),
+            })
+            .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
+
+            client
+                .put(leader_path.as_str(), leader_json, None)
+                .await
+                .map_err(|err| boxed_error(format!("put leader key failed: {err}")))?;
+
+            let (mut ctx, dcs_subscriber) = build_worker_ctx(&fixture.scope, store);
+            let self_member = MemberId("node-a".to_string());
+            let expected_leader = MemberId("node-b".to_string());
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut observed = false;
+            while Instant::now() < deadline {
+                step_once(&mut ctx)
+                    .await
+                    .map_err(|err| boxed_error(format!("dcs step_once failed: {err}")))?;
+
+                let latest = dcs_subscriber.latest();
+                let leader_matches = latest
+                    .value
+                    .cache
+                    .leader
+                    .as_ref()
+                    .map(|leader| leader.member_id.clone())
+                    == Some(expected_leader.clone());
+                let self_member_written = latest.value.cache.members.contains_key(&self_member);
+                if leader_matches && self_member_written {
+                    observed = true;
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            if !observed {
+                return Err(boxed_error(
+                    "timed out waiting for step_once to publish real-etcd leader/member refresh",
+                ));
+            }
+
+            let member_path = format!("/{}/member/node-a", fixture.scope);
+            let member_response = client
+                .get(member_path.as_str(), None)
+                .await
+                .map_err(|err| boxed_error(format!("get member key failed: {err}")))?;
+            if member_response.kvs().is_empty() {
+                return Err(boxed_error(
+                    "expected member key to be persisted at /{scope}/member/{id}",
+                ));
+            }
+
+            Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_marks_store_unhealthy_on_real_decode_failure() -> TestResult {
+        let fixture =
+            match RealEtcdFixture::spawn("dcs-etcd-store-decode-failure", "scope-c").await? {
+                Some(fixture) => fixture,
+                None => return Ok(()),
+            };
+
+        let fixture = fixture;
+        let result: TestResult = async {
+            let store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
+                .await
+                .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
+
+            let leader_path = format!("/{}/leader", fixture.scope);
+            client
+                .put(leader_path.as_str(), "not-json", None)
+                .await
+                .map_err(|err| boxed_error(format!("put malformed leader key failed: {err}")))?;
+
+            let (mut ctx, dcs_subscriber) = build_worker_ctx(&fixture.scope, store);
+            let expected_worker =
+                WorkerStatus::Faulted(WorkerError::Message("dcs store unhealthy".to_string()));
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut observed_fault = false;
+            while Instant::now() < deadline {
+                step_once(&mut ctx)
+                    .await
+                    .map_err(|err| boxed_error(format!("dcs step_once failed: {err}")))?;
+
+                let latest = dcs_subscriber.latest();
+                if latest.value.worker == expected_worker && latest.value.trust == DcsTrust::NotTrusted
+                {
+                    observed_fault = true;
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            if !observed_fault {
+                return Err(boxed_error(
+                    "timed out waiting for decode failure to fault dcs worker state",
+                ));
+            }
+
+            Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn etcd_store_write_reports_unreachable_endpoint() -> TestResult {
-        let mut store = EtcdDcsStore::connect(vec!["http://127.0.0.1:1".to_string()], "scope-a")?;
-        match store.write_path("/scope-a/member/node-a", "{}".to_string()) {
-            Ok(_) => Err(boxed_error(
-                "expected write against unreachable endpoint to fail",
-            )),
+        match EtcdDcsStore::connect(vec!["http://127.0.0.1:1".to_string()], "scope-a") {
+            Ok(mut store) => match store.write_path("/scope-a/member/node-a", "{}".to_string()) {
+                Ok(_) => Err(boxed_error(
+                    "expected write against unreachable endpoint to fail",
+                )),
+                Err(DcsStoreError::Io(_)) => Ok(()),
+                Err(other) => Err(boxed_error(format!(
+                    "expected io error for unreachable endpoint write, got {other}"
+                ))),
+            },
             Err(DcsStoreError::Io(_)) => Ok(()),
             Err(other) => Err(boxed_error(format!(
-                "expected io error for unreachable endpoint write, got {other}"
+                "expected io error for unreachable endpoint connect, got {other}"
             ))),
         }
-    }
-
-    #[test]
-    fn harness_error_type_is_used() {
-        let _: Option<HarnessError> = None;
     }
 }

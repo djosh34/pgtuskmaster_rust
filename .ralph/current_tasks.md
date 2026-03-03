@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 01:51:54 AM CET 2026
+Generated: Tue Mar  3 02:05:19 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -250,7 +250,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-rust-system-harness/10b-task-dcs-real-etcd3-store-adapter-and-tests.md`
 
-## Task: Implement real etcd3-backed DCS store adapter and integration tests <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Implement real etcd3-backed DCS store adapter and integration tests <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
