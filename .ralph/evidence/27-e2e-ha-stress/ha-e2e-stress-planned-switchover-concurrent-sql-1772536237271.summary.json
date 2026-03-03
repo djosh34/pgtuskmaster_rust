@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "scenario": "ha-e2e-stress-planned-switchover-concurrent-sql",
+  "status": "passed",
+  "started_at_unix_ms": 1772536214738,
+  "finished_at_unix_ms": 1772536237270,
+  "bootstrap_primary": "node-1",
+  "final_primary": "node-3",
+  "former_primary_demoted": true,
+  "workload_spec": {
+    "worker_count": 4,
+    "run_interval_ms": 250,
+    "table_name": "ha_stress_switchover"
+  },
+  "workload": {
+    "scenario_name": "ha-e2e-stress-planned-switchover-concurrent-sql",
+    "table_name": "ha_stress_switchover",
+    "worker_count": 4,
+    "started_at_unix_ms": 1772536216632,
+    "finished_at_unix_ms": 1772536237139,
+    "duration_ms": 20507,
+    "attempted_writes": 172,
+    "committed_writes": 12,
+    "attempted_reads": 172,
+    "read_successes": 13,
+    "transient_failures": 319,
+    "fencing_failures": 0,
+    "hard_failures": 0,
+    "unique_committed_keys": 12,
+    "committed_keys": [
+      "0:0",
+      "0:3",
+      "0:6",
+      "1:2",
+      "1:5",
+      "1:8",
+      "2:1",
+      "2:4",
+      "2:7",
+      "3:0",
+      "3:3",
+      "3:6"
+    ],
+    "committed_at_unix_ms": [
+      1772536216652,
+      1772536217795,
+      1772536218779,
+      1772536217368,
+      1772536218447,
+      1772536219708,
+      1772536216943,
+      1772536218113,
+      1772536219197,
+      1772536216653,
+      1772536217789,
+      1772536218780
+    ],
+    "worker_stats": [
+      {
+        "worker_id": 0,
+        "attempted_writes": 43,
+        "committed_writes": 3,
+        "attempted_reads": 43,
+        "read_successes": 3,
+        "transient_failures": 80,
+        "fencing_failures": 0,
+        "hard_failures": 0,
+        "write_latency_total_ms": 2568,
+        "write_latency_max_ms": 213,
+        "committed_keys": [
+          "0:0",
+          "0:3",
+          "0:6"
+        ],
+        "committed_at_unix_ms": [
+          1772536216652,
+          1772536217795,
+          1772536218779
+        ],
+        "last_error": "target=node-1 read seq=42 error=psql exited unsuccessfully with status exit status: 2; stderr=psql: error: connection to server at \"127.0.0.1\", port 39159 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?"
+      },
+      {
+        "worker_id": 1,
+        "attempted_writes": 43,
+        "committed_writes": 3,
+        "attempted_reads": 43,
+        "read_successes": 3,
+        "transient_failures": 80,
+        "fencing_failures": 0,
+        "hard_failures": 0,
+        "write_latency_total_ms": 2575,
+        "write_latency_max_ms": 216,
+        "committed_keys": [
+          "1:2",
+          "1:5",
+          "1:8"
+        ],
+        "committed_at_unix_ms": [
+          1772536217368,
+          1772536218447,
+          1772536219708
+        ],
+        "last_error": "target=node-2 read seq=42 error=psql exited unsuccessfully with status exit status: 1; stderr=ERROR:  relation \"ha_stress_switchover\" does not exist\nLINE 1: SELECT COUNT(*)::bigint FROM ha_stress_switchover\n                                     ^"
+      },
+      {
+        "worker_id": 2,
+        "attempted_writes": 43,
+        "committed_writes": 3,
+        "attempted_reads": 43,
+        "read_successes": 4,
+        "transient_failures": 79,
+        "fencing_failures": 0,
+        "hard_failures": 0,
+        "write_latency_total_ms": 2578,
+        "write_latency_max_ms": 218,
+        "committed_keys": [
+          "2:1",
+          "2:4",
+          "2:7"
+        ],
+        "committed_at_unix_ms": [
+          1772536216943,
+          1772536218113,
+          1772536219197
+        ],
+        "last_error": "target=node-3 write seq=42 error=psql exited unsuccessfully with status exit status: 1; stderr=ERROR:  relation \"ha_stress_switchover\" does not exist\nLINE 1: INSERT INTO ha_stress_switchover (worker_id, seq, payload) V...\n                    ^"
+      },
+      {
+        "worker_id": 3,
+        "attempted_writes": 43,
+        "committed_writes": 3,
+        "attempted_reads": 43,
+        "read_successes": 3,
+        "transient_failures": 80,
+        "fencing_failures": 0,
+        "hard_failures": 0,
+        "write_latency_total_ms": 2538,
+        "write_latency_max_ms": 214,
+        "committed_keys": [
+          "3:0",
+          "3:3",
+          "3:6"
+        ],
+        "committed_at_unix_ms": [
+          1772536216653,
+          1772536217789,
+          1772536218780
+        ],
+        "last_error": "target=node-1 read seq=42 error=psql exited unsuccessfully with status exit status: 2; stderr=psql: error: connection to server at \"127.0.0.1\", port 39159 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?"
+      }
+    ],
+    "worker_errors": []
+  },
+  "ha_observations": {
+    "sample_count": 19,
+    "api_error_count": 0,
+    "max_concurrent_primaries": 2,
+    "leader_change_count": 1,
+    "failsafe_sample_count": 0,
+    "recent_samples": [
+      "node-1:Primary:leader=node-1, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3",
+      "node-1:WaitingPostgresReachable:leader=node-3, node-2:Replica:leader=node-3, node-3:Primary:leader=node-3"
+    ]
+  },
+  "notes": [
+    "phase_history=node-1:Primary|WaitingPostgresReachable,node-2:Replica|WaitingPostgresReachable,node-3:Primary|Replica|WaitingPostgresReachable",
+    "primary_transition=node-1=>node-3"
+  ]
+}

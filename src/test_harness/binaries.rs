@@ -46,8 +46,7 @@ pub(crate) fn require_pg16_bin_for_real_tests(name: &str) -> Result<PathBuf, Har
     require_real_binary(path.as_path())
 }
 
-pub(crate) fn require_pg16_process_binaries_for_real_tests(
-) -> Result<BinaryPaths, HarnessError> {
+pub(crate) fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryPaths, HarnessError> {
     Ok(BinaryPaths {
         postgres: require_pg16_bin_for_real_tests("postgres")?,
         pg_ctl: require_pg16_bin_for_real_tests("pg_ctl")?,

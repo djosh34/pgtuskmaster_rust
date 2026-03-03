@@ -1,0 +1,4 @@
+log: .ralph/evidence/27-e2e-ha-stress/gates/make-test.log
+generated_at: 2026-03-03T12:33:24+01:00
+pattern: congratulations|evaluation failed
+NO_MATCH

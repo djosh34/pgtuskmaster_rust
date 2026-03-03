@@ -87,6 +87,222 @@ const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(10);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
+const STRESS_ARTIFACT_DIR: &str = ".ralph/evidence/27-e2e-ha-stress";
+const STRESS_SUMMARY_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone)]
+struct SqlWorkloadSpec {
+    scenario_name: String,
+    table_name: String,
+    worker_count: usize,
+    run_interval_ms: u64,
+}
+
+impl SqlWorkloadSpec {
+    fn interval(&self) -> Duration {
+        Duration::from_millis(self.run_interval_ms.max(1))
+    }
+}
+
+#[derive(Clone)]
+struct SqlWorkloadTarget {
+    node_id: String,
+    port: u16,
+}
+
+#[derive(Clone)]
+struct SqlWorkloadCtx {
+    psql_bin: PathBuf,
+    scenario_name: String,
+    table_name: String,
+    interval: Duration,
+    targets: Vec<SqlWorkloadTarget>,
+}
+
+struct SqlWorkloadHandle {
+    spec: SqlWorkloadSpec,
+    started_at_unix_ms: u64,
+    stop_tx: tokio::sync::watch::Sender<bool>,
+    joins: Vec<JoinHandle<Result<SqlWorkloadWorkerStats, WorkerError>>>,
+}
+
+#[derive(Default, serde::Serialize)]
+struct SqlWorkloadWorkerStats {
+    worker_id: usize,
+    attempted_writes: u64,
+    committed_writes: u64,
+    attempted_reads: u64,
+    read_successes: u64,
+    transient_failures: u64,
+    fencing_failures: u64,
+    hard_failures: u64,
+    write_latency_total_ms: u64,
+    write_latency_max_ms: u64,
+    committed_keys: Vec<String>,
+    committed_at_unix_ms: Vec<u64>,
+    last_error: Option<String>,
+}
+
+#[derive(Default, serde::Serialize)]
+struct SqlWorkloadStats {
+    scenario_name: String,
+    table_name: String,
+    worker_count: usize,
+    started_at_unix_ms: u64,
+    finished_at_unix_ms: u64,
+    duration_ms: u64,
+    attempted_writes: u64,
+    committed_writes: u64,
+    attempted_reads: u64,
+    read_successes: u64,
+    transient_failures: u64,
+    fencing_failures: u64,
+    hard_failures: u64,
+    unique_committed_keys: usize,
+    committed_keys: Vec<String>,
+    committed_at_unix_ms: Vec<u64>,
+    worker_stats: Vec<SqlWorkloadWorkerStats>,
+    worker_errors: Vec<String>,
+}
+
+#[derive(Default, serde::Serialize)]
+struct HaObservationStats {
+    sample_count: u64,
+    api_error_count: u64,
+    max_concurrent_primaries: usize,
+    leader_change_count: u64,
+    failsafe_sample_count: u64,
+    recent_samples: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct SqlWorkloadSpecSummary {
+    worker_count: usize,
+    run_interval_ms: u64,
+    table_name: String,
+}
+
+#[derive(serde::Serialize)]
+struct StressScenarioSummary {
+    schema_version: u32,
+    scenario: String,
+    status: String,
+    started_at_unix_ms: u64,
+    finished_at_unix_ms: u64,
+    bootstrap_primary: Option<String>,
+    final_primary: Option<String>,
+    former_primary_demoted: Option<bool>,
+    workload_spec: SqlWorkloadSpecSummary,
+    workload: SqlWorkloadStats,
+    ha_observations: HaObservationStats,
+    notes: Vec<String>,
+}
+
+impl StressScenarioSummary {
+    fn failed(scenario: &str, failure: String) -> Self {
+        Self {
+            schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
+            scenario: scenario.to_string(),
+            status: "failed".to_string(),
+            started_at_unix_ms: 0,
+            finished_at_unix_ms: 0,
+            bootstrap_primary: None,
+            final_primary: None,
+            former_primary_demoted: None,
+            workload_spec: SqlWorkloadSpecSummary {
+                worker_count: 0,
+                run_interval_ms: 0,
+                table_name: String::new(),
+            },
+            workload: SqlWorkloadStats::default(),
+            ha_observations: HaObservationStats::default(),
+            notes: vec![failure],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SqlErrorClass {
+    Transient,
+    Fencing,
+    Hard,
+}
+
+fn classify_sql_error(message: &str) -> SqlErrorClass {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("read-only")
+        || normalized.contains("read only")
+        || normalized.contains("recovery is in progress")
+        || normalized.contains("cannot execute insert")
+    {
+        return SqlErrorClass::Fencing;
+    }
+    if normalized.contains("connection refused")
+        || normalized.contains("could not connect")
+        || normalized.contains("connection reset")
+        || normalized.contains("server closed the connection")
+        || normalized.contains("timed out")
+        || normalized.contains("timeout")
+        || normalized.contains("the database system is starting up")
+        || normalized.contains("the database system is shutting down")
+        || normalized.contains("no route to host")
+        || normalized.contains("broken pipe")
+        || normalized.contains("does not exist")
+        || normalized.contains("not yet accepting connections")
+    {
+        return SqlErrorClass::Transient;
+    }
+    if normalized.contains("syntax error")
+        || normalized.contains("permission denied")
+        || normalized.contains("invalid input syntax")
+        || normalized.contains("unterminated quoted string")
+    {
+        return SqlErrorClass::Hard;
+    }
+    SqlErrorClass::Transient
+}
+
+fn sanitize_component(raw: &str) -> String {
+    let mut safe: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        safe = "unknown".to_string();
+    }
+    safe
+}
+
+fn sanitize_sql_identifier(raw: &str) -> String {
+    let mut value: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if value.is_empty() {
+        value = "ha_stress_table".to_string();
+    }
+    let first_is_alpha = value
+        .chars()
+        .next()
+        .map(|ch| ch.is_ascii_alphabetic())
+        .unwrap_or(false);
+    if !first_is_alpha {
+        value = format!("ha_stress_{value}");
+    }
+    value
+}
 
 impl ClusterFixture {
     async fn start(
@@ -474,6 +690,453 @@ impl ClusterFixture {
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+
+    fn node_ids(&self) -> Vec<String> {
+        self.nodes.iter().map(|node| node.id.clone()).collect()
+    }
+
+    fn sql_workload_ctx(&self, spec: &SqlWorkloadSpec) -> Result<SqlWorkloadCtx, WorkerError> {
+        if spec.worker_count == 0 {
+            return Err(WorkerError::Message(
+                "sql workload requires at least one worker".to_string(),
+            ));
+        }
+        if self.nodes.is_empty() {
+            return Err(WorkerError::Message(
+                "sql workload cannot start: cluster has no nodes".to_string(),
+            ));
+        }
+        let targets = self
+            .nodes
+            .iter()
+            .map(|node| SqlWorkloadTarget {
+                node_id: node.id.clone(),
+                port: node.pg_port,
+            })
+            .collect::<Vec<_>>();
+        Ok(SqlWorkloadCtx {
+            psql_bin: self.psql_bin.clone(),
+            scenario_name: spec.scenario_name.clone(),
+            table_name: sanitize_sql_identifier(spec.table_name.as_str()),
+            interval: spec.interval(),
+            targets,
+        })
+    }
+
+    async fn prepare_stress_table(
+        &self,
+        bootstrap_primary: &str,
+        table_name: &str,
+    ) -> Result<(), WorkerError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {table_name} (worker_id INTEGER NOT NULL, seq BIGINT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (worker_id, seq))"
+        );
+        self.run_sql_on_node_with_retry(bootstrap_primary, sql.as_str(), Duration::from_secs(30))
+            .await?;
+        Ok(())
+    }
+
+    async fn wait_for_table_readable_on_nodes(
+        &self,
+        table_name: &str,
+        node_ids: &[String],
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        if node_ids.is_empty() {
+            return Err(WorkerError::Message(
+                "table readability check requires at least one node".to_string(),
+            ));
+        }
+        let count_sql = format!("SELECT COUNT(*)::bigint FROM {table_name}");
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut pending: BTreeSet<String> = node_ids.iter().cloned().collect();
+        let mut last_observation = "none".to_string();
+        loop {
+            let pending_nodes: Vec<String> = pending.iter().cloned().collect();
+            for node_id in pending_nodes {
+                match self
+                    .run_sql_on_node(node_id.as_str(), count_sql.as_str())
+                    .await
+                {
+                    Ok(_) => {
+                        let _ = pending.remove(&node_id);
+                    }
+                    Err(err) => {
+                        last_observation =
+                            format!("node={node_id} table readability probe failed: {err}");
+                    }
+                }
+            }
+            if pending.is_empty() {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for table {table_name} readability on nodes={pending:?}; last_observation={last_observation}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn start_sql_workload(
+        &mut self,
+        spec: SqlWorkloadSpec,
+    ) -> Result<SqlWorkloadHandle, WorkerError> {
+        let workload_ctx = self.sql_workload_ctx(&spec)?;
+        let started_at_unix_ms = unix_now()?.0;
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let mut joins = Vec::with_capacity(spec.worker_count);
+        for worker_id in 0..spec.worker_count {
+            let worker_ctx = workload_ctx.clone();
+            let worker_stop_rx = stop_rx.clone();
+            joins.push(tokio::spawn(async move {
+                run_sql_workload_worker(worker_ctx, worker_id, worker_stop_rx).await
+            }));
+        }
+        self.record(format!(
+            "sql workload started: scenario={} table={} workers={} interval_ms={}",
+            spec.scenario_name, workload_ctx.table_name, spec.worker_count, spec.run_interval_ms
+        ));
+        Ok(SqlWorkloadHandle {
+            spec,
+            started_at_unix_ms,
+            stop_tx,
+            joins,
+        })
+    }
+
+    async fn stop_sql_workload_and_collect(
+        &mut self,
+        handle: SqlWorkloadHandle,
+        drain: Duration,
+    ) -> Result<SqlWorkloadStats, WorkerError> {
+        let SqlWorkloadHandle {
+            spec,
+            started_at_unix_ms,
+            stop_tx,
+            joins,
+        } = handle;
+        let _ = stop_tx.send(true);
+        tokio::time::sleep(drain).await;
+
+        let mut stats = SqlWorkloadStats {
+            scenario_name: spec.scenario_name.clone(),
+            table_name: sanitize_sql_identifier(spec.table_name.as_str()),
+            worker_count: spec.worker_count,
+            started_at_unix_ms,
+            ..SqlWorkloadStats::default()
+        };
+        let mut committed_key_set: BTreeSet<String> = BTreeSet::new();
+        for join in joins {
+            match join.await {
+                Ok(Ok(worker)) => {
+                    stats.attempted_writes = stats
+                        .attempted_writes
+                        .saturating_add(worker.attempted_writes);
+                    stats.committed_writes = stats
+                        .committed_writes
+                        .saturating_add(worker.committed_writes);
+                    stats.attempted_reads =
+                        stats.attempted_reads.saturating_add(worker.attempted_reads);
+                    stats.read_successes =
+                        stats.read_successes.saturating_add(worker.read_successes);
+                    stats.transient_failures = stats
+                        .transient_failures
+                        .saturating_add(worker.transient_failures);
+                    stats.fencing_failures = stats
+                        .fencing_failures
+                        .saturating_add(worker.fencing_failures);
+                    stats.hard_failures = stats.hard_failures.saturating_add(worker.hard_failures);
+                    stats
+                        .committed_at_unix_ms
+                        .extend(worker.committed_at_unix_ms.iter().copied());
+                    for key in &worker.committed_keys {
+                        committed_key_set.insert(key.clone());
+                    }
+                    stats.worker_stats.push(worker);
+                }
+                Ok(Err(err)) => {
+                    stats.worker_errors.push(err.to_string());
+                }
+                Err(err) => {
+                    stats
+                        .worker_errors
+                        .push(format!("workload worker join failed: {err}"));
+                }
+            }
+        }
+        let worker_error_count_u64 = u64::try_from(stats.worker_errors.len()).unwrap_or(u64::MAX);
+        stats.hard_failures = stats.hard_failures.saturating_add(worker_error_count_u64);
+        stats.committed_keys = committed_key_set.into_iter().collect();
+        stats.unique_committed_keys = stats.committed_keys.len();
+        stats.finished_at_unix_ms = unix_now()?.0;
+        stats.duration_ms = stats
+            .finished_at_unix_ms
+            .saturating_sub(stats.started_at_unix_ms);
+        self.record(format!(
+            "sql workload stopped: scenario={} committed={} unique_keys={} transient={} fencing={} hard={}",
+            stats.scenario_name,
+            stats.committed_writes,
+            stats.unique_committed_keys,
+            stats.transient_failures,
+            stats.fencing_failures,
+            stats.hard_failures
+        ));
+        Ok(stats)
+    }
+
+    async fn sample_ha_states_window(
+        &mut self,
+        window: Duration,
+        interval: Duration,
+        ring_capacity: usize,
+    ) -> Result<HaObservationStats, WorkerError> {
+        let deadline = tokio::time::Instant::now() + window;
+        let mut stats = HaObservationStats::default();
+        let mut last_leader_signature: Option<String> = None;
+        loop {
+            match self.cluster_ha_states().await {
+                Ok(states) => {
+                    stats.sample_count = stats.sample_count.saturating_add(1);
+                    let primaries = Self::primary_members(states.as_slice());
+                    stats.max_concurrent_primaries =
+                        stats.max_concurrent_primaries.max(primaries.len());
+
+                    let mut leaders = states
+                        .iter()
+                        .filter_map(|state| state.leader.clone())
+                        .collect::<Vec<_>>();
+                    leaders.sort();
+                    leaders.dedup();
+                    let leader_signature = leaders.join("|");
+                    if last_leader_signature
+                        .as_deref()
+                        .map(|prior| prior != leader_signature.as_str())
+                        .unwrap_or(false)
+                    {
+                        stats.leader_change_count = stats.leader_change_count.saturating_add(1);
+                    }
+                    last_leader_signature = Some(leader_signature);
+                    if !states.is_empty() && states.iter().all(|state| state.ha_phase == "FailSafe")
+                    {
+                        stats.failsafe_sample_count = stats.failsafe_sample_count.saturating_add(1);
+                    }
+                    if ring_capacity > 0 {
+                        let sample = states
+                            .iter()
+                            .map(|state| {
+                                let leader = state.leader.as_deref().unwrap_or("none");
+                                format!(
+                                    "{}:{}:leader={leader}",
+                                    state.self_member_id, state.ha_phase
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if stats.recent_samples.len() >= ring_capacity {
+                            let _ = stats.recent_samples.remove(0);
+                        }
+                        stats.recent_samples.push(sample);
+                    }
+                }
+                Err(err) => {
+                    stats.api_error_count = stats.api_error_count.saturating_add(1);
+                    if ring_capacity > 0 {
+                        if stats.recent_samples.len() >= ring_capacity {
+                            let _ = stats.recent_samples.remove(0);
+                        }
+                        stats.recent_samples.push(format!("api_error:{err}"));
+                    }
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(stats);
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }
+
+    fn assert_no_dual_primary_in_samples(stats: &HaObservationStats) -> Result<(), WorkerError> {
+        if stats.max_concurrent_primaries > 1 {
+            return Err(WorkerError::Message(format!(
+                "dual primary observed during sampled window; max_concurrent_primaries={}",
+                stats.max_concurrent_primaries
+            )));
+        }
+        Ok(())
+    }
+
+    async fn assert_former_primary_demoted_after_transition(
+        &mut self,
+        former_primary: &str,
+    ) -> Result<(), WorkerError> {
+        let node_index = self.node_index_by_id(former_primary).ok_or_else(|| {
+            WorkerError::Message(format!(
+                "unknown former primary for demotion assertion: {former_primary}"
+            ))
+        })?;
+        let state = self.fetch_node_ha_state_by_index(node_index).await?;
+        if state.ha_phase == "Primary" {
+            return Err(WorkerError::Message(format!(
+                "former primary {former_primary} still reports Primary phase"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn wait_for_table_digest_convergence(
+        &self,
+        table_name: &str,
+        node_ids: &[String],
+        expected_min_rows: usize,
+        timeout: Duration,
+    ) -> Result<BTreeMap<String, String>, WorkerError> {
+        if node_ids.is_empty() {
+            return Err(WorkerError::Message(
+                "cannot verify table digest convergence with empty node list".to_string(),
+            ));
+        }
+        let expected_min_rows_u64 = u64::try_from(expected_min_rows).unwrap_or(u64::MAX);
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_observation = "none".to_string();
+        loop {
+            let mut digests = BTreeMap::new();
+            let mut row_counts = BTreeMap::new();
+            let digest_sql = format!(
+                "SELECT COALESCE(string_agg(worker_id::text || ':' || seq::text || ':' || payload, ',' ORDER BY worker_id, seq), '') FROM {table_name}"
+            );
+            let count_sql = format!("SELECT COUNT(*)::bigint FROM {table_name}");
+            let mut query_failed = false;
+            for node_id in node_ids {
+                let digest_raw = match self.run_sql_on_node(node_id, digest_sql.as_str()).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        query_failed = true;
+                        last_observation =
+                            format!("node={node_id} digest query failed during convergence: {err}");
+                        break;
+                    }
+                };
+                let count_raw = match self.run_sql_on_node(node_id, count_sql.as_str()).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        query_failed = true;
+                        last_observation =
+                            format!("node={node_id} count query failed during convergence: {err}");
+                        break;
+                    }
+                };
+                let digest = parse_psql_rows(digest_raw.as_str())
+                    .first()
+                    .cloned()
+                    .unwrap_or_default();
+                let row_count = parse_single_u64(count_raw.as_str())?;
+                digests.insert(node_id.clone(), digest);
+                row_counts.insert(node_id.clone(), row_count);
+            }
+            if !query_failed {
+                let mut digest_values = digests.values();
+                let first_digest = digest_values.next().cloned().unwrap_or_default();
+                let all_equal = digest_values.all(|digest| digest == &first_digest);
+                let all_counts_satisfied = row_counts
+                    .values()
+                    .all(|count| *count >= expected_min_rows_u64);
+                if all_equal && all_counts_satisfied {
+                    return Ok(digests);
+                }
+                last_observation = format!(
+                    "digest mismatch or low row counts; row_counts={row_counts:?} all_equal={all_equal}"
+                );
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for table digest convergence on {table_name}; last_observation={last_observation}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn assert_table_key_integrity_on_node(
+        &self,
+        node_id: &str,
+        table_name: &str,
+        min_rows: u64,
+        timeout: Duration,
+    ) -> Result<u64, WorkerError> {
+        let count_sql = format!("SELECT COUNT(*)::bigint FROM {table_name}");
+        let duplicate_sql = format!(
+            "SELECT COUNT(*)::bigint FROM (SELECT worker_id, seq, COUNT(*) AS c FROM {table_name} GROUP BY worker_id, seq HAVING COUNT(*) > 1) d"
+        );
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let count_raw = match self.run_sql_on_node(node_id, count_sql.as_str()).await {
+                Ok(value) => value,
+                Err(err) => {
+                    let detail = format!("row count query failed: {err}");
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(WorkerError::Message(format!(
+                            "timed out verifying table integrity on {node_id}; last_observation={detail}"
+                        )));
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
+            let duplicate_raw = match self.run_sql_on_node(node_id, duplicate_sql.as_str()).await {
+                Ok(value) => value,
+                Err(err) => {
+                    let detail = format!("duplicate query failed: {err}");
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(WorkerError::Message(format!(
+                            "timed out verifying table integrity on {node_id}; last_observation={detail}"
+                        )));
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
+            let row_count = parse_single_u64(count_raw.as_str())?;
+            let duplicate_count = parse_single_u64(duplicate_raw.as_str())?;
+            if duplicate_count > 0 {
+                return Err(WorkerError::Message(format!(
+                    "duplicate (worker_id,seq) rows detected on {node_id}: {duplicate_count}"
+                )));
+            }
+            if row_count >= min_rows {
+                return Ok(row_count);
+            }
+            let detail = format!("row_count={row_count} below min_rows={min_rows}");
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out verifying table integrity on {node_id}; last_observation={detail}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    fn assert_no_split_brain_write_evidence(
+        workload: &SqlWorkloadStats,
+        _ha_stats: &HaObservationStats,
+    ) -> Result<(), WorkerError> {
+        if workload.unique_committed_keys
+            != usize::try_from(workload.committed_writes).unwrap_or(usize::MAX)
+        {
+            return Err(WorkerError::Message(format!(
+                "duplicate committed write keys detected: committed_writes={} unique_keys={}",
+                workload.committed_writes, workload.unique_committed_keys
+            )));
+        }
+        if workload.hard_failures > 0 {
+            return Err(WorkerError::Message(format!(
+                "hard SQL failures detected during stress workload: hard_failures={} worker_errors={:?}",
+                workload.hard_failures, workload.worker_errors
+            )));
+        }
+        Ok(())
     }
 
     fn update_phase_history(
@@ -931,20 +1594,34 @@ impl ClusterFixture {
         fs::create_dir_all(&artifact_dir)
             .map_err(|err| WorkerError::Message(format!("create artifact dir failed: {err}")))?;
         let stamp = unix_now()?.0;
-        let safe_scenario: String = scenario
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                    ch
-                } else {
-                    '-'
-                }
-            })
-            .collect();
+        let safe_scenario = sanitize_component(scenario);
         let artifact_path = artifact_dir.join(format!("{safe_scenario}-{stamp}.timeline.log"));
         fs::write(&artifact_path, self.timeline.join("\n"))
             .map_err(|err| WorkerError::Message(format!("write timeline failed: {err}")))?;
         Ok(artifact_path)
+    }
+
+    fn write_stress_artifacts(
+        &self,
+        scenario: &str,
+        summary: &StressScenarioSummary,
+    ) -> Result<(PathBuf, PathBuf), WorkerError> {
+        let artifact_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(STRESS_ARTIFACT_DIR);
+        fs::create_dir_all(&artifact_dir).map_err(|err| {
+            WorkerError::Message(format!("create stress artifact dir failed: {err}"))
+        })?;
+        let stamp = unix_now()?.0;
+        let safe_scenario = sanitize_component(scenario);
+        let timeline_path = artifact_dir.join(format!("{safe_scenario}-{stamp}.timeline.log"));
+        fs::write(&timeline_path, self.timeline.join("\n")).map_err(|err| {
+            WorkerError::Message(format!("write stress timeline artifact failed: {err}"))
+        })?;
+        let summary_path = artifact_dir.join(format!("{safe_scenario}-{stamp}.summary.json"));
+        let summary_json = serde_json::to_string_pretty(summary)
+            .map_err(|err| WorkerError::Message(format!("encode stress summary failed: {err}")))?;
+        fs::write(&summary_path, summary_json)
+            .map_err(|err| WorkerError::Message(format!("write stress summary failed: {err}")))?;
+        Ok((timeline_path, summary_path))
     }
 
     async fn shutdown(&mut self) -> Result<(), WorkerError> {
@@ -1182,6 +1859,134 @@ fn parse_psql_rows(output: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_single_u64(output: &str) -> Result<u64, WorkerError> {
+    let rows = parse_psql_rows(output);
+    if rows.len() != 1 {
+        return Err(WorkerError::Message(format!(
+            "expected one scalar row, got {} rows: {rows:?}",
+            rows.len()
+        )));
+    }
+    rows[0].parse::<u64>().map_err(|err| {
+        WorkerError::Message(format!("parse scalar u64 from '{}' failed: {err}", rows[0]))
+    })
+}
+
+async fn run_sql_workload_worker(
+    workload: SqlWorkloadCtx,
+    worker_id: usize,
+    mut stop_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<SqlWorkloadWorkerStats, WorkerError> {
+    if workload.targets.is_empty() {
+        return Err(WorkerError::Message(
+            "sql workload worker cannot run without targets".to_string(),
+        ));
+    }
+    let mut stats = SqlWorkloadWorkerStats {
+        worker_id,
+        ..SqlWorkloadWorkerStats::default()
+    };
+    let mut seq = 0u64;
+    let mut target_index = worker_id % workload.targets.len();
+    loop {
+        if *stop_rx.borrow() {
+            break;
+        }
+        let target = workload.targets.get(target_index).ok_or_else(|| {
+            WorkerError::Message(format!(
+                "sql workload target index out of bounds: index={} len={}",
+                target_index,
+                workload.targets.len()
+            ))
+        })?;
+        target_index = (target_index + 1) % workload.targets.len();
+
+        let payload = format!("{}-{worker_id}-{seq}", workload.scenario_name);
+        let write_sql = format!(
+            "INSERT INTO {} (worker_id, seq, payload) VALUES ({worker_id}, {seq}, '{}') ON CONFLICT (worker_id, seq) DO UPDATE SET payload = EXCLUDED.payload",
+            workload.table_name, payload
+        );
+        stats.attempted_writes = stats.attempted_writes.saturating_add(1);
+        let write_started = tokio::time::Instant::now();
+        match run_psql_statement(workload.psql_bin.as_path(), target.port, write_sql.as_str()).await
+        {
+            Ok(_) => {
+                stats.committed_writes = stats.committed_writes.saturating_add(1);
+                stats.committed_keys.push(format!("{worker_id}:{seq}"));
+                let committed_at = match unix_now() {
+                    Ok(value) => value.0,
+                    Err(_) => 0,
+                };
+                stats.committed_at_unix_ms.push(committed_at);
+            }
+            Err(err) => {
+                let err_text = err.to_string();
+                match classify_sql_error(err_text.as_str()) {
+                    SqlErrorClass::Transient => {
+                        stats.transient_failures = stats.transient_failures.saturating_add(1);
+                    }
+                    SqlErrorClass::Fencing => {
+                        stats.fencing_failures = stats.fencing_failures.saturating_add(1);
+                    }
+                    SqlErrorClass::Hard => {
+                        stats.hard_failures = stats.hard_failures.saturating_add(1);
+                    }
+                }
+                stats.last_error = Some(format!(
+                    "target={} write seq={seq} error={err_text}",
+                    target.node_id
+                ));
+            }
+        }
+        let latency_ms = u64::try_from(write_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        stats.write_latency_total_ms = stats.write_latency_total_ms.saturating_add(latency_ms);
+        stats.write_latency_max_ms = stats.write_latency_max_ms.max(latency_ms);
+
+        let read_sql = format!("SELECT COUNT(*)::bigint FROM {}", workload.table_name);
+        stats.attempted_reads = stats.attempted_reads.saturating_add(1);
+        match run_psql_statement(workload.psql_bin.as_path(), target.port, read_sql.as_str()).await
+        {
+            Ok(_) => {
+                stats.read_successes = stats.read_successes.saturating_add(1);
+            }
+            Err(err) => {
+                let err_text = err.to_string();
+                match classify_sql_error(err_text.as_str()) {
+                    SqlErrorClass::Transient => {
+                        stats.transient_failures = stats.transient_failures.saturating_add(1);
+                    }
+                    SqlErrorClass::Fencing => {
+                        stats.fencing_failures = stats.fencing_failures.saturating_add(1);
+                    }
+                    SqlErrorClass::Hard => {
+                        stats.hard_failures = stats.hard_failures.saturating_add(1);
+                    }
+                }
+                stats.last_error = Some(format!(
+                    "target={} read seq={seq} error={err_text}",
+                    target.node_id
+                ));
+            }
+        }
+
+        seq = seq.saturating_add(1);
+        tokio::select! {
+            changed = stop_rx.changed() => {
+                match changed {
+                    Ok(()) => {
+                        if *stop_rx.borrow() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            _ = tokio::time::sleep(workload.interval) => {}
+        }
+    }
+    Ok(stats)
+}
+
 struct ApiHttpResponse {
     status_code: u16,
     body: Vec<u8>,
@@ -1364,6 +2169,47 @@ fn expect_accepted_response(action: &str, response: ApiHttpResponse) -> Result<(
         )));
     }
     Ok(())
+}
+
+fn finalize_stress_scenario_result(
+    run_error: Option<String>,
+    artifacts: Result<(PathBuf, PathBuf), WorkerError>,
+    shutdown_result: Result<(), WorkerError>,
+) -> Result<(), WorkerError> {
+    match (run_error, artifacts, shutdown_result) {
+        (None, Ok(_), Ok(())) => Ok(()),
+        (Some(run_err), Ok((timeline, summary)), Ok(())) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline: {}; summary: {}",
+            timeline.display(),
+            summary.display()
+        ))),
+        (Some(run_err), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+            "{run_err}; stress artifact write failed: {artifact_err}"
+        ))),
+        (None, Ok((timeline, summary)), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "shutdown failed: {shutdown_err}; timeline: {}; summary: {}",
+            timeline.display(),
+            summary.display()
+        ))),
+        (None, Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "stress artifact write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+        ))),
+        (Some(run_err), Ok((timeline, summary)), Err(shutdown_err)) => Err(WorkerError::Message(
+            format!(
+                "{run_err}; shutdown failed: {shutdown_err}; timeline: {}; summary: {}",
+                timeline.display(),
+                summary.display()
+            ),
+        )),
+        (Some(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(
+            format!(
+                "{run_err}; stress artifact write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+            ),
+        )),
+        (None, Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+            "stress artifact write failed: {artifact_err}"
+        ))),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1644,4 +2490,420 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             "timeline write failed: {artifact_err}"
         ))),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(), WorkerError> {
+    let binaries = resolve_pg_binaries_for_real_tests()?;
+    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
+    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    let scenario_name = "ha-e2e-stress-planned-switchover-concurrent-sql";
+
+    let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+        let started_at_unix_ms = unix_now()?.0;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let workload_spec = SqlWorkloadSpec {
+            scenario_name: scenario_name.to_string(),
+            table_name: "ha_stress_switchover".to_string(),
+            worker_count: 4,
+            run_interval_ms: 250,
+        };
+        let table_name = sanitize_sql_identifier(workload_spec.table_name.as_str());
+
+        fixture.record("stress switchover bootstrap: wait for stable primary");
+        let bootstrap_primary = fixture
+            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
+            .await?;
+        fixture
+            .prepare_stress_table(&bootstrap_primary, table_name.as_str())
+            .await?;
+        let workload_handle = fixture.start_sql_workload(workload_spec.clone()).await?;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        fixture.record("stress switchover: trigger API switchover while workload is active");
+        fixture
+            .post_switchover_via_api("e2e-stress-switchover")
+            .await?;
+        let ha_stats = fixture
+            .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 80)
+            .await?;
+        let switchover_primary = fixture
+            .wait_for_stable_primary(
+                Duration::from_secs(90),
+                Some(&bootstrap_primary),
+                5,
+                &mut phase_history,
+            )
+            .await?;
+        fixture
+            .assert_former_primary_demoted_after_transition(&bootstrap_primary)
+            .await?;
+        fixture
+            .assert_no_dual_primary_window(Duration::from_secs(5))
+            .await?;
+        fixture
+            .prepare_stress_table(&switchover_primary, table_name.as_str())
+            .await?;
+        fixture
+            .run_sql_on_node_with_retry(
+                &switchover_primary,
+                format!(
+                    "INSERT INTO {table_name} (worker_id, seq, payload) VALUES (9999, 1, 'post-switchover-proof') ON CONFLICT (worker_id, seq) DO UPDATE SET payload = EXCLUDED.payload"
+                )
+                .as_str(),
+                Duration::from_secs(30),
+            )
+            .await?;
+        let workload = fixture
+            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
+            .await?;
+        if workload.committed_writes == 0 {
+            return Err(WorkerError::Message(
+                "stress switchover workload committed zero writes".to_string(),
+            ));
+        }
+        ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
+
+        let primary_row_count = fixture
+            .assert_table_key_integrity_on_node(
+                &switchover_primary,
+                table_name.as_str(),
+                1,
+                Duration::from_secs(90),
+            )
+            .await?;
+
+        fixture.record(format!(
+            "stress switchover key integrity verified on {switchover_primary} with row_count={primary_row_count}"
+        ));
+        let finished_at_unix_ms = unix_now()?.0;
+        Ok(StressScenarioSummary {
+            schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
+            scenario: scenario_name.to_string(),
+            status: "passed".to_string(),
+            started_at_unix_ms,
+            finished_at_unix_ms,
+            bootstrap_primary: Some(bootstrap_primary.clone()),
+            final_primary: Some(switchover_primary.clone()),
+            former_primary_demoted: Some(true),
+            workload_spec: SqlWorkloadSpecSummary {
+                worker_count: workload_spec.worker_count,
+                run_interval_ms: workload_spec.run_interval_ms,
+                table_name,
+            },
+            workload,
+            ha_observations: ha_stats,
+            notes: vec![
+                format!(
+                    "phase_history={}",
+                    ClusterFixture::format_phase_history(&phase_history)
+                ),
+                format!(
+                    "primary_transition={}=>{}",
+                    bootstrap_primary, switchover_primary
+                ),
+            ],
+        })
+    })
+    .await
+    {
+        Ok(run_result) => run_result,
+        Err(_) => Err(WorkerError::Message(format!(
+            "stress switchover scenario timed out after {}s",
+            E2E_SCENARIO_TIMEOUT.as_secs()
+        ))),
+    };
+
+    let (summary, run_error) = match run_result {
+        Ok(summary) => (summary, None),
+        Err(err) => {
+            let message = err.to_string();
+            (
+                StressScenarioSummary::failed(scenario_name, message.clone()),
+                Some(message),
+            )
+        }
+    };
+    let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
+    let shutdown_result = fixture.shutdown().await;
+    finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<(), WorkerError> {
+    let binaries = resolve_pg_binaries_for_real_tests()?;
+    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
+    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    let scenario_name = "ha-e2e-stress-unassisted-failover-concurrent-sql";
+
+    let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+        let started_at_unix_ms = unix_now()?.0;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let workload_spec = SqlWorkloadSpec {
+            scenario_name: scenario_name.to_string(),
+            table_name: "ha_stress_failover".to_string(),
+            worker_count: 4,
+            run_interval_ms: 250,
+        };
+        let table_name = sanitize_sql_identifier(workload_spec.table_name.as_str());
+
+        fixture.record("stress failover bootstrap: wait for stable primary");
+        let bootstrap_primary = fixture
+            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
+            .await?;
+        fixture
+            .prepare_stress_table(&bootstrap_primary, table_name.as_str())
+            .await?;
+        let workload_handle = fixture.start_sql_workload(workload_spec.clone()).await?;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        fixture.record(format!(
+            "stress failover: stop postgres on bootstrap primary {bootstrap_primary}"
+        ));
+        fixture.stop_postgres_for_node(&bootstrap_primary).await?;
+        let ha_stats = fixture
+            .sample_ha_states_window(Duration::from_secs(10), Duration::from_millis(150), 100)
+            .await?;
+        let failover_primary = fixture
+            .wait_for_stable_primary(
+                Duration::from_secs(120),
+                Some(&bootstrap_primary),
+                5,
+                &mut phase_history,
+            )
+            .await?;
+        ClusterFixture::assert_phase_history_contains_failover(
+            &phase_history,
+            &bootstrap_primary,
+            &failover_primary,
+        )?;
+        fixture
+            .assert_former_primary_demoted_after_transition(&bootstrap_primary)
+            .await?;
+        fixture
+            .assert_no_dual_primary_window(Duration::from_secs(6))
+            .await?;
+        fixture
+            .prepare_stress_table(&failover_primary, table_name.as_str())
+            .await?;
+        fixture
+            .run_sql_on_node_with_retry(
+                &failover_primary,
+                format!(
+                    "INSERT INTO {table_name} (worker_id, seq, payload) VALUES (9999, 2, 'post-failover-proof') ON CONFLICT (worker_id, seq) DO UPDATE SET payload = EXCLUDED.payload"
+                )
+                .as_str(),
+                Duration::from_secs(30),
+            )
+            .await?;
+        let workload = fixture
+            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
+            .await?;
+        if workload.committed_writes == 0 {
+            return Err(WorkerError::Message(
+                "stress failover workload committed zero writes".to_string(),
+            ));
+        }
+        ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
+
+        let primary_row_count = fixture
+            .assert_table_key_integrity_on_node(
+                &failover_primary,
+                table_name.as_str(),
+                1,
+                Duration::from_secs(90),
+            )
+            .await?;
+        fixture.record(format!(
+            "stress failover key integrity verified on {failover_primary} with row_count={primary_row_count}"
+        ));
+
+        let finished_at_unix_ms = unix_now()?.0;
+        Ok(StressScenarioSummary {
+            schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
+            scenario: scenario_name.to_string(),
+            status: "passed".to_string(),
+            started_at_unix_ms,
+            finished_at_unix_ms,
+            bootstrap_primary: Some(bootstrap_primary.clone()),
+            final_primary: Some(failover_primary.clone()),
+            former_primary_demoted: Some(true),
+            workload_spec: SqlWorkloadSpecSummary {
+                worker_count: workload_spec.worker_count,
+                run_interval_ms: workload_spec.run_interval_ms,
+                table_name,
+            },
+            workload,
+            ha_observations: ha_stats,
+            notes: vec![
+                format!(
+                    "phase_history={}",
+                    ClusterFixture::format_phase_history(&phase_history)
+                ),
+                format!(
+                    "primary_transition={}=>{}",
+                    bootstrap_primary, failover_primary
+                ),
+            ],
+        })
+    })
+    .await
+    {
+        Ok(run_result) => run_result,
+        Err(_) => Err(WorkerError::Message(format!(
+            "stress failover scenario timed out after {}s",
+            E2E_SCENARIO_TIMEOUT.as_secs()
+        ))),
+    };
+
+    let (summary, run_error) = match run_result {
+        Ok(summary) => (summary, None),
+        Err(err) => {
+            let message = err.to_string();
+            (
+                StressScenarioSummary::failed(scenario_name, message.clone()),
+                Some(message),
+            )
+        }
+    };
+    let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
+    let shutdown_result = fixture.shutdown().await;
+    finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result<(), WorkerError> {
+    let binaries = resolve_pg_binaries_for_real_tests()?;
+    let etcd_bin = resolve_etcd_bin_for_real_tests()?;
+    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
+    let scenario_name = "ha-e2e-stress-no-quorum-fencing-concurrent-sql";
+
+    let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+        let started_at_unix_ms = unix_now()?.0;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let workload_spec = SqlWorkloadSpec {
+            scenario_name: scenario_name.to_string(),
+            table_name: "ha_stress_fencing".to_string(),
+            worker_count: 4,
+            run_interval_ms: 250,
+        };
+        let table_name = sanitize_sql_identifier(workload_spec.table_name.as_str());
+        fixture.record("stress no-quorum bootstrap: wait for stable primary");
+        let bootstrap_primary = fixture
+            .wait_for_stable_primary(
+                Duration::from_secs(60),
+                None,
+                5,
+                &mut phase_history,
+            )
+            .await?;
+        fixture
+            .prepare_stress_table(&bootstrap_primary, table_name.as_str())
+            .await?;
+        let workload_handle = fixture.start_sql_workload(workload_spec.clone()).await?;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        fixture.record("stress no-quorum: stop etcd majority while workload active");
+        let stopped_members = fixture.stop_etcd_majority(2).await?;
+        fixture.record(format!(
+            "stress no-quorum members stopped: {}",
+            stopped_members.join(",")
+        ));
+        fixture.wait_for_all_failsafe(Duration::from_secs(60)).await?;
+        let failsafe_observed_at_ms = unix_now()?.0;
+        let ha_stats = fixture
+            .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 100)
+            .await?;
+
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        let workload = fixture
+            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
+            .await?;
+        if workload.committed_writes == 0 {
+            return Err(WorkerError::Message(
+                "stress no-quorum workload committed zero writes".to_string(),
+            ));
+        }
+        let rejected_writes = workload
+            .fencing_failures
+            .saturating_add(workload.transient_failures);
+        if rejected_writes == 0 {
+            return Err(WorkerError::Message(
+                "expected write rejections (fencing or transient) during fail-safe window"
+                    .to_string(),
+            ));
+        }
+        let fencing_grace_ms = 5_000u64;
+        let cutoff_ms = failsafe_observed_at_ms.saturating_add(fencing_grace_ms);
+        let commits_after_cutoff = workload
+            .committed_at_unix_ms
+            .iter()
+            .filter(|timestamp| **timestamp > cutoff_ms)
+            .count();
+        let allowed_post_cutoff_commits = 10usize;
+        if commits_after_cutoff > allowed_post_cutoff_commits {
+            return Err(WorkerError::Message(format!(
+                "writes still committed after fail-safe fencing cutoff beyond tolerance; cutoff_ms={cutoff_ms} commits_after_cutoff={commits_after_cutoff} allowed={allowed_post_cutoff_commits}"
+            )));
+        }
+        ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
+
+        let primary_row_count = fixture
+            .assert_table_key_integrity_on_node(
+                &bootstrap_primary,
+                table_name.as_str(),
+                1,
+                Duration::from_secs(90),
+            )
+            .await?;
+        fixture.record(format!(
+            "stress no-quorum key integrity verified on {bootstrap_primary} with row_count={primary_row_count}"
+        ));
+        let finished_at_unix_ms = unix_now()?.0;
+        Ok(StressScenarioSummary {
+            schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
+            scenario: scenario_name.to_string(),
+            status: "passed".to_string(),
+            started_at_unix_ms,
+            finished_at_unix_ms,
+            bootstrap_primary: Some(bootstrap_primary),
+            final_primary: None,
+            former_primary_demoted: None,
+            workload_spec: SqlWorkloadSpecSummary {
+                worker_count: workload_spec.worker_count,
+                run_interval_ms: workload_spec.run_interval_ms,
+                table_name,
+            },
+            workload,
+            ha_observations: ha_stats,
+            notes: vec![
+                format!("phase_history={}", ClusterFixture::format_phase_history(&phase_history)),
+                format!("failsafe_observed_at_ms={failsafe_observed_at_ms}"),
+                format!("fencing_cutoff_ms={cutoff_ms}"),
+                format!("allowed_post_cutoff_commits={allowed_post_cutoff_commits}"),
+            ],
+        })
+    })
+    .await
+    {
+        Ok(run_result) => run_result,
+        Err(_) => Err(WorkerError::Message(format!(
+            "stress no-quorum scenario timed out after {}s",
+            E2E_SCENARIO_TIMEOUT.as_secs()
+        ))),
+    };
+
+    let (summary, run_error) = match run_result {
+        Ok(summary) => (summary, None),
+        Err(err) => {
+            let message = err.to_string();
+            (
+                StressScenarioSummary::failed(scenario_name, message.clone()),
+                Some(message),
+            )
+        }
+    };
+    let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
+    let shutdown_result = fixture.shutdown().await;
+    finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
 }

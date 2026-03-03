@@ -1,0 +1,127 @@
+[1772535544056] stress failover bootstrap: wait for stable primary
+[1772535544056] api request start: node=node-1 GET /ha/state
+[1772535544156] api request success: node=node-1 GET /ha/state status=200
+[1772535544156] api request start: node=node-2 GET /ha/state
+[1772535544157] api request success: node=node-2 GET /ha/state status=200
+[1772535544157] api request start: node=node-3 GET /ha/state
+[1772535554356] api request failure: node=node-3 GET /ha/state error=read response for GET /ha/state timed out after 10s
+[1772535554457] api request start: node=node-1 GET /ha/state
+[1772535554677] api request success: node=node-1 GET /ha/state status=200
+[1772535554677] api request start: node=node-2 GET /ha/state
+[1772535554677] api request success: node=node-2 GET /ha/state status=200
+[1772535554677] api request start: node=node-3 GET /ha/state
+[1772535554678] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535554884] api request start: node=node-1 GET /ha/state
+[1772535555000] api request success: node=node-1 GET /ha/state status=200
+[1772535555000] api request start: node=node-2 GET /ha/state
+[1772535555001] api request success: node=node-2 GET /ha/state status=200
+[1772535555001] api request start: node=node-3 GET /ha/state
+[1772535565223] api request failure: node=node-3 GET /ha/state error=read response for GET /ha/state timed out after 10s
+[1772535565335] api request start: node=node-1 GET /ha/state
+[1772535565337] api request success: node=node-1 GET /ha/state status=200
+[1772535565337] api request start: node=node-2 GET /ha/state
+[1772535565337] api request success: node=node-2 GET /ha/state status=200
+[1772535565337] api request start: node=node-3 GET /ha/state
+[1772535565338] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535565547] api request start: node=node-1 GET /ha/state
+[1772535565660] api request success: node=node-1 GET /ha/state status=200
+[1772535565660] api request start: node=node-2 GET /ha/state
+[1772535565660] api request success: node=node-2 GET /ha/state status=200
+[1772535565661] api request start: node=node-3 GET /ha/state
+[1772535565661] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535565871] api request start: node=node-1 GET /ha/state
+[1772535565987] api request success: node=node-1 GET /ha/state status=200
+[1772535565987] api request start: node=node-2 GET /ha/state
+[1772535565988] api request success: node=node-2 GET /ha/state status=200
+[1772535565988] api request start: node=node-3 GET /ha/state
+[1772535576303] api request failure: node=node-3 GET /ha/state error=read response for GET /ha/state timed out after 10s
+[1772535576416] api request start: node=node-1 GET /ha/state
+[1772535576420] api request success: node=node-1 GET /ha/state status=200
+[1772535576420] api request start: node=node-2 GET /ha/state
+[1772535576421] api request success: node=node-2 GET /ha/state status=200
+[1772535576421] api request start: node=node-3 GET /ha/state
+[1772535576422] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535576647] api request start: node=node-1 GET /ha/state
+[1772535576648] api request success: node=node-1 GET /ha/state status=200
+[1772535576648] api request start: node=node-2 GET /ha/state
+[1772535576648] api request success: node=node-2 GET /ha/state status=200
+[1772535576648] api request start: node=node-3 GET /ha/state
+[1772535576648] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535576759] api request start: node=node-1 GET /ha/state
+[1772535576873] api request success: node=node-1 GET /ha/state status=200
+[1772535576873] api request start: node=node-2 GET /ha/state
+[1772535576874] api request success: node=node-2 GET /ha/state status=200
+[1772535576874] api request start: node=node-3 GET /ha/state
+[1772535576874] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535577083] api request start: node=node-1 GET /ha/state
+[1772535577197] api request success: node=node-1 GET /ha/state status=200
+[1772535577197] api request start: node=node-2 GET /ha/state
+[1772535577198] api request success: node=node-2 GET /ha/state status=200
+[1772535577198] api request start: node=node-3 GET /ha/state
+[1772535587477] api request failure: node=node-3 GET /ha/state error=read response for GET /ha/state timed out after 10s
+[1772535587584] api request start: node=node-1 GET /ha/state
+[1772535587587] api request success: node=node-1 GET /ha/state status=200
+[1772535587587] api request start: node=node-2 GET /ha/state
+[1772535587589] api request success: node=node-2 GET /ha/state status=200
+[1772535587589] api request start: node=node-3 GET /ha/state
+[1772535587589] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535587805] api request start: node=node-1 GET /ha/state
+[1772535587921] api request success: node=node-1 GET /ha/state status=200
+[1772535587921] api request start: node=node-2 GET /ha/state
+[1772535587922] api request success: node=node-2 GET /ha/state status=200
+[1772535587922] api request start: node=node-3 GET /ha/state
+[1772535587922] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535588027] api request start: node=node-1 GET /ha/state
+[1772535588139] api request success: node=node-1 GET /ha/state status=200
+[1772535588140] api request start: node=node-2 GET /ha/state
+[1772535588141] api request success: node=node-2 GET /ha/state status=200
+[1772535588141] api request start: node=node-3 GET /ha/state
+[1772535588142] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535588355] api request start: node=node-1 GET /ha/state
+[1772535588471] api request success: node=node-1 GET /ha/state status=200
+[1772535588471] api request start: node=node-2 GET /ha/state
+[1772535588472] api request success: node=node-2 GET /ha/state status=200
+[1772535588472] api request start: node=node-3 GET /ha/state
+[1772535588473] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535588681] api request start: node=node-1 GET /ha/state
+[1772535588795] api request success: node=node-1 GET /ha/state status=200
+[1772535588795] api request start: node=node-2 GET /ha/state
+[1772535588795] api request success: node=node-2 GET /ha/state status=200
+[1772535588795] api request start: node=node-3 GET /ha/state
+[1772535599105] api request failure: node=node-3 GET /ha/state error=read response for GET /ha/state timed out after 10s
+[1772535599216] api request start: node=node-1 GET /ha/state
+[1772535599219] api request success: node=node-1 GET /ha/state status=200
+[1772535599219] api request start: node=node-2 GET /ha/state
+[1772535599221] api request success: node=node-2 GET /ha/state status=200
+[1772535599221] api request start: node=node-3 GET /ha/state
+[1772535599222] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535599426] api request start: node=node-1 GET /ha/state
+[1772535599538] api request success: node=node-1 GET /ha/state status=200
+[1772535599538] api request start: node=node-2 GET /ha/state
+[1772535599539] api request success: node=node-2 GET /ha/state status=200
+[1772535599539] api request start: node=node-3 GET /ha/state
+[1772535599540] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535599651] api request start: node=node-1 GET /ha/state
+[1772535599767] api request success: node=node-1 GET /ha/state status=200
+[1772535599767] api request start: node=node-2 GET /ha/state
+[1772535599772] api request success: node=node-2 GET /ha/state status=200
+[1772535599772] api request start: node=node-3 GET /ha/state
+[1772535599772] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535599985] api request start: node=node-1 GET /ha/state
+[1772535600093] api request success: node=node-1 GET /ha/state status=200
+[1772535600093] api request start: node=node-2 GET /ha/state
+[1772535600097] api request success: node=node-2 GET /ha/state status=200
+[1772535600097] api request start: node=node-3 GET /ha/state
+[1772535600098] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535600311] api request start: node=node-1 GET /ha/state
+[1772535600317] api request success: node=node-1 GET /ha/state status=200
+[1772535600317] api request start: node=node-2 GET /ha/state
+[1772535600317] api request success: node=node-2 GET /ha/state status=200
+[1772535600317] api request start: node=node-3 GET /ha/state
+[1772535600318] api request failure: node=node-3 GET /ha/state error=api step for GET /ha/state failed: api write body failed: Broken pipe (os error 32)
+[1772535600429] api request start: node=node-1 GET /ha/state
+[1772535600542] api request success: node=node-1 GET /ha/state status=200
+[1772535600542] api request start: node=node-2 GET /ha/state
+[1772535600543] api request success: node=node-2 GET /ha/state status=200
+[1772535600543] api request start: node=node-3 GET /ha/state
+[1772535610705] api request failure: node=node-3 GET /ha/state error=read response for GET /ha/state timed out after 10s

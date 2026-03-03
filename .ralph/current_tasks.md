@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 12:09:51 PM CET 2026
+Generated: Tue Mar  3 12:33:38 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -75,6 +75,16 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 
 <description>
 `make test` failed while running real process worker job tests. Multiple tests panic because process state publish fails with `state channel is closed`.
+
+---
+
+**Path:** `.ralph/tasks/bugs/ralph-event-watch-missing-script-path.md`
+
+## Bug: ralph-event-watch service restart loop from missing script path <status>not_started</status> <passes>false</passes>
+
+<description>
+`ralph-event-watch.service` is in continuous auto-restart with exit code 127 because `ExecStart` points to a non-existent script path:
+`/home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh`.
 
 ---
 
@@ -443,7 +453,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/27-task-e2e-ha-stress-workloads-during-role-changes.md`
 
-## Task: Add HA stress e2e suites with concurrent SQL workloads during role changes <status>not_started</status> <passes>false</passes>
+## Task: Add HA stress e2e suites with concurrent SQL workloads during role changes <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
 <blocked_by>25-task-enforce-e2e-api-only-control-no-direct-dcs</blocked_by>

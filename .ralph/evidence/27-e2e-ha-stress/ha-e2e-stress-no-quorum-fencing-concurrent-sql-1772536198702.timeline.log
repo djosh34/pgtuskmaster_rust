@@ -1,0 +1,57 @@
+[1772536109459] stress no-quorum bootstrap: wait for stable primary
+[1772536109459] api request start: node=node-1 GET /ha/state
+[1772536109560] api request success: node=node-1 GET /ha/state status=200
+[1772536109560] api request start: node=node-2 GET /ha/state
+[1772536109560] api request success: node=node-2 GET /ha/state status=200
+[1772536109560] api request start: node=node-3 GET /ha/state
+[1772536109560] api request success: node=node-3 GET /ha/state status=200
+[1772536109560] stable-primary poll states: node-1:Primary:leader=node-1, node-2:WaitingPostgresReachable:leader=node-1, node-3:WaitingPostgresReachable:leader=node-1
+[1772536109978] api request start: node=node-1 GET /ha/state
+[1772536110085] api request success: node=node-1 GET /ha/state status=200
+[1772536110085] api request start: node=node-2 GET /ha/state
+[1772536110085] api request success: node=node-2 GET /ha/state status=200
+[1772536110085] api request start: node=node-3 GET /ha/state
+[1772536110085] api request success: node=node-3 GET /ha/state status=200
+[1772536110085] stable-primary poll states: node-1:Primary:leader=node-1, node-2:Replica:leader=node-1, node-3:WaitingPostgresReachable:leader=node-1
+[1772536110414] api request start: node=node-1 GET /ha/state
+[1772536110421] api request success: node=node-1 GET /ha/state status=200
+[1772536110421] api request start: node=node-2 GET /ha/state
+[1772536110422] api request success: node=node-2 GET /ha/state status=200
+[1772536110422] api request start: node=node-3 GET /ha/state
+[1772536110422] api request success: node=node-3 GET /ha/state status=200
+[1772536110422] stable-primary poll states: node-1:Primary:leader=node-1, node-2:Replica:leader=node-1, node-3:Replica:leader=node-1
+[1772536110627] api request start: node=node-1 GET /ha/state
+[1772536110855] api request success: node=node-1 GET /ha/state status=200
+[1772536110855] api request start: node=node-2 GET /ha/state
+[1772536110856] api request success: node=node-2 GET /ha/state status=200
+[1772536110856] api request start: node=node-3 GET /ha/state
+[1772536110856] api request success: node=node-3 GET /ha/state status=200
+[1772536110967] api request start: node=node-1 GET /ha/state
+[1772536111195] api request success: node=node-1 GET /ha/state status=200
+[1772536111196] api request start: node=node-2 GET /ha/state
+[1772536111197] api request success: node=node-2 GET /ha/state status=200
+[1772536111197] api request start: node=node-3 GET /ha/state
+[1772536111197] api request success: node=node-3 GET /ha/state status=200
+[1772536111224] sql workload started: scenario=ha-e2e-stress-no-quorum-fencing-concurrent-sql table=ha_stress_fencing workers=4 interval_ms=250
+[1772536114426] stress no-quorum: stop etcd majority while workload active
+[1772536120731] stress no-quorum members stopped: etcd-a,etcd-b
+[1772536120731] api request start: node=node-1 GET /ha/state
+[1772536120732] api request success: node=node-1 GET /ha/state status=200
+[1772536120732] api request start: node=node-2 GET /ha/state
+[1772536120733] api request success: node=node-2 GET /ha/state status=200
+[1772536120733] api request start: node=node-3 GET /ha/state
+[1772536120733] api request success: node=node-3 GET /ha/state status=200
+[1772536120733] api request start: node=node-1 GET /ha/state
+[1772536120734] api request success: node=node-1 GET /ha/state status=200
+[1772536120734] api request start: node=node-2 GET /ha/state
+[1772536120734] api request success: node=node-2 GET /ha/state status=200
+[1772536120734] api request start: node=node-3 GET /ha/state
+[1772536120734] api request success: node=node-3 GET /ha/state status=200
+[1772536125802] api request start: node=node-1 GET /ha/state
+[1772536141657] api request success: node=node-1 GET /ha/state status=200
+[1772536141657] api request start: node=node-2 GET /ha/state
+[1772536152093] api request success: node=node-2 GET /ha/state status=200
+[1772536152093] api request start: node=node-3 GET /ha/state
+[1772536157420] api request success: node=node-3 GET /ha/state status=200
+[1772536179508] sql workload stopped: scenario=ha-e2e-stress-no-quorum-fencing-concurrent-sql committed=36 unique_keys=36 transient=144 fencing=0 hard=0
+[1772536198701] stress no-quorum key integrity verified on node-1 with row_count=36

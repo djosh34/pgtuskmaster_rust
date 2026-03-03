@@ -26,6 +26,6 @@
         - [ ] include summary of what was done in commit message (evidence for tests completing, challenges faced during
           implementation)
         - [ ] Make sure to add all files, please do not forget commiting any file when completing a task, also the stuff in .ralph
+    - [ ] push commits with: `git push`
     - [ ] Write any learnings/surprises to AGENTS.md
     - [ ] QUIT IMMEDIATELY
-

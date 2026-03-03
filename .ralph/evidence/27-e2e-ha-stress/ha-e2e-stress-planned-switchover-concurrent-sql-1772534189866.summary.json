@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "scenario": "ha-e2e-stress-planned-switchover-concurrent-sql",
+  "status": "failed",
+  "started_at_unix_ms": 0,
+  "finished_at_unix_ms": 0,
+  "bootstrap_primary": null,
+  "final_primary": null,
+  "former_primary_demoted": null,
+  "workload_spec": {
+    "worker_count": 0,
+    "run_interval_ms": 0,
+    "table_name": ""
+  },
+  "workload": {
+    "scenario_name": "",
+    "table_name": "",
+    "worker_count": 0,
+    "started_at_unix_ms": 0,
+    "finished_at_unix_ms": 0,
+    "duration_ms": 0,
+    "attempted_writes": 0,
+    "committed_writes": 0,
+    "attempted_reads": 0,
+    "read_successes": 0,
+    "transient_failures": 0,
+    "fencing_failures": 0,
+    "hard_failures": 0,
+    "unique_committed_keys": 0,
+    "committed_keys": [],
+    "committed_at_unix_ms": [],
+    "worker_stats": [],
+    "worker_errors": []
+  },
+  "ha_observations": {
+    "sample_count": 0,
+    "api_error_count": 0,
+    "max_concurrent_primaries": 0,
+    "leader_change_count": 0,
+    "failsafe_sample_count": 0,
+    "recent_samples": []
+  },
+  "notes": [
+    "timed out waiting for table ha_stress_switchover readability on nodes={\"node-2\", \"node-3\"}; last_observation=node=node-3 table readability probe failed: psql exited unsuccessfully with status exit status: 1; stderr=ERROR:  relation \"ha_stress_switchover\" does not exist\nLINE 1: SELECT COUNT(*)::bigint FROM ha_stress_switchover\n                                     ^"
+  ]
+}
