@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use crate::{
-    api::HaStateResponse,
+    cli::client::{CliApiClient, HaStateResponse},
     config::{
         schema::{
             ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
@@ -174,9 +174,7 @@ impl PartitionFixture {
                 ))
             })?;
             let endpoint = endpoints.get(endpoint_index).ok_or_else(|| {
-                WorkerError::Message(format!(
-                    "missing etcd endpoint for index {endpoint_index}"
-                ))
+                WorkerError::Message(format!("missing etcd endpoint for index {endpoint_index}"))
             })?;
             let proxy_port = next_port(proxy_ports.as_slice(), &mut cursor)?;
             let target_addr = parse_http_endpoint(endpoint.as_str())?;
@@ -392,19 +390,18 @@ impl PartitionFixture {
         node_id: &str,
         mode: ProxyMode,
     ) -> Result<(), WorkerError> {
-        let links = self
-            .etcd_links_by_node
-            .get(node_id)
-            .ok_or_else(|| WorkerError::Message(format!("unknown node for etcd partition: {node_id}")))?;
+        let links = self.etcd_links_by_node.get(node_id).ok_or_else(|| {
+            WorkerError::Message(format!("unknown node for etcd partition: {node_id}"))
+        })?;
         for link_name in links {
             let link = self.etcd_proxies.get(link_name.as_str()).ok_or_else(|| {
                 WorkerError::Message(format!(
                     "missing etcd proxy link for node {node_id}: {link_name}"
                 ))
             })?;
-            link.set_mode(mode.clone())
-                .await
-                .map_err(|err| WorkerError::Message(format!("set mode on {link_name} failed: {err}")))?;
+            link.set_mode(mode.clone()).await.map_err(|err| {
+                WorkerError::Message(format!("set mode on {link_name} failed: {err}"))
+            })?;
         }
         Ok(())
     }
@@ -413,22 +410,25 @@ impl PartitionFixture {
         self.record(format!(
             "network fault: partition node from etcd majority node={node_id}"
         ));
-        self.set_etcd_mode_for_node(node_id, ProxyMode::Blocked).await
+        self.set_etcd_mode_for_node(node_id, ProxyMode::Blocked)
+            .await
     }
 
     async fn partition_primary_from_etcd(&mut self, node_id: &str) -> Result<(), WorkerError> {
         self.record(format!(
             "network fault: partition current primary from etcd node={node_id}"
         ));
-        self.set_etcd_mode_for_node(node_id, ProxyMode::Blocked).await
+        self.set_etcd_mode_for_node(node_id, ProxyMode::Blocked)
+            .await
     }
 
     async fn isolate_api_path(&mut self, node_id: &str) -> Result<(), WorkerError> {
-        self.record(format!("network fault: isolate API path for node={node_id}"));
-        let link = self
-            .api_proxies
-            .get(node_id)
-            .ok_or_else(|| WorkerError::Message(format!("missing api proxy for node: {node_id}")))?;
+        self.record(format!(
+            "network fault: isolate API path for node={node_id}"
+        ));
+        let link = self.api_proxies.get(node_id).ok_or_else(|| {
+            WorkerError::Message(format!("missing api proxy for node: {node_id}"))
+        })?;
         link.set_mode(ProxyMode::Blocked)
             .await
             .map_err(|err| WorkerError::Message(format!("set api proxy mode failed: {err}")))
@@ -447,42 +447,30 @@ impl PartitionFixture {
                 .map_err(|err| WorkerError::Message(format!("heal api proxy failed: {err}")))?;
         }
         for link in self.pg_proxies.values() {
-            link.set_mode(ProxyMode::PassThrough)
-                .await
-                .map_err(|err| WorkerError::Message(format!("heal postgres proxy failed: {err}")))?;
+            link.set_mode(ProxyMode::PassThrough).await.map_err(|err| {
+                WorkerError::Message(format!("heal postgres proxy failed: {err}"))
+            })?;
         }
         Ok(())
     }
 
     async fn fetch_node_ha_state(&self, node_id: &str) -> Result<HaStateResponse, WorkerError> {
-        let node = self
-            .node_by_id(node_id)
-            .ok_or_else(|| WorkerError::Message(format!("unknown node id for HA state: {node_id}")))?;
-        let url = format!("http://{}/ha/state", node.api_proxy_addr);
-        let client = reqwest::Client::builder()
-            .timeout(E2E_HTTP_STEP_TIMEOUT)
-            .build()
-            .map_err(|err| WorkerError::Message(format!("build reqwest client failed: {err}")))?;
-        let response = client
-            .get(url.as_str())
-            .send()
-            .await
-            .map_err(|err| WorkerError::Message(format!("GET /ha/state request failed: {err}")))?;
-        if response.status() != reqwest::StatusCode::OK {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<body read failed>".to_string());
-            return Err(WorkerError::Message(format!(
-                "GET /ha/state returned status={status} body={} node={node_id}",
-                body.trim()
-            )));
-        }
-        response
-            .json::<HaStateResponse>()
-            .await
-            .map_err(|err| WorkerError::Message(format!("decode /ha/state response failed: {err}")))
+        let node = self.node_by_id(node_id).ok_or_else(|| {
+            WorkerError::Message(format!("unknown node id for HA state: {node_id}"))
+        })?;
+        let timeout_ms = u64::try_from(E2E_HTTP_STEP_TIMEOUT.as_millis()).map_err(|_| {
+            WorkerError::Message("e2e HTTP timeout does not fit into u64".to_string())
+        })?;
+        let client = CliApiClient::new(
+            format!("http://{}", node.api_proxy_addr),
+            timeout_ms,
+            None,
+            None,
+        )
+        .map_err(|err| WorkerError::Message(format!("build CliApiClient failed: {err}")))?;
+        client.get_ha_state().await.map_err(|err| {
+            WorkerError::Message(format!("GET /ha/state failed for node {node_id}: {err}"))
+        })
     }
 
     async fn cluster_ha_states_best_effort(
@@ -523,7 +511,10 @@ impl PartitionFixture {
                 .iter()
                 .map(|state| {
                     let leader = state.leader.as_deref().unwrap_or("none");
-                    format!("{}:{}:leader={leader}", state.self_member_id, state.ha_phase)
+                    format!(
+                        "{}:{}:leader={leader}",
+                        state.self_member_id, state.ha_phase
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -607,10 +598,7 @@ impl PartitionFixture {
                     if state.ha_phase == expected_phase {
                         return Ok(());
                     }
-                    format!(
-                        "phase={} leader={:?}",
-                        state.ha_phase, state.leader
-                    )
+                    format!("phase={} leader={:?}", state.ha_phase, state.leader)
                 }
                 Err(err) => err.to_string(),
             };
@@ -863,11 +851,13 @@ fn parse_loopback_socket(port: u16) -> Result<SocketAddr, WorkerError> {
 
 fn parse_http_endpoint(endpoint: &str) -> Result<SocketAddr, WorkerError> {
     let host_port = endpoint.strip_prefix("http://").ok_or_else(|| {
-        WorkerError::Message(format!("unsupported endpoint format for proxy target: {endpoint}"))
+        WorkerError::Message(format!(
+            "unsupported endpoint format for proxy target: {endpoint}"
+        ))
     })?;
-    host_port
-        .parse::<SocketAddr>()
-        .map_err(|err| WorkerError::Message(format!("parse endpoint socket failed: {endpoint} ({err})")))
+    host_port.parse::<SocketAddr>().map_err(|err| {
+        WorkerError::Message(format!("parse endpoint socket failed: {endpoint} ({err})"))
+    })
 }
 
 fn allocate_non_overlapping_ports(

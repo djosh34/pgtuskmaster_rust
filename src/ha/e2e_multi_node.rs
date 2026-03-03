@@ -7,6 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use clap::Parser;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, Command},
@@ -14,7 +15,12 @@ use tokio::{
 };
 
 use crate::{
-    api::{AcceptedResponse, HaStateResponse},
+    cli::{
+        self,
+        args::Cli,
+        client::{AcceptedResponse as CliAcceptedResponse, CliApiClient, HaStateResponse},
+        error::CliError,
+    },
     config::{
         schema::{
             ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
@@ -51,6 +57,7 @@ struct ClusterFixture {
     psql_bin: PathBuf,
     etcd: Option<EtcdClusterHandle>,
     nodes: Vec<NodeFixture>,
+    api_clients: Vec<CliApiClient>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
     timeline: Vec<String>,
 }
@@ -62,6 +69,11 @@ const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(45);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
 const STRESS_ARTIFACT_DIR: &str = ".ralph/evidence/27-e2e-ha-stress";
 const STRESS_SUMMARY_SCHEMA_VERSION: u32 = 1;
+
+fn e2e_http_timeout_ms() -> Result<u64, WorkerError> {
+    u64::try_from(E2E_HTTP_STEP_TIMEOUT.as_millis())
+        .map_err(|_| WorkerError::Message("e2e HTTP timeout does not fit into u64".to_string()))
+}
 
 #[derive(Clone)]
 struct SqlWorkloadSpec {
@@ -338,6 +350,7 @@ impl ClusterFixture {
         let psql_bin = binaries.psql.clone();
         let mut tasks = Vec::new();
         let mut nodes = Vec::new();
+        let mut api_clients = Vec::new();
         let rewind_source_port = *node_ports.first().ok_or_else(|| {
             WorkerError::Message("missing postgres ports for cluster startup".to_string())
         })?;
@@ -374,6 +387,17 @@ impl ClusterFixture {
             let api_addr: SocketAddr = format!("127.0.0.1:{api_port}")
                 .parse()
                 .map_err(|err| WorkerError::Message(format!("parse api addr failed: {err}")))?;
+            let api_client = CliApiClient::new(
+                format!("http://{api_addr}"),
+                e2e_http_timeout_ms()?,
+                None,
+                None,
+            )
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "build CliApiClient failed for startup node {node_id}: {err}"
+                ))
+            })?;
 
             let runtime_cfg = RuntimeConfig {
                 cluster: ClusterConfig {
@@ -419,11 +443,9 @@ impl ClusterFixture {
             tasks.push(tokio::task::spawn_local(async move {
                 match crate::runtime::run_node_from_config(runtime_cfg).await {
                     Ok(()) => Ok(()),
-                    Err(err) => {
-                        Err(WorkerError::Message(format!(
-                            "runtime node {task_node_id} exited with error: {err}"
-                        )))
-                    }
+                    Err(err) => Err(WorkerError::Message(format!(
+                        "runtime node {task_node_id} exited with error: {err}"
+                    ))),
                 }
             }));
 
@@ -434,6 +456,7 @@ impl ClusterFixture {
                 data_dir,
                 log_file: log_file.clone(),
             });
+            api_clients.push(api_client);
 
             let task_handle = tasks.last_mut().ok_or_else(|| {
                 WorkerError::Message("missing runtime task after node spawn".to_string())
@@ -455,7 +478,6 @@ impl ClusterFixture {
                 )
                 .await?;
             }
-
         }
 
         Ok(Self {
@@ -466,6 +488,7 @@ impl ClusterFixture {
             psql_bin,
             etcd: Some(etcd),
             nodes,
+            api_clients,
             tasks,
             timeline: Vec::new(),
         })
@@ -1147,65 +1170,71 @@ impl ClusterFixture {
         Ok(())
     }
 
-    // Post-start hands-off policy: only use external HTTP routes as control/observation inputs.
-    // Do not steer cluster state through internal workers or direct DCS mutation calls.
-    async fn send_node_request(
-        &mut self,
+    fn node_api_base_url_by_index(
+        &self,
         node_index: usize,
-        method: &str,
-        path: &str,
-        body: Option<&[u8]>,
-        content_type: Option<&str>,
-    ) -> Result<ApiHttpResponse, WorkerError> {
-        let node_id = self
-            .nodes
-            .get(node_index)
-            .ok_or_else(|| {
-                WorkerError::Message(format!("invalid node index for API request: {node_index}"))
-            })?
-            .id
-            .clone();
-        let node_addr = self
-            .nodes
-            .get(node_index)
-            .ok_or_else(|| {
-                WorkerError::Message(format!("invalid node index for API request: {node_index}"))
-            })?
-            .api_addr;
-        self.record(format!("api request start: node={node_id} {method} {path}"));
-        let response = send_http_request(node_addr, method, path, body, content_type).await;
-        match &response {
-            Ok(http) => self.record(format!(
-                "api request success: node={node_id} {method} {path} status={}",
-                http.status_code
-            )),
-            Err(err) => self.record(format!(
-                "api request failure: node={node_id} {method} {path} error={err}"
-            )),
-        }
-        response
+    ) -> Result<(String, String), WorkerError> {
+        let node = self.nodes.get(node_index).ok_or_else(|| {
+            WorkerError::Message(format!("invalid node index for API request: {node_index}"))
+        })?;
+        Ok((node.id.clone(), format!("http://{}", node.api_addr)))
     }
 
-    // Switchover is an allowed admin API control action in post-start scenarios.
-    async fn post_switchover_via_api(&mut self, requested_by: &str) -> Result<(), WorkerError> {
-        #[derive(serde::Serialize)]
-        struct SwitchoverBody<'a> {
-            requested_by: &'a str,
-        }
-
-        let body = serde_json::to_vec(&SwitchoverBody { requested_by }).map_err(|err| {
-            WorkerError::Message(format!("encode switchover request failed: {err}"))
+    fn cli_api_client_for_node_index(
+        &self,
+        node_index: usize,
+    ) -> Result<(String, CliApiClient), WorkerError> {
+        let (node_id, _) = self.node_api_base_url_by_index(node_index)?;
+        let client = self.api_clients.get(node_index).cloned().ok_or_else(|| {
+            WorkerError::Message(format!(
+                "missing cached CliApiClient for node index {node_index}"
+            ))
         })?;
-        let response = self
-            .send_node_request(
-                self.control_node_index()?,
-                "POST",
-                "/switchover",
-                Some(&body),
-                Some("application/json"),
-            )
-            .await?;
-        expect_accepted_response("POST /switchover", response)
+        Ok((node_id, client))
+    }
+
+    async fn request_switchover_via_cli(&mut self, requested_by: &str) -> Result<(), WorkerError> {
+        let (node_id, base_url) = self.node_api_base_url_by_index(self.control_node_index()?)?;
+        self.record(format!(
+            "cli request start: node={node_id} ha switchover request requested_by={requested_by}"
+        ));
+        let timeout_ms = e2e_http_timeout_ms()?;
+        let argv: Vec<String> = vec![
+            "pgtuskmasterctl".to_string(),
+            "--base-url".to_string(),
+            base_url,
+            "--timeout-ms".to_string(),
+            timeout_ms.to_string(),
+            "--output".to_string(),
+            "json".to_string(),
+            "ha".to_string(),
+            "switchover".to_string(),
+            "request".to_string(),
+            "--requested-by".to_string(),
+            requested_by.to_string(),
+        ];
+        let cli = Cli::try_parse_from(argv).map_err(|err| {
+            WorkerError::Message(format!("parse switchover CLI args failed: {err}"))
+        })?;
+        let output = cli::run(cli).await.map_err(|err| {
+            WorkerError::Message(format!("run switchover CLI command failed: {err}"))
+        })?;
+        let accepted =
+            serde_json::from_str::<CliAcceptedResponse>(output.as_str()).map_err(|err| {
+                WorkerError::Message(format!(
+                    "decode switchover CLI response failed: {err}; output={}",
+                    output.trim()
+                ))
+            })?;
+        if !accepted.accepted {
+            return Err(WorkerError::Message(
+                "switchover CLI response returned accepted=false".to_string(),
+            ));
+        }
+        self.record(format!(
+            "cli request success: node={node_id} ha switchover request accepted=true requested_by={requested_by}"
+        ));
+        Ok(())
     }
 
     async fn request_switchover_until_stable_primary_changes(
@@ -1230,7 +1259,7 @@ impl ClusterFixture {
 
         let mut last_error = "none".to_string();
         for attempt in 1..=max_attempts {
-            self.post_switchover_via_api(requested_by).await?;
+            self.request_switchover_via_cli(requested_by).await?;
             match self
                 .wait_for_stable_primary(
                     per_attempt_timeout,
@@ -1263,19 +1292,29 @@ impl ClusterFixture {
         &mut self,
         node_index: usize,
     ) -> Result<HaStateResponse, WorkerError> {
-        let response = self
-            .send_node_request(node_index, "GET", "/ha/state", None, None)
-            .await?;
-        if response.status_code != 200 {
-            let body = String::from_utf8_lossy(&response.body);
-            return Err(WorkerError::Message(format!(
-                "GET /ha/state returned status {} body={}",
-                response.status_code,
-                body.trim()
-            )));
+        let node_addr = self
+            .nodes
+            .get(node_index)
+            .ok_or_else(|| {
+                WorkerError::Message(format!(
+                    "invalid node index for HA state fetch: {node_index}"
+                ))
+            })?
+            .api_addr;
+        let (node_id, client) = self.cli_api_client_for_node_index(node_index)?;
+        match client.get_ha_state().await {
+            Ok(state) => Ok(state),
+            Err(CliError::Transport(primary_err)) => fetch_ha_state_via_tcp(node_addr)
+                .await
+                .map_err(|fallback_err| {
+                    WorkerError::Message(format!(
+                        "GET /ha/state failed for node {node_id}: primary_transport={primary_err}; fallback={fallback_err}"
+                    ))
+                }),
+            Err(err) => Err(WorkerError::Message(format!(
+                "GET /ha/state failed for node {node_id}: {err}"
+            ))),
         }
-        serde_json::from_slice::<HaStateResponse>(&response.body)
-            .map_err(|err| WorkerError::Message(format!("decode /ha/state response failed: {err}")))
     }
 
     async fn cluster_ha_states(&mut self) -> Result<Vec<HaStateResponse>, WorkerError> {
@@ -1412,28 +1451,57 @@ impl ClusterFixture {
 
     async fn wait_for_all_failsafe(&mut self, timeout: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
-        let mut last_error: Option<String> = None;
+        let mut observed_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
+        let mut last_observation: Option<String> = None;
         loop {
-            match self.cluster_ha_states().await {
-                Ok(states) => {
-                    let all_failsafe = !states.is_empty()
-                        && states.iter().all(|state| state.ha_phase == "FailSafe");
-                    if all_failsafe {
-                        return Ok(());
-                    }
-                }
-                Err(err) => {
-                    last_error = Some(err.to_string());
-                }
-            }
             if tokio::time::Instant::now() >= deadline {
-                let detail = last_error
+                let detail = last_observation
                     .as_deref()
                     .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for all nodes to enter fail-safe via API; last_error={detail}"
+                    "timed out waiting for all nodes to enter fail-safe via API; last_observation={detail}"
                 )));
             }
+            self.ensure_runtime_tasks_healthy().await?;
+            let mut poll_details = Vec::new();
+            let mut has_primary = false;
+            let node_count = self.nodes.len();
+            for node_index in 0..node_count {
+                let node_id = self
+                    .nodes
+                    .get(node_index)
+                    .map(|node| node.id.clone())
+                    .ok_or_else(|| {
+                        WorkerError::Message(format!(
+                            "missing node metadata for fail-safe poll index {node_index}"
+                        ))
+                    })?;
+                match self.fetch_node_ha_state_by_index(node_index).await {
+                    Ok(state) => {
+                        if state.ha_phase == "Primary" {
+                            has_primary = true;
+                        }
+                        if state.ha_phase == "FailSafe" {
+                            observed_failsafe_nodes.insert(node_id.clone());
+                        }
+                        poll_details.push(format!(
+                            "{node_id}:phase={} leader={:?}",
+                            state.ha_phase, state.leader
+                        ));
+                    }
+                    Err(err) => {
+                        poll_details.push(format!("{node_id}:error={err}"));
+                    }
+                }
+            }
+            if !has_primary && !observed_failsafe_nodes.is_empty() {
+                return Ok(());
+            }
+            last_observation = Some(format!(
+                "observed_failsafe_nodes={:?}; poll={}",
+                observed_failsafe_nodes,
+                poll_details.join(" | ")
+            ));
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -1552,6 +1620,14 @@ async fn wait_for_node_api_ready_or_task_exit(
     timeout: Duration,
 ) -> Result<(), WorkerError> {
     let deadline = tokio::time::Instant::now() + timeout;
+    let timeout_ms = e2e_http_timeout_ms()?;
+    let client = CliApiClient::new(format!("http://{node_addr}"), timeout_ms, None, None).map_err(
+        |err| {
+            WorkerError::Message(format!(
+                "build CliApiClient failed for api readiness probe on {node_id}: {err}"
+            ))
+        },
+    )?;
     loop {
         if task.is_finished() {
             let joined = task.await.map_err(|err| {
@@ -1568,20 +1644,9 @@ async fn wait_for_node_api_ready_or_task_exit(
             };
         }
 
-        let observation = match send_http_request(node_addr, "GET", "/ha/state", None, None).await
-        {
-            Ok(response) if response.status_code == 200 => return Ok(()),
-            Ok(response) => {
-                let body = String::from_utf8_lossy(&response.body);
-                format!(
-                    "status={} body={}",
-                    response.status_code,
-                    body.trim()
-                )
-            }
-            Err(err) => {
-                err.to_string()
-            }
+        let observation = match client.get_ha_state().await {
+            Ok(_) => return Ok(()),
+            Err(err) => err.to_string(),
         };
 
         if tokio::time::Instant::now() >= deadline {
@@ -1610,19 +1675,122 @@ fn read_log_tail(path: &Path, max_lines: usize) -> String {
     lines.join(" | ")
 }
 
+async fn fetch_ha_state_via_tcp(node_addr: SocketAddr) -> Result<HaStateResponse, WorkerError> {
+    let mut stream = match tokio::time::timeout(
+        E2E_HTTP_STEP_TIMEOUT,
+        tokio::net::TcpStream::connect(node_addr),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!(
+                "fallback connect to {node_addr} failed: {err}"
+            )));
+        }
+        Err(_) => {
+            return Err(WorkerError::Message(format!(
+                "fallback connect to {node_addr} timed out after {}s",
+                E2E_HTTP_STEP_TIMEOUT.as_secs()
+            )));
+        }
+    };
+    let request =
+        format!("GET /ha/state HTTP/1.1\r\nHost: {node_addr}\r\nConnection: close\r\n\r\n");
+    match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.write_all(request.as_bytes())).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!(
+                "fallback write request to {node_addr} failed: {err}"
+            )));
+        }
+        Err(_) => {
+            return Err(WorkerError::Message(format!(
+                "fallback write request to {node_addr} timed out after {}s",
+                E2E_HTTP_STEP_TIMEOUT.as_secs()
+            )));
+        }
+    }
+
+    let mut raw = Vec::new();
+    match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.read_to_end(&mut raw)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!(
+                "fallback read response from {node_addr} failed: {err}"
+            )));
+        }
+        Err(_) => {
+            return Err(WorkerError::Message(format!(
+                "fallback read response from {node_addr} timed out after {}s",
+                E2E_HTTP_STEP_TIMEOUT.as_secs()
+            )));
+        }
+    }
+
+    let (status_code, body) = parse_raw_http_response(raw.as_slice())?;
+    if status_code != 200 {
+        let body_text = String::from_utf8_lossy(body);
+        return Err(WorkerError::Message(format!(
+            "fallback GET /ha/state returned status {status_code} body={}",
+            body_text.trim()
+        )));
+    }
+
+    serde_json::from_slice::<HaStateResponse>(body)
+        .map_err(|err| WorkerError::Message(format!("fallback decode /ha/state failed: {err}")))
+}
+
+fn parse_raw_http_response(raw: &[u8]) -> Result<(u16, &[u8]), WorkerError> {
+    let status_line_end = raw
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .ok_or_else(|| WorkerError::Message("fallback response missing status line".to_string()))?;
+    let status_line = String::from_utf8_lossy(&raw[..status_line_end]);
+    let mut parts = status_line.split_whitespace();
+    let _http_version = parts.next().ok_or_else(|| {
+        WorkerError::Message("fallback response missing http version".to_string())
+    })?;
+    let status_code = parts
+        .next()
+        .ok_or_else(|| WorkerError::Message("fallback response missing status code".to_string()))?
+        .parse::<u16>()
+        .map_err(|err| {
+            WorkerError::Message(format!("fallback response status parse failed: {err}"))
+        })?;
+
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| {
+            WorkerError::Message("fallback response missing header/body boundary".to_string())
+        })?;
+    let body_start = header_end.checked_add(4).ok_or_else(|| {
+        WorkerError::Message("fallback response body offset overflow".to_string())
+    })?;
+    let body = raw.get(body_start..).ok_or_else(|| {
+        WorkerError::Message("fallback response body offset out of bounds".to_string())
+    })?;
+    Ok((status_code, body))
+}
+
 async fn wait_for_bootstrap_primary(
     node_addr: SocketAddr,
     expected_member_id: &str,
     timeout: Duration,
 ) -> Result<(), WorkerError> {
     let deadline = tokio::time::Instant::now() + timeout;
+    let timeout_ms = e2e_http_timeout_ms()?;
+    let client = CliApiClient::new(format!("http://{node_addr}"), timeout_ms, None, None).map_err(
+        |err| {
+            WorkerError::Message(format!(
+                "build CliApiClient failed for bootstrap probe on {expected_member_id}: {err}"
+            ))
+        },
+    )?;
     loop {
-        let observation = match send_http_request(node_addr, "GET", "/ha/state", None, None).await
-        {
-            Ok(response) if response.status_code == 200 => {
-                let state = serde_json::from_slice::<HaStateResponse>(&response.body).map_err(
-                    |err| WorkerError::Message(format!("decode /ha/state response failed: {err}")),
-                )?;
+        let observation = match client.get_ha_state().await {
+            Ok(state) => {
                 let is_expected_primary =
                     state.self_member_id == expected_member_id && state.ha_phase == "Primary";
                 if is_expected_primary {
@@ -1634,17 +1802,7 @@ async fn wait_for_bootstrap_primary(
                     state.self_member_id, state.ha_phase
                 )
             }
-            Ok(response) => {
-                let body = String::from_utf8_lossy(&response.body);
-                format!(
-                    "status={} body={}",
-                    response.status_code,
-                    body.trim()
-                )
-            }
-            Err(err) => {
-                err.to_string()
-            }
+            Err(err) => err.to_string(),
         };
 
         if tokio::time::Instant::now() >= deadline {
@@ -1955,151 +2113,6 @@ async fn run_sql_workload_worker(
         }
     }
     Ok(stats)
-}
-
-struct ApiHttpResponse {
-    status_code: u16,
-    body: Vec<u8>,
-}
-
-async fn send_http_request(
-    node_addr: SocketAddr,
-    method: &str,
-    path: &str,
-    body: Option<&[u8]>,
-    content_type: Option<&str>,
-) -> Result<ApiHttpResponse, WorkerError> {
-    let mut stream = match tokio::time::timeout(
-        E2E_HTTP_STEP_TIMEOUT,
-        tokio::net::TcpStream::connect(node_addr),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "connect {} for {method} {path} failed: {err}",
-                node_addr
-            )))
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "connect {} for {method} {path} timed out after {}s",
-                node_addr,
-                E2E_HTTP_STEP_TIMEOUT.as_secs()
-            )))
-        }
-    };
-
-    let payload = body.unwrap_or(&[]);
-    let mut request =
-        format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
-    if !payload.is_empty() {
-        let ct = content_type.unwrap_or("application/json");
-        request.push_str(&format!("Content-Type: {ct}\r\n"));
-        request.push_str(&format!("Content-Length: {}\r\n", payload.len()));
-    }
-    request.push_str("\r\n");
-
-    match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.write_all(request.as_bytes())).await {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "write request headers for {method} {path} failed: {err}"
-            )))
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "write request headers for {method} {path} timed out after {}s",
-                E2E_HTTP_STEP_TIMEOUT.as_secs()
-            )))
-        }
-    }
-    if !payload.is_empty() {
-        match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.write_all(payload)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return Err(WorkerError::Message(format!(
-                    "write request body for {method} {path} failed: {err}"
-                )))
-            }
-            Err(_) => {
-                return Err(WorkerError::Message(format!(
-                    "write request body for {method} {path} timed out after {}s",
-                    E2E_HTTP_STEP_TIMEOUT.as_secs()
-                )))
-            }
-        }
-    }
-
-    let mut raw = Vec::new();
-    match tokio::time::timeout(E2E_HTTP_STEP_TIMEOUT, stream.read_to_end(&mut raw)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "read response for {method} {path} failed: {err}"
-            )))
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "read response for {method} {path} timed out after {}s",
-                E2E_HTTP_STEP_TIMEOUT.as_secs()
-            )))
-        }
-    }
-    parse_http_response(raw.as_slice())
-}
-
-fn parse_http_response(raw: &[u8]) -> Result<ApiHttpResponse, WorkerError> {
-    let status_line_end = raw
-        .windows(2)
-        .position(|window| window == b"\r\n")
-        .ok_or_else(|| WorkerError::Message("missing status line terminator".to_string()))?;
-    let status_line = String::from_utf8_lossy(&raw[..status_line_end]);
-    let mut parts = status_line.split_whitespace();
-    let _http_version = parts
-        .next()
-        .ok_or_else(|| WorkerError::Message("missing http version".to_string()))?;
-    let status_code = parts
-        .next()
-        .ok_or_else(|| WorkerError::Message("missing status code".to_string()))?
-        .parse::<u16>()
-        .map_err(|err| WorkerError::Message(format!("invalid status code: {err}")))?;
-
-    let header_end = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| WorkerError::Message("missing header/body separator".to_string()))?;
-    let body_start = header_end
-        .checked_add(4)
-        .ok_or_else(|| WorkerError::Message("response body offset overflow".to_string()))?;
-    let body = raw
-        .get(body_start..)
-        .ok_or_else(|| WorkerError::Message("response body slice out of bounds".to_string()))?
-        .to_vec();
-
-    Ok(ApiHttpResponse { status_code, body })
-}
-
-fn expect_accepted_response(action: &str, response: ApiHttpResponse) -> Result<(), WorkerError> {
-    if response.status_code != 202 {
-        let body = String::from_utf8_lossy(&response.body);
-        return Err(WorkerError::Message(format!(
-            "{action} returned status {} body={}",
-            response.status_code,
-            body.trim()
-        )));
-    }
-
-    let decoded = serde_json::from_slice::<AcceptedResponse>(&response.body).map_err(|err| {
-        WorkerError::Message(format!("{action} decode accepted response failed: {err}"))
-    })?;
-    if !decoded.accepted {
-        return Err(WorkerError::Message(format!(
-            "{action} response accepted=false"
-        )));
-    }
-    Ok(())
 }
 
 fn finalize_stress_scenario_result(
@@ -2462,7 +2475,7 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
 
         fixture.record("stress switchover: trigger API switchover while workload is active");
         fixture
-            .post_switchover_via_api("e2e-stress-switchover")
+            .request_switchover_via_cli("e2e-stress-switchover")
             .await?;
         let ha_stats = fixture
             .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 80)
@@ -2785,10 +2798,10 @@ async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result
             stopped_members.join(",")
         ));
         fixture.wait_for_all_failsafe(Duration::from_secs(90)).await?;
-        let failsafe_observed_at_ms = unix_now()?.0;
         let ha_stats = fixture
             .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 100)
             .await?;
+        let failsafe_observed_at_ms = unix_now()?.0;
 
         tokio::time::sleep(Duration::from_secs(7)).await;
         let workload = fixture

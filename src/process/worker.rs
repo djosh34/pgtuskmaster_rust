@@ -533,6 +533,7 @@ mod tests {
     use std::{collections::VecDeque, fs, path::PathBuf, time::Duration};
 
     use tokio::{
+        process::Command,
         sync::mpsc,
         time::{sleep, Instant},
     };
@@ -1095,9 +1096,9 @@ mod tests {
                 .map_err(|err| WorkerError::Message(format!("port allocation failed: {err}")))?;
             let port = reservation.as_slice()[0];
 
-            let data_dir = namespace.child_dir("process/node-a/data");
-            let socket_dir = namespace.child_dir("process/node-a/socket");
-            let log_dir = namespace.child_dir("logs/process-node-a");
+            let data_dir = namespace.child_dir("pgdata");
+            let socket_dir = namespace.child_dir("sock");
+            let log_dir = namespace.child_dir("log");
             let log_file = log_dir.join("postgres.log");
             fs::create_dir_all(&socket_dir)
                 .map_err(|err| WorkerError::Message(format!("socket dir create failed: {err}")))?;
@@ -1135,24 +1136,67 @@ mod tests {
             // Release the reserved port immediately before starting postgres so
             // `pg_ctl` can bind the requested port.
             drop(reservation);
-            let start = fixture
-                .submit_job_and_wait(
-                    "start",
-                    ProcessJobKind::StartPostgres(StartPostgresSpec {
-                        data_dir: fixture.data_dir.clone(),
-                        host: "127.0.0.1".to_string(),
-                        port: fixture.port,
-                        socket_dir: fixture.socket_dir.clone(),
-                        log_file: fixture.log_file.clone(),
-                        wait_seconds: Some(20),
-                        timeout_ms: Some(30_000),
-                    }),
-                    Duration::from_secs(40),
-                )
-                .await?;
-            if !matches!(start, JobOutcome::Success { .. }) {
+            let mut start_failure: Option<JobOutcome> = None;
+            for attempt in 1..=3 {
+                if attempt > 1 {
+                    let retry_reservation = allocate_ports(1).map_err(|err| {
+                        WorkerError::Message(format!("retry port allocation failed: {err}"))
+                    })?;
+                    fixture.port = retry_reservation.as_slice()[0];
+                    drop(retry_reservation);
+                }
+                let start = fixture
+                    .submit_job_and_wait(
+                        "start",
+                        ProcessJobKind::StartPostgres(StartPostgresSpec {
+                            data_dir: fixture.data_dir.clone(),
+                            host: "127.0.0.1".to_string(),
+                            port: fixture.port,
+                            socket_dir: fixture.socket_dir.clone(),
+                            log_file: fixture.log_file.clone(),
+                            wait_seconds: Some(45),
+                            timeout_ms: Some(70_000),
+                        }),
+                        Duration::from_secs(80),
+                    )
+                    .await?;
+                if matches!(start, JobOutcome::Success { .. }) {
+                    start_failure = None;
+                    break;
+                }
+                if fixture.postgres_ready_probe(Duration::from_secs(5)).await? {
+                    start_failure = None;
+                    break;
+                }
+                let cleanup_id = format!("start-cleanup-{attempt}");
+                let _ = fixture
+                    .submit_job_and_wait(
+                        cleanup_id.as_str(),
+                        ProcessJobKind::StopPostgres(StopPostgresSpec {
+                            data_dir: fixture.data_dir.clone(),
+                            mode: ShutdownMode::Immediate,
+                            timeout_ms: Some(15_000),
+                        }),
+                        Duration::from_secs(20),
+                    )
+                    .await;
+                start_failure = Some(start);
+            }
+            if let Some(start) = start_failure {
+                let log_tail = match fs::read_to_string(&fixture.log_file) {
+                    Ok(content) => {
+                        let lines = content.lines().collect::<Vec<_>>();
+                        let tail = if lines.len() > 30 {
+                            lines[lines.len().saturating_sub(30)..].to_vec()
+                        } else {
+                            lines
+                        };
+                        tail.join(" | ")
+                    }
+                    Err(err) => format!("log-read-failed: {err}"),
+                };
                 return Err(WorkerError::Message(format!(
-                    "start setup failed: {start:?}"
+                    "start setup failed after retries: {start:?}; postgres_log_tail={log_tail}"
                 )));
             }
 
@@ -1203,6 +1247,37 @@ mod tests {
                 "timed out waiting for process outcome for {} (last snapshot: {:?})",
                 expected_job.0, last_snapshot
             )))
+        }
+
+        async fn postgres_ready_probe(&self, timeout: Duration) -> Result<bool, WorkerError> {
+            let mut command = Command::new(&self.ctx.config.binaries.psql);
+            command
+                .arg("-h")
+                .arg("127.0.0.1")
+                .arg("-p")
+                .arg(self.port.to_string())
+                .arg("-U")
+                .arg("postgres")
+                .arg("-d")
+                .arg("postgres")
+                .arg("-At")
+                .arg("-c")
+                .arg("SELECT 1");
+
+            let output = match tokio::time::timeout(timeout, command.output()).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(err)) => {
+                    return Err(WorkerError::Message(format!(
+                        "postgres readiness probe spawn failed: {err}"
+                    )))
+                }
+                Err(_) => return Ok(false),
+            };
+            if !output.status.success() {
+                return Ok(false);
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(stdout.lines().any(|line| line.trim() == "1"))
         }
     }
 

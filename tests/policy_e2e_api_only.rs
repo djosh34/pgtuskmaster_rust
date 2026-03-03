@@ -21,17 +21,22 @@ const FORBIDDEN_PATTERNS: &[&str] = &[
     "EtcdDcsStore::connect(",
     "refresh_from_etcd_watch(",
     "initialize_pgdata(",
+    "send_http_request(",
+    "parse_http_response(",
+    "post_switchover_via_api(",
 ];
 
 const ALLOWED_POST_START_PATTERNS: &[&str] = &[
     "\"/switchover\"",
+    "CliApiClient::get_ha_state(",
+    "crate::cli::run(",
     ".run_sql_on_node(",
     ".run_sql_on_node_with_retry(",
 ];
 
 #[test]
-fn e2e_sources_must_use_post_start_hands_off_control_paths()
--> Result<(), Box<dyn std::error::Error>> {
+fn e2e_sources_must_use_post_start_hands_off_control_paths(
+) -> Result<(), Box<dyn std::error::Error>> {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let ha_dir = repo_root.join("src/ha");
 

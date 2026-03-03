@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 18:14:01 CET 2026
+Generated: Tue Mar  3 20:11:18 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -482,7 +482,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/30-task-full-e2e-blackbox-api-cli-orchestration.md`
 
-## Task: Migrate full e2e suites to black-box API and CLI orchestration <status>not_started</status> <passes>false</passes>
+## Task: Migrate full e2e suites to black-box API and CLI orchestration <status>completed</status> <passes>true</passes> <passing>true</passing>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
 <blocked_by>23-task-ha-admin-cli-over-api</blocked_by>
@@ -492,10 +492,10 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/31-task-docs-framework-selection-install-and-artifact-hygiene.md`
 
-## Task: Select docs framework, install it, and enforce artifact git hygiene <status>not_started</status> <passes>false</passes>
+## Task: Install mdBook docs framework and enforce artifact git hygiene <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Choose the best documentation framework for this Rust project (including VitePress as a candidate), install it, prove it renders a static HTML site correctly, and lock down strict git artifact hygiene before any docs commits.
+**Goal:** Use mdBook for this Rust project, install it, prove it renders a static HTML site correctly, and lock down strict git artifact hygiene before any docs commits.
 
 ---
 
@@ -544,6 +544,33 @@ This is a **RECURRING META-TASK**.
 <blocked_by>35-task-migrate-all-node-startup-tests-to-unified-entrypoint-config-only</blocked_by>
 
 <description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/37-task-unified-e2e-harness-testconfig-interface.md`
+
+## Task: Unify HA E2E Harness Behind Stable `TestConfig` Interface <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Design and implement one stable, shared HA e2e harness interface driven by a single `TestConfig` input that initializes the requested cluster topology + pre-test setup, returns a full test handle, and removes duplicated setup/wait/process glue from scenario files.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/38-task-unified-structured-logging-and-postgres-binary-ingestion.md`
+
+## Task: Build Unified Structured Logging Pipeline With Postgres/Binary Ingestion <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Implement one unified, config-driven logging system that emits structured JSONL to `stderr` by default, ingests/normalizes all postgres and helper-binary logs into the same stream, and guarantees no log loss on parse failures.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/39-task-logging-file-sink-backlog.md`
+
+## Task: Add Structured File Sink Support (Backlog) <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Extend the unified logging subsystem with optional structured file sink support after the base structured-ingestion task is complete.
 
 ---
 

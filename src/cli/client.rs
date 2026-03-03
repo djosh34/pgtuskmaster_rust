@@ -59,6 +59,7 @@ impl CliApiClient {
             .map_err(|err| CliError::RequestBuild(format!("invalid --base-url value: {err}")))?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
+            .pool_max_idle_per_host(0)
             .build()
             .map_err(|err| CliError::RequestBuild(format!("build http client failed: {err}")))?;
 
