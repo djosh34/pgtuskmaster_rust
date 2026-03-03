@@ -4,6 +4,15 @@ model_reasoning_summary = "detailed"
 model_verbosity = "high"
 model_supports_reasoning_summaries = true
 
+[features]
+multi_agent = true
+
+[profiles.spark]
+model = "gpt-5.3-codex-spark"
+model_reasoning_effort = "high"
+model_reasoning_summary = "none"
+model_supports_reasoning_summaries = false
+
 [profiles.normal_high]
 model = "gpt-5.2"
 model_reasoning_effort = "high"
