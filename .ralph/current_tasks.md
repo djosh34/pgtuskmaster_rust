@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 12:34:09 PM CET 2026
+Generated: Tue Mar  3 12:56:52 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -80,7 +80,7 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 
 **Path:** `.ralph/tasks/bugs/ralph-event-watch-missing-script-path.md`
 
-## Bug: ralph-event-watch service restart loop from missing script path <status>not_started</status> <passes>false</passes>
+## Bug: ralph-event-watch service restart loop from missing script path <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 `ralph-event-watch.service` is in continuous auto-restart with exit code 127 because `ExecStart` points to a non-existent script path:

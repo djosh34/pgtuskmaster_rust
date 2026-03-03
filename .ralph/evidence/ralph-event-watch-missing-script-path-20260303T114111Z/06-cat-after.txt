@@ -1,3 +1,4 @@
+# /home/joshazimullah.linux/.config/systemd/user/ralph-event-watch.service
 [Unit]
 Description=Event Watcher for PGTuskMaster Ralph
 Documentation=https://opencode.ai

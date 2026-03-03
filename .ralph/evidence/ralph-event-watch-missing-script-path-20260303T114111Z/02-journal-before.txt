@@ -1,0 +1,120 @@
+Mar 03 12:39:23 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:39:28 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14214.
+Mar 03 12:39:28 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:28 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:28 lima-opencode-vm bash[733050]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:39:28 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:39:28 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:39:33 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14215.
+Mar 03 12:39:33 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:33 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:33 lima-opencode-vm bash[733073]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:39:33 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:39:33 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:39:39 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14216.
+Mar 03 12:39:39 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:39 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:39 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:39:39 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:39:44 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14217.
+Mar 03 12:39:44 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:44 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:44 lima-opencode-vm bash[733595]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:39:44 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:39:44 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:39:49 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14218.
+Mar 03 12:39:49 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:49 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:49 lima-opencode-vm bash[733636]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:39:49 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:39:49 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:39:54 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14219.
+Mar 03 12:39:54 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:54 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:39:54 lima-opencode-vm bash[734400]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:39:54 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:39:54 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:00 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14220.
+Mar 03 12:40:00 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:00 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:00 lima-opencode-vm bash[734542]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:00 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:00 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:05 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14221.
+Mar 03 12:40:05 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:05 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:05 lima-opencode-vm bash[734583]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:05 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:05 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:10 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14222.
+Mar 03 12:40:10 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:10 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:10 lima-opencode-vm bash[734599]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:10 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:10 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:15 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14223.
+Mar 03 12:40:15 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:15 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:15 lima-opencode-vm bash[734600]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:15 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:15 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:20 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14224.
+Mar 03 12:40:20 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:20 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:20 lima-opencode-vm bash[734672]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:20 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:20 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:26 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14225.
+Mar 03 12:40:26 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:26 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:26 lima-opencode-vm bash[735046]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:26 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:26 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:31 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14226.
+Mar 03 12:40:31 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:31 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:31 lima-opencode-vm bash[735063]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:31 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:31 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:36 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14227.
+Mar 03 12:40:36 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:36 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:36 lima-opencode-vm bash[735064]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:36 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:36 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:41 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14228.
+Mar 03 12:40:41 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:41 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:41 lima-opencode-vm bash[735286]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:41 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:41 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:47 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14229.
+Mar 03 12:40:47 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:47 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:47 lima-opencode-vm bash[735287]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:47 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:47 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:52 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14230.
+Mar 03 12:40:52 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:52 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:52 lima-opencode-vm bash[735289]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:52 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:52 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:40:57 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14231.
+Mar 03 12:40:57 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:57 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:40:57 lima-opencode-vm bash[735331]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:40:57 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:40:57 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:41:02 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14232.
+Mar 03 12:41:02 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:41:02 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:41:02 lima-opencode-vm bash[735355]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:41:02 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:41:02 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.
+Mar 03 12:41:08 lima-opencode-vm systemd[778]: ralph-event-watch.service: Scheduled restart job, restart counter is at 14233.
+Mar 03 12:41:08 lima-opencode-vm systemd[778]: Stopped Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:41:08 lima-opencode-vm systemd[778]: Started Event Watcher for PGTuskMaster Ralph.
+Mar 03 12:41:08 lima-opencode-vm bash[735381]: /bin/bash: /home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh: No such file or directory
+Mar 03 12:41:08 lima-opencode-vm systemd[778]: ralph-event-watch.service: Main process exited, code=exited, status=127/n/a
+Mar 03 12:41:08 lima-opencode-vm systemd[778]: ralph-event-watch.service: Failed with result 'exit-code'.

@@ -1,0 +1,8 @@
+   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.86s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-040e006ef3ee91df)
+error: The "report-time" flag is only accepted on the nightly compiler with -Z unstable-options
+error: test failed, to rerun pass `--lib`
+real 23.939
+user 26.636
+sys 8.132
