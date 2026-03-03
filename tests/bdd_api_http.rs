@@ -237,3 +237,63 @@ async fn bdd_api_auth_token_denies_missing_header() -> Result<(), WorkerError> {
     assert_eq!(writes.len(), 0);
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_debug_routes_expose_ui_and_verbose_contracts() -> Result<(), WorkerError> {
+    let cfg = sample_runtime_config(None);
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
+
+    let store = RecordingStore::default();
+    let store_for_ctx = store.clone();
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
+    let addr = ctx.local_addr()?;
+
+    let mut ui_client = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    let ui_request = "GET /debug/ui HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    ui_client
+        .write_all(ui_request.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("ui write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let mut ui_raw = Vec::new();
+    ui_client
+        .read_to_end(&mut ui_raw)
+        .await
+        .map_err(|err| WorkerError::Message(format!("ui read failed: {err}")))?;
+    let (ui_status, ui_body) = extract_status_and_body(&ui_raw)?;
+    assert!(ui_status.contains("200"), "expected 200, got: {ui_status}");
+    let ui_html = String::from_utf8(ui_body)
+        .map_err(|err| WorkerError::Message(format!("ui body not utf8: {err}")))?;
+    assert!(ui_html.contains("id=\"meta-panel\""));
+    assert!(ui_html.contains("/debug/verbose"));
+
+    let mut verbose_client = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    let verbose_request = "GET /debug/verbose HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    verbose_client
+        .write_all(verbose_request.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("verbose write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let mut verbose_raw = Vec::new();
+    verbose_client
+        .read_to_end(&mut verbose_raw)
+        .await
+        .map_err(|err| WorkerError::Message(format!("verbose read failed: {err}")))?;
+    let (verbose_status, verbose_body) = extract_status_and_body(&verbose_raw)?;
+    assert!(
+        verbose_status.contains("503"),
+        "expected 503, got: {verbose_status}"
+    );
+    let verbose_text = String::from_utf8(verbose_body)
+        .map_err(|err| WorkerError::Message(format!("verbose body not utf8: {err}")))?;
+    assert!(verbose_text.contains("snapshot unavailable"));
+    Ok(())
+}

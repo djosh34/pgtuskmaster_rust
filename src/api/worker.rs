@@ -13,7 +13,7 @@ use crate::{
     },
     config::RuntimeConfig,
     dcs::store::DcsStore,
-    debug_api::snapshot::SystemSnapshot,
+    debug_api::{snapshot::SystemSnapshot, view::build_verbose_payload},
     state::{StateSubscriber, WorkerError},
 };
 
@@ -117,6 +117,13 @@ impl ApiWorkerCtx {
     pub fn set_require_client_cert(&mut self, required: bool) {
         self.require_client_cert = required;
     }
+
+    pub(crate) fn set_debug_snapshot_subscriber(
+        &mut self,
+        subscriber: StateSubscriber<SystemSnapshot>,
+    ) {
+        self.debug_snapshot_subscriber = Some(subscriber);
+    }
 }
 
 pub async fn run(mut ctx: ApiWorkerCtx) -> Result<(), WorkerError> {
@@ -177,7 +184,8 @@ fn route_request(
     cfg: &RuntimeConfig,
     request: HttpRequest,
 ) -> HttpResponse {
-    match (request.method.as_str(), request.path.as_str()) {
+    let (path, query) = split_path_and_query(&request.path);
+    match (request.method.as_str(), path) {
         ("POST", "/switchover") => {
             let input = match serde_json::from_slice::<SwitchoverRequestInput>(&request.body) {
                 Ok(parsed) => parsed,
@@ -216,6 +224,27 @@ fn route_request(
             let snapshot = subscriber.latest();
             HttpResponse::text(200, "OK", format!("{:#?}", snapshot))
         }
+        ("GET", "/debug/verbose") => {
+            if !cfg.debug.enabled {
+                return HttpResponse::text(404, "Not Found", "not found");
+            }
+            let Some(subscriber) = ctx.debug_snapshot_subscriber.as_ref() else {
+                return HttpResponse::text(503, "Service Unavailable", "snapshot unavailable");
+            };
+            let since_sequence = match parse_since_sequence(query) {
+                Ok(value) => value,
+                Err(message) => return HttpResponse::text(400, "Bad Request", message),
+            };
+            let snapshot = subscriber.latest();
+            let payload = build_verbose_payload(&snapshot, since_sequence);
+            HttpResponse::json(200, "OK", &payload)
+        }
+        ("GET", "/debug/ui") => {
+            if !cfg.debug.enabled {
+                return HttpResponse::text(404, "Not Found", "not found");
+            }
+            HttpResponse::html(200, "OK", debug_ui_html())
+        }
         _ => HttpResponse::text(404, "Not Found", "not found"),
     }
 }
@@ -227,6 +256,244 @@ fn api_error_to_http(err: ApiError) -> HttpResponse {
         ApiError::DcsStore(message) => HttpResponse::text(503, "Service Unavailable", message),
         ApiError::Internal(message) => HttpResponse::text(500, "Internal Server Error", message),
     }
+}
+
+fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
+    match path.split_once('?') {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (path, None),
+    }
+}
+
+fn parse_since_sequence(query: Option<&str>) -> Result<Option<u64>, String> {
+    let Some(query) = query else {
+        return Ok(None);
+    };
+
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key == "since" {
+            let parsed = value
+                .parse::<u64>()
+                .map_err(|err| format!("invalid since query parameter: {err}"))?;
+            return Ok(Some(parsed));
+        }
+    }
+    Ok(None)
+}
+
+fn debug_ui_html() -> &'static str {
+    r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PGTuskMaster Debug UI</title>
+  <style>
+    :root {
+      --bg: radial-gradient(circle at 10% 10%, #162132, #081019 55%, #06090f 100%);
+      --panel: rgba(16, 26, 40, 0.92);
+      --line: rgba(139, 190, 255, 0.22);
+      --text: #d8e6ff;
+      --muted: #89a3c4;
+      --ok: #4bd18b;
+      --warn: #f0bc5e;
+      --err: #ff7070;
+      --accent: #5ec3ff;
+      --font: "JetBrains Mono", "Fira Mono", Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 14px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+      max-width: 1300px;
+      margin: 0 auto;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .panel h2 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+      text-transform: uppercase;
+    }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 8px;
+      background: rgba(0,0,0,0.2);
+    }
+    .metric .label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+    .metric .value { margin-top: 6px; font-size: 16px; font-weight: 700; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid var(--line);
+      margin-left: 8px;
+    }
+    .badge.ok { color: var(--ok); border-color: color-mix(in oklab, var(--ok), black 40%); }
+    .badge.warn { color: var(--warn); border-color: color-mix(in oklab, var(--warn), black 40%); }
+    .badge.err { color: var(--err); border-color: color-mix(in oklab, var(--err), black 40%); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th, td {
+      text-align: left;
+      padding: 6px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      vertical-align: top;
+      word-break: break-word;
+    }
+    th { color: var(--muted); }
+    .timeline { max-height: 260px; overflow: auto; }
+    .full { grid-column: 1 / -1; }
+    @media (max-width: 760px) {
+      body { padding: 8px; }
+      .metrics { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <section class="panel full" id="meta-panel">
+      <h2>Runtime Meta <span id="meta-badge" class="badge warn">loading</span></h2>
+      <div class="metrics">
+        <div class="metric"><div class="label">Lifecycle</div><div class="value" id="m-lifecycle">-</div></div>
+        <div class="metric"><div class="label">Sequence</div><div class="value" id="m-seq">-</div></div>
+        <div class="metric"><div class="label">Generated (ms)</div><div class="value" id="m-ts">-</div></div>
+      </div>
+    </section>
+    <section class="panel" id="config-panel"><h2>Config</h2><div id="config-body">-</div></section>
+    <section class="panel" id="pginfo-panel"><h2>PgInfo</h2><div id="pginfo-body">-</div></section>
+    <section class="panel" id="dcs-panel"><h2>DCS</h2><div id="dcs-body">-</div></section>
+    <section class="panel" id="process-panel"><h2>Process</h2><div id="process-body">-</div></section>
+    <section class="panel" id="ha-panel"><h2>HA</h2><div id="ha-body">-</div></section>
+    <section class="panel full timeline" id="timeline-panel">
+      <h2>Timeline</h2>
+      <table>
+        <thead><tr><th>Seq</th><th>At</th><th>Category</th><th>Message</th></tr></thead>
+        <tbody id="timeline-body"></tbody>
+      </table>
+    </section>
+    <section class="panel full timeline" id="changes-panel">
+      <h2>Changes</h2>
+      <table>
+        <thead><tr><th>Seq</th><th>At</th><th>Domain</th><th>Versions</th><th>Summary</th></tr></thead>
+        <tbody id="changes-body"></tbody>
+      </table>
+    </section>
+  </div>
+  <script>
+    const state = { since: 0 };
+    const byId = (id) => document.getElementById(id);
+    const asText = (value) => (value === null || value === undefined ? "-" : String(value));
+    const badge = (label, cls) => {
+      const el = byId("meta-badge");
+      el.textContent = label;
+      el.className = `badge ${cls}`;
+    };
+    function renderKeyValue(id, entries) {
+      byId(id).innerHTML = entries
+        .map(([k, v]) => `<div><strong>${k}</strong>: ${asText(v)}</div>`)
+        .join("");
+    }
+    function renderRows(id, rows, mapRow) {
+      byId(id).innerHTML = rows.map(mapRow).join("");
+    }
+    function render(payload) {
+      byId("m-lifecycle").textContent = asText(payload.meta.app_lifecycle);
+      byId("m-seq").textContent = asText(payload.meta.sequence);
+      byId("m-ts").textContent = asText(payload.meta.generated_at_ms);
+      badge("connected", "ok");
+
+      renderKeyValue("config-body", [
+        ["member", payload.config.member_id],
+        ["cluster", payload.config.cluster_name],
+        ["scope", payload.config.scope],
+        ["version", payload.config.version],
+        ["debug", payload.config.debug_enabled],
+        ["tls", payload.config.tls_enabled]
+      ]);
+      renderKeyValue("pginfo-body", [
+        ["variant", payload.pginfo.variant],
+        ["worker", payload.pginfo.worker],
+        ["sql", payload.pginfo.sql],
+        ["readiness", payload.pginfo.readiness],
+        ["summary", payload.pginfo.summary]
+      ]);
+      renderKeyValue("dcs-body", [
+        ["worker", payload.dcs.worker],
+        ["trust", payload.dcs.trust],
+        ["members", payload.dcs.member_count],
+        ["leader", payload.dcs.leader],
+        ["switchover", payload.dcs.has_switchover_request]
+      ]);
+      renderKeyValue("process-body", [
+        ["worker", payload.process.worker],
+        ["state", payload.process.state],
+        ["running_job", payload.process.running_job_id],
+        ["last_outcome", payload.process.last_outcome]
+      ]);
+      renderKeyValue("ha-body", [
+        ["worker", payload.ha.worker],
+        ["phase", payload.ha.phase],
+        ["tick", payload.ha.tick],
+        ["pending", payload.ha.pending_actions]
+      ]);
+
+      renderRows("timeline-body", payload.timeline, (row) =>
+        `<tr><td>${row.sequence}</td><td>${row.at_ms}</td><td>${row.category}</td><td>${row.message}</td></tr>`
+      );
+      renderRows("changes-body", payload.changes, (row) =>
+        `<tr><td>${row.sequence}</td><td>${row.at_ms}</td><td>${row.domain}</td><td>${asText(row.previous_version)} -> ${asText(row.current_version)}</td><td>${row.summary}</td></tr>`
+      );
+
+      if (typeof payload.meta.sequence === "number") {
+        state.since = Math.max(state.since, payload.meta.sequence);
+      }
+    }
+    async function tick() {
+      try {
+        const response = await fetch(`/debug/verbose?since=${state.since}`, { cache: "no-store" });
+        if (!response.ok) {
+          badge(`http-${response.status}`, "warn");
+          return;
+        }
+        const payload = await response.json();
+        render(payload);
+      } catch (err) {
+        badge("offline", "err");
+        console.error("debug ui fetch failed", err);
+      }
+    }
+    tick();
+    setInterval(tick, 900);
+  </script>
+</body>
+</html>"#
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,7 +562,8 @@ fn resolve_role_tokens(ctx: &ApiWorkerCtx, cfg: &RuntimeConfig) -> ApiRoleTokens
 }
 
 fn endpoint_role(request: &HttpRequest) -> EndpointRole {
-    match (request.method.as_str(), request.path.as_str()) {
+    let (path, _query) = split_path_and_query(&request.path);
+    match (request.method.as_str(), path) {
         ("POST", "/switchover") | ("POST", "/fallback/heartbeat") => EndpointRole::Admin,
         _ => EndpointRole::Read,
     }
@@ -452,6 +720,15 @@ impl HttpResponse {
                 "Internal Server Error",
                 format!("json encode failed: {err}"),
             ),
+        }
+    }
+
+    fn html(status: u16, reason: &'static str, body: impl Into<String>) -> Self {
+        Self {
+            status,
+            reason,
+            content_type: "text/html; charset=utf-8",
+            body: body.into().into_bytes(),
         }
     }
 }
@@ -620,6 +897,7 @@ fn extract_bearer_token(request: &HttpRequest) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
 
     use rcgen::{
@@ -640,7 +918,17 @@ mod tests {
             ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig,
             PostgresConfig, ProcessConfig, RuntimeConfig, SecurityConfig,
         },
+        dcs::state::{DcsCache, DcsState, DcsTrust},
         dcs::store::{DcsStore, DcsStoreError, WatchEvent},
+        debug_api::snapshot::{
+            AppLifecycle, DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot,
+        },
+        ha::{
+            actions::HaAction,
+            state::{HaPhase, HaState},
+        },
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        process::state::ProcessState,
         state::{new_state_channel, UnixMillis, WorkerError},
         test_harness::{
             auth::ApiRoleTokens,
@@ -751,10 +1039,96 @@ mod tests {
         }
     }
 
-    async fn build_ctx(
-        auth_token: Option<String>,
-    ) -> Result<(ApiWorkerCtx, RecordingStore), WorkerError> {
+    fn sample_pg_state() -> PgInfoState {
+        PgInfoState::Unknown {
+            common: PgInfoCommon {
+                worker: crate::state::WorkerStatus::Running,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                pg_config: PgConfig {
+                    port: Some(5432),
+                    hot_standby: Some(false),
+                    primary_conninfo: None,
+                    primary_slot_name: None,
+                    extra: BTreeMap::new(),
+                },
+                last_refresh_at: Some(UnixMillis(1)),
+            },
+        }
+    }
+
+    fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
+        DcsState {
+            worker: crate::state::WorkerStatus::Running,
+            trust: DcsTrust::FullQuorum,
+            cache: DcsCache {
+                members: BTreeMap::new(),
+                leader: None,
+                switchover: None,
+                config: cfg,
+                init_lock: None,
+            },
+            last_refresh_at: Some(UnixMillis(1)),
+        }
+    }
+
+    fn sample_process_state() -> ProcessState {
+        ProcessState::Idle {
+            worker: crate::state::WorkerStatus::Running,
+            last_outcome: None,
+        }
+    }
+
+    fn sample_ha_state() -> HaState {
+        HaState {
+            worker: crate::state::WorkerStatus::Running,
+            phase: HaPhase::Replica,
+            tick: 7,
+            pending: vec![HaAction::SignalFailSafe],
+            recent_action_ids: BTreeSet::new(),
+        }
+    }
+
+    fn sample_debug_snapshot(auth_token: Option<String>) -> SystemSnapshot {
         let cfg = sample_runtime_config(auth_token);
+        let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone(), UnixMillis(1));
+        let (_pg_publisher, pg_subscriber) = new_state_channel(sample_pg_state(), UnixMillis(1));
+        let (_dcs_publisher, dcs_subscriber) =
+            new_state_channel(sample_dcs_state(cfg.clone()), UnixMillis(1));
+        let (_process_publisher, process_subscriber) =
+            new_state_channel(sample_process_state(), UnixMillis(1));
+        let (_ha_publisher, ha_subscriber) = new_state_channel(sample_ha_state(), UnixMillis(1));
+
+        SystemSnapshot {
+            app: AppLifecycle::Running,
+            config: cfg_subscriber.latest(),
+            pg: pg_subscriber.latest(),
+            dcs: dcs_subscriber.latest(),
+            process: process_subscriber.latest(),
+            ha: ha_subscriber.latest(),
+            generated_at: UnixMillis(1),
+            sequence: 2,
+            changes: vec![DebugChangeEvent {
+                sequence: 1,
+                at: UnixMillis(1),
+                domain: DebugDomain::Config,
+                previous_version: None,
+                current_version: Some(cfg_subscriber.latest().version),
+                summary: "config initialized".to_string(),
+            }],
+            timeline: vec![DebugTimelineEntry {
+                sequence: 2,
+                at: UnixMillis(1),
+                domain: DebugDomain::Ha,
+                message: "ha reached replica".to_string(),
+            }],
+        }
+    }
+
+    async fn build_ctx_with_config(
+        cfg: RuntimeConfig,
+    ) -> Result<(ApiWorkerCtx, RecordingStore), WorkerError> {
         let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -763,6 +1137,12 @@ mod tests {
         let store = RecordingStore::default();
         let ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store.clone()));
         Ok((ctx, store))
+    }
+
+    async fn build_ctx(
+        auth_token: Option<String>,
+    ) -> Result<(ApiWorkerCtx, RecordingStore), WorkerError> {
+        build_ctx_with_config(sample_runtime_config(auth_token)).await
     }
 
     fn extract_status_and_body(raw: &[u8]) -> Result<(String, Vec<u8>), WorkerError> {
@@ -1142,6 +1522,133 @@ mod tests {
         .await?;
         assert!(status.contains("202"), "expected 202, got: {status}");
         assert_eq!(store.write_count()?, 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_verbose_route_returns_structured_json_and_since_filter(
+    ) -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-debug-verbose-json")?;
+        let (mut ctx, _store) = build_ctx(None).await?;
+
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_debug_snapshot_subscriber(debug_subscriber);
+
+        let (status, body) =
+            send_plain_request(&mut ctx, format_get("/debug/verbose?since=1", None), None).await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+
+        let decoded: serde_json::Value = serde_json::from_slice(&body).map_err(|err| {
+            WorkerError::Message(format!("decode debug verbose json failed: {err}"))
+        })?;
+        assert_eq!(decoded["meta"]["schema_version"], "v1");
+        assert_eq!(decoded["meta"]["sequence"], 2);
+        assert!(decoded["timeline"].is_array());
+        assert!(decoded["changes"].is_array());
+        assert_eq!(
+            decoded["changes"].as_array().map(|value| value.len()),
+            Some(0)
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_snapshot_route_is_kept_for_backward_compatibility() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-debug-snapshot-compat")?;
+        let (mut ctx, _store) = build_ctx(None).await?;
+
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_debug_snapshot_subscriber(debug_subscriber);
+
+        let (status, body) =
+            send_plain_request(&mut ctx, format_get("/debug/snapshot", None), None).await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+        let body_text = String::from_utf8(body)
+            .map_err(|err| WorkerError::Message(format!("snapshot body not utf8: {err}")))?;
+        assert!(body_text.contains("SystemSnapshot"));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_verbose_route_404_when_debug_disabled() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-debug-disabled-404")?;
+        let mut cfg = sample_runtime_config(None);
+        cfg.debug.enabled = false;
+        let (mut ctx, _store) = build_ctx_with_config(cfg).await?;
+        let (status, _body) =
+            send_plain_request(&mut ctx, format_get("/debug/verbose", None), None).await?;
+        assert!(status.contains("404"), "expected 404, got: {status}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_verbose_route_503_without_subscriber() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-debug-missing-subscriber")?;
+        let (mut ctx, _store) = build_ctx(None).await?;
+        let (status, _body) =
+            send_plain_request(&mut ctx, format_get("/debug/verbose", None), None).await?;
+        assert!(status.contains("503"), "expected 503, got: {status}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_ui_route_returns_html_scaffold() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-debug-ui-html")?;
+        let (mut ctx, _store) = build_ctx(None).await?;
+        let (status, body) =
+            send_plain_request(&mut ctx, format_get("/debug/ui", None), None).await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+        let html = String::from_utf8(body)
+            .map_err(|err| WorkerError::Message(format!("ui body not utf8: {err}")))?;
+        assert!(html.contains("id=\"meta-panel\""));
+        assert!(html.contains("/debug/verbose"));
+        assert!(html.contains("id=\"timeline-panel\""));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_routes_require_auth_when_tokens_set() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-debug-authz")?;
+        let (mut ctx, _store) = build_ctx(None).await?;
+        let roles = ApiRoleTokens::new("read-token", "admin-token")?;
+        ctx.configure_role_tokens(
+            Some(roles.read_token.clone()),
+            Some(roles.admin_token.clone()),
+        )?;
+
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_debug_snapshot_subscriber(debug_subscriber);
+
+        let (status, _body) =
+            send_plain_request(&mut ctx, format_get("/debug/verbose", None), None).await?;
+        assert!(status.contains("401"), "expected 401, got: {status}");
+
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_get("/debug/verbose", Some(&roles.read_bearer_header())),
+            None,
+        )
+        .await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_get("/debug/ui", Some(&roles.read_bearer_header())),
+            None,
+        )
+        .await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_get("/debug/verbose", Some(&roles.admin_bearer_header())),
+            None,
+        )
+        .await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
         Ok(())
     }
 

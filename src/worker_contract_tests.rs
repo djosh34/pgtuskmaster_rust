@@ -301,6 +301,10 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         dcs: debug_dcs_subscriber.latest(),
         process: debug_process_subscriber.latest(),
         ha: debug_ha_subscriber.latest(),
+        generated_at: UnixMillis(1),
+        sequence: 0,
+        changes: Vec::new(),
+        timeline: Vec::new(),
     };
     let (debug_publisher, debug_subscriber) =
         new_state_channel(initial_debug_snapshot, UnixMillis(1));
@@ -349,7 +353,7 @@ fn snapshot_contract_type_compiles() {
         ha: Versioned::new(Version(2), UnixMillis(2), ha),
     };
 
-    let system = crate::debug_api::snapshot::build_snapshot(&debug_ctx, UnixMillis(2));
+    let system = crate::debug_api::snapshot::build_snapshot(&debug_ctx, UnixMillis(2), 0, &[], &[]);
     assert_eq!(system.config.version, Version(2));
     let _unused = ClusterName("cluster-a".to_string());
     let _job_id = JobId("job-1".to_string());
