@@ -213,11 +213,11 @@ Required gates (must be 100% green before marking `<passes>true</passes>`):
   - [x] Add a short evidence pointer to `.ralph/evidence/task-32-architecture-docs/`
 - Evidence: `.ralph/evidence/task-32-architecture-docs/`
 - [x] Run `/bin/bash .ralph/task_switch.sh`
-- [ ] `git add -A` (including `.ralph` updates, excluding generated docs output)
-- [ ] Commit:
-  - [ ] `task finished 32-task-author-complete-architecture-docs-with-diagrams-and-no-code: <summary + evidence>`
-- [ ] `git push`
-- [ ] Append learnings/surprises to `AGENTS.md`
+- [x] `git add -A` (including `.ralph` updates, excluding generated docs output)
+- [x] Commit:
+  - [x] `task finished 32-task-author-complete-architecture-docs-with-diagrams-and-no-code: <summary + evidence>`
+- [x] `git push`
+- [x] Append learnings/surprises to `AGENTS.md`
 
 NOW EXECUTE
 </execution_plan>
