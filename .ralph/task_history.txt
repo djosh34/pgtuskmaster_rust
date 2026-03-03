@@ -36,3 +36,4 @@
 .ralph/tasks/story-rust-system-harness/task-typed-dcs-writes-and-encapsulation.md
 .ralph/tasks/story-rust-system-harness/19-task-do-meta-deep-skeptical-review-pass-1.md
 .ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md
+.ralph/tasks/story-rust-system-harness/21-task-do-meta-deep-skeptical-review-pass-3.md

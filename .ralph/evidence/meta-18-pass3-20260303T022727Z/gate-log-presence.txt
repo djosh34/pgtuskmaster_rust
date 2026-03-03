@@ -1,0 +1,5 @@
+present make-check.log
+present make-test.log
+present make-test-real.log
+present make-test-bdd.log
+present make-lint.log

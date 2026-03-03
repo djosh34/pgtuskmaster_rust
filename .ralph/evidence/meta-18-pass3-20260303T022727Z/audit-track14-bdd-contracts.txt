@@ -1,0 +1,36 @@
+track14: BDD/API/state contracts
+tests/bdd_state_watch.rs:4:async fn bdd_state_watch_channel_flow() -> Result<(), Box<dyn std::error::Error>> {
+tests/bdd_state_watch.rs:8:    assert_eq!(initial.version, Version(0));
+tests/bdd_state_watch.rs:9:    assert_eq!(initial.value, "starting");
+tests/bdd_state_watch.rs:12:    assert_eq!(next_version, Version(1));
+tests/bdd_state_watch.rs:15:    assert_eq!(changed.version, Version(1));
+tests/bdd_state_watch.rs:16:    assert_eq!(changed.updated_at, UnixMillis(2));
+tests/bdd_state_watch.rs:17:    assert_eq!(changed.value, "running");
+tests/bdd_state_watch.rs:21:    assert_eq!(closed, Err(StateRecvError::ChannelClosed));
+tests/bdd_api_http.rs:47:    fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
+tests/bdd_api_http.rs:52:fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
+tests/bdd_api_http.rs:85:        debug: DebugConfig { enabled: true },
+tests/bdd_api_http.rs:87:            tls_enabled: false,
+tests/bdd_api_http.rs:88:            auth_token,
+tests/bdd_api_http.rs:93:fn extract_status_and_body(raw: &[u8]) -> Result<(String, Vec<u8>), WorkerError> {
+tests/bdd_api_http.rs:96:    let status_line = parts
+tests/bdd_api_http.rs:98:        .ok_or_else(|| WorkerError::Message("missing status line".to_string()))?
+tests/bdd_api_http.rs:104:    Ok((status_line, raw[split + 4..].to_vec()))
+tests/bdd_api_http.rs:145:    let (status_line, body_bytes) = extract_status_and_body(&raw)?;
+tests/bdd_api_http.rs:146:    assert!(
+tests/bdd_api_http.rs:147:        status_line.contains("202"),
+tests/bdd_api_http.rs:148:        "expected 202, got: {status_line}"
+tests/bdd_api_http.rs:152:    assert_eq!(decoded["accepted"], true);
+tests/bdd_api_http.rs:155:    assert_eq!(writes.len(), 1);
+tests/bdd_api_http.rs:156:    assert_eq!(writes[0].0, "/scope-a/switchover");
+tests/bdd_api_http.rs:190:    let (status_line, body_bytes) = extract_status_and_body(&raw)?;
+tests/bdd_api_http.rs:191:    assert!(
+tests/bdd_api_http.rs:192:        status_line.contains("200"),
+tests/bdd_api_http.rs:193:        "expected 200, got: {status_line}"
+tests/bdd_api_http.rs:197:    assert_eq!(decoded["name"], "cluster-a");
+tests/bdd_api_http.rs:202:async fn bdd_api_auth_token_denies_missing_header() -> Result<(), WorkerError> {
+tests/bdd_api_http.rs:231:    let (status_line, _body_bytes) = extract_status_and_body(&raw)?;
+tests/bdd_api_http.rs:232:    assert!(
+tests/bdd_api_http.rs:233:        status_line.contains("401"),
+tests/bdd_api_http.rs:234:        "expected 401, got: {status_line}"
+tests/bdd_api_http.rs:237:    assert_eq!(writes.len(), 0);
