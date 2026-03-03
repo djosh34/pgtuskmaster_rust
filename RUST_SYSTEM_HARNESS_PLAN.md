@@ -15,6 +15,20 @@
   - `cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented`
 - Test harness helpers use narrowly scoped lint allowances in `src/test_harness/mod.rs` so test fixture ergonomics do not weaken runtime lint guarantees.
 
+## Real-Binary Test Prerequisites
+- Real-system tests resolve binaries from repository-local paths:
+  - PostgreSQL 16 tools: `.tools/postgres16/bin/{postgres,pg_ctl,pg_rewind,initdb,psql,pg_basebackup}`
+  - etcd: `.tools/etcd/bin/etcd`
+- Optional default flow: `make test`
+  - Missing binaries are treated as "skip real-binary tests" unless enforcement is enabled.
+- Enforced flow: `make test-real`
+  - Runs only real-binary suites with `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1`.
+  - Missing binaries fail fast with an explicit prerequisite error.
+- CI should install/copy binaries into those `.tools/...` paths before running `make test-real`.
+- Example package sources (distribution-dependent):
+  - PostgreSQL 16 binaries from `postgresql-16` / official PostgreSQL apt/yum packages.
+  - etcd binary from `etcd-server` package or official etcd release artifact.
+
 ## Visibility Policy (`pub` vs private)
 - In Rust, `pub` means visible outside the current module scope (not automatically mutable).
 - Mutation still requires mutable access (`&mut`) or interior mutability.

@@ -38,6 +38,7 @@ use crate::{
         WorkerStatus,
     },
     test_harness::{
+        binaries::{require_etcd_bin_for_real_tests, require_pg16_bin_for_real_tests},
         etcd3::{prepare_etcd_data_dir, spawn_etcd3, EtcdHandle, EtcdInstanceSpec},
         namespace::NamespaceGuard,
         pg16::prepare_pgdata_dir,
@@ -58,6 +59,7 @@ struct ClusterFixture {
     _guard: NamespaceGuard,
     scope: String,
     endpoint: String,
+    pg_ctl_bin: PathBuf,
     etcd: Option<EtcdHandle>,
     nodes: Vec<NodeFixture>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
@@ -65,7 +67,11 @@ struct ClusterFixture {
 }
 
 impl ClusterFixture {
-    async fn start(node_count: usize) -> Result<Self, WorkerError> {
+    async fn start(
+        node_count: usize,
+        binaries: BinaryPaths,
+        etcd_bin: PathBuf,
+    ) -> Result<Self, WorkerError> {
         let guard = NamespaceGuard::new("ha-e2e-multi-node")
             .map_err(|err| WorkerError::Message(format!("namespace create failed: {err}")))?;
         let namespace = guard
@@ -83,7 +89,6 @@ impl ClusterFixture {
         let node_ports = ports[2..].to_vec();
         let etcd_data_dir = prepare_etcd_data_dir(namespace)
             .map_err(|err| WorkerError::Message(format!("prepare etcd data dir failed: {err}")))?;
-        let etcd_bin = ensure_etcd_bin()?;
         let log_dir = namespace.child_dir("logs/etcd");
         let spec = EtcdInstanceSpec {
             etcd_bin,
@@ -103,7 +108,7 @@ impl ClusterFixture {
             .map_err(|err| WorkerError::Message(format!("spawn etcd failed: {err}")))?;
         let endpoint = format!("http://127.0.0.1:{etcd_client_port}");
 
-        let binaries = resolve_pg_binaries()?;
+        let pg_ctl_bin = binaries.pg_ctl.clone();
         let mut tasks = Vec::new();
         let mut nodes = Vec::new();
         let rewind_source_conninfo = format!(
@@ -287,6 +292,7 @@ impl ClusterFixture {
             _guard: guard,
             scope,
             endpoint,
+            pg_ctl_bin,
             etcd: Some(etcd),
             nodes,
             tasks,
@@ -496,7 +502,7 @@ impl ClusterFixture {
                 "unknown node for stop request: {node_id}"
             )));
         };
-        pg_ctl_stop_immediate(&resolve_pg_ctl()?, &node.data_dir).await
+        pg_ctl_stop_immediate(&self.pg_ctl_bin, &node.data_dir).await
     }
 
     fn write_timeline_artifact(&self) -> Result<PathBuf, WorkerError> {
@@ -520,9 +526,8 @@ impl ClusterFixture {
             let _ = task.await;
         }
 
-        let pg_ctl = resolve_pg_ctl()?;
         for node in &self.nodes {
-            let _ = pg_ctl_stop_immediate(&pg_ctl, &node.data_dir).await;
+            let _ = pg_ctl_stop_immediate(&self.pg_ctl_bin, &node.data_dir).await;
         }
 
         if let Some(etcd) = self.etcd.as_mut() {
@@ -535,43 +540,67 @@ impl ClusterFixture {
     }
 }
 
-fn resolve_pg_binaries() -> Result<BinaryPaths, WorkerError> {
-    Ok(BinaryPaths {
-        postgres: resolve_pg_bin("postgres")?,
-        pg_ctl: resolve_pg_bin("pg_ctl")?,
-        pg_rewind: resolve_pg_bin("pg_rewind")?,
-        initdb: resolve_pg_bin("initdb")?,
-        psql: resolve_pg_bin("psql")?,
-    })
+fn resolve_pg_binaries_for_real_tests() -> Result<Option<BinaryPaths>, WorkerError> {
+    let postgres = match require_pg16_bin_for_real_tests("postgres") {
+        Ok(Some(path)) => path,
+        Ok(None) => return Ok(None),
+        Err(err) => {
+            return Err(WorkerError::Message(format!(
+                "postgres binary lookup failed: {err}"
+            )))
+        }
+    };
+    let pg_ctl = match require_pg16_bin_for_real_tests("pg_ctl") {
+        Ok(Some(path)) => path,
+        Ok(None) => return Ok(None),
+        Err(err) => {
+            return Err(WorkerError::Message(format!(
+                "pg_ctl binary lookup failed: {err}"
+            )))
+        }
+    };
+    let pg_rewind = match require_pg16_bin_for_real_tests("pg_rewind") {
+        Ok(Some(path)) => path,
+        Ok(None) => return Ok(None),
+        Err(err) => {
+            return Err(WorkerError::Message(format!(
+                "pg_rewind binary lookup failed: {err}"
+            )))
+        }
+    };
+    let initdb = match require_pg16_bin_for_real_tests("initdb") {
+        Ok(Some(path)) => path,
+        Ok(None) => return Ok(None),
+        Err(err) => {
+            return Err(WorkerError::Message(format!(
+                "initdb binary lookup failed: {err}"
+            )))
+        }
+    };
+    let psql = match require_pg16_bin_for_real_tests("psql") {
+        Ok(Some(path)) => path,
+        Ok(None) => return Ok(None),
+        Err(err) => {
+            return Err(WorkerError::Message(format!(
+                "psql binary lookup failed: {err}"
+            )))
+        }
+    };
+    Ok(Some(BinaryPaths {
+        postgres,
+        pg_ctl,
+        pg_rewind,
+        initdb,
+        psql,
+    }))
 }
 
-fn resolve_pg_ctl() -> Result<PathBuf, WorkerError> {
-    resolve_pg_bin("pg_ctl")
-}
-
-fn resolve_pg_bin(name: &str) -> Result<PathBuf, WorkerError> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".tools/postgres16/bin")
-        .join(name);
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(WorkerError::Message(format!(
-            "required postgres binary missing: {}",
-            path.display()
-        )))
-    }
-}
-
-fn ensure_etcd_bin() -> Result<PathBuf, WorkerError> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(".tools/etcd/bin/etcd");
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(WorkerError::Message(format!(
-            "required etcd binary missing: {}",
-            path.display()
-        )))
+fn resolve_etcd_bin_for_real_tests() -> Result<Option<PathBuf>, WorkerError> {
+    match require_etcd_bin_for_real_tests() {
+        Ok(path) => Ok(path),
+        Err(err) => Err(WorkerError::Message(format!(
+            "etcd binary lookup failed: {err}"
+        ))),
     }
 }
 
@@ -658,7 +687,15 @@ fn leader_path(scope: &str) -> String {
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
-    let mut fixture = ClusterFixture::start(3).await?;
+    let binaries = match resolve_pg_binaries_for_real_tests()? {
+        Some(paths) => paths,
+        None => return Ok(()),
+    };
+    let etcd_bin = match resolve_etcd_bin_for_real_tests()? {
+        Some(path) => path,
+        None => return Ok(()),
+    };
+    let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
     let mut control_store =
         EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)
             .map_err(|err| WorkerError::Message(format!("control store connect failed: {err}")))?;

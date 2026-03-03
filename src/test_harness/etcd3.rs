@@ -156,7 +156,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{prepare_etcd_data_dir, spawn_etcd3, EtcdInstanceSpec};
-    use crate::test_harness::binaries::require_etcd_bin;
+    use crate::test_harness::binaries::require_etcd_bin_for_real_tests;
     use crate::test_harness::namespace::NamespaceGuard;
     use crate::test_harness::ports::allocate_ports;
     use crate::test_harness::HarnessError;
@@ -176,7 +176,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn spawn_etcd3_requires_binary_and_spawns() -> Result<(), HarnessError> {
-        let etcd_bin = require_etcd_bin()?;
+        let etcd_bin = match require_etcd_bin_for_real_tests()? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
 
         let guard = NamespaceGuard::new("spawn-etcd")?;
         let ns = guard.namespace()?;

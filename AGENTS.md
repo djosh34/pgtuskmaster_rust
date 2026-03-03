@@ -58,3 +58,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - For mTLS contract tests in `step_once` workers, prefer asserting end-to-end request rejection over handshake-only failure checks, because post-handshake worker policy can still close unauthorized clients deterministically.
 - When logging gate runs with `... | tee ...`, always enforce `set -o pipefail`; otherwise `tee` can hide a failing `make` exit status and produce a false green task.
 - If acceptance criteria ask for log phrase checks that may not exist in native tool output, still archive explicit grep artifacts (including "not found") so pass/fail evidence remains auditable without inventing output.
+- If real-binary policy is centralized in harness helpers, audit HA/e2e fixtures for leftover direct `.tools/...` path checks; those bypasses silently diverge from enforcement env behavior unless routed through the same helper.

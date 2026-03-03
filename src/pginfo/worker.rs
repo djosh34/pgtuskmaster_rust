@@ -46,7 +46,7 @@ mod tests {
 
     use crate::pginfo::state::{PgConfig, PgInfoCommon};
     use crate::state::{new_state_channel, MemberId, UnixMillis, WorkerStatus};
-    use crate::test_harness::binaries::require_pg16_bin;
+    use crate::test_harness::binaries::require_pg16_bin_for_real_tests;
     use crate::test_harness::namespace::NamespaceGuard;
     use crate::test_harness::pg16::{prepare_pgdata_dir, spawn_pg16, PgHandle, PgInstanceSpec};
     use crate::test_harness::ports::allocate_ports;
@@ -90,8 +90,14 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots() -> TestResult {
-        let postgres_bin = require_pg16_bin("postgres")?;
-        let initdb_bin = require_pg16_bin("initdb")?;
+        let postgres_bin = match require_pg16_bin_for_real_tests("postgres")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
+        let initdb_bin = match require_pg16_bin_for_real_tests("initdb")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
 
         let guard = NamespaceGuard::new("pginfo-primary-flow")?;
         let namespace = guard.namespace()?;
@@ -206,9 +212,18 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_maps_replica_when_polling_standby() -> TestResult {
-        let postgres_bin = require_pg16_bin("postgres")?;
-        let initdb_bin = require_pg16_bin("initdb")?;
-        let basebackup_bin = require_pg16_bin("pg_basebackup")?;
+        let postgres_bin = match require_pg16_bin_for_real_tests("postgres")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
+        let initdb_bin = match require_pg16_bin_for_real_tests("initdb")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
+        let basebackup_bin = match require_pg16_bin_for_real_tests("pg_basebackup")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
 
         let guard = NamespaceGuard::new("pginfo-replica-flow")?;
         let ns = guard.namespace()?;

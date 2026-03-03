@@ -216,7 +216,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{prepare_pgdata_dir, spawn_pg16, PgInstanceSpec};
-    use crate::test_harness::binaries::require_pg16_bin;
+    use crate::test_harness::binaries::require_pg16_bin_for_real_tests;
     use crate::test_harness::namespace::NamespaceGuard;
     use crate::test_harness::ports::allocate_ports;
     use crate::test_harness::HarnessError;
@@ -236,8 +236,14 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn spawn_pg16_requires_binaries_and_spawns() -> Result<(), HarnessError> {
-        let postgres_bin = require_pg16_bin("postgres")?;
-        let initdb_bin = require_pg16_bin("initdb")?;
+        let postgres_bin = match require_pg16_bin_for_real_tests("postgres")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
+        let initdb_bin = match require_pg16_bin_for_real_tests("initdb")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
 
         let guard = NamespaceGuard::new("spawn-pg16")?;
         let ns = guard.namespace()?;
