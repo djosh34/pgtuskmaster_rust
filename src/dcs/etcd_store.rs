@@ -141,7 +141,8 @@ fn run_worker_loop(
                             response_tx,
                         } => {
                             let result =
-                                execute_write(&endpoints, &mut client, &healthy, &path, value).await;
+                                execute_write(&endpoints, &mut client, &healthy, &path, value)
+                                    .await;
                             if result.is_err() {
                                 _watcher = None;
                                 watch_stream = None;
@@ -222,7 +223,8 @@ async fn establish_watch_session(
     let mut client = connect_client(endpoints).await?;
     let snapshot_revision = bootstrap_snapshot(&mut client, scope_prefix, events).await?;
     let start_revision = snapshot_revision.saturating_add(1);
-    let (watcher, watch_stream) = create_watch_stream(&mut client, scope_prefix, start_revision).await?;
+    let (watcher, watch_stream) =
+        create_watch_stream(&mut client, scope_prefix, start_revision).await?;
     Ok((client, watcher, watch_stream))
 }
 
@@ -338,7 +340,11 @@ async fn create_watch_stream(
     let watch_options = WatchOptions::new()
         .with_prefix()
         .with_start_revision(start_revision);
-    timeout_etcd("etcd watch", client.watch(scope_prefix, Some(watch_options))).await
+    timeout_etcd(
+        "etcd watch",
+        client.watch(scope_prefix, Some(watch_options)),
+    )
+    .await
 }
 
 fn apply_watch_response(
@@ -469,7 +475,10 @@ impl Drop for EtcdDcsStore {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, time::{Duration, Instant}};
+    use std::{
+        collections::BTreeMap,
+        time::{Duration, Instant},
+    };
 
     use etcd_client::Client;
 
@@ -637,6 +646,10 @@ mod tests {
                 readiness: Readiness::Ready,
                 timeline: None,
                 pg_config: PgConfig {
+                    port: None,
+                    hot_standby: None,
+                    primary_conninfo: None,
+                    primary_slot_name: None,
                     extra: BTreeMap::new(),
                 },
                 last_refresh_at: Some(UnixMillis(1)),
@@ -702,7 +715,12 @@ mod tests {
             let value = r#"{"member_id":"node-a","role":"Primary"}"#.to_string();
 
             store.write_path(path.as_str(), value)?;
-            wait_for_event(&mut store, WatchOp::Put, path.as_str(), Duration::from_secs(5))?;
+            wait_for_event(
+                &mut store,
+                WatchOp::Put,
+                path.as_str(),
+                Duration::from_secs(5),
+            )?;
 
             store.delete_path(path.as_str())?;
             wait_for_event(
@@ -829,7 +847,8 @@ mod tests {
                     .map_err(|err| boxed_error(format!("dcs step_once failed: {err}")))?;
 
                 let latest = dcs_subscriber.latest();
-                if latest.value.worker == expected_worker && latest.value.trust == DcsTrust::NotTrusted
+                if latest.value.worker == expected_worker
+                    && latest.value.trust == DcsTrust::NotTrusted
                 {
                     observed_fault = true;
                     break;

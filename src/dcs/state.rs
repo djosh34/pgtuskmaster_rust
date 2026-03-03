@@ -259,6 +259,10 @@ mod tests {
             readiness,
             timeline: Some(TimelineId(4)),
             pg_config: PgConfig {
+                port: None,
+                hot_standby: None,
+                primary_conninfo: None,
+                primary_slot_name: None,
                 extra: BTreeMap::new(),
             },
             last_refresh_at: Some(UnixMillis(9)),

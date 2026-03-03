@@ -7,6 +7,7 @@ use tokio::{
 
 use crate::{
     config::ProcessConfig,
+    pginfo::state::render_pg_conninfo,
     state::{UnixMillis, WorkerError, WorkerStatus},
 };
 
@@ -351,18 +352,13 @@ fn build_command(
         }
         ProcessJobKind::PgRewind(spec) => {
             validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
-            if spec.source_conninfo.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "pg_rewind.source_conninfo must not be empty".to_string(),
-                ));
-            }
             Ok(ProcessCommandSpec {
                 program: config.binaries.pg_rewind.clone(),
                 args: vec![
                     "--target-pgdata".to_string(),
                     spec.target_data_dir.display().to_string(),
                     "--source-server".to_string(),
-                    spec.source_conninfo.clone(),
+                    render_pg_conninfo(&spec.source_conninfo),
                 ],
             })
         }
@@ -512,6 +508,7 @@ mod tests {
 
     use crate::{
         config::{BinaryPaths, ProcessConfig},
+        pginfo::state::{PgConnInfo, PgSslMode},
         process::{
             jobs::{
                 ActiveJob, BootstrapSpec, CancelReason, DemoteSpec, FencingSpec, NoopCommandRunner,
@@ -600,6 +597,19 @@ mod tests {
             log_file: PathBuf::from("/tmp/node/postgres.log"),
             wait_seconds: Some(1),
             timeout_ms: Some(1_000),
+        }
+    }
+
+    fn sample_rewind_conninfo() -> PgConnInfo {
+        PgConnInfo {
+            host: "127.0.0.1".to_string(),
+            port: 9,
+            user: "postgres".to_string(),
+            dbname: "postgres".to_string(),
+            application_name: None,
+            connect_timeout_s: None,
+            ssl_mode: PgSslMode::Prefer,
+            options: None,
         }
     }
 
@@ -1230,7 +1240,7 @@ mod tests {
             "rewind-1",
             ProcessJobKind::PgRewind(PgRewindSpec {
                 target_data_dir: data_dir,
-                source_conninfo: "host=127.0.0.1 port=9 user=postgres dbname=postgres".to_string(),
+                source_conninfo: sample_rewind_conninfo(),
                 timeout_ms: Some(5_000),
             }),
             Duration::from_secs(10),

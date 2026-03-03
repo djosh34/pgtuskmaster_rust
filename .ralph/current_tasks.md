@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 02:05:19 AM CET 2026
+Generated: Tue Mar  3 02:17:08 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -269,7 +269,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-rust-system-harness/11-task-typed-pg-config-and-conninfo-roundtrip-tests.md`
 
-## Task: Implement typed postgres config and conninfo parser renderer <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Implement typed postgres config and conninfo parser renderer <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
 
 <blocked_by>02-task-runtime-config-schema-defaults-parse-validate</blocked_by>
 

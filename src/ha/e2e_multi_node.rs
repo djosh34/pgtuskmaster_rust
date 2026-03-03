@@ -27,7 +27,9 @@ use crate::{
         },
         worker as ha_worker,
     },
-    pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+    pginfo::state::{
+        PgConfig, PgConnInfo, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus,
+    },
     process::{
         jobs::{ActiveJobKind, ShutdownMode},
         state::{ProcessState, ProcessWorkerCtx},
@@ -111,10 +113,16 @@ impl ClusterFixture {
         let pg_ctl_bin = binaries.pg_ctl.clone();
         let mut tasks = Vec::new();
         let mut nodes = Vec::new();
-        let rewind_source_conninfo = format!(
-            "host=127.0.0.1 port={} user=postgres dbname=postgres",
-            node_ports[0]
-        );
+        let rewind_source_conninfo = PgConnInfo {
+            host: "127.0.0.1".to_string(),
+            port: node_ports[0],
+            user: "postgres".to_string(),
+            dbname: "postgres".to_string(),
+            application_name: None,
+            connect_timeout_s: None,
+            ssl_mode: PgSslMode::Prefer,
+            options: None,
+        };
 
         for (index, pg_port) in node_ports.into_iter().enumerate() {
             let node_id = format!("node-{}", index.saturating_add(1));
@@ -612,6 +620,10 @@ fn initial_pg_state() -> PgInfoState {
             readiness: Readiness::Unknown,
             timeline: None,
             pg_config: PgConfig {
+                port: None,
+                hot_standby: None,
+                primary_conninfo: None,
+                primary_slot_name: None,
                 extra: BTreeMap::new(),
             },
             last_refresh_at: None,

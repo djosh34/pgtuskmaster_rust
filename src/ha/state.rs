@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 use crate::{
     config::RuntimeConfig,
     dcs::{state::DcsState, store::DcsStore},
-    pginfo::state::PgInfoState,
+    pginfo::state::{PgConnInfo, PgInfoState, PgSslMode},
     process::{
         jobs::ShutdownMode,
         state::{ProcessJobRequest, ProcessState},
@@ -81,7 +81,7 @@ pub(crate) struct ProcessDispatchDefaults {
     pub(crate) postgres_port: u16,
     pub(crate) socket_dir: PathBuf,
     pub(crate) log_file: PathBuf,
-    pub(crate) rewind_source_conninfo: String,
+    pub(crate) rewind_source_conninfo: PgConnInfo,
     pub(crate) shutdown_mode: ShutdownMode,
 }
 
@@ -92,8 +92,16 @@ impl ProcessDispatchDefaults {
             postgres_port: 5432,
             socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
             log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
-            rewind_source_conninfo: "host=127.0.0.1 port=5432 user=postgres dbname=postgres"
-                .to_string(),
+            rewind_source_conninfo: PgConnInfo {
+                host: "127.0.0.1".to_string(),
+                port: 5432,
+                user: "postgres".to_string(),
+                dbname: "postgres".to_string(),
+                application_name: None,
+                connect_timeout_s: None,
+                ssl_mode: PgSslMode::Prefer,
+                options: None,
+            },
             shutdown_mode: ShutdownMode::Fast,
         }
     }

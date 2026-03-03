@@ -135,6 +135,10 @@ mod tests {
                 readiness: Readiness::Unknown,
                 timeline: None,
                 pg_config: PgConfig {
+                    port: None,
+                    hot_standby: None,
+                    primary_conninfo: None,
+                    primary_slot_name: None,
                     extra: std::collections::BTreeMap::new(),
                 },
                 last_refresh_at: Some(UnixMillis(1)),
@@ -316,6 +320,10 @@ mod tests {
                     readiness: Readiness::Unknown,
                     timeline: None,
                     pg_config: PgConfig {
+                        port: None,
+                        hot_standby: None,
+                        primary_conninfo: None,
+                        primary_slot_name: None,
                         extra: std::collections::BTreeMap::new(),
                     },
                     last_refresh_at: Some(UnixMillis(1)),

@@ -2,6 +2,7 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 
 use thiserror::Error;
 
+use crate::pginfo::state::PgConnInfo;
 use crate::state::{JobId, UnixMillis};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,7 +14,7 @@ pub(crate) struct BootstrapSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PgRewindSpec {
     pub(crate) target_data_dir: PathBuf,
-    pub(crate) source_conninfo: String,
+    pub(crate) source_conninfo: PgConnInfo,
     pub(crate) timeout_ms: Option<u64>,
 }
 

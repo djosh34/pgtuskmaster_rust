@@ -403,7 +403,9 @@ mod tests {
             },
             worker::{dispatch_actions, run, step_once, ActionDispatchError},
         },
-        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        pginfo::state::{
+            PgConfig, PgConnInfo, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus,
+        },
         process::{
             jobs::{
                 ProcessCommandRunner, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle,
@@ -558,6 +560,10 @@ mod tests {
                 readiness: Readiness::Ready,
                 timeline: None,
                 pg_config: PgConfig {
+                    port: None,
+                    hot_standby: None,
+                    primary_conninfo: None,
+                    primary_slot_name: None,
                     extra: BTreeMap::new(),
                 },
                 last_refresh_at: Some(UnixMillis(1)),
@@ -603,8 +609,16 @@ mod tests {
             postgres_port: 5432,
             socket_dir: "/tmp/pgtuskmaster/socket".into(),
             log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-            rewind_source_conninfo: "host=127.0.0.1 port=5432 user=postgres dbname=postgres"
-                .to_string(),
+            rewind_source_conninfo: PgConnInfo {
+                host: "127.0.0.1".to_string(),
+                port: 5432,
+                user: "postgres".to_string(),
+                dbname: "postgres".to_string(),
+                application_name: None,
+                connect_timeout_s: None,
+                ssl_mode: PgSslMode::Prefer,
+                options: None,
+            },
             shutdown_mode: ShutdownMode::Fast,
         }
     }

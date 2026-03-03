@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) use super::conninfo::{render_pg_conninfo, PgConnInfo, PgSslMode};
 use super::query::PgPollData;
 use crate::state::StatePublisher;
 use crate::state::{MemberId, TimelineId, UnixMillis, WalLsn, WorkerStatus};
@@ -22,6 +23,10 @@ pub(crate) enum Readiness {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PgConfig {
+    pub(crate) port: Option<u16>,
+    pub(crate) hot_standby: Option<bool>,
+    pub(crate) primary_conninfo: Option<PgConnInfo>,
+    pub(crate) primary_slot_name: Option<String>,
     pub(crate) extra: std::collections::BTreeMap<String, String>,
 }
 
@@ -99,6 +104,10 @@ pub(crate) fn to_member_status(
         readiness: derive_readiness(&sql_status, readiness_signal),
         timeline,
         pg_config: PgConfig {
+            port: None,
+            hot_standby: None,
+            primary_conninfo: None,
+            primary_slot_name: None,
             extra: std::collections::BTreeMap::new(),
         },
         last_refresh_at: Some(polled_at),
