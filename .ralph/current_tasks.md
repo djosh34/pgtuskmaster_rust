@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 11:02:18 AM CET 2026
+Generated: Tue Mar  3 12:09:51 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -504,6 +504,35 @@ This is a **RECURRING META-TASK**.
 ## Task: Perform deep skeptical verification of all docs facts and writing quality <status>not_started</status> <passes>false</passes>
 
 <blocked_by>32-task-author-complete-architecture-docs-with-diagrams-and-no-code</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/34-task-add-non-test-unified-node-entrypoint-autobootstrap-and-ha-loop.md`
+
+## Task: Add non-test unified node entrypoint from start through autonomous HA loop <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+**Goal:** Provide one production (non-test) entry path that starts a `pgtuskmaster` node from config only and runs it through bootstrap and HA loop without manual orchestration.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/35-task-migrate-all-node-startup-tests-to-unified-entrypoint-config-only.md`
+
+## Task: Migrate all node-starting tests to unified entrypoint (config-only) <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>34-task-add-non-test-unified-node-entrypoint-autobootstrap-and-ha-loop</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/36-task-enforce-post-startup-hands-off-test-policy-no-direct-coordination.md`
+
+## Task: Enforce post-startup hands-off test policy (no direct coordination) <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>35-task-migrate-all-node-startup-tests-to-unified-entrypoint-config-only</blocked_by>
 
 <description>
 
