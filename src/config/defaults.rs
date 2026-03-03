@@ -111,6 +111,7 @@ mod tests {
                     pg_ctl: PathBuf::from("/usr/bin/pg_ctl"),
                     pg_rewind: PathBuf::from("/usr/bin/pg_rewind"),
                     initdb: PathBuf::from("/usr/bin/initdb"),
+                    pg_basebackup: PathBuf::from("/usr/bin/pg_basebackup"),
                     psql: PathBuf::from("/usr/bin/psql"),
                 },
             },

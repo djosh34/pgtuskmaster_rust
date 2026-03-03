@@ -1662,6 +1662,9 @@ fn resolve_pg_binaries_for_real_tests() -> Result<BinaryPaths, WorkerError> {
         pg_ctl,
         pg_rewind,
         initdb,
+        pg_basebackup: require_pg16_bin_for_real_tests("pg_basebackup").map_err(|err| {
+            WorkerError::Message(format!("pg_basebackup binary lookup failed: {err}"))
+        })?,
         psql,
     })
 }

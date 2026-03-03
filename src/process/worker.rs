@@ -301,9 +301,10 @@ pub(crate) fn system_now_unix_millis() -> Result<UnixMillis, WorkerError> {
     Ok(UnixMillis(millis))
 }
 
-fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) -> u64 {
+pub(crate) fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) -> u64 {
     match kind {
         ProcessJobKind::Bootstrap(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
+        ProcessJobKind::BaseBackup(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
         ProcessJobKind::PgRewind(spec) => spec.timeout_ms.unwrap_or(config.pg_rewind_timeout_ms),
         ProcessJobKind::Fencing(spec) => spec.timeout_ms.unwrap_or(config.fencing_timeout_ms),
         ProcessJobKind::Promote(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
@@ -321,6 +322,7 @@ fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) -> u64 {
 fn active_kind(kind: &ProcessJobKind) -> ActiveJobKind {
     match kind {
         ProcessJobKind::Bootstrap(_) => ActiveJobKind::Bootstrap,
+        ProcessJobKind::BaseBackup(_) => ActiveJobKind::BaseBackup,
         ProcessJobKind::PgRewind(_) => ActiveJobKind::PgRewind,
         ProcessJobKind::Promote(_) => ActiveJobKind::Promote,
         ProcessJobKind::Demote(_) => ActiveJobKind::Demote,
@@ -331,7 +333,7 @@ fn active_kind(kind: &ProcessJobKind) -> ActiveJobKind {
     }
 }
 
-fn build_command(
+pub(crate) fn build_command(
     config: &ProcessConfig,
     kind: &ProcessJobKind,
 ) -> Result<ProcessCommandSpec, ProcessError> {
@@ -347,6 +349,35 @@ fn build_command(
                     "trust".to_string(),
                     "-U".to_string(),
                     "postgres".to_string(),
+                ],
+            })
+        }
+        ProcessJobKind::BaseBackup(spec) => {
+            validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
+            if spec.source_conninfo.host.trim().is_empty() {
+                return Err(ProcessError::InvalidSpec(
+                    "basebackup.source_conninfo.host must not be empty".to_string(),
+                ));
+            }
+            if spec.source_conninfo.user.trim().is_empty() {
+                return Err(ProcessError::InvalidSpec(
+                    "basebackup.source_conninfo.user must not be empty".to_string(),
+                ));
+            }
+            Ok(ProcessCommandSpec {
+                program: config.binaries.pg_basebackup.clone(),
+                args: vec![
+                    "-h".to_string(),
+                    spec.source_conninfo.host.clone(),
+                    "-p".to_string(),
+                    spec.source_conninfo.port.to_string(),
+                    "-U".to_string(),
+                    spec.source_conninfo.user.clone(),
+                    "-D".to_string(),
+                    spec.data_dir.display().to_string(),
+                    "-Fp".to_string(),
+                    "-Xs".to_string(),
+                    "-R".to_string(),
                 ],
             })
         }
@@ -511,17 +542,17 @@ mod tests {
         pginfo::state::{PgConnInfo, PgSslMode},
         process::{
             jobs::{
-                ActiveJob, BootstrapSpec, CancelReason, DemoteSpec, FencingSpec, NoopCommandRunner,
-                PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessExit, ProcessHandle,
-                PromoteSpec, RestartPostgresSpec, ShutdownMode, StartPostgresSpec,
+                ActiveJob, BaseBackupSpec, BootstrapSpec, CancelReason, DemoteSpec, FencingSpec,
+                NoopCommandRunner, PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessExit,
+                ProcessHandle, PromoteSpec, RestartPostgresSpec, ShutdownMode, StartPostgresSpec,
                 StopPostgresSpec,
             },
             state::{
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
             },
             worker::{
-                can_accept_job, cancel_active_job, start_job, step_once, tick_active_job,
-                TokioCommandRunner,
+                build_command, can_accept_job, cancel_active_job, start_job, step_once,
+                tick_active_job, TokioCommandRunner,
             },
         },
         state::{new_state_channel, JobId, UnixMillis, WorkerError, WorkerStatus},
@@ -583,6 +614,7 @@ mod tests {
                 pg_ctl: PathBuf::from("/usr/bin/pg_ctl"),
                 pg_rewind: PathBuf::from("/usr/bin/pg_rewind"),
                 initdb: PathBuf::from("/usr/bin/initdb"),
+                pg_basebackup: PathBuf::from("/usr/bin/pg_basebackup"),
                 psql: PathBuf::from("/usr/bin/psql"),
             },
         }
@@ -610,6 +642,49 @@ mod tests {
             connect_timeout_s: None,
             ssl_mode: PgSslMode::Prefer,
             options: None,
+        }
+    }
+
+    #[test]
+    fn build_command_basebackup_uses_pg_basebackup_binary_and_args() {
+        let config = sample_config();
+        let command = build_command(
+            &config,
+            &ProcessJobKind::BaseBackup(BaseBackupSpec {
+                data_dir: PathBuf::from("/tmp/node/data"),
+                source_conninfo: PgConnInfo {
+                    host: "10.0.0.12".to_string(),
+                    port: 5433,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: None,
+                    ssl_mode: PgSslMode::Prefer,
+                    options: None,
+                },
+                timeout_ms: Some(30_000),
+            }),
+        );
+
+        assert!(command.is_ok());
+        if let Ok(spec) = command {
+            assert_eq!(spec.program, config.binaries.pg_basebackup);
+            assert_eq!(
+                spec.args,
+                vec![
+                    "-h",
+                    "10.0.0.12",
+                    "-p",
+                    "5433",
+                    "-U",
+                    "replicator",
+                    "-D",
+                    "/tmp/node/data",
+                    "-Fp",
+                    "-Xs",
+                    "-R",
+                ]
+            );
         }
     }
 

@@ -8,9 +8,9 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, BootstrapSpec, DemoteSpec, FencingSpec, NoopCommandRunner, PgRewindSpec,
-    ProcessCommandRunner, ProcessError, ProcessHandle, PromoteSpec, RestartPostgresSpec,
-    StartPostgresSpec, StopPostgresSpec,
+    ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, NoopCommandRunner,
+    PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessHandle, PromoteSpec,
+    RestartPostgresSpec, StartPostgresSpec, StopPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +44,7 @@ impl ProcessState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProcessJobKind {
     Bootstrap(BootstrapSpec),
+    BaseBackup(BaseBackupSpec),
     PgRewind(PgRewindSpec),
     Promote(PromoteSpec),
     Demote(DemoteSpec),

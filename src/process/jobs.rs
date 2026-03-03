@@ -19,6 +19,13 @@ pub(crate) struct PgRewindSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BaseBackupSpec {
+    pub(crate) data_dir: PathBuf,
+    pub(crate) source_conninfo: PgConnInfo,
+    pub(crate) timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PromoteSpec {
     pub(crate) data_dir: PathBuf,
     pub(crate) wait_seconds: Option<u64>,
@@ -89,6 +96,7 @@ impl ShutdownMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ActiveJobKind {
     Bootstrap,
+    BaseBackup,
     PgRewind,
     Promote,
     Demote,

@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 12:56:52 PM CET 2026
+Generated: Tue Mar  3 01:28:49 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -521,7 +521,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/34-task-add-non-test-unified-node-entrypoint-autobootstrap-and-ha-loop.md`
 
-## Task: Add non-test unified node entrypoint from start through autonomous HA loop <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Add non-test unified node entrypoint from start through autonomous HA loop <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
 
 <description>
 **Goal:** Provide one production (non-test) entry path that starts a `pgtuskmaster` node from config only and runs it through bootstrap and HA loop without manual orchestration.

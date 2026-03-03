@@ -58,6 +58,7 @@ pub struct BinaryPaths {
     pub pg_ctl: PathBuf,
     pub pg_rewind: PathBuf,
     pub initdb: PathBuf,
+    pub pg_basebackup: PathBuf,
     pub psql: PathBuf,
 }
 

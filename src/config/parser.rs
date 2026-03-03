@@ -54,6 +54,10 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         &cfg.process.binaries.pg_rewind,
     )?;
     validate_non_empty_path("process.binaries.initdb", &cfg.process.binaries.initdb)?;
+    validate_non_empty_path(
+        "process.binaries.pg_basebackup",
+        &cfg.process.binaries.pg_basebackup,
+    )?;
     validate_non_empty_path("process.binaries.psql", &cfg.process.binaries.psql)?;
 
     validate_timeout(
@@ -188,6 +192,7 @@ mod tests {
                     pg_ctl: PathBuf::from("/usr/bin/pg_ctl"),
                     pg_rewind: PathBuf::from("/usr/bin/pg_rewind"),
                     initdb: PathBuf::from("/usr/bin/initdb"),
+                    pg_basebackup: PathBuf::from("/usr/bin/pg_basebackup"),
                     psql: PathBuf::from("/usr/bin/psql"),
                 },
             },
@@ -318,7 +323,7 @@ loop_interval_ms = 1000
 lease_ttl_ms = 10000
 
 [process]
-binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", psql = "/usr/bin/psql" }
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -357,7 +362,7 @@ loop_interval_ms = 1000
 lease_ttl_ms = 10000
 
 [process]
-binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", psql = "/usr/bin/psql" }
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 "#;
 
         std::fs::write(&path, toml)?;

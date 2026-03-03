@@ -52,6 +52,7 @@ pub(crate) fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryPat
         pg_ctl: require_pg16_bin_for_real_tests("pg_ctl")?,
         pg_rewind: require_pg16_bin_for_real_tests("pg_rewind")?,
         initdb: require_pg16_bin_for_real_tests("initdb")?,
+        pg_basebackup: require_pg16_bin_for_real_tests("pg_basebackup")?,
         psql: require_pg16_bin_for_real_tests("psql")?,
     })
 }
@@ -62,6 +63,7 @@ pub(crate) fn require_pg16_process_binaries() -> Result<BinaryPaths, HarnessErro
         pg_ctl: require_pg16_bin("pg_ctl")?,
         pg_rewind: require_pg16_bin("pg_rewind")?,
         initdb: require_pg16_bin("initdb")?,
+        pg_basebackup: require_pg16_bin("pg_basebackup")?,
         psql: require_pg16_bin("psql")?,
     })
 }
