@@ -1,3 +1,10 @@
+MDBOOK := .tools/mdbook/bin/mdbook
+
+.PHONY: check test test-real test-bdd lint docs-build docs-serve docs-hygiene ensure-mdbook
+
+ensure-mdbook:
+	@test -x "$(MDBOOK)" || (echo "missing mdBook binary: run ./tools/install-mdbook.sh" >&2; exit 1)
+
 check:
 	cargo check --all-targets
 
@@ -27,3 +34,18 @@ lint:
 	cargo clippy --tests --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 	# Skeptical all-target guard so restrictions are enforced uniformly.
 	cargo clippy --all-targets --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+
+docs-build: ensure-mdbook
+	"$(MDBOOK)" build docs
+
+docs-serve: ensure-mdbook
+	"$(MDBOOK)" serve docs -n 127.0.0.1 -p 3000
+
+docs-hygiene:
+	@set -euo pipefail; \
+	tracked="$$(git ls-files -- docs/book docs/.mdbook)"; \
+	if [[ -n "$${tracked}" ]]; then \
+		echo "generated docs output is tracked (must be removed from git index):" >&2; \
+		echo "$${tracked}" >&2; \
+		exit 1; \
+	fi

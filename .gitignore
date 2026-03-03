@@ -21,3 +21,6 @@ target/
 
 # local tool downloads/installations used by tests
 .tools/
+
+# mdBook generated output
+/docs/book/

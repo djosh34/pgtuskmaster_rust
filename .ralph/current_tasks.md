@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 20:32:52 CET 2026
+Generated: Tue Mar  3 21:00:07 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -492,7 +492,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/31-task-docs-framework-selection-install-and-artifact-hygiene.md`
 
-## Task: Install mdBook docs framework and enforce artifact git hygiene <status>not_started</status> <passes>false</passes> <passing>false</passing>
+## Task: Install mdBook docs framework and enforce artifact git hygiene <status>completed</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Use mdBook for this Rust project, install it, prove it renders a static HTML site correctly, and lock down strict git artifact hygiene before any docs commits.
