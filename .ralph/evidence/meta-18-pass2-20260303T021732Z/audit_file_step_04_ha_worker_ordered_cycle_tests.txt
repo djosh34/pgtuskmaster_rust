@@ -1,0 +1,81 @@
+
+        fn push_leader_event(&mut self, member_id: &str) -> Result<(), WorkerError> {
+            let record = LeaderRecord {
+                member_id: MemberId(member_id.to_string()),
+            };
+            let value = serde_json::to_string(&record)
+                .map_err(|err| WorkerError::Message(format!("leader encode failed: {err}")))?;
+            let event = WatchEvent {
+                op: WatchOp::Put,
+                path: "/scope-a/leader".to_string(),
+                value: Some(value),
+                revision: self.take_revision(),
+            };
+            self.store.push_event(event)
+        }
+
+        fn delete_leader_event(&mut self) -> Result<(), WorkerError> {
+            let event = WatchEvent {
+                op: WatchOp::Delete,
+                path: "/scope-a/leader".to_string(),
+                value: None,
+                revision: self.take_revision(),
+            };
+            self.store.push_event(event)
+        }
+
+        async fn step_dcs_and_ha(&mut self) -> Result<(), WorkerError> {
+            crate::dcs::worker::step_once(&mut self.dcs_ctx).await?;
+            step_once(&mut self.ha_ctx).await
+        }
+
+        async fn step_dcs_ha_process_ha(&mut self) -> Result<(), WorkerError> {
+            crate::dcs::worker::step_once(&mut self.dcs_ctx).await?;
+            step_once(&mut self.ha_ctx).await?;
+            crate::process::worker::step_once(&mut self.process_ctx).await?;
+            step_once(&mut self.ha_ctx).await
+        }
+
+        fn latest_ha(&self) -> HaState {
+            self.ha_subscriber.latest().value
+        }
+
+        fn latest_dcs(&self) -> DcsState {
+            self.dcs_subscriber.latest().value
+        }
+
+        fn latest_process(&self) -> ProcessState {
+            self.process_subscriber.latest().value
+        }
+
+        fn take_revision(&mut self) -> i64 {
+            let current = self.next_revision;
+            self.next_revision = self.next_revision.saturating_add(1);
+            current
+        }
+    }
+
+    fn sample_member_record(member_id: &str, role: MemberRole) -> MemberRecord {
+        MemberRecord {
+            member_id: MemberId(member_id.to_string()),
+            role,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            write_lsn: None,
+            replay_lsn: None,
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        }
+    }
+
+    async fn wait_for_ha_version(
+        subscriber: &crate::state::StateSubscriber<HaState>,
+        min_version: u64,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if subscriber.latest().version.0 >= min_version {
+                return true;
+            }

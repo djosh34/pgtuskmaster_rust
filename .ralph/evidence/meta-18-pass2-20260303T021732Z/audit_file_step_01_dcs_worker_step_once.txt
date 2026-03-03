@@ -1,0 +1,161 @@
+            }
+            DcsKey::Switchover => {
+                cache.switchover = None;
+            }
+            DcsKey::Config => {}
+            DcsKey::InitLock => {
+                cache.init_lock = None;
+            }
+        },
+    }
+}
+
+pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError> {
+    let now = now_unix_millis()?;
+    let pg_snapshot = ctx.pg_subscriber.latest();
+
+    let mut store_healthy = ctx.store.healthy();
+
+    if ctx.last_published_pg_version != Some(pg_snapshot.version) {
+        let local_member =
+            build_local_member_record(&ctx.self_id, &pg_snapshot.value, now, pg_snapshot.version);
+        if write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member).is_ok() {
+            ctx.last_published_pg_version = Some(pg_snapshot.version);
+            ctx.cache.members.insert(ctx.self_id.clone(), local_member);
+        } else {
+            store_healthy = false;
+        }
+    }
+
+    let events = match ctx.store.drain_watch_events() {
+        Ok(events) => events,
+        Err(_) => {
+            store_healthy = false;
+            Vec::new()
+        }
+    };
+    match refresh_from_etcd_watch(&ctx.scope, &mut ctx.cache, events) {
+        Ok(result) => {
+            if result.had_errors {
+                store_healthy = false;
+            }
+        }
+        Err(_) => {
+            store_healthy = false;
+        }
+    }
+
+    let trust = evaluate_trust(store_healthy, &ctx.cache, &ctx.self_id);
+    let worker = if store_healthy {
+        crate::state::WorkerStatus::Running
+    } else {
+        crate::state::WorkerStatus::Faulted(WorkerError::Message("dcs store unhealthy".to_string()))
+    };
+
+    let next = DcsState {
+        worker,
+        trust: if store_healthy {
+            trust
+        } else {
+            DcsTrust::NotTrusted
+        },
+        cache: ctx.cache.clone(),
+        last_refresh_at: Some(now),
+    };
+    ctx.publisher
+        .publish(next, now)
+        .map_err(|err| WorkerError::Message(format!("dcs publish failed: {err}")))?;
+    Ok(())
+}
+
+fn now_unix_millis() -> Result<crate::state::UnixMillis, WorkerError> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| WorkerError::Message(format!("system clock before unix epoch: {err}")))?;
+    let millis = u64::try_from(elapsed.as_millis())
+        .map_err(|err| WorkerError::Message(format!("unix millis conversion failed: {err}")))?;
+    Ok(crate::state::UnixMillis(millis))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use crate::{
+        config::{
+            schema::{
+                ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
+                SecurityConfig,
+            },
+            BinaryPaths, ProcessConfig, RuntimeConfig,
+        },
+        dcs::{
+            keys::DcsKey,
+            state::{
+                DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord,
+                MemberRecord, MemberRole, SwitchoverRequest,
+            },
+            store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
+            worker::{apply_watch_update, DcsValue, DcsWatchUpdate},
+        },
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
+    };
+
+    use super::step_once;
+
+    #[derive(Clone, Default)]
+    struct RecordingStore {
+        healthy: bool,
+        events: Arc<Mutex<VecDeque<WatchEvent>>>,
+        writes: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl RecordingStore {
+        fn new(healthy: bool) -> Self {
+            Self {
+                healthy,
+                events: Arc::new(Mutex::new(VecDeque::new())),
+                writes: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn push_event(&self, event: WatchEvent) {
+            if let Ok(mut guard) = self.events.lock() {
+                guard.push_back(event);
+            }
+        }
+
+        fn write_count(&self) -> usize {
+            if let Ok(guard) = self.writes.lock() {
+                guard.len()
+            } else {
+                0
+            }
+        }
+
+        fn first_write_path(&self) -> Option<String> {
+            if let Ok(guard) = self.writes.lock() {
+                return guard.first().map(|(path, _)| path.clone());
+            }
+            None
+        }
+    }
+
+    impl DcsStore for RecordingStore {
+        fn healthy(&self) -> bool {
+            self.healthy
+        }
+
+        fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
+            let mut guard = self
+                .writes
+                .lock()
+                .map_err(|_| DcsStoreError::Io("writes lock poisoned".to_string()))?;
+            guard.push((path.to_string(), value));
+            Ok(())
+        }
+

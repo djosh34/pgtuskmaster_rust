@@ -1,0 +1,101 @@
+                changed.map_err(|err| {
+                    WorkerError::Message(format!("ha config subscriber closed: {err}"))
+                })?;
+            }
+            _ = interval.tick() => {}
+        }
+        step_once(&mut ctx).await?;
+    }
+}
+
+pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> {
+    let world = world_snapshot(ctx);
+    let output = decide(DecideInput {
+        current: ctx.state.clone(),
+        world,
+    })
+    .map_err(|err| WorkerError::Message(format!("ha decide failed: {err}")))?;
+
+    let dispatch_errors = dispatch_actions(ctx, &output.actions);
+    let now = (ctx.now)()?;
+
+    let mut next = output.next;
+    next.worker = if dispatch_errors.is_empty() {
+        WorkerStatus::Running
+    } else {
+        WorkerStatus::Faulted(WorkerError::Message(format_dispatch_errors(
+            &dispatch_errors,
+        )))
+    };
+
+    ctx.publisher
+        .publish(next.clone(), now)
+        .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
+    ctx.state = next;
+    Ok(())
+}
+
+pub(crate) fn dispatch_actions(
+    ctx: &mut HaWorkerCtx,
+    actions: &[HaAction],
+) -> Vec<ActionDispatchError> {
+    let mut errors = Vec::new();
+    let leader_key = leader_path(&ctx.scope);
+    let switchover_key = switchover_path(&ctx.scope);
+    let runtime_config = ctx.config_subscriber.latest().value;
+
+    for (index, action) in actions.iter().enumerate() {
+        match action {
+            HaAction::AcquireLeaderLease => {
+                if let Err(err) = ctx.dcs_store.write_leader_lease(&ctx.scope, &ctx.self_id) {
+                    errors.push(ActionDispatchError::DcsWrite {
+                        action: action.id(),
+                        path: leader_key.clone(),
+                        message: dcs_error_message(err),
+                    });
+                }
+            }
+            HaAction::ReleaseLeaderLease => {
+                if let Err(err) = ctx.dcs_store.delete_leader(&ctx.scope) {
+                    errors.push(ActionDispatchError::DcsDelete {
+                        action: action.id(),
+                        path: leader_key.clone(),
+                        message: dcs_error_message(err),
+                    });
+                }
+            }
+            HaAction::ClearSwitchover => {
+                if let Err(err) = ctx.dcs_store.clear_switchover(&ctx.scope) {
+                    errors.push(ActionDispatchError::DcsDelete {
+                        action: action.id(),
+                        path: switchover_key.clone(),
+                        message: dcs_error_message(err),
+                    });
+                }
+            }
+            HaAction::StartPostgres => {
+                let now = match (ctx.now)() {
+                    Ok(value) => value,
+                    Err(err) => {
+                        errors.push(ActionDispatchError::Clock {
+                            action: action.id(),
+                            message: err.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                let request = ProcessJobRequest {
+                    id: process_job_id(action, index, ctx.state.tick, now.0),
+                    kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                        data_dir: runtime_config.postgres.data_dir.clone(),
+                        host: ctx.process_defaults.postgres_host.clone(),
+                        port: ctx.process_defaults.postgres_port,
+                        socket_dir: ctx.process_defaults.socket_dir.clone(),
+                        log_file: ctx.process_defaults.log_file.clone(),
+                        wait_seconds: None,
+                        timeout_ms: None,
+                    }),
+                };
+                if let Err(err) = ctx.process_inbox.send(request) {
+                    errors.push(ActionDispatchError::ProcessSend {
+                        action: action.id(),

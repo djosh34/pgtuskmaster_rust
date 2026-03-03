@@ -1,0 +1,5 @@
+src/lib.rs:2:    clippy::unwrap_used,
+src/lib.rs:3:    clippy::expect_used,
+src/lib.rs:4:    clippy::panic,
+src/lib.rs:5:    clippy::todo,
+src/lib.rs:6:    clippy::unimplemented

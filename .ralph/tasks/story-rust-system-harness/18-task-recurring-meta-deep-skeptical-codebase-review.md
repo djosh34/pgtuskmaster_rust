@@ -19,6 +19,45 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 **NEVER set this task's passes to anything other than meta-task.**
 
 ## Exploration
+### 2026-03-03 (fresh run, pass-2 full review complete)
+- Reviewer: codex
+- Evidence directory: `.ralph/evidence/meta-18-pass2-20260303T021732Z`
+- Preflight model check result: `.ralph/model.txt` was `deep_review` (precondition satisfied).
+- Files/modules audited:
+  - Gate definitions + strict lint posture (`Makefile`, `src/lib.rs`)
+  - Config schema/parser strictness (`src/config/schema.rs`, `src/config/parser.rs`)
+  - Real-binary enforcement policy (`src/test_harness/binaries.rs`, `Makefile:test-real`)
+  - DCS adapter/watch semantics + error handling (`src/dcs/etcd_store.rs`, `src/dcs/store.rs`, `src/dcs/worker.rs`)
+  - HA decision + ordered multi-worker step discipline (`src/ha/decide.rs`, `src/ha/worker.rs`)
+  - Process worker job lifecycle + timeouts (`src/process/worker.rs`)
+  - PG info polling + readiness mapping (`src/pginfo/worker.rs`, `src/pginfo/conninfo.rs`)
+  - API worker routing/auth/TLS behaviors + fallback endpoints (`src/api/worker.rs`, `src/api/controller.rs`, `src/api/fallback.rs`)
+  - Integration/e2e realism checks and port reservation discipline (`src/ha/e2e_multi_node.rs`, `src/test_harness/ports.rs`, `src/test_harness/namespace.rs`)
+  - BDD/API/state contract tests (`tests/bdd_api_http.rs`, `tests/bdd_state_watch.rs`)
+- Findings summary:
+  - No `unwrap()`/`expect()`/`panic!()`/`todo!()`/`unimplemented!()` occurrences found in `src/` or `tests/`.
+  - Config structs keep strict `#[serde(deny_unknown_fields)]` coverage in schema/API surfaces.
+  - etcd watch bootstrap uses `get(prefix)` snapshot then `watch(prefix)` from `snapshot_revision + 1`, and treats canceled/compacted watch responses as unhealthy (forcing reconnect+resnapshot).
+  - Real-binary enforcement gate `make test-real` is available and passes with `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1`.
+- Small issues -> bug tasks: none for this pass.
+- Large issues -> agent tasks: none for this pass.
+- Gate outcomes:
+  - `make check`: pass (`make-check.log`)
+  - `make test`: pass (`make-test.log`)
+  - `make test-bdd`: pass (`make-test-bdd.log`)
+  - `make lint`: pass (`make-lint.log`)
+  - Real-binary enforcement gate: `make test-real`: pass (`make-test-real.log`)
+- Closeout model reset to `normal_high`: done (after gates; see `.ralph/model.txt`)
+
+### 2026-03-03 (fresh run, pass-2 preflight only)
+- Reviewer: codex
+- Preflight model check result: `.ralph/model.txt` was `normal_high` (mismatch), updated to `deep_review` to satisfy run precondition.
+- Files/modules audited: none yet (execution halted at preflight by task contract).
+- Findings summary: no code findings yet; this entry only documents mandatory model gate enforcement for pass-2.
+- Small issues -> bug tasks: none (not started due preflight halt).
+- Large issues -> agent tasks: none (not started due preflight halt).
+- Closeout model reset to `normal_high`: not applicable yet; full review not started.
+
 ### 2026-03-03 (fresh run, pass-1 full review in progress)
 - Reviewer: codex
 - Evidence directory: `.ralph/evidence/meta-18-pass1-20260303T020551Z`

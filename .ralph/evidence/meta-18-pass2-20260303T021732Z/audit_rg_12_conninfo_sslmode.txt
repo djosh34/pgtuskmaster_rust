@@ -1,0 +1,123 @@
+src/process/jobs.rs:5:use crate::pginfo::state::PgConnInfo;
+src/process/jobs.rs:17:    pub(crate) source_conninfo: PgConnInfo,
+src/dcs/state.rs:264:                primary_conninfo: None,
+src/dcs/worker.rs:285:                    primary_conninfo: None,
+src/process/worker.rs:10:    pginfo::state::render_pg_conninfo,
+src/process/worker.rs:361:                    render_pg_conninfo(&spec.source_conninfo),
+src/process/worker.rs:511:        pginfo::state::{PgConnInfo, PgSslMode},
+src/process/worker.rs:603:    fn sample_rewind_conninfo() -> PgConnInfo {
+src/process/worker.rs:604:        PgConnInfo {
+src/process/worker.rs:611:            ssl_mode: PgSslMode::Prefer,
+src/process/worker.rs:1243:                source_conninfo: sample_rewind_conninfo(),
+src/debug_api/worker.rs:151:                    primary_conninfo: None,
+src/dcs/etcd_store.rs:651:                    primary_conninfo: None,
+src/ha/decide.rs:655:                primary_conninfo: None,
+src/ha/e2e_multi_node.rs:31:        PgConfig, PgConnInfo, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus,
+src/ha/e2e_multi_node.rs:116:        let rewind_source_conninfo = PgConnInfo {
+src/ha/e2e_multi_node.rs:123:            ssl_mode: PgSslMode::Prefer,
+src/ha/e2e_multi_node.rs:273:                rewind_source_conninfo: rewind_source_conninfo.clone(),
+src/ha/e2e_multi_node.rs:625:                primary_conninfo: None,
+src/pginfo/worker.rs:140:                    primary_conninfo: None,
+src/pginfo/worker.rs:325:                        primary_conninfo: None,
+src/ha/state.rs:6:    pginfo::state::{PgConnInfo, PgInfoState, PgSslMode},
+src/ha/state.rs:84:    pub(crate) rewind_source_conninfo: PgConnInfo,
+src/ha/state.rs:95:            rewind_source_conninfo: PgConnInfo {
+src/ha/state.rs:102:                ssl_mode: PgSslMode::Prefer,
+src/pginfo/conninfo.rs:4:pub(crate) enum PgSslMode {
+src/pginfo/conninfo.rs:13:impl PgSslMode {
+src/pginfo/conninfo.rs:39:pub(crate) struct PgConnInfo {
+src/pginfo/conninfo.rs:46:    pub(crate) ssl_mode: PgSslMode,
+src/pginfo/conninfo.rs:51:pub(crate) enum ConnInfoParseError {
+src/pginfo/conninfo.rs:52:    #[error("conninfo syntax error: {0}")]
+src/pginfo/conninfo.rs:54:    #[error("missing required conninfo key `{0}`")]
+src/pginfo/conninfo.rs:56:    #[error("duplicate conninfo key `{0}`")]
+src/pginfo/conninfo.rs:58:    #[error("unsupported conninfo key `{0}`")]
+src/pginfo/conninfo.rs:60:    #[error("unsupported conninfo sslmode `{0}`")]
+src/pginfo/conninfo.rs:61:    UnsupportedSslMode(String),
+src/pginfo/conninfo.rs:62:    #[error("invalid conninfo value for `{key}`: {message}")]
+src/pginfo/conninfo.rs:66:pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, ConnInfoParseError> {
+src/pginfo/conninfo.rs:88:                    return Err(ConnInfoParseError::DuplicateKey(key));
+src/pginfo/conninfo.rs:93:                        .map_err(|err| ConnInfoParseError::InvalidValue {
+src/pginfo/conninfo.rs:104:                    return Err(ConnInfoParseError::DuplicateKey(key));
+src/pginfo/conninfo.rs:109:                        .map_err(|err| ConnInfoParseError::InvalidValue {
+src/pginfo/conninfo.rs:115:            "sslmode" => {
+src/pginfo/conninfo.rs:117:                    return Err(ConnInfoParseError::DuplicateKey(key));
+src/pginfo/conninfo.rs:119:                let parsed = PgSslMode::parse(&value)
+src/pginfo/conninfo.rs:120:                    .ok_or_else(|| ConnInfoParseError::UnsupportedSslMode(value.clone()))?;
+src/pginfo/conninfo.rs:124:            _ => return Err(ConnInfoParseError::UnsupportedKey(key)),
+src/pginfo/conninfo.rs:128:    let host = host.ok_or(ConnInfoParseError::MissingRequiredKey("host"))?;
+src/pginfo/conninfo.rs:129:    let port = port.ok_or(ConnInfoParseError::MissingRequiredKey("port"))?;
+src/pginfo/conninfo.rs:130:    let user = user.ok_or(ConnInfoParseError::MissingRequiredKey("user"))?;
+src/pginfo/conninfo.rs:131:    let dbname = dbname.ok_or(ConnInfoParseError::MissingRequiredKey("dbname"))?;
+src/pginfo/conninfo.rs:133:    Ok(PgConnInfo {
+src/pginfo/conninfo.rs:140:        ssl_mode: ssl_mode.unwrap_or(PgSslMode::Prefer),
+src/pginfo/conninfo.rs:149:) -> Result<(), ConnInfoParseError> {
+src/pginfo/conninfo.rs:151:        return Err(ConnInfoParseError::DuplicateKey(key));
+src/pginfo/conninfo.rs:157:pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
+src/pginfo/conninfo.rs:171:    pairs.push(("sslmode".to_string(), info.ssl_mode.as_str().to_string()));
+src/pginfo/conninfo.rs:223:    fn parse_key(&mut self) -> Result<String, ConnInfoParseError> {
+src/pginfo/conninfo.rs:230:                return Err(ConnInfoParseError::Syntax(
+src/pginfo/conninfo.rs:239:            return Err(ConnInfoParseError::Syntax(
+src/pginfo/conninfo.rs:240:                "empty conninfo key is not allowed".to_string(),
+src/pginfo/conninfo.rs:247:    fn expect_equals(&mut self) -> Result<(), ConnInfoParseError> {
+src/pginfo/conninfo.rs:250:            _ => Err(ConnInfoParseError::Syntax(
+src/pginfo/conninfo.rs:251:                "expected '=' after conninfo key".to_string(),
+src/pginfo/conninfo.rs:256:    fn parse_value(&mut self) -> Result<String, ConnInfoParseError> {
+src/pginfo/conninfo.rs:260:            None => Err(ConnInfoParseError::Syntax(
+src/pginfo/conninfo.rs:261:                "missing conninfo value after '='".to_string(),
+src/pginfo/conninfo.rs:266:    fn parse_unquoted_value(&mut self) -> Result<String, ConnInfoParseError> {
+src/pginfo/conninfo.rs:275:                    ConnInfoParseError::Syntax("dangling backslash in conninfo value".to_string())
+src/pginfo/conninfo.rs:286:    fn parse_quoted_value(&mut self) -> Result<String, ConnInfoParseError> {
+src/pginfo/conninfo.rs:289:            return Err(ConnInfoParseError::Syntax(
+src/pginfo/conninfo.rs:290:                "quoted conninfo value must start with single quote".to_string(),
+src/pginfo/conninfo.rs:300:                        ConnInfoParseError::Syntax(
+src/pginfo/conninfo.rs:301:                            "dangling backslash in quoted conninfo value".to_string(),
+src/pginfo/conninfo.rs:308:                    return Err(ConnInfoParseError::Syntax(
+src/pginfo/conninfo.rs:309:                        "unterminated quoted conninfo value".to_string(),
+src/pginfo/conninfo.rs:316:    fn require_token_boundary(&self) -> Result<(), ConnInfoParseError> {
+src/pginfo/conninfo.rs:319:                return Err(ConnInfoParseError::Syntax(
+src/pginfo/conninfo.rs:320:                    "expected whitespace between conninfo key/value pairs".to_string(),
+src/pginfo/conninfo.rs:340:    use super::{parse_pg_conninfo, render_pg_conninfo, ConnInfoParseError, PgConnInfo, PgSslMode};
+src/pginfo/conninfo.rs:342:    fn sample_conninfo() -> PgConnInfo {
+src/pginfo/conninfo.rs:343:        PgConnInfo {
+src/pginfo/conninfo.rs:350:            ssl_mode: PgSslMode::Require,
+src/pginfo/conninfo.rs:357:        let parsed = parse_pg_conninfo("host=127.0.0.1 port=5432 user=postgres dbname=postgres");
+src/pginfo/conninfo.rs:360:            Ok(PgConnInfo {
+src/pginfo/conninfo.rs:367:                ssl_mode: PgSslMode::Prefer,
+src/pginfo/conninfo.rs:375:        let parsed = parse_pg_conninfo(
+src/pginfo/conninfo.rs:389:            parse_pg_conninfo("host 127.0.0.1 port=5432 user=postgres dbname=postgres"),
+src/pginfo/conninfo.rs:390:            Err(ConnInfoParseError::Syntax(_))
+src/pginfo/conninfo.rs:393:            parse_pg_conninfo("host='127.0.0.1 port=5432 user=postgres dbname=postgres"),
+src/pginfo/conninfo.rs:394:            Err(ConnInfoParseError::Syntax(_))
+src/pginfo/conninfo.rs:397:            parse_pg_conninfo("host='127.0.0.1'port=5432 user=postgres dbname=postgres"),
+src/pginfo/conninfo.rs:398:            Err(ConnInfoParseError::Syntax(_))
+src/pginfo/conninfo.rs:405:            parse_pg_conninfo("host=127.0.0.1 user=postgres dbname=postgres"),
+src/pginfo/conninfo.rs:406:            Err(ConnInfoParseError::MissingRequiredKey("port"))
+src/pginfo/conninfo.rs:413:            parse_pg_conninfo(
+src/pginfo/conninfo.rs:416:            Err(ConnInfoParseError::DuplicateKey("host".to_string()))
+src/pginfo/conninfo.rs:423:            parse_pg_conninfo(
+src/pginfo/conninfo.rs:424:                "host=127.0.0.1 port=5432 user=postgres dbname=postgres sslmdoe=require"
+src/pginfo/conninfo.rs:426:            Err(ConnInfoParseError::UnsupportedKey("sslmdoe".to_string()))
+src/pginfo/conninfo.rs:431:    fn parse_rejects_unsupported_sslmode() {
+src/pginfo/conninfo.rs:433:            parse_pg_conninfo(
+src/pginfo/conninfo.rs:434:                "host=127.0.0.1 port=5432 user=postgres dbname=postgres sslmode=invalid"
+src/pginfo/conninfo.rs:436:            Err(ConnInfoParseError::UnsupportedSslMode(
+src/pginfo/conninfo.rs:445:            parse_pg_conninfo("host=127.0.0.1 port=70000 user=postgres dbname=postgres"),
+src/pginfo/conninfo.rs:446:            Err(ConnInfoParseError::InvalidValue { key: "port", .. })
+src/pginfo/conninfo.rs:449:            parse_pg_conninfo(
+src/pginfo/conninfo.rs:452:            Err(ConnInfoParseError::InvalidValue {
+src/pginfo/conninfo.rs:461:        let rendered = render_pg_conninfo(&sample_conninfo());
+src/pginfo/conninfo.rs:464:            "host=127.0.0.1 port=5432 user=postgres dbname='postgres' application_name='ha worker' connect_timeout=5 sslmode=require options='-c search_path=public'"
+src/pginfo/conninfo.rs:471:        let original = sample_conninfo();
+src/pginfo/conninfo.rs:472:        let rendered = render_pg_conninfo(&original);
+src/pginfo/conninfo.rs:473:        let reparsed = parse_pg_conninfo(&rendered);
+src/pginfo/mod.rs:3:pub(crate) mod conninfo;
+src/pginfo/state.rs:5:pub(crate) use super::conninfo::{render_pg_conninfo, PgConnInfo, PgSslMode};
+src/pginfo/state.rs:28:    pub(crate) primary_conninfo: Option<PgConnInfo>,
+src/pginfo/state.rs:109:            primary_conninfo: None,
+src/worker_contract_tests.rs:99:                primary_conninfo: None,
+src/ha/worker.rs:232:                        source_conninfo: ctx.process_defaults.rewind_source_conninfo.clone(),
+src/ha/worker.rs:393:            PgConfig, PgConnInfo, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus,
+src/ha/worker.rs:551:                    primary_conninfo: None,
+src/ha/worker.rs:598:            rewind_source_conninfo: PgConnInfo {
+src/ha/worker.rs:605:                ssl_mode: PgSslMode::Prefer,

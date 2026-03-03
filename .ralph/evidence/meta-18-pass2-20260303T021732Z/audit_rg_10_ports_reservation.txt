@@ -1,0 +1,7 @@
+src/test_harness/ports.rs:2:use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+src/test_harness/ports.rs:7:pub(crate) struct PortReservation {
+src/test_harness/ports.rs:8:    listeners: Vec<TcpListener>,
+src/test_harness/ports.rs:12:impl PortReservation {
+src/test_harness/ports.rs:30:pub(crate) fn allocate_ports(count: usize) -> Result<PortReservation, HarnessError> {
+src/test_harness/ports.rs:42:        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+src/test_harness/ports.rs:54:    Ok(PortReservation { listeners, ports })

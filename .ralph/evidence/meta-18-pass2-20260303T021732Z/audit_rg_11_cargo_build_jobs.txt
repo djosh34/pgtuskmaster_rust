@@ -1,0 +1,17 @@
+.ralph/tasks/story-full-verification/03-task-run-full-suite-regression-pass.md:55:- Updated execution to run all suite commands with `CARGO_BUILD_JOBS=1` to reduce intermittent object/archive races during full-suite validation while keeping commands serial.
+.ralph/tasks/story-full-verification/03-task-run-full-suite-regression-pass.md:60:- Run each command via `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 <cmd> | tee <log>'` so outputs are archived and exit codes are preserved.
+.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md:80:- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make check | tee make-check.log'`
+.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md:81:- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test | tee make-test.log'`
+.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md:82:- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test-bdd | tee make-test-bdd.log'`
+.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md:83:- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make lint | tee make-lint.log'`
+.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md:69:- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make check 2>&1 | tee .ralph/evidence/15-final-gate/make-check.log'`.
+.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md:70:- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test 2>&1 | tee .ralph/evidence/15-final-gate/make-test.log'`.
+.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md:71:- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test-bdd 2>&1 | tee .ralph/evidence/15-final-gate/make-test-bdd.log'`.
+.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md:72:- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make lint 2>&1 | tee .ralph/evidence/15-final-gate/make-lint.log'`.
+.ralph/tasks/story-rust-system-harness/14-task-security-auth-tls-real-cluster-tests.md:97:- Required gates (all passing, sequential): `CARGO_BUILD_JOBS=1 make check`, `CARGO_BUILD_JOBS=1 make test`, `CARGO_BUILD_JOBS=1 make test-bdd`, `CARGO_BUILD_JOBS=1 make lint`
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md:75:  - `CARGO_BUILD_JOBS=1 make check`
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md:76:  - `CARGO_BUILD_JOBS=1 make test`
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md:77:  - `CARGO_BUILD_JOBS=1 make test-bdd`
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md:78:  - `CARGO_BUILD_JOBS=1 make lint`
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md:80:  - `CARGO_BUILD_JOBS=1 make test-real`
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md:114:- Alteration 2: required `CARGO_BUILD_JOBS=1` for all gate runs to control known Cargo archive race noise.

@@ -1,0 +1,131 @@
+        })?;
+
+        Ok(Box::new(TokioProcessHandle { child }))
+    }
+}
+
+pub(crate) fn can_accept_job(state: &ProcessState) -> bool {
+    matches!(state, ProcessState::Idle { .. })
+}
+
+pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
+    loop {
+        step_once(&mut ctx).await?;
+        tokio::time::sleep(ctx.poll_interval).await;
+    }
+}
+
+pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
+    match ctx.inbox.try_recv() {
+        Ok(request) => {
+            start_job(ctx, request).await?;
+        }
+        Err(TryRecvError::Empty) => {}
+        Err(TryRecvError::Disconnected) => {}
+    }
+
+    tick_active_job(ctx).await
+}
+
+pub(crate) async fn start_job(
+    ctx: &mut ProcessWorkerCtx,
+    request: ProcessJobRequest,
+) -> Result<(), WorkerError> {
+    if !can_accept_job(&ctx.state) {
+        let now = current_time(ctx)?;
+        ctx.last_rejection = Some(ProcessJobRejection {
+            id: request.id,
+            error: ProcessError::Busy,
+            rejected_at: now,
+        });
+        return Ok(());
+    }
+
+    let now = current_time(ctx)?;
+    let timeout_ms = timeout_for_kind(&request.kind, &ctx.config);
+    let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
+
+    let command = match build_command(&ctx.config, &request.kind) {
+        Ok(command) => command,
+        Err(error) => {
+            transition_to_idle(
+                ctx,
+                JobOutcome::Failure {
+                    id: request.id,
+                    error,
+                    finished_at: now,
+                },
+                now,
+            )?;
+            return Ok(());
+        }
+    };
+
+    let handle = match ctx.command_runner.spawn(command) {
+        Ok(handle) => handle,
+        Err(error) => {
+            transition_to_idle(
+                ctx,
+                JobOutcome::Failure {
+                    id: request.id,
+                    error,
+                    finished_at: now,
+                },
+                now,
+            )?;
+            return Ok(());
+        }
+    };
+
+    let active = ActiveJob {
+        id: request.id.clone(),
+        kind: active_kind(&request.kind),
+        started_at: now,
+        deadline_at,
+    };
+
+    ctx.active_runtime = Some(ActiveRuntime {
+        request,
+        timeout_ms,
+        started_at: now,
+        deadline_at,
+        handle,
+    });
+    ctx.state = ProcessState::Running {
+        worker: WorkerStatus::Running,
+        active,
+    };
+    publish_state(ctx, now)
+}
+
+pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
+    let mut runtime = match ctx.active_runtime.take() {
+        Some(runtime) => runtime,
+        None => return Ok(()),
+    };
+
+    let now = current_time(ctx)?;
+    if now.0 >= runtime.deadline_at.0 {
+        let cancel_result = runtime.handle.cancel().await;
+        let outcome = match cancel_result {
+            Ok(()) => JobOutcome::Timeout {
+                id: runtime.request.id,
+                finished_at: now,
+            },
+            Err(error) => JobOutcome::Failure {
+                id: runtime.request.id,
+                error,
+                finished_at: now,
+            },
+        };
+        transition_to_idle(ctx, outcome, now)?;
+        return Ok(());
+    }
+
+    let poll = runtime.handle.poll_exit();
+    match poll {
+        Ok(None) => {
+            ctx.active_runtime = Some(runtime);
+            Ok(())
+        }
+        Ok(Some(ProcessExit::Success)) => {

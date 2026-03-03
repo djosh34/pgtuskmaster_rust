@@ -1,0 +1,3 @@
+src/dcs/etcd_store.rs:354:    if response.canceled() || response.compact_revision() > 0 {
+src/dcs/etcd_store.rs:356:            "etcd watch canceled: reason='{}' compact_revision={}",
+src/dcs/etcd_store.rs:357:            response.cancel_reason(),

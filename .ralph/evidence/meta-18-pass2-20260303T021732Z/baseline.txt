@@ -1,0 +1,18 @@
+# baseline 2026-03-03T02:17:32+00:00
+
+## git status --short
+ M .ralph/current_tasks.md
+ M .ralph/model.txt
+ M .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
+ M .ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md
+?? .ralph/current_task.txt
+?? .ralph/evidence/meta-18-pass2-20260303T021732Z/
+?? .ralph/evidence/meta-18-pass2-latest.path
+?? .ralph/progress/37.jsonl
+
+## current_task
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md
+
+## model
+deep_review
+

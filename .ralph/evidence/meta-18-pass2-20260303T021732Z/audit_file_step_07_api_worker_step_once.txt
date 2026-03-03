@@ -1,0 +1,131 @@
+        self.role_tokens = Some(ApiRoleTokens {
+            read_token: read,
+            admin_token: admin,
+        });
+        Ok(())
+    }
+
+    pub fn set_require_client_cert(&mut self, required: bool) {
+        self.require_client_cert = required;
+    }
+}
+
+pub async fn run(mut ctx: ApiWorkerCtx) -> Result<(), WorkerError> {
+    loop {
+        step_once(&mut ctx).await?;
+        tokio::time::sleep(ctx.poll_interval).await;
+    }
+}
+
+pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
+    let (stream, _peer) =
+        match tokio::time::timeout(Duration::from_millis(1), ctx.listener.accept()).await {
+            Ok(Ok((stream, peer))) => (stream, peer),
+            Ok(Err(err)) => {
+                return Err(WorkerError::Message(format!("api accept failed: {err}")));
+            }
+            Err(_elapsed) => return Ok(()),
+        };
+
+    let cfg = ctx.config_subscriber.latest().value;
+    let mut stream = match accept_connection(ctx, &cfg, stream).await? {
+        Some(stream) => stream,
+        None => return Ok(()),
+    };
+
+    let request =
+        match tokio::time::timeout(Duration::from_millis(100), stream.read_http_request()).await {
+            Ok(Ok(req)) => req,
+            Ok(Err(message)) => {
+                let response = HttpResponse::text(400, "Bad Request", message);
+                stream.write_http_response(response).await?;
+                return Ok(());
+            }
+            Err(_elapsed) => return Ok(()),
+        };
+
+    match authorize_request(ctx, &cfg, &request) {
+        AuthDecision::Allowed => {}
+        AuthDecision::Unauthorized => {
+            let response = HttpResponse::text(401, "Unauthorized", "unauthorized");
+            stream.write_http_response(response).await?;
+            return Ok(());
+        }
+        AuthDecision::Forbidden => {
+            let response = HttpResponse::text(403, "Forbidden", "forbidden");
+            stream.write_http_response(response).await?;
+            return Ok(());
+        }
+    }
+
+    let response = route_request(ctx, &cfg, request);
+    stream.write_http_response(response).await?;
+    Ok(())
+}
+
+fn route_request(
+    ctx: &mut ApiWorkerCtx,
+    cfg: &RuntimeConfig,
+    request: HttpRequest,
+) -> HttpResponse {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/switchover") => {
+            let input = match serde_json::from_slice::<SwitchoverRequestInput>(&request.body) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
+                }
+            };
+            match post_switchover(&ctx.scope, &mut *ctx.dcs_store, input) {
+                Ok(value) => HttpResponse::json(202, "Accepted", &value),
+                Err(err) => api_error_to_http(err),
+            }
+        }
+        ("GET", "/fallback/cluster") => {
+            let view = get_fallback_cluster(cfg);
+            HttpResponse::json(200, "OK", &view)
+        }
+        ("POST", "/fallback/heartbeat") => {
+            let input = match serde_json::from_slice::<FallbackHeartbeatInput>(&request.body) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
+                }
+            };
+            match post_fallback_heartbeat(input) {
+                Ok(value) => HttpResponse::json(202, "Accepted", &value),
+                Err(err) => api_error_to_http(err),
+            }
+        }
+        ("GET", "/debug/snapshot") => {
+            if !cfg.debug.enabled {
+                return HttpResponse::text(404, "Not Found", "not found");
+            }
+            let Some(subscriber) = ctx.debug_snapshot_subscriber.as_ref() else {
+                return HttpResponse::text(503, "Service Unavailable", "snapshot unavailable");
+            };
+            let snapshot = subscriber.latest();
+            HttpResponse::text(200, "OK", format!("{:#?}", snapshot))
+        }
+        _ => HttpResponse::text(404, "Not Found", "not found"),
+    }
+}
+
+fn api_error_to_http(err: ApiError) -> HttpResponse {
+    match err {
+        ApiError::BadRequest(message) => HttpResponse::text(400, "Bad Request", message),
+        ApiError::Unauthorized => HttpResponse::text(401, "Unauthorized", "unauthorized"),
+        ApiError::DcsStore(message) => HttpResponse::text(503, "Service Unavailable", message),
+        ApiError::Internal(message) => HttpResponse::text(500, "Internal Server Error", message),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EndpointRole {
+    Read,
+    Admin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthDecision {
+    Allowed,

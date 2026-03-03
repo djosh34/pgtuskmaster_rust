@@ -1,0 +1,16 @@
+.ralph/tasks/story-full-verification/02-task-run-targeted-unit-and-integration-tests.md:49:- Run commands via `bash -lc 'set -o pipefail; <cmd> | tee <log>'` so each exit status is preserved.
+.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md:80:- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make check | tee make-check.log'`
+.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md:81:- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test | tee make-test.log'`
+.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md:82:- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test-bdd | tee make-test-bdd.log'`
+.ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md:83:- `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make lint | tee make-lint.log'`
+.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md:69:- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make check 2>&1 | tee .ralph/evidence/15-final-gate/make-check.log'`.
+.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md:70:- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test 2>&1 | tee .ralph/evidence/15-final-gate/make-test.log'`.
+.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md:71:- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make test-bdd 2>&1 | tee .ralph/evidence/15-final-gate/make-test-bdd.log'`.
+.ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md:72:- [x] Run `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 make lint 2>&1 | tee .ralph/evidence/15-final-gate/make-lint.log'`.
+.ralph/tasks/story-full-verification/03-task-run-full-suite-regression-pass.md:60:- Run each command via `bash -lc 'set -o pipefail; CARGO_BUILD_JOBS=1 <cmd> | tee <log>'` so outputs are archived and exit codes are preserved.
+.ralph/tasks/story-rust-system-harness/19-task-do-meta-deep-skeptical-review-pass-1.md:58:- Execute sequentially with log capture and `set -o pipefail`:
+.ralph/tasks/story-rust-system-harness/19-task-do-meta-deep-skeptical-review-pass-1.md:91:- Control: enforce `set -o pipefail` for all logged gate runs.
+.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md:59:- Run each gate through `bash -lc 'set -o pipefail; ... | tee ...'` so exit codes are preserved.
+.ralph/tasks/story-rust-system-harness/05c-task-zero-panic-unwrap-expect-across-runtime-and-tests.md:113:- Use `set -o pipefail` if logging through `tee`, and archive logs under `.ralph/evidence/05c-zero-panic/gates/`.
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md:73:- Run sequentially with `set -o pipefail` and `tee` into evidence logs.
+.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md:121:- Control: mandatory `set -o pipefail` for each logged gate.

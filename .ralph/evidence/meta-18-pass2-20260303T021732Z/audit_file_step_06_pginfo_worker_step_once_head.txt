@@ -1,0 +1,120 @@
+use crate::state::WorkerError;
+use crate::state::{UnixMillis, WorkerStatus};
+
+use super::query::poll_once;
+use super::state::{to_member_status, PgInfoWorkerCtx, SqlStatus};
+
+pub(crate) async fn run(mut ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
+    loop {
+        step_once(&mut ctx).await?;
+        tokio::time::sleep(ctx.poll_interval).await;
+    }
+}
+
+pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerError> {
+    let now = now_unix_millis()?;
+    let next_state = match poll_once(&ctx.postgres_dsn).await {
+        Ok(polled) => {
+            to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))
+        }
+        Err(_) => to_member_status(WorkerStatus::Running, SqlStatus::Unreachable, now, None),
+    };
+
+    ctx.publisher
+        .publish(next_state, now)
+        .map_err(|err| WorkerError::Message(format!("pginfo publish failed: {err}")))?;
+    Ok(())
+}
+
+fn now_unix_millis() -> Result<UnixMillis, WorkerError> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| WorkerError::Message(format!("system clock before unix epoch: {err}")))?;
+    let millis = u64::try_from(elapsed.as_millis())
+        .map_err(|err| WorkerError::Message(format!("unix millis conversion failed: {err}")))?;
+    Ok(UnixMillis(millis))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io;
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+    use tokio_postgres::NoTls;
+
+    use crate::pginfo::state::{PgConfig, PgInfoCommon};
+    use crate::state::{new_state_channel, MemberId, UnixMillis, WorkerStatus};
+    use crate::test_harness::binaries::require_pg16_bin_for_real_tests;
+    use crate::test_harness::namespace::NamespaceGuard;
+    use crate::test_harness::pg16::{prepare_pgdata_dir, spawn_pg16, PgHandle, PgInstanceSpec};
+    use crate::test_harness::ports::allocate_ports;
+
+    use super::{step_once, PgInfoWorkerCtx, SqlStatus};
+    use crate::pginfo::state::{PgInfoState, Readiness};
+
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(io::Error::other(message.into()))
+    }
+
+    async fn wait_for_postgres_ready(dsn: &str, timeout: Duration) -> TestResult {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match tokio_postgres::connect(dsn, NoTls).await {
+                Ok((client, connection)) => {
+                    let conn_task = tokio::spawn(connection);
+                    client.simple_query("SELECT 1;").await?;
+                    drop(client);
+                    conn_task.await??;
+                    return Ok(());
+                }
+                Err(err) => {
+                    if Instant::now() >= deadline {
+                        return Err(Box::new(err));
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    async fn shutdown_with_context(label: &str, handle: &mut PgHandle) -> TestResult {
+        handle
+            .shutdown()
+            .await
+            .map_err(|err| test_error(format!("{label} shutdown failed: {err}")))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots() -> TestResult {
+        let postgres_bin = match require_pg16_bin_for_real_tests("postgres")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
+        let initdb_bin = match require_pg16_bin_for_real_tests("initdb")? {
+            Some(path) => path,
+            None => return Ok(()),
+        };
+
+        let guard = NamespaceGuard::new("pginfo-primary-flow")?;
+        let namespace = guard.namespace()?;
+
+        let reservation = allocate_ports(1)?;
+        let port = reservation.as_slice()[0];
+
+        let data_dir = prepare_pgdata_dir(namespace, "primary")?;
+        let socket_dir = namespace.child_dir("run/primary");
+        let log_dir = namespace.child_dir("logs/primary");
+        fs::create_dir_all(&socket_dir)?;
+        fs::create_dir_all(&log_dir)?;
+
+        let spec = PgInstanceSpec {
+            postgres_bin,
+            initdb_bin,
+            data_dir: data_dir.clone(),
+            socket_dir: socket_dir.clone(),
+            log_dir,
+            port,
