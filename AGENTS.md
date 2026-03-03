@@ -56,3 +56,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - `new_state_channel(...)` starts at `Version(0)`; in contract tests, a single successful `publish(...)` should assert `Version(1)`, while untouched channels should remain at `Version(0)`.
 - In one-shot TLS tests, `tokio-rustls` may surface `UnexpectedEof` when the server closes without `close_notify`; treat it as acceptable only if full HTTP response bytes were already received and parsed.
 - For mTLS contract tests in `step_once` workers, prefer asserting end-to-end request rejection over handshake-only failure checks, because post-handshake worker policy can still close unauthorized clients deterministically.
+- When logging gate runs with `... | tee ...`, always enforce `set -o pipefail`; otherwise `tee` can hide a failing `make` exit status and produce a false green task.
