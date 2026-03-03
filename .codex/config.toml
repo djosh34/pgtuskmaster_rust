@@ -5,7 +5,7 @@ model_verbosity = "high"
 model_supports_reasoning_summaries = true
 
 [profiles.normal_high]
-model = "gpt-5.3-codex"
+model = "gpt-5.2"
 model_reasoning_effort = "high"
 
 [profiles.normal_medium]
