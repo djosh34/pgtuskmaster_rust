@@ -24,3 +24,4 @@
 .ralph/tasks/bugs/worker-contract-tests-assert-only-callability.md
 .ralph/tasks/story-rust-system-harness/14-task-security-auth-tls-real-cluster-tests.md
 .ralph/tasks/story-rust-system-harness/15-task-final-double-check-and-stop-gate.md
+.ralph/tasks/story-rust-system-harness/05c-task-zero-panic-unwrap-expect-across-runtime-and-tests.md

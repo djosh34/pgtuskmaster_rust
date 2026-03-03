@@ -57,3 +57,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - In one-shot TLS tests, `tokio-rustls` may surface `UnexpectedEof` when the server closes without `close_notify`; treat it as acceptable only if full HTTP response bytes were already received and parsed.
 - For mTLS contract tests in `step_once` workers, prefer asserting end-to-end request rejection over handshake-only failure checks, because post-handshake worker policy can still close unauthorized clients deterministically.
 - When logging gate runs with `... | tee ...`, always enforce `set -o pipefail`; otherwise `tee` can hide a failing `make` exit status and produce a false green task.
+- If acceptance criteria ask for log phrase checks that may not exist in native tool output, still archive explicit grep artifacts (including "not found") so pass/fail evidence remains auditable without inventing output.

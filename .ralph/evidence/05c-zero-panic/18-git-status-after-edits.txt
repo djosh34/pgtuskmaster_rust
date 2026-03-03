@@ -1,0 +1,7 @@
+ M .ralph/current_tasks.md
+ M .ralph/progress/26.jsonl
+ M .ralph/tasks/story-rust-system-harness/05c-task-zero-panic-unwrap-expect-across-runtime-and-tests.md
+ M Makefile
+ M src/lib.rs
+?? .ralph/current_task.txt
+?? .ralph/evidence/05c-zero-panic/
