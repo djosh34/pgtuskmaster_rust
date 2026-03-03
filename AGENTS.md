@@ -64,3 +64,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - Even when `make test` (`cargo test --all-targets`) already exercises BDD test binaries, still run `make test-bdd` separately when task policy requires it so evidence logs map 1:1 to acceptance commands.
 - In `story-full-verification` task files, final completion metadata is expected as `<status>done</status> <passes>true</passes> <passing>true</passing>`; keep all three tags aligned to avoid downstream task-state ambiguity.
 - For full-suite regression tasks, using `CARGO_BUILD_JOBS=1` for each serial `make` gate can reduce intermittent Cargo archive/object race noise while preserving deterministic pass/fail evidence.
+- For closure-only remediation tasks where all bug files are already done, still archive a task-local `bug-inventory.log` plus `bug-pending-status.log`; this makes "no active bugs" auditable instead of implicit.

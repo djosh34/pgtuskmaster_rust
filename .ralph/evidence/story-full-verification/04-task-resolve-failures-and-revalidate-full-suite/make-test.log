@@ -1,0 +1,212 @@
+cargo test --all-targets
+
+running 120 tests
+test api::controller::tests::post_switchover_rejects_empty_requested_by ... ok
+test api::fallback::tests::get_cluster_returns_config_name ... ok
+test api::fallback::tests::heartbeat_rejects_empty_source ... ok
+test api::fallback::tests::heartbeat_denies_unknown_fields ... ok
+test api::controller::tests::switchover_input_denies_unknown_fields ... ok
+test api::controller::tests::post_switchover_writes_typed_record_to_expected_key ... ok
+test api::worker::tests::security_role_permissions_allow_admin ... ok
+test api::worker::tests::security_role_permissions_allow_read_deny_admin ... ok
+test api::worker::tests::security_tls_optional_accepts_plain_and_tls ... ok
+test api::worker::tests::security_tls_required_accepts_tls_rejects_plain ... ok
+test config::defaults::tests::apply_defaults_fills_optional_fields ... ok
+test config::defaults::tests::apply_defaults_preserves_caller_values ... ok
+test api::worker::tests::security_mtls_node_auth_allows_trusted_client_only ... ok
+test api::worker::tests::security_tls_wrong_ca_and_hostname_and_expiry_failures ... ok
+test config::parser::tests::validate_runtime_config_accepts_valid_config ... ok
+test config::parser::tests::validate_runtime_config_rejects_bad_timeout ... ok
+test config::parser::tests::validate_runtime_config_rejects_empty_binary_path ... ok
+test config::parser::tests::validate_runtime_config_rejects_missing_dcs_and_ha_invariants ... ok
+test config::parser::tests::load_runtime_config_rejects_invalid_file ... ok
+test config::parser::tests::load_runtime_config_roundtrip_and_defaults ... ok
+test dcs::etcd_store::tests::etcd_store_write_reports_unreachable_endpoint ... ok
+test api::worker::tests::security_tls_disabled_accepts_plain_rejects_tls ... ok
+test dcs::keys::tests::parses_supported_paths ... ok
+test dcs::keys::tests::rejects_missing_member_id ... ok
+test dcs::keys::tests::rejects_unknown_and_extra_segments ... ok
+test dcs::keys::tests::rejects_wrong_scope ... ok
+test dcs::state::tests::build_local_member_record_maps_pg_variants ... ok
+test dcs::state::tests::evaluate_trust_covers_all_outcomes ... ok
+test dcs::store::tests::dcs_value_type_is_exercised_to_keep_contracts_live ... ok
+test dcs::store::tests::refresh_applies_member_put_and_delete ... ok
+test dcs::store::tests::refresh_reports_decode_error ... ok
+test dcs::store::tests::refresh_sets_had_errors_for_unknown_keys_and_applies_known_updates ... ok
+test dcs::store::tests::write_local_member_writes_only_member_path ... ok
+test dcs::worker::tests::apply_watch_update_handles_put_and_delete_paths ... ok
+test dcs::worker::tests::step_once_marks_store_unhealthy_when_watch_decode_fails ... ok
+test dcs::worker::tests::step_once_marks_store_unhealthy_when_watch_key_is_unknown ... ok
+test dcs::worker::tests::step_once_publishes_and_writes_only_self_member ... ok
+test dcs::worker::tests::step_once_writes_member_only_when_pg_version_changes ... ok
+test debug_api::worker::tests::step_once_publishes_snapshot ... ok
+test ha::decide::tests::fail_safe_holds_without_quorum_and_exits_when_restored ... ok
+test ha::decide::tests::idempotency_emits_only_new_mixed_actions ... ok
+test ha::decide::tests::idempotency_suppresses_duplicate_actions ... ok
+test ha::decide::tests::primary_with_switchover_demotes_releases_and_clears_request ... ok
+test ha::decide::tests::rewinding_while_running_emits_nothing ... ok
+test ha::decide::tests::transition_matrix_cases ... ok
+The files belonging to this database system will be owned by user "joshazimullah".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "C.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772501940283-432122-11/pg16/node-1/data ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting default time zone ... Europe/Amsterdam
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... ok
+syncing data to disk ... ok
+
+Success. You can now start the database server using:
+
+    /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.tools/postgres16/bin/pg_ctl -D /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772501940283-432122-11/pg16/node-1/data -l logfile start
+
+The files belonging to this database system will be owned by user "joshazimullah".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "C.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772501940283-432122-11/pg16/node-2/data ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting default time zone ... Europe/Amsterdam
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... ok
+syncing data to disk ... test dcs::etcd_store::tests::step_once_consumes_real_etcd_watch_path_without_mocking ... ok
+test ha::worker::tests::dispatch_actions_clears_switchover_key ... ok
+test ha::worker::tests::dispatch_actions_is_best_effort_and_reports_typed_errors ... ok
+test ha::worker::tests::dispatch_actions_maps_dcs_and_process_requests ... ok
+test ha::worker::tests::integration_primary_split_brain_enters_fencing_and_process_feedback_advances ... ok
+test dcs::etcd_store::tests::step_once_marks_store_unhealthy_on_real_decode_failure ... ok
+test ha::worker::tests::integration_primary_unreachable_rewinds_then_returns_replica_on_success ... ok
+test ha::worker::tests::integration_start_postgres_dispatch_updates_process_state_versions ... ok
+test ha::worker::tests::integration_transitions_replica_candidate_primary_and_failsafe ... ok
+test ha::worker::tests::run_first_tick_matches_step_once_for_same_inputs ... ok
+test ha::worker::tests::step_once_uses_subscribers_and_publishes_next_state ... ok
+test pginfo::conninfo::tests::parse_accepts_minimal_valid_input ... ok
+test pginfo::conninfo::tests::parse_accepts_quoted_values_with_escapes ... ok
+test pginfo::conninfo::tests::parse_rejects_duplicate_keys ... ok
+test pginfo::conninfo::tests::parse_rejects_invalid_numeric_ranges ... ok
+test pginfo::conninfo::tests::parse_rejects_invalid_syntax ... ok
+test pginfo::conninfo::tests::parse_rejects_missing_required_keys ... ok
+test pginfo::conninfo::tests::parse_rejects_unknown_key_typos ... ok
+test pginfo::conninfo::tests::parse_rejects_unsupported_sslmode ... ok
+test pginfo::conninfo::tests::parse_render_roundtrip_is_stable ... ok
+test pginfo::conninfo::tests::render_emits_canonical_key_order ... ok
+test pginfo::query::tests::parse_wal_lsn_accepts_valid_hex_format ... ok
+test pginfo::query::tests::parse_wal_lsn_rejects_invalid_formats ... ok
+test pginfo::query::tests::poll_sql_selects_expected_fields ... ok
+test pginfo::state::tests::derive_readiness_maps_sql_and_signal ... ok
+test pginfo::state::tests::to_member_status_maps_primary_snapshot ... ok
+test pginfo::state::tests::to_member_status_maps_replica_snapshot ... ok
+test ha::worker::tests::run_reacts_to_interval_tick_and_watcher_change ... ok
+ok
+
+Success. You can now start the database server using:
+
+    /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.tools/postgres16/bin/pg_ctl -D /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772501940283-432122-11/pg16/node-2/data -l logfile start
+
+test dcs::etcd_store::tests::etcd_store_round_trips_write_delete_and_events ... ok
+test process::worker::tests::can_accept_job_is_true_only_when_idle ... ok
+test process::worker::tests::cancel_active_job_emits_cancelled_and_is_noop_when_idle ... ok
+The files belonging to this database system will be owned by user "joshazimullah".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "C.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772501940283-432122-11/pg16/node-3/data ... ok
+creating subdirectories ... ok
+selecting dynamic shared memory implementation ... posix
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting default time zone ... Europe/Amsterdam
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... ok
+syncing data to disk ... ok
+
+Success. You can now start the database server using:
+
+    /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.tools/postgres16/bin/pg_ctl -D /tmp/pgtuskmaster-rust/pgtm-ha-e2e-multi-node-1772501940283-432122-11/pg16/node-3/data -l logfile start
+
+test process::worker::tests::real_bootstrap_job_executes_initdb ... ok
+test pginfo::worker::tests::step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots ... ok
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+test process::worker::tests::real_pg_rewind_job_executes_binary_path ... ok
+test process::worker::tests::real_demote_job_executes_binary_path ... ok
+test process::worker::tests::real_fencing_job_executes_binary_path ... ok
+test process::worker::tests::real_promote_job_executes_binary_path ... ok
+test process::worker::tests::rejecting_new_job_while_active_records_deterministic_rejection ... ok
+test process::worker::tests::start_job_returns_channel_closed_when_all_subscribers_are_dropped ... ok
+test process::worker::tests::start_job_when_idle_transitions_to_running_and_publishes ... ok
+test process::worker::tests::tick_active_job_is_safe_when_no_runtime ... ok
+test process::worker::tests::tick_active_job_maps_success_failure_and_timeout_outcomes ... ok
+test state::watch_state::tests::changed_propagates_closed_channel_error ... ok
+test state::watch_state::tests::changed_returns_latest_after_publish ... ok
+test state::watch_state::tests::initial_snapshot_has_expected_version_and_time ... ok
+test state::watch_state::tests::latest_matches_between_publisher_and_subscriber ... ok
+test state::watch_state::tests::publish_increments_version_and_updates_timestamp ... ok
+test test_harness::auth::tests::api_role_tokens_formats_bearer_headers ... ok
+test test_harness::auth::tests::api_role_tokens_rejects_empty_input ... ok
+test test_harness::binaries::tests::parse_bool_env_accepts_expected_values ... ok
+test test_harness::binaries::tests::parse_bool_env_rejects_invalid_values ... ok
+test test_harness::binaries::tests::require_binary_missing_path_returns_invalid_input ... ok
+test test_harness::binaries::tests::require_or_skip_binary_returns_error_when_missing_and_enforced ... ok
+test test_harness::binaries::tests::require_or_skip_binary_returns_none_when_missing_and_not_enforced ... ok
+test test_harness::binaries::tests::require_or_skip_binary_returns_path_when_present ... ok
+test test_harness::etcd3::tests::prepare_etcd_data_dir_rejects_reuse ... ok
+test test_harness::etcd3::tests::spawn_etcd3_requires_binary_and_spawns ... ok
+test test_harness::namespace::tests::cleanup_is_idempotent ... ok
+test test_harness::namespace::tests::create_namespace_is_unique ... ok
+test test_harness::namespace::tests::guard_cleans_up_on_drop ... ok
+test test_harness::pg16::tests::prepare_pgdata_dir_rejects_reuse ... ok
+test process::worker::tests::real_start_and_stop_jobs_execute_binary_paths ... ok
+test test_harness::ports::tests::allocate_ports_rejects_zero ... ok
+test test_harness::ports::tests::allocate_ports_returns_unique_ports ... ok
+test test_harness::ports::tests::concurrent_allocations_do_not_collide_while_reserved ... ok
+test test_harness::tests::concurrent_namespace_and_port_allocations_are_isolated ... ok
+test test_harness::tls::tests::write_tls_material_writes_files_under_namespace ... ok
+test worker_contract_tests::required_state_types_exist ... ok
+test worker_contract_tests::snapshot_contract_type_compiles ... ok
+test worker_contract_tests::step_once_contracts_are_callable ... ok
+test worker_contract_tests::worker_contract_symbols_exist ... ok
+test process::worker::tests::real_restart_job_executes_binary_path ... ok
+test test_harness::pg16::tests::spawn_pg16_requires_binaries_and_spawns ... ok
+test ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix ... ok
+
+test result: ok. 120 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.20s
+
+
+running 3 tests
+test bdd_api_auth_token_denies_missing_header ... ok
+test bdd_api_post_switchover_writes_dcs_key ... ok
+test bdd_api_get_fallback_cluster_returns_name ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test bdd_state_watch_channel_flow ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

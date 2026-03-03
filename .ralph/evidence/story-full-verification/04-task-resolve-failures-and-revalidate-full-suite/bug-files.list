@@ -1,0 +1,9 @@
+.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md
+.ralph/tasks/bugs/dcs-watch-refresh-errors-ignored.md
+.ralph/tasks/bugs/pginfo-standby-polling-test-configure-primary-db-error.md
+.ralph/tasks/bugs/process-worker-real-job-tests-accept-failure-outcomes.md
+.ralph/tasks/bugs/process-worker-real-job-tests-state-channel-closed.md
+.ralph/tasks/bugs/real-binary-tests-fail-when-port-allocation-is-blocked.md
+.ralph/tasks/bugs/remove-panics-expects-unwraps.md
+.ralph/tasks/bugs/test-harness-binary-check-panics.md
+.ralph/tasks/bugs/worker-contract-tests-assert-only-callability.md

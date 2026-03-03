@@ -1,0 +1,9 @@
+.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md | 2:## Bug: Remove Clippy Allowances For Unwrap/Panic <status>done</status> <passes>true</passes> <passing>true</passing>
+.ralph/tasks/bugs/dcs-watch-refresh-errors-ignored.md | 2:## Bug: DCS watch refresh errors are tracked but ignored <status>done</status> <passes>true</passes> <passing>true</passing>
+.ralph/tasks/bugs/pginfo-standby-polling-test-configure-primary-db-error.md | 2:## Bug: Pginfo standby polling test fails during primary configure with db error <status>done</status> <passes>true</passes> <passing>true</passing>
+.ralph/tasks/bugs/process-worker-real-job-tests-accept-failure-outcomes.md | 2:## Bug: Process worker real job tests accept failure outcomes <status>done</status> <passes>true</passes> <passing>true</passing>
+.ralph/tasks/bugs/process-worker-real-job-tests-state-channel-closed.md | 2:## Bug: Process worker real job tests fail with state channel closed <status>done</status> <passes>true</passes> <passing>true</passing>
+.ralph/tasks/bugs/real-binary-tests-fail-when-port-allocation-is-blocked.md | 2:## Bug: Real-binary tests fail when port allocation is blocked <status>done</status> <passes>true</passes> <passing>true</passing>
+.ralph/tasks/bugs/remove-panics-expects-unwraps.md | 2:## Bug: Remove panics/expects/unwraps in codebase <status>done</status> <passes>true</passes> <passing>true</passing>
+.ralph/tasks/bugs/test-harness-binary-check-panics.md | 2:## Bug: Test harness binary checks panic instead of returning errors <status>done</status> <passes>true</passes> <passing>true</passing>
+.ralph/tasks/bugs/worker-contract-tests-assert-only-callability.md | 2:## Bug: Worker contract tests only assert callability <status>done</status> <passes>true</passes> <passing>true</passing>
