@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 08:28:37 AM CET 2026
+Generated: Tue Mar  3 08:40:25 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -388,7 +388,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/24-task-real-e2e-harness-3nodes-3etcd.md`
 
-## Task: Upgrade real e2e harness to 3 pgtuskmaster nodes and 3 etcd members <status>not_started</status> <passes>false</passes>
+## Task: Upgrade real e2e harness to 3 pgtuskmaster nodes and 3 etcd members <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Make the real e2e environment represent a true 3-node HA control plane with a 3-member etcd cluster instead of a single etcd instance.

@@ -27,6 +27,33 @@ impl PortReservation {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct HaTopologyPorts {
+    pub(crate) etcd_client_ports: Vec<u16>,
+    pub(crate) etcd_peer_ports: Vec<u16>,
+    pub(crate) node_ports: Vec<u16>,
+}
+
+#[derive(Debug)]
+pub(crate) struct HaTopologyPortReservation {
+    reservation: PortReservation,
+    layout: HaTopologyPorts,
+}
+
+impl HaTopologyPortReservation {
+    pub(crate) fn layout(&self) -> &HaTopologyPorts {
+        &self.layout
+    }
+
+    pub(crate) fn into_layout(self) -> HaTopologyPorts {
+        self.layout
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.reservation.len()
+    }
+}
+
 pub(crate) fn allocate_ports(count: usize) -> Result<PortReservation, HarnessError> {
     if count == 0 {
         return Err(HarnessError::InvalidInput(
@@ -54,6 +81,47 @@ pub(crate) fn allocate_ports(count: usize) -> Result<PortReservation, HarnessErr
     Ok(PortReservation { listeners, ports })
 }
 
+pub(crate) fn allocate_ha_topology_ports(
+    node_count: usize,
+    etcd_members: usize,
+) -> Result<HaTopologyPortReservation, HarnessError> {
+    if node_count == 0 {
+        return Err(HarnessError::InvalidInput(
+            "node_count must be greater than zero".to_string(),
+        ));
+    }
+    if etcd_members == 0 {
+        return Err(HarnessError::InvalidInput(
+            "etcd_members must be greater than zero".to_string(),
+        ));
+    }
+
+    let total = node_count
+        .checked_add(etcd_members.saturating_mul(2))
+        .ok_or_else(|| {
+            HarnessError::InvalidInput(
+                "topology port count overflowed usize while reserving ports".to_string(),
+            )
+        })?;
+
+    let reservation = allocate_ports(total)?;
+    let ports = reservation.as_slice();
+
+    let etcd_client_end = etcd_members;
+    let etcd_peer_end = etcd_client_end + etcd_members;
+
+    let layout = HaTopologyPorts {
+        etcd_client_ports: ports[..etcd_client_end].to_vec(),
+        etcd_peer_ports: ports[etcd_client_end..etcd_peer_end].to_vec(),
+        node_ports: ports[etcd_peer_end..].to_vec(),
+    };
+
+    Ok(HaTopologyPortReservation {
+        reservation,
+        layout,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -61,7 +129,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use super::{allocate_ports, HarnessError};
+    use super::{allocate_ha_topology_ports, allocate_ports, HarnessError};
 
     #[test]
     fn allocate_ports_rejects_zero() {
@@ -76,6 +144,35 @@ mod tests {
         let ports = reservation.as_slice();
         let unique: BTreeSet<u16> = ports.iter().copied().collect();
         assert_eq!(unique.len(), ports.len());
+        Ok(())
+    }
+
+    #[test]
+    fn allocate_ha_topology_ports_rejects_zero_sizes() {
+        assert!(allocate_ha_topology_ports(0, 3).is_err());
+        assert!(allocate_ha_topology_ports(3, 0).is_err());
+    }
+
+    #[test]
+    fn allocate_ha_topology_ports_returns_expected_layout() -> Result<(), HarnessError> {
+        let reservation = allocate_ha_topology_ports(3, 3)?;
+        let layout = reservation.layout();
+        assert_eq!(reservation.len(), 9);
+        assert_eq!(layout.etcd_client_ports.len(), 3);
+        assert_eq!(layout.etcd_peer_ports.len(), 3);
+        assert_eq!(layout.node_ports.len(), 3);
+
+        let mut all = BTreeSet::new();
+        for port in &layout.etcd_client_ports {
+            assert!(all.insert(*port));
+        }
+        for port in &layout.etcd_peer_ports {
+            assert!(all.insert(*port));
+        }
+        for port in &layout.node_ports {
+            assert!(all.insert(*port));
+        }
+        assert_eq!(all.len(), 9);
         Ok(())
     }
 

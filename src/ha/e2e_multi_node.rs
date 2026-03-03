@@ -41,10 +41,13 @@ use crate::{
     },
     test_harness::{
         binaries::{require_etcd_bin_for_real_tests, require_pg16_bin_for_real_tests},
-        etcd3::{prepare_etcd_data_dir, spawn_etcd3, EtcdHandle, EtcdInstanceSpec},
+        etcd3::{
+            prepare_etcd_member_data_dir, spawn_etcd3_cluster, EtcdClusterHandle,
+            EtcdClusterMemberSpec, EtcdClusterSpec,
+        },
         namespace::NamespaceGuard,
         pg16::prepare_pgdata_dir,
-        ports::allocate_ports,
+        ports::allocate_ha_topology_ports,
     },
 };
 
@@ -60,9 +63,9 @@ struct NodeFixture {
 struct ClusterFixture {
     _guard: NamespaceGuard,
     scope: String,
-    endpoint: String,
+    endpoints: Vec<String>,
     pg_ctl_bin: PathBuf,
-    etcd: Option<EtcdHandle>,
+    etcd: Option<EtcdClusterHandle>,
     nodes: Vec<NodeFixture>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
     timeline: Vec<String>,
@@ -81,34 +84,42 @@ impl ClusterFixture {
             .map_err(|err| WorkerError::Message(format!("namespace lookup failed: {err}")))?;
         let scope = "scope-ha-e2e".to_string();
 
-        let ports_needed = node_count.saturating_add(2);
-        let reservation = allocate_ports(ports_needed)
+        let reservation = allocate_ha_topology_ports(node_count, 3)
             .map_err(|err| WorkerError::Message(format!("allocate ports failed: {err}")))?;
-        let ports = reservation.as_slice().to_vec();
-
-        let etcd_client_port = ports[0];
-        let etcd_peer_port = ports[1];
-        let node_ports = ports[2..].to_vec();
-        let etcd_data_dir = prepare_etcd_data_dir(namespace)
-            .map_err(|err| WorkerError::Message(format!("prepare etcd data dir failed: {err}")))?;
-        let log_dir = namespace.child_dir("logs/etcd");
-        let spec = EtcdInstanceSpec {
+        let topology = reservation.into_layout();
+        let node_ports = topology.node_ports;
+        let etcd_members = ["etcd-a", "etcd-b", "etcd-c"];
+        let mut members = Vec::with_capacity(etcd_members.len());
+        for (index, member_name) in etcd_members.iter().enumerate() {
+            let data_dir = prepare_etcd_member_data_dir(namespace, member_name).map_err(|err| {
+                WorkerError::Message(format!("prepare etcd data dir failed: {err}"))
+            })?;
+            let log_dir = namespace.child_dir(format!("logs/{member_name}"));
+            members.push(EtcdClusterMemberSpec {
+                member_name: (*member_name).to_string(),
+                data_dir,
+                log_dir,
+                client_port: topology.etcd_client_ports[index],
+                peer_port: topology.etcd_peer_ports[index],
+            });
+        }
+        let cluster_spec = EtcdClusterSpec {
             etcd_bin,
             namespace_id: namespace.id.clone(),
-            member_name: "etcd-a".to_string(),
-            data_dir: etcd_data_dir,
-            log_dir,
-            client_port: etcd_client_port,
-            peer_port: etcd_peer_port,
             startup_timeout: Duration::from_secs(15),
+            members,
         };
 
-        // Release the reserved ports immediately before child bind.
-        drop(reservation);
-        let etcd = spawn_etcd3(spec)
+        let etcd = spawn_etcd3_cluster(cluster_spec)
             .await
             .map_err(|err| WorkerError::Message(format!("spawn etcd failed: {err}")))?;
-        let endpoint = format!("http://127.0.0.1:{etcd_client_port}");
+        let endpoints = etcd.client_endpoints().to_vec();
+        let endpoint_count = endpoints.len();
+        if endpoint_count == 0 {
+            return Err(WorkerError::Message(
+                "etcd cluster returned no endpoints".to_string(),
+            ));
+        }
 
         let pg_ctl_bin = binaries.pg_ctl.clone();
         let mut tasks = Vec::new();
@@ -156,7 +167,7 @@ impl ClusterFixture {
                     connect_timeout_s: 2,
                 },
                 dcs: DcsConfig {
-                    endpoints: vec![endpoint.clone()],
+                    endpoints: endpoints.clone(),
                     scope: scope.clone(),
                 },
                 ha: HaConfig {
@@ -223,7 +234,7 @@ impl ClusterFixture {
                 publisher: pg_publisher,
             };
 
-            let dcs_store = EtcdDcsStore::connect(vec![endpoint.clone()], &scope)
+            let dcs_store = EtcdDcsStore::connect(endpoints.clone(), &scope)
                 .map_err(|err| WorkerError::Message(format!("dcs store connect failed: {err}")))?;
             let dcs_ctx = crate::dcs::state::DcsWorkerCtx {
                 self_id: MemberId(node_id.clone()),
@@ -251,10 +262,9 @@ impl ClusterFixture {
             process_ctx.command_runner = Box::new(TokioCommandRunner);
             process_ctx.now = system_clock();
 
-            let ha_store =
-                EtcdDcsStore::connect(vec![endpoint.clone()], &scope).map_err(|err| {
-                    WorkerError::Message(format!("ha dcs store connect failed: {err}"))
-                })?;
+            let ha_store = EtcdDcsStore::connect(endpoints.clone(), &scope).map_err(|err| {
+                WorkerError::Message(format!("ha dcs store connect failed: {err}"))
+            })?;
             let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
                 publisher: ha_publisher,
                 config_subscriber: cfg_subscriber,
@@ -301,7 +311,7 @@ impl ClusterFixture {
         Ok(Self {
             _guard: guard,
             scope,
-            endpoint,
+            endpoints,
             pg_ctl_bin,
             etcd: Some(etcd),
             nodes,
@@ -515,6 +525,43 @@ impl ClusterFixture {
         pg_ctl_stop_immediate(&self.pg_ctl_bin, &node.data_dir).await
     }
 
+    async fn stop_etcd_majority(&mut self, stop_count: usize) -> Result<Vec<String>, WorkerError> {
+        let Some(etcd_cluster) = self.etcd.as_mut() else {
+            return Err(WorkerError::Message(
+                "cannot stop etcd majority: cluster is not running".to_string(),
+            ));
+        };
+
+        let member_names = etcd_cluster.member_names();
+        if member_names.len() < stop_count {
+            return Err(WorkerError::Message(format!(
+                "cannot stop etcd majority: requested {stop_count}, available {}",
+                member_names.len()
+            )));
+        }
+
+        let mut stopped = Vec::with_capacity(stop_count);
+        for member_name in member_names.into_iter().take(stop_count) {
+            let stopped_member =
+                etcd_cluster
+                    .shutdown_member(&member_name)
+                    .await
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "failed to stop etcd member {member_name}: {err}"
+                        ))
+                    })?;
+            if !stopped_member {
+                return Err(WorkerError::Message(format!(
+                    "etcd member {member_name} was not found for shutdown"
+                )));
+            }
+            stopped.push(member_name);
+        }
+
+        Ok(stopped)
+    }
+
     fn write_timeline_artifact(&self) -> Result<PathBuf, WorkerError> {
         let artifact_dir =
             Path::new(env!("CARGO_MANIFEST_DIR")).join(".ralph/evidence/13-e2e-multi-node");
@@ -541,7 +588,7 @@ impl ClusterFixture {
         }
 
         if let Some(etcd) = self.etcd.as_mut() {
-            etcd.shutdown()
+            etcd.shutdown_all()
                 .await
                 .map_err(|err| WorkerError::Message(format!("etcd shutdown failed: {err}")))?;
         }
@@ -710,9 +757,8 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
         None => return Ok(()),
     };
     let mut fixture = ClusterFixture::start(3, binaries, etcd_bin).await?;
-    let mut control_store =
-        EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)
-            .map_err(|err| WorkerError::Message(format!("control store connect failed: {err}")))?;
+    let mut control_store = EtcdDcsStore::connect(fixture.endpoints.clone(), &fixture.scope)
+        .map_err(|err| WorkerError::Message(format!("control store connect failed: {err}")))?;
 
     let run_result: Result<(), WorkerError> = async {
         fixture.record("scenario bootstrap/election: wait for single primary");
@@ -802,13 +848,12 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             .assert_no_dual_primary_window(Duration::from_secs(5))
             .await?;
 
-        fixture.record("scenario no-quorum fail-safe: shutdown etcd");
-        if let Some(etcd) = fixture.etcd.as_mut() {
-            etcd.shutdown().await.map_err(|err| {
-                WorkerError::Message(format!("etcd shutdown for no-quorum failed: {err}"))
-            })?;
-            fixture.etcd = None;
-        }
+        fixture.record("scenario no-quorum fail-safe: shutdown etcd majority (2/3)");
+        let stopped_members = fixture.stop_etcd_majority(2).await?;
+        fixture.record(format!(
+            "no-quorum setup: stopped etcd members={}",
+            stopped_members.join(",")
+        ));
         fixture.wait_for_all_failsafe(Duration::from_secs(45)).await?;
         fixture.record("no-quorum fail-safe observed on all nodes");
         Ok(())

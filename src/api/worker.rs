@@ -1632,7 +1632,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn ha_state_route_returns_typed_json_even_when_debug_disabled() -> Result<(), WorkerError> {
+    async fn ha_state_route_returns_typed_json_even_when_debug_disabled() -> Result<(), WorkerError>
+    {
         let _guard = NamespaceGuard::new("api-ha-state-json")?;
         let mut cfg = sample_runtime_config(None);
         cfg.debug.enabled = false;
@@ -1641,12 +1642,11 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
-        let (status, body) = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        let (status, body) =
+            send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
         assert!(status.contains("200"), "expected 200, got: {status}");
-        let decoded: serde_json::Value =
-            serde_json::from_slice(&body).map_err(|err| WorkerError::Message(format!(
-                "decode ha state json failed: {err}"
-            )))?;
+        let decoded: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|err| WorkerError::Message(format!("decode ha state json failed: {err}")))?;
         assert_eq!(decoded["cluster_name"], "cluster-a");
         assert_eq!(decoded["scope"], "scope-a");
         assert_eq!(decoded["self_member_id"], "node-a");
@@ -1665,7 +1665,8 @@ mod tests {
     async fn ha_state_route_returns_503_without_subscriber() -> Result<(), WorkerError> {
         let _guard = NamespaceGuard::new("api-ha-state-missing-subscriber")?;
         let (mut ctx, _store) = build_ctx(None).await?;
-        let (status, _body) = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        let (status, _body) =
+            send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
         assert!(status.contains("503"), "expected 503, got: {status}");
         Ok(())
     }
@@ -1763,7 +1764,8 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
-        let (status, _body) = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        let (status, _body) =
+            send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
         assert!(status.contains("401"), "expected 401, got: {status}");
 
         let (status, _body) = send_plain_request(

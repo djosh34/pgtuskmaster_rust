@@ -356,7 +356,9 @@ async fn bdd_api_ha_admin_routes_require_legacy_auth_token() -> Result<(), Worke
         .await
         .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
     state_client
-        .write_all(b"GET /ha/state HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret\r\n\r\n")
+        .write_all(
+            b"GET /ha/state HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret\r\n\r\n",
+        )
         .await
         .map_err(|err| WorkerError::Message(format!("state write failed: {err}")))?;
     pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;

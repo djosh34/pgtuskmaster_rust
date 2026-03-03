@@ -60,10 +60,7 @@ pub(crate) fn post_set_leader(
     Ok(AcceptedResponse { accepted: true })
 }
 
-pub(crate) fn delete_leader(
-    scope: &str,
-    store: &mut dyn DcsStore,
-) -> ApiResult<AcceptedResponse> {
+pub(crate) fn delete_leader(scope: &str, store: &mut dyn DcsStore) -> ApiResult<AcceptedResponse> {
     DcsHaWriter::delete_leader(store, scope).map_err(|err| ApiError::DcsStore(err.to_string()))?;
     Ok(AcceptedResponse { accepted: true })
 }
@@ -72,7 +69,8 @@ pub(crate) fn delete_switchover(
     scope: &str,
     store: &mut dyn DcsStore,
 ) -> ApiResult<AcceptedResponse> {
-    DcsHaWriter::clear_switchover(store, scope).map_err(|err| ApiError::DcsStore(err.to_string()))?;
+    DcsHaWriter::clear_switchover(store, scope)
+        .map_err(|err| ApiError::DcsStore(err.to_string()))?;
     Ok(AcceptedResponse { accepted: true })
 }
 

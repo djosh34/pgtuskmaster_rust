@@ -136,7 +136,10 @@ fn validate_timeout(field: &'static str, value: u64) -> Result<(), ConfigError> 
     Ok(())
 }
 
-fn validate_optional_non_empty(field: &'static str, value: Option<&str>) -> Result<(), ConfigError> {
+fn validate_optional_non_empty(
+    field: &'static str,
+    value: Option<&str>,
+) -> Result<(), ConfigError> {
     if let Some(raw) = value {
         if raw.trim().is_empty() {
             return Err(ConfigError::Validation {

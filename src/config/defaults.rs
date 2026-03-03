@@ -42,9 +42,7 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
             .as_ref()
             .and_then(|cfg| cfg.listen_addr.clone())
             .unwrap_or_else(|| DEFAULT_API_LISTEN_ADDR.to_string()),
-        read_auth_token: api_raw
-            .as_ref()
-            .and_then(|cfg| cfg.read_auth_token.clone()),
+        read_auth_token: api_raw.as_ref().and_then(|cfg| cfg.read_auth_token.clone()),
         admin_auth_token: api_raw.and_then(|cfg| cfg.admin_auth_token),
     };
 
