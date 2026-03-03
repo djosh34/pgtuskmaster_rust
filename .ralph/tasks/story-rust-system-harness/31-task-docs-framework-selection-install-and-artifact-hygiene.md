@@ -177,10 +177,10 @@ Notes:
   - [x] Add a short “evidence” note pointing at `.ralph/evidence/task-31-mdbook/`
 - [x] Run `/bin/bash .ralph/task_switch.sh` (task handoff protocol)
 - [x] `git add -A` (including `.ralph` updates) and confirm no generated artifacts are staged
-- [ ] Commit message format:
-  - [ ] `task finished 31-task-docs-framework-selection-install-and-artifact-hygiene: <summary + evidence>`
-- [ ] `git push`
-- [ ] Append any learnings/surprises to `AGENTS.md`
+- [x] Commit message format:
+  - [x] `task finished 31-task-docs-framework-selection-install-and-artifact-hygiene: <summary + evidence>`
+- [x] `git push`
+- [x] Append any learnings/surprises to `AGENTS.md`
 
 Evidence (logs + commands): `.ralph/evidence/task-31-mdbook/`
 - installer: `install-mdbook.log`
