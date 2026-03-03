@@ -28,3 +28,4 @@
 .ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md
 .ralph/tasks/story-rust-system-harness/10b-task-dcs-real-etcd3-store-adapter-and-tests.md
 .ralph/tasks/story-rust-system-harness/11-task-typed-pg-config-and-conninfo-roundtrip-tests.md
+.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md

@@ -61,3 +61,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - If real-binary policy is centralized in harness helpers, audit HA/e2e fixtures for leftover direct `.tools/...` path checks; those bypasses silently diverge from enforcement env behavior unless routed through the same helper.
 - For etcd-backed DCS adapters, bootstrap with `get(prefix)` and then create `watch(prefix)` from `header.revision + 1`; if watch responses are canceled/compacted, mark unhealthy and force a full reconnect+resnapshot cycle.
 - For strict conninfo typing, keep `PgConnInfo` in HA/process job specs and render only at command boundary; parser-level `UnsupportedKey` checks catch typo drift (for example `sslmdoe`) before any process job is dispatched.
+- Even when `make test` (`cargo test --all-targets`) already exercises BDD test binaries, still run `make test-bdd` separately when task policy requires it so evidence logs map 1:1 to acceptance commands.
