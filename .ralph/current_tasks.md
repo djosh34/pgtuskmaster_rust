@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 03:50:55 CET 2026
+Generated: Tue Mar  3 08:19:35 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -164,15 +164,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -197,6 +188,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
 
 ---
 
@@ -239,16 +239,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
@@ -264,6 +254,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
 
 ---
 
@@ -362,6 +362,120 @@ This is a **RECURRING META-TASK**.
 ## Task: Do meta-task 18 deep skeptical review pass 3 <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <blocked_by>20-task-do-meta-deep-skeptical-review-pass-2</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/22-task-ha-admin-api-read-write-surface.md`
+
+## Task: Expose full HA admin API read and write surface <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Add a first-class HA admin API that exposes operational read endpoints and write actions needed to control cluster behavior without touching DCS directly.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/23-task-ha-admin-cli-over-api.md`
+
+## Task: Build a simple Rust HA admin CLI over the exposed API <status>not_started</status> <passes>false</passes>
+
+<blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/24-task-real-e2e-harness-3nodes-3etcd.md`
+
+## Task: Upgrade real e2e harness to 3 pgtuskmaster nodes and 3 etcd members <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Make the real e2e environment represent a true 3-node HA control plane with a 3-member etcd cluster instead of a single etcd instance.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/25-task-enforce-e2e-api-only-control-no-direct-dcs.md`
+
+## Task: Enforce API-only control in e2e and ban direct DCS mutations <status>not_started</status> <passes>false</passes>
+
+<blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
+<blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/26-task-e2e-unassisted-failover-sql-consistency.md`
+
+## Task: Add unassisted failover e2e with before/after SQL consistency proof <status>not_started</status> <passes>false</passes>
+
+<blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
+<blocked_by>25-task-enforce-e2e-api-only-control-no-direct-dcs</blocked_by>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/27-task-e2e-ha-stress-workloads-during-role-changes.md`
+
+## Task: Add HA stress e2e suites with concurrent SQL workloads during role changes <status>not_started</status> <passes>false</passes>
+
+<blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
+<blocked_by>25-task-enforce-e2e-api-only-control-no-direct-dcs</blocked_by>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/28-task-e2e-network-partition-chaos-no-split-brain.md`
+
+## Task: Add network partition e2e chaos tests with proxy fault injection <status>not_started</status> <passes>false</passes>
+
+<blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/29-task-e2e-tls-adversarial-cert-validation.md`
+
+## Task: Expand TLS adversarial e2e tests for certificate validation hardening <status>not_started</status> <passes>false</passes>
+
+<blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/30-task-full-e2e-blackbox-api-cli-orchestration.md`
+
+## Task: Migrate full e2e suites to black-box API and CLI orchestration <status>not_started</status> <passes>false</passes>
+
+<blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
+<blocked_by>23-task-ha-admin-cli-over-api</blocked_by>
+<blocked_by>25-task-enforce-e2e-api-only-control-no-direct-dcs</blocked_by>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/31-task-docs-framework-selection-install-and-artifact-hygiene.md`
+
+## Task: Select docs framework, install it, and enforce artifact git hygiene <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Choose the best documentation framework for this Rust project (including VitePress as a candidate), install it, prove it renders a static HTML site correctly, and lock down strict git artifact hygiene before any docs commits.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/32-task-author-complete-architecture-docs-with-diagrams-and-no-code.md`
+
+## Task: Author full architecture documentation with rich diagrams and zero code-level narration <status>not_started</status> <passes>false</passes>
+
+<blocked_by>31-task-docs-framework-selection-install-and-artifact-hygiene</blocked_by>
+
+<description>
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/33-task-deep-skeptical-verification-of-doc-facts-and-writing-quality.md`
+
+## Task: Perform deep skeptical verification of all docs facts and writing quality <status>not_started</status> <passes>false</passes>
+
+<blocked_by>32-task-author-complete-architecture-docs-with-diagrams-and-no-code</blocked_by>
 
 <description>
 

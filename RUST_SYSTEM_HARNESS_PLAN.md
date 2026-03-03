@@ -554,3 +554,16 @@ pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, Ha
 7. Unit tests for pure logic.
 8. Real PG/etcd harness.
 9. Integration + e2e + auth/TLS suites.
+
+
+
+# More Future TODOS: create tasks
+- Have opentelemetry ready logging system
+  - All structured logs
+  - Includes auto reader/parser of postgresql logs from its log dir and converts into structured logs
+  - all structured logs include the member/host and where the logs came from (such as from pgtuskmaster, postgres, pg_rewind) etc..
+  - log config inside app config: write to json files/write to opentelemetry only/write to stderr only in jsonl (default is always stderr)
+  - tests includes full files of json postgres logs that are live parsed (since the parser reads them live and not directly all at once, but per flush of pg)
+- Setup docker
+  - all tests run in docker, no exceptions
+  - docker builds are smart to reuse cache from previous builds
