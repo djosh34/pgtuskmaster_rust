@@ -7,7 +7,10 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 use crate::{
     api::{
-        controller::{post_switchover, SwitchoverRequestInput},
+        controller::{
+            delete_leader, delete_switchover, get_ha_state, post_set_leader, post_switchover,
+            SetLeaderRequestInput, SwitchoverRequestInput,
+        },
         fallback::{get_fallback_cluster, post_fallback_heartbeat, FallbackHeartbeatInput},
         ApiError,
     },
@@ -124,6 +127,13 @@ impl ApiWorkerCtx {
     ) {
         self.debug_snapshot_subscriber = Some(subscriber);
     }
+
+    pub(crate) fn set_ha_snapshot_subscriber(
+        &mut self,
+        subscriber: StateSubscriber<SystemSnapshot>,
+    ) {
+        self.debug_snapshot_subscriber = Some(subscriber);
+    }
 }
 
 pub async fn run(mut ctx: ApiWorkerCtx) -> Result<(), WorkerError> {
@@ -197,6 +207,34 @@ fn route_request(
                 Ok(value) => HttpResponse::json(202, "Accepted", &value),
                 Err(err) => api_error_to_http(err),
             }
+        }
+        ("POST", "/ha/leader") => {
+            let input = match serde_json::from_slice::<SetLeaderRequestInput>(&request.body) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
+                }
+            };
+            match post_set_leader(&ctx.scope, &mut *ctx.dcs_store, input) {
+                Ok(value) => HttpResponse::json(202, "Accepted", &value),
+                Err(err) => api_error_to_http(err),
+            }
+        }
+        ("DELETE", "/ha/leader") => match delete_leader(&ctx.scope, &mut *ctx.dcs_store) {
+            Ok(value) => HttpResponse::json(202, "Accepted", &value),
+            Err(err) => api_error_to_http(err),
+        },
+        ("DELETE", "/ha/switchover") => match delete_switchover(&ctx.scope, &mut *ctx.dcs_store) {
+            Ok(value) => HttpResponse::json(202, "Accepted", &value),
+            Err(err) => api_error_to_http(err),
+        },
+        ("GET", "/ha/state") => {
+            let Some(subscriber) = ctx.debug_snapshot_subscriber.as_ref() else {
+                return HttpResponse::text(503, "Service Unavailable", "snapshot unavailable");
+            };
+            let snapshot = subscriber.latest();
+            let response = get_ha_state(&snapshot);
+            HttpResponse::json(200, "OK", &response)
         }
         ("GET", "/fallback/cluster") => {
             let view = get_fallback_cluster(cfg);
@@ -554,6 +592,15 @@ fn resolve_role_tokens(ctx: &ApiWorkerCtx, cfg: &RuntimeConfig) -> ApiRoleTokens
         return configured.clone();
     }
 
+    let read_from_api = normalize_runtime_token(cfg.api.read_auth_token.clone());
+    let admin_from_api = normalize_runtime_token(cfg.api.admin_auth_token.clone());
+    if read_from_api.is_some() || admin_from_api.is_some() {
+        return ApiRoleTokens {
+            read_token: read_from_api,
+            admin_token: admin_from_api,
+        };
+    }
+
     let legacy = cfg.security.auth_token.clone();
     ApiRoleTokens {
         read_token: legacy.clone(),
@@ -564,7 +611,11 @@ fn resolve_role_tokens(ctx: &ApiWorkerCtx, cfg: &RuntimeConfig) -> ApiRoleTokens
 fn endpoint_role(request: &HttpRequest) -> EndpointRole {
     let (path, _query) = split_path_and_query(&request.path);
     match (request.method.as_str(), path) {
-        ("POST", "/switchover") | ("POST", "/fallback/heartbeat") => EndpointRole::Admin,
+        ("POST", "/switchover")
+        | ("POST", "/fallback/heartbeat")
+        | ("POST", "/ha/leader")
+        | ("DELETE", "/ha/leader")
+        | ("DELETE", "/ha/switchover") => EndpointRole::Admin,
         _ => EndpointRole::Read,
     }
 }
@@ -582,6 +633,20 @@ fn normalize_optional_token(raw: Option<String>) -> Result<Option<String>, Worke
             }
         }
         None => Ok(None),
+    }
+}
+
+fn normalize_runtime_token(raw: Option<String>) -> Option<String> {
+    match raw {
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        None => None,
     }
 }
 
@@ -940,6 +1005,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordingStore {
         writes: Arc<Mutex<Vec<(String, String)>>>,
+        deletes: Arc<Mutex<Vec<String>>>,
     }
 
     impl RecordingStore {
@@ -949,6 +1015,30 @@ mod tests {
                 .lock()
                 .map_err(|_| WorkerError::Message("writes lock poisoned".to_string()))?;
             Ok(guard.len())
+        }
+
+        fn writes(&self) -> Result<Vec<(String, String)>, WorkerError> {
+            let guard = self
+                .writes
+                .lock()
+                .map_err(|_| WorkerError::Message("writes lock poisoned".to_string()))?;
+            Ok(guard.clone())
+        }
+
+        fn delete_count(&self) -> Result<usize, WorkerError> {
+            let guard = self
+                .deletes
+                .lock()
+                .map_err(|_| WorkerError::Message("deletes lock poisoned".to_string()))?;
+            Ok(guard.len())
+        }
+
+        fn deletes(&self) -> Result<Vec<String>, WorkerError> {
+            let guard = self
+                .deletes
+                .lock()
+                .map_err(|_| WorkerError::Message("deletes lock poisoned".to_string()))?;
+            Ok(guard.clone())
         }
     }
 
@@ -966,7 +1056,12 @@ mod tests {
             Ok(())
         }
 
-        fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
+        fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError> {
+            let mut guard = self
+                .deletes
+                .lock()
+                .map_err(|_| DcsStoreError::Io("deletes lock poisoned".to_string()))?;
+            guard.push(path.to_string());
             Ok(())
         }
 
@@ -1030,6 +1125,8 @@ mod tests {
             },
             api: ApiConfig {
                 listen_addr: "127.0.0.1:0".to_string(),
+                read_auth_token: None,
+                admin_auth_token: None,
             },
             debug: DebugConfig { enabled: true },
             security: SecurityConfig {
@@ -1463,6 +1560,15 @@ mod tests {
         }
     }
 
+    fn format_delete(path: &str, auth: Option<&str>) -> String {
+        match auth {
+            Some(auth_header) => format!(
+                "DELETE {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: {auth_header}\r\n\r\n"
+            ),
+            None => format!("DELETE {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn security_role_permissions_allow_read_deny_admin() -> Result<(), WorkerError> {
         let _guard = NamespaceGuard::new("api-role-read-deny")?;
@@ -1522,6 +1628,180 @@ mod tests {
         .await?;
         assert!(status.contains("202"), "expected 202, got: {status}");
         assert_eq!(store.write_count()?, 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ha_state_route_returns_typed_json_even_when_debug_disabled() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-ha-state-json")?;
+        let mut cfg = sample_runtime_config(None);
+        cfg.debug.enabled = false;
+        let (mut ctx, _store) = build_ctx_with_config(cfg).await?;
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+
+        let (status, body) = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+        let decoded: serde_json::Value =
+            serde_json::from_slice(&body).map_err(|err| WorkerError::Message(format!(
+                "decode ha state json failed: {err}"
+            )))?;
+        assert_eq!(decoded["cluster_name"], "cluster-a");
+        assert_eq!(decoded["scope"], "scope-a");
+        assert_eq!(decoded["self_member_id"], "node-a");
+        assert_eq!(decoded["leader"], serde_json::Value::Null);
+        assert_eq!(decoded["switchover_requested_by"], serde_json::Value::Null);
+        assert_eq!(decoded["member_count"], 0);
+        assert_eq!(decoded["dcs_trust"], "FullQuorum");
+        assert_eq!(decoded["ha_phase"], "Replica");
+        assert_eq!(decoded["ha_tick"], 7);
+        assert_eq!(decoded["pending_actions"], 1);
+        assert_eq!(decoded["snapshot_sequence"], 2);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ha_state_route_returns_503_without_subscriber() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-ha-state-missing-subscriber")?;
+        let (mut ctx, _store) = build_ctx(None).await?;
+        let (status, _body) = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        assert!(status.contains("503"), "expected 503, got: {status}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ha_leader_routes_mutate_expected_dcs_keys() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-ha-leader-routes")?;
+        let (mut ctx, store) = build_ctx(None).await?;
+
+        let body = br#"{"member_id":"node-b"}"#.to_vec();
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_post("/ha/leader", None, body.as_slice()),
+            Some(body),
+        )
+        .await?;
+        assert!(status.contains("202"), "expected 202, got: {status}");
+
+        let (status, _body) =
+            send_plain_request(&mut ctx, format_delete("/ha/leader", None), None).await?;
+        assert!(status.contains("202"), "expected 202, got: {status}");
+
+        let (status, _body) =
+            send_plain_request(&mut ctx, format_delete("/ha/switchover", None), None).await?;
+        assert!(status.contains("202"), "expected 202, got: {status}");
+
+        let writes = store.writes()?;
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, "/scope-a/leader");
+        let encoded: serde_json::Value = serde_json::from_str(&writes[0].1)
+            .map_err(|err| WorkerError::Message(format!("decode leader payload failed: {err}")))?;
+        assert_eq!(encoded["member_id"], "node-b");
+
+        assert_eq!(store.delete_count()?, 2);
+        let deletes = store.deletes()?;
+        assert_eq!(deletes, vec!["/scope-a/leader", "/scope-a/switchover"]);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_role_permissions_cover_new_ha_routes() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-ha-authz-roles")?;
+        let (mut ctx, _store) = build_ctx(None).await?;
+        let roles = ApiRoleTokens::new("read-token", "admin-token")?;
+        ctx.configure_role_tokens(
+            Some(roles.read_token.clone()),
+            Some(roles.admin_token.clone()),
+        )?;
+
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_get("/ha/state", Some(&roles.read_bearer_header())),
+            None,
+        )
+        .await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+
+        let body = br#"{"member_id":"node-b"}"#.to_vec();
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_post(
+                "/ha/leader",
+                Some(&roles.read_bearer_header()),
+                body.as_slice(),
+            ),
+            Some(body),
+        )
+        .await?;
+        assert!(status.contains("403"), "expected 403, got: {status}");
+
+        let body = br#"{"member_id":"node-b"}"#.to_vec();
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_post(
+                "/ha/leader",
+                Some(&roles.admin_bearer_header()),
+                body.as_slice(),
+            ),
+            Some(body),
+        )
+        .await?;
+        assert!(status.contains("202"), "expected 202, got: {status}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_legacy_auth_token_fallback_protects_ha_routes() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-ha-authz-legacy-fallback")?;
+        let (mut ctx, _store) = build_ctx(Some("legacy-token".to_string())).await?;
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+
+        let (status, _body) = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        assert!(status.contains("401"), "expected 401, got: {status}");
+
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_get("/ha/state", Some("Bearer legacy-token")),
+            None,
+        )
+        .await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_api_tokens_override_legacy_token() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-ha-authz-api-precedence")?;
+        let mut cfg = sample_runtime_config(Some("legacy-token".to_string()));
+        cfg.api.read_auth_token = Some("read-token".to_string());
+        cfg.api.admin_auth_token = Some("admin-token".to_string());
+        let (mut ctx, _store) = build_ctx_with_config(cfg).await?;
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_get("/ha/state", Some("Bearer legacy-token")),
+            None,
+        )
+        .await?;
+        assert!(status.contains("401"), "expected 401, got: {status}");
+
+        let (status, _body) = send_plain_request(
+            &mut ctx,
+            format_get("/ha/state", Some("Bearer read-token")),
+            None,
+        )
+        .await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
         Ok(())
     }
 

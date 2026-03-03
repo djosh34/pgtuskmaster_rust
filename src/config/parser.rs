@@ -110,6 +110,9 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         });
     }
 
+    validate_optional_non_empty("api.read_auth_token", cfg.api.read_auth_token.as_deref())?;
+    validate_optional_non_empty("api.admin_auth_token", cfg.api.admin_auth_token.as_deref())?;
+
     Ok(())
 }
 
@@ -129,6 +132,18 @@ fn validate_timeout(field: &'static str, value: u64) -> Result<(), ConfigError> 
             field,
             message: format!("must be between {MIN_TIMEOUT_MS} and {MAX_TIMEOUT_MS} ms"),
         });
+    }
+    Ok(())
+}
+
+fn validate_optional_non_empty(field: &'static str, value: Option<&str>) -> Result<(), ConfigError> {
+    if let Some(raw) = value {
+        if raw.trim().is_empty() {
+            return Err(ConfigError::Validation {
+                field,
+                message: "must not be empty when configured".to_string(),
+            });
+        }
     }
     Ok(())
 }
@@ -175,6 +190,8 @@ mod tests {
             },
             api: ApiConfig {
                 listen_addr: "127.0.0.1:8080".to_string(),
+                read_auth_token: None,
+                admin_auth_token: None,
             },
             debug: DebugConfig { enabled: false },
             security: SecurityConfig {
@@ -242,6 +259,33 @@ mod tests {
             err,
             Err(ConfigError::Validation {
                 field: "ha.lease_ttl_ms",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_blank_api_tokens() {
+        let mut cfg = base_runtime_config();
+        cfg.api.read_auth_token = Some(" ".to_string());
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "api.read_auth_token",
+                ..
+            })
+        ));
+
+        let mut cfg = base_runtime_config();
+        cfg.api.admin_auth_token = Some("\t".to_string());
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "api.admin_auth_token",
                 ..
             })
         ));

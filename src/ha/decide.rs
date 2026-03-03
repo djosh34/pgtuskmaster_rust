@@ -697,6 +697,8 @@ mod tests {
             },
             api: ApiConfig {
                 listen_addr: "127.0.0.1:8080".to_string(),
+                read_auth_token: None,
+                admin_auth_token: None,
             },
             debug: DebugConfig { enabled: true },
             security: SecurityConfig {

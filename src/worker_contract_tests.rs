@@ -77,6 +77,8 @@ fn sample_runtime_config() -> RuntimeConfig {
         },
         api: crate::config::schema::ApiConfig {
             listen_addr: "127.0.0.1:8080".to_string(),
+            read_auth_token: None,
+            admin_auth_token: None,
         },
         debug: crate::config::schema::DebugConfig { enabled: true },
         security: crate::config::schema::SecurityConfig {

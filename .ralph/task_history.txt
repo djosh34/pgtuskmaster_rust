@@ -38,3 +38,4 @@
 .ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md
 .ralph/tasks/story-rust-system-harness/21-task-do-meta-deep-skeptical-review-pass-3.md
 .ralph/tasks/story-rust-system-harness/16-task-debug-ui-verbose-state-actions-events-and-final-stop.md
+.ralph/tasks/story-rust-system-harness/22-task-ha-admin-api-read-write-surface.md

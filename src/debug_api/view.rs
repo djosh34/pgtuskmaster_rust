@@ -166,6 +166,9 @@ pub(crate) fn build_verbose_payload(
                 "/debug/ui",
                 "/fallback/cluster",
                 "/switchover",
+                "/ha/state",
+                "/ha/leader",
+                "/ha/switchover",
             ],
         },
         debug: DebugSection {

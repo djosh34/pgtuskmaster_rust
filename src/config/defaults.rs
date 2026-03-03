@@ -36,11 +36,16 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
         binaries: raw.process.binaries,
     };
 
+    let api_raw = raw.api;
     let api = ApiConfig {
-        listen_addr: raw
-            .api
-            .and_then(|cfg| cfg.listen_addr)
+        listen_addr: api_raw
+            .as_ref()
+            .and_then(|cfg| cfg.listen_addr.clone())
             .unwrap_or_else(|| DEFAULT_API_LISTEN_ADDR.to_string()),
+        read_auth_token: api_raw
+            .as_ref()
+            .and_then(|cfg| cfg.read_auth_token.clone()),
+        admin_auth_token: api_raw.and_then(|cfg| cfg.admin_auth_token),
     };
 
     let debug = DebugConfig {
@@ -132,6 +137,8 @@ mod tests {
         );
         assert_eq!(cfg.process.fencing_timeout_ms, DEFAULT_FENCING_TIMEOUT_MS);
         assert_eq!(cfg.api.listen_addr, DEFAULT_API_LISTEN_ADDR);
+        assert_eq!(cfg.api.read_auth_token, None);
+        assert_eq!(cfg.api.admin_auth_token, None);
         assert!(!cfg.debug.enabled);
         assert!(!cfg.security.tls_enabled);
         assert_eq!(cfg.security.auth_token, None);
@@ -146,6 +153,8 @@ mod tests {
         raw.process.fencing_timeout_ms = Some(4_000);
         raw.api = Some(PartialApiConfig {
             listen_addr: Some("0.0.0.0:9999".to_string()),
+            read_auth_token: Some("reader".to_string()),
+            admin_auth_token: Some("admin".to_string()),
         });
         raw.debug = Some(PartialDebugConfig {
             enabled: Some(true),
@@ -162,6 +171,8 @@ mod tests {
         assert_eq!(cfg.process.bootstrap_timeout_ms, 3_000);
         assert_eq!(cfg.process.fencing_timeout_ms, 4_000);
         assert_eq!(cfg.api.listen_addr, "0.0.0.0:9999");
+        assert_eq!(cfg.api.read_auth_token.as_deref(), Some("reader"));
+        assert_eq!(cfg.api.admin_auth_token.as_deref(), Some("admin"));
         assert!(cfg.debug.enabled);
         assert!(cfg.security.tls_enabled);
         assert_eq!(cfg.security.auth_token.as_deref(), Some("token-123"));

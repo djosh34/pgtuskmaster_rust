@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 08:19:35 AM CET 2026
+Generated: Tue Mar  3 08:28:37 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -369,7 +369,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/22-task-ha-admin-api-read-write-surface.md`
 
-## Task: Expose full HA admin API read and write surface <status>not_started</status> <passes>false</passes>
+## Task: Expose full HA admin API read and write surface <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Add a first-class HA admin API that exposes operational read endpoints and write actions needed to control cluster behavior without touching DCS directly.

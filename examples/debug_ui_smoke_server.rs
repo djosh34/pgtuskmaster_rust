@@ -62,6 +62,8 @@ fn sample_runtime_config() -> RuntimeConfig {
         },
         api: ApiConfig {
             listen_addr: "127.0.0.1:18080".to_string(),
+            read_auth_token: None,
+            admin_auth_token: None,
         },
         debug: DebugConfig { enabled: true },
         security: SecurityConfig {

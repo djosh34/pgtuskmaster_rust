@@ -65,6 +65,8 @@ pub struct BinaryPaths {
 #[serde(deny_unknown_fields)]
 pub struct ApiConfig {
     pub listen_addr: String,
+    pub read_auth_token: Option<String>,
+    pub admin_auth_token: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -113,6 +115,8 @@ pub struct PartialProcessConfig {
 #[serde(deny_unknown_fields)]
 pub struct PartialApiConfig {
     pub listen_addr: Option<String>,
+    pub read_auth_token: Option<String>,
+    pub admin_auth_token: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

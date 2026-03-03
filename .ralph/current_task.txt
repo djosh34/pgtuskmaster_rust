@@ -1,1 +1,0 @@
-.ralph/tasks/story-rust-system-harness/22-task-ha-admin-api-read-write-surface.md

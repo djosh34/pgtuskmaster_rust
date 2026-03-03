@@ -171,6 +171,8 @@ impl ClusterFixture {
                 },
                 api: ApiConfig {
                     listen_addr: "127.0.0.1:0".to_string(),
+                    read_auth_token: None,
+                    admin_auth_token: None,
                 },
                 debug: DebugConfig { enabled: false },
                 security: SecurityConfig {
