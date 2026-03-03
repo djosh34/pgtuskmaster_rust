@@ -57,3 +57,4 @@
 .ralph/tasks/story-rust-system-harness/31-task-docs-framework-selection-install-and-artifact-hygiene.md
 .ralph/tasks/story-rust-system-harness/32-task-author-complete-architecture-docs-with-diagrams-and-no-code.md
 .ralph/tasks/story-rust-system-harness/37-task-unified-e2e-harness-testconfig-interface.md
+.ralph/tasks/story-rust-system-harness/40-task-ultra-high-prio-test-target-split-and-reference-migration.md

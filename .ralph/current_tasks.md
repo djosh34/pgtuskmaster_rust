@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 11:40:47 PM CET 2026
+Generated: Wed Mar  4 12:03:03 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -31,7 +31,7 @@ Investigation found that writable `/ha/leader` was introduced by task `22-task-h
 
 ---
 
-**Path:** `.ralph/tasks/bugs/bug-test-full-suite-hangs.md`
+**Path:** `.ralph/tasks/bugs/bug-test-bdd-full-suite-hangs.md`
 
 ## Bug: test full-suite command hangs in real HA e2e <status>done</status> <passes>true</passes> <passing>true</passing>
 
@@ -571,6 +571,24 @@ This is a **RECURRING META-TASK**.
 
 <description>
 **Goal:** Extend the unified logging subsystem with optional structured file sink support after the base structured-ingestion task is complete.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/40-task-ultra-high-prio-test-target-split-and-reference-migration.md`
+
+## Task: Ultra-high-priority migrate repo gates to `make test` + `make test-long` only <status>not_started</status> <passes>false</passes> <priority>ultra-high</priority>
+
+<description>
+**Goal:** Complete and verify the global migration from legacy test targets to only two test groups: `make test` (regular) and `make test-long` (ultra-long only).
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/41-task-ultra-high-prio-split-ultra-long-e2e-into-short-parallel-tests.md`
+
+## Task: Ultra-high-priority split ultra-long e2e tests into shorter parallel real-binary tests <status>not_started</status> <passes>false</passes> <priority>ultra-high</priority>
+
+<description>
+**Goal:** Replace the current ultra-long HA e2e stress scenario(s) with multiple shorter real-binary e2e tests that preserve full coverage and must run in parallel.
 
 ---
 
