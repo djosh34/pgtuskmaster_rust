@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 02:50:17 AM CET 2026
+Generated: Tue Mar  3 02:59:09 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -378,7 +378,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/task-typed-dcs-writes-and-encapsulation.md`
 
-## Task: Replace Stringly DCS Writes With Typed Writer API <status>not_started</status> <passes>false</passes>
+## Task: Replace Stringly DCS Writes With Typed Writer API <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Eliminate raw path/string DCS writes from HA by introducing a typed DCS writer API and restricting access to low-level write/delete operations.

@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 use crate::{
     config::RuntimeConfig,
-    dcs::{state::DcsState, store::DcsStore},
+    dcs::{state::DcsState, store::DcsHaWriter},
     pginfo::state::{PgConnInfo, PgInfoState, PgSslMode},
     process::{
         jobs::ShutdownMode,
@@ -68,7 +68,7 @@ pub(crate) struct HaWorkerCtx {
     pub(crate) dcs_subscriber: StateSubscriber<DcsState>,
     pub(crate) process_subscriber: StateSubscriber<ProcessState>,
     pub(crate) process_inbox: UnboundedSender<ProcessJobRequest>,
-    pub(crate) dcs_store: Box<dyn DcsStore>,
+    pub(crate) dcs_store: Box<dyn DcsHaWriter>,
     pub(crate) scope: String,
     pub(crate) self_id: MemberId,
     pub(crate) process_defaults: ProcessDispatchDefaults,
@@ -114,7 +114,7 @@ pub(crate) struct HaWorkerContractStubInputs {
     pub(crate) dcs_subscriber: StateSubscriber<DcsState>,
     pub(crate) process_subscriber: StateSubscriber<ProcessState>,
     pub(crate) process_inbox: UnboundedSender<ProcessJobRequest>,
-    pub(crate) dcs_store: Box<dyn DcsStore>,
+    pub(crate) dcs_store: Box<dyn DcsHaWriter>,
     pub(crate) scope: String,
     pub(crate) self_id: MemberId,
 }

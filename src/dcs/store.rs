@@ -5,6 +5,7 @@ use super::{
     state::{DcsCache, InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest},
     worker::{apply_watch_update, DcsWatchUpdate},
 };
+use crate::state::MemberId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WatchOp {
@@ -43,6 +44,53 @@ pub trait DcsStore: Send {
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError>;
     fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError>;
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError>;
+}
+
+pub(crate) trait DcsHaWriter: Send {
+    fn write_leader_lease(
+        &mut self,
+        scope: &str,
+        member_id: &MemberId,
+    ) -> Result<(), DcsStoreError>;
+    fn delete_leader(&mut self, scope: &str) -> Result<(), DcsStoreError>;
+    fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError>;
+}
+
+impl<T> DcsHaWriter for T
+where
+    T: DcsStore + ?Sized,
+{
+    fn write_leader_lease(
+        &mut self,
+        scope: &str,
+        member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        let path = leader_path(scope);
+        let encoded = serde_json::to_string(&LeaderRecord {
+            member_id: member_id.clone(),
+        })
+        .map_err(|err| DcsStoreError::Decode {
+            key: path.clone(),
+            message: err.to_string(),
+        })?;
+        self.write_path(&path, encoded)
+    }
+
+    fn delete_leader(&mut self, scope: &str) -> Result<(), DcsStoreError> {
+        self.delete_path(&leader_path(scope))
+    }
+
+    fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError> {
+        self.delete_path(&switchover_path(scope))
+    }
+}
+
+fn leader_path(scope: &str) -> String {
+    format!("/{}/leader", scope.trim_matches('/'))
+}
+
+fn switchover_path(scope: &str) -> String {
+    format!("/{}/switchover", scope.trim_matches('/'))
 }
 
 pub(crate) fn write_local_member(
@@ -221,8 +269,8 @@ mod tests {
     };
 
     use super::{
-        refresh_from_etcd_watch, write_local_member, DcsStore, DcsStoreError, RefreshResult,
-        TestDcsStore, WatchEvent, WatchOp,
+        refresh_from_etcd_watch, write_local_member, DcsHaWriter, DcsStore, DcsStoreError,
+        RefreshResult, TestDcsStore, WatchEvent, WatchOp,
     };
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -390,5 +438,32 @@ mod tests {
         let _value = DcsValue::Leader(crate::dcs::state::LeaderRecord {
             member_id: MemberId("node-a".to_string()),
         });
+    }
+
+    #[test]
+    fn write_leader_lease_writes_leader_path_and_payload() {
+        let mut store = TestDcsStore::new(true);
+        let result =
+            DcsHaWriter::write_leader_lease(&mut store, "scope-a", &MemberId("node-a".to_string()));
+        assert_eq!(result, Ok(()));
+        assert_eq!(store.writes().len(), 1);
+        assert_eq!(store.writes()[0].0, "/scope-a/leader");
+        assert!(store.writes()[0].1.contains("\"member_id\":\"node-a\""));
+    }
+
+    #[test]
+    fn delete_leader_deletes_leader_key() {
+        let mut store = TestDcsStore::new(true);
+        let result = DcsHaWriter::delete_leader(&mut store, "scope-a");
+        assert_eq!(result, Ok(()));
+        assert_eq!(store.deletes(), &["/scope-a/leader".to_string()]);
+    }
+
+    #[test]
+    fn clear_switchover_deletes_switchover_key() {
+        let mut store = TestDcsStore::new(true);
+        let result = DcsHaWriter::clear_switchover(&mut store, "scope-a");
+        assert_eq!(result, Ok(()));
+        assert_eq!(store.deletes(), &["/scope-a/switchover".to_string()]);
     }
 }

@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    dcs::{state::LeaderRecord, store::DcsStoreError},
+    dcs::store::DcsStoreError,
     process::{
         jobs::{
             BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec, PromoteSpec, StartPostgresSpec,
@@ -106,21 +106,7 @@ pub(crate) fn dispatch_actions(
     for (index, action) in actions.iter().enumerate() {
         match action {
             HaAction::AcquireLeaderLease => {
-                let leader_payload = serde_json::to_string(&LeaderRecord {
-                    member_id: ctx.self_id.clone(),
-                });
-                let encoded = match leader_payload {
-                    Ok(value) => value,
-                    Err(err) => {
-                        errors.push(ActionDispatchError::DcsWrite {
-                            action: action.id(),
-                            path: leader_key.clone(),
-                            message: err.to_string(),
-                        });
-                        continue;
-                    }
-                };
-                if let Err(err) = ctx.dcs_store.write_path(&leader_key, encoded) {
+                if let Err(err) = ctx.dcs_store.write_leader_lease(&ctx.scope, &ctx.self_id) {
                     errors.push(ActionDispatchError::DcsWrite {
                         action: action.id(),
                         path: leader_key.clone(),
@@ -129,7 +115,7 @@ pub(crate) fn dispatch_actions(
                 }
             }
             HaAction::ReleaseLeaderLease => {
-                if let Err(err) = ctx.dcs_store.delete_path(&leader_key) {
+                if let Err(err) = ctx.dcs_store.delete_leader(&ctx.scope) {
                     errors.push(ActionDispatchError::DcsDelete {
                         action: action.id(),
                         path: leader_key.clone(),
@@ -138,7 +124,7 @@ pub(crate) fn dispatch_actions(
                 }
             }
             HaAction::ClearSwitchover => {
-                if let Err(err) = ctx.dcs_store.delete_path(&switchover_key) {
+                if let Err(err) = ctx.dcs_store.clear_switchover(&ctx.scope) {
                     errors.push(ActionDispatchError::DcsDelete {
                         action: action.id(),
                         path: switchover_key.clone(),

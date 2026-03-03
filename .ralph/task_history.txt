@@ -33,3 +33,4 @@
 .ralph/tasks/story-full-verification/03-task-run-full-suite-regression-pass.md
 .ralph/tasks/story-full-verification/04-task-resolve-failures-and-revalidate-full-suite.md
 .ralph/tasks/story-rust-system-harness/task-real-ha-dcs-process-integration-tests.md
+.ralph/tasks/story-rust-system-harness/task-typed-dcs-writes-and-encapsulation.md
