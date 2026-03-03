@@ -32,9 +32,9 @@
 - [x] Add/update regression guard(s) that fail if new node-starting tests bypass the unified entrypoint
 - [x] `make check --all-targets` (or stricter equivalent) passes after config surface changes
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 ## Detailed Implementation Plan (Draft 2 - Verified)
@@ -166,7 +166,7 @@ Phase 4: Run required verification gates
 - `make check --all-targets` (explicit per acceptance criteria)
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - Record and fix all failures until green.
 

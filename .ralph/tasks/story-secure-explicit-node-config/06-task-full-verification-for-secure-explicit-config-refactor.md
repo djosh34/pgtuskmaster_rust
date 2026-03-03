@@ -24,7 +24,7 @@
 - [ ] Evidence logs are captured for each gate and linked from the task update
 - [ ] Any failing gate has corresponding bug task(s) with repro and impacted modules
 - [ ] `make check` — passes cleanly
-- [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test` — all BDD features pass
+- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] `make lint` — passes cleanly
+- [ ] BDD features pass (covered by `make test`).
 </acceptance_criteria>

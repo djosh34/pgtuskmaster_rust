@@ -26,6 +26,8 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 
 ## Cross application applicable learnings
 - ... (add here)
+- When running shell commands that include markdown backticks (for example searching for `` `make test` `` in tasks), always wrap the regex in single quotes; backticks inside double quotes trigger shell command substitution and can accidentally run `make test`.
+- This workspace’s `rg` build may not include PCRE2; avoid `rg -P` and prefer Rust-regex-compatible patterns.
 - `mdbook init docs` creates `docs/book/` immediately and `mdbook build` writes static output there; ignore `/docs/book/` at repo root to prevent accidental commits.
 - On Linux `aarch64`, mdBook upstream releases may only provide a `*-unknown-linux-musl` asset; pin/verify the correct archive per arch instead of assuming a `*-gnu` build exists.
 - `mdbook-mermaid` must match the mdBook major line: newer `mdbook-mermaid` releases (e.g. 0.16+) target mdBook 0.5 and can fail under mdBook 0.4 with a preprocessor JSON parse error; for mdBook v0.4.40, pin `mdbook-mermaid` v0.14.0 (depends on mdBook crate v0.4.36) and ensure the preprocessor is on `PATH` during `mdbook build`.

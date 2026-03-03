@@ -33,9 +33,9 @@
 - [x] `src/ha/worker.rs` tests: update `RecordingStore`/stubs to match new writer interface.
 - [x] `src/worker_contract_tests.rs`: update `ContractStore` to implement the typed writer interface.
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <plan>
@@ -89,7 +89,7 @@
 - Run:
   - `make check`
   - `make test`
-  - `make test`
+  - `make test-long`
   - `make lint`
 - Run sequentially (not parallel cargo invocations) for deterministic results and avoid cargo artifact races noted in prior learnings.
 - Capture and inspect command outcomes; do not skip any test category.

@@ -25,9 +25,9 @@
 - [x] For each distinct failing behavior, use `$add-bug` skill to create bug task(s) in `.ralph/tasks/bugs/` with exact repro command and expected vs actual behavior. (No failing behavior observed; no bug files required.)
 - [x] Re-run impacted test command(s) after fixes to confirm outcome. (No fixes were needed; required commands executed and passed in this run.)
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <implementation_plan>
@@ -49,7 +49,7 @@
 - Run commands via `bash -lc 'set -o pipefail; <cmd> | tee <log>'` so each exit status is preserved.
 - Planned log files:
 - `make-test.log`
-- `make-test.log`
+- `make-test-long.log`
 - `make-test-failures.log`
 - `make-check.log`
 - `make-lint.log`
@@ -59,7 +59,7 @@
 2. Execute the canonical gate sequence serially
 - Run, in order:
 - `make test`
-- `make test`
+- `make test-long`
 - `make check`
 - `make lint`
 - Perform marker greps after `make test` and `make lint` for `congratulations|evaluation failed`.
@@ -82,7 +82,7 @@
 - After all targeted failures are resolved, rerun full required gate suite:
 - `make check` (final)
 - `make test` (final)
-- `make test` (final)
+- `make test-long` (final)
 - `make lint` (final)
 
 5. Task finalization criteria

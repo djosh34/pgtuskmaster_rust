@@ -24,9 +24,9 @@
 <acceptance_criteria>
 - [x] Full exhaustive checklist completed with concrete module requirements: `src/api/controller.rs` (typed handlers), `src/api/worker.rs` (routes/authz), `src/api/mod.rs` (shared API types/errors), `src/config/schema.rs` + parser/defaults (admin/read auth config), `tests/bdd_api_http.rs` + new API contract tests (read/write route assertions)
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>
@@ -122,7 +122,7 @@
 - Run full required gates in order:
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - If failures occur, fix immediately or create bugs via `add-bug` per AGENTS policy before completion.
 

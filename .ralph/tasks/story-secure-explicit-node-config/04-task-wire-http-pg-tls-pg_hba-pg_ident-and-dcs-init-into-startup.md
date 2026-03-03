@@ -28,7 +28,7 @@
 - [ ] DCS init config is explicitly sourced from config and used during bootstrap/init writes
 - [ ] Real-binary and integration tests validate startup with explicit config only
 - [ ] `make check` — passes cleanly
-- [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test` — all BDD features pass
+- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] `make lint` — passes cleanly
+- [ ] BDD features pass (covered by `make test`).
 </acceptance_criteria>

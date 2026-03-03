@@ -25,9 +25,9 @@
 - [x] For each failure found, use `$add-bug` skill to create bug task(s) in `.ralph/tasks/bugs/` including repro command, logs, and scope. (No failures found; no new bug tasks required.)
 - [x] If all commands pass, record full-suite pass evidence in the task update.
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <implementation_plan>

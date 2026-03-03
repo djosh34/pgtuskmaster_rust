@@ -255,9 +255,9 @@
 - [x] `tests/policy_e2e_api_only.rs` remains semantically aligned with post-start hands-off rules
 - [x] New harness-level tests cover `TestConfig` validation/defaults and handle lifecycle
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 NOW EXECUTE

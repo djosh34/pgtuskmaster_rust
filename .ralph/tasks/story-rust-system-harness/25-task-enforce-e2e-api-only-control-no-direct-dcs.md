@@ -27,9 +27,9 @@
 <acceptance_criteria>
 - [x] Full exhaustive checklist completed with concrete module requirements: `src/ha/e2e_multi_node.rs` and any new e2e files (remove direct `write_path`/`delete_path` DCS control), API helper modules/tests updated for equivalent actions, new policy guard test/script (for example in `tests/` or `scripts/`) that fails on direct DCS control usage inside e2e suites
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail) (`no marker found` in log grep, command exit 0)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail) (`no marker found` in log grep, command exit 0)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>
@@ -45,7 +45,7 @@
 - Track 7: verified e2e fixture currently has no API worker per node and no API address plumbing.
 - Track 8: verified e2e convergence checks still rely on internal subscribers (HA/DCS/process) and not API payloads.
 - Track 9: verified no existing policy test blocks future direct DCS mutation in e2e modules.
-- Track 10: revalidated mandatory gate order from `Makefile`: `make check` -> `make test` -> `make test` -> `make lint`.
+- Track 10: revalidated mandatory gate order from `Makefile`: `make check` -> `make test` -> `make test-long` -> `make lint`.
 - Track 11: checked for broad false-positive risk in guard scope because `tests/bdd_api_http.rs` intentionally implements a `DcsStore` test double with `write_path`/`delete_path` methods.
 - Track 12: checked that real e2e already uses 3-node/3-etcd fixture from prior task and should be minimally disrupted.
 - Track 13: rechecked current task file acceptance criteria to ensure guard can be implemented as Rust test in `tests/`.
@@ -112,7 +112,7 @@
 - Run gates in required order:
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - Capture `congratulations` / `evaluation failed` markers for `make test` and `make lint`.
 </execution_plan>

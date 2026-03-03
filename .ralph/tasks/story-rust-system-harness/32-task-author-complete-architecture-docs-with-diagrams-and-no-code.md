@@ -37,9 +37,9 @@
 - [x] Writing quality bar met: natural flow, minimal jargon overload, reader-first explanations, and explicitly architecture-focused content with no function-signature or argument-level narrative
 - [x] “No code in architecture docs” rule enforced: no code blocks except optional tiny config/CLI examples if absolutely required for orientation, and those must not dominate content
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>

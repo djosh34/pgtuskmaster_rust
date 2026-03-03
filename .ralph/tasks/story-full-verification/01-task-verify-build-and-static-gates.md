@@ -24,9 +24,9 @@
 - [x] Run `make lint` and record pass/fail with relevant error excerpts.
 - [x] If either command fails, use `$add-bug` skill to create bug task(s) in `.ralph/tasks/bugs/` with repro steps and affected files. (No failures observed; no bug files required.)
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <implementation_plan>
@@ -60,7 +60,7 @@
 - Write logs:
 - `make-check.log`
 - `make-test.log`
-- `make-test.log`
+- `make-test-long.log`
 - `make-lint.log`
 - `grep-make-test-markers.log`
 - `grep-make-lint-markers.log`
@@ -69,7 +69,7 @@
 - Execute in order:
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - After `make test` and `make lint`, run marker greps for `congratulations|evaluation failed`; if absent, record explicit `not found` output to the grep logs.
 

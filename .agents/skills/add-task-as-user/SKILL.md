@@ -27,9 +27,9 @@ Tell the agent to explore and research the codebase first, then implement.
 
 <acceptance_criteria>
 - [ ] `make check` — passes cleanly
-- [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test` — full regular suite passes (including BDD/ignored coverage now grouped in this target)
+- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] `make lint` — passes cleanly
+- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 ```
 

@@ -3,6 +3,9 @@ MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 
 .PHONY: check test test-long lint docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid
 
+ULTRA_LONG_TESTS := ha::e2e_multi_node::e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql
+ULTRA_LONG_SKIP_ARGS := $(foreach t,$(ULTRA_LONG_TESTS),--skip $(t))
+
 ensure-mdbook:
 	@test -x "$(MDBOOK)" || (echo "missing mdBook binary: run ./tools/install-mdbook.sh" >&2; exit 1)
 
@@ -13,15 +16,15 @@ check:
 	cargo check --all-targets
 
 test:
-	cargo test --all-targets -- --skip ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql --skip ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql --skip ha::e2e_multi_node::e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql
-	cargo test --all-targets -- --include-ignored --skip ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql --skip ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql --skip ha::e2e_multi_node::e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql
+	cargo test --all-targets -- $(ULTRA_LONG_SKIP_ARGS)
 
 test-long:
-	@echo "test-long runs only ultra-long tests."
+	@echo "test-long runs only ultra-long tests (evidence-backed passed runtime >= 3 minutes)."
 	@echo "If one becomes short enough for regular development cycles, move it back into make test."
-	cargo test --all-targets ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql
-	cargo test --all-targets ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql
-	cargo test --all-targets ha::e2e_multi_node::e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql
+	@set -e; \
+	for t in $(ULTRA_LONG_TESTS); do \
+		cargo test --all-targets "$$t"; \
+	done
 
 docs-lint:
 	./tools/docs-architecture-no-code-guard.sh

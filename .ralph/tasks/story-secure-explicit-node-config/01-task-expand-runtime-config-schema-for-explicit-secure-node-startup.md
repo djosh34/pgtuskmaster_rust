@@ -34,7 +34,7 @@
 - [ ] Role auth is enum-typed (`tls` | `password`) with explicit fields for each mode
 - [ ] No type-level path remains for implicitly inferred default postgres identity fields
 - [ ] `make check` — passes cleanly
-- [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test` — all BDD features pass
+- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] `make lint` — passes cleanly
+- [ ] BDD features pass (covered by `make test`).
 </acceptance_criteria>

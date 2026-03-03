@@ -28,7 +28,7 @@
 - [x] `make check` — passes cleanly
 - [x] `make test` — log captured at `.ralph/evidence/story-rust-system-harness/28-task-e2e-network-partition-chaos-no-split-brain/gates/make-test.log`; no `evaluation failed` marker and command exited 0
 - [x] `make lint` — log captured at `.ralph/evidence/story-rust-system-harness/28-task-e2e-network-partition-chaos-no-split-brain/gates/make-lint.log`; no `evaluation failed` marker and command exited 0
-- [x] `make test` — all BDD features pass
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>
@@ -134,7 +134,7 @@
 - Execute required gates in order:
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - Capture marker grep evidence from `make test` and `make lint` logs (`congratulations` / `evaluation failed`) per acceptance criteria.
 

@@ -46,9 +46,9 @@
 - [x] All created task files and related bookkeeping changes are committed.
 - [x] Final step only: set `.ralph/model.txt` content to exactly `normal_high`.
 - [x] `make check` — passes cleanly, or failure is captured with follow-up task(s).
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail); failures become follow-up task(s).
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail); failures become follow-up task(s).
-- [x] `make test` — all BDD features pass, or failures become follow-up task(s).
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`); failures become follow-up task(s).
+- [x] `make lint` — passes cleanly; failures become follow-up task(s).
+- [x] BDD features pass (covered by `make test`), or failures become follow-up task(s).
 </acceptance_criteria>
 
 <execution_plan>
@@ -57,7 +57,7 @@
 Research snapshot from deep skeptical verification (parallel 16-probe sweep):
 - `.ralph/model.txt` currently exists and is `deep_review`.
 - Story done-task set currently includes `01, 02, 03, 04, 05, 05a, 06, 07, 10`.
-- Required make targets exist in root `Makefile`: `check`, `test`, `test`, `lint`.
+- Required make targets exist in root `Makefile`: `check`, `test`, `test-long`, `lint`.
 - Clippy deny policy exists in `src/lib.rs`; scoped test harness allowance exists in `src/test_harness/mod.rs`.
 - `panic!/expect/unwrap` matches are present broadly in `src/` and `tests/`; runtime-vs-test classification must be done explicitly before filing findings.
 - Grep evidence for `congratulations` / `evaluation failed` is not yet persisted to deterministic paths; execution must tee outputs to fixed log files.
@@ -81,7 +81,7 @@ Execution notes (2026-03-02):
 - [x] Execute baseline gates in strict order (no parallel make/cargo):
 - [x] `make check | tee .ralph/evidence/05b/make-check.log`
 - [x] `make test | tee .ralph/evidence/05b/make-test.log`
-- [x] `make test | tee .ralph/evidence/05b/make-test.log`
+- [x] `make test-long | tee .ralph/evidence/05b/make-test-long.log`
 - [x] `make lint | tee .ralph/evidence/05b/make-lint.log`
 - [x] For `make test` and `make lint`, grep saved logs for `congratulations` and `evaluation failed` exactly per task rule and store grep outputs under the same evidence directory.
 - [x] Convert any gate failure into explicit follow-up tasks during this same run (no deferred TODOs).

@@ -32,9 +32,9 @@
 - [x] Full exhaustive checklist completed for git hygiene: `.gitignore` updated only after observing produced artifacts, includes all generated dependency/build output (for chosen framework), `git add -n`/staging checks demonstrate artifacts are ignored, if artifacts were previously staged/tracked then they are removed from index and cleaned from branch history before final commit
 - [x] No generated docs artifacts committed (`node_modules`, build output folders, caches) and verification evidence captured in task notes
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>

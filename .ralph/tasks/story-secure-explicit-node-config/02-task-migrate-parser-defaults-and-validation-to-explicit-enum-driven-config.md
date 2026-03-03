@@ -28,7 +28,7 @@
 - [ ] Parse/validate error paths clearly identify missing required secure config fields
 - [ ] Existing fixtures and sample configs are updated or intentionally rejected with explicit migration guidance
 - [ ] `make check` — passes cleanly
-- [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test` — all BDD features pass
+- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] `make lint` — passes cleanly
+- [ ] BDD features pass (covered by `make test`).
 </acceptance_criteria>

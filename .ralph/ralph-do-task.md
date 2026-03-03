@@ -14,7 +14,7 @@
 - [ ] you are really done if and only if ALL of these are passing 100%:
     - [ ] `make check`
     - [ ] `make test`
-    - [ ] `make test`
+    - [ ] `make test-long`
     - [ ] `make lint`
 
 - [ ] only when you're done, and all checks pass:

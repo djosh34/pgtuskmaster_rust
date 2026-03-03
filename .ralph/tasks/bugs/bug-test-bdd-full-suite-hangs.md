@@ -14,9 +14,9 @@ Please explore and research the codebase first to identify whether this is a gen
 
 <acceptance_criteria>
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>
@@ -56,7 +56,7 @@ Please explore and research the codebase first to identify whether this is a gen
 - Run and verify, in order:
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - If all pass, update task checklist and `<passes>true</passes>`, then run task switch + commit with required message format.
 </execution_plan>

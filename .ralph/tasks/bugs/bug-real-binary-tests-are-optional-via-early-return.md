@@ -11,9 +11,9 @@ The solution should preserve clear error messages about missing prerequisites an
 
 <acceptance_criteria>
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 ## Research Findings (2026-03-03)
@@ -94,7 +94,7 @@ The solution should preserve clear error messages about missing prerequisites an
 - [x] Run required gates and capture outputs under a new evidence directory:
   - `make check`
   - `make test`
-  - `make test`
+  - `make test-long`
   - `make lint`
 - [x] For acceptance criteria that mention grep pass/fail phrases, save command outputs and grep artifacts explicitly.
 - [x] If linker/object flake appears on this mount, use known mitigation:

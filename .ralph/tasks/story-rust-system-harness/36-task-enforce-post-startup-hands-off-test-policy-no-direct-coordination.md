@@ -31,9 +31,9 @@
 - [x] Allowed exception paths are explicitly codified: SQL data writes where needed, and approved API actions (including switchover requests)
 - [x] Existing HA scenario tests continue to validate role/fencing/safety behavior using external-observable flows
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 ## Detailed Implementation Plan (Draft 2, verified)
@@ -111,7 +111,7 @@ Post-start tests may not:
 - `cargo test --test policy_e2e_api_only -- --nocapture` (fast fail-first policy gate)
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 
 4. Task completion bookkeeping (only after all gates pass).

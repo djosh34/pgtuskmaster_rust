@@ -82,7 +82,7 @@
 - Preserve auditable command logs:
   - `make check`
   - `make test`
-  - `make test`
+  - `make test-long`
   - `make lint`
 - `make test`
 - If any gate fails, create bug task(s) immediately before closeout.

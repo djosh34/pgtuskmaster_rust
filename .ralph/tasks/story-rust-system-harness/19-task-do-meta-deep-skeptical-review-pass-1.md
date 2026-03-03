@@ -58,7 +58,7 @@
 - Execute sequentially with log capture and `set -o pipefail`:
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - Persist outputs to evidence logs and create grep artifacts for `make test`/`make lint` marker checks when requested by task conventions.
 - For any gate failure, immediately create follow-up bug task(s) before closeout.

@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 12:03:03 AM CET 2026
+Generated: Wed Mar  4 00:37:57 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -202,6 +202,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -226,15 +235,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
 
 ---
 
@@ -277,6 +277,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
@@ -292,16 +302,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
 
 ---
 
@@ -576,7 +576,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/40-task-ultra-high-prio-test-target-split-and-reference-migration.md`
 
-## Task: Ultra-high-priority migrate repo gates to `make test` + `make test-long` only <status>not_started</status> <passes>false</passes> <priority>ultra-high</priority>
+## Task: Ultra-high-priority migrate repo gates to `make test` + `make test-long` only <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra-high</priority>
 
 <description>
 **Goal:** Complete and verify the global migration from legacy test targets to only two test groups: `make test` (regular) and `make test-long` (ultra-long only).

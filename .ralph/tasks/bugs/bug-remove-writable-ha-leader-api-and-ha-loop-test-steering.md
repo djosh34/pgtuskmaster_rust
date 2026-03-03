@@ -29,9 +29,9 @@ Directly impacted usages discovered during investigation:
 - [x] Tests previously validating `/ha/leader` writes/deletes are replaced with tests validating forbidden/absent route behavior and HA-loop outcomes.
 - [x] Policy guard coverage fails if e2e code reintroduces `/ha/leader` write/delete steering.
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 ## Execution Plan (Draft 2 - Skeptical Verification Applied)

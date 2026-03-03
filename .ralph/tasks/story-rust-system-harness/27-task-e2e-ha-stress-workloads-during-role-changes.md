@@ -27,9 +27,9 @@
 <acceptance_criteria>
 - [x] Full exhaustive checklist completed with concrete module requirements: new/updated stress e2e files (`src/ha/e2e_*` and/or `tests/e2e_*`), SQL workload helper module(s), API-state assertion utilities, artifact logging paths under `.ralph/evidence` for stress timelines and summary stats
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>
@@ -44,7 +44,7 @@
 - Track 6: verified current tests already use deterministic scenario/global timeouts; stress suites should reuse and extend this timeout model.
 - Track 7: validated no-quorum path currently checks fail-safe convergence but does not validate write-fencing behavior under concurrent load.
 - Track 8: inspected harness/binary requirements and verified real-binary tests are fail-fast (no optional skip path).
-- Track 9: confirmed `make` gate order to satisfy completion remains `make check` -> `make test` -> `make test` -> `make lint`.
+- Track 9: confirmed `make` gate order to satisfy completion remains `make check` -> `make test` -> `make test-long` -> `make lint`.
 - Track 10: confirmed `src/ha/mod.rs` currently wires one e2e module (`e2e_multi_node`), so stress scenarios can be additive in same file or a new `e2e_*.rs` module.
 - Track 11: validated current SQL helpers are node-targeted; no reusable concurrent workload runner abstraction exists yet.
 - Track 12: reviewed prior completed e2e tasks and lifecycle markers to mirror task-file protocol (`TO BE VERIFIED` -> skeptical delta -> `NOW EXECUTE`).

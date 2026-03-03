@@ -21,8 +21,8 @@
   - etcd: `.tools/etcd/bin/etcd`
 - Required default flow: `make test`
   - Missing real-test binaries now fail fast with explicit prerequisite errors.
-- Focused real-only flow: `make test-long`
-  - Runs the real-binary suites directly and also fails fast if prerequisites are missing.
+- Ultra-long-only flow: `make test-long`
+  - Runs only tests classified as ultra-long (evidence-backed passed runtime >= 3 minutes) and also fails fast if prerequisites are missing.
 - CI should install/copy binaries into those `.tools/...` paths before running `make test` or `make test-long`.
 - Example package sources (distribution-dependent):
   - PostgreSQL 16 binaries from `postgresql-16` / official PostgreSQL apt/yum packages.

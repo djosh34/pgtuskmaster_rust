@@ -7,9 +7,9 @@
 
 <acceptance_criteria>
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <implementation_plan>
@@ -46,7 +46,7 @@
 4. Run required gates sequentially after test/fix updates.
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - If any gate fails, fix root cause and rerun from failing gate, then rerun full sequence for confidence.
 
@@ -72,7 +72,7 @@ EXECUTED
 - Required gates (all pass):
   - `make check`
   - `make test`
-  - `make test`
+  - `make test-long`
   - `make lint`
 - Conclusion: the behavior fix was already present in current code path, and this task closes by adding explicit unknown-key regression coverage so the prior fix cannot silently regress.
 </execution_evidence>

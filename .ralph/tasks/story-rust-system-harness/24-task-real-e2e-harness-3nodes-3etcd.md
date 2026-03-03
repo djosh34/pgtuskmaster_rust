@@ -24,9 +24,9 @@
 <acceptance_criteria>
 - [x] Full exhaustive checklist completed with concrete module requirements: `src/test_harness/etcd3.rs` (multi-member cluster spawner), `src/test_harness/ports.rs` (port planning for 3 etcd + 3 nodes), `src/ha/e2e_multi_node.rs` or successor e2e fixtures (consume cluster endpoints), e2e teardown/retry logic files updated for clean shutdown
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>
@@ -116,7 +116,7 @@
 - Run mandatory gates in order:
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 - Capture marker checks for `make test` and `make lint` outputs (`congratulations` / `evaluation failed`) as required by task acceptance language.
 

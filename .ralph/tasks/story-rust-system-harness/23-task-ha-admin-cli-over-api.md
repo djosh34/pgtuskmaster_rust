@@ -26,9 +26,9 @@
 <acceptance_criteria>
 - [x] Full exhaustive checklist completed with concrete module requirements: `Cargo.toml` (CLI deps), `src/bin/pgtuskmasterctl.rs` (command tree), `src/api/*` or new client module (request/response client), `tests/` CLI coverage (parse + transport mocks), docs/readme command examples
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail) (`no marker found` in output; command exit 0)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail) (`no marker found` in output; command exit 0)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>
@@ -41,7 +41,7 @@
 - Verified `src/api/mod.rs` response structs are `pub(crate)`, so external reuse from new CLI modules would force unnecessary visibility widening.
 - Verified there is no existing binary target in `src/bin/`.
 - Verified strict lint denies unwrap/expect/panic/todo/unimplemented globally.
-- Verified Make targets required by this task are exactly `check`, `test`, `test`, `lint`.
+- Verified Make targets required by this task are exactly `check`, `test`, `test-long`, `lint`.
 - Verified docs baseline: no dedicated CLI doc exists yet.
 
 ### Verification delta (mandatory plan changes)
@@ -136,7 +136,7 @@
 5. Required gates:
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 
 ### Execution sequence

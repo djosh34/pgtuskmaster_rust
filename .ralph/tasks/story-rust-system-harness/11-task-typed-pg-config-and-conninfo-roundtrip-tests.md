@@ -144,7 +144,7 @@
 5. Run mandatory gates sequentially (no parallel cargo invocations):
 - `make check`
 - `make test`
-- `make test`
+- `make test-long`
 - `make lint`
 6. If any gate fails, create `$add-bug` task(s) with command, failing sample inputs, and observed errors.
 

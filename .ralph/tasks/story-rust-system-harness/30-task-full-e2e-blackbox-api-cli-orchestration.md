@@ -28,9 +28,9 @@
 <acceptance_criteria>
 - [x] Full exhaustive checklist completed with concrete module requirements: full e2e scenario files migrated to API/CLI control paths, direct internal control helpers removed from full e2e codepaths, API status assertions replacing internal-only checks where feasible, e2e policy doc/conventions updated under repository docs/task notes
 - [x] `make check` — passes cleanly
-- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [x] `make test` — all BDD features pass
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
 
 <execution_plan>
