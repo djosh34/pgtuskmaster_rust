@@ -62,3 +62,4 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - For etcd-backed DCS adapters, bootstrap with `get(prefix)` and then create `watch(prefix)` from `header.revision + 1`; if watch responses are canceled/compacted, mark unhealthy and force a full reconnect+resnapshot cycle.
 - For strict conninfo typing, keep `PgConnInfo` in HA/process job specs and render only at command boundary; parser-level `UnsupportedKey` checks catch typo drift (for example `sslmdoe`) before any process job is dispatched.
 - Even when `make test` (`cargo test --all-targets`) already exercises BDD test binaries, still run `make test-bdd` separately when task policy requires it so evidence logs map 1:1 to acceptance commands.
+- In `story-full-verification` task files, final completion metadata is expected as `<status>done</status> <passes>true</passes> <passing>true</passing>`; keep all three tags aligned to avoid downstream task-state ambiguity.
