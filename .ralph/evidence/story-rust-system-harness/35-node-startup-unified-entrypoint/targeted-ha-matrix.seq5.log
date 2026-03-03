@@ -1,0 +1,19 @@
+   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.19s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-4ed2729427fd503c)
+
+running 1 test
+test ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix ... FAILED
+
+failures:
+
+---- ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix stdout ----
+Error: Message("timed out waiting for api readiness at 127.0.0.1:46359; last_observation=connect 127.0.0.1:46359 for GET /ha/state failed: Connection refused (os error 111)")
+
+
+failures:
+    ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 167 filtered out; finished in 122.41s
+
+error: test failed, to rerun pass `--lib`

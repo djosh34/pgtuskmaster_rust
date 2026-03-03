@@ -1,0 +1,40 @@
+cargo clippy --all-targets --all-features -- -D warnings
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+error: redundant field names in struct initialization
+   --> src/ha/e2e_multi_node.rs:391:21
+    |
+391 |                     rewind_source_port: rewind_source_port,
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `rewind_source_port`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#redundant_field_names
+    = note: `-D clippy::redundant-field-names` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::redundant_field_names)]`
+
+error: you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let`
+    --> src/ha/e2e_multi_node.rs:1395:13
+     |
+1395 | /             match self.cluster_ha_states().await {
+1396 | |                 Ok(states) => {
+1397 | |                     if Self::primary_members(&states).len() > 1 {
+1398 | |                         return Err(WorkerError::Message(
+...    |
+1403 | |                 Err(_) => {}
+1404 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#single_match
+     = note: `-D clippy::single-match` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::single_match)]`
+help: try
+     |
+1395 ~             if let Ok(states) = self.cluster_ha_states().await {
+1396 +                 if Self::primary_members(&states).len() > 1 {
+1397 +                     return Err(WorkerError::Message(
+1398 +                         "split-brain detected: more than one primary".to_string(),
+1399 +                     ));
+1400 +                 }
+1401 +             }
+     |
+
+error: could not compile `pgtuskmaster_rust` (lib test) due to 2 previous errors
+make: *** [Makefile:23: lint] Error 101

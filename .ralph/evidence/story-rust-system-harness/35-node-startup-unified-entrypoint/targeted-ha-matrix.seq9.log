@@ -1,0 +1,13 @@
+   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.54s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-4ed2729427fd503c)
+
+running 1 test
+test ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix ... waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 167 filtered out; finished in 90.28s
+

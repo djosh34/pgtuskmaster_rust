@@ -70,6 +70,11 @@ pub(crate) fn prepare_pgdata_dir(
         return Err(HarnessError::StalePath { path: data_dir });
     }
     fs::create_dir_all(&data_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&data_dir, fs::Permissions::from_mode(0o700))?;
+    }
     Ok(data_dir)
 }
 

@@ -328,9 +328,16 @@ async fn run_startup_job(cfg: &RuntimeConfig, job: ProcessJobKind) -> Result<(),
     let command = build_command(&cfg.process, &job).map_err(|err| {
         RuntimeError::StartupExecution(format!("startup command build failed: {err}"))
     })?;
+    let command_display = format!(
+        "{} {}",
+        command.program.display(),
+        command.args.join(" ")
+    );
 
     let mut handle = runner.spawn(command).map_err(|err| {
-        RuntimeError::StartupExecution(format!("startup command spawn failed: {err}"))
+        RuntimeError::StartupExecution(format!(
+            "startup command spawn failed for `{command_display}`: {err}"
+        ))
     })?;
 
     let started = system_now_unix_millis().map_err(|err| RuntimeError::Time(err.to_string()))?;
@@ -343,7 +350,7 @@ async fn run_startup_job(cfg: &RuntimeConfig, job: ProcessJobKind) -> Result<(),
             Some(ProcessExit::Success) => return Ok(()),
             Some(ProcessExit::Failure { code }) => {
                 return Err(RuntimeError::StartupExecution(format!(
-                    "startup process exited unsuccessfully (code: {code:?})"
+                    "startup command `{command_display}` exited unsuccessfully (code: {code:?})"
                 )));
             }
             None => {}
@@ -353,11 +360,11 @@ async fn run_startup_job(cfg: &RuntimeConfig, job: ProcessJobKind) -> Result<(),
         if now.0 >= deadline {
             handle.cancel().await.map_err(|err| {
                 RuntimeError::StartupExecution(format!(
-                    "startup process timeout cancellation failed: {err}"
+                    "startup command `{command_display}` timeout cancellation failed: {err}"
                 ))
             })?;
             return Err(RuntimeError::StartupExecution(format!(
-                "startup process timed out after {timeout_ms} ms"
+                "startup command `{command_display}` timed out after {timeout_ms} ms"
             )));
         }
 

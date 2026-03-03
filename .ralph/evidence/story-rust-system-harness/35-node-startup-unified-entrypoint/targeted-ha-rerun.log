@@ -1,0 +1,5 @@
+error: unexpected argument 'ha::e2e_multi_node::e2e_multi_node_unassisted_failover_sql_consistency' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.

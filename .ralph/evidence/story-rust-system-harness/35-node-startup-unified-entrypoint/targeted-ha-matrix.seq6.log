@@ -1,0 +1,20 @@
+   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+error[E0382]: borrow of moved value: `node_id`
+   --> src/ha/e2e_multi_node.rs:441:17
+    |
+367 |             let node_id = format!("node-{}", index.saturating_add(1));
+    |                 ------- move occurs because `node_id` has type `std::string::String`, which does not implement the `Copy` trait
+...
+430 |                 id: node_id,
+    |                     ------- value moved here
+...
+441 |                 node_id.as_str(),
+    |                 ^^^^^^^ value borrowed here after move
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+430 |                 id: node_id.clone(),
+    |                            ++++++++
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `pgtuskmaster_rust` (lib test) due to 1 previous error

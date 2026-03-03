@@ -1,0 +1,24 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-4ed2729427fd503c)
+
+running 1 test
+test ha::e2e_multi_node::e2e_multi_node_unassisted_failover_sql_consistency ... waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+FAILED
+
+failures:
+
+---- ha::e2e_multi_node::e2e_multi_node_unassisted_failover_sql_consistency stdout ----
+Error: Message("timed out running SQL on node-2; last_error=psql exited unsuccessfully with status exit status: 1; stderr=ERROR:  cannot execute CREATE TABLE in a read-only transaction; timeline: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/13-e2e-multi-node/ha-e2e-unassisted-failover-sql-consistency-1772549244692.timeline.log")
+
+
+failures:
+    ha::e2e_multi_node::e2e_multi_node_unassisted_failover_sql_consistency
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 167 filtered out; finished in 31.94s
+
+error: test failed, to rerun pass `--lib`

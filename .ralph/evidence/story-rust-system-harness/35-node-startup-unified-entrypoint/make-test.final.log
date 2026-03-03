@@ -1,0 +1,257 @@
+cargo test --all-targets
+   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.64s
+     Running unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-4ed2729427fd503c)
+
+running 168 tests
+test api::controller::tests::delete_switchover_deletes_expected_key ... ok
+test api::controller::tests::post_switchover_rejects_empty_requested_by ... ok
+test api::controller::tests::post_switchover_writes_typed_record_to_expected_key ... ok
+test api::controller::tests::switchover_input_denies_unknown_fields ... ok
+test api::fallback::tests::get_cluster_returns_config_name ... ok
+test api::fallback::tests::heartbeat_denies_unknown_fields ... ok
+test api::fallback::tests::heartbeat_rejects_empty_source ... ok
+test api::worker::tests::debug_routes_require_auth_when_tokens_set ... ok
+test api::worker::tests::debug_snapshot_route_is_kept_for_backward_compatibility ... ok
+test api::worker::tests::debug_ui_route_returns_html_scaffold ... ok
+test api::worker::tests::debug_verbose_route_404_when_debug_disabled ... ok
+test api::worker::tests::debug_verbose_route_503_without_subscriber ... ok
+test api::worker::tests::debug_verbose_route_returns_structured_json_and_since_filter ... ok
+test api::worker::tests::ha_leader_routes_are_not_found_and_do_not_mutate_dcs_keys ... ok
+test api::worker::tests::ha_state_route_returns_503_without_subscriber ... ok
+test api::worker::tests::ha_state_route_returns_typed_json_even_when_debug_disabled ... ok
+test api::worker::tests::security_api_tokens_override_legacy_token ... ok
+test api::worker::tests::security_legacy_auth_token_fallback_protects_ha_routes ... ok
+test api::worker::tests::security_mtls_node_auth_allows_trusted_client_only ... ok
+test api::worker::tests::security_role_permissions_allow_admin ... ok
+test api::worker::tests::security_role_permissions_allow_read_deny_admin ... ok
+test api::worker::tests::security_role_permissions_handle_removed_ha_leader_routes ... ok
+test api::worker::tests::security_tls_disabled_accepts_plain_rejects_tls ... ok
+test api::worker::tests::security_tls_optional_accepts_plain_and_tls ... ok
+test api::worker::tests::security_tls_required_accepts_tls_rejects_plain ... ok
+test api::worker::tests::security_tls_wrong_ca_and_hostname_and_expiry_failures ... ok
+test cli::args::tests::parse_env_token_fallbacks ... ok
+test cli::args::tests::parse_full_switchover_write_command ... ok
+test cli::args::tests::parse_ha_state_with_defaults ... ok
+test cli::args::tests::parse_requires_requested_by_for_switchover_request ... ok
+test cli::args::tests::parse_switchover_request ... ok
+test cli::client::tests::connection_refused_maps_to_transport_error ... ok
+test cli::client::tests::malformed_json_maps_to_decode_error ... ok
+test cli::client::tests::non_2xx_maps_to_api_status_error ... ok
+test cli::client::tests::state_request_falls_back_to_admin_token_when_read_missing ... ok
+test cli::client::tests::state_request_uses_read_token_when_configured ... ok
+test cli::client::tests::switchover_clear_uses_delete_endpoint ... ok
+test cli::output::tests::json_output_renders_accepted_payload ... ok
+test cli::output::tests::text_output_renders_state_lines ... ok
+test cli::tests::exit_code_mapping_is_stable ... ok
+test config::defaults::tests::apply_defaults_fills_optional_fields ... ok
+test config::defaults::tests::apply_defaults_preserves_caller_values ... ok
+test config::parser::tests::load_runtime_config_rejects_invalid_file ... ok
+test config::parser::tests::load_runtime_config_roundtrip_and_defaults ... ok
+test config::parser::tests::validate_runtime_config_accepts_valid_config ... ok
+test config::parser::tests::validate_runtime_config_rejects_bad_timeout ... ok
+test config::parser::tests::validate_runtime_config_rejects_blank_api_tokens ... ok
+test config::parser::tests::validate_runtime_config_rejects_empty_binary_path ... ok
+test config::parser::tests::validate_runtime_config_rejects_invalid_postgres_runtime_fields ... ok
+test config::parser::tests::validate_runtime_config_rejects_missing_dcs_and_ha_invariants ... ok
+test dcs::etcd_store::tests::etcd_store_round_trips_write_delete_and_events ... ok
+test dcs::etcd_store::tests::etcd_store_write_reports_unreachable_endpoint ... ok
+test dcs::etcd_store::tests::step_once_consumes_real_etcd_watch_path_without_mocking ... ok
+test dcs::etcd_store::tests::step_once_marks_store_unhealthy_on_real_decode_failure ... ok
+test dcs::keys::tests::parses_supported_paths ... ok
+test dcs::keys::tests::rejects_missing_member_id ... ok
+test dcs::keys::tests::rejects_unknown_and_extra_segments ... ok
+test dcs::keys::tests::rejects_wrong_scope ... ok
+test dcs::state::tests::build_local_member_record_maps_pg_variants ... ok
+test dcs::state::tests::evaluate_trust_covers_all_outcomes ... ok
+test dcs::store::tests::clear_switchover_deletes_switchover_key ... ok
+test dcs::store::tests::dcs_value_type_is_exercised_to_keep_contracts_live ... ok
+test dcs::store::tests::delete_leader_deletes_leader_key ... ok
+test dcs::store::tests::refresh_applies_member_put_and_delete ... ok
+test dcs::store::tests::refresh_reports_decode_error ... ok
+test dcs::store::tests::refresh_sets_had_errors_for_unknown_keys_and_applies_known_updates ... ok
+test dcs::store::tests::write_leader_lease_writes_leader_path_and_payload ... ok
+test dcs::store::tests::write_local_member_writes_only_member_path ... ok
+test dcs::worker::tests::apply_watch_update_handles_put_and_delete_paths ... ok
+test dcs::worker::tests::step_once_marks_store_unhealthy_when_watch_decode_fails ... ok
+test dcs::worker::tests::step_once_marks_store_unhealthy_when_watch_key_is_unknown ... ok
+test dcs::worker::tests::step_once_publishes_and_writes_only_self_member ... ok
+test dcs::worker::tests::step_once_writes_member_only_when_pg_version_changes ... ok
+test debug_api::worker::tests::step_once_history_retention_trims_old_entries ... ok
+test debug_api::worker::tests::step_once_keeps_history_when_versions_unchanged ... ok
+test debug_api::worker::tests::step_once_publishes_snapshot ... ok
+test debug_api::worker::tests::step_once_records_incremental_version_changes ... ok
+test ha::decide::tests::fail_safe_holds_without_quorum_and_exits_when_restored ... ok
+test ha::decide::tests::idempotency_emits_only_new_mixed_actions ... ok
+test ha::decide::tests::idempotency_suppresses_duplicate_actions ... ok
+test ha::decide::tests::primary_with_switchover_demotes_releases_and_clears_request ... ok
+test ha::decide::tests::replica_with_unhealthy_leader_becomes_candidate ... ok
+test ha::decide::tests::rewinding_while_running_emits_nothing ... ok
+test ha::decide::tests::transition_matrix_cases ... ok
+test ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix ... waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+ok
+test ha::e2e_multi_node::e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql ... waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+ok
+test ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql ... waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+ok
+test ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql ... waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+ok
+test ha::e2e_multi_node::e2e_multi_node_unassisted_failover_sql_consistency ... waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+ok
+test ha::worker::tests::dispatch_actions_clears_switchover_key ... ok
+test ha::worker::tests::dispatch_actions_is_best_effort_and_reports_typed_errors ... ok
+test ha::worker::tests::dispatch_actions_maps_dcs_and_process_requests ... ok
+test ha::worker::tests::integration_primary_split_brain_enters_fencing_and_process_feedback_advances ... ok
+test ha::worker::tests::integration_primary_unreachable_rewinds_then_returns_replica_on_success ... ok
+test ha::worker::tests::integration_start_postgres_dispatch_updates_process_state_versions ... ok
+test ha::worker::tests::integration_transitions_replica_candidate_primary_and_failsafe ... ok
+test ha::worker::tests::run_first_tick_matches_step_once_for_same_inputs ... ok
+test ha::worker::tests::run_reacts_to_interval_tick_and_watcher_change ... ok
+test ha::worker::tests::step_once_uses_subscribers_and_publishes_next_state ... ok
+test pginfo::conninfo::tests::parse_accepts_minimal_valid_input ... ok
+test pginfo::conninfo::tests::parse_accepts_quoted_values_with_escapes ... ok
+test pginfo::conninfo::tests::parse_rejects_duplicate_keys ... ok
+test pginfo::conninfo::tests::parse_rejects_invalid_numeric_ranges ... ok
+test pginfo::conninfo::tests::parse_rejects_invalid_syntax ... ok
+test pginfo::conninfo::tests::parse_rejects_missing_required_keys ... ok
+test pginfo::conninfo::tests::parse_rejects_unknown_key_typos ... ok
+test pginfo::conninfo::tests::parse_rejects_unsupported_sslmode ... ok
+test pginfo::conninfo::tests::parse_render_roundtrip_is_stable ... ok
+test pginfo::conninfo::tests::render_emits_canonical_key_order ... ok
+test pginfo::query::tests::parse_wal_lsn_accepts_valid_hex_format ... ok
+test pginfo::query::tests::parse_wal_lsn_rejects_invalid_formats ... ok
+test pginfo::query::tests::poll_sql_selects_expected_fields ... ok
+test pginfo::state::tests::derive_readiness_maps_sql_and_signal ... ok
+test pginfo::state::tests::to_member_status_maps_primary_snapshot ... ok
+test pginfo::state::tests::to_member_status_maps_replica_snapshot ... ok
+test pginfo::worker::tests::step_once_maps_replica_when_polling_standby ... ok
+test pginfo::worker::tests::step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots ... ok
+test process::worker::tests::build_command_basebackup_uses_pg_basebackup_binary_and_args ... ok
+test process::worker::tests::can_accept_job_is_true_only_when_idle ... ok
+test process::worker::tests::cancel_active_job_emits_cancelled_and_is_noop_when_idle ... ok
+test process::worker::tests::real_bootstrap_job_executes_initdb ... ok
+test process::worker::tests::real_demote_job_executes_binary_path ... ok
+test process::worker::tests::real_fencing_job_executes_binary_path ... ok
+test process::worker::tests::real_pg_rewind_job_executes_binary_path ... ok
+test process::worker::tests::real_promote_job_executes_binary_path ... ok
+test process::worker::tests::real_restart_job_executes_binary_path ... ok
+test process::worker::tests::real_start_and_stop_jobs_execute_binary_paths ... ok
+test process::worker::tests::rejecting_new_job_while_active_records_deterministic_rejection ... ok
+test process::worker::tests::start_job_returns_channel_closed_when_all_subscribers_are_dropped ... ok
+test process::worker::tests::start_job_when_idle_transitions_to_running_and_publishes ... ok
+test process::worker::tests::tick_active_job_is_safe_when_no_runtime ... ok
+test process::worker::tests::tick_active_job_maps_success_failure_and_timeout_outcomes ... ok
+test runtime::node::tests::inspect_data_dir_classifies_missing_empty_and_existing ... ok
+test runtime::node::tests::inspect_data_dir_rejects_ambiguous_partial_state ... ok
+test runtime::node::tests::select_startup_mode_prefers_clone_when_foreign_healthy_leader_exists ... ok
+test runtime::node::tests::select_startup_mode_uses_initialize_when_no_leader_evidence ... ok
+test runtime::node::tests::select_startup_mode_uses_resume_when_pgdata_exists ... ok
+test state::watch_state::tests::changed_propagates_closed_channel_error ... ok
+test state::watch_state::tests::changed_returns_latest_after_publish ... ok
+test state::watch_state::tests::initial_snapshot_has_expected_version_and_time ... ok
+test state::watch_state::tests::latest_matches_between_publisher_and_subscriber ... ok
+test state::watch_state::tests::publish_increments_version_and_updates_timestamp ... ok
+test test_harness::auth::tests::api_role_tokens_formats_bearer_headers ... ok
+test test_harness::auth::tests::api_role_tokens_rejects_empty_input ... ok
+test test_harness::binaries::tests::require_binary_missing_path_returns_invalid_input ... ok
+test test_harness::binaries::tests::require_real_binary_returns_error_when_missing ... ok
+test test_harness::binaries::tests::require_real_binary_returns_path_when_present ... ok
+test test_harness::etcd3::tests::build_initial_cluster_formats_entries ... ok
+test test_harness::etcd3::tests::build_initial_cluster_rejects_empty_member_name ... ok
+test test_harness::etcd3::tests::prepare_etcd_data_dir_rejects_reuse ... ok
+test test_harness::etcd3::tests::prepare_etcd_member_data_dir_isolated_per_member ... ok
+test test_harness::etcd3::tests::spawn_etcd3_requires_binary_and_spawns ... ok
+test test_harness::namespace::tests::cleanup_is_idempotent ... ok
+test test_harness::namespace::tests::create_namespace_is_unique ... ok
+test test_harness::namespace::tests::guard_cleans_up_on_drop ... ok
+test test_harness::pg16::tests::prepare_pgdata_dir_rejects_reuse ... ok
+test test_harness::pg16::tests::spawn_pg16_requires_binaries_and_spawns ... ok
+test test_harness::ports::tests::allocate_ha_topology_ports_rejects_zero_sizes ... ok
+test test_harness::ports::tests::allocate_ha_topology_ports_returns_expected_layout ... ok
+test test_harness::ports::tests::allocate_ports_rejects_zero ... ok
+test test_harness::ports::tests::allocate_ports_returns_unique_ports ... ok
+test test_harness::ports::tests::concurrent_allocations_do_not_collide_while_reserved ... ok
+test test_harness::tests::concurrent_namespace_and_port_allocations_are_isolated ... ok
+test test_harness::tls::tests::write_tls_material_writes_files_under_namespace ... ok
+test worker_contract_tests::required_state_types_exist ... ok
+test worker_contract_tests::snapshot_contract_type_compiles ... ok
+test worker_contract_tests::step_once_contracts_are_callable ... ok
+test worker_contract_tests::worker_contract_symbols_exist ... ok
+
+test result: ok. 168 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 396.88s
+
+     Running unittests src/bin/pgtuskmaster.rs (target/debug/deps/pgtuskmaster-acdbcd65dcbda6ae)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/pgtuskmasterctl.rs (target/debug/deps/pgtuskmasterctl-81e05ce685b75e06)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-7e473697f3ec389b)
+
+running 6 tests
+test bdd_api_auth_token_denies_missing_header ... ok
+test bdd_api_debug_routes_expose_ui_and_verbose_contracts ... ok
+test bdd_api_get_fallback_cluster_returns_name ... ok
+test bdd_api_post_switchover_writes_dcs_key ... ok
+test bdd_api_removed_ha_leader_routes_and_ha_state_contract ... ok
+test bdd_api_removed_ha_leader_routes_require_legacy_auth_token ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-41bb70d50d7ae392)
+
+running 1 test
+test bdd_state_watch_channel_flow ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/cli_binary.rs (target/debug/deps/cli_binary-df8d6c28bf6121a1)
+
+running 4 tests
+test help_exits_success ... ok
+test missing_required_subcommand_arg_exits_usage_code ... ok
+test node_help_exits_success ... ok
+test state_command_maps_connection_refused_to_exit_3 ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/policy_e2e_api_only.rs (target/debug/deps/policy_e2e_api_only-9b180260a8e348f9)
+
+running 1 test
+test e2e_sources_must_use_api_only_control_paths ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests examples/debug_ui_smoke_server.rs (target/debug/examples/debug_ui_smoke_server-b567b868d9915c79)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

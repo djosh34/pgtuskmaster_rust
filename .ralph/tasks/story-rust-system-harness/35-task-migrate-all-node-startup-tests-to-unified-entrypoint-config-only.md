@@ -1,5 +1,6 @@
 ---
-## Task: Migrate all node-starting tests to unified entrypoint (config-only) <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Migrate all node-starting tests to unified entrypoint (config-only) <status>done</status> <passes>true</passes> <priority>high</priority>
+<passing>true</passing>
 
 <blocked_by>34-task-add-non-test-unified-node-entrypoint-autobootstrap-and-ha-loop</blocked_by>
 
@@ -25,15 +26,15 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Full exhaustive checklist completed with concrete module requirements: all test harness modules and test files that start nodes are enumerated and migrated to the unified entrypoint
-- [ ] No test that starts a node uses bespoke direct startup orchestration outside the unified entry API
-- [ ] Shared config structs/fixtures are updated where required so startup remains config-only
-- [ ] Add/update regression guard(s) that fail if new node-starting tests bypass the unified entrypoint
-- [ ] `make check --all-targets` (or stricter equivalent) passes after config surface changes
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
-- [ ] `make test-bdd` — all BDD features pass
+- [x] Full exhaustive checklist completed with concrete module requirements: all test harness modules and test files that start nodes are enumerated and migrated to the unified entrypoint
+- [x] No test that starts a node uses bespoke direct startup orchestration outside the unified entry API
+- [x] Shared config structs/fixtures are updated where required so startup remains config-only
+- [x] Add/update regression guard(s) that fail if new node-starting tests bypass the unified entrypoint
+- [x] `make check --all-targets` (or stricter equivalent) passes after config surface changes
+- [x] `make check` — passes cleanly
+- [x] `make test` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
+- [x] `make lint` — grep output file for `congratulations` (pass) or `evaluation failed` (fail)
+- [x] `make test-bdd` — all BDD features pass
 </acceptance_criteria>
 
 ## Detailed Implementation Plan (Draft 2 - Verified)
@@ -196,15 +197,15 @@ Phase 5: Task bookkeeping after green
 
 ### Completion Checklist for `NOW EXECUTE`
 
-- [ ] `src/ha/e2e_multi_node.rs` no longer manually wires worker contexts for node startup.
-- [ ] HA e2e nodes start through unified runtime entrypoint only.
-- [ ] Any startup helper that duplicates runtime bootstrap logic is removed from HA e2e path.
-- [ ] Regression policy test catches startup-bypass patterns in e2e sources.
-- [ ] Shared config/harness updates compiled under `--all-targets`.
-- [ ] `make check --all-targets` passes.
-- [ ] `make check` passes.
-- [ ] `make test` passes.
-- [ ] `make test-bdd` passes.
-- [ ] `make lint` passes.
+- [x] `src/ha/e2e_multi_node.rs` no longer manually wires worker contexts for node startup.
+- [x] HA e2e nodes start through unified runtime entrypoint only.
+- [x] Any startup helper that duplicates runtime bootstrap logic is removed from HA e2e path.
+- [x] Regression policy test catches startup-bypass patterns in e2e sources.
+- [x] Shared config/harness updates compiled under `--all-targets`.
+- [x] `make check --all-targets` passes.
+- [x] `make check` passes.
+- [x] `make test` passes.
+- [x] `make test-bdd` passes.
+- [x] `make lint` passes.
 
 NOW EXECUTE

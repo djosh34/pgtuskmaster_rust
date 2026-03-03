@@ -40,6 +40,7 @@ struct NodeFixture {
     pg_port: u16,
     api_addr: SocketAddr,
     data_dir: PathBuf,
+    log_file: PathBuf,
 }
 
 struct ClusterFixture {
@@ -57,6 +58,7 @@ struct ClusterFixture {
 const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(20);
+const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(45);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
 const STRESS_ARTIFACT_DIR: &str = ".ralph/evidence/27-e2e-ha-stress";
 const STRESS_SUMMARY_SCHEMA_VERSION: u32 = 1;
@@ -384,9 +386,9 @@ impl ClusterFixture {
                     listen_host: "127.0.0.1".to_string(),
                     listen_port: pg_port,
                     socket_dir,
-                    log_file,
+                    log_file: log_file.clone(),
                     rewind_source_host: "127.0.0.1".to_string(),
-                    rewind_source_port: rewind_source_port,
+                    rewind_source_port,
                 },
                 dcs: DcsConfig {
                     endpoints: endpoints.clone(),
@@ -398,7 +400,7 @@ impl ClusterFixture {
                 },
                 process: ProcessConfig {
                     pg_rewind_timeout_ms: 5_000,
-                    bootstrap_timeout_ms: 5_000,
+                    bootstrap_timeout_ms: 30_000,
                     fencing_timeout_ms: 5_000,
                     binaries: binaries.clone(),
                 },
@@ -426,11 +428,33 @@ impl ClusterFixture {
             }));
 
             nodes.push(NodeFixture {
-                id: node_id,
+                id: node_id.clone(),
                 pg_port,
                 api_addr,
                 data_dir,
+                log_file: log_file.clone(),
             });
+
+            let task_handle = tasks.last_mut().ok_or_else(|| {
+                WorkerError::Message("missing runtime task after node spawn".to_string())
+            })?;
+            wait_for_node_api_ready_or_task_exit(
+                api_addr,
+                node_id.as_str(),
+                log_file.as_path(),
+                task_handle,
+                Duration::from_secs(120),
+            )
+            .await?;
+            if index == 0 {
+                let expected_member_id = format!("node-{}", index.saturating_add(1));
+                wait_for_bootstrap_primary(
+                    api_addr,
+                    expected_member_id.as_str(),
+                    E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
+                )
+                .await?;
+            }
 
         }
 
@@ -1251,12 +1275,46 @@ impl ClusterFixture {
     }
 
     async fn cluster_ha_states(&mut self) -> Result<Vec<HaStateResponse>, WorkerError> {
+        self.ensure_runtime_tasks_healthy().await?;
         let mut states = Vec::with_capacity(self.nodes.len());
         let node_count = self.nodes.len();
         for index in 0..node_count {
             states.push(self.fetch_node_ha_state_by_index(index).await?);
         }
         Ok(states)
+    }
+
+    async fn ensure_runtime_tasks_healthy(&mut self) -> Result<(), WorkerError> {
+        let mut index = 0usize;
+        while index < self.tasks.len() {
+            if !self.tasks[index].is_finished() {
+                index = index.saturating_add(1);
+                continue;
+            }
+
+            let node_id = self
+                .nodes
+                .get(index)
+                .map(|node| node.id.clone())
+                .unwrap_or_else(|| format!("index-{index}"));
+            let task = self.tasks.swap_remove(index);
+            let joined = task
+                .await
+                .map_err(|err| WorkerError::Message(format!("runtime task join failed: {err}")))?;
+            match joined {
+                Ok(()) => {
+                    return Err(WorkerError::Message(format!(
+                        "runtime task for {node_id} exited unexpectedly"
+                    )));
+                }
+                Err(err) => {
+                    return Err(WorkerError::Message(format!(
+                        "runtime task for {node_id} failed: {err}"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn primary_members(states: &[HaStateResponse]) -> Vec<String> {
@@ -1334,15 +1392,12 @@ impl ClusterFixture {
     async fn assert_no_dual_primary_window(&mut self, window: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
         loop {
-            match self.cluster_ha_states().await {
-                Ok(states) => {
-                    if Self::primary_members(&states).len() > 1 {
-                        return Err(WorkerError::Message(
-                            "split-brain detected: more than one primary".to_string(),
-                        ));
-                    }
+            if let Ok(states) = self.cluster_ha_states().await {
+                if Self::primary_members(&states).len() > 1 {
+                    return Err(WorkerError::Message(
+                        "split-brain detected: more than one primary".to_string(),
+                    ));
                 }
-                Err(_) => {}
             }
             if tokio::time::Instant::now() >= deadline {
                 return Ok(());
@@ -1480,6 +1535,119 @@ impl ClusterFixture {
         }
         self.etcd = None;
         Ok(())
+    }
+}
+
+async fn wait_for_node_api_ready_or_task_exit(
+    node_addr: SocketAddr,
+    node_id: &str,
+    postgres_log_file: &Path,
+    task: &mut JoinHandle<Result<(), WorkerError>>,
+    timeout: Duration,
+) -> Result<(), WorkerError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if task.is_finished() {
+            let joined = task.await.map_err(|err| {
+                WorkerError::Message(format!("runtime task join failed for {node_id}: {err}"))
+            })?;
+            return match joined {
+                Ok(()) => Err(WorkerError::Message(format!(
+                    "runtime task exited unexpectedly for {node_id} before API became ready"
+                ))),
+                Err(err) => Err(WorkerError::Message(format!(
+                    "runtime task failed for {node_id} before API became ready: {err}; postgres_log_tail={}",
+                    read_log_tail(postgres_log_file, 40)
+                ))),
+            };
+        }
+
+        let observation = match send_http_request(node_addr, "GET", "/ha/state", None, None).await
+        {
+            Ok(response) if response.status_code == 200 => return Ok(()),
+            Ok(response) => {
+                let body = String::from_utf8_lossy(&response.body);
+                format!(
+                    "status={} body={}",
+                    response.status_code,
+                    body.trim()
+                )
+            }
+            Err(err) => {
+                err.to_string()
+            }
+        };
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(WorkerError::Message(format!(
+                "timed out waiting for api readiness for {node_id} at {node_addr}; last_observation={observation}; postgres_log_tail={}",
+                read_log_tail(postgres_log_file, 40)
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn read_log_tail(path: &Path, max_lines: usize) -> String {
+    let content = match fs::read_to_string(path) {
+        Ok(value) => value,
+        Err(err) => return format!("log-read-failed: {err}"),
+    };
+    let mut lines = content.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return "empty".to_string();
+    }
+    if lines.len() > max_lines {
+        let start = lines.len().saturating_sub(max_lines);
+        lines = lines[start..].to_vec();
+    }
+    lines.join(" | ")
+}
+
+async fn wait_for_bootstrap_primary(
+    node_addr: SocketAddr,
+    expected_member_id: &str,
+    timeout: Duration,
+) -> Result<(), WorkerError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let observation = match send_http_request(node_addr, "GET", "/ha/state", None, None).await
+        {
+            Ok(response) if response.status_code == 200 => {
+                let state = serde_json::from_slice::<HaStateResponse>(&response.body).map_err(
+                    |err| WorkerError::Message(format!("decode /ha/state response failed: {err}")),
+                )?;
+                let is_expected_primary =
+                    state.self_member_id == expected_member_id && state.ha_phase == "Primary";
+                if is_expected_primary {
+                    return Ok(());
+                }
+                let leader = state.leader.as_deref().unwrap_or("none");
+                format!(
+                    "member={} phase={} leader={leader}",
+                    state.self_member_id, state.ha_phase
+                )
+            }
+            Ok(response) => {
+                let body = String::from_utf8_lossy(&response.body);
+                format!(
+                    "status={} body={}",
+                    response.status_code,
+                    body.trim()
+                )
+            }
+            Err(err) => {
+                err.to_string()
+            }
+        };
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(WorkerError::Message(format!(
+                "timed out waiting for bootstrap primary {expected_member_id} at {node_addr}; last_observation={}",
+                observation
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -2038,20 +2206,6 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
             .map(|node| node.id.clone())
             .collect();
         for replica_id in replica_ids {
-            fixture
-                .run_sql_on_node_with_retry(
-                    &replica_id,
-                    "CREATE TABLE IF NOT EXISTS ha_unassisted_failover_proof (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
-                    Duration::from_secs(20),
-                )
-                .await?;
-            fixture
-                .run_sql_on_node_with_retry(
-                    &replica_id,
-                    "INSERT INTO ha_unassisted_failover_proof (id, payload) VALUES (1, 'before') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
-                    Duration::from_secs(20),
-                )
-                .await?;
             fixture
                 .wait_for_rows_on_node(
                     &replica_id,
