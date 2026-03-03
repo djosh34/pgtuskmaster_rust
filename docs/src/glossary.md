@@ -1,3 +1,4 @@
-# Glossary
+# Glossary (moved)
 
-Placeholder glossary for project-specific terms.
+The canonical glossary moved to:
+- [Concepts / Glossary](./concepts/glossary.md)

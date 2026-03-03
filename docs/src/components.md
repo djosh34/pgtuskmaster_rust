@@ -1,11 +1,5 @@
-# Components
+# Components (moved)
 
-Placeholder for component-level documentation.
-
-## Runtime
-
-## API / Debug API
-
-## DCS (etcd)
-
-## PostgreSQL process management
+This repository’s component descriptions moved to:
+- [Concepts / Mental Model](./concepts/mental-model.md)
+- [Architecture / Node Runtime](./architecture/node-runtime.md)

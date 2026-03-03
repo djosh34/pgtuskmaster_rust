@@ -55,3 +55,4 @@
 .ralph/tasks/story-rust-system-harness/29-task-e2e-tls-adversarial-cert-validation.md
 .ralph/tasks/story-rust-system-harness/30-task-full-e2e-blackbox-api-cli-orchestration.md
 .ralph/tasks/story-rust-system-harness/31-task-docs-framework-selection-install-and-artifact-hygiene.md
+.ralph/tasks/story-rust-system-harness/32-task-author-complete-architecture-docs-with-diagrams-and-no-code.md

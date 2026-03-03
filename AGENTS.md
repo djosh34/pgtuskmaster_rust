@@ -28,6 +28,7 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 - ... (add here)
 - `mdbook init docs` creates `docs/book/` immediately and `mdbook build` writes static output there; ignore `/docs/book/` at repo root to prevent accidental commits.
 - On Linux `aarch64`, mdBook upstream releases may only provide a `*-unknown-linux-musl` asset; pin/verify the correct archive per arch instead of assuming a `*-gnu` build exists.
+- `mdbook-mermaid` must match the mdBook major line: newer `mdbook-mermaid` releases (e.g. 0.16+) target mdBook 0.5 and can fail under mdBook 0.4 with a preprocessor JSON parse error; for mdBook v0.4.40, pin `mdbook-mermaid` v0.14.0 (depends on mdBook crate v0.4.36) and ensure the preprocessor is on `PATH` during `mdbook build`.
 - Policy guard tests for post-start behavior should avoid over-broad helper-name bans (for example `post_switchover(`) and instead ban precise forbidden coordination tokens while adding explicit assertions that allowed admin API/SQL action tokens remain unblocked.
 - When runtime startup may use `pg_basebackup` into harness-created data directories, enforce `0700` permissions on those directories (`prepare_pgdata_dir`) before startup; otherwise postgres can fail with `data directory ... has invalid permissions` and the node API never binds.
 - When adding fields to shared config structs (`ApiConfig`), always run `make check --all-targets` equivalent immediately because examples and contract fixtures outside `src/` are frequent compile-break points.

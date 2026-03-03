@@ -1,7 +1,7 @@
-# Architecture Overview
+# Architecture Overview (moved)
 
-Placeholder for a high-level architecture description:
-- Major subsystems and responsibilities
-- Control loops / workers
-- Data flow between components
-- Failure modes and recovery paths
+This repository’s architecture documentation moved to the structured book chapters under:
+- `Architecture → …` in the left navigation.
+
+Start at:
+- [Architecture](./architecture/index.md)
