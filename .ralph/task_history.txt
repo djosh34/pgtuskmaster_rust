@@ -30,3 +30,4 @@
 .ralph/tasks/story-rust-system-harness/11-task-typed-pg-config-and-conninfo-roundtrip-tests.md
 .ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md
 .ralph/tasks/story-full-verification/02-task-run-targeted-unit-and-integration-tests.md
+.ralph/tasks/story-full-verification/03-task-run-full-suite-regression-pass.md

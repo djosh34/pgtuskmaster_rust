@@ -1,0 +1,13 @@
+[1772501567540] scenario bootstrap/election: wait for single primary
+[1772501567540] bootstrap/election success: primary=node-1
+[1772501570750] scenario planned switchover: submit request through API controller
+[1772501571380] planned switchover success: old_primary=node-1, new_primary=node-3
+[1772501571380] scenario fencing-before-promotion: inject conflicting leader
+[1772501574996] fencing-before-promotion observed on node-3
+[1772501574996] scenario failover: stop current primary and remove stale leader key
+[1772501575423] failover signal observed: failed_primary=node-3, dcs_leader=node-1
+[1772501575423] scenario rewind path: verify former primary enters rewind/process recovery path
+[1772501575423] rewind/recovery path observed for former primary node-3
+[1772501575423] scenario split-brain prevention: ensure no dual primary after failover
+[1772501580465] scenario no-quorum fail-safe: shutdown etcd
+[1772501586006] no-quorum fail-safe observed on all nodes

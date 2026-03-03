@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 02:29:41 AM CET 2026
+Generated: Tue Mar  3 02:34:22 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -109,7 +109,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-full-verification/03-task-run-full-suite-regression-pass.md`
 
-## Task: Run full regression suite end-to-end <status>not_started</status> <passes>false</passes>
+## Task: Run full regression suite end-to-end <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Execute the entire validation suite in one pass to confirm holistic repository health.
