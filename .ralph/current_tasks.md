@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 08:12:14 PM CET 2026
+Generated: Tue Mar  3 20:32:52 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -202,6 +202,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -226,15 +235,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
 
 ---
 
@@ -277,6 +277,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
@@ -292,16 +302,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
 
 ---
 
@@ -492,7 +492,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/31-task-docs-framework-selection-install-and-artifact-hygiene.md`
 
-## Task: Install mdBook docs framework and enforce artifact git hygiene <status>not_started</status> <passes>false</passes>
+## Task: Install mdBook docs framework and enforce artifact git hygiene <status>not_started</status> <passes>false</passes> <passing>false</passing>
 
 <description>
 **Goal:** Use mdBook for this Rust project, install it, prove it renders a static HTML site correctly, and lock down strict git artifact hygiene before any docs commits.
@@ -589,4 +589,58 @@ This is a **RECURRING META-TASK**.
 
 <description>
 **Goal:** Eliminate raw path/string DCS writes from HA by introducing a typed DCS writer API and restricting access to low-level write/delete operations.
+
+---
+
+**Path:** `.ralph/tasks/story-secure-explicit-node-config/01-task-expand-runtime-config-schema-for-explicit-secure-node-startup.md`
+
+## Task: Expand runtime config schema for explicit secure node startup <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Redesign the runtime config model so every required secure startup setting is explicitly represented (TLS, HTTP, PostgreSQL hosting, roles/auth, pg_hba/pg_ident, and DCS init config).
+
+---
+
+**Path:** `.ralph/tasks/story-secure-explicit-node-config/02-task-migrate-parser-defaults-and-validation-to-explicit-enum-driven-config.md`
+
+## Task: Migrate parser/defaults/validation to explicit enum-driven config semantics <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Remove hidden config inference by moving defaulting/validation behavior to explicit enum-driven semantics while preserving safe startup requirements.
+
+---
+
+**Path:** `.ralph/tasks/story-secure-explicit-node-config/03-task-enforce-role-specific-credential-usage-across-runtime.md`
+
+## Task: Enforce role-specific credential usage across runtime operations <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Ensure each runtime function uses only its designated role (`superuser`, `replicator`, `rewinder`) and corresponding auth mode from config.
+
+---
+
+**Path:** `.ralph/tasks/story-secure-explicit-node-config/04-task-wire-http-pg-tls-pg_hba-pg_ident-and-dcs-init-into-startup.md`
+
+## Task: Wire HTTP/PG TLS, pg_hba/pg_ident, and DCS init config into startup orchestration <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Make startup consume the expanded config end-to-end so node boot requires explicit secure config and does not infer missing values.
+
+---
+
+**Path:** `.ralph/tasks/story-secure-explicit-node-config/05-task-migrate-fixtures-examples-and-cli-config-surfaces-to-new-schema.md`
+
+## Task: Migrate fixtures/examples/CLI config surfaces to the secure explicit schema <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Align all config producers/consumers (tests, examples, CLI entrypoints) with the expanded schema and explicit secure requirements.
+
+---
+
+**Path:** `.ralph/tasks/story-secure-explicit-node-config/06-task-full-verification-for-secure-explicit-config-refactor.md`
+
+## Task: Run full verification for secure explicit config refactor <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Execute full validation gates after the config refactor and convert any failures into actionable bug tasks.
 

@@ -18,6 +18,8 @@
   - failover and recovery paths
 - Keep writing natural, editorial, and coherent (HashiCorp-docs-level readability and structure), while staying technically grounded in this codebase.
 - Explicitly forbid code dumps and low-level API/argument walkthrough prose in the architecture docs.
+- Please don't hesitate to COMPLETELY alter the current ToC. If you don't change any port of the current structure, that means you didn't think this through enough.
+- Think proper GREAT rustbook, with subpages and subsubpages, overviews, suboverviews, diagrams, nicely flowing text, natural text, etc etc
 
 **Context from research:**
 - User requested “VitePress-level beauty” and highly readable docs with heavy diagram support.
