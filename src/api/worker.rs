@@ -1466,6 +1466,7 @@ mod tests {
         server: &GeneratedCert,
         server_ca: &GeneratedCert,
     ) -> Result<Arc<ServerConfig>, WorkerError> {
+        ensure_crypto_provider_installed()?;
         let config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
@@ -1481,6 +1482,7 @@ mod tests {
         server_ca: &GeneratedCert,
         trusted_client_ca: &GeneratedCert,
     ) -> Result<Arc<ServerConfig>, WorkerError> {
+        ensure_crypto_provider_installed()?;
         let mut roots = RootCertStore::empty();
         roots.add(trusted_client_ca.cert_der()).map_err(|err| {
             WorkerError::Message(format!("add trusted client root failed: {err}"))
@@ -1510,6 +1512,7 @@ mod tests {
         identity: Option<&GeneratedCert>,
         identity_ca: Option<&GeneratedCert>,
     ) -> Result<Arc<ClientConfig>, WorkerError> {
+        ensure_crypto_provider_installed()?;
         let mut roots = RootCertStore::empty();
         roots.add(trusted_server_ca.cert_der()).map_err(|err| {
             WorkerError::Message(format!("add trusted server root failed: {err}"))
@@ -1536,6 +1539,20 @@ mod tests {
         };
 
         Ok(Arc::new(config))
+    }
+
+    fn ensure_crypto_provider_installed() -> Result<(), WorkerError> {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+
+        if rustls::crypto::CryptoProvider::get_default().is_some() {
+            Ok(())
+        } else {
+            Err(WorkerError::Message(
+                "rustls crypto provider is unavailable".to_string(),
+            ))
+        }
     }
 
     fn format_get(path: &str, auth: Option<&str>) -> String {

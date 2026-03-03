@@ -567,3 +567,34 @@ pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, Ha
 - Setup docker
   - all tests run in docker, no exceptions
   - docker builds are smart to reuse cache from previous builds
+
+## HA Admin CLI (`pgtuskmasterctl`)
+
+The project now includes a simple API-driven HA admin CLI binary:
+
+- read state:
+  - `pgtuskmasterctl ha state`
+- set leader lease:
+  - `pgtuskmasterctl --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" ha leader set --member-id node-a`
+- clear leader lease:
+  - `pgtuskmasterctl --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" ha leader clear`
+- request switchover:
+  - `pgtuskmasterctl --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" ha switchover request --requested-by node-b`
+- clear switchover:
+  - `pgtuskmasterctl --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" ha switchover clear`
+
+Common global flags:
+
+- `--base-url` (default `http://127.0.0.1:8008`)
+- `--read-token` (or env `PGTUSKMASTER_READ_TOKEN`)
+- `--admin-token` (or env `PGTUSKMASTER_ADMIN_TOKEN`)
+- `--timeout-ms` (default `5000`)
+- `--output json|text` (default `json`)
+
+Exit codes:
+
+- `0` success
+- `2` usage/argument parsing failure
+- `3` transport/timeouts
+- `4` API non-2xx status
+- `5` response decode/output serialization failure

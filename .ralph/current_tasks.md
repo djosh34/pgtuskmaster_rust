@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar  3 08:59:18 AM CET 2026
+Generated: Tue Mar  3 09:23:10 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-remove-unwrap-panic-allow.md`
 
@@ -9,6 +9,15 @@ Generated: Tue Mar  3 08:59:18 AM CET 2026
 <description>
 src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which violates the repo rule against unwraps, panics, or expects anywhere. This hides violations in test harness code and makes it easy to slip new ones in. Investigate all test_harness code (and any other modules) for unwrap/expect/panic usage, replace with proper error handling, and remove the lint allow attributes.
 </description>
+
+---
+
+**Path:** `.ralph/tasks/bugs/bug-test-bdd-full-suite-hangs.md`
+
+## Bug: test-bdd full-suite command hangs in real HA e2e <status>not_started</status> <passes>false</passes>
+
+<description>
+After updating `make test-bdd` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets -- --include-ignored`, the verification run did not complete within an extended runtime window (over 15 minutes observed on 2026-03-03).
 
 ---
 
@@ -378,7 +387,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/23-task-ha-admin-cli-over-api.md`
 
-## Task: Build a simple Rust HA admin CLI over the exposed API <status>not_started</status> <passes>false</passes>
+## Task: Build a simple Rust HA admin CLI over the exposed API <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
 
