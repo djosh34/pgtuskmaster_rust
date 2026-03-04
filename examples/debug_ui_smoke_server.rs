@@ -3,9 +3,9 @@ use std::time::Duration;
 use pgtuskmaster_rust::{
     api::worker::{step_once, ApiWorkerCtx},
     config::{
-        ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
-        DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
-        PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig,
+        ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
+        ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel,
+        LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig,
         PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
         RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
     },
@@ -102,6 +102,7 @@ fn sample_runtime_config() -> RuntimeConfig {
             pg_rewind_timeout_ms: 1000,
             bootstrap_timeout_ms: 1000,
             fencing_timeout_ms: 1000,
+            backup_timeout_ms: 1000,
             binaries: BinaryPaths {
                 postgres: "/usr/bin/postgres".into(),
                 pg_ctl: "/usr/bin/pg_ctl".into(),
@@ -109,8 +110,10 @@ fn sample_runtime_config() -> RuntimeConfig {
                 initdb: "/usr/bin/initdb".into(),
                 pg_basebackup: "/usr/bin/pg_basebackup".into(),
                 psql: "/usr/bin/psql".into(),
+                pgbackrest: None,
             },
         },
+        backup: BackupConfig::default(),
         logging: LoggingConfig {
             level: LogLevel::Info,
             capture_subprocess_output: true,

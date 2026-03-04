@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 08:58:57 PM CET 2026
+Generated: Wed Mar  4 09:52:01 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -282,7 +282,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/01-task-backup-provider-abstraction-and-pgbackrest-default.md`
 
-## Task: Introduce backup-provider abstraction with pgBackRest as the default provider <status>not_started</status> <passes>false</passes>
+## Task: Introduce backup-provider abstraction with pgBackRest as the default provider <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Add a provider abstraction for backup/restore operations and ship pgBackRest as the first-class default integration with explicit runtime config and binary path support.

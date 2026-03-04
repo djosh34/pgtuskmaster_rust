@@ -45,6 +45,7 @@ enum ArtifactKind {
 enum ExpectedVersion {
     Etcd { exact: String },
     Postgres { major: u32 },
+    Pgbackrest { major: u32 },
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,7 +134,7 @@ pub(crate) fn verify_real_binaries_from_repo_root(
     }
     if attestation.schema_version != 1 {
         return Err(HarnessError::InvalidInput(format!(
-            "unsupported real-binaries attestation schema_version={} (expected 1); regenerate by running ./tools/install-etcd.sh and ./tools/install-postgres16.sh",
+            "unsupported real-binaries attestation schema_version={} (expected 1); regenerate by running ./tools/install-etcd.sh, ./tools/install-postgres16.sh, and ./tools/install-pgbackrest.sh",
             attestation.schema_version
         )));
     }
@@ -156,7 +157,7 @@ pub(crate) fn verify_real_binaries_from_repo_root(
 
         let attested = attest_by_path.get(required.path.as_str()).ok_or_else(|| {
             HarnessError::InvalidInput(format!(
-                "real-binary attestation missing required entry for {} at {} (regenerate by running ./tools/install-etcd.sh and ./tools/install-postgres16.sh)",
+                "real-binary attestation missing required entry for {} at {} (regenerate by running ./tools/install-etcd.sh, ./tools/install-postgres16.sh, and ./tools/install-pgbackrest.sh)",
                 required.label, required.path
             ))
         })?;
@@ -262,13 +263,13 @@ fn load_policy(path: &Path) -> Result<RealBinariesPolicy, HarnessError> {
 fn load_attestation(path: &Path) -> Result<RealBinariesAttestation, HarnessError> {
     let bytes = fs::read(path).map_err(|err| {
         HarnessError::InvalidInput(format!(
-            "real-binary attestation missing or unreadable: {} ({err}); run ./tools/install-etcd.sh and ./tools/install-postgres16.sh",
+            "real-binary attestation missing or unreadable: {} ({err}); run ./tools/install-etcd.sh, ./tools/install-postgres16.sh, and ./tools/install-pgbackrest.sh",
             path.display()
         ))
     })?;
     serde_json::from_slice::<RealBinariesAttestation>(bytes.as_slice()).map_err(|err| {
         HarnessError::InvalidInput(format!(
-            "failed to parse real-binary attestation JSON {}: {err}; regenerate by running ./tools/install-etcd.sh and ./tools/install-postgres16.sh",
+            "failed to parse real-binary attestation JSON {}: {err}; regenerate by running ./tools/install-etcd.sh, ./tools/install-postgres16.sh, and ./tools/install-pgbackrest.sh",
             path.display()
         ))
     })
@@ -551,6 +552,15 @@ fn verify_version(label: &str, binary_path: &Path, expected: &ExpectedVersion) -
             if !combined.contains(needle.as_str()) {
                 return Err(HarnessError::InvalidInput(format!(
                     "unexpected postgres major version for {label} at {}: expected_substring={needle:?} output={combined:?}",
+                    binary_path.display()
+                )));
+            }
+        }
+        ExpectedVersion::Pgbackrest { major } => {
+            let needle = format!(" {major}.");
+            if !combined.contains("pgBackRest") || !combined.contains(needle.as_str()) {
+                return Err(HarnessError::InvalidInput(format!(
+                    "unexpected pgbackrest major version for {label} at {}: expected_substring={needle:?} output={combined:?}",
                     binary_path.display()
                 )));
             }

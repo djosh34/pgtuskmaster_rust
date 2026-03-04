@@ -238,12 +238,12 @@ mod tests {
 
     use crate::{
         config::{
-            ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
-            DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel,
-            LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig,
-            PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
-            RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsClientAuthConfig, TlsServerConfig,
-            TlsServerIdentityConfig,
+            ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
+            ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
+            LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig,
+            PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
+            ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsClientAuthConfig,
+            TlsServerConfig, TlsServerIdentityConfig,
         },
         pginfo::conninfo::PgSslMode,
         test_harness::tls::build_adversarial_tls_fixture,
@@ -333,6 +333,7 @@ mod tests {
                 pg_rewind_timeout_ms: 1000,
                 bootstrap_timeout_ms: 1000,
                 fencing_timeout_ms: 1000,
+                backup_timeout_ms: 1000,
                 binaries: BinaryPaths {
                     postgres: "/usr/bin/postgres".into(),
                     pg_ctl: "/usr/bin/pg_ctl".into(),
@@ -340,8 +341,10 @@ mod tests {
                     initdb: "/usr/bin/initdb".into(),
                     pg_basebackup: "/usr/bin/pg_basebackup".into(),
                     psql: "/usr/bin/psql".into(),
+                    pgbackrest: None,
                 },
             },
+            backup: BackupConfig::default(),
             logging: LoggingConfig {
                 level: LogLevel::Info,
                 capture_subprocess_output: true,

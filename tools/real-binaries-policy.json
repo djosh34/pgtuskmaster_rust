@@ -51,6 +51,12 @@
       "path": ".tools/postgres16/bin/psql",
       "expected_version": { "kind": "postgres", "major": 16 },
       "allowed_target_prefixes": ["/usr/pgsql-16/bin", "/usr/lib/postgresql/16/bin", "/usr/bin"]
+    },
+    {
+      "label": "pgbackrest",
+      "path": ".tools/pgbackrest/bin/pgbackrest",
+      "expected_version": { "kind": "pgbackrest", "major": 2 },
+      "allowed_target_prefixes": ["/usr/bin", "/usr/local/bin"]
     }
   ]
 }

@@ -78,6 +78,7 @@ pub struct RuntimeConfig {
     pub dcs: DcsConfig,
     pub ha: HaConfig,
     pub process: ProcessConfig,
+    pub backup: BackupConfig,
     pub logging: LoggingConfig,
     pub api: ApiConfig,
     pub debug: DebugConfig,
@@ -179,7 +180,52 @@ pub struct ProcessConfig {
     pub pg_rewind_timeout_ms: u64,
     pub bootstrap_timeout_ms: u64,
     pub fencing_timeout_ms: u64,
+    pub backup_timeout_ms: u64,
     pub binaries: BinaryPaths,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupConfig {
+    pub enabled: bool,
+    pub provider: BackupProvider,
+    pub pgbackrest: Option<PgBackRestConfig>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupProvider {
+    #[default]
+    Pgbackrest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PgBackRestConfig {
+    pub stanza: Option<String>,
+    pub repo: Option<String>,
+    pub options: BackupOptions,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct BackupOptions {
+    pub backup: Vec<String>,
+    pub info: Vec<String>,
+    pub check: Vec<String>,
+    pub restore: Vec<String>,
+    pub archive_push: Vec<String>,
+    pub archive_get: Vec<String>,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: BackupProvider::default(),
+            pgbackrest: Some(PgBackRestConfig::default()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -258,6 +304,7 @@ pub struct BinaryPaths {
     pub initdb: PathBuf,
     pub pg_basebackup: PathBuf,
     pub psql: PathBuf,
+    pub pgbackrest: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -413,6 +460,7 @@ pub struct RuntimeConfigV2Input {
     pub dcs: DcsConfig,
     pub ha: HaConfig,
     pub process: ProcessConfigV2Input,
+    pub backup: Option<BackupConfigV2Input>,
     pub logging: Option<LoggingConfig>,
     pub api: ApiConfigV2Input,
     pub debug: Option<DebugConfig>,
@@ -424,7 +472,47 @@ pub struct ProcessConfigV2Input {
     pub pg_rewind_timeout_ms: Option<u64>,
     pub bootstrap_timeout_ms: Option<u64>,
     pub fencing_timeout_ms: Option<u64>,
-    pub binaries: Option<BinaryPaths>,
+    pub backup_timeout_ms: Option<u64>,
+    pub binaries: Option<BinaryPathsV2Input>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryPathsV2Input {
+    pub postgres: Option<PathBuf>,
+    pub pg_ctl: Option<PathBuf>,
+    pub pg_rewind: Option<PathBuf>,
+    pub initdb: Option<PathBuf>,
+    pub pg_basebackup: Option<PathBuf>,
+    pub psql: Option<PathBuf>,
+    pub pgbackrest: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupConfigV2Input {
+    pub enabled: Option<bool>,
+    pub provider: Option<BackupProvider>,
+    pub pgbackrest: Option<PgBackRestConfigV2Input>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgBackRestConfigV2Input {
+    pub stanza: Option<String>,
+    pub repo: Option<String>,
+    pub options: Option<BackupOptionsV2Input>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupOptionsV2Input {
+    pub backup: Option<Vec<String>>,
+    pub info: Option<Vec<String>>,
+    pub check: Option<Vec<String>>,
+    pub restore: Option<Vec<String>>,
+    pub archive_push: Option<Vec<String>>,
+    pub archive_get: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

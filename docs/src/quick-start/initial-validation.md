@@ -17,6 +17,7 @@ Good initial validation means that state transitions are explainable. If trust d
 ## Common first-run issues
 
 - Missing binaries in `process.binaries`
+- Backup enabled without `process.binaries.pgbackrest` and `[backup.pgbackrest]` stanza/repo
 - Unreadable secret files
 - Incorrect `pg_hba` for replication paths
 - etcd endpoint mismatch or scope mismatch

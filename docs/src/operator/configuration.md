@@ -47,11 +47,32 @@ binaries = {
   initdb = "/usr/pgsql-16/bin/initdb",
   pg_basebackup = "/usr/pgsql-16/bin/pg_basebackup",
   psql = "/usr/pgsql-16/bin/psql",
+  # Only required when backup.enabled = true (see [backup] below).
+  pgbackrest = "/usr/bin/pgbackrest",
 }
 
 [api]
 listen_addr = "0.0.0.0:8080"
 security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+
+[backup]
+enabled = false
+provider = "pgbackrest"
+
+[backup.pgbackrest]
+# Required when backup.enabled = true.
+stanza = "prod-cluster-a"
+repo = "1"
+
+[backup.pgbackrest.options]
+# Extra pgBackRest CLI options, per operation. These are appended to the rendered command.
+# For safety, options must not override stanza/repo (no `--stanza*` / `--repo*` tokens).
+backup = []
+info = ["--log-level-console=info"]
+check = []
+restore = []
+archive_push = []
+archive_get = []
 ```
 
 ## Why this exists
@@ -117,6 +138,25 @@ Most severe incidents begin with implicit assumptions about identity, auth, or r
 - Operational effect: missing or wrong paths fail startup or action execution.
 - PostgreSQL implication: rewind/bootstrap capability depends directly on correct binary wiring.
 
+### `[backup]`
+
+Backup/restore operations are provider-driven and executed as process jobs so that:
+
+- subprocess execution is centralized (timeouts, cancellation, output capture),
+- orchestration code can stay provider-agnostic, and
+- the provider interface can evolve without leaking pgBackRest CLI strings across the codebase.
+
+Fields:
+
+- `enabled`:
+  - when `false` (default), backup settings are inert and the node does not require pgBackRest wiring.
+  - when `true`, the node requires:
+    - `process.binaries.pgbackrest` to be set to a valid executable path
+    - `[backup.pgbackrest] stanza` and `repo` to be set and non-empty.
+- `provider`: currently only `pgbackrest` is supported.
+- `[backup.pgbackrest.options]`: extra pgBackRest CLI options per operation (arrays of strings).
+  - For safety and determinism, these option tokens must not override managed fields (no `--stanza*` / `--repo*`).
+
 ### `[api]`
 
 - `listen_addr`: operator access endpoint.
@@ -131,6 +171,7 @@ Most severe incidents begin with implicit assumptions about identity, auth, or r
 | `pg_basebackup` auth failures | missing replication HBA rules | `pg_hba` replication entries |
 | Rewind jobs fail on permissions/auth | rewinder identity mismatch, missing auth, or insufficient privileges | `rewind_conn_identity` wiring, rewinder auth, and DB grants (privilege failures surface at runtime) |
 | Node cannot find binaries | invalid `process.binaries` paths | `process.binaries` values (path correctness/executability) |
+| Backup enabled fails validation | missing `process.binaries.pgbackrest` or `[backup.pgbackrest] stanza/repo` | `process.binaries.pgbackrest` and `[backup]` configuration |
 | Trust drops repeatedly despite healthy PostgreSQL | DCS store is unhealthy (NotTrusted) or membership/leader invariants are inconsistent (FailSafe) | `[dcs]` endpoints and `scope`, plus DCS membership/leader consistency |
 
 For interface-level details, see [Interfaces / Node API](../interfaces/node-api.md) and [Interfaces / CLI Workflows](../interfaces/cli.md).

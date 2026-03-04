@@ -428,6 +428,7 @@ async fn start_cluster_inner(
                 "pg_rewind_timeout_ms": 5000,
                 "bootstrap_timeout_ms": 30000,
                 "fencing_timeout_ms": 5000,
+                "backup_timeout_ms": 30000,
                 "binaries": {
                     "postgres": binaries.postgres.display().to_string(),
                     "pg_ctl": binaries.pg_ctl.display().to_string(),
@@ -435,7 +436,16 @@ async fn start_cluster_inner(
                     "initdb": binaries.initdb.display().to_string(),
                     "pg_basebackup": binaries.pg_basebackup.display().to_string(),
                     "psql": binaries.psql.display().to_string(),
+                    "pgbackrest": binaries
+                        .pgbackrest
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
                 },
+            },
+            "backup": {
+                "enabled": false,
+                "provider": "pgbackrest",
+                "pgbackrest": null,
             },
             "logging": {
                 "level": "info",
@@ -539,8 +549,10 @@ async fn start_cluster_inner(
                 pg_rewind_timeout_ms: 5_000,
                 bootstrap_timeout_ms: 30_000,
                 fencing_timeout_ms: 5_000,
+                backup_timeout_ms: 30_000,
                 binaries: binaries.clone(),
             },
+            backup: crate::config::BackupConfig::default(),
             logging: LoggingConfig {
                 level: LogLevel::Info,
                 capture_subprocess_output: false,

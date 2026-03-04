@@ -10,8 +10,9 @@ use crate::{
 
 use super::jobs::{
     ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec,
-    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessLogIdentity, PromoteSpec,
-    StartPostgresSpec,
+    PgBackRestArchiveGetSpec, PgBackRestArchivePushSpec, PgBackRestBackupSpec, PgBackRestCheckSpec,
+    PgBackRestInfoSpec, PgBackRestRestoreSpec, PgBackRestVersionSpec, ProcessCommandRunner,
+    ProcessError, ProcessHandle, ProcessLogIdentity, PromoteSpec, StartPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +46,13 @@ pub(crate) enum ProcessJobKind {
     Demote(DemoteSpec),
     StartPostgres(StartPostgresSpec),
     Fencing(FencingSpec),
+    PgBackRestVersion(PgBackRestVersionSpec),
+    PgBackRestInfo(PgBackRestInfoSpec),
+    PgBackRestCheck(PgBackRestCheckSpec),
+    PgBackRestBackup(PgBackRestBackupSpec),
+    PgBackRestRestore(PgBackRestRestoreSpec),
+    PgBackRestArchivePush(PgBackRestArchivePushSpec),
+    PgBackRestArchiveGet(PgBackRestArchiveGetSpec),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

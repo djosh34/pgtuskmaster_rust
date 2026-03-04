@@ -84,3 +84,4 @@
 .ralph/tasks/bugs/bug-test-harness-runtime-path-dependent-kill-command.md
 .ralph/tasks/bugs/gate-audit-timeout-silent-pass-hardening.md
 .ralph/tasks/bugs/bug-real-binary-provenance-enforcement-gaps.md
+.ralph/tasks/story-pgbackrest-managed-backup-recovery/01-task-backup-provider-abstraction-and-pgbackrest-default.md

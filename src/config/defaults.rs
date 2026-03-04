@@ -1,6 +1,8 @@
 use super::schema::{
+    BackupConfig, BackupOptions, BackupOptionsV2Input, BinaryPaths, BinaryPathsV2Input,
     DebugConfig, FileSinkConfig, FileSinkMode, LogCleanupConfig, LogLevel, LoggingConfig,
-    LoggingSinksConfig, PostgresLoggingConfig, ProcessConfig, StderrSinkConfig,
+    LoggingSinksConfig, PgBackRestConfig, PgBackRestConfigV2Input, PostgresLoggingConfig,
+    ProcessConfig, StderrSinkConfig,
 };
 use super::ConfigError;
 
@@ -11,6 +13,7 @@ const DEFAULT_PG_CONNECT_TIMEOUT_S: u32 = 5;
 const DEFAULT_PG_REWIND_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_FENCING_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_BACKUP_TIMEOUT_MS: u64 = 600_000;
 
 const DEFAULT_API_LISTEN_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_DEBUG_ENABLED: bool = false;
@@ -76,6 +79,7 @@ pub(crate) fn normalize_process_config(
         field: "process.binaries",
         message: "missing required secure field for config_version=v2".to_string(),
     })?;
+    let binaries = normalize_binary_paths_v2(binaries)?;
 
     Ok(ProcessConfig {
         pg_rewind_timeout_ms: input
@@ -87,8 +91,98 @@ pub(crate) fn normalize_process_config(
         fencing_timeout_ms: input
             .fencing_timeout_ms
             .unwrap_or(DEFAULT_FENCING_TIMEOUT_MS),
+        backup_timeout_ms: input
+            .backup_timeout_ms
+            .unwrap_or(DEFAULT_BACKUP_TIMEOUT_MS),
         binaries,
     })
+}
+
+fn normalize_binary_paths_v2(input: BinaryPathsV2Input) -> Result<BinaryPaths, ConfigError> {
+    Ok(BinaryPaths {
+        postgres: require_binary_path("process.binaries.postgres", input.postgres)?,
+        pg_ctl: require_binary_path("process.binaries.pg_ctl", input.pg_ctl)?,
+        pg_rewind: require_binary_path("process.binaries.pg_rewind", input.pg_rewind)?,
+        initdb: require_binary_path("process.binaries.initdb", input.initdb)?,
+        pg_basebackup: require_binary_path("process.binaries.pg_basebackup", input.pg_basebackup)?,
+        psql: require_binary_path("process.binaries.psql", input.psql)?,
+        pgbackrest: input.pgbackrest,
+    })
+}
+
+fn require_binary_path(
+    field: &'static str,
+    value: Option<std::path::PathBuf>,
+) -> Result<std::path::PathBuf, ConfigError> {
+    value.ok_or_else(|| ConfigError::Validation {
+        field,
+        message: "missing required secure field for config_version=v2".to_string(),
+    })
+}
+
+pub(crate) fn default_backup_config() -> BackupConfig {
+    BackupConfig::default()
+}
+
+pub(crate) fn normalize_backup_config(
+    input: Option<super::schema::BackupConfigV2Input>,
+) -> Result<BackupConfig, ConfigError> {
+    let defaults = default_backup_config();
+    let Some(input) = input else {
+        return Ok(defaults);
+    };
+
+    let enabled = input.enabled.unwrap_or(defaults.enabled);
+    let provider = input.provider.unwrap_or(defaults.provider);
+
+    let pgbackrest = normalize_pgbackrest_config(input.pgbackrest, defaults.pgbackrest)?;
+
+    Ok(BackupConfig {
+        enabled,
+        provider,
+        pgbackrest,
+    })
+}
+
+fn default_backup_options() -> BackupOptions {
+    BackupOptions::default()
+}
+
+fn normalize_backup_options(input: Option<BackupOptionsV2Input>) -> BackupOptions {
+    let defaults = default_backup_options();
+    let Some(input) = input else {
+        return defaults;
+    };
+
+    BackupOptions {
+        backup: input.backup.unwrap_or(defaults.backup),
+        info: input.info.unwrap_or(defaults.info),
+        check: input.check.unwrap_or(defaults.check),
+        restore: input.restore.unwrap_or(defaults.restore),
+        archive_push: input.archive_push.unwrap_or(defaults.archive_push),
+        archive_get: input.archive_get.unwrap_or(defaults.archive_get),
+    }
+}
+
+fn normalize_pgbackrest_config(
+    input: Option<PgBackRestConfigV2Input>,
+    defaults: Option<PgBackRestConfig>,
+) -> Result<Option<PgBackRestConfig>, ConfigError> {
+    let defaults = defaults.unwrap_or(PgBackRestConfig {
+        stanza: None,
+        repo: None,
+        options: default_backup_options(),
+    });
+
+    let Some(input) = input else {
+        return Ok(Some(defaults));
+    };
+
+    Ok(Some(PgBackRestConfig {
+        stanza: input.stanza.or(defaults.stanza),
+        repo: input.repo.or(defaults.repo),
+        options: normalize_backup_options(input.options),
+    }))
 }
 
 #[cfg(test)]

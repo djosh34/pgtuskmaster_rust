@@ -75,7 +75,7 @@ Binary validation is enforced by:
 
 Real-binary prerequisites are defined in the repo-tracked policy: `tools/real-binaries-policy.json`.
 
-Installers (`./tools/install-etcd.sh` and `./tools/install-postgres16.sh`) generate a local attestation manifest at `.tools/real-binaries-attestation.json` that records:
+Installers (`./tools/install-etcd.sh`, `./tools/install-postgres16.sh`, and `./tools/install-pgbackrest.sh`) generate a local attestation manifest at `.tools/real-binaries-attestation.json` that records:
 
 - expected repo-relative path under `.tools/`
 - sha256 and file size
