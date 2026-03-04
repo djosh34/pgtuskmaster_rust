@@ -268,8 +268,12 @@ pub(crate) fn build_server_config(
     server: &GeneratedCert,
     server_ca: &GeneratedCert,
 ) -> Result<Arc<ServerConfig>, HarnessError> {
-    ensure_crypto_provider_installed()?;
-    let config = ServerConfig::builder()
+    let provider = rustls::crypto::ring::default_provider();
+    let builder = ServerConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .map_err(|err| HarnessError::InvalidInput(format!("build server config failed: {err}")))?;
+
+    let config = builder
         .with_no_client_auth()
         .with_single_cert(
             vec![server.cert_der(), server_ca.cert_der()],
@@ -285,19 +289,29 @@ pub(crate) fn build_server_config_with_client_auth(
     server_ca: &GeneratedCert,
     trusted_client_ca: &GeneratedCert,
 ) -> Result<Arc<ServerConfig>, HarnessError> {
-    ensure_crypto_provider_installed()?;
     let mut roots = RootCertStore::empty();
     roots.add(trusted_client_ca.cert_der()).map_err(|err| {
         HarnessError::InvalidInput(format!("add trusted client root failed: {err}"))
     })?;
 
-    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+    let provider = rustls::crypto::ring::default_provider();
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots),
+        provider.into(),
+    )
         .build()
         .map_err(|err| {
             HarnessError::InvalidInput(format!("build client cert verifier failed: {err}"))
         })?;
 
-    let config = ServerConfig::builder()
+    let provider = rustls::crypto::ring::default_provider();
+    let builder = ServerConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .map_err(|err| {
+            HarnessError::InvalidInput(format!("build mTLS server config failed: {err}"))
+        })?;
+
+    let config = builder
         .with_client_cert_verifier(verifier)
         .with_single_cert(
             vec![server.cert_der(), server_ca.cert_der()],
@@ -316,13 +330,16 @@ pub(crate) fn build_client_config(
     identity: Option<&GeneratedCert>,
     identity_ca: Option<&GeneratedCert>,
 ) -> Result<Arc<ClientConfig>, HarnessError> {
-    ensure_crypto_provider_installed()?;
     let mut roots = RootCertStore::empty();
     roots.add(trusted_server_ca.cert_der()).map_err(|err| {
         HarnessError::InvalidInput(format!("add trusted server root failed: {err}"))
     })?;
 
-    let builder = ClientConfig::builder().with_root_certificates(roots);
+    let provider = rustls::crypto::ring::default_provider();
+    let builder = ClientConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .map_err(|err| HarnessError::InvalidInput(format!("build client config failed: {err}")))?
+        .with_root_certificates(roots);
     let config = match identity {
         Some(cert) => builder
             .with_client_auth_cert(
@@ -343,21 +360,6 @@ pub(crate) fn build_client_config(
     };
 
     Ok(Arc::new(config))
-}
-
-#[cfg(test)]
-fn ensure_crypto_provider_installed() -> Result<(), HarnessError> {
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
-
-    if rustls::crypto::CryptoProvider::get_default().is_some() {
-        Ok(())
-    } else {
-        Err(HarnessError::InvalidInput(
-            "rustls crypto provider is unavailable".to_string(),
-        ))
-    }
 }
 
 #[cfg(test)]

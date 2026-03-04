@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 08:30:08 CET 2026
+Generated: Wed Mar  4 09:05:15 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -37,15 +37,6 @@ Investigation found that writable `/ha/leader` was introduced by task `22-task-h
 
 <description>
 After updating `make test` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets -- --include-ignored`, the verification run did not complete within an extended runtime window (over 15 minutes observed on 2026-03-03).
-
----
-
-**Path:** `.ralph/tasks/bugs/dcs-init-config-key-bootstrap-semantics-not-implemented.md`
-
-## Bug: DCS init/config bootstrap semantics not implemented <status>not_started</status> <passes>false</passes>
-
-<description>
-`dcs.init.payload_json` and `dcs.init.write_on_bootstrap` are present in config schema, and DCS key parsing/decoding supports `/<scope>/config` and `/<scope>/init`, but runtime/HA never writes either key.
 
 ---
 
@@ -666,7 +657,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-secure-explicit-node-config/05-task-migrate-fixtures-examples-and-cli-config-surfaces-to-new-schema.md`
 
-## Task: Migrate fixtures/examples/CLI config surfaces to the secure explicit schema <status>not_started</status> <passes>false</passes>
+## Task: Migrate fixtures/examples/CLI config surfaces to the secure explicit schema <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Align all config producers/consumers (tests, examples, CLI entrypoints) with the expanded schema and explicit secure requirements.

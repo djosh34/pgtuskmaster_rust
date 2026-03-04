@@ -1,5 +1,19 @@
 use std::process::Command;
 
+fn write_temp_config(label: &str, toml: &str) -> Result<std::path::PathBuf, String> {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| format!("system time error: {err}"))?
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "pgtuskmaster-cli-config-{label}-{unique}-{}",
+        std::process::id()
+    ));
+
+    std::fs::write(&path, toml).map_err(|err| format!("write config failed: {err}"))?;
+    Ok(path)
+}
+
 fn cli_bin_path() -> Result<std::path::PathBuf, String> {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_pgtuskmasterctl") {
         return Ok(std::path::PathBuf::from(path));
@@ -138,5 +152,103 @@ fn node_help_exits_success() -> Result<(), String> {
         stdout.contains("--config"),
         "help output should include --config option"
     );
+    Ok(())
+}
+
+#[test]
+fn node_missing_config_version_prints_explicit_v2_migration_hint() -> Result<(), String> {
+    let bin = node_bin_path()?;
+    let path = write_temp_config("missing-config-version", r#"
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+"#)?;
+
+    let output = Command::new(&bin)
+        .args(["--config", path.to_string_lossy().as_ref()])
+        .output()
+        .map_err(|err| format!("failed to run node with missing config_version: {err}"))?;
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "invalid configs should exit with code 1"
+    );
+
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
+    assert!(
+        stderr.contains("set config_version = \"v2\""),
+        "stderr should include explicit v2 migration hint, got: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn node_missing_secure_field_prints_stable_field_path() -> Result<(), String> {
+    let bin = node_bin_path()?;
+    let path = write_temp_config(
+        "missing-process-binaries",
+        r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 120000
+bootstrap_timeout_ms = 300000
+fencing_timeout_ms = 30000
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#,
+    )?;
+
+    let output = Command::new(&bin)
+        .args(["--config", path.to_string_lossy().as_ref()])
+        .output()
+        .map_err(|err| format!("failed to run node with invalid config: {err}"))?;
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "invalid configs should exit with code 1"
+    );
+
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
+    assert!(
+        stderr.contains("`process.binaries`"),
+        "stderr should mention stable field path, got: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(path);
     Ok(())
 }

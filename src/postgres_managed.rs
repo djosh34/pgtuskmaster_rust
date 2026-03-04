@@ -488,4 +488,30 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         Ok(())
     }
+
+    #[test]
+    fn materialize_rejects_tls_required_without_identity() -> TestResult {
+        let dir = temp_dir("tls-required-missing-identity");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+
+        let cfg = sample_runtime_config(
+            dir.clone(),
+            TlsServerConfig {
+                mode: ApiTlsMode::Required,
+                identity: None,
+                client_auth: None,
+            },
+        );
+
+        let result = materialize_managed_postgres_config(&cfg);
+        if !matches!(result, Err(super::ManagedPostgresError::InvalidConfig { .. })) {
+            return Err(Box::new(std::io::Error::other(
+                "expected tls required without identity to be rejected",
+            )));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+        Ok(())
+    }
 }

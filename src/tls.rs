@@ -75,7 +75,9 @@ fn build_client_verifier(
         })?;
     }
 
-    let mut verifier_builder = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots));
+    let provider = rustls::crypto::ring::default_provider();
+    let mut verifier_builder =
+        rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.into());
     if !client_auth.require_client_cert {
         verifier_builder = verifier_builder.allow_unauthenticated();
     }
@@ -129,6 +131,8 @@ fn load_inline_or_path_bytes(field: &str, source: &InlineOrPath) -> Result<Vec<u
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use crate::{
         config::{ApiTlsMode, InlineOrPath, TlsClientAuthConfig, TlsServerConfig, TlsServerIdentityConfig},
         test_harness::tls::build_adversarial_tls_fixture,
@@ -171,6 +175,72 @@ mod tests {
 
         let built = build_rustls_server_config(&cfg)?;
         assert!(built.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn build_rustls_server_config_reports_io_error_when_cert_path_missing() {
+        let cfg = TlsServerConfig {
+            mode: ApiTlsMode::Required,
+            identity: Some(TlsServerIdentityConfig {
+                cert_chain: InlineOrPath::Path(PathBuf::from(
+                    "/tmp/pgtuskmaster-missing-cert-chain.pem",
+                )),
+                private_key: InlineOrPath::Path(PathBuf::from(
+                    "/tmp/pgtuskmaster-missing-private-key.pem",
+                )),
+            }),
+            client_auth: None,
+        };
+
+        let result = build_rustls_server_config(&cfg);
+        assert!(matches!(result, Err(super::TlsConfigError::Io { .. })));
+    }
+
+    #[test]
+    fn build_rustls_server_config_reports_pem_error_for_invalid_cert_chain() {
+        let cfg = TlsServerConfig {
+            mode: ApiTlsMode::Required,
+            identity: Some(TlsServerIdentityConfig {
+                cert_chain: InlineOrPath::Inline {
+                    content: "not-a-cert".to_string(),
+                },
+                private_key: InlineOrPath::Inline {
+                    content: "not-a-key".to_string(),
+                },
+            }),
+            client_auth: None,
+        };
+
+        let result = build_rustls_server_config(&cfg);
+        assert!(matches!(
+            result,
+            Err(super::TlsConfigError::PemParse { .. })
+        ));
+    }
+
+    #[test]
+    fn build_rustls_server_config_reports_pem_error_for_invalid_private_key(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = build_adversarial_tls_fixture()?;
+        let cfg = TlsServerConfig {
+            mode: ApiTlsMode::Required,
+            identity: Some(TlsServerIdentityConfig {
+                cert_chain: InlineOrPath::Inline {
+                    content: fixture.valid_server.cert_pem.clone(),
+                },
+                private_key: InlineOrPath::Inline {
+                    content: "not-a-private-key".to_string(),
+                },
+            }),
+            client_auth: None,
+        };
+
+        let result = build_rustls_server_config(&cfg);
+        assert!(matches!(
+            result,
+            Err(super::TlsConfigError::PemParse { .. })
+        ));
         Ok(())
     }
 }

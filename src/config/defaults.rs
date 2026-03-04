@@ -2,6 +2,7 @@ use super::schema::{
     DebugConfig, FileSinkConfig, FileSinkMode, LogCleanupConfig, LogLevel, LoggingConfig,
     LoggingSinksConfig, PostgresLoggingConfig, ProcessConfig, StderrSinkConfig,
 };
+use super::ConfigError;
 
 // This module is intentionally restricted to *safe* defaults only.
 // It must not synthesize security-sensitive material (users/roles/auth, TLS posture, pg_hba/pg_ident).
@@ -70,8 +71,13 @@ pub(crate) fn default_logging_config() -> LoggingConfig {
 
 pub(crate) fn normalize_process_config(
     input: super::schema::ProcessConfigV2Input,
-) -> ProcessConfig {
-    ProcessConfig {
+) -> Result<ProcessConfig, ConfigError> {
+    let binaries = input.binaries.ok_or_else(|| ConfigError::Validation {
+        field: "process.binaries",
+        message: "missing required secure field for config_version=v2".to_string(),
+    })?;
+
+    Ok(ProcessConfig {
         pg_rewind_timeout_ms: input
             .pg_rewind_timeout_ms
             .unwrap_or(DEFAULT_PG_REWIND_TIMEOUT_MS),
@@ -81,8 +87,8 @@ pub(crate) fn normalize_process_config(
         fencing_timeout_ms: input
             .fencing_timeout_ms
             .unwrap_or(DEFAULT_FENCING_TIMEOUT_MS),
-        binaries: input.binaries,
-    }
+        binaries,
+    })
 }
 
 #[cfg(test)]

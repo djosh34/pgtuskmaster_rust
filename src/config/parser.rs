@@ -9,7 +9,7 @@ use super::defaults::{
 use super::schema::{
     ApiConfig, ApiSecurityConfig, ConfigVersion, InlineOrPath, PgHbaConfig, PgIdentConfig,
     PostgresConnIdentityConfig, PostgresConfig, PostgresRoleConfig, PostgresRolesConfig,
-    RuntimeConfig, RuntimeConfigV2Input, RoleAuthConfig, SecretSource,
+    RuntimeConfig, RuntimeConfigV2Input, RoleAuthConfig, RoleAuthConfigV2Input, SecretSource,
     TlsServerConfig, TlsServerIdentityConfig,
 };
 
@@ -110,7 +110,7 @@ fn normalize_runtime_config_v2(input: RuntimeConfigV2Input) -> Result<RuntimeCon
     }
 
     let postgres = normalize_postgres_config_v2(input.postgres)?;
-    let process = normalize_process_config(input.process);
+    let process = normalize_process_config(input.process)?;
     let logging = input.logging.unwrap_or_else(default_logging_config);
     let api = normalize_api_config_v2(input.api)?;
     let debug = input.debug.unwrap_or_else(default_debug_config);
@@ -267,7 +267,33 @@ fn normalize_postgres_role_v2(
         message: "missing required secure field for config_version=v2".to_string(),
     })?;
 
+    let auth = normalize_role_auth_config_v2(auth_field, auth)?;
+
     Ok(PostgresRoleConfig { username, auth })
+}
+
+fn normalize_role_auth_config_v2(
+    field_prefix: &'static str,
+    input: RoleAuthConfigV2Input,
+) -> Result<RoleAuthConfig, ConfigError> {
+    match input {
+        RoleAuthConfigV2Input::Tls => Ok(RoleAuthConfig::Tls),
+        RoleAuthConfigV2Input::Password { password } => {
+            let password_field = match field_prefix {
+                "postgres.roles.superuser.auth" => "postgres.roles.superuser.auth.password",
+                "postgres.roles.replicator.auth" => "postgres.roles.replicator.auth.password",
+                "postgres.roles.rewinder.auth" => "postgres.roles.rewinder.auth.password",
+                _ => field_prefix,
+            };
+
+            let password = password.ok_or_else(|| ConfigError::Validation {
+                field: password_field,
+                message: "missing required secure field for config_version=v2".to_string(),
+            })?;
+
+            Ok(RoleAuthConfig::Password { password })
+        }
+    }
 }
 
 fn normalize_pg_hba_v2(
@@ -1316,6 +1342,633 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             err,
             Err(ConfigError::Validation {
                 field: "postgres.local_conn_identity",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_missing_process_binaries_is_actionable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("runtime-config-v2-missing-binaries-{unique}.toml"));
+
+        // Intentionally omit `process.binaries`.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 120000
+bootstrap_timeout_ms = 300000
+fencing_timeout_ms = 30000
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "process.binaries",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_password_auth_missing_password_is_actionable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-missing-auth-password-{unique}.toml"
+        ));
+
+        // Intentionally omit `postgres.roles.superuser.auth.password`.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "password" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.roles.superuser.auth.password",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_missing_postgres_roles_block_is_actionable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("runtime-config-v2-missing-roles-{unique}.toml"));
+
+        // Intentionally omit `postgres.roles`.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.roles",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_missing_replicator_role_is_actionable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-missing-replicator-role-{unique}.toml"
+        ));
+
+        // Intentionally omit `postgres.roles.replicator`.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.roles.replicator",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_missing_replicator_username_is_actionable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-missing-replicator-username-{unique}.toml"
+        ));
+
+        // Intentionally omit `postgres.roles.replicator.username`.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.roles.replicator.username",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_missing_replicator_auth_is_actionable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-missing-replicator-auth-{unique}.toml"
+        ));
+
+        // Intentionally omit `postgres.roles.replicator.auth`.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator" }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.roles.replicator.auth",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_rejects_conn_identity_role_mismatch(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-conn-identity-mismatch-{unique}.toml"
+        ));
+
+        // Intentionally set local_conn_identity.user to a different user than roles.superuser.username.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "not-postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.local_conn_identity.user",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_rejects_blank_password_secret(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-blank-password-secret-{unique}.toml"
+        ));
+
+        // Intentionally set password secret content to empty.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "" } } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.roles.superuser.auth.password.content",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_rejects_tls_required_without_identity(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-required-tls-no-identity-{unique}.toml"
+        ));
+
+        // Intentionally omit `postgres.tls.identity` while requiring TLS.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "required" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.tls.identity",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_rejects_client_auth_with_tls_disabled(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-client-auth-with-tls-disabled-{unique}.toml"
+        ));
+
+        // Intentionally configure client auth while TLS is disabled.
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled", client_auth = { client_ca = { content = "client-ca" }, require_client_cert = false } }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.tls.client_auth",
                 ..
             })
         ));

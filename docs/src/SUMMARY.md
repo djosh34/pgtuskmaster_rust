@@ -27,6 +27,7 @@
 
 - [Operations](./operations/index.md)
   - [Deployment](./operations/deployment.md)
+  - [Configuration Migration (v2)](./operations/config-migration-v2.md)
   - [Observability](./operations/observability.md)
   - [Docs Tooling](./operations/docs.md)
 

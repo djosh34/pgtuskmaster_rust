@@ -30,7 +30,6 @@ flowchart TD
 ```
 
 ## If you’re here for a specific job
-- Operator/SRE: [Operations](./operations/index.md) + [Interfaces / Node API](./interfaces/node-api.md)
+- Operator/SRE: [Operations](./operations/index.md) + [Operations / Configuration Migration (v2)](./operations/config-migration-v2.md) + [Interfaces / Node API](./interfaces/node-api.md)
 - HA behavior: [Architecture / HA Lifecycle](./architecture/ha-lifecycle.md) + [Failover and Recovery](./architecture/failover-and-recovery.md)
 - Security posture: [Interfaces / Node API](./interfaces/node-api.md) + [Architecture / Safety and Fencing](./architecture/safety-and-fencing.md)
-

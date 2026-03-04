@@ -424,7 +424,7 @@ pub struct ProcessConfigV2Input {
     pub pg_rewind_timeout_ms: Option<u64>,
     pub bootstrap_timeout_ms: Option<u64>,
     pub fencing_timeout_ms: Option<u64>,
-    pub binaries: BinaryPaths,
+    pub binaries: Option<BinaryPaths>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -472,7 +472,7 @@ pub struct PostgresConnIdentityConfigV2Input {
 #[serde(deny_unknown_fields)]
 pub struct PostgresRoleConfigV2Input {
     pub username: Option<String>,
-    pub auth: Option<RoleAuthConfig>,
+    pub auth: Option<RoleAuthConfigV2Input>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -500,6 +500,13 @@ pub struct PgIdentConfigV2Input {
 pub struct TlsServerIdentityConfigV2Input {
     pub cert_chain: Option<InlineOrPath>,
     pub private_key: Option<InlineOrPath>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum RoleAuthConfigV2Input {
+    Tls,
+    Password { password: Option<SecretSource> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
