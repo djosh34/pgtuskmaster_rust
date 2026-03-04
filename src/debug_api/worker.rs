@@ -276,7 +276,7 @@ fn summarize_config(config: &RuntimeConfig) -> String {
         config.cluster.member_id,
         config.dcs.scope,
         config.debug.enabled,
-        config.security.tls_enabled
+        config.api.security.tls.mode != crate::config::ApiTlsMode::Disabled
     )
 }
 
@@ -371,7 +371,11 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use crate::{
-        config::{schema::ClusterConfig, RuntimeConfig},
+        config::{
+            schema::ClusterConfig, ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode,
+            InlineOrPath, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresRoleConfig,
+            PostgresRolesConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
+        },
         dcs::state::{DcsCache, DcsState, DcsTrust},
         debug_api::snapshot::{AppLifecycle, DebugDomain, SystemSnapshot},
         ha::actions::HaAction,
@@ -380,6 +384,7 @@ mod tests {
         process::state::ProcessState,
         state::{new_state_channel, UnixMillis, WorkerError, WorkerStatus},
     };
+    use crate::pginfo::conninfo::PgSslMode;
 
     use super::{DebugApiContractStubInputs, DebugApiCtx};
 
@@ -398,10 +403,50 @@ mod tests {
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
                 rewind_source_host: "127.0.0.1".to_string(),
                 rewind_source_port: 5432,
+                local_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        username: "postgres".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    replicator: PostgresRoleConfig {
+                        username: "replicator".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    rewinder: PostgresRoleConfig {
+                        username: "rewinder".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                },
+                pg_hba: PgHbaConfig {
+                    source: InlineOrPath::Inline {
+                        content: String::new(),
+                    },
+                },
+                pg_ident: PgIdentConfig {
+                    source: InlineOrPath::Inline {
+                        content: String::new(),
+                    },
+                },
             },
             dcs: crate::config::schema::DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
                 scope: "scope-a".to_string(),
+                init: None,
             },
             ha: crate::config::schema::HaConfig {
                 loop_interval_ms: 1000,
@@ -436,7 +481,7 @@ mod tests {
                     },
                 },
                 sinks: crate::config::LoggingSinksConfig {
-                    stderr: crate::config::StderrSinkConfig { enabled: true },
+                    stderr: StderrSinkConfig { enabled: true },
                     file: crate::config::FileSinkConfig {
                         enabled: false,
                         path: None,
@@ -444,16 +489,18 @@ mod tests {
                     },
                 },
             },
-            api: crate::config::schema::ApiConfig {
+            api: ApiConfig {
                 listen_addr: "127.0.0.1:8080".to_string(),
-                read_auth_token: None,
-                admin_auth_token: None,
+                security: ApiSecurityConfig {
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
+                    },
+                    auth: ApiAuthConfig::Disabled,
+                },
             },
             debug: crate::config::schema::DebugConfig { enabled: true },
-            security: crate::config::schema::SecurityConfig {
-                tls_enabled: false,
-                auth_token: None,
-            },
         }
     }
 
@@ -658,7 +705,7 @@ mod tests {
         let before = subscriber.latest().value.sequence;
 
         let mut updated_cfg = cfg.clone();
-        updated_cfg.security.tls_enabled = true;
+        updated_cfg.api.security.tls.mode = ApiTlsMode::Required;
         cfg_publisher
             .publish(updated_cfg, UnixMillis(3))
             .map_err(|err| WorkerError::Message(format!("cfg publish failed: {err}")))?;

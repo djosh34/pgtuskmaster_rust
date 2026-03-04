@@ -1,8 +1,13 @@
 use super::schema::{
-    ApiConfig, DebugConfig, FileSinkConfig, FileSinkMode, LogCleanupConfig, LogLevel, LoggingConfig,
-    LoggingSinksConfig, PartialRuntimeConfig, PostgresConfig, PostgresLoggingConfig, ProcessConfig,
-    RuntimeConfig, SecurityConfig, StderrSinkConfig,
+    ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, DebugConfig,
+    FileSinkConfig, FileSinkMode, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
+    LoggingSinksConfig, PartialRuntimeConfig, PgHbaConfig, PgIdentConfig,
+    PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig,
+    PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
+    TlsServerConfig,
 };
+
+use crate::pginfo::conninfo::PgSslMode;
 
 const DEFAULT_PG_CONNECT_TIMEOUT_S: u32 = 5;
 const DEFAULT_PG_LISTEN_HOST: &str = "127.0.0.1";
@@ -11,12 +16,13 @@ const DEFAULT_PG_SOCKET_DIR: &str = "/tmp/pgtuskmaster/socket";
 const DEFAULT_PG_LOG_FILE: &str = "/tmp/pgtuskmaster/postgres.log";
 const DEFAULT_PG_REWIND_SOURCE_HOST: &str = "127.0.0.1";
 const DEFAULT_PG_REWIND_SOURCE_PORT: u16 = 5432;
+const DEFAULT_PG_LOCAL_USER: &str = "postgres";
+const DEFAULT_PG_LOCAL_DBNAME: &str = "postgres";
 const DEFAULT_PG_REWIND_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_FENCING_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_API_LISTEN_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_DEBUG_ENABLED: bool = false;
-const DEFAULT_SECURITY_TLS_ENABLED: bool = false;
 const DEFAULT_LOGGING_LEVEL: LogLevel = LogLevel::Info;
 const DEFAULT_LOGGING_CAPTURE_SUBPROCESS_OUTPUT: bool = true;
 const DEFAULT_LOGGING_POSTGRES_ENABLED: bool = true;
@@ -27,6 +33,45 @@ const DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
 const DEFAULT_LOGGING_SINK_STDERR_ENABLED: bool = true;
 const DEFAULT_LOGGING_SINK_FILE_ENABLED: bool = false;
 const DEFAULT_LOGGING_SINK_FILE_MODE: FileSinkMode = FileSinkMode::Append;
+
+fn tls_disabled() -> TlsServerConfig {
+    TlsServerConfig {
+        mode: ApiTlsMode::Disabled,
+        identity: None,
+        client_auth: None,
+    }
+}
+
+fn default_conn_identity() -> PostgresConnIdentityConfig {
+    PostgresConnIdentityConfig {
+        user: DEFAULT_PG_LOCAL_USER.to_string(),
+        dbname: DEFAULT_PG_LOCAL_DBNAME.to_string(),
+        ssl_mode: PgSslMode::Prefer,
+    }
+}
+
+fn default_roles() -> PostgresRolesConfig {
+    PostgresRolesConfig {
+        superuser: PostgresRoleConfig {
+            username: DEFAULT_PG_LOCAL_USER.to_string(),
+            auth: RoleAuthConfig::Tls,
+        },
+        replicator: PostgresRoleConfig {
+            username: "replicator".to_string(),
+            auth: RoleAuthConfig::Tls,
+        },
+        rewinder: PostgresRoleConfig {
+            username: "rewinder".to_string(),
+            auth: RoleAuthConfig::Tls,
+        },
+    }
+}
+
+fn empty_inline_source() -> InlineOrPath {
+    InlineOrPath::Inline {
+        content: String::new(),
+    }
+}
 
 pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
     let postgres = PostgresConfig {
@@ -56,6 +101,16 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
             .postgres
             .rewind_source_port
             .unwrap_or(DEFAULT_PG_REWIND_SOURCE_PORT),
+        local_conn_identity: default_conn_identity(),
+        rewind_conn_identity: default_conn_identity(),
+        tls: tls_disabled(),
+        roles: default_roles(),
+        pg_hba: PgHbaConfig {
+            source: empty_inline_source(),
+        },
+        pg_ident: PgIdentConfig {
+            source: empty_inline_source(),
+        },
     };
 
     let process = ProcessConfig {
@@ -127,14 +182,45 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
         },
     };
 
-    let api_raw = raw.api;
+    let api_raw = raw.api.as_ref();
+    let security_raw = raw.security.as_ref();
+    let api_read = api_raw.and_then(|cfg| cfg.read_auth_token.clone());
+    let api_admin = api_raw.and_then(|cfg| cfg.admin_auth_token.clone());
+    let legacy_token = security_raw.and_then(|cfg| cfg.auth_token.clone());
+    let tls_enabled = security_raw
+        .and_then(|cfg| cfg.tls_enabled)
+        .unwrap_or(false);
+
+    let auth = if api_read.is_some() || api_admin.is_some() {
+        ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+            read_token: api_read,
+            admin_token: api_admin,
+        })
+    } else if legacy_token.is_some() {
+        ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+            read_token: legacy_token.clone(),
+            admin_token: legacy_token,
+        })
+    } else {
+        ApiAuthConfig::Disabled
+    };
+
     let api = ApiConfig {
         listen_addr: api_raw
-            .as_ref()
             .and_then(|cfg| cfg.listen_addr.clone())
             .unwrap_or_else(|| DEFAULT_API_LISTEN_ADDR.to_string()),
-        read_auth_token: api_raw.as_ref().and_then(|cfg| cfg.read_auth_token.clone()),
-        admin_auth_token: api_raw.and_then(|cfg| cfg.admin_auth_token),
+        security: ApiSecurityConfig {
+            tls: TlsServerConfig {
+                mode: if tls_enabled {
+                    ApiTlsMode::Required
+                } else {
+                    ApiTlsMode::Disabled
+                },
+                identity: None,
+                client_auth: None,
+            },
+            auth,
+        },
     };
 
     let debug = DebugConfig {
@@ -142,15 +228,6 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
             .debug
             .and_then(|cfg| cfg.enabled)
             .unwrap_or(DEFAULT_DEBUG_ENABLED),
-    };
-
-    let security = SecurityConfig {
-        tls_enabled: raw
-            .security
-            .as_ref()
-            .and_then(|cfg| cfg.tls_enabled)
-            .unwrap_or(DEFAULT_SECURITY_TLS_ENABLED),
-        auth_token: raw.security.and_then(|cfg| cfg.auth_token),
     };
 
     RuntimeConfig {
@@ -162,20 +239,20 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
         logging,
         api,
         debug,
-        security,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
+    mod tests {
+        use std::path::PathBuf;
 
-    use super::*;
-    use crate::config::schema::{
-        BinaryPaths, ClusterConfig, DcsConfig, HaConfig, PartialApiConfig, PartialDebugConfig,
-        PartialFileSinkConfig, PartialLoggingConfig, PartialLoggingSinksConfig,
-        PartialPostgresConfig, PartialProcessConfig, PartialSecurityConfig, PartialStderrSinkConfig,
-    };
+        use super::*;
+        use crate::pginfo::conninfo::PgSslMode;
+        use crate::config::schema::{
+            BinaryPaths, ClusterConfig, DcsConfig, HaConfig, PartialApiConfig, PartialDebugConfig,
+            PartialFileSinkConfig, PartialLoggingConfig, PartialLoggingSinksConfig,
+            PartialPostgresConfig, PartialProcessConfig, PartialSecurityConfig, PartialStderrSinkConfig,
+        };
 
     fn base_partial() -> PartialRuntimeConfig {
         PartialRuntimeConfig {
@@ -196,6 +273,7 @@ mod tests {
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
                 scope: "demo".to_string(),
+                init: None,
             },
             ha: HaConfig {
                 loop_interval_ms: 1_000,
@@ -251,11 +329,18 @@ mod tests {
         );
         assert_eq!(cfg.process.fencing_timeout_ms, DEFAULT_FENCING_TIMEOUT_MS);
         assert_eq!(cfg.api.listen_addr, DEFAULT_API_LISTEN_ADDR);
-        assert_eq!(cfg.api.read_auth_token, None);
-        assert_eq!(cfg.api.admin_auth_token, None);
+        assert!(matches!(cfg.api.security.auth, ApiAuthConfig::Disabled));
+        assert_eq!(cfg.api.security.tls.mode, ApiTlsMode::Disabled);
         assert!(!cfg.debug.enabled);
-        assert!(!cfg.security.tls_enabled);
-        assert_eq!(cfg.security.auth_token, None);
+        assert_eq!(cfg.postgres.local_conn_identity.user, DEFAULT_PG_LOCAL_USER);
+        assert_eq!(cfg.postgres.local_conn_identity.dbname, DEFAULT_PG_LOCAL_DBNAME);
+        assert_eq!(cfg.postgres.local_conn_identity.ssl_mode, PgSslMode::Prefer);
+        assert_eq!(cfg.postgres.rewind_conn_identity.user, DEFAULT_PG_LOCAL_USER);
+        assert_eq!(cfg.postgres.rewind_conn_identity.dbname, DEFAULT_PG_LOCAL_DBNAME);
+        assert_eq!(cfg.postgres.rewind_conn_identity.ssl_mode, PgSslMode::Prefer);
+        assert_eq!(cfg.postgres.roles.superuser.username, DEFAULT_PG_LOCAL_USER);
+        assert_eq!(cfg.postgres.roles.replicator.username, "replicator");
+        assert_eq!(cfg.postgres.roles.rewinder.username, "rewinder");
         assert_eq!(cfg.logging.level, DEFAULT_LOGGING_LEVEL);
         assert_eq!(
             cfg.logging.capture_subprocess_output,
@@ -285,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_defaults_preserves_caller_values() {
+    fn apply_defaults_preserves_caller_values() -> Result<(), String> {
         let mut raw = base_partial();
         raw.postgres.connect_timeout_s = Some(42);
         raw.postgres.listen_host = Some("0.0.0.0".to_string());
@@ -338,11 +423,18 @@ mod tests {
         assert_eq!(cfg.process.bootstrap_timeout_ms, 3_000);
         assert_eq!(cfg.process.fencing_timeout_ms, 4_000);
         assert_eq!(cfg.api.listen_addr, "0.0.0.0:9999");
-        assert_eq!(cfg.api.read_auth_token.as_deref(), Some("reader"));
-        assert_eq!(cfg.api.admin_auth_token.as_deref(), Some("admin"));
+        assert!(matches!(
+            cfg.api.security.auth,
+            ApiAuthConfig::RoleTokens(ApiRoleTokensConfig { .. })
+        ));
+        let tokens = match cfg.api.security.auth {
+            ApiAuthConfig::RoleTokens(tokens) => tokens,
+            ApiAuthConfig::Disabled => return Err("expected role_tokens auth config".to_string()),
+        };
+        assert_eq!(tokens.read_token.as_deref(), Some("reader"));
+        assert_eq!(tokens.admin_token.as_deref(), Some("admin"));
+        assert_eq!(cfg.api.security.tls.mode, ApiTlsMode::Required);
         assert!(cfg.debug.enabled);
-        assert!(cfg.security.tls_enabled);
-        assert_eq!(cfg.security.auth_token.as_deref(), Some("token-123"));
         assert_eq!(cfg.logging.level, LogLevel::Debug);
         assert!(!cfg.logging.capture_subprocess_output);
         assert!(!cfg.logging.sinks.stderr.enabled);
@@ -352,5 +444,6 @@ mod tests {
             Some(PathBuf::from("/tmp/pgtuskmaster.jsonl"))
         );
         assert_eq!(cfg.logging.sinks.file.mode, FileSinkMode::Truncate);
+        Ok(())
     }
 }

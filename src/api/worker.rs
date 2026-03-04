@@ -11,18 +11,11 @@ use crate::{
         fallback::{get_fallback_cluster, post_fallback_heartbeat, FallbackHeartbeatInput},
         ApiError,
     },
-    config::RuntimeConfig,
+    config::{ApiAuthConfig, ApiTlsMode, RuntimeConfig},
     dcs::store::DcsStore,
     debug_api::{snapshot::SystemSnapshot, view::build_verbose_payload},
     state::{StateSubscriber, WorkerError},
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ApiTlsMode {
-    Disabled,
-    Optional,
-    Required,
-}
 
 #[derive(Clone, Debug, Default)]
 struct ApiRoleTokens {
@@ -575,19 +568,15 @@ fn resolve_role_tokens(ctx: &ApiWorkerCtx, cfg: &RuntimeConfig) -> ApiRoleTokens
         return configured.clone();
     }
 
-    let read_from_api = normalize_runtime_token(cfg.api.read_auth_token.clone());
-    let admin_from_api = normalize_runtime_token(cfg.api.admin_auth_token.clone());
-    if read_from_api.is_some() || admin_from_api.is_some() {
-        return ApiRoleTokens {
-            read_token: read_from_api,
-            admin_token: admin_from_api,
-        };
-    }
-
-    let legacy = cfg.security.auth_token.clone();
-    ApiRoleTokens {
-        read_token: legacy.clone(),
-        admin_token: legacy,
+    match &cfg.api.security.auth {
+        ApiAuthConfig::Disabled => ApiRoleTokens {
+            read_token: None,
+            admin_token: None,
+        },
+        ApiAuthConfig::RoleTokens(tokens) => ApiRoleTokens {
+            read_token: normalize_runtime_token(tokens.read_token.clone()),
+            admin_token: normalize_runtime_token(tokens.admin_token.clone()),
+        },
     }
 }
 
@@ -695,11 +684,7 @@ fn effective_tls_mode(ctx: &ApiWorkerCtx, cfg: &RuntimeConfig) -> ApiTlsMode {
         return mode;
     }
 
-    if cfg.security.tls_enabled {
-        ApiTlsMode::Required
-    } else {
-        ApiTlsMode::Disabled
-    }
+    cfg.api.security.tls.mode
 }
 
 fn require_tls_acceptor(ctx: &ApiWorkerCtx) -> Result<TlsAcceptor, WorkerError> {
@@ -952,11 +937,14 @@ mod tests {
     use tokio_rustls::TlsConnector;
 
     use crate::{
-        api::worker::{step_once, ApiTlsMode, ApiWorkerCtx},
+        api::worker::{step_once, ApiWorkerCtx},
         config::{
-            ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig,
-            LogCleanupConfig, LogLevel, LoggingConfig, PostgresConfig, PostgresLoggingConfig,
-            ProcessConfig, RuntimeConfig, SecurityConfig,
+            ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
+            ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
+            LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig,
+            PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig,
+            PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
+            TlsServerConfig,
         },
         dcs::state::{DcsCache, DcsState, DcsTrust},
         dcs::store::{DcsStore, DcsStoreError, WatchEvent},
@@ -979,6 +967,7 @@ mod tests {
             },
         },
     };
+    use crate::pginfo::conninfo::PgSslMode;
 
     #[derive(Clone, Default)]
     struct RecordingStore {
@@ -1049,6 +1038,14 @@ mod tests {
     }
 
     fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
+        let auth = match auth_token {
+            Some(token) => ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                read_token: Some(token.clone()),
+                admin_token: Some(token),
+            }),
+            None => ApiAuthConfig::Disabled,
+        };
+
         RuntimeConfig {
             cluster: ClusterConfig {
                 name: "cluster-a".to_string(),
@@ -1063,10 +1060,50 @@ mod tests {
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
                 rewind_source_host: "127.0.0.1".to_string(),
                 rewind_source_port: 5432,
+                local_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        username: "postgres".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    replicator: PostgresRoleConfig {
+                        username: "replicator".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    rewinder: PostgresRoleConfig {
+                        username: "rewinder".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                },
+                pg_hba: PgHbaConfig {
+                    source: InlineOrPath::Inline {
+                        content: String::new(),
+                    },
+                },
+                pg_ident: PgIdentConfig {
+                    source: InlineOrPath::Inline {
+                        content: String::new(),
+                    },
+                },
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
                 scope: "scope-a".to_string(),
+                init: None,
             },
             ha: HaConfig {
                 loop_interval_ms: 1000,
@@ -1101,7 +1138,7 @@ mod tests {
                     },
                 },
                 sinks: crate::config::LoggingSinksConfig {
-                    stderr: crate::config::StderrSinkConfig { enabled: true },
+                    stderr: StderrSinkConfig { enabled: true },
                     file: crate::config::FileSinkConfig {
                         enabled: false,
                         path: None,
@@ -1111,14 +1148,16 @@ mod tests {
             },
             api: ApiConfig {
                 listen_addr: "127.0.0.1:0".to_string(),
-                read_auth_token: None,
-                admin_auth_token: None,
+                security: ApiSecurityConfig {
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
+                    },
+                    auth,
+                },
             },
             debug: DebugConfig { enabled: true },
-            security: SecurityConfig {
-                tls_enabled: false,
-                auth_token,
-            },
         }
     }
 
@@ -1614,8 +1653,10 @@ mod tests {
     async fn security_api_tokens_override_legacy_token() -> Result<(), WorkerError> {
         let _guard = NamespaceGuard::new("api-ha-authz-api-precedence")?;
         let mut cfg = sample_runtime_config(Some("legacy-token".to_string()));
-        cfg.api.read_auth_token = Some("read-token".to_string());
-        cfg.api.admin_auth_token = Some("admin-token".to_string());
+        cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+            read_token: Some("read-token".to_string()),
+            admin_token: Some("admin-token".to_string()),
+        });
         let (mut ctx, _store) = build_ctx_with_config(cfg).await?;
         let snapshot = sample_debug_snapshot(None);
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));

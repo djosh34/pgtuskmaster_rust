@@ -3,7 +3,7 @@ use std::path::Path;
 use thiserror::Error;
 
 use super::defaults::apply_defaults;
-use super::schema::{PartialRuntimeConfig, RuntimeConfig};
+use super::schema::{ConfigVersion, PartialRuntimeConfig, RuntimeConfig, RuntimeConfigV2Input};
 
 const MIN_TIMEOUT_MS: u64 = 1;
 const MAX_TIMEOUT_MS: u64 = 86_400_000;
@@ -35,15 +35,41 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         source,
     })?;
 
-    let raw: PartialRuntimeConfig =
+    #[derive(serde::Deserialize)]
+    struct ConfigEnvelope {
+        config_version: Option<ConfigVersion>,
+    }
+
+    let envelope: ConfigEnvelope =
         toml::from_str(&contents).map_err(|source| ConfigError::Parse {
             path: path.display().to_string(),
             source,
         })?;
 
-    let cfg = apply_defaults(raw);
-    validate_runtime_config(&cfg)?;
-    Ok(cfg)
+    match envelope.config_version.unwrap_or(ConfigVersion::V1) {
+        ConfigVersion::V1 => {
+            let raw: PartialRuntimeConfig =
+                toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+                    path: path.display().to_string(),
+                    source,
+                })?;
+            let cfg = apply_defaults(raw);
+            validate_runtime_config(&cfg)?;
+            Ok(cfg)
+        }
+        ConfigVersion::V2 => {
+            let _: RuntimeConfigV2Input =
+                toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+                    path: path.display().to_string(),
+                    source,
+                })?;
+            Err(ConfigError::Validation {
+                field: "config_version",
+                message: "config_version=v2 is recognized but not executable yet (task 02 implements v2 normalization)"
+                    .to_string(),
+            })
+        }
+    }
 }
 
 pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
@@ -59,6 +85,23 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_port(
         "postgres.rewind_source_port",
         cfg.postgres.rewind_source_port,
+    )?;
+
+    validate_non_empty(
+        "postgres.local_conn_identity.user",
+        cfg.postgres.local_conn_identity.user.as_str(),
+    )?;
+    validate_non_empty(
+        "postgres.local_conn_identity.dbname",
+        cfg.postgres.local_conn_identity.dbname.as_str(),
+    )?;
+    validate_non_empty(
+        "postgres.rewind_conn_identity.user",
+        cfg.postgres.rewind_conn_identity.user.as_str(),
+    )?;
+    validate_non_empty(
+        "postgres.rewind_conn_identity.dbname",
+        cfg.postgres.rewind_conn_identity.dbname.as_str(),
     )?;
 
     validate_non_empty_path("process.binaries.postgres", &cfg.process.binaries.postgres)?;
@@ -167,8 +210,19 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         });
     }
 
-    validate_optional_non_empty("api.read_auth_token", cfg.api.read_auth_token.as_deref())?;
-    validate_optional_non_empty("api.admin_auth_token", cfg.api.admin_auth_token.as_deref())?;
+    match &cfg.api.security.auth {
+        crate::config::ApiAuthConfig::Disabled => {}
+        crate::config::ApiAuthConfig::RoleTokens(tokens) => {
+            validate_optional_non_empty(
+                "api.security.auth.role_tokens.read_token",
+                tokens.read_token.as_deref(),
+            )?;
+            validate_optional_non_empty(
+                "api.security.auth.role_tokens.admin_token",
+                tokens.admin_token.as_deref(),
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -229,20 +283,24 @@ fn validate_optional_non_empty(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
+    mod tests {
+        use std::path::PathBuf;
 
-    use super::*;
-    use crate::config::schema::{
-        ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode,
-        HaConfig, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PostgresConfig,
-        PostgresLoggingConfig, ProcessConfig, RuntimeConfig, SecurityConfig, StderrSinkConfig,
-    };
+        use super::*;
+        use crate::config::schema::{
+            ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
+            ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
+            InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
+            PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig,
+            PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
+            StderrSinkConfig, TlsServerConfig,
+        };
+        use crate::pginfo::conninfo::PgSslMode;
 
-    fn base_runtime_config() -> RuntimeConfig {
-        RuntimeConfig {
-            cluster: ClusterConfig {
-                name: "cluster-a".to_string(),
+        fn base_runtime_config() -> RuntimeConfig {
+            RuntimeConfig {
+                cluster: ClusterConfig {
+                    name: "cluster-a".to_string(),
                 member_id: "member-a".to_string(),
             },
             postgres: PostgresConfig {
@@ -250,15 +308,55 @@ mod tests {
                 connect_timeout_s: 5,
                 listen_host: "127.0.0.1".to_string(),
                 listen_port: 5432,
-                socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
-                log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
-            },
-            dcs: DcsConfig {
-                endpoints: vec!["http://127.0.0.1:2379".to_string()],
-                scope: "scope-a".to_string(),
-            },
+                    socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
+                    log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
+                    rewind_source_host: "127.0.0.1".to_string(),
+                    rewind_source_port: 5432,
+                    local_conn_identity: PostgresConnIdentityConfig {
+                        user: "postgres".to_string(),
+                        dbname: "postgres".to_string(),
+                        ssl_mode: PgSslMode::Prefer,
+                    },
+                    rewind_conn_identity: PostgresConnIdentityConfig {
+                        user: "postgres".to_string(),
+                        dbname: "postgres".to_string(),
+                        ssl_mode: PgSslMode::Prefer,
+                    },
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
+                    },
+                    roles: PostgresRolesConfig {
+                        superuser: PostgresRoleConfig {
+                            username: "postgres".to_string(),
+                            auth: RoleAuthConfig::Tls,
+                        },
+                        replicator: PostgresRoleConfig {
+                            username: "replicator".to_string(),
+                            auth: RoleAuthConfig::Tls,
+                        },
+                        rewinder: PostgresRoleConfig {
+                            username: "rewinder".to_string(),
+                            auth: RoleAuthConfig::Tls,
+                        },
+                    },
+                    pg_hba: PgHbaConfig {
+                        source: InlineOrPath::Inline {
+                            content: String::new(),
+                        },
+                    },
+                    pg_ident: PgIdentConfig {
+                        source: InlineOrPath::Inline {
+                            content: String::new(),
+                        },
+                    },
+                },
+                dcs: DcsConfig {
+                    endpoints: vec!["http://127.0.0.1:2379".to_string()],
+                    scope: "scope-a".to_string(),
+                    init: None,
+                },
             ha: HaConfig {
                 loop_interval_ms: 1_000,
                 lease_ttl_ms: 10_000,
@@ -299,19 +397,21 @@ mod tests {
                         mode: FileSinkMode::Append,
                     },
                 },
-            },
-            api: ApiConfig {
-                listen_addr: "127.0.0.1:8080".to_string(),
-                read_auth_token: None,
-                admin_auth_token: None,
-            },
-            debug: DebugConfig { enabled: false },
-            security: SecurityConfig {
-                tls_enabled: false,
-                auth_token: None,
-            },
+                },
+                api: ApiConfig {
+                    listen_addr: "127.0.0.1:8080".to_string(),
+                    security: ApiSecurityConfig {
+                        tls: TlsServerConfig {
+                            mode: ApiTlsMode::Disabled,
+                            identity: None,
+                            client_auth: None,
+                        },
+                        auth: ApiAuthConfig::Disabled,
+                    },
+                },
+                debug: DebugConfig { enabled: false },
+            }
         }
-    }
 
     #[test]
     fn validate_runtime_config_accepts_valid_config() {
@@ -402,31 +502,37 @@ mod tests {
     }
 
     #[test]
-    fn validate_runtime_config_rejects_blank_api_tokens() {
-        let mut cfg = base_runtime_config();
-        cfg.api.read_auth_token = Some(" ".to_string());
+        fn validate_runtime_config_rejects_blank_api_tokens() {
+            let mut cfg = base_runtime_config();
+            cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                read_token: Some(" ".to_string()),
+                admin_token: None,
+            });
 
-        let err = validate_runtime_config(&cfg);
-        assert!(matches!(
-            err,
-            Err(ConfigError::Validation {
-                field: "api.read_auth_token",
-                ..
-            })
-        ));
+            let err = validate_runtime_config(&cfg);
+            assert!(matches!(
+                err,
+                Err(ConfigError::Validation {
+                    field: "api.security.auth.role_tokens.read_token",
+                    ..
+                })
+            ));
 
-        let mut cfg = base_runtime_config();
-        cfg.api.admin_auth_token = Some("\t".to_string());
+            let mut cfg = base_runtime_config();
+            cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                read_token: None,
+                admin_token: Some("\t".to_string()),
+            });
 
-        let err = validate_runtime_config(&cfg);
-        assert!(matches!(
-            err,
-            Err(ConfigError::Validation {
-                field: "api.admin_auth_token",
-                ..
-            })
-        ));
-    }
+            let err = validate_runtime_config(&cfg);
+            assert!(matches!(
+                err,
+                Err(ConfigError::Validation {
+                    field: "api.security.auth.role_tokens.admin_token",
+                    ..
+                })
+            ));
+        }
 
     #[test]
     fn validate_runtime_config_rejects_file_sink_enabled_without_path() {
@@ -563,6 +669,79 @@ binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewi
 
         let err = load_runtime_config(&path);
         assert!(matches!(err, Err(ConfigError::Parse { .. })));
+
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_is_recognized_but_fails_closed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("runtime-config-v2-{unique}.toml"));
+
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+connect_timeout_s = 5
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+rewind_source_host = "127.0.0.1"
+rewind_source_port = 5432
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+pg_hba = { source = { content = "" } }
+pg_ident = { source = { content = "" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 120000
+bootstrap_timeout_ms = 300000
+fencing_timeout_ms = 30000
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[logging]
+level = "info"
+capture_subprocess_output = true
+postgres = { enabled = true, poll_interval_ms = 200, cleanup = { enabled = true, max_files = 10, max_age_seconds = 60 } }
+sinks = { stderr = { enabled = true }, file = { enabled = false, mode = "append" } }
+
+[api]
+listen_addr = "127.0.0.1:8080"
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+
+[debug]
+enabled = false
+"#;
+
+        std::fs::write(&path, toml)?;
+        let err = load_runtime_config(&path);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "config_version",
+                ..
+            })
+        ));
 
         let _ = std::fs::remove_file(path);
         Ok(())

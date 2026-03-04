@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 05:07:34 AM CET 2026
+Generated: Wed Mar  4 06:02:48 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -621,7 +621,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-secure-explicit-node-config/01-task-expand-runtime-config-schema-for-explicit-secure-node-startup.md`
 
-## Task: Expand runtime config schema for explicit secure node startup <status>not_started</status> <passes>false</passes>
+## Task: Expand runtime config schema for explicit secure node startup <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Redesign the runtime config model so every required secure startup setting is explicitly represented (TLS, HTTP, PostgreSQL hosting, roles/auth, pg_hba/pg_ident, and DCS init config).

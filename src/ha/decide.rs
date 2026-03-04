@@ -267,12 +267,12 @@ mod tests {
 
     use crate::{
         config::{
-            schema::{
-                ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
-                SecurityConfig,
-            },
-            BinaryPaths, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig,
-            ProcessConfig, RuntimeConfig,
+            schema::{ClusterConfig, DebugConfig, HaConfig, PostgresConfig},
+            ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, DcsConfig,
+            InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig,
+            PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
+            PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
+            TlsServerConfig,
         },
         dcs::state::{
             DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
@@ -281,7 +281,7 @@ mod tests {
             actions::{ActionId, HaAction},
             state::{DecideInput, HaPhase, HaState, WorldSnapshot},
         },
-        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus},
         process::{
             jobs::{ActiveJob, ActiveJobKind},
             state::{JobOutcome, ProcessState},
@@ -717,10 +717,50 @@ mod tests {
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
                 rewind_source_host: "127.0.0.1".to_string(),
                 rewind_source_port: 5432,
+                local_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        username: "postgres".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    replicator: PostgresRoleConfig {
+                        username: "replicator".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    rewinder: PostgresRoleConfig {
+                        username: "rewinder".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                },
+                pg_hba: PgHbaConfig {
+                    source: InlineOrPath::Inline {
+                        content: String::new(),
+                    },
+                },
+                pg_ident: PgIdentConfig {
+                    source: InlineOrPath::Inline {
+                        content: String::new(),
+                    },
+                },
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
                 scope: "scope-a".to_string(),
+                init: None,
             },
             ha: HaConfig {
                 loop_interval_ms: 1000,
@@ -755,7 +795,7 @@ mod tests {
                     },
                 },
                 sinks: crate::config::LoggingSinksConfig {
-                    stderr: crate::config::StderrSinkConfig { enabled: true },
+                    stderr: StderrSinkConfig { enabled: true },
                     file: crate::config::FileSinkConfig {
                         enabled: false,
                         path: None,
@@ -765,14 +805,16 @@ mod tests {
             },
             api: ApiConfig {
                 listen_addr: "127.0.0.1:8080".to_string(),
-                read_auth_token: None,
-                admin_auth_token: None,
+                security: ApiSecurityConfig {
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
+                    },
+                    auth: ApiAuthConfig::Disabled,
+                },
             },
             debug: DebugConfig { enabled: true },
-            security: SecurityConfig {
-                tls_enabled: false,
-                auth_token: None,
-            },
         };
 
         let leader_record = leader.map(|member| LeaderRecord {

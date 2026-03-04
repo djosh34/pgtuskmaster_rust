@@ -3,8 +3,11 @@ use std::time::Duration;
 
 use crate::{
     config::{
-        BinaryPaths, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig, ProcessConfig,
-        RuntimeConfig,
+        ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, DcsConfig, HaConfig,
+        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig,
+        PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig,
+        PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
+        TlsServerConfig,
     },
     dcs::state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx},
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
@@ -16,7 +19,9 @@ use crate::{
         actions::HaAction,
         state::{HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, WorldSnapshot},
     },
-    pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, PgInfoWorkerCtx, Readiness, SqlStatus},
+    pginfo::state::{
+        PgConfig, PgInfoCommon, PgInfoState, PgInfoWorkerCtx, PgSslMode, Readiness, SqlStatus,
+    },
     process::{
         state::{JobOutcome, ProcessJobKind, ProcessState, ProcessWorkerCtx},
         worker as process_worker,
@@ -54,7 +59,7 @@ fn sample_runtime_config() -> RuntimeConfig {
             name: "cluster-a".to_string(),
             member_id: "node-a".to_string(),
         },
-        postgres: crate::config::schema::PostgresConfig {
+        postgres: PostgresConfig {
             data_dir: "/tmp/pgdata".into(),
             connect_timeout_s: 5,
             listen_host: "127.0.0.1".to_string(),
@@ -63,12 +68,52 @@ fn sample_runtime_config() -> RuntimeConfig {
             log_file: "/tmp/pgtuskmaster/postgres.log".into(),
             rewind_source_host: "127.0.0.1".to_string(),
             rewind_source_port: 5432,
+            local_conn_identity: PostgresConnIdentityConfig {
+                user: "postgres".to_string(),
+                dbname: "postgres".to_string(),
+                ssl_mode: PgSslMode::Prefer,
+            },
+            rewind_conn_identity: PostgresConnIdentityConfig {
+                user: "postgres".to_string(),
+                dbname: "postgres".to_string(),
+                ssl_mode: PgSslMode::Prefer,
+            },
+            tls: TlsServerConfig {
+                mode: ApiTlsMode::Disabled,
+                identity: None,
+                client_auth: None,
+            },
+            roles: PostgresRolesConfig {
+                superuser: PostgresRoleConfig {
+                    username: "postgres".to_string(),
+                    auth: RoleAuthConfig::Tls,
+                },
+                replicator: PostgresRoleConfig {
+                    username: "replicator".to_string(),
+                    auth: RoleAuthConfig::Tls,
+                },
+                rewinder: PostgresRoleConfig {
+                    username: "rewinder".to_string(),
+                    auth: RoleAuthConfig::Tls,
+                },
+            },
+            pg_hba: PgHbaConfig {
+                source: InlineOrPath::Inline {
+                    content: String::new(),
+                },
+            },
+            pg_ident: PgIdentConfig {
+                source: InlineOrPath::Inline {
+                    content: String::new(),
+                },
+            },
         },
-        dcs: crate::config::schema::DcsConfig {
+        dcs: DcsConfig {
             endpoints: vec!["http://127.0.0.1:2379".to_string()],
             scope: "scope-a".to_string(),
+            init: None,
         },
-        ha: crate::config::schema::HaConfig {
+        ha: HaConfig {
             loop_interval_ms: 1000,
             lease_ttl_ms: 10_000,
         },
@@ -101,7 +146,7 @@ fn sample_runtime_config() -> RuntimeConfig {
                 },
             },
             sinks: crate::config::LoggingSinksConfig {
-                stderr: crate::config::StderrSinkConfig { enabled: true },
+                stderr: StderrSinkConfig { enabled: true },
                 file: crate::config::FileSinkConfig {
                     enabled: false,
                     path: None,
@@ -109,16 +154,18 @@ fn sample_runtime_config() -> RuntimeConfig {
                 },
             },
         },
-        api: crate::config::schema::ApiConfig {
+        api: ApiConfig {
             listen_addr: "127.0.0.1:8080".to_string(),
-            read_auth_token: None,
-            admin_auth_token: None,
+            security: ApiSecurityConfig {
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                auth: ApiAuthConfig::Disabled,
+            },
         },
         debug: crate::config::schema::DebugConfig { enabled: true },
-        security: crate::config::schema::SecurityConfig {
-            tls_enabled: false,
-            auth_token: None,
-        },
     }
 }
 

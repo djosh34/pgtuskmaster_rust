@@ -188,7 +188,7 @@ fn to_config_section(cfg: &Versioned<RuntimeConfig>) -> ConfigSection {
         member_id: cfg.value.cluster.member_id.clone(),
         scope: cfg.value.dcs.scope.clone(),
         debug_enabled: cfg.value.debug.enabled,
-        tls_enabled: cfg.value.security.tls_enabled,
+        tls_enabled: cfg.value.api.security.tls.mode != crate::config::ApiTlsMode::Disabled,
     }
 }
 

@@ -7,12 +7,13 @@ use tokio::task::JoinHandle;
 
 use crate::cli::client::CliApiClient;
 use crate::config::{
-    schema::{
-        ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig, SecurityConfig,
-    },
-    BinaryPaths, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig, ProcessConfig,
-    RuntimeConfig,
+    ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig, DcsConfig,
+    DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig,
+    PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig,
+    PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
+    StderrSinkConfig, TlsServerConfig,
 };
+use crate::pginfo::conninfo::PgSslMode;
 use crate::state::WorkerError;
 use crate::test_harness::binaries::{
     require_etcd_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
@@ -419,10 +420,50 @@ async fn start_cluster_inner(
                 log_file: log_file.clone(),
                 rewind_source_host: "127.0.0.1".to_string(),
                 rewind_source_port,
+                local_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        username: "postgres".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    replicator: PostgresRoleConfig {
+                        username: "replicator".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    rewinder: PostgresRoleConfig {
+                        username: "rewinder".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                },
+                pg_hba: PgHbaConfig {
+                    source: InlineOrPath::Inline {
+                        content: String::new(),
+                    },
+                },
+                pg_ident: PgIdentConfig {
+                    source: InlineOrPath::Inline {
+                        content: String::new(),
+                    },
+                },
             },
             dcs: DcsConfig {
                 endpoints: dcs_endpoints,
                 scope: config.scope.clone(),
+                init: None,
             },
             ha: HaConfig {
                 loop_interval_ms: 100,
@@ -450,7 +491,7 @@ async fn start_cluster_inner(
                     },
                 },
                 sinks: crate::config::LoggingSinksConfig {
-                    stderr: crate::config::StderrSinkConfig { enabled: true },
+                    stderr: StderrSinkConfig { enabled: true },
                     file: crate::config::FileSinkConfig {
                         enabled: false,
                         path: None,
@@ -460,14 +501,16 @@ async fn start_cluster_inner(
             },
             api: ApiConfig {
                 listen_addr: api_addr.to_string(),
-                read_auth_token: None,
-                admin_auth_token: None,
+                security: ApiSecurityConfig {
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
+                    },
+                    auth: ApiAuthConfig::Disabled,
+                },
             },
             debug: DebugConfig { enabled: false },
-            security: SecurityConfig {
-                tls_enabled: false,
-                auth_token: None,
-            },
         };
 
         topology_reservation

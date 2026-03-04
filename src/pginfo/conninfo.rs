@@ -1,7 +1,8 @@
 use thiserror::Error;
+use serde::{de, Deserialize, Deserializer};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PgSslMode {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PgSslMode {
     Disable,
     Allow,
     Prefer,
@@ -11,7 +12,7 @@ pub(crate) enum PgSslMode {
 }
 
 impl PgSslMode {
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Disable => "disable",
             Self::Allow => "allow",
@@ -22,7 +23,7 @@ impl PgSslMode {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "disable" => Some(Self::Disable),
             "allow" => Some(Self::Allow),
@@ -32,6 +33,17 @@ impl PgSslMode {
             "verify-full" => Some(Self::VerifyFull),
             _ => None,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for PgSslMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(raw.as_str())
+            .ok_or_else(|| de::Error::custom(format!("unsupported sslmode `{raw}`")))
     }
 }
 
