@@ -15,7 +15,7 @@ sequenceDiagram
   participant PG as PostgreSQL (candidate)
 
   Old--xETCD: stops refreshing / becomes unreachable
-  New->>ETCD: observes leader missing\n(and trust level)
+  New->>ETCD: observes leader missing<br/>(and trust level)
   New->>New: evaluates safety invariants
   New->>PG: checks local Postgres is reachable
   New->>ETCD: attempts to acquire leader record

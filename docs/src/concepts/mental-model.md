@@ -7,12 +7,12 @@ The important mental model is **ownership**: each component owns one slice of th
 ```mermaid
 flowchart TB
   subgraph Node[One pgtuskmaster node]
-    PgInfo["PgInfo worker\nWhat is Postgres doing?"] --> Bus[(State bus)]
-    Dcs["DCS worker\nWhat does etcd say?"] --> Bus
-    Ha["HA worker\nWhat should we do next?"] --> Bus
-    Proc["Process worker\nPerform actions safely"] --> Bus
-    Debug["Debug snapshot worker\nExplain what changed"] --> Bus
-    Bus --> Api["Node API worker\nOperator controls & status"]
+    PgInfo["PgInfo worker<br/>What is Postgres doing?"] --> Bus[(State bus)]
+    Dcs["DCS worker<br/>What does etcd say?"] --> Bus
+    Ha["HA worker<br/>What should we do next?"] --> Bus
+    Proc["Process worker<br/>Perform actions safely"] --> Bus
+    Debug["Debug snapshot worker<br/>Explain what changed"] --> Bus
+    Bus --> Api["Node API worker<br/>Operator controls & status"]
   end
 
   PG[(PostgreSQL)] --> PgInfo

@@ -19,11 +19,11 @@ sequenceDiagram
   DCS->>DCS: Refresh cache + trust
   DCS-->>HA: Publish DCS view (members/leader/intent/trust)
 
-  API->>DCS: Write operator intent (optional)\n(e.g. switchover request)
+  API->>DCS: Write operator intent (optional)<br/>(e.g. switchover request)
 
   HA->>HA: Decide next safe role/actions
-  HA-->>Proc: Action requests (start/stop/rewind/bootstrap)\nwith safety constraints
-  HA-->>DCS: Coordination writes (leader lease,\nclear switchover)
+  HA-->>Proc: Action requests (start/stop/rewind/bootstrap)<br/>with safety constraints
+  HA-->>DCS: Coordination writes (leader lease,<br/>clear switchover)
 
   Proc->>PG: Execute actions
 ```

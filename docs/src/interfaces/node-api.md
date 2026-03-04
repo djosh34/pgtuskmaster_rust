@@ -24,10 +24,10 @@ sequenceDiagram
   participant HA as HA worker
   participant ETCD as DCS (etcd)
 
-  Op->>API: request intent\n(switchover)
+  Op->>API: request intent<br/>(switchover)
   API->>ETCD: write intent record
   HA->>ETCD: observe intent
-  HA-->>API: state reflects intent\nand progress over time
+  HA-->>API: state reflects intent<br/>and progress over time
 ```
 
 ## Authentication / authorization model

@@ -80,6 +80,16 @@ function extractMermaidBlocks(markdown, filePath) {
   return blocks;
 }
 
+function escapedNewlineLine(content, startLine) {
+  const lines = content.split("\n");
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    if (lines[idx].includes("\\n")) {
+      return startLine + idx;
+    }
+  }
+  return null;
+}
+
 function loadMermaid() {
   if (!fs.existsSync(MERMAID_BUNDLE)) {
     throw new Error(
@@ -134,6 +144,12 @@ async function main() {
           `${block.filePath}:${block.startLine}: mermaid block is not closed with \`\`\``
         );
         continue;
+      }
+      const escapedLine = escapedNewlineLine(block.content, block.startLine);
+      if (escapedLine !== null) {
+        failures.push(
+          `${block.filePath}:${escapedLine}: mermaid contains literal \\n; use <br/> for line breaks`
+        );
       }
       try {
         await mermaid.parse(block.content);

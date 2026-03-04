@@ -9,8 +9,8 @@ Two different situations must be kept distinct:
 ```mermaid
 flowchart TD
   A[Observe DCS leader record] --> Missing{Leader missing?}
-  Missing -->|yes| PromoteCheck["Consider promotion\n(only if safe)"]
-  Missing -->|no| Conflict{"Leader record conflicts\nwith local invariants?"}
+  Missing -->|yes| PromoteCheck["Consider promotion<br/>(only if safe)"]
+  Missing -->|no| Conflict{"Leader record conflicts<br/>with local invariants?"}
   Conflict -->|yes| Fence[Fencing / demotion path]
   Conflict -->|no| Follow[Follow leader / stay stable]
 ```

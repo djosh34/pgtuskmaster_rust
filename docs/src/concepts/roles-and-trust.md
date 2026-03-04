@@ -16,8 +16,8 @@ The DCS worker publishes a trust level that constrains HA decisions.
 ```mermaid
 stateDiagram-v2
   [*] --> NotTrusted
-  NotTrusted --> FailSafe: etcd healthy\nbut membership/leader invariants broken
-  FailSafe --> FullQuorum: self present and\nleader (if any) is consistent
+  NotTrusted --> FailSafe: etcd healthy<br/>but membership/leader invariants broken
+  FailSafe --> FullQuorum: self present and<br/>leader (if any) is consistent
   FailSafe --> NotTrusted: etcd unhealthy / unreachable
   FullQuorum --> NotTrusted: etcd unhealthy / unreachable
 ```

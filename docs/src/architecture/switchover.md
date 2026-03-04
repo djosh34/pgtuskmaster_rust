@@ -17,7 +17,7 @@ sequenceDiagram
   API->>ETCD: write switchover intent
   HA->>ETCD: observe intent + trust
   HA->>Old: request demotion
-  HA->>ETCD: establish new leader record\nwhen safe
+  HA->>ETCD: establish new leader record<br/>when safe
   HA->>New: request promotion
   HA->>ETCD: clear switchover intent
 ```

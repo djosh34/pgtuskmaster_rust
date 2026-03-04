@@ -10,9 +10,9 @@ To keep diagrams readable, it helps to separate:
 ```mermaid
 stateDiagram-v2
   [*] --> Replica
-  Replica --> CandidateLeader: leader unavailable\nand DCS trust is OK
-  CandidateLeader --> Primary: leader acquired\nand Postgres reachable
-  Primary --> Replica: demotion needed\n(switchover or safety)
+  Replica --> CandidateLeader: leader unavailable<br/>and DCS trust is OK
+  CandidateLeader --> Primary: leader acquired<br/>and Postgres reachable
+  Primary --> Replica: demotion needed<br/>(switchover or safety)
 ```
 
 ## Recovery and safety phases
@@ -21,13 +21,13 @@ stateDiagram-v2
   [*] --> WaitingPostgresReachable
   WaitingPostgresReachable --> WaitingDcsTrusted: Postgres reachable
   WaitingDcsTrusted --> FailSafe: DCS trust degraded
-  WaitingDcsTrusted --> Replica: trust OK\nand following leader
+  WaitingDcsTrusted --> Replica: trust OK<br/>and following leader
 
-  Primary --> Fencing: conflicting leader\nor safety trigger
+  Primary --> Fencing: conflicting leader<br/>or safety trigger
   Fencing --> Replica: demoted safely
 
-  Primary --> Rewinding: local SQL unhealthy\n(primary safety trigger)
-  Rewinding --> Bootstrapping: rewind fails\n(or is unsafe)
+  Primary --> Rewinding: local SQL unhealthy<br/>(primary safety trigger)
+  Rewinding --> Bootstrapping: rewind fails<br/>(or is unsafe)
   Bootstrapping --> Replica: re-bootstrapped safely
 ```
 
