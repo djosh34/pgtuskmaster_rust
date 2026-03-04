@@ -1,22 +1,17 @@
 # CLI Workflows
 
-`pgtuskmasterctl` is a convenience interface for the node API.
+`pgtuskmasterctl` is the operator-friendly client for the Node API.
 
-The CLI is designed to support operator workflows such as:
-- “show me the current HA state”
-- “request a switchover”
-- “cancel a pending switchover”
+Common workflows:
 
-```mermaid
-flowchart LR
-  CLI[pgtuskmasterctl] -->|HTTP| API[Node API]
-  API -->|intent/state| ETCD[(DCS)]
-```
-
-Example (orientation only):
+- inspect current HA state
+- submit switchover intent
+- cancel pending switchover
 
 ```console
-# Inspect HA state (read-only)
 pgtuskmasterctl ha state
+pgtuskmasterctl switchover --to <member-id>
+pgtuskmasterctl switchover cancel
 ```
 
+The CLI does not bypass API policy. It follows the same interface contract and security model.

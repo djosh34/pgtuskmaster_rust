@@ -1,19 +1,18 @@
 # Interfaces
 
-This section describes the ways humans and automation interact with the node.
+Interfaces are the operator contract surfaces for control and observation.
 
-There are two primary interaction styles:
-- “Control”: request an operation (for example, switchover)
-- “Observe”: read current state (for example, HA state)
+There are two interaction modes:
+
+- Observe current HA state and trust posture.
+- Submit or cancel planned transition intent.
 
 ```mermaid
 flowchart LR
-  Op[Operator / Automation] --> API[Node API]
-  Op --> CLI[pgtuskmasterctl]
+  Op[Operator or automation] --> CLI[pgtuskmasterctl]
+  Op --> API[Node API]
   CLI --> API
-
-  API --- Runtime[Node Runtime]
-  API -->|intent| ETCD[(DCS)]
-  Runtime -->|coordination| ETCD
-  Runtime -->|control| PG[(PostgreSQL)]
+  API --> DCS[(DCS intent records)]
 ```
+
+Use this section when you need concrete endpoint and CLI workflow behavior.

@@ -1,38 +1,29 @@
 # Node API
 
-The node API is the primary operator interface for HA control and state inspection.
+The Node API is a compact operational interface for state visibility and planned control intent.
 
-The API is intentionally small: it is meant to express **intent**, not to expose internal mechanisms.
+## Main endpoints
 
-## High-level endpoints
-- `GET /ha/state`: observe current HA-relevant state
-- `POST /switchover`: request a planned primary transition
-- `DELETE /ha/switchover`: cancel/clear a pending switchover request
+- `GET /ha/state`: current HA-relevant state projection
+- `POST /switchover`: create planned switchover intent
+- `DELETE /ha/switchover`: cancel or clear pending switchover intent
 
 ## Optional debug endpoints
 
-When `debug.enabled = true` in the runtime config, the node also serves debugging routes intended for development and incident triage (not the primary operator contract):
+When debug support is enabled in runtime configuration:
 
-- `GET /debug/ui`: minimal debug UI
-- `GET /debug/verbose?since=<sequence>`: structured “what changed” view
-- `GET /debug/snapshot`: raw snapshot dump (kept for backwards compatibility)
+- `GET /debug/ui`
+- `GET /debug/verbose?since=<sequence>`
+- `GET /debug/snapshot`
 
-```mermaid
-sequenceDiagram
-  participant Op as Operator
-  participant API as Node API
-  participant HA as HA worker
-  participant ETCD as DCS (etcd)
+## Why this exists
 
-  Op->>API: request intent<br/>(switchover)
-  API->>ETCD: write intent record
-  HA->>ETCD: observe intent
-  HA-->>API: state reflects intent<br/>and progress over time
-```
+The API is intentionally small to keep operational behavior explicit. It is designed around intent and state, not low-level procedure endpoints.
 
-## Authentication / authorization model
-At a high level, the API distinguishes:
-- read-only status access
-- admin actions that mutate intent
+## Tradeoffs
 
-Exact token fields and deployment policy are documented under Operations.
+A narrow API surface means fewer ad-hoc knobs. The benefit is clearer lifecycle behavior and smaller control-plane risk.
+
+## When this matters in operations
+
+For planned role changes, use API intent workflows instead of direct out-of-band coordination writes.

@@ -1,31 +1,25 @@
-# Introduction
+# Start Here
 
-This book explains the **architecture and operational model** of `pgtuskmaster` (the Rust rewrite), aimed at engineers seeing this repository for the first time.
+This system is a local high-availability control plane for PostgreSQL. One `pgtuskmaster` node supervises one PostgreSQL instance, participates in shared coordination through etcd, and continuously decides whether that PostgreSQL should run as primary, replica, or in a conservative safety state.
 
-The priority is a clear mental model:
-- What problems the system solves.
-- What the major components are responsible for.
-- How state changes propagate through the system.
-- How failover, recovery, and safety are handled.
-- How operators and automation interact with the system.
-
-This book is intentionally *not* a code walkthrough. When we name internal concepts (for example, worker names or state names), it’s only to keep the architecture description faithful to the system you are running.
+The practical goal is to keep role transitions safe and predictable. When a cluster is healthy, the system supports stable leadership, planned switchovers, and unplanned failover handling. When signals are inconsistent, the system prefers actions that reduce split-brain risk, even when those actions temporarily reduce write availability.
 
 ```mermaid
 flowchart LR
-  Operator[Operator / Automation] -->|HTTP| API[Node API]
-  Operator -->|CLI| CLI[pgtuskmasterctl]
-  CLI -->|HTTP| API
-
-  API --- Runtime[Node Runtime]
-  API -->|intent| ETCD[(etcd / DCS)]
-  Runtime -->|control| PG[(PostgreSQL)]
-  Runtime <-->|coordination| ETCD
-
-  Clients[App Clients] -->|SQL| PG
+  Op[Operator] --> API[Node API / CLI]
+  API --> Node[pgtuskmaster node]
+  Node <-->|coordination| ETCD[(etcd / DCS)]
+  Node --> PG[(PostgreSQL)]
 ```
 
-If you only remember three things after reading:
-1. `pgtuskmaster` is a **control plane** that continuously reconciles desired cluster role (primary/replica) with what PostgreSQL is actually doing.
-2. etcd is the **shared coordination memory** (who is leader, who is alive, what switchover is requested), but the system is explicitly designed to behave differently when DCS trust degrades.
-3. “Safety” is a first-class design goal: when signals are inconsistent, the system prefers **fencing/demotion** over optimistic promotion.
+This documentation is organized to support two reading modes:
+
+- If you are setting up or operating the system, start with **Quick Start** and then **Operator Guide**.
+- If you need design confidence and lifecycle reasoning, continue with **System Lifecycle** and **Architecture Assurance**.
+- If you are modifying the project, use **Contributors** for code structure, worker flow, and test internals.
+
+The rest of this section answers three foundation questions in order:
+
+1. What problem is this system meant to solve?
+2. How does it solve that problem?
+3. How should you navigate the rest of the book?

@@ -485,3 +485,95 @@ Important: `make test` is wrapped in `timeout 120s` including compilation; warm 
 - [x] Only if pass-5 includes code changes: run `.ralph/task_switch.sh`, commit, and `git push` per repo workflow.
 
 NOW EXECUTE
+
+## 2026-03-04 (fresh run, pass-6) — Plan (draft)
+
+This meta-task run must be treated as **fresh**. Prior passes are not trusted.
+
+### 0) Preconditions (model gate; must be true before any review)
+- [ ] Verify `.ralph/model.txt` is exactly `deep_review`.
+  - [ ] If not `deep_review`: set it to `deep_review`, write a preflight-only entry under “Exploration”, and **quit immediately** (per task contract).
+
+### 1) Evidence + logging discipline (fail-closed)
+- [ ] Create a new evidence dir: `.ralph/evidence/meta-18-pass6-<UTC timestamp>` and store all logs/artifacts there.
+- [ ] Append a new `### 2026-03-04 (fresh run, pass-6 ...)` entry under `## Exploration` with:
+  - [ ] reviewer id
+  - [ ] evidence directory path
+  - [ ] preflight model check result
+  - [ ] explicit “what I audited” list (paths) and “what I ran” list (commands)
+
+### 2) Repo-wide “trust nothing” scans (no best-effort)
+- [ ] Run and archive grep scans (save outputs into the evidence dir):
+  - [ ] Forbidden tokens (must stay at 0): `unwrap(` / `expect(` / `panic!(` / `todo!(` / `unimplemented!(`
+  - [ ] Lint bypass / ignore markers (must stay at 0): `#[ignore]`, `#[allow(clippy::...)]`, `#![allow(clippy::...)]`
+  - [ ] Leniency / error swallowing hotspots: `best_effort`, `let _ =`, `.ok()`, retry/fallback loops, `continue;` in workers/e2e
+- [ ] If any forbidden tokens or bypass markers are found:
+  - [ ] create a bug with the `add-bug` skill (small/local) or `add-task-as-agent` (larger refactor)
+  - [ ] fix/remove the bypass in the same pass (no “temporary ignore”)
+
+Suggested scan kit (archive output files):
+- [ ] `rg -n --no-heading -g '*.rs' -e 'unwrap\\(|expect\\(|panic!\\(|todo!\\(|unimplemented!\\(' src tests examples`
+- [ ] `rg -n --no-heading -g '*.rs' -e 'allow\\s*\\(\\s*clippy|#!\\s*\\[\\s*allow\\s*\\(\\s*clippy|#\\[\\s*ignore(\\s*=.*)?\\]' src tests examples`
+- [ ] `rg -n --no-heading -g '*.rs' -e 'best[-_ ]effort|fallback|graceful|tolerat|non[- ]fatal|ignore.*error' src tests examples`
+- [ ] `rg -n --no-heading -g '*.rs' -e 'let _ = .*;|\\.ok\\(\\);?|if let Err\\(|continue;|retry|backoff|timeout|deadline|poll' src tests examples`
+
+### 3) Gate realism + silent-pass resistance (Makefile + scripts)
+- [ ] Audit `Makefile` and any invoked scripts (log notes to evidence dir):
+  - [ ] `make test` uses `timeout 120s` and that includes compilation; decide whether to warm build first.
+  - [ ] `make test-long` has **no outer timeout**; a hung ultra-long test can hang forever.
+  - [ ] `docs-lint` currently checks only a subset of `docs/src/**`; verify intended coverage and fail-closed posture.
+  - [ ] Verify configured ultra-long test selection remains exact-match and cannot silently run 0 tests.
+- [ ] If any “silent pass” or “hang forever” risk exists:
+  - [ ] create bug/task and implement fail-closed hardening (no skips; bounded time)
+
+### 4) Real-binary provenance (pg16 + etcd) — install, don’t skip
+- [ ] Verify required real binaries exist (hard requirement; do not skip tests):
+  - [ ] `.tools/postgres16/bin/postgres` / `.tools/postgres16/bin/pg_ctl` / `.tools/postgres16/bin/pg_basebackup` / `.tools/postgres16/bin/pg_rewind`
+  - [ ] `.tools/etcd/bin/etcd`
+- [ ] If missing, install them (capture logs into evidence dir):
+  - [ ] run `tools/install-postgres16.sh`
+  - [ ] run `tools/install-etcd.sh`
+- [ ] Skeptically review installers + harness resolution:
+  - [ ] etcd installer: pinned SHA256s, atomic installs, post-install version assertion
+  - [ ] postgres16 installer: ensure it does not “accidentally” accept wrong bins from PATH or an unexpected `/usr/bin/*` fallback
+  - [ ] harness: ensure required binaries are repo/tool rooted and validated as executable regular files
+
+### 5) Deep skeptical logic review (production + e2e)
+- [ ] Production fail-open risks first:
+  - [ ] `src/runtime/node.rs` (startup probes; ensure errors don’t get silently ignored if they matter)
+  - [ ] `src/ha/worker.rs`, `src/api/worker.rs` (loop/continue/retry branches; bounded + observable)
+- [ ] DCS etcd watch + reconnect invariants (`src/dcs/*`):
+  - [ ] reconnect/resnapshot is an authoritative reset (no stale queued PUT resurrection)
+  - [ ] disconnect/compaction/cancel handling forces reconnect + reset marker
+  - [ ] Add a **real-etcd regression** if a gap is found (notably: forced compaction/cancel recovery path)
+- [ ] HA e2e signal integrity (avoid best-effort proof claims):
+  - [ ] `src/ha/e2e_multi_node.rs` and `src/ha/e2e_partition_chaos.rs` must fail closed when observability is insufficient
+  - [ ] ensure fencing/split-brain invariants are fail-closed, not “best effort”
+- [ ] Harness cleanup / ports / startup (`src/test_harness/*`):
+  - [ ] teardown failures must not be silently ignored if they can corrupt later tests
+  - [ ] port lease tracking must not leak resources silently via `Drop`
+- [ ] Logging ingestion / diagnostics (`src/logging/*`):
+  - [ ] “best effort” file tailing must not mask actionable failure signals in tests
+
+### 6) Findings -> tracked work (no “drive-by” forgetfulness)
+- [ ] For each finding:
+  - [ ] if small: create bug with `add-bug` and fix inline
+  - [ ] if large: create task with `add-task-as-agent` and stop after scoping + minimal safe guardrails (unless fully completed here)
+  - [ ] attach: evidence paths, exact reproduction steps, and why this is unsafe
+
+### 7) Mandatory gates (all must pass 100%)
+- [ ] Warm build (avoid `make test` timeout-on-compile): `cargo test --all-targets --no-run`
+- [ ] Run and archive outputs:
+  - [ ] `make check`
+  - [ ] `make test`
+  - [ ] `make lint`
+  - [ ] `make test-long`
+- [ ] If any gate fails:
+  - [ ] create one bug per failing area (use `add-bug`)
+  - [ ] if `make test-long` fails: also create a follow-up task to add a shorter real-binary regression reproducer
+
+### 8) Closeout (only after all gates + tasks/bugs are created)
+- [ ] Append a new “Exploration” entry for pass-6 including audited paths, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
+- [ ] Set `.ralph/model.txt` back to exactly `normal_high`.
+
+TO BE VERIFIED

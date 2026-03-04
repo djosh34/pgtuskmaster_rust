@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 13:58:03 CET 2026
+Generated: Wed Mar  4 15:03:32 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -196,6 +196,24 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Drive failure resolution from created bug tasks and confirm full-suite green status after fixes.
+
+---
+
+**Path:** `.ralph/tasks/story-operator-architecture-docs/01-task-restructure-operator-docs-for-flow-depth-and-rationale.md`
+
+## Task: Restructure Operator Docs for Better Flow, Depth, and Decision Rationale <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Rebuild the mdBook documentation into an operator-first guide that explains not only what the system does, but why it behaves that way and which tradeoffs drive key HA decisions.
+
+---
+
+**Path:** `.ralph/tasks/story-operator-architecture-docs/02-task-post-rewrite-skeptical-claim-verification-with-spark.md`
+
+## Task: Post-Rewrite Skeptical Claim Verification with 15+ Parallel Spark Subagents <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** After the operator-doc transformation is complete, run a deep, adversarial verification of every claim in the docs using many independent `spark` subagents, and resolve all mismatches before finalizing docs.
 
 ---
 
