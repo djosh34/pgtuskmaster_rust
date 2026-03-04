@@ -1,10 +1,10 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 12:32:13 PM CET 2026
+Generated: Wed Mar  4 01:01:08 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
-## Bug: BDD HTTP tests false-pass via fragile status and read patterns <status>not_started</status> <passes>false</passes>
+## Bug: BDD HTTP tests false-pass via fragile status and read patterns <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 BDD HTTP contract tests use weak status matching and response-read behavior that can hide protocol/handler regressions or induce hangs.

@@ -930,9 +930,10 @@ fn extract_bearer_token(request: &HttpRequest) -> Option<String> {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use rustls::{pki_types::ServerName, ClientConfig};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
 
@@ -1267,25 +1268,212 @@ mod tests {
         build_ctx_with_config(sample_runtime_config(auth_token)).await
     }
 
-    fn extract_status_and_body(raw: &[u8]) -> Result<(String, Vec<u8>), WorkerError> {
-        let raw_str = String::from_utf8_lossy(raw);
-        let mut parts = raw_str.splitn(2, "\r\n");
-        let status_line = parts
-            .next()
-            .ok_or_else(|| WorkerError::Message("missing status line".to_string()))?
-            .to_string();
-        let split = raw
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .ok_or_else(|| WorkerError::Message("missing header terminator".to_string()))?;
-        Ok((status_line, raw[split + 4..].to_vec()))
+    const HEADER_LIMIT: usize = 16 * 1024;
+    const MAX_BODY_BYTES: usize = 256 * 1024;
+    const MAX_RESPONSE_BYTES: usize = HEADER_LIMIT + MAX_BODY_BYTES;
+    const IO_TIMEOUT: Duration = Duration::from_secs(2);
+
+    #[derive(Debug)]
+    struct TestHttpResponse {
+        status_code: u16,
+        body: Vec<u8>,
+    }
+
+    #[derive(Debug)]
+    struct ParsedHttpHead {
+        status_code: u16,
+        content_length: usize,
+        body_start: usize,
+    }
+
+    fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpHead, WorkerError> {
+        let head = raw.get(..header_end).ok_or_else(|| {
+            WorkerError::Message("response header end offset out of bounds".to_string())
+        })?;
+
+        let status_line_end = head
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| WorkerError::Message("response missing status line".to_string()))?;
+
+        let status_line_bytes = head.get(..status_line_end).ok_or_else(|| {
+            WorkerError::Message("response status line offset out of bounds".to_string())
+        })?;
+        let status_line = std::str::from_utf8(status_line_bytes).map_err(|err| {
+            WorkerError::Message(format!("response status line not utf8: {err}"))
+        })?;
+
+        let mut status_parts = status_line.split_whitespace();
+        let http_version = status_parts.next().ok_or_else(|| {
+            WorkerError::Message("response status line missing http version".to_string())
+        })?;
+        if http_version != "HTTP/1.1" {
+            return Err(WorkerError::Message(format!(
+                "unexpected http version in response: {http_version}"
+            )));
+        }
+        let status_str = status_parts.next().ok_or_else(|| {
+            WorkerError::Message("response status line missing status code".to_string())
+        })?;
+        if status_str.len() != 3 || !status_str.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(WorkerError::Message(format!(
+                "response status code must be 3 digits, got: {status_str}"
+            )));
+        }
+        let status_code = status_str.parse::<u16>().map_err(|err| {
+            WorkerError::Message(format!("response status code parse failed: {err}"))
+        })?;
+        if !(100..=599).contains(&status_code) {
+            return Err(WorkerError::Message(format!(
+                "response status code out of range: {status_code}"
+            )));
+        }
+
+        let header_text = head
+            .get(status_line_end + 2..)
+            .ok_or_else(|| WorkerError::Message("response header offset out of bounds".to_string()))?;
+        let header_text = std::str::from_utf8(header_text)
+            .map_err(|err| WorkerError::Message(format!("response headers not utf8: {err}")))?;
+
+        let mut content_length: Option<usize> = None;
+        for line in header_text.split("\r\n") {
+            if line.is_empty() {
+                continue;
+            }
+            let (name, value) = line.split_once(':').ok_or_else(|| {
+                WorkerError::Message(format!("invalid response header line (missing ':'): {line}"))
+            })?;
+            if name.trim().eq_ignore_ascii_case("Content-Length") {
+                if content_length.is_some() {
+                    return Err(WorkerError::Message(
+                        "response contains multiple Content-Length headers".to_string(),
+                    ));
+                }
+                let parsed = value.trim().parse::<usize>().map_err(|err| {
+                    WorkerError::Message(format!("response Content-Length parse failed: {err}"))
+                })?;
+                content_length = Some(parsed);
+            }
+        }
+
+        let content_length = content_length.ok_or_else(|| {
+            WorkerError::Message("response missing Content-Length header".to_string())
+        })?;
+
+        let body_start = header_end.checked_add(4).ok_or_else(|| {
+            WorkerError::Message("response body offset overflow".to_string())
+        })?;
+
+        Ok(ParsedHttpHead {
+            status_code,
+            content_length,
+            body_start,
+        })
+    }
+
+    async fn read_http_response_framed(
+        stream: &mut (impl AsyncRead + Unpin),
+        timeout: Duration,
+    ) -> Result<TestHttpResponse, WorkerError> {
+        let response = tokio::time::timeout(timeout, async {
+            let mut raw: Vec<u8> = Vec::new();
+            let mut scratch = [0u8; 4096];
+
+            let mut parsed_head: Option<ParsedHttpHead> = None;
+            let mut expected_total_len: Option<usize> = None;
+
+            loop {
+                if let Some(expected) = expected_total_len {
+                    if raw.len() == expected {
+                        let parsed = parsed_head.ok_or_else(|| {
+                            WorkerError::Message("response framing parsed without header".to_string())
+                        })?;
+                        let body = raw
+                            .get(parsed.body_start..expected)
+                            .ok_or_else(|| {
+                                WorkerError::Message(
+                                    "response body slice out of bounds after framing".to_string(),
+                                )
+                            })?
+                            .to_vec();
+                        return Ok(TestHttpResponse {
+                            status_code: parsed.status_code,
+                            body,
+                        });
+                    }
+                    if raw.len() > expected {
+                        return Err(WorkerError::Message(format!(
+                            "response exceeded expected length (expected {expected} bytes, got {})",
+                            raw.len()
+                        )));
+                    }
+                } else {
+                    if raw.len() > HEADER_LIMIT {
+                        return Err(WorkerError::Message(format!(
+                            "response headers exceeded limit of {HEADER_LIMIT} bytes"
+                        )));
+                    }
+
+                    if let Some(header_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = parse_http_response_head(&raw, header_end)?;
+                        if head.content_length > MAX_BODY_BYTES {
+                            return Err(WorkerError::Message(format!(
+                                "response body exceeded limit of {MAX_BODY_BYTES} bytes (Content-Length={})",
+                                head.content_length
+                            )));
+                        }
+                        let expected =
+                            head.body_start.checked_add(head.content_length).ok_or_else(|| {
+                                WorkerError::Message("response total length overflow".to_string())
+                            })?;
+                        if expected > MAX_RESPONSE_BYTES {
+                            return Err(WorkerError::Message(format!(
+                                "response exceeded limit of {MAX_RESPONSE_BYTES} bytes (expected {expected})"
+                            )));
+                        }
+                        parsed_head = Some(head);
+                        expected_total_len = Some(expected);
+                        continue;
+                    }
+                }
+
+                let n = stream.read(&mut scratch).await.map_err(|err| {
+                    WorkerError::Message(format!("client read failed: {err}"))
+                })?;
+                if n == 0 {
+                    return Err(WorkerError::Message(format!(
+                        "unexpected eof while reading response (read {} bytes so far)",
+                        raw.len()
+                    )));
+                }
+
+                let new_len = raw.len().checked_add(n).ok_or_else(|| {
+                    WorkerError::Message("response length overflow while reading".to_string())
+                })?;
+                if new_len > MAX_RESPONSE_BYTES {
+                    return Err(WorkerError::Message(format!(
+                        "response exceeded limit of {MAX_RESPONSE_BYTES} bytes while reading (would reach {new_len})"
+                    )));
+                }
+                raw.extend_from_slice(&scratch[..n]);
+            }
+        })
+        .await;
+
+        match response {
+            Ok(inner) => inner,
+            Err(_) => Err(WorkerError::Message(format!(
+                "timed out reading framed http response after {}s",
+                timeout.as_secs()
+            ))),
+        }
     }
 
     async fn send_plain_request(
         ctx: &mut ApiWorkerCtx,
         request_head: String,
         body: Option<Vec<u8>>,
-    ) -> Result<(String, Vec<u8>), WorkerError> {
+    ) -> Result<TestHttpResponse, WorkerError> {
         let addr = ctx.local_addr()?;
         let mut client = TcpStream::connect(addr)
             .await
@@ -1304,14 +1492,7 @@ mod tests {
         }
 
         step_once(ctx).await?;
-
-        let mut raw = Vec::new();
-        client
-            .read_to_end(&mut raw)
-            .await
-            .map_err(|err| WorkerError::Message(format!("client read failed: {err}")))?;
-
-        extract_status_and_body(&raw)
+        read_http_response_framed(&mut client, IO_TIMEOUT).await
     }
 
     async fn send_tls_request(
@@ -1320,7 +1501,7 @@ mod tests {
         server_name: &str,
         request_head: String,
         body: Option<Vec<u8>>,
-    ) -> Result<(String, Vec<u8>), WorkerError> {
+    ) -> Result<TestHttpResponse, WorkerError> {
         let addr = ctx.local_addr()?;
         let tcp = TcpStream::connect(addr)
             .await
@@ -1344,13 +1525,7 @@ mod tests {
                     .await
                     .map_err(|err| WorkerError::Message(format!("tls write body failed: {err}")))?;
             }
-            let mut raw = Vec::new();
-            if let Err(err) = tls.read_to_end(&mut raw).await {
-                if err.kind() != std::io::ErrorKind::UnexpectedEof || raw.is_empty() {
-                    return Err(WorkerError::Message(format!("tls read failed: {err}")));
-                }
-            }
-            extract_status_and_body(&raw)
+            read_http_response_framed(&mut tls, IO_TIMEOUT).await
         };
 
         let (step_result, client_result) = tokio::join!(step_once(ctx), client);
@@ -1399,10 +1574,11 @@ mod tests {
         .await;
 
         match result {
-            Ok((status, _body)) => {
-                if status.contains("200") {
+            Ok(response) => {
+                if response.status_code == 200 {
                     Err(WorkerError::Message(format!(
-                        "expected tls request rejection, got successful status: {status}"
+                        "expected tls request rejection, got status {}",
+                        response.status_code
                     )))
                 } else {
                     Ok(())
@@ -1415,20 +1591,20 @@ mod tests {
     fn format_get(path: &str, auth: Option<&str>) -> String {
         match auth {
             Some(auth_header) => format!(
-                "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: {auth_header}\r\n\r\n"
+                "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: {auth_header}\r\n\r\n"
             ),
-            None => format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            None => format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
         }
     }
 
     fn format_post(path: &str, auth: Option<&str>, body: &[u8]) -> String {
         match auth {
             Some(auth_header) => format!(
-                "POST {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: {auth_header}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                "POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: {auth_header}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 body.len()
             ),
             None => format!(
-                "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                "POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 body.len()
             ),
         }
@@ -1437,9 +1613,9 @@ mod tests {
     fn format_delete(path: &str, auth: Option<&str>) -> String {
         match auth {
             Some(auth_header) => format!(
-                "DELETE {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: {auth_header}\r\n\r\n"
+                "DELETE {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: {auth_header}\r\n\r\n"
             ),
-            None => format!("DELETE {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            None => format!("DELETE {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
         }
     }
 
@@ -1454,16 +1630,16 @@ mod tests {
             Some(roles.admin_token.clone()),
         )?;
 
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_get("/fallback/cluster", Some(&roles.read_bearer_header())),
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
         let post_body = br#"{"requested_by":"node-a"}"#.to_vec();
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_post(
                 "/switchover",
@@ -1473,7 +1649,7 @@ mod tests {
             Some(post_body),
         )
         .await?;
-        assert!(status.contains("403"), "expected 403, got: {status}");
+        assert_eq!(response.status_code, 403);
         assert_eq!(store.write_count()?, 0);
         Ok(())
     }
@@ -1490,7 +1666,7 @@ mod tests {
         )?;
 
         let post_body = br#"{"requested_by":"node-a"}"#.to_vec();
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_post(
                 "/switchover",
@@ -1500,7 +1676,7 @@ mod tests {
             Some(post_body),
         )
         .await?;
-        assert!(status.contains("202"), "expected 202, got: {status}");
+        assert_eq!(response.status_code, 202);
         assert_eq!(store.write_count()?, 1);
         Ok(())
     }
@@ -1516,10 +1692,9 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
-        let (status, body) =
-            send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
-        let decoded: serde_json::Value = serde_json::from_slice(&body)
+        let response = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        assert_eq!(response.status_code, 200);
+        let decoded: serde_json::Value = serde_json::from_slice(&response.body)
             .map_err(|err| WorkerError::Message(format!("decode ha state json failed: {err}")))?;
         assert_eq!(decoded["cluster_name"], "cluster-a");
         assert_eq!(decoded["scope"], "scope-a");
@@ -1539,9 +1714,8 @@ mod tests {
     async fn ha_state_route_returns_503_without_subscriber() -> Result<(), WorkerError> {
         let _guard = NamespaceGuard::new("api-ha-state-missing-subscriber")?;
         let (mut ctx, _store) = build_ctx(None).await?;
-        let (status, _body) =
-            send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
-        assert!(status.contains("503"), "expected 503, got: {status}");
+        let response = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        assert_eq!(response.status_code, 503);
         Ok(())
     }
 
@@ -1552,21 +1726,21 @@ mod tests {
         let (mut ctx, store) = build_ctx(None).await?;
 
         let body = br#"{"member_id":"node-b"}"#.to_vec();
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_post("/ha/leader", None, body.as_slice()),
             Some(body),
         )
         .await?;
-        assert!(status.contains("404"), "expected 404, got: {status}");
+        assert_eq!(response.status_code, 404);
 
-        let (status, _body) =
+        let response =
             send_plain_request(&mut ctx, format_delete("/ha/leader", None), None).await?;
-        assert!(status.contains("404"), "expected 404, got: {status}");
+        assert_eq!(response.status_code, 404);
 
-        let (status, _body) =
+        let response =
             send_plain_request(&mut ctx, format_delete("/ha/switchover", None), None).await?;
-        assert!(status.contains("202"), "expected 202, got: {status}");
+        assert_eq!(response.status_code, 202);
 
         assert_eq!(store.write_count()?, 0);
 
@@ -1591,16 +1765,16 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_get("/ha/state", Some(&roles.read_bearer_header())),
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
         let body = br#"{"member_id":"node-b"}"#.to_vec();
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_post(
                 "/ha/leader",
@@ -1610,10 +1784,10 @@ mod tests {
             Some(body),
         )
         .await?;
-        assert!(status.contains("404"), "expected 404, got: {status}");
+        assert_eq!(response.status_code, 404);
 
         let body = br#"{"member_id":"node-b"}"#.to_vec();
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_post(
                 "/ha/leader",
@@ -1623,7 +1797,7 @@ mod tests {
             Some(body),
         )
         .await?;
-        assert!(status.contains("404"), "expected 404, got: {status}");
+        assert_eq!(response.status_code, 404);
         Ok(())
     }
 
@@ -1635,17 +1809,16 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
-        let (status, _body) =
-            send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
-        assert!(status.contains("401"), "expected 401, got: {status}");
+        let response = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
+        assert_eq!(response.status_code, 401);
 
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_get("/ha/state", Some("Bearer legacy-token")),
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
         Ok(())
     }
 
@@ -1662,21 +1835,21 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_get("/ha/state", Some("Bearer legacy-token")),
             None,
         )
         .await?;
-        assert!(status.contains("401"), "expected 401, got: {status}");
+        assert_eq!(response.status_code, 401);
 
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_get("/ha/state", Some("Bearer read-token")),
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
         Ok(())
     }
 
@@ -1690,11 +1863,11 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_debug_snapshot_subscriber(debug_subscriber);
 
-        let (status, body) =
+        let response =
             send_plain_request(&mut ctx, format_get("/debug/verbose?since=1", None), None).await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
-        let decoded: serde_json::Value = serde_json::from_slice(&body).map_err(|err| {
+        let decoded: serde_json::Value = serde_json::from_slice(&response.body).map_err(|err| {
             WorkerError::Message(format!("decode debug verbose json failed: {err}"))
         })?;
         assert_eq!(decoded["meta"]["schema_version"], "v1");
@@ -1717,10 +1890,10 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_debug_snapshot_subscriber(debug_subscriber);
 
-        let (status, body) =
+        let response =
             send_plain_request(&mut ctx, format_get("/debug/snapshot", None), None).await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
-        let body_text = String::from_utf8(body)
+        assert_eq!(response.status_code, 200);
+        let body_text = String::from_utf8(response.body)
             .map_err(|err| WorkerError::Message(format!("snapshot body not utf8: {err}")))?;
         assert!(body_text.contains("SystemSnapshot"));
         Ok(())
@@ -1732,9 +1905,9 @@ mod tests {
         let mut cfg = sample_runtime_config(None);
         cfg.debug.enabled = false;
         let (mut ctx, _store) = build_ctx_with_config(cfg).await?;
-        let (status, _body) =
+        let response =
             send_plain_request(&mut ctx, format_get("/debug/verbose", None), None).await?;
-        assert!(status.contains("404"), "expected 404, got: {status}");
+        assert_eq!(response.status_code, 404);
         Ok(())
     }
 
@@ -1742,9 +1915,9 @@ mod tests {
     async fn debug_verbose_route_503_without_subscriber() -> Result<(), WorkerError> {
         let _guard = NamespaceGuard::new("api-debug-missing-subscriber")?;
         let (mut ctx, _store) = build_ctx(None).await?;
-        let (status, _body) =
+        let response =
             send_plain_request(&mut ctx, format_get("/debug/verbose", None), None).await?;
-        assert!(status.contains("503"), "expected 503, got: {status}");
+        assert_eq!(response.status_code, 503);
         Ok(())
     }
 
@@ -1752,10 +1925,9 @@ mod tests {
     async fn debug_ui_route_returns_html_scaffold() -> Result<(), WorkerError> {
         let _guard = NamespaceGuard::new("api-debug-ui-html")?;
         let (mut ctx, _store) = build_ctx(None).await?;
-        let (status, body) =
-            send_plain_request(&mut ctx, format_get("/debug/ui", None), None).await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
-        let html = String::from_utf8(body)
+        let response = send_plain_request(&mut ctx, format_get("/debug/ui", None), None).await?;
+        assert_eq!(response.status_code, 200);
+        let html = String::from_utf8(response.body)
             .map_err(|err| WorkerError::Message(format!("ui body not utf8: {err}")))?;
         assert!(html.contains("id=\"meta-panel\""));
         assert!(html.contains("/debug/verbose"));
@@ -1777,33 +1949,33 @@ mod tests {
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_debug_snapshot_subscriber(debug_subscriber);
 
-        let (status, _body) =
+        let response =
             send_plain_request(&mut ctx, format_get("/debug/verbose", None), None).await?;
-        assert!(status.contains("401"), "expected 401, got: {status}");
+        assert_eq!(response.status_code, 401);
 
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_get("/debug/verbose", Some(&roles.read_bearer_header())),
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_get("/debug/ui", Some(&roles.read_bearer_header())),
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
-        let (status, _body) = send_plain_request(
+        let response = send_plain_request(
             &mut ctx,
             format_get("/debug/verbose", Some(&roles.admin_bearer_header())),
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
         Ok(())
     }
 
@@ -1823,9 +1995,9 @@ mod tests {
 
         let (mut ctx, _store) = build_ctx(None).await?;
 
-        let (status, _body) =
+        let response =
             send_plain_request(&mut ctx, format_get("/fallback/cluster", None), None).await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
         let trusted_client = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         expect_tls_handshake_failure(&mut ctx, trusted_client, "localhost").await?;
@@ -1855,12 +2027,12 @@ mod tests {
             )?),
         )?;
 
-        let (status, _body) =
+        let response =
             send_plain_request(&mut ctx, format_get("/fallback/cluster", None), None).await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
         let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
-        let (status, _body) = send_tls_request(
+        let response = send_tls_request(
             &mut ctx,
             client_cfg,
             "localhost",
@@ -1868,7 +2040,7 @@ mod tests {
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
         Ok(())
     }
 
@@ -1896,7 +2068,7 @@ mod tests {
         )?;
 
         let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
-        let (status, _body) = send_tls_request(
+        let response = send_tls_request(
             &mut ctx,
             client_cfg,
             "localhost",
@@ -1904,7 +2076,7 @@ mod tests {
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
         let addr = ctx.local_addr()?;
         let mut plain = TcpStream::connect(addr)
@@ -1915,16 +2087,10 @@ mod tests {
             .await
             .map_err(|err| WorkerError::Message(format!("plain write failed: {err}")))?;
         step_once(&mut ctx).await?;
-        let mut raw = Vec::new();
-        plain
-            .read_to_end(&mut raw)
-            .await
-            .map_err(|err| WorkerError::Message(format!("plain read failed: {err}")))?;
-        let response_text = String::from_utf8_lossy(&raw);
-        assert!(
-            !response_text.contains("HTTP/1.1 200"),
-            "expected plaintext request rejection in required mode, got: {response_text}"
-        );
+        let plain_result = read_http_response_framed(&mut plain, IO_TIMEOUT).await;
+        if let Ok(plain_response) = plain_result {
+            assert_ne!(plain_response.status_code, 200);
+        }
         Ok(())
     }
 
@@ -1964,7 +2130,7 @@ mod tests {
         ctx.configure_tls(ApiTlsMode::Required, server_cfg)?;
 
         let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
-        let (status, _body) = send_tls_request(
+        let response = send_tls_request(
             &mut ctx,
             client_cfg,
             "localhost",
@@ -1972,7 +2138,7 @@ mod tests {
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
         Ok(())
     }
 
@@ -2035,7 +2201,7 @@ mod tests {
             Some(&fixture.trusted_client),
             Some(&fixture.trusted_client_ca.cert),
         )?;
-        let (status, _body) = send_tls_request(
+        let response = send_tls_request(
             &mut ctx,
             trusted_cfg,
             "localhost",
@@ -2043,7 +2209,7 @@ mod tests {
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
         let missing_client_cert_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         expect_tls_request_rejected(&mut ctx, missing_client_cert_cfg, "localhost").await?;
@@ -2161,7 +2327,7 @@ mod tests {
             Some(&fixture.trusted_client),
             Some(&fixture.trusted_client_ca.cert),
         )?;
-        let (status, _body) = send_tls_request(
+        let response = send_tls_request(
             &mut ctx,
             trusted_cfg,
             "localhost",
@@ -2169,7 +2335,7 @@ mod tests {
             None,
         )
         .await?;
-        assert!(status.contains("200"), "expected 200, got: {status}");
+        assert_eq!(response.status_code, 200);
 
         let missing_client_cert_cfg =
             build_client_config(&fixture.valid_server_ca.cert, None, None)?;

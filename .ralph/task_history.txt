@@ -75,3 +75,4 @@
 .ralph/tasks/bugs/etcd-watch-bootstrap-startup-timeout-and-resnapshot-stale-events.md
 .ralph/tasks/bugs/bug-ha-e2e-false-pass-via-best-effort-polling-and-timestamp-fallback.md
 .ralph/tasks/bugs/fencing-cutoff-commit-timestamp-zero-fallback-undercounts.md
+.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md
