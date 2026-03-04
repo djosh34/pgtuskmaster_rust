@@ -32,4 +32,5 @@
 
 - [Testing Model](./testing/index.md)
   - [Harness Architecture](./testing/harness.md)
+  - [HA no-quorum stress mapping](./testing/ha-e2e-stress-mapping.md)
   - [BDD Coverage](./testing/bdd.md)

@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use crate::cli::client::{CliApiClient, HaStateResponse};
 use crate::cli::error::CliError;
 use crate::state::{UnixMillis, WorkerError};
-use crate::test_harness::ports::allocate_ports;
+use crate::test_harness::ports::{allocate_ports, PortReservation};
 
 pub(crate) async fn run_with_local_set<F, T>(future: F) -> T
 where
@@ -30,10 +30,10 @@ pub(crate) async fn wait_for_node_api_ready_or_task_exit(
     node_addr: SocketAddr,
     node_id: &str,
     postgres_log_file: &Path,
-    task: &mut JoinHandle<Result<(), WorkerError>>,
+    task: JoinHandle<Result<(), WorkerError>>,
     http_step_timeout: Duration,
     timeout: Duration,
-) -> Result<(), WorkerError> {
+) -> Result<JoinHandle<Result<(), WorkerError>>, WorkerError> {
     let deadline = tokio::time::Instant::now() + timeout;
     let timeout_ms = http_timeout_ms(http_step_timeout)?;
     let client = CliApiClient::new(format!("http://{node_addr}"), timeout_ms, None, None).map_err(
@@ -61,11 +61,13 @@ pub(crate) async fn wait_for_node_api_ready_or_task_exit(
         }
 
         let observation = match client.get_ha_state().await {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(task),
             Err(err) => err.to_string(),
         };
 
         if tokio::time::Instant::now() >= deadline {
+            task.abort();
+            let _ = task.await;
             return Err(WorkerError::Message(format!(
                 "timed out waiting for api readiness for {node_id} at {node_addr}; last_observation={observation}; postgres_log_tail={}",
                 read_log_tail(postgres_log_file, 40)
@@ -266,21 +268,104 @@ pub(crate) async fn pg_ctl_stop_immediate(
         .spawn()
         .map_err(|err| WorkerError::Message(format!("pg_ctl stop spawn failed: {err}")))?;
     let label = format!("pg_ctl stop for {}", data_dir.display());
-    let status = wait_for_child_exit_with_timeout(
+    let wait_result = wait_for_child_exit_with_timeout(
         &label,
         &mut child,
         command_timeout,
         command_kill_wait_timeout,
     )
-    .await?;
+    .await;
 
-    if status.success() || !pid_file.exists() {
-        Ok(())
-    } else {
+    match wait_result {
+        Ok(status) => {
+            if status.success() || !pid_file.exists() {
+                return Ok(());
+            }
+        }
+        Err(_) => {
+            // Continue to fallback kill path below.
+        }
+    }
+
+    let pid = read_postmaster_pid(&pid_file)?;
+    force_kill_postmaster_pid(pid, &label).await?;
+    if pid_is_alive(pid, &label).await.unwrap_or(false) {
         Err(WorkerError::Message(format!(
-            "pg_ctl stop exited unsuccessfully with status {status} for {}",
-            data_dir.display()
+            "{label} postgres pid {pid} still alive after fallback kill"
         )))
+    } else {
+        Ok(())
+    }
+}
+
+fn read_postmaster_pid(pid_file: &Path) -> Result<u32, WorkerError> {
+    let contents = fs::read_to_string(pid_file).map_err(|err| {
+        WorkerError::Message(format!(
+            "read postmaster.pid failed for {}: {err}",
+            pid_file.display()
+        ))
+    })?;
+    let first_line = contents
+        .lines()
+        .next()
+        .ok_or_else(|| WorkerError::Message("postmaster.pid missing pid line".to_string()))?;
+    let trimmed = first_line.trim();
+    if trimmed.is_empty() {
+        return Err(WorkerError::Message(
+            "postmaster.pid pid line is empty".to_string(),
+        ));
+    }
+    trimmed.parse::<u32>().map_err(|err| {
+        WorkerError::Message(format!(
+            "parse postmaster pid '{trimmed}' failed: {err}"
+        ))
+    })
+}
+
+async fn kill_best_effort(pid: u32, signal: &str, label: &str) -> Result<(), WorkerError> {
+    let mut command = Command::new("kill");
+    command.arg(format!("-{signal}")).arg(pid.to_string());
+    match tokio::time::timeout(Duration::from_secs(2), command.status()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(err)) => Err(WorkerError::Message(format!(
+            "{label} kill -{signal} failed for pid={pid}: {err}"
+        ))),
+        Err(_) => Err(WorkerError::Message(format!(
+            "{label} kill -{signal} timed out for pid={pid}"
+        ))),
+    }
+}
+
+async fn pid_is_alive(pid: u32, label: &str) -> Result<bool, WorkerError> {
+    let mut command = Command::new("kill");
+    command.arg("-0").arg(pid.to_string());
+    match tokio::time::timeout(Duration::from_secs(2), command.status()).await {
+        Ok(Ok(status)) => Ok(status.success()),
+        Ok(Err(err)) => Err(WorkerError::Message(format!(
+            "{label} kill -0 spawn failed for pid={pid}: {err}"
+        ))),
+        Err(_) => Err(WorkerError::Message(format!(
+            "{label} kill -0 timed out for pid={pid}"
+        ))),
+    }
+}
+
+async fn force_kill_postmaster_pid(pid: u32, label: &str) -> Result<(), WorkerError> {
+    let _ = kill_best_effort(pid, "TERM", label).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    if !pid_is_alive(pid, label).await.unwrap_or(false) {
+        return Ok(());
+    }
+
+    let _ = kill_best_effort(pid, "KILL", label).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    if pid_is_alive(pid, label).await.unwrap_or(false) {
+        Err(WorkerError::Message(format!(
+            "{label} postgres pid {pid} still alive after kill"
+        )))
+    } else {
+        Ok(())
     }
 }
 
@@ -434,17 +519,20 @@ pub(crate) fn parse_http_endpoint(endpoint: &str) -> Result<SocketAddr, WorkerEr
     })
 }
 
-pub(crate) fn allocate_non_overlapping_ports(
+pub(crate) fn reserve_non_overlapping_ports(
     count: usize,
     forbidden: &BTreeSet<u16>,
-) -> Result<Vec<u16>, WorkerError> {
+) -> Result<PortReservation, WorkerError> {
     if count == 0 {
-        return Ok(Vec::new());
+        return Ok(PortReservation::empty());
     }
 
     for _attempt in 0..30 {
-        let candidate = allocate_ports(count)?.into_vec();
-        let overlaps = candidate.iter().any(|port| forbidden.contains(port));
+        let candidate = allocate_ports(count)?;
+        let overlaps = candidate
+            .as_slice()
+            .iter()
+            .any(|port| forbidden.contains(port));
         if !overlaps {
             return Ok(candidate);
         }

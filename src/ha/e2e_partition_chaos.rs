@@ -15,6 +15,7 @@ use crate::{
 
 const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const E2E_PG_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(20);
 const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(60);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(360);
@@ -516,16 +517,30 @@ impl PartitionFixture {
             let _ = task.await;
         }
 
+        let mut pg_stops = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
-            if let Err(err) = ha_e2e::util::pg_ctl_stop_immediate(
-                &self.pg_ctl_bin,
-                &node.data_dir,
-                E2E_COMMAND_TIMEOUT,
-                E2E_COMMAND_KILL_WAIT_TIMEOUT,
-            )
-            .await
-            {
-                failures.push(format!("postgres stop {} failed: {err}", node.id));
+            let pg_ctl_bin = self.pg_ctl_bin.clone();
+            let data_dir = node.data_dir.clone();
+            let node_id = node.id.clone();
+            pg_stops.push(tokio::task::spawn_local(async move {
+                match ha_e2e::util::pg_ctl_stop_immediate(
+                    &pg_ctl_bin,
+                    &data_dir,
+                    E2E_PG_STOP_TIMEOUT,
+                    E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                )
+                .await
+                {
+                    Ok(()) => None,
+                    Err(err) => Some(format!("postgres stop {node_id} failed: {err}")),
+                }
+            }));
+        }
+        for stop in pg_stops {
+            match stop.await {
+                Ok(Some(message)) => failures.push(message),
+                Ok(None) => {}
+                Err(err) => failures.push(format!("postgres stop join failed: {err}")),
             }
         }
 

@@ -23,12 +23,12 @@ use crate::test_harness::etcd3::{
 use crate::test_harness::namespace::NamespaceGuard;
 use crate::test_harness::net_proxy::{ProxyLinkSpec, TcpProxyLink};
 use crate::test_harness::pg16::prepare_pgdata_dir;
-use crate::test_harness::ports::allocate_ha_topology_ports;
+use crate::test_harness::ports::{allocate_ha_topology_ports, PortReservation};
 
 use super::config::{Mode, TestConfig};
 use super::handle::{NodeHandle, TestClusterHandle};
 use super::util::{
-    allocate_non_overlapping_ports, http_timeout_ms, parse_http_endpoint, parse_loopback_socket,
+    http_timeout_ms, parse_http_endpoint, parse_loopback_socket, reserve_non_overlapping_ports,
     wait_for_bootstrap_primary, wait_for_node_api_ready_or_task_exit,
 };
 
@@ -136,9 +136,16 @@ impl StartupGuard {
 }
 
 pub(crate) async fn start_cluster(config: TestConfig) -> Result<TestClusterHandle, WorkerError> {
+    let mut config = config;
     config.validate()?;
 
     let namespace_guard = NamespaceGuard::new(config.test_name.as_str())?;
+    let namespace_id = namespace_guard
+        .namespace()?
+        .id
+        .clone();
+    config.scope = format!("{}-{}", config.scope, namespace_id);
+    config.cluster_name = format!("{}-{}", config.cluster_name, namespace_id);
 
     let binaries = require_pg16_process_binaries_for_real_tests()?;
     let etcd_bin = require_etcd_bin_for_real_tests()?;
@@ -184,9 +191,9 @@ async fn start_cluster_inner(
 ) -> Result<(), WorkerError> {
     let namespace = guard.guard.namespace()?.clone();
     let etcd_member_count = config.etcd_members.len();
-    let reservation = allocate_ha_topology_ports(config.node_count, etcd_member_count)?;
-    let topology = reservation.into_layout();
-    let node_ports = topology.node_ports;
+    let mut topology_reservation = allocate_ha_topology_ports(config.node_count, etcd_member_count)?;
+    let topology = topology_reservation.layout().clone();
+    let node_ports = topology.node_ports.clone();
 
     let mut forbidden_ports: BTreeSet<u16> = topology
         .etcd_client_ports
@@ -223,6 +230,16 @@ async fn start_cluster_inner(
         members,
     };
 
+    for port in topology
+        .etcd_client_ports
+        .iter()
+        .chain(topology.etcd_peer_ports.iter())
+    {
+        topology_reservation
+            .release_port(*port)
+            .map_err(|err| WorkerError::Message(format!("release etcd reserved port failed: {err}")))?;
+    }
+
     let etcd = spawn_etcd3_cluster(cluster_spec).await?;
     let endpoints = etcd.client_endpoints().to_vec();
     let endpoint_count = endpoints.len();
@@ -233,7 +250,9 @@ async fn start_cluster_inner(
     }
     guard.etcd = Some(etcd);
 
-    let api_ports = allocate_non_overlapping_ports(config.node_count, &forbidden_ports)?;
+    let mut api_reservation =
+        reserve_non_overlapping_ports(config.node_count, &forbidden_ports)?;
+    let api_ports = api_reservation.as_slice().to_vec();
     if api_ports.len() != config.node_count {
         return Err(WorkerError::Message(format!(
             "api port reservation mismatch: expected {}, got {}",
@@ -250,6 +269,7 @@ async fn start_cluster_inner(
     })?;
 
     let mut cursor = 0usize;
+    let mut proxy_reservation = PortReservation::empty();
     let (dcs_endpoints_by_node, proxy_ports) = match config.mode {
         Mode::Plain => (None, Vec::new()),
         Mode::PartitionProxy => {
@@ -259,20 +279,26 @@ async fn start_cluster_inner(
                 .ok_or_else(|| {
                     WorkerError::Message("proxy port count overflow for partition mode".to_string())
                 })?;
-            let proxy_ports = allocate_non_overlapping_ports(total_proxy_ports, &forbidden_ports)?;
+            proxy_reservation =
+                reserve_non_overlapping_ports(total_proxy_ports, &forbidden_ports)?;
+            let proxy_ports = proxy_reservation.as_slice().to_vec();
             let dcs_endpoints_by_node = spawn_partition_etcd_proxies(
                 guard,
                 config.node_count,
                 &endpoints,
                 proxy_ports.as_slice(),
                 &mut cursor,
+                &mut proxy_reservation,
             )
             .await?;
             (Some(dcs_endpoints_by_node), proxy_ports)
         }
     };
 
-    let next_proxy_port = |ports: &[u16], cursor_ref: &mut usize| -> Result<u16, WorkerError> {
+    let next_proxy_port = |ports: &[u16],
+                           cursor_ref: &mut usize,
+                           reservation: &mut PortReservation|
+     -> Result<u16, WorkerError> {
         if *cursor_ref >= ports.len() {
             return Err(WorkerError::Message(
                 "proxy port allocation cursor out of bounds".to_string(),
@@ -280,12 +306,15 @@ async fn start_cluster_inner(
         }
         let selected = ports[*cursor_ref];
         *cursor_ref = cursor_ref.saturating_add(1);
+        reservation
+            .release_port(selected)
+            .map_err(|err| WorkerError::Message(format!("release proxy reserved port failed: {err}")))?;
         Ok(selected)
     };
 
     let http_timeout_ms = http_timeout_ms(config.timeouts.http_step_timeout)?;
 
-    for (index, (pg_port, api_port)) in node_ports.into_iter().zip(api_ports).enumerate() {
+    for (index, (pg_port, api_port)) in node_ports.iter().copied().zip(api_ports).enumerate() {
         let node_id = format!("node-{}", index.saturating_add(1));
         let data_dir = prepare_pgdata_dir(&namespace, &node_id)?;
         let socket_dir = namespace.child_dir(format!("run/{node_id}"));
@@ -305,7 +334,8 @@ async fn start_cluster_inner(
         let (api_observe_addr, sql_port) = match config.mode {
             Mode::Plain => (api_addr, pg_port),
             Mode::PartitionProxy => {
-                let api_proxy_port = next_proxy_port(proxy_ports.as_slice(), &mut cursor)?;
+                let api_proxy_port =
+                    next_proxy_port(proxy_ports.as_slice(), &mut cursor, &mut proxy_reservation)?;
                 let api_proxy = TcpProxyLink::spawn(ProxyLinkSpec {
                     name: format!("{node_id}-api-proxy"),
                     listen_addr: parse_loopback_socket(api_proxy_port)?,
@@ -315,7 +345,8 @@ async fn start_cluster_inner(
                 let api_proxy_addr = api_proxy.listen_addr();
                 guard.api_proxies.insert(node_id.clone(), api_proxy);
 
-                let pg_proxy_port = next_proxy_port(proxy_ports.as_slice(), &mut cursor)?;
+                let pg_proxy_port =
+                    next_proxy_port(proxy_ports.as_slice(), &mut cursor, &mut proxy_reservation)?;
                 let pg_target_addr = parse_loopback_socket(pg_port)?;
                 let pg_proxy = TcpProxyLink::spawn(ProxyLinkSpec {
                     name: format!("{node_id}-pg-proxy"),
@@ -397,15 +428,24 @@ async fn start_cluster_inner(
             },
         };
 
+        topology_reservation
+            .release_port(pg_port)
+            .map_err(|err| {
+                WorkerError::Message(format!("release postgres reserved port failed: {err}"))
+            })?;
+        api_reservation.release_port(api_port).map_err(|err| {
+            WorkerError::Message(format!("release api reserved port failed: {err}"))
+        })?;
+
         let task_node_id = node_id.clone();
-        guard.tasks.push(tokio::task::spawn_local(async move {
+        let runtime_task = tokio::task::spawn_local(async move {
             match crate::runtime::run_node_from_config(runtime_cfg).await {
                 Ok(()) => Ok(()),
                 Err(err) => Err(WorkerError::Message(format!(
                     "runtime node {task_node_id} exited with error: {err}"
                 ))),
             }
-        }));
+        });
 
         guard.nodes.push(NodeHandle {
             id: node_id.clone(),
@@ -418,19 +458,16 @@ async fn start_cluster_inner(
         });
         guard.api_clients.push(api_client);
 
-        let task_handle = guard.tasks.last_mut().ok_or_else(|| {
-            WorkerError::Message("missing runtime task after node spawn".to_string())
-        })?;
-
-        wait_for_node_api_ready_or_task_exit(
+        let runtime_task = wait_for_node_api_ready_or_task_exit(
             api_observe_addr,
             node_id.as_str(),
             log_file.as_path(),
-            task_handle,
+            runtime_task,
             config.timeouts.http_step_timeout,
             config.timeouts.api_readiness_timeout,
         )
         .await?;
+        guard.tasks.push(runtime_task);
 
         if index == 0 {
             let expected_member_id = format!("node-{}", index.saturating_add(1));
@@ -460,6 +497,7 @@ async fn spawn_partition_etcd_proxies(
     endpoints: &[String],
     proxy_ports: &[u16],
     cursor: &mut usize,
+    proxy_reservation: &mut PortReservation,
 ) -> Result<BTreeMap<String, Vec<String>>, WorkerError> {
     let member_names = guard
         .etcd
@@ -474,7 +512,10 @@ async fn spawn_partition_etcd_proxies(
         )));
     }
 
-    let next_port = |ports: &[u16], cursor_ref: &mut usize| -> Result<u16, WorkerError> {
+    let next_port = |ports: &[u16],
+                     cursor_ref: &mut usize,
+                     reservation: &mut PortReservation|
+     -> Result<u16, WorkerError> {
         if *cursor_ref >= ports.len() {
             return Err(WorkerError::Message(
                 "proxy port allocation cursor out of bounds".to_string(),
@@ -482,6 +523,9 @@ async fn spawn_partition_etcd_proxies(
         }
         let selected = ports[*cursor_ref];
         *cursor_ref = cursor_ref.saturating_add(1);
+        reservation
+            .release_port(selected)
+            .map_err(|err| WorkerError::Message(format!("release proxy reserved port failed: {err}")))?;
         Ok(selected)
     };
 
@@ -497,7 +541,7 @@ async fn spawn_partition_etcd_proxies(
         let endpoint = endpoints.get(endpoint_index).ok_or_else(|| {
             WorkerError::Message(format!("missing etcd endpoint for index {endpoint_index}"))
         })?;
-        let proxy_port = next_port(proxy_ports, cursor)?;
+        let proxy_port = next_port(proxy_ports, cursor, proxy_reservation)?;
         let target_addr = parse_http_endpoint(endpoint.as_str())?;
         let link_name = format!("{node_id}-to-{member_name}-etcd");
         let listen_addr = parse_loopback_socket(proxy_port)?;

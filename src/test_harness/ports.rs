@@ -10,12 +10,35 @@ pub(crate) struct PortReservation {
 }
 
 impl PortReservation {
+    pub(crate) fn empty() -> Self {
+        Self {
+            listeners: Vec::new(),
+            ports: Vec::new(),
+        }
+    }
+
     pub(crate) fn as_slice(&self) -> &[u16] {
         &self.ports
     }
 
     pub(crate) fn into_vec(self) -> Vec<u16> {
         self.ports
+    }
+
+    pub(crate) fn release_port(&mut self, port: u16) -> Result<(), HarnessError> {
+        let index = self
+            .ports
+            .iter()
+            .position(|candidate| *candidate == port)
+            .ok_or_else(|| {
+                HarnessError::InvalidInput(format!(
+                    "attempted to release unknown reserved port: {port}"
+                ))
+            })?;
+
+        self.ports.remove(index);
+        self.listeners.remove(index);
+        Ok(())
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -47,6 +70,10 @@ impl HaTopologyPortReservation {
 
     pub(crate) fn into_layout(self) -> HaTopologyPorts {
         self.layout
+    }
+
+    pub(crate) fn release_port(&mut self, port: u16) -> Result<(), HarnessError> {
+        self.reservation.release_port(port)
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -125,6 +152,7 @@ pub(crate) fn allocate_ha_topology_ports(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use std::time::Duration;
@@ -237,6 +265,57 @@ mod tests {
                 .map_err(|_| HarnessError::InvalidInput("thread panicked".to_string()))?;
             thread_result?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn release_port_succeeds_for_reserved_port() -> Result<(), HarnessError> {
+        let mut reservation = allocate_ports(2)?;
+        let port = *reservation
+            .as_slice()
+            .first()
+            .ok_or_else(|| HarnessError::InvalidInput("missing reserved port".to_string()))?;
+        reservation.release_port(port)?;
+        Ok(())
+    }
+
+    #[test]
+    fn release_port_errors_for_unknown_port() -> Result<(), HarnessError> {
+        let mut reservation = allocate_ports(2)?;
+        let result = reservation.release_port(1);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn release_port_keeps_other_ports_reserved() -> Result<(), HarnessError> {
+        let mut reservation = allocate_ports(2)?;
+        let ports = reservation.as_slice().to_vec();
+        if ports.len() != 2 {
+            return Err(HarnessError::InvalidInput(format!(
+                "expected 2 ports, got {}",
+                ports.len()
+            )));
+        }
+
+        reservation.release_port(ports[0])?;
+
+        let released_bind = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, ports[0]));
+        if released_bind.is_err() {
+            return Err(HarnessError::InvalidInput(format!(
+                "expected released port to be bindable: port={} err={:?}",
+                ports[0], released_bind
+            )));
+        }
+
+        let still_held_bind = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, ports[1]));
+        if still_held_bind.is_ok() {
+            return Err(HarnessError::InvalidInput(format!(
+                "expected unreleased port to remain reserved: port={}",
+                ports[1]
+            )));
+        }
+
         Ok(())
     }
 }

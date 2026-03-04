@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -31,11 +32,23 @@ struct ClusterFixture {
 
 const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const E2E_SQL_WORKLOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+const E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+const E2E_PG_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(20);
 const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(45);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
+const E2E_SHORT_SCENARIO_TIMEOUT: Duration = Duration::from_secs(90);
 const STRESS_ARTIFACT_DIR: &str = ".ralph/evidence/27-e2e-ha-stress";
 const STRESS_SUMMARY_SCHEMA_VERSION: u32 = 1;
+
+static E2E_UNIQUE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn unique_e2e_token() -> Result<String, WorkerError> {
+    let now = ha_e2e::util::unix_now()?.0;
+    let seq = E2E_UNIQUE_SEQ.fetch_add(1, Ordering::Relaxed);
+    Ok(format!("{now}-{seq}"))
+}
 
 fn e2e_http_timeout_ms() -> Result<u64, WorkerError> {
     u64::try_from(E2E_HTTP_STEP_TIMEOUT.as_millis())
@@ -593,48 +606,64 @@ impl ClusterFixture {
         let mut stats = HaObservationStats::default();
         let mut last_leader_signature: Option<String> = None;
         loop {
-            match self.cluster_ha_states().await {
-                Ok(states) => {
-                    stats.sample_count = stats.sample_count.saturating_add(1);
-                    let primaries = Self::primary_members(states.as_slice());
-                    stats.max_concurrent_primaries =
-                        stats.max_concurrent_primaries.max(primaries.len());
-
-                    let mut leaders = states
-                        .iter()
-                        .filter_map(|state| state.leader.clone())
-                        .collect::<Vec<_>>();
-                    leaders.sort();
-                    leaders.dedup();
-                    let leader_signature = leaders.join("|");
-                    if last_leader_signature
-                        .as_deref()
-                        .map(|prior| prior != leader_signature.as_str())
-                        .unwrap_or(false)
-                    {
-                        stats.leader_change_count = stats.leader_change_count.saturating_add(1);
-                    }
-                    last_leader_signature = Some(leader_signature);
-                    if !states.is_empty() && states.iter().all(|state| state.ha_phase == "FailSafe")
-                    {
-                        stats.failsafe_sample_count = stats.failsafe_sample_count.saturating_add(1);
-                    }
-                    if ring_capacity > 0 {
-                        let sample = states
-                            .iter()
-                            .map(|state| {
+            self.ensure_runtime_tasks_healthy().await?;
+            match self
+                .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
+                .await
+            {
+                Ok(polled) => {
+                    let mut states = Vec::new();
+                    let mut fragments = Vec::with_capacity(polled.len());
+                    for (node_id, state_result) in polled {
+                        match state_result {
+                            Ok(state) => {
                                 let leader = state.leader.as_deref().unwrap_or("none");
-                                format!(
+                                fragments.push(format!(
                                     "{}:{}:leader={leader}",
                                     state.self_member_id, state.ha_phase
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ");
+                                ));
+                                states.push(state);
+                            }
+                            Err(err) => {
+                                stats.api_error_count = stats.api_error_count.saturating_add(1);
+                                fragments.push(format!("{node_id}:error={err}"));
+                            }
+                        }
+                    }
+
+                    if !states.is_empty() {
+                        stats.sample_count = stats.sample_count.saturating_add(1);
+                        let primaries = Self::primary_members(states.as_slice());
+                        stats.max_concurrent_primaries =
+                            stats.max_concurrent_primaries.max(primaries.len());
+
+                        let mut leaders = states
+                            .iter()
+                            .filter_map(|state| state.leader.clone())
+                            .collect::<Vec<_>>();
+                        leaders.sort();
+                        leaders.dedup();
+                        let leader_signature = leaders.join("|");
+                        if last_leader_signature
+                            .as_deref()
+                            .map(|prior| prior != leader_signature.as_str())
+                            .unwrap_or(false)
+                        {
+                            stats.leader_change_count =
+                                stats.leader_change_count.saturating_add(1);
+                        }
+                        last_leader_signature = Some(leader_signature);
+                        if states.iter().all(|state| state.ha_phase == "FailSafe") {
+                            stats.failsafe_sample_count =
+                                stats.failsafe_sample_count.saturating_add(1);
+                        }
+                    }
+
+                    if ring_capacity > 0 {
                         if stats.recent_samples.len() >= ring_capacity {
                             let _ = stats.recent_samples.remove(0);
                         }
-                        stats.recent_samples.push(sample);
+                        stats.recent_samples.push(fragments.join(", "));
                     }
                 }
                 Err(err) => {
@@ -646,7 +675,7 @@ impl ClusterFixture {
                         stats.recent_samples.push(format!("api_error:{err}"));
                     }
                 }
-            }
+            };
             if tokio::time::Instant::now() >= deadline {
                 return Ok(stats);
             }
@@ -762,13 +791,22 @@ impl ClusterFixture {
         min_rows: u64,
         timeout: Duration,
     ) -> Result<u64, WorkerError> {
+        let port = self.postgres_port_by_id(node_id)?;
         let count_sql = format!("SELECT COUNT(*)::bigint FROM {table_name}");
         let duplicate_sql = format!(
             "SELECT COUNT(*)::bigint FROM (SELECT worker_id, seq, COUNT(*) AS c FROM {table_name} GROUP BY worker_id, seq HAVING COUNT(*) > 1) d"
         );
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let count_raw = match self.run_sql_on_node(node_id, count_sql.as_str()).await {
+            let count_raw = match ha_e2e::util::run_psql_statement(
+                self.psql_bin.as_path(),
+                port,
+                count_sql.as_str(),
+                E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
+                E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT,
+            )
+            .await
+            {
                 Ok(value) => value,
                 Err(err) => {
                     let detail = format!("row count query failed: {err}");
@@ -781,7 +819,15 @@ impl ClusterFixture {
                     continue;
                 }
             };
-            let duplicate_raw = match self.run_sql_on_node(node_id, duplicate_sql.as_str()).await {
+            let duplicate_raw = match ha_e2e::util::run_psql_statement(
+                self.psql_bin.as_path(),
+                port,
+                duplicate_sql.as_str(),
+                E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
+                E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT,
+            )
+            .await
+            {
                 Ok(value) => value,
                 Err(err) => {
                     let detail = format!("duplicate query failed: {err}");
@@ -1116,12 +1162,60 @@ impl ClusterFixture {
         .await
     }
 
+    async fn poll_node_ha_states_best_effort(
+        &self,
+    ) -> Result<Vec<(String, Result<HaStateResponse, WorkerError>)>, WorkerError> {
+        self.poll_node_ha_states_best_effort_with_timeout(E2E_HTTP_STEP_TIMEOUT)
+            .await
+    }
+
+    async fn poll_node_ha_states_best_effort_with_timeout(
+        &self,
+        http_step_timeout: Duration,
+    ) -> Result<Vec<(String, Result<HaStateResponse, WorkerError>)>, WorkerError> {
+        let node_count = self.nodes.len();
+        let mut joins = Vec::with_capacity(node_count);
+
+        for node_index in 0..node_count {
+            let node = self.nodes.get(node_index).ok_or_else(|| {
+                WorkerError::Message(format!(
+                    "invalid node index for HA state poll: {node_index}"
+                ))
+            })?;
+            let (node_id, client) = self.cli_api_client_for_node_index(node_index)?;
+            let node_addr = node.api_addr;
+            joins.push(tokio::task::spawn_local(async move {
+                let result = ha_e2e::util::get_ha_state_with_fallback(
+                    &client,
+                    node_id.as_str(),
+                    node_addr,
+                    http_step_timeout,
+                )
+                .await;
+                (node_id, result)
+            }));
+        }
+
+        let mut results = Vec::with_capacity(node_count);
+        for join in joins {
+            let joined = join.await.map_err(|err| {
+                WorkerError::Message(format!("HA state poll join failed: {err}"))
+            })?;
+            results.push(joined);
+        }
+
+        Ok(results)
+    }
+
     async fn cluster_ha_states(&mut self) -> Result<Vec<HaStateResponse>, WorkerError> {
         self.ensure_runtime_tasks_healthy().await?;
-        let mut states = Vec::with_capacity(self.nodes.len());
-        let node_count = self.nodes.len();
-        for index in 0..node_count {
-            states.push(self.fetch_node_ha_state_by_index(index).await?);
+        let polled = self.poll_node_ha_states_best_effort().await?;
+        let mut states = Vec::with_capacity(polled.len());
+        for (node_id, result) in polled {
+            let state = result.map_err(|err| {
+                WorkerError::Message(format!("HA state poll failed for {node_id}: {err}"))
+            })?;
+            states.push(state);
         }
         Ok(states)
     }
@@ -1258,24 +1352,17 @@ impl ClusterFixture {
                     .as_deref()
                     .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for all nodes to enter fail-safe via API; last_observation={detail}"
+                    "timed out waiting for no-quorum fail-safe condition via API (no primary + at least one FailSafe + all nodes observed); last_observation={detail}"
                 )));
             }
             self.ensure_runtime_tasks_healthy().await?;
             let mut poll_details = Vec::new();
             let mut has_primary = false;
-            let node_count = self.nodes.len();
-            for node_index in 0..node_count {
-                let node_id = self
-                    .nodes
-                    .get(node_index)
-                    .map(|node| node.id.clone())
-                    .ok_or_else(|| {
-                        WorkerError::Message(format!(
-                            "missing node metadata for fail-safe poll index {node_index}"
-                        ))
-                    })?;
-                match self.fetch_node_ha_state_by_index(node_index).await {
+            for (node_id, state_result) in self
+                .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
+                .await?
+            {
+                match state_result {
                     Ok(state) => {
                         if state.ha_phase == "Primary" {
                             has_primary = true;
@@ -1288,9 +1375,7 @@ impl ClusterFixture {
                             state.ha_phase, state.leader
                         ));
                     }
-                    Err(err) => {
-                        poll_details.push(format!("{node_id}:error={err}"));
-                    }
+                    Err(err) => poll_details.push(format!("{node_id}:error={err}")),
                 }
             }
             if !has_primary && !observed_failsafe_nodes.is_empty() {
@@ -1301,6 +1386,89 @@ impl ClusterFixture {
                 observed_failsafe_nodes,
                 poll_details.join(" | ")
             ));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn wait_for_all_nodes_failsafe(&mut self, timeout: Duration) -> Result<(), WorkerError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut observed_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
+        let mut observed_non_primary_nodes: BTreeSet<String> = BTreeSet::new();
+        let mut last_observation: Option<String> = None;
+        let mut last_recorded_at = tokio::time::Instant::now();
+        let node_count = self.nodes.len();
+        if node_count == 0 {
+            return Err(WorkerError::Message(
+                "cannot wait for fail-safe with zero nodes".to_string(),
+            ));
+        }
+
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                let detail = last_observation
+                    .as_deref()
+                    .map_or_else(|| "none".to_string(), ToString::to_string);
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for no-quorum fail-safe condition via API (no primary + at least one FailSafe + all nodes observed non-primary); last_observation={detail}"
+                )));
+            }
+            self.ensure_runtime_tasks_healthy().await?;
+            let mut poll_details = Vec::new();
+            let mut has_primary = false;
+            let polled = match self
+                .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
+                .await
+            {
+                Ok(values) => values,
+                Err(err) => {
+                    last_observation = Some(format!("poll:error={err}"));
+                    if last_recorded_at.elapsed() >= Duration::from_secs(5) {
+                        self.record(format!("no-quorum wait poll: poll:error={err}"));
+                        last_recorded_at = tokio::time::Instant::now();
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+
+            for (node_id, state_result) in polled {
+                match state_result {
+                    Ok(state) => {
+                        if state.ha_phase == "Primary" {
+                            has_primary = true;
+                        } else {
+                            observed_non_primary_nodes.insert(node_id.clone());
+                        }
+                        if state.ha_phase == "FailSafe" {
+                            observed_failsafe_nodes.insert(node_id.clone());
+                        }
+                        poll_details.push(format!(
+                            "{node_id}:phase={} leader={:?}",
+                            state.ha_phase, state.leader
+                        ));
+                    }
+                    Err(err) => poll_details.push(format!("{node_id}:error={err}")),
+                }
+            }
+
+            if !has_primary
+                && !observed_failsafe_nodes.is_empty()
+                && observed_non_primary_nodes.len() == node_count
+            {
+                return Ok(());
+            }
+            last_observation = Some(format!(
+                "observed_failsafe_nodes={:?}; observed_non_primary_nodes={:?}; poll={}",
+                observed_failsafe_nodes,
+                observed_non_primary_nodes,
+                poll_details.join(" | ")
+            ));
+            if last_recorded_at.elapsed() >= Duration::from_secs(5) {
+                if let Some(observation) = last_observation.as_deref() {
+                    self.record(format!("no-quorum wait poll: {observation}"));
+                }
+                last_recorded_at = tokio::time::Instant::now();
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -1403,14 +1571,22 @@ impl ClusterFixture {
             let _ = task.await;
         }
 
+        let mut pg_stops = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
-            let _ = ha_e2e::util::pg_ctl_stop_immediate(
-                &self.pg_ctl_bin,
-                &node.data_dir,
-                E2E_COMMAND_TIMEOUT,
-                E2E_COMMAND_KILL_WAIT_TIMEOUT,
-            )
-            .await;
+            let pg_ctl_bin = self.pg_ctl_bin.clone();
+            let data_dir = node.data_dir.clone();
+            pg_stops.push(tokio::task::spawn_local(async move {
+                let _ = ha_e2e::util::pg_ctl_stop_immediate(
+                    &pg_ctl_bin,
+                    &data_dir,
+                    E2E_PG_STOP_TIMEOUT,
+                    E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                )
+                .await;
+            }));
+        }
+        for stop in pg_stops {
+            let _ = stop.await;
         }
 
         if let Some(etcd) = self.etcd.as_mut() {
@@ -1463,8 +1639,8 @@ async fn run_sql_workload_worker(
             workload.psql_bin.as_path(),
             target.port,
             write_sql.as_str(),
-            E2E_COMMAND_TIMEOUT,
-            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
+            E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT,
         )
         .await {
             Ok(_) => {
@@ -1505,8 +1681,8 @@ async fn run_sql_workload_worker(
             workload.psql_bin.as_path(),
             target.port,
             read_sql.as_str(),
-            E2E_COMMAND_TIMEOUT,
-            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
+            E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT,
         )
         .await {
             Ok(_) => {
@@ -1589,6 +1765,40 @@ fn finalize_stress_scenario_result(
             "stress artifact write failed: {artifact_err}"
         ))),
     }
+}
+
+async fn stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
+    fixture: &mut ClusterFixture,
+    stop_count: usize,
+    timeout: Duration,
+) -> Result<u64, WorkerError> {
+    fixture.record("no-quorum: stop etcd majority");
+    let stopped_members = fixture.stop_etcd_majority(stop_count).await?;
+    fixture.record(format!(
+        "no-quorum: etcd members stopped: {}",
+        stopped_members.join(",")
+    ));
+
+    fixture.wait_for_all_nodes_failsafe(timeout).await?;
+    fixture.record("no-quorum: fail-safe observed on all nodes");
+    Ok(ha_e2e::util::unix_now()?.0)
+}
+
+async fn stop_etcd_majority_and_wait_failsafe(
+    fixture: &mut ClusterFixture,
+    stop_count: usize,
+    timeout: Duration,
+) -> Result<u64, WorkerError> {
+    fixture.record("no-quorum: stop etcd majority");
+    let stopped_members = fixture.stop_etcd_majority(stop_count).await?;
+    fixture.record(format!(
+        "no-quorum: etcd members stopped: {}",
+        stopped_members.join(",")
+    ));
+
+    fixture.wait_for_all_failsafe(timeout).await?;
+    fixture.record("no-quorum: fail-safe observed (best-effort)");
+    Ok(ha_e2e::util::unix_now()?.0)
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1872,13 +2082,13 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
 async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
-    let scenario_name = "ha-e2e-stress-planned-switchover-concurrent-sql";
+    let scenario_name = "ha-e2e-stress-planned-switchover-concurrent-sql".to_string();
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
         let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
         let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
-            scenario_name: scenario_name.to_string(),
+            scenario_name: scenario_name.clone(),
             table_name: "ha_stress_switchover".to_string(),
             worker_count: 4,
             run_interval_ms: 250,
@@ -1972,7 +2182,7 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
         let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         Ok(StressScenarioSummary {
             schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
-            scenario: scenario_name.to_string(),
+            scenario: scenario_name.clone(),
             status: "passed".to_string(),
             started_at_unix_ms,
             finished_at_unix_ms,
@@ -2012,12 +2222,12 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
         Err(err) => {
             let message = err.to_string();
             (
-                StressScenarioSummary::failed(scenario_name, message.clone()),
+                StressScenarioSummary::failed(scenario_name.as_str(), message.clone()),
                 Some(message),
             )
         }
     };
-    let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
+    let artifacts = fixture.write_stress_artifacts(scenario_name.as_str(), &summary);
     let shutdown_result = fixture.shutdown().await;
     finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
     })
@@ -2028,13 +2238,13 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
 async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
-    let scenario_name = "ha-e2e-stress-unassisted-failover-concurrent-sql";
+    let scenario_name = "ha-e2e-stress-unassisted-failover-concurrent-sql".to_string();
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
         let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
         let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
-            scenario_name: scenario_name.to_string(),
+            scenario_name: scenario_name.clone(),
             table_name: "ha_stress_failover".to_string(),
             worker_count: 4,
             run_interval_ms: 250,
@@ -2126,7 +2336,7 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
         let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         Ok(StressScenarioSummary {
             schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
-            scenario: scenario_name.to_string(),
+            scenario: scenario_name.clone(),
             status: "passed".to_string(),
             started_at_unix_ms,
             finished_at_unix_ms,
@@ -2166,12 +2376,12 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
         Err(err) => {
             let message = err.to_string();
             (
-                StressScenarioSummary::failed(scenario_name, message.clone()),
+                StressScenarioSummary::failed(scenario_name.as_str(), message.clone()),
                 Some(message),
             )
         }
     };
-    let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
+    let artifacts = fixture.write_stress_artifacts(scenario_name.as_str(), &summary);
     let shutdown_result = fixture.shutdown().await;
     finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
     })
@@ -2179,55 +2389,150 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result<(), WorkerError> {
+async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
-    let scenario_name = "ha-e2e-stress-no-quorum-fencing-concurrent-sql";
+    let token = unique_e2e_token()?;
+    let scenario_name = format!("ha-e2e-no-quorum-enters-failsafe-strict-all-nodes-{token}");
 
-    let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+    let run_result = (async {
+        let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+        fixture.record("no-quorum: wait for stable primary");
+        let bootstrap_primary = fixture
+            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
+            .await?;
+        let failsafe_observed_at_ms = stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
+            &mut fixture,
+            2,
+            Duration::from_secs(60),
+        )
+        .await?;
+        fixture.ensure_runtime_tasks_healthy().await?;
+        let polled = fixture
+            .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
+            .await?;
+        let mut observed = Vec::new();
+        let mut observed_primary = false;
+        for (node_id, state_result) in polled {
+            match state_result {
+                Ok(state) => {
+                    if state.ha_phase == "Primary" {
+                        observed_primary = true;
+                    }
+                    observed.push(format!("{node_id}:{}", state.ha_phase));
+                }
+                Err(err) => {
+                    fixture.record(format!("no-quorum: best-effort ha poll error for {node_id}: {err}"));
+                }
+            }
+        }
+        if observed_primary {
+            return Err(WorkerError::Message(format!(
+                "expected no Primary phase after quorum loss in best-effort poll; observed={observed:?}"
+            )));
+        }
+        let ha_stats = fixture
+            .sample_ha_states_window(Duration::from_secs(4), Duration::from_millis(150), 60)
+            .await?;
+        ClusterFixture::assert_no_dual_primary_in_samples(&ha_stats)?;
+
+        let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
+        Ok(StressScenarioSummary {
+            schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
+            scenario: scenario_name.to_string(),
+            status: "passed".to_string(),
+            started_at_unix_ms,
+            finished_at_unix_ms,
+            bootstrap_primary: Some(bootstrap_primary),
+            final_primary: None,
+            former_primary_demoted: None,
+            workload_spec: SqlWorkloadSpecSummary {
+                worker_count: 0,
+                run_interval_ms: 0,
+                table_name: String::new(),
+            },
+            workload: SqlWorkloadStats::default(),
+            ha_observations: ha_stats,
+            notes: vec![
+                format!(
+                    "phase_history={}",
+                    ClusterFixture::format_phase_history(&phase_history)
+                ),
+                format!("failsafe_observed_at_ms={failsafe_observed_at_ms}"),
+            ],
+        })
+    })
+    .await;
+
+    let (summary, run_error) = match run_result {
+        Ok(summary) => (summary, None),
+        Err(err) => {
+            let message = err.to_string();
+            (
+                StressScenarioSummary::failed(scenario_name.as_str(), message.clone()),
+                Some(message),
+            )
+        }
+    };
+    let artifacts = fixture.write_stress_artifacts(scenario_name.as_str(), &summary);
+    let shutdown_result = fixture.shutdown().await;
+    finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+    let mut fixture = ClusterFixture::start(3).await?;
+    let token = unique_e2e_token()?;
+    let scenario_name =
+        format!("ha-e2e-no-quorum-fencing-blocks-post-cutoff-commits-{token}");
+
+    let run_result = (async {
         let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
         let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
             scenario_name: scenario_name.to_string(),
-            table_name: "ha_stress_fencing".to_string(),
+            table_name: format!("ha_no_quorum_fencing_{token}"),
             worker_count: 4,
             run_interval_ms: 250,
         };
         let table_name = sanitize_sql_identifier(workload_spec.table_name.as_str());
-        fixture.record("stress no-quorum bootstrap: wait for stable primary");
+
+        fixture.record("no-quorum fencing: wait for stable primary");
         let bootstrap_primary = fixture
-            .wait_for_stable_primary(
-                Duration::from_secs(60),
-                None,
-                5,
-                &mut phase_history,
-            )
+            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
             .await?;
         fixture
             .prepare_stress_table(&bootstrap_primary, table_name.as_str())
             .await?;
         let workload_handle = fixture.start_sql_workload(workload_spec.clone()).await?;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
-        fixture.record("stress no-quorum: stop etcd majority while workload active");
+        fixture.record("no-quorum fencing: stop etcd majority while workload active");
+        fixture.record("no-quorum: stop etcd majority");
         let stopped_members = fixture.stop_etcd_majority(2).await?;
         fixture.record(format!(
-            "stress no-quorum members stopped: {}",
+            "no-quorum: etcd members stopped: {}",
             stopped_members.join(",")
         ));
-        fixture.wait_for_all_failsafe(Duration::from_secs(90)).await?;
+        let quorum_lost_at_ms = ha_e2e::util::unix_now()?.0;
         let ha_stats = fixture
-            .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 100)
+            .sample_ha_states_window(Duration::from_secs(2), Duration::from_millis(150), 80)
             .await?;
-        let failsafe_observed_at_ms = ha_e2e::util::unix_now()?.0;
 
-        tokio::time::sleep(Duration::from_secs(7)).await;
+        let fencing_grace_ms = 7_000u64;
+        tokio::time::sleep(Duration::from_secs(8)).await;
         let workload = fixture
-            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
+            .stop_sql_workload_and_collect(workload_handle, Duration::from_millis(200))
             .await?;
         if workload.committed_writes == 0 {
             return Err(WorkerError::Message(
-                "stress no-quorum workload committed zero writes".to_string(),
+                "no-quorum fencing workload committed zero writes".to_string(),
             ));
         }
         let rejected_writes = workload
@@ -2239,8 +2544,8 @@ async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result
                     .to_string(),
             ));
         }
-        let fencing_grace_ms = 5_000u64;
-        let cutoff_ms = failsafe_observed_at_ms.saturating_add(fencing_grace_ms);
+
+        let cutoff_ms = quorum_lost_at_ms.saturating_add(fencing_grace_ms);
         let commits_after_cutoff = workload
             .committed_at_unix_ms
             .iter()
@@ -2259,12 +2564,13 @@ async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result
                 &bootstrap_primary,
                 table_name.as_str(),
                 1,
-                Duration::from_secs(90),
+                Duration::from_secs(45),
             )
             .await?;
         fixture.record(format!(
-            "stress no-quorum key integrity verified on {bootstrap_primary} with row_count={primary_row_count}"
+            "no-quorum fencing key integrity verified on {bootstrap_primary} with row_count={primary_row_count}"
         ));
+
         let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         Ok(StressScenarioSummary {
             schema_version: STRESS_SUMMARY_SCHEMA_VERSION,
@@ -2284,32 +2590,25 @@ async fn e2e_multi_node_stress_no_quorum_fencing_with_concurrent_sql() -> Result
             ha_observations: ha_stats,
             notes: vec![
                 format!("phase_history={}", ClusterFixture::format_phase_history(&phase_history)),
-                format!("failsafe_observed_at_ms={failsafe_observed_at_ms}"),
+                format!("quorum_lost_at_ms={quorum_lost_at_ms}"),
                 format!("fencing_cutoff_ms={cutoff_ms}"),
                 format!("allowed_post_cutoff_commits={allowed_post_cutoff_commits}"),
             ],
         })
     })
-    .await
-    {
-        Ok(run_result) => run_result,
-        Err(_) => Err(WorkerError::Message(format!(
-            "stress no-quorum scenario timed out after {}s",
-            E2E_SCENARIO_TIMEOUT.as_secs()
-        ))),
-    };
+    .await;
 
     let (summary, run_error) = match run_result {
         Ok(summary) => (summary, None),
         Err(err) => {
             let message = err.to_string();
             (
-                StressScenarioSummary::failed(scenario_name, message.clone()),
+                StressScenarioSummary::failed(scenario_name.as_str(), message.clone()),
                 Some(message),
             )
         }
     };
-    let artifacts = fixture.write_stress_artifacts(scenario_name, &summary);
+    let artifacts = fixture.write_stress_artifacts(scenario_name.as_str(), &summary);
     let shutdown_result = fixture.shutdown().await;
     finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
     })

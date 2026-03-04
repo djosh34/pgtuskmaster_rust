@@ -17,7 +17,7 @@ use etcd_client::{
 
 use super::store::{DcsStore, DcsStoreError, WatchEvent, WatchOp};
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const WATCH_IDLE_INTERVAL: Duration = Duration::from_millis(100);
 
 enum WorkerCommand {
