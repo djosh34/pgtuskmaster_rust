@@ -32,6 +32,7 @@ You are free and encouraged to make large code/schema changes, if that will impr
 Regarding subagents, please use the explore_spark subagents. 
 These are incredibly cheap and fast, and you are encouraged to use them in massively parallel fashion: 20-30 at the same time.
 You have to prompt them with very specific questions. Also please prompt multiple 3+ subagents per question you have to compare answers.
+You can also use them to search the web, or search repos pulled with btca.
 
 
 ## Cross application applicable learnings
