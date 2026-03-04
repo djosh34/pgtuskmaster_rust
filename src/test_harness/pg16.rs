@@ -7,6 +7,7 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout, Instant};
 
+use super::binaries::validate_executable_file;
 use super::HarnessError;
 use crate::test_harness::namespace::TestNamespace;
 
@@ -86,18 +87,8 @@ pub(crate) async fn spawn_pg16_with_conf_lines(
     spec: PgInstanceSpec,
     postgresql_conf_lines: &[String],
 ) -> Result<PgHandle, HarnessError> {
-    if !spec.postgres_bin.exists() {
-        return Err(HarnessError::InvalidInput(format!(
-            "postgres binary does not exist: {}",
-            spec.postgres_bin.display()
-        )));
-    }
-    if !spec.initdb_bin.exists() {
-        return Err(HarnessError::InvalidInput(format!(
-            "initdb binary does not exist: {}",
-            spec.initdb_bin.display()
-        )));
-    }
+    validate_executable_file(spec.postgres_bin.as_path(), "postgres")?;
+    validate_executable_file(spec.initdb_bin.as_path(), "initdb")?;
 
     fs::create_dir_all(&spec.socket_dir)?;
     fs::create_dir_all(&spec.log_dir)?;

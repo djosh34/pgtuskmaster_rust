@@ -1,0 +1,3 @@
+Track A: forbidden macro/method scan (src/, tests/)
+
+Track A: clippy allow suppressions

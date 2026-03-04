@@ -8,6 +8,7 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout, Instant};
 
+use super::binaries::validate_executable_file;
 use super::HarnessError;
 use crate::test_harness::namespace::TestNamespace;
 
@@ -188,12 +189,7 @@ pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, Ha
 pub(crate) async fn spawn_etcd3_cluster(
     spec: EtcdClusterSpec,
 ) -> Result<EtcdClusterHandle, HarnessError> {
-    if !spec.etcd_bin.exists() {
-        return Err(HarnessError::InvalidInput(format!(
-            "etcd binary does not exist: {}",
-            spec.etcd_bin.display()
-        )));
-    }
+    validate_executable_file(spec.etcd_bin.as_path(), "etcd")?;
     if spec.members.is_empty() {
         return Err(HarnessError::InvalidInput(
             "etcd cluster must include at least one member".to_string(),

@@ -1,0 +1,17 @@
+Binary presence + permissions:
+lrwxr-xr-x. 1 joshazimullah joshazimullah 17 Mar  4 09:38 .tools/postgres16/bin/postgres -> /usr/bin/postgres
+lrwxr-xr-x. 1 joshazimullah joshazimullah 15 Mar  4 09:38 .tools/postgres16/bin/pg_ctl -> /usr/bin/pg_ctl
+lrwxr-xr-x. 1 joshazimullah joshazimullah 15 Mar  4 09:38 .tools/postgres16/bin/initdb -> /usr/bin/initdb
+lrwxr-xr-x. 1 joshazimullah joshazimullah 22 Mar  4 09:38 .tools/postgres16/bin/pg_basebackup -> /usr/bin/pg_basebackup
+lrwxr-xr-x. 1 joshazimullah joshazimullah 18 Mar  4 09:38 .tools/postgres16/bin/pg_rewind -> /usr/bin/pg_rewind
+-rwxr-xr-x. 1 joshazimullah joshazimullah 24838328 Mar  4 09:38 .tools/etcd/bin/etcd
+
+Version probes:
+postgres (PostgreSQL) 16.11
+pg_ctl (PostgreSQL) 16.11
+pg_basebackup (PostgreSQL) 16.11
+pg_rewind (PostgreSQL) 16.11
+etcd Version: 3.6.8
+Git SHA: 4e814e2
+Go Version: go1.24.13
+Go OS/Arch: linux/arm64

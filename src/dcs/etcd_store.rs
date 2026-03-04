@@ -19,6 +19,7 @@ use etcd_client::{
 use super::store::{DcsStore, DcsStoreError, WatchEvent, WatchOp};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+const WORKER_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
 const WATCH_IDLE_INTERVAL: Duration = Duration::from_millis(100);
 
 enum WorkerCommand {
@@ -48,6 +49,14 @@ pub(crate) struct EtcdDcsStore {
 
 impl EtcdDcsStore {
     pub(crate) fn connect(endpoints: Vec<String>, scope: &str) -> Result<Self, DcsStoreError> {
+        Self::connect_with_worker_bootstrap_timeout(endpoints, scope, WORKER_BOOTSTRAP_TIMEOUT)
+    }
+
+    fn connect_with_worker_bootstrap_timeout(
+        endpoints: Vec<String>,
+        scope: &str,
+        worker_bootstrap_timeout: Duration,
+    ) -> Result<Self, DcsStoreError> {
         if endpoints.is_empty() {
             return Err(DcsStoreError::Io(
                 "at least one etcd endpoint is required".to_string(),
@@ -79,7 +88,7 @@ impl EtcdDcsStore {
             })
             .map_err(|err| DcsStoreError::Io(format!("spawn etcd worker failed: {err}")))?;
 
-        match startup_rx.recv_timeout(COMMAND_TIMEOUT) {
+        match startup_rx.recv_timeout(worker_bootstrap_timeout) {
             Ok(Ok(())) => Ok(Self {
                 healthy,
                 events,
@@ -91,6 +100,11 @@ impl EtcdDcsStore {
                 Err(err)
             }
             Err(err) => {
+                // The worker might still be performing its bootstrap (connect + get + watch).
+                // Avoid leaving a long-lived worker thread behind; request shutdown and close the
+                // command channel before joining.
+                let _ = command_tx.send(WorkerCommand::Shutdown);
+                drop(command_tx);
                 let _ = worker_handle.join();
                 Err(DcsStoreError::Io(format!(
                     "timed out waiting for etcd worker startup: {err}"
@@ -141,12 +155,22 @@ fn run_worker_loop(
     };
 
     runtime.block_on(async move {
+        let mut had_successful_session = false;
+
         let (mut client, mut _watcher, mut watch_stream): (
             Option<Client>,
             Option<Watcher>,
             Option<WatchStream>,
-        ) = match establish_watch_session(&endpoints, &scope_prefix, &events).await {
+        ) = match establish_watch_session(
+            &endpoints,
+            &scope_prefix,
+            &events,
+            had_successful_session,
+        )
+        .await
+        {
             Ok((next_client, next_watcher, next_stream)) => {
+                had_successful_session = true;
                 healthy.store(true, Ordering::SeqCst);
                 let _ = startup_tx.send(Ok(()));
                 (Some(next_client), Some(next_watcher), Some(next_stream))
@@ -212,8 +236,16 @@ fn run_worker_loop(
             }
 
             if client.is_none() || watch_stream.is_none() {
-                match establish_watch_session(&endpoints, &scope_prefix, &events).await {
+                match establish_watch_session(
+                    &endpoints,
+                    &scope_prefix,
+                    &events,
+                    had_successful_session,
+                )
+                .await
+                {
                     Ok((next_client, next_watcher, next_stream)) => {
+                        had_successful_session = true;
                         client = Some(next_client);
                         _watcher = Some(next_watcher);
                         watch_stream = Some(next_stream);
@@ -265,9 +297,14 @@ async fn establish_watch_session(
     endpoints: &[String],
     scope_prefix: &str,
     events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    is_reconnect: bool,
 ) -> Result<(Client, Watcher, WatchStream), DcsStoreError> {
+    #[cfg(test)]
+    apply_test_establish_delay().await;
+
     let mut client = connect_client(endpoints).await?;
-    let snapshot_revision = bootstrap_snapshot(&mut client, scope_prefix, events).await?;
+    let snapshot_revision =
+        bootstrap_snapshot(&mut client, scope_prefix, events, is_reconnect).await?;
     let start_revision = snapshot_revision.saturating_add(1);
     let (watcher, watch_stream) =
         create_watch_stream(&mut client, scope_prefix, start_revision).await?;
@@ -378,6 +415,7 @@ async fn bootstrap_snapshot(
     client: &mut Client,
     scope_prefix: &str,
     events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    is_reconnect: bool,
 ) -> Result<i64, DcsStoreError> {
     let response = timeout_etcd(
         "etcd get",
@@ -391,6 +429,14 @@ async fn bootstrap_snapshot(
         .unwrap_or(0);
 
     let mut queue = VecDeque::new();
+    if is_reconnect {
+        queue.push_back(WatchEvent {
+            op: WatchOp::Reset,
+            path: scope_prefix.to_string(),
+            value: None,
+            revision,
+        });
+    }
     for kv in response.kvs() {
         let path = str::from_utf8(kv.key()).map_err(|err| DcsStoreError::Decode {
             key: "watch-key".to_string(),
@@ -409,7 +455,11 @@ async fn bootstrap_snapshot(
         });
     }
 
-    enqueue_watch_events(events, queue)?;
+    if is_reconnect {
+        replace_watch_events(events, queue)?;
+    } else {
+        enqueue_watch_events(events, queue)?;
+    }
     Ok(revision)
 }
 
@@ -491,6 +541,18 @@ fn enqueue_watch_events(
     Ok(())
 }
 
+fn replace_watch_events(
+    events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    queue: VecDeque<WatchEvent>,
+) -> Result<(), DcsStoreError> {
+    let mut guard = events
+        .lock()
+        .map_err(|_| DcsStoreError::Io("events lock poisoned".to_string()))?;
+    guard.clear();
+    guard.extend(queue);
+    Ok(())
+}
+
 async fn timeout_etcd<T, F>(operation: &str, fut: F) -> Result<T, DcsStoreError>
 where
     F: Future<Output = Result<T, etcd_client::Error>>,
@@ -500,6 +562,21 @@ where
         Ok(Err(err)) => Err(DcsStoreError::Io(format!("{operation} failed: {err}"))),
         Err(err) => Err(DcsStoreError::Io(format!("{operation} timed out: {err}"))),
     }
+}
+
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
+
+#[cfg(test)]
+static TEST_ESTABLISH_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+async fn apply_test_establish_delay() {
+    let delay_ms = TEST_ESTABLISH_DELAY_MS.load(Ordering::SeqCst);
+    if delay_ms == 0 {
+        return;
+    }
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 }
 
 impl DcsStore for EtcdDcsStore {
@@ -558,6 +635,8 @@ impl Drop for EtcdDcsStore {
 mod tests {
     use std::{
         collections::BTreeMap,
+        fs,
+        path::PathBuf,
         time::{Duration, Instant},
     };
 
@@ -574,8 +653,11 @@ mod tests {
         },
         dcs::{
             etcd_store::EtcdDcsStore,
-            state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx, LeaderRecord},
-            store::{DcsStore, DcsStoreError, WatchOp},
+            state::{
+                DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord,
+                MemberRecord, MemberRole, SwitchoverRequest,
+            },
+            store::{refresh_from_etcd_watch, DcsStore, DcsStoreError, WatchEvent, WatchOp},
             worker::step_once,
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
@@ -600,6 +682,10 @@ mod tests {
     struct RealEtcdFixture {
         _guard: NamespaceGuard,
         handle: EtcdHandle,
+        etcd_bin: PathBuf,
+        namespace_id: String,
+        log_dir: PathBuf,
+        peer_port: u16,
         endpoint: String,
         scope: String,
     }
@@ -610,6 +696,8 @@ mod tests {
 
             let guard = NamespaceGuard::new(test_name)?;
             let namespace = guard.namespace()?;
+            let namespace_id = namespace.id.clone();
+            let log_dir = namespace.child_dir("logs/etcd-store");
             let data_dir = prepare_etcd_data_dir(namespace)?;
 
             let reservation = allocate_ports(2)?;
@@ -618,13 +706,12 @@ mod tests {
             let peer_port = ports[1];
             drop(reservation);
 
-            let log_dir = namespace.child_dir("logs/etcd-store");
             let handle = spawn_etcd3(EtcdInstanceSpec {
-                etcd_bin,
-                namespace_id: namespace.id.clone(),
+                etcd_bin: etcd_bin.clone(),
+                namespace_id: namespace_id.clone(),
                 member_name: "node-a".to_string(),
                 data_dir,
-                log_dir,
+                log_dir: log_dir.clone(),
                 client_port,
                 peer_port,
                 startup_timeout: Duration::from_secs(10),
@@ -634,6 +721,10 @@ mod tests {
             Ok(Self {
                 _guard: guard,
                 handle,
+                etcd_bin,
+                namespace_id,
+                log_dir,
+                peer_port,
                 endpoint: format!("http://127.0.0.1:{client_port}"),
                 scope: scope.to_string(),
             })
@@ -641,6 +732,50 @@ mod tests {
 
         async fn shutdown(&mut self) -> Result<(), HarnessError> {
             self.handle.shutdown().await
+        }
+
+        async fn restart_clean(&mut self) -> Result<(), HarnessError> {
+            self.handle.shutdown().await?;
+
+            if self.handle.data_dir.exists() {
+                fs::remove_dir_all(&self.handle.data_dir)?;
+            }
+            fs::create_dir_all(&self.handle.data_dir)?;
+
+            let client_port = self.handle.client_port;
+            let data_dir = self.handle.data_dir.clone();
+            let handle = spawn_etcd3(EtcdInstanceSpec {
+                etcd_bin: self.etcd_bin.clone(),
+                namespace_id: self.namespace_id.clone(),
+                member_name: self.handle.member_name().to_string(),
+                data_dir,
+                log_dir: self.log_dir.clone(),
+                client_port,
+                peer_port: self.peer_port,
+                startup_timeout: Duration::from_secs(10),
+            })
+            .await?;
+            self.handle = handle;
+            Ok(())
+        }
+    }
+
+    struct EstablishDelayGuard {
+        previous_ms: u64,
+    }
+
+    impl EstablishDelayGuard {
+        fn new(delay_ms: u64) -> Self {
+            let previous_ms =
+                super::TEST_ESTABLISH_DELAY_MS.swap(delay_ms, std::sync::atomic::Ordering::SeqCst);
+            Self { previous_ms }
+        }
+    }
+
+    impl Drop for EstablishDelayGuard {
+        fn drop(&mut self) {
+            super::TEST_ESTABLISH_DELAY_MS
+                .store(self.previous_ms, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -854,6 +989,181 @@ mod tests {
                 Err(err) => Err(Box::new(err)),
             },
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn etcd_store_connect_timeout_returns_and_does_not_hang() -> TestResult {
+        let fixture =
+            RealEtcdFixture::spawn("dcs-etcd-store-connect-timeout", "scope-timeout").await?;
+
+        let fixture = fixture;
+        let result: TestResult = async {
+            let _delay_guard = EstablishDelayGuard::new(300);
+            let endpoint = fixture.endpoint.clone();
+            let scope = fixture.scope.clone();
+
+            let handle = tokio::task::spawn_blocking(move || {
+                EtcdDcsStore::connect_with_worker_bootstrap_timeout(
+                    vec![endpoint],
+                    scope.as_str(),
+                    Duration::from_millis(50),
+                )
+            });
+
+            let outcome = tokio::time::timeout(Duration::from_secs(3), handle).await;
+            let store_result = match outcome {
+                Ok(joined) => match joined {
+                    Ok(store_result) => store_result,
+                    Err(err) => {
+                        return Err(boxed_error(format!(
+                            "connect spawn_blocking join failed: {err}"
+                        )));
+                    }
+                },
+                Err(_) => {
+                    return Err(boxed_error(
+                        "timed out waiting for connect() to return after startup timeout",
+                    ));
+                }
+            };
+
+            match store_result {
+                Ok(_) => Err(boxed_error(
+                    "expected connect() to fail when worker bootstrap timeout is too small",
+                )),
+                Err(DcsStoreError::Io(message)) => {
+                    if !message.contains("timed out waiting for etcd worker startup") {
+                        return Err(boxed_error(format!(
+                            "expected startup-timeout io error, got: {message}"
+                        )));
+                    }
+                    Ok(())
+                }
+                Err(other) => Err(boxed_error(format!(
+                    "expected io error for startup timeout, got: {other}"
+                ))),
+            }
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn etcd_store_reconnect_resets_cache_when_snapshot_is_empty() -> TestResult {
+        let fixture =
+            RealEtcdFixture::spawn("dcs-etcd-store-reconnect-reset", "scope-reconnect").await?;
+
+        let mut fixture = fixture;
+        let result: TestResult = async {
+            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut cache = sample_cache(&fixture.scope);
+
+            cache.members.insert(
+                MemberId("node-stale".to_string()),
+                MemberRecord {
+                    member_id: MemberId("node-stale".to_string()),
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: crate::state::Version(1),
+                },
+            );
+            cache.switchover = Some(SwitchoverRequest {
+                requested_by: MemberId("node-stale".to_string()),
+            });
+            cache.init_lock = Some(InitLockRecord {
+                holder: MemberId("node-stale".to_string()),
+            });
+
+            cache.leader = Some(LeaderRecord {
+                member_id: MemberId("node-stale".to_string()),
+            });
+
+            let stale_leader = serde_json::to_string(&LeaderRecord {
+                member_id: MemberId("node-stale".to_string()),
+            })
+            .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
+
+            {
+                let mut guard = store
+                    .events
+                    .lock()
+                    .map_err(|_| boxed_error("events lock poisoned"))?;
+                guard.push_back(WatchEvent {
+                    op: WatchOp::Put,
+                    path: format!("/{}/leader", fixture.scope),
+                    value: Some(stale_leader),
+                    revision: 1,
+                });
+            }
+
+            fixture.restart_clean().await?;
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut observed_reset = false;
+            while Instant::now() < deadline {
+                let events = store.drain_watch_events()?;
+                if events.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+
+                if events.iter().any(|event| event.op == WatchOp::Reset) {
+                    if events.iter().any(|event| {
+                        event.op == WatchOp::Put
+                            && event.path == format!("/{}/leader", fixture.scope)
+                    }) {
+                        return Err(boxed_error(
+                            "expected reconnect to replace the watch queue (dropping stale leader PUT)",
+                        ));
+                    }
+                    refresh_from_etcd_watch(&fixture.scope, &mut cache, events)?;
+                    observed_reset = true;
+                    break;
+                }
+
+                // Apply any other events so the cache continues to evolve, but do not accept
+                // reconnect without a reset marker.
+                let _ = refresh_from_etcd_watch(&fixture.scope, &mut cache, events);
+            }
+
+            if !observed_reset {
+                return Err(boxed_error(
+                    "timed out waiting for reconnect snapshot reset marker",
+                ));
+            }
+
+            if cache.leader.is_some() {
+                return Err(boxed_error(
+                    "expected leader record to be cleared by reconnect reset",
+                ));
+            }
+            if !cache.members.is_empty() {
+                return Err(boxed_error(
+                    "expected members to be cleared by reconnect reset",
+                ));
+            }
+            if cache.switchover.is_some() {
+                return Err(boxed_error(
+                    "expected switchover record to be cleared by reconnect reset",
+                ));
+            }
+            if cache.init_lock.is_some() {
+                return Err(boxed_error(
+                    "expected init lock record to be cleared by reconnect reset",
+                ));
+            }
+
+            Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
     }
 
     #[tokio::test(flavor = "current_thread")]

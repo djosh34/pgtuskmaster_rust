@@ -26,6 +26,8 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 
 ## Cross application applicable learnings
 - ... (add here)
+- For watch-based caches, treat reconnect/resnapshot as an authoritative reset: emit an explicit reset marker (or equivalent) and drop/replace any queued pre-reconnect events so deleted keys cannot be resurrected by stale PUTs.
+- For Makefile-driven “ultra-long” test suites, make the runner fail closed (non-empty by default) and validate exact test names via one `cargo test -- --list` preflight plus `-- --exact` execution to prevent silent 0-test passes.
 - When moving `pg_basebackup` / `pg_rewind` to use configured non-`postgres` role usernames, real HA e2e must ensure those roles exist on the elected primary *before* starting clone nodes (e.g. `replicator` with `LOGIN REPLICATION`; `rewinder` often needs `SUPERUSER` for `pg_rewind`).
 - If you override Postgres auth via managed `hba_file=...`, remember replication clients (`pg_basebackup`, `replication` DSNs) do **not** match `database=all`; include explicit `host replication <user> ...` rules or basebackup will fail with auth errors.
 - When reading secrets from files for env vars (e.g. `PGPASSWORD`), trim trailing `\n`/`\r` (`trim_end_matches(['\n', '\r'])`) so newline-terminated files don’t break auth and clippy stays clean.

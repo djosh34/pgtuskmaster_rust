@@ -11,6 +11,12 @@ use crate::state::MemberId;
 pub enum WatchOp {
     Put,
     Delete,
+    /// Indicates that the watch consumer should treat the following snapshot as authoritative
+    /// and reset any previously cached DCS state for this scope.
+    ///
+    /// This is synthesized by the etcd store during reconnect/resnapshot and does not come from
+    /// etcd itself.
+    Reset,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,6 +122,15 @@ pub(crate) fn refresh_from_etcd_watch(
     let mut had_errors = false;
 
     for event in events {
+        if event.op == WatchOp::Reset {
+            cache.members.clear();
+            cache.leader = None;
+            cache.switchover = None;
+            cache.init_lock = None;
+            applied = applied.saturating_add(1);
+            continue;
+        }
+
         let key = match key_from_path(scope, &event.path) {
             Ok(parsed) => parsed,
             Err(err) => match err {
@@ -139,6 +154,10 @@ pub(crate) fn refresh_from_etcd_watch(
                     key,
                     value: Box::new(value),
                 }
+            }
+            WatchOp::Reset => {
+                // Handled above, before key parsing.
+                continue;
             }
         };
 
@@ -508,6 +527,63 @@ mod tests {
                 member_id: MemberId("node-a".to_string())
             })
         );
+    }
+
+    #[test]
+    fn refresh_reset_clears_cached_records_but_preserves_config() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut cache = sample_cache();
+        let preserved_config = cache.config.clone();
+
+        cache.members.insert(
+            MemberId("node-stale".to_string()),
+            MemberRecord {
+                member_id: MemberId("node-stale".to_string()),
+                role: MemberRole::Replica,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(10),
+                pg_version: Version(1),
+            },
+        );
+        cache.leader = Some(crate::dcs::state::LeaderRecord {
+            member_id: MemberId("node-stale".to_string()),
+        });
+        cache.switchover = Some(crate::dcs::state::SwitchoverRequest {
+            requested_by: MemberId("node-stale".to_string()),
+        });
+        cache.init_lock = Some(crate::dcs::state::InitLockRecord {
+            holder: MemberId("node-stale".to_string()),
+        });
+
+        let result = refresh_from_etcd_watch(
+            "scope-a",
+            &mut cache,
+            vec![WatchEvent {
+                op: WatchOp::Reset,
+                path: "/scope-a".to_string(),
+                value: None,
+                revision: 42,
+            }],
+        )?;
+
+        assert_eq!(
+            result,
+            RefreshResult {
+                applied: 1,
+                had_errors: false
+            }
+        );
+        assert!(cache.members.is_empty());
+        assert!(cache.leader.is_none());
+        assert!(cache.switchover.is_none());
+        assert!(cache.init_lock.is_none());
+        assert_eq!(cache.config, preserved_config);
+
+        Ok(())
     }
 
     #[test]

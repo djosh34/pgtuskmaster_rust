@@ -41,11 +41,25 @@ test-long:
 	@echo "If one becomes short enough for regular development cycles, move it back into make test."
 	@set -e; \
 	if [ -z "$(strip $(ULTRA_LONG_TESTS))" ]; then \
-		echo "No ultra-long tests configured."; \
-		exit 0; \
+		if [ "$${ALLOW_EMPTY_ULTRA_LONG_TESTS:-0}" = "1" ]; then \
+			echo "No ultra-long tests configured (ALLOW_EMPTY_ULTRA_LONG_TESTS=1)."; \
+			exit 0; \
+		fi; \
+		echo "No ultra-long tests configured (set ALLOW_EMPTY_ULTRA_LONG_TESTS=1 to allow)."; \
+		exit 1; \
 	fi; \
+	list_file="$$(mktemp)"; \
+	trap 'rm -f "$${list_file}"' EXIT; \
+	echo "Preflight: listing tests for exact-match validation..."; \
+	env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets -- --list > "$${list_file}"; \
 	for t in $(ULTRA_LONG_TESTS); do \
-		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets "$$t"; \
+		if ! awk -F': ' '{print $$1}' "$${list_file}" | grep -Fx "$$t" >/dev/null; then \
+			echo "Ultra-long test not found (exact): $$t" >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	for t in $(ULTRA_LONG_TESTS); do \
+		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets "$$t" -- --exact; \
 	done
 
 docs-lint:

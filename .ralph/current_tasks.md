@@ -1,6 +1,24 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 10:42:45 CET 2026
+Generated: Wed Mar  4 11:27:24 CET 2026
+
+**Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
+
+## Bug: BDD HTTP tests false-pass via fragile status and read patterns <status>not_started</status> <passes>false</passes>
+
+<description>
+BDD HTTP contract tests use weak status matching and response-read behavior that can hide protocol/handler regressions or induce hangs.
+
+---
+
+**Path:** `.ralph/tasks/bugs/bug-ha-e2e-false-pass-via-best-effort-polling-and-timestamp-fallback.md`
+
+## Bug: HA e2e false-pass via best-effort polling and timestamp fallback <status>not_started</status> <passes>false</passes>
+
+<description>
+HA e2e assertions can pass without reliable cluster-wide observations during unstable windows.
+
+---
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -47,6 +65,15 @@ After updating `make test` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo te
 <description>
 `refresh_from_etcd_watch` in [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs) records `had_errors` (for unknown keys or decode failures) but no caller uses it. In [src/dcs/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/worker.rs), `step_once` only checks for `Err`, so unknown/malformed watch events can be silently ignored while the worker still reports healthy state. Decide on the correct behavior (e.g., mark store unhealthy, emit faulted state, or log/telemetry), and wire `had_errors` into worker health so errors do not pass silently.
 </description>
+
+---
+
+**Path:** `.ralph/tasks/bugs/etcd-watch-bootstrap-startup-timeout-and-resnapshot-stale-events.md`
+
+## Bug: Etcd watch bootstrap can hang startup and resnapshot can replay stale events <status>not_started</status> <passes>false</passes>
+
+<description>
+The etcd DCS store watch worker has subtle correctness issues in bootstrap/reconnect handling.
 
 ---
 
@@ -367,7 +394,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md`
 
-## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes>
+## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes> <passing>true</passing>
 NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
 
 <description>

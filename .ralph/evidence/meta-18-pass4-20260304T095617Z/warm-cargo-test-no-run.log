@@ -1,0 +1,10 @@
+   Compiling pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.83s
+  Executable unittests src/lib.rs (target/debug/deps/pgtuskmaster_rust-e4d6b96aed46fa51)
+  Executable unittests src/bin/pgtuskmaster.rs (target/debug/deps/pgtuskmaster-1979ffb285ca149b)
+  Executable unittests src/bin/pgtuskmasterctl.rs (target/debug/deps/pgtuskmasterctl-f663b524a9332644)
+  Executable tests/bdd_api_http.rs (target/debug/deps/bdd_api_http-5f3059a740a5704c)
+  Executable tests/bdd_state_watch.rs (target/debug/deps/bdd_state_watch-957eba521454847b)
+  Executable tests/cli_binary.rs (target/debug/deps/cli_binary-3531278249142b91)
+  Executable tests/policy_e2e_api_only.rs (target/debug/deps/policy_e2e_api_only-8b0d6b604a3ca86f)
+  Executable unittests examples/debug_ui_smoke_server.rs (target/debug/examples/debug_ui_smoke_server-224a81ec6a7c23cc)
