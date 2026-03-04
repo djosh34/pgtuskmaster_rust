@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 10:46:13 PM CET 2026
+Generated: Wed Mar  4 11:05:13 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -128,6 +128,15 @@ In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_
 
 <description>
 `src/test_harness/ha_e2e/util.rs` uses `tokio::process::Command::new("kill")` both to send signals and to probe liveness (`kill -0`).
+
+---
+
+**Path:** `.ralph/tasks/bugs/logging-archive-ingest-silent-failure-and-unsafe-cleanup.md`
+
+## Bug: Archive/restore ingest silently fails and cleanup/path ownership can destroy active observability signals <status>not_started</status> <passes>false</passes>
+
+<description>
+Archive/restore observability has several correctness failures in the current logging pipeline:
 
 ---
 
