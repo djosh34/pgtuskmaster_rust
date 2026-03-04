@@ -6,12 +6,29 @@ NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recu
 This is a **RECURRING META-TASK**.
 
 Every time this task is picked up, the engineer must run a **FRESH verification** from scratch:
+- Before starting the verification body, delete prior fresh-run artifacts for this meta-task to eliminate carry-over bias.
+  - Remove all `.ralph/evidence/meta-18-*` directories before creating the new run’s evidence directory.
+  - If retention policy requires historical artifacts, archive them outside `.ralph/evidence` first.
 - Before starting: ensure `.ralph/model.txt` is exactly `deep_review`; if not, set it and quit immediately to switch model.
 - Perform deep skeptical review across the full codebase quality surface: trust nothing, assume nothing.
 - Validate test reality and anti-silent-pass guarantees, including real pg16 and real `etcd` binary usage.
 - Validate e2e/integration behavior comes from real implementation, not accidental effects.
 - Audit all code smells and broader quality concerns with nothing out of scope.
+- Validate documentation correctness as part of the same skepticism pass:
+  - Read every task in `.ralph/tasks/story-operator-architecture-docs/` every time this meta-task is run, including tasks currently marked passing.
+  - For every non-trivial doc claim (behavioral guarantee, safety claim, endpoint behavior, config effect, failure-mode expectation), trace the supporting evidence to either code, tests, runtime artifacts, or explicit docs rationale.
+  - Create/execute a claim verification pass using many parallel subagents with small, disjoint question scopes (small-scope, one question per worker).
+  - Capture all verification artifacts in evidence (including claim inventory, ownership map, pass/uncertain status, and residual risk), and keep this tracking outside operator docs.
+  - Do not add claim-check checkboxes or claim-tracking UI into docs; verification bookkeeping belongs in task/evidence layers only.
 - Create `$add-bug` tasks for small findings and `$add-task-as-agent` tasks for larger findings.
+- Validate usability and operational readiness:
+  - Verify, from docs + fresh e2e execution evidence, that the system is usable by a new operator without tribal knowledge.
+  - Verify all runtime behavior can be configured from the central config surface (no silent split-config expectations like "read this flag from elsewhere").
+  - Verify PostgreSQL authentication/role paths are covered across at least:
+    - peer/password-style auth modes documented and actually accepted in config/runtime,
+    - secure and non-secure startup combinations,
+    - non-`postgres` role usernames for basebackup/rewind/repl workflows where applicable.
+  - Verify logging, restart behavior, and control-plane configuration are discoverable in one source of truth and reflected in docs.
 - Final phase after findings/code-smell audit: run `make check`, `make test`, `make lint`, and `make test-long`.
 - If any final-phase test gate fails, create bug task(s) with `$add-bug` for each failing area before closeout.
 - If `make test-long` fails, also create a follow-up task to add a shorter real-binary e2e regression that reproduces the same failure.
@@ -210,6 +227,14 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - [ ] Preflight model gate is enforced (`deep_review`, or set+quit immediately when mismatched).
 - [ ] Test reality and silent-pass resistance are verified, including real pg16/etcd binary usage and real implementation behavior in integration/e2e tests.
 - [ ] Code smells and broader quality issues are audited across the full codebase.
+- [ ] All tasks in `story-operator-architecture-docs` are reviewed this pass, including tasks already marked passing.
+- [ ] A full non-trivial claim inventory is produced with `path:line` references and a per-claim evidence method.
+- [ ] At least 15 parallelized subagents are used for doc claim verification, and each claim is verified independently with small scoped prompts.
+- [ ] Doc claim verification artifacts stay in task/evidence tracking; no claim checklists are added to docs content.
+- [ ] Usability review confirms default operator path is testable from docs and produces a runnable minimal-start workflow through external APIs only.
+- [ ] Config-centralization audit confirms one primary runtime config source for behavior-affecting fields (including auth/logging/safety controls), and documents any intentional splits with explicit rationale.
+- [ ] Edge-case e2e coverage review confirms non-default, auth/config variants are tested through external interfaces (API/CLI/CLI side channels only), with focused breakage scenarios.
+- [ ] Any discovered test gap is assessed against real-world impact (production-relevant failure mode), not patched away in tests as a first move.
 - [ ] Every small issue is turned into a bug task via `$add-bug`.
 - [ ] Every larger issue is turned into a task via `$add-task-as-agent`.
 - [ ] Final verification runs all gates: `make check`, `make test`, `make lint`, `make test-long`.

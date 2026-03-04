@@ -569,6 +569,27 @@ pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, Ha
 - Setup docker
   - all tests run in docker, no exceptions
   - docker builds are smart to reuse cache from previous builds
+- integrated pgbackrest
+  - we are owner of archive and recovery command
+  - recovery integrated into bootstrap
+    - including .conf file take over such that postgres can safely do its restore and we get in all logs for that
+  - archive command control
+  - metrics/otel on those backups
+    - last backup
+    - logs for each backup
+    - integrate natively using json output of pgbackrest to use in our logs/decisions/api
+  - have api endpoint that will force a new restore and let the cluster use that restore
+    - patroni can't do that natively and requires a lot of work to make work
+    - this is fully possible, you just 
+      - force restore on one node, 
+      - then let pg do recovery as instructed by pgbackrest, but replaced conf by conf from pgtuskmaster (if backup contains any conf files, remove all of them and replace by pgtuskmaster config)
+      - after recovery complete and postgres is ready, hand over to normal pgtuskmaster logic
+        - do make sure that other nodes will rewind to new leader/pgbasebackup, but that SHOULD already be the case
+    - during this full restore all automatic logging from both postgres and all commands stay working, such that the operator directly can see in the logs why a restore failed if it did
+  - tokio-cron-scheduler 
+    - integrated schedular of backups, and since it is 'integrated' and we have a dcs, you can choose who makes the backup (which node will do scheduling)
+  - I say pgbackrest here, but we do need to think about how flexible to make this to support other backup programs
+  - but do integrate with pgbackrest as in, it being a default way including a binary path set in the config just like the other binaries
 
 ## HA Admin CLI (`pgtuskmasterctl`)
 
@@ -576,10 +597,6 @@ The project now includes a simple API-driven HA admin CLI binary:
 
 - read state:
   - `pgtuskmasterctl ha state`
-- set leader lease:
-  - `pgtuskmasterctl --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" ha leader set --member-id node-a`
-- clear leader lease:
-  - `pgtuskmasterctl --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" ha leader clear`
 - request switchover:
   - `pgtuskmasterctl --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" ha switchover request --requested-by node-b`
 - clear switchover:

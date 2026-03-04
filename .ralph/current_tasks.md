@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 15:03:32 CET 2026
+Generated: Wed Mar  4 03:35:30 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -163,6 +163,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-container-first-deployment/01-task-container-first-docker-deployment-and-compose.md`
+
+## Task: Container-first deployment baseline with Docker images, Compose stacks, and secrets <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Make container deployment the default operational path by adding production/development images and turnkey Docker Compose stacks that run etcd3 + pgtuskmaster with config maps and Docker secrets.
+
+---
+
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
 ## Task: Verify build and static quality gates <status>done</status> <passes>true</passes> <passing>true</passing>
@@ -201,7 +210,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-operator-architecture-docs/01-task-restructure-operator-docs-for-flow-depth-and-rationale.md`
 
-## Task: Restructure Operator Docs for Better Flow, Depth, and Decision Rationale <status>not_started</status> <passes>false</passes>
+## Task: Restructure Operator Docs for Better Flow, Depth, and Decision Rationale <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Rebuild the mdBook documentation into an operator-first guide that explains not only what the system does, but why it behaves that way and which tradeoffs drive key HA decisions.
@@ -256,15 +265,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -289,6 +289,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
 
 ---
 
@@ -331,16 +340,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
@@ -356,6 +355,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
 
 ---
 
@@ -426,36 +435,6 @@ NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recu
 
 <description>
 This is a **RECURRING META-TASK**.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/19-task-do-meta-deep-skeptical-review-pass-1.md`
-
-## Task: Do meta-task 18 deep skeptical review pass 1 <status>done</status> <passes>true</passes> <passing>true</passing>
-
-<blocked_by>18-task-recurring-meta-deep-skeptical-codebase-review</blocked_by>
-
-<description>
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/20-task-do-meta-deep-skeptical-review-pass-2.md`
-
-## Task: Do meta-task 18 deep skeptical review pass 2 <status>done</status> <passes>true</passes> <passing>true</passing>
-
-<blocked_by>19-task-do-meta-deep-skeptical-review-pass-1</blocked_by>
-
-<description>
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/21-task-do-meta-deep-skeptical-review-pass-3.md`
-
-## Task: Do meta-task 18 deep skeptical review pass 3 <status>done</status> <passes>true</passes> <passing>true</passing>
-
-<blocked_by>20-task-do-meta-deep-skeptical-review-pass-2</blocked_by>
-
-<description>
 
 ---
 
