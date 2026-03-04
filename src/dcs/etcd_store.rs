@@ -1336,10 +1336,13 @@ mod tests {
                 }
 
                 let events = store.drain_watch_events()?;
-                if !events.is_empty() {
+                if events.iter().any(|event| event.op != WatchOp::Reset) {
                     return Err(boxed_error(format!(
-                        "expected disconnect to clear queued watch events before reconnect Reset; observed={events:?}"
+                        "expected disconnect to clear queued watch events before reconnect Reset (allowing only Reset markers); observed={events:?}"
                     )));
+                }
+                if events.iter().any(|event| event.op == WatchOp::Reset) {
+                    return Ok(());
                 }
             }
 

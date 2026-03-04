@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 09:52:01 PM CET 2026
+Generated: Wed Mar  4 10:46:13 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -86,6 +86,15 @@ Real-binary harness paths are intended to be explicit and provenance-controlled,
 
 ---
 
+**Path:** `.ralph/tasks/bugs/docs-claims-drift-harness-readiness-and-chapter-shape.md`
+
+## Bug: Contributor docs claims drift from implementation and contract <status>done</status> <passes>true</passes>
+
+<description>
+Two contributor-facing documentation defects were found during slice verification.
+
+---
+
 **Path:** `.ralph/tasks/bugs/etcd-watch-bootstrap-startup-timeout-and-resnapshot-stale-events.md`
 
 ## Bug: Etcd watch bootstrap can hang startup and resnapshot can replay stale events <status>done</status> <passes>true</passes>
@@ -147,6 +156,16 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 
 <description>
 `make test` failed while running real process worker job tests. Multiple tests panic because process state publish fails with `state channel is closed`.
+
+---
+
+**Path:** `.ralph/tasks/bugs/provenance-missing-helper-functions-break-lib-test-compile.md`
+
+## Bug: Provenance Helpers Missing Break Lib Test Compile <status>done</status> <passes>true</passes>
+
+<description>
+`src/test_harness/provenance.rs` calls helper functions that are not defined in scope:
+- `verify_policy_optional_pins`
 
 ---
 

@@ -146,3 +146,35 @@ This chapter describes “where things live”. The next step is learning “how
 - Read [HA Decision and Action Pipeline](./ha-pipeline.md) to understand how `ha::decide` and `ha::worker::dispatch_actions` compose.
 - Read [API and Debug Contracts](./api-debug-contracts.md) to understand the intent write path (`/switchover`) and the debug snapshot projection model.
 - Read [Testing System Deep Dive](./testing-system.md) to learn which tests protect which boundary, and how to extend coverage safely.
+
+## Failure behavior
+
+Most “things went wrong” paths in this codebase are surfaced through *typed state* and worker status, not implicit panics:
+
+- startup planning returns an error early if prerequisites cannot be satisfied (missing config, unreadable paths, unreachable DCS during probe)
+- steady-state workers publish faulted status when a boundary fails (for example DCS connectivity loss, or process job failure)
+- HA decisions are conservative when inputs are missing or unhealthy: lack of trusted DCS state or lack of Postgres reachability tends to suppress promotion and prefer fail-safe waiting phases.
+
+When debugging a failure, start from the boundary that failed (API, DCS, pginfo, process) and trace what state it published.
+
+## Tradeoffs / sharp edges
+
+This project chooses explicit ownership and a small number of side-effect boundaries over “everything can call everything” convenience.
+
+Sharp edges to watch for when making changes:
+
+- don’t sneak business logic into `runtime/` orchestration; keep decisions in `ha/decide` and projections in controllers/views
+- don’t add new DCS write paths casually; coordination writes are the highest-risk surface
+- avoid “helpful” direct probing inside HA or API handlers; that creates split-brain between “what the system believes” and “what the handler did ad hoc”
+- when adding new state, decide who owns it and how it is versioned before wiring it to multiple consumers.
+
+## Evidence pointers
+
+If you want to quickly validate the mental model in code, these are the best starting points:
+
+- `src/runtime/node.rs`: startup planning + worker wiring
+- `src/state/`: watch-based “latest state” semantics
+- `src/ha/decide.rs` and `src/ha/worker.rs`: pure decisions + dispatch boundary
+- `src/dcs/worker.rs` and `src/dcs/etcd_store.rs`: watch cache + reconnect semantics
+- `src/process/worker.rs`: subprocess boundary, timeouts, and error surfacing
+- `tests/bdd_api_http.rs` and `src/ha/e2e_multi_node.rs`: external-interface behavior and real-process e2e coverage

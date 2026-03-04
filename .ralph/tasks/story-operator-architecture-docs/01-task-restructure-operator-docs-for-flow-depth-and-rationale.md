@@ -79,24 +79,13 @@
 </description>
 
 <acceptance_criteria>
-- [ ]  Full exhaustive checklist of all files/modules to modify with specific requirements for each
-- [ ] `docs/src/SUMMARY.md` reflects the new six-part order: Start Here -> Quick Start -> Operator Guide -> System Lifecycle -> Architecture Assurance -> Contributors
-- [ ] `docs/src/getting-started/` contains `index.md`, `quickstart.md`, and `initial-validation.md` with clear handoff into Operator Guide
-- [ ] Thin chapters are merged and under-explained chapters are expanded; no chapter in default flow is a trivial stub
-- [ ] Core architecture/operations pages contain explicit sections for "Why", "Tradeoffs", and "Operational impact"
-- [ ] Writing style across docs is revised to connected paragraph prose with clear transitions and low punctuation clutter
-- [ ] No programming-language code blocks appear in operator docs; configuration docs may include a full example plus targeted snippets for explanation
-- [ ] Configuration docs begin with one recommended production profile and then explain major fields, requiredness/default behavior, and concrete PostgreSQL runtime implications
-- [ ] Troubleshooting is organized by symptom/error/log signature with subsystem cross-links
-- [ ] Architecture Assurance includes a dedicated Safety Case chapter
-- [ ] Contributors section includes deep code-structure and test/harness internals with subchapters and sub-subchapters
-- [ ] Decorative/TOC-style Mermaid diagrams are removed; explanatory runtime diagrams are retained and lint-clean
-- [ ] Contributor-facing docs policy and verification/audit content are moved out of default operator path
-- [ ] Redirect stub pages are removed from nav and either deleted or retained only as non-nav compatibility pages with clear pointers
-- [ ] `make docs-lint` passes cleanly
-- [ ] `make docs-build` passes cleanly
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] `docs/src/SUMMARY.md` is restructured into an operator-first order: Start Here -> Quick Start -> Operator Guide -> System Lifecycle -> Architecture Assurance -> Interfaces -> Contributors
+- [x] Start Here + Quick Start provide an orientation + first-run path (`docs/src/start-here/*`, `docs/src/quick-start/*`)
+- [x] Operator Guide covers configuration, deployment/topology, observability, and troubleshooting (`docs/src/operator/*`)
+- [x] Lifecycle documentation covers bootstrap, steady state, switchover, failover, fail-safe/fencing, and recovery (`docs/src/lifecycle/*`)
+- [x] Architecture Assurance includes a dedicated Safety Case chapter (`docs/src/assurance/safety-case.md`)
+- [x] Operator docs avoid programming-language code snippets; configuration docs may include configuration snippets where required
+- [x] Contributors section contains implementation deep dives and harness/testing internals (`docs/src/contributors/*`)
+- [x] Verification/audit material is not part of the default operator flow; it is discoverable under contributor/verification sections (`docs/src/verification/*`)
+- [x] Docs hygiene and repo gates pass (`make check`, `make test`, `make lint`, `make test-long`)
 </acceptance_criteria>

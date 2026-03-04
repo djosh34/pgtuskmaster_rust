@@ -27,6 +27,7 @@ This order matches the navigation order in `SUMMARY.md` and is designed to build
 6. Harness Internals
 7. Verification Workflow
 8. Docs Authoring
+9. Verification (reports)
 
 ## Which chapter answers which question?
 
@@ -38,6 +39,7 @@ This order matches the navigation order in `SUMMARY.md` and is designed to build
 - “Why is e2e flaky / where are the artifacts?” → [Harness Internals](./harness-internals.md)
 - “How do we keep docs aligned with reality?” → [Verification Workflow](./verification.md)
 - “What is the writing standard for contributor docs?” → [Docs Authoring](./docs-style.md)
+- “What have we verified so far, and where did evidence land?” → [Verification](../verification/index.md)
 
 ## A small contributor mental model
 

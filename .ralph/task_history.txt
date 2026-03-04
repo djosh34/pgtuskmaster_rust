@@ -85,3 +85,4 @@
 .ralph/tasks/bugs/gate-audit-timeout-silent-pass-hardening.md
 .ralph/tasks/bugs/bug-real-binary-provenance-enforcement-gaps.md
 .ralph/tasks/story-pgbackrest-managed-backup-recovery/01-task-backup-provider-abstraction-and-pgbackrest-default.md
+.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md

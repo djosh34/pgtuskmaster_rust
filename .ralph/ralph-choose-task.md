@@ -10,8 +10,14 @@ Find the most logical task that you should do next, and write its path to .ralph
 you MUST pick a bug task before any non-bug task. Only when all bug tasks are passing may you consider other work.
 Within bugs, still follow `<priority>` tags (e.g. `ultra_high` before `high`).
 
+**TASK SELECTION PRECEDENCE (STRICT, NO EXCEPTIONS):**
+1) failing bug tasks (`<passes>false</passes>` or `<passing>false</passing>`)
+2) other failing/non-passing tasks (`<passes>false</passes>` or `<passing>false</passing>`)
+3) meta-task (`<passes>meta-task</passes>`) ONLY when 1) and 2) are empty
+4) already-passing tasks (`<passes>true</passes>` / `<passing>true</passing>`)
+
 - [ ] first find all tasks available by reading .ralph/current_tasks.md
-- [ ] if there are still tasks with `<passes>false</passes>` or `<passing>false</passing>`
+- [ ] if there are still tasks with `<passes>false</passes>` or `<passing>false</passing>` (bug or non-bug), they ALWAYS outrank meta-task
     - [ ] deeply think about which task has the highest priority to do next
         - [ ] always prefer fixing bugs over other tasks (bug-first rule)
     - [ ] this is almost never the first one in the list. Choose the one that has biggest prio to do next based on the
@@ -24,7 +30,11 @@ Within bugs, still follow `<priority>` tags (e.g. `ultra_high` before `high`).
     - [ ] find the file where that task is defined as specified in current_tasks.md
     - [ ] write only the path to that task to .ralph/current_task.txt e.g. '.ralph/tasks/story-[story name]/[task name].md'
     - [ ] QUIT IMMEDIATELY
-- [ ] **META-TASK CHECK (MANDATORY):** If ANY task has `<passes>meta-task</passes>`, you MUST choose it — even if it was done last time, even if there are other tasks available. Meta-tasks are RECURRING verification tasks that must be run every cycle. They are NEVER "done". Always pick meta-task over any `<passes>true</passes>` task. Only `<passes>false</passes>` tasks (actual broken things) take priority over meta-tasks.
+- [ ] **META-TASK CHECK (MANDATORY, BUT ONLY AFTER NON-PASSING TASKS ARE ZERO):** Re-scan `.ralph/current_tasks.md` and confirm there are ZERO tasks with `<passes>false</passes>` or `<passing>false</passing>` before choosing meta-task.
+    - [ ] if any non-passing task exists, DO NOT choose meta-task; go back to the non-passing-task branch above
+    - [ ] if ANY task has `<passes>meta-task</passes>` and non-passing tasks are zero, you MUST choose the meta-task — even if it was done last time, even if there are other passing tasks available
+    - [ ] meta-tasks are recurring verification tasks; they are never "done"
+    - [ ] meta-task outranks only already-passing tasks (`<passes>true</passes>` / `<passing>true</passing>`)
     - [ ] find the file where that meta-task is defined as specified in current_tasks.md
     - [ ] write only the path to that task to .ralph/current_task.txt
     - [ ] QUIT IMMEDIATELY

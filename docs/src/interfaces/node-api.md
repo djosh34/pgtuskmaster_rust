@@ -8,12 +8,19 @@ The Node API is a compact operational interface for state visibility and planned
 - `POST /switchover`: create planned switchover intent
 - `DELETE /ha/switchover`: cancel or clear pending switchover intent
 
+## Fallback endpoints
+
+These endpoints exist for compatibility and minimal external health/identity workflows:
+
+- `GET /fallback/cluster`: minimal cluster identity view
+- `POST /fallback/heartbeat`: compatibility heartbeat (admin endpoint)
+
 ## Optional debug endpoints
 
 When debug support is enabled in runtime configuration:
 
 - `GET /debug/ui`
-- `GET /debug/verbose?since=<sequence>`
+- `GET /debug/verbose` (optionally accepts `?since=<sequence>` to filter)
 - `GET /debug/snapshot`
 
 ## Why this exists

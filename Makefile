@@ -14,6 +14,9 @@ endif
 ifneq ($(filter -i --ignore-errors i,$(MAKEFLAGS))$(filter %i%,$(SINGLE_DASH_MAKEFLAGS)),)
 $(error Refusing to run Makefile gates with ignore-errors enabled (MAKEFLAGS contains -i/--ignore-errors))
 endif
+ifneq ($(filter -e --environment-overrides e,$(MAKEFLAGS))$(filter %e%,$(SINGLE_DASH_MAKEFLAGS)),)
+$(error Refusing to run Makefile gates with environment overrides enabled (MAKEFLAGS contains -e/--environment-overrides))
+endif
 
 ifneq ($(origin ULTRA_LONG_TESTS),undefined)
 $(error ULTRA_LONG_TESTS must not be set externally; edit Makefile to change the canonical ultra-long test list)
@@ -38,6 +41,9 @@ CARGO_INCREMENTAL ?= 0
 
 TEST_TIMEOUT_SECS := 120
 TEST_TIMEOUT_KILL_AFTER_SECS := 15
+ifneq ($(origin TIMEOUT_BIN),undefined)
+$(error TIMEOUT_BIN must not be set externally; edit Makefile to change timeout resolution)
+endif
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 
 TEST_PREFLIGHT_TIMEOUT_SECS := 180

@@ -28,7 +28,6 @@ struct PolicyBinary {
     expected_version: Option<ExpectedVersion>,
     #[serde(default)]
     allowed_target_prefixes: Option<Vec<String>>,
-    #[allow(dead_code)]
     pinned_archive: Option<PinnedArchive>,
 }
 
@@ -50,22 +49,16 @@ enum ExpectedVersion {
 
 #[derive(Debug, Deserialize)]
 struct PinnedArchive {
-    #[allow(dead_code)]
     kind: String,
-    #[allow(dead_code)]
     repo: String,
-    #[allow(dead_code)]
     tag: String,
-    #[allow(dead_code)]
     os: String,
-    #[allow(dead_code)]
     sha256_by_arch: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RealBinariesAttestation {
     schema_version: u32,
-    #[allow(dead_code)]
     generated_by: Option<String>,
     entries: Vec<AttestedBinary>,
 }
@@ -76,9 +69,7 @@ struct AttestedBinary {
     path: String,
     sha256: String,
     size_bytes: u64,
-    #[allow(dead_code)]
     installed_at_utc: Option<String>,
-    #[allow(dead_code)]
     resolved_path_abs: Option<String>,
 }
 
@@ -139,6 +130,9 @@ pub(crate) fn verify_real_binaries_from_repo_root(
         )));
     }
 
+    verify_policy_optional_pins(&policy)?;
+    verify_attestation_metadata(&attestation)?;
+
     verify_manifest_permissions(attestation_path.as_path())?;
 
     let tools_root = repo_root.join(".tools");
@@ -148,6 +142,7 @@ pub(crate) fn verify_real_binaries_from_repo_root(
 
     let mut attest_by_path: BTreeMap<String, AttestedBinary> = BTreeMap::new();
     for entry in attestation.entries {
+        verify_attested_entry_metadata(&entry)?;
         attest_by_path.insert(entry.path.clone(), entry);
     }
 
@@ -243,6 +238,119 @@ pub(crate) fn verify_real_binaries_from_repo_root(
     }
 
     Ok(VerifiedRealBinaries { by_label })
+}
+
+fn verify_policy_optional_pins(policy: &RealBinariesPolicy) -> Result<(), HarnessError> {
+    let arch = std::env::consts::ARCH;
+    let policy_arch = match arch {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => {
+            return Err(HarnessError::InvalidInput(format!(
+                "unsupported host arch for pinned-archive policy checks: {other}"
+            )));
+        }
+    };
+
+    for required in &policy.required_binaries {
+        let Some(pinned) = required.pinned_archive.as_ref() else {
+            continue;
+        };
+
+        if pinned.kind.trim().is_empty() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary policy pinned_archive.kind must be non-empty for {} at {}",
+                required.label, required.path
+            )));
+        }
+        if pinned.repo.trim().is_empty() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary policy pinned_archive.repo must be non-empty for {} at {}",
+                required.label, required.path
+            )));
+        }
+        if pinned.tag.trim().is_empty() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary policy pinned_archive.tag must be non-empty for {} at {}",
+                required.label, required.path
+            )));
+        }
+        if pinned.os.trim().is_empty() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary policy pinned_archive.os must be non-empty for {} at {}",
+                required.label, required.path
+            )));
+        }
+        if pinned.sha256_by_arch.is_empty() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary policy pinned_archive.sha256_by_arch must be non-empty for {} at {}",
+                required.label, required.path
+            )));
+        }
+
+        let Some(sha) = pinned.sha256_by_arch.get(policy_arch) else {
+            let keys: Vec<&String> = pinned.sha256_by_arch.keys().collect();
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary policy pinned_archive.sha256_by_arch missing arch {policy_arch} for {} at {} (have keys={keys:?})",
+                required.label, required.path
+            )));
+        };
+        if sha.trim().is_empty() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary policy pinned_archive.sha256_by_arch[{policy_arch}] must be non-empty for {} at {}",
+                required.label, required.path
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_attestation_metadata(attestation: &RealBinariesAttestation) -> Result<(), HarnessError> {
+    if let Some(generated_by) = attestation.generated_by.as_deref() {
+        if generated_by.trim().is_empty() {
+            return Err(HarnessError::InvalidInput(
+                "real-binary attestation generated_by must be non-empty when present".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_attested_entry_metadata(entry: &AttestedBinary) -> Result<(), HarnessError> {
+    if let Some(installed_at_utc) = entry.installed_at_utc.as_deref() {
+        let trimmed = installed_at_utc.trim();
+        if trimmed.is_empty() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary attestation installed_at_utc must be non-empty when present (label={} path={})",
+                entry.label, entry.path
+            )));
+        }
+        if !trimmed.ends_with('Z') || !trimmed.contains('T') {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary attestation installed_at_utc must look like RFC3339 UTC (ending with Z) when present (label={} path={} installed_at_utc={trimmed:?})",
+                entry.label, entry.path
+            )));
+        }
+    }
+
+    if let Some(resolved_path_abs) = entry.resolved_path_abs.as_deref() {
+        let trimmed = resolved_path_abs.trim();
+        if trimmed.is_empty() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary attestation resolved_path_abs must be non-empty when present (label={} path={})",
+                entry.label, entry.path
+            )));
+        }
+        if !Path::new(trimmed).is_absolute() {
+            return Err(HarnessError::InvalidInput(format!(
+                "real-binary attestation resolved_path_abs must be absolute when present (label={} path={} resolved_path_abs={trimmed:?})",
+                entry.label, entry.path
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn load_policy(path: &Path) -> Result<RealBinariesPolicy, HarnessError> {

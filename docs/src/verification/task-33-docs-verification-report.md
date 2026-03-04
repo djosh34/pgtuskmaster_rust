@@ -6,6 +6,17 @@
 - Baseline commit when audit started: `cc600a63b4fa97b595b128f7eb735f7959c3b888`
 - Standard: “skeptical by default” (see below)
 
+## Historical scope notice
+
+This report is a **historical verification artifact** produced against the docs tree at (or near) the baseline commit above.
+
+The docs set and file paths have since been restructured. As a result:
+
+- some `doc_loc` and “coverage checklist” paths referenced below may not exist in the current tree, and
+- this document should not be treated as a continuously-updated “current coverage ledger”.
+
+For current verification practice and expectations, use the contributor-facing verification workflow and the recurring meta-task review process.
+
 ## Standard: what “Verified” means
 
 Non-negotiable rules used in this report:
@@ -21,7 +32,7 @@ Non-negotiable rules used in this report:
   - remove it,
   - or move it into “Uncertainties” with a follow-up task.
 
-## Canonical terminology table (must stay consistent across docs)
+## Canonical terminology table (intended to stay consistent across docs)
 
 | Term | Meaning in these docs |
 |---|---|
@@ -37,9 +48,9 @@ Non-negotiable rules used in this report:
 
 If a page uses different words for the same concept, that is treated as a defect unless the difference is explicitly explained.
 
-## Coverage checklist (docs pages audited)
+## Coverage checklist (docs pages audited at the time of Task 33)
 
-This table is the audit ledger: each page must be dispositioned.
+This table was the audit ledger during the Task 33 run. It is not automatically kept in sync with later docs restructures.
 
 | Page | Status | Notes |
 |---|---:|---|

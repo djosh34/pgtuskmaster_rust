@@ -107,7 +107,7 @@ It enforces basic sanity before spawning:
 - member names must be unique
 - client and peer ports must not collide.
 
-Readiness is currently checked by attempting to connect to the client port. If a member exits before readiness or does not become reachable before the timeout, the harness returns a structured error and attempts to shut down any already-started members.
+Readiness is currently checked in two stages: (1) a TCP connect probe to each member’s client port, then (2) an etcd KV round-trip (`put`/`get`/`delete`) via the etcd client before the cluster is treated as ready. If a member exits before readiness or does not become reachable before the timeout, the harness returns a structured error and attempts to shut down any already-started members.
 
 ### Postgres 16 instances (`src/test_harness/pg16.rs`)
 

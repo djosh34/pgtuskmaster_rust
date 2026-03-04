@@ -46,4 +46,5 @@
     - [Harness Internals](./contributors/harness-internals.md)
   - [Verification Workflow](./contributors/verification.md)
   - [Docs Authoring](./contributors/docs-style.md)
-  - [Appendix: Task 33 Verification Report](./contributors/task-33-docs-verification-report.md)
+  - [Verification](./verification/index.md)
+    - [Task 33 — Docs verification report (facts + writing quality)](./verification/task-33-docs-verification-report.md)
