@@ -449,6 +449,14 @@ async fn start_cluster_inner(
                         max_age_seconds: 7 * 24 * 60 * 60,
                     },
                 },
+                sinks: crate::config::LoggingSinksConfig {
+                    stderr: crate::config::StderrSinkConfig { enabled: true },
+                    file: crate::config::FileSinkConfig {
+                        enabled: false,
+                        path: None,
+                        mode: crate::config::FileSinkMode::Append,
+                    },
+                },
             },
             api: ApiConfig {
                 listen_addr: api_addr.to_string(),

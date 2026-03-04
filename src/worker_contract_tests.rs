@@ -100,6 +100,14 @@ fn sample_runtime_config() -> RuntimeConfig {
                     max_age_seconds: 60,
                 },
             },
+            sinks: crate::config::LoggingSinksConfig {
+                stderr: crate::config::StderrSinkConfig { enabled: true },
+                file: crate::config::FileSinkConfig {
+                    enabled: false,
+                    path: None,
+                    mode: crate::config::FileSinkMode::Append,
+                },
+            },
         },
         api: crate::config::schema::ApiConfig {
             listen_addr: "127.0.0.1:8080".to_string(),

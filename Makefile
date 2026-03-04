@@ -3,7 +3,11 @@ MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 
 .PHONY: check test test-long lint docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-timeout
 
-ULTRA_LONG_TESTS :=
+ULTRA_LONG_TESTS := \
+	ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix \
+	ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql \
+	ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql \
+	ha::e2e_multi_node::e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity
 ULTRA_LONG_SKIP_ARGS := $(foreach t,$(ULTRA_LONG_TESTS),--skip $(t))
 
 # The workspace mount this repo typically lives on can exhibit intermittent

@@ -62,3 +62,4 @@
 .ralph/tasks/story-rust-system-harness/40-task-ultra-high-prio-test-target-split-and-reference-migration.md
 .ralph/tasks/story-rust-system-harness/41-task-ultra-high-prio-split-ultra-long-e2e-into-short-parallel-tests.md
 .ralph/tasks/story-rust-system-harness/38-task-unified-structured-logging-and-postgres-binary-ingestion.md
+.ralph/tasks/story-rust-system-harness/39-task-file-sink-support-for-structured-logging.md

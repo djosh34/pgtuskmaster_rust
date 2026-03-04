@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 04:37:09 AM CET 2026
+Generated: Wed Mar  4 05:07:34 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-tests-are-optional-via-early-return.md`
 
@@ -567,7 +567,7 @@ This is a **RECURRING META-TASK**.
 
 **Path:** `.ralph/tasks/story-rust-system-harness/39-task-file-sink-support-for-structured-logging.md`
 
-## Task: Add File Sink Support For Unified Structured Logging <status>not_started</status> <passes>false</passes>
+## Task: Add File Sink Support For Unified Structured Logging <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Extend the unified structured logging subsystem to support configurable JSONL file sinks (in addition to the current stderr JSONL sink).

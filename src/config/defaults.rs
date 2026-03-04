@@ -1,6 +1,7 @@
 use super::schema::{
-    ApiConfig, DebugConfig, LogCleanupConfig, LogLevel, LoggingConfig, PartialRuntimeConfig,
-    PostgresConfig, PostgresLoggingConfig, ProcessConfig, RuntimeConfig, SecurityConfig,
+    ApiConfig, DebugConfig, FileSinkConfig, FileSinkMode, LogCleanupConfig, LogLevel, LoggingConfig,
+    LoggingSinksConfig, PartialRuntimeConfig, PostgresConfig, PostgresLoggingConfig, ProcessConfig,
+    RuntimeConfig, SecurityConfig, StderrSinkConfig,
 };
 
 const DEFAULT_PG_CONNECT_TIMEOUT_S: u32 = 5;
@@ -23,6 +24,9 @@ const DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS: u64 = 200;
 const DEFAULT_LOGGING_CLEANUP_ENABLED: bool = true;
 const DEFAULT_LOGGING_CLEANUP_MAX_FILES: u64 = 50;
 const DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
+const DEFAULT_LOGGING_SINK_STDERR_ENABLED: bool = true;
+const DEFAULT_LOGGING_SINK_FILE_ENABLED: bool = false;
+const DEFAULT_LOGGING_SINK_FILE_MODE: FileSinkMode = FileSinkMode::Append;
 
 pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
     let postgres = PostgresConfig {
@@ -73,6 +77,9 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
     let logging_raw = raw.logging.as_ref();
     let postgres_raw = logging_raw.and_then(|cfg| cfg.postgres.as_ref());
     let cleanup_raw = postgres_raw.and_then(|cfg| cfg.cleanup.as_ref());
+    let sinks_raw = logging_raw.and_then(|cfg| cfg.sinks.as_ref());
+    let stderr_sink_raw = sinks_raw.and_then(|cfg| cfg.stderr.as_ref());
+    let file_sink_raw = sinks_raw.and_then(|cfg| cfg.file.as_ref());
     let logging = LoggingConfig {
         level: logging_raw
             .and_then(|cfg| cfg.level)
@@ -100,6 +107,22 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
                 max_age_seconds: cleanup_raw
                     .and_then(|cfg| cfg.max_age_seconds)
                     .unwrap_or(DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS),
+            },
+        },
+        sinks: LoggingSinksConfig {
+            stderr: StderrSinkConfig {
+                enabled: stderr_sink_raw
+                    .and_then(|cfg| cfg.enabled)
+                    .unwrap_or(DEFAULT_LOGGING_SINK_STDERR_ENABLED),
+            },
+            file: FileSinkConfig {
+                enabled: file_sink_raw
+                    .and_then(|cfg| cfg.enabled)
+                    .unwrap_or(DEFAULT_LOGGING_SINK_FILE_ENABLED),
+                path: file_sink_raw.and_then(|cfg| cfg.path.clone()),
+                mode: file_sink_raw
+                    .and_then(|cfg| cfg.mode)
+                    .unwrap_or(DEFAULT_LOGGING_SINK_FILE_MODE),
             },
         },
     };
@@ -150,7 +173,8 @@ mod tests {
     use super::*;
     use crate::config::schema::{
         BinaryPaths, ClusterConfig, DcsConfig, HaConfig, PartialApiConfig, PartialDebugConfig,
-        PartialLoggingConfig, PartialPostgresConfig, PartialProcessConfig, PartialSecurityConfig,
+        PartialFileSinkConfig, PartialLoggingConfig, PartialLoggingSinksConfig,
+        PartialPostgresConfig, PartialProcessConfig, PartialSecurityConfig, PartialStderrSinkConfig,
     };
 
     fn base_partial() -> PartialRuntimeConfig {
@@ -254,6 +278,10 @@ mod tests {
             cfg.logging.postgres.cleanup.max_age_seconds,
             DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS
         );
+        assert!(cfg.logging.sinks.stderr.enabled);
+        assert!(!cfg.logging.sinks.file.enabled);
+        assert_eq!(cfg.logging.sinks.file.path, None);
+        assert_eq!(cfg.logging.sinks.file.mode, FileSinkMode::Append);
     }
 
     #[test]
@@ -285,6 +313,16 @@ mod tests {
             level: Some(LogLevel::Debug),
             capture_subprocess_output: Some(false),
             postgres: None,
+            sinks: Some(PartialLoggingSinksConfig {
+                stderr: Some(PartialStderrSinkConfig {
+                    enabled: Some(false),
+                }),
+                file: Some(PartialFileSinkConfig {
+                    enabled: Some(true),
+                    path: Some(PathBuf::from("/tmp/pgtuskmaster.jsonl")),
+                    mode: Some(FileSinkMode::Truncate),
+                }),
+            }),
         });
 
         let cfg = apply_defaults(raw);
@@ -307,5 +345,12 @@ mod tests {
         assert_eq!(cfg.security.auth_token.as_deref(), Some("token-123"));
         assert_eq!(cfg.logging.level, LogLevel::Debug);
         assert!(!cfg.logging.capture_subprocess_output);
+        assert!(!cfg.logging.sinks.stderr.enabled);
+        assert!(cfg.logging.sinks.file.enabled);
+        assert_eq!(
+            cfg.logging.sinks.file.path,
+            Some(PathBuf::from("/tmp/pgtuskmaster.jsonl"))
+        );
+        assert_eq!(cfg.logging.sinks.file.mode, FileSinkMode::Truncate);
     }
 }

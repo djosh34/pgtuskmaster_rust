@@ -112,6 +112,17 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         }
     }
 
+    if let Some(path) = cfg.logging.sinks.file.path.as_ref() {
+        validate_non_empty_path("logging.sinks.file.path", path)?;
+    }
+
+    if cfg.logging.sinks.file.enabled && cfg.logging.sinks.file.path.is_none() {
+        return Err(ConfigError::Validation {
+            field: "logging.sinks.file.path",
+            message: "must be configured when logging.sinks.file.enabled is true".to_string(),
+        });
+    }
+
     if cfg.dcs.endpoints.is_empty() {
         return Err(ConfigError::Validation {
             field: "dcs.endpoints",
@@ -223,9 +234,9 @@ mod tests {
 
     use super::*;
     use crate::config::schema::{
-        ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, LogCleanupConfig,
-        LogLevel, LoggingConfig, PostgresConfig, PostgresLoggingConfig, ProcessConfig, RuntimeConfig,
-        SecurityConfig,
+        ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode,
+        HaConfig, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PostgresConfig,
+        PostgresLoggingConfig, ProcessConfig, RuntimeConfig, SecurityConfig, StderrSinkConfig,
     };
 
     fn base_runtime_config() -> RuntimeConfig {
@@ -278,6 +289,14 @@ mod tests {
                         enabled: true,
                         max_files: 10,
                         max_age_seconds: 60,
+                    },
+                },
+                sinks: LoggingSinksConfig {
+                    stderr: StderrSinkConfig { enabled: true },
+                    file: FileSinkConfig {
+                        enabled: false,
+                        path: None,
+                        mode: FileSinkMode::Append,
                     },
                 },
             },
@@ -407,6 +426,47 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_file_sink_enabled_without_path() {
+        let mut cfg = base_runtime_config();
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = None;
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "logging.sinks.file.path",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_file_sink_empty_path() {
+        let mut cfg = base_runtime_config();
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = Some(PathBuf::new());
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "logging.sinks.file.path",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_accepts_file_sink_enabled_with_path() {
+        let mut cfg = base_runtime_config();
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = Some(PathBuf::from("/tmp/pgtuskmaster.jsonl"));
+
+        assert!(validate_runtime_config(&cfg).is_ok());
     }
 
     #[test]

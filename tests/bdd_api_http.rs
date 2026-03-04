@@ -116,6 +116,14 @@ fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
                     max_age_seconds: 60,
                 },
             },
+            sinks: pgtuskmaster_rust::config::LoggingSinksConfig {
+                stderr: pgtuskmaster_rust::config::StderrSinkConfig { enabled: true },
+                file: pgtuskmaster_rust::config::FileSinkConfig {
+                    enabled: false,
+                    path: None,
+                    mode: pgtuskmaster_rust::config::FileSinkMode::Append,
+                },
+            },
         },
         api: ApiConfig {
             listen_addr: "127.0.0.1:0".to_string(),

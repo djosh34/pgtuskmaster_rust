@@ -64,6 +64,7 @@ pub struct LoggingConfig {
     pub level: LogLevel,
     pub capture_subprocess_output: bool,
     pub postgres: PostgresLoggingConfig,
+    pub sinks: LoggingSinksConfig,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -86,6 +87,34 @@ pub struct PostgresLoggingConfig {
     pub archive_command_log_file: Option<PathBuf>,
     pub poll_interval_ms: u64,
     pub cleanup: LogCleanupConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoggingSinksConfig {
+    pub stderr: StderrSinkConfig,
+    pub file: FileSinkConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StderrSinkConfig {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileSinkConfig {
+    pub enabled: bool,
+    pub path: Option<PathBuf>,
+    pub mode: FileSinkMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileSinkMode {
+    Append,
+    Truncate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -170,6 +199,7 @@ pub struct PartialLoggingConfig {
     pub level: Option<LogLevel>,
     pub capture_subprocess_output: Option<bool>,
     pub postgres: Option<PartialPostgresLoggingConfig>,
+    pub sinks: Option<PartialLoggingSinksConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -189,6 +219,27 @@ pub struct PartialLogCleanupConfig {
     pub enabled: Option<bool>,
     pub max_files: Option<u64>,
     pub max_age_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialLoggingSinksConfig {
+    pub stderr: Option<PartialStderrSinkConfig>,
+    pub file: Option<PartialFileSinkConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialStderrSinkConfig {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialFileSinkConfig {
+    pub enabled: Option<bool>,
+    pub path: Option<PathBuf>,
+    pub mode: Option<FileSinkMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
