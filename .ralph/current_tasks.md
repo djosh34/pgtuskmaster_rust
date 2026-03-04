@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 11:52:41 AM CET 2026
+Generated: Wed Mar  4 12:00:58 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -74,6 +74,15 @@ After updating `make test` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo te
 
 <description>
 The etcd DCS store watch worker has subtle correctness issues in bootstrap/reconnect handling.
+
+---
+
+**Path:** `.ralph/tasks/bugs/fencing-cutoff-commit-timestamp-zero-fallback-undercounts.md`
+
+## Bug: Fencing cutoff commit timestamp fallback undercounts post-cutoff commits <status>not_started</status> <passes>false</passes>
+
+<description>
+In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_ms` using `ha_e2e::util::unix_now()`, but on error the code falls back to `0` (`Err(_) => 0`).
 
 ---
 

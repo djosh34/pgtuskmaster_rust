@@ -24,6 +24,12 @@ No test must be optional, especially not tests against real binaries. Instead in
 Skipping tests is one of the worst things you can do, giving extremely false confidence. Create bug immediately when spotted with add-bug skill.
 
 
+This is greenfield project with 0 users. 
+We don't have legacy at all. If you find legacy, remove it.
+Never plan changes thinking of backwards compatibility.
+You are free and encouraged to make large code/schema changes, if that will improve the codebase.
+
+
 ## Cross application applicable learnings
 - ... (add here)
 - For watch-based caches, treat reconnect/resnapshot as an authoritative reset: emit an explicit reset marker (or equivalent) and drop/replace any queued pre-reconnect events so deleted keys cannot be resurrected by stale PUTs.
