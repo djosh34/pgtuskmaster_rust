@@ -68,12 +68,26 @@ The important sharp edge:
 
 The harness intentionally fails closed if prerequisites are missing.
 
-Binary validation is in `src/test_harness/binaries.rs`:
+Binary validation is enforced by:
 
-- “developer” helpers like `require_pg16_bin(...)` can accept local paths
-- real-binary gates use `require_*_for_real_tests(...)` which require binaries under:
-  - `.tools/postgres16/bin/`
-  - `.tools/etcd/bin/`.
+- `src/test_harness/binaries.rs`: the public harness entry points (`require_*_for_real_tests(...)`)
+- `src/test_harness/provenance.rs`: provenance verification (policy + attestation + hash/version checks)
+
+Real-binary prerequisites are defined in the repo-tracked policy: `tools/real-binaries-policy.json`.
+
+Installers (`./tools/install-etcd.sh` and `./tools/install-postgres16.sh`) generate a local attestation manifest at `.tools/real-binaries-attestation.json` that records:
+
+- expected repo-relative path under `.tools/`
+- sha256 and file size
+- install timestamp (for debugging).
+
+During tests, the harness verifies that required binaries are:
+
+- regular executable files (symlinks are allowed only if policy explicitly allows them and the canonical target path is in the allowlist),
+- contained within `.tools/` after canonicalization (or, for allowlisted symlinks, contained within the allowlisted system prefixes),
+- not group/other writable,
+- byte-identical to the attested sha256/size, and
+- version-compatible with policy (checked via `--version` after hash validation).
 
 If a real-binary test fails with “missing prerequisite”, the fix is to install the binaries (via scripts under `tools/`), not to skip the test.
 

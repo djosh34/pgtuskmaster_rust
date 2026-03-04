@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 07:59:30 PM CET 2026
+Generated: Wed Mar  4 20:57:13 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -22,7 +22,7 @@ HA e2e assertions can pass without reliable cluster-wide observations during uns
 
 **Path:** `.ralph/tasks/bugs/bug-real-binary-provenance-enforcement-gaps.md`
 
-## Bug: Real-binary provenance enforcement gaps in installers and harness <status>not_started</status> <passes>false</passes>
+## Bug: Real-binary provenance enforcement gaps in installers and harness <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 Real-binary tooling currently enforces existence/executability but not strong provenance at runtime.
@@ -373,6 +373,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -397,15 +406,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
 
 ---
 
@@ -448,6 +448,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
@@ -463,16 +473,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
 
 ---
 

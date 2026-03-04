@@ -6,6 +6,7 @@ use thiserror::Error;
 pub(crate) mod auth;
 pub(crate) mod binaries;
 pub(crate) mod etcd3;
+pub(crate) mod provenance;
 #[cfg(test)]
 pub(crate) mod ha_e2e;
 pub(crate) mod namespace;

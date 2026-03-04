@@ -10,6 +10,7 @@ default = []
 clap = { version = "4.5.47", features = ["derive", "env"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
+sha2 = "0.10.9"
 thiserror = "2.0.12"
 tokio = { version = "1.44.1", features = ["sync", "rt", "macros", "time", "process", "net", "io-util", "fs"] }
 tokio-postgres = "0.7.13"

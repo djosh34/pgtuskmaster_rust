@@ -83,3 +83,4 @@
 .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
 .ralph/tasks/bugs/bug-test-harness-runtime-path-dependent-kill-command.md
 .ralph/tasks/bugs/gate-audit-timeout-silent-pass-hardening.md
+.ralph/tasks/bugs/bug-real-binary-provenance-enforcement-gaps.md
