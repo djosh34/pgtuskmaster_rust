@@ -69,3 +69,4 @@
 .ralph/tasks/story-secure-explicit-node-config/04-task-wire-http-pg-tls-pg_hba-pg_ident-and-dcs-init-into-startup.md
 .ralph/tasks/story-secure-explicit-node-config/05-task-migrate-fixtures-examples-and-cli-config-surfaces-to-new-schema.md
 .ralph/tasks/story-secure-explicit-node-config/06-task-full-verification-for-secure-explicit-config-refactor.md
+.ralph/tasks/story-rust-system-harness/33-task-deep-skeptical-verification-of-doc-facts-and-writing-quality.md

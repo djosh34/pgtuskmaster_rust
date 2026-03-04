@@ -1,0 +1,4 @@
+PATH="/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.tools/mdbook/bin:$PATH" ".tools/mdbook/bin/mdbook" build docs
+2026-03-04 10:20:23 [INFO] (mdbook::book): Book building has started
+Warning: The mdbook-mermaid preprocessor was built against version 0.4.36 of mdbook, but we're being called from version 0.4.40
+2026-03-04 10:20:23 [INFO] (mdbook::book): Running the html backend

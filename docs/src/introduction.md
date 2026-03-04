@@ -17,9 +17,10 @@ flowchart LR
   Operator -->|CLI| CLI[pgtuskmasterctl]
   CLI -->|HTTP| API
 
-  API --> Runtime[Node Runtime]
+  API --- Runtime[Node Runtime]
+  API -->|intent| ETCD[(etcd / DCS)]
   Runtime -->|control| PG[(PostgreSQL)]
-  Runtime <-->|coordination| ETCD[(etcd / DCS)]
+  Runtime <-->|coordination| ETCD
 
   Clients[App Clients] -->|SQL| PG
 ```

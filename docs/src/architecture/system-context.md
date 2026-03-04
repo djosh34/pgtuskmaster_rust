@@ -14,18 +14,17 @@ flowchart LR
   end
 
   subgraph Node[pgtuskmaster node]
-    API[Node API]
+    API[Node API\n(includes debug routes)]
     Runtime[Node Runtime]
-    Debug[Debug API]
+    Debug[Debug snapshot worker]
     PG[(PostgreSQL)]
   end
 
-  Operator -->|HTTP control + read| API
-  Operator -->|debug reads| Debug
+  Operator -->|HTTP control + read\n(including debug)| API
   Clients -->|SQL| PG
 
-  API --> Runtime
-  Debug --> Runtime
+  Debug --> API
+  API --- Runtime
   Runtime <-->|watches/writes| ETCD
   Runtime -->|starts/stops/rewires| PG
 ```
@@ -35,4 +34,3 @@ Things that are intentionally *not* in scope of the node:
 - A centralized scheduler across clusters.
 
 The node is designed to be deployable as a local supervisor that makes safe decisions given the signals it can observe.
-

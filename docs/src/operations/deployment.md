@@ -9,7 +9,7 @@ This page captures the operational assumptions a new operator should know.
 ```mermaid
 flowchart LR
   Node[pgtuskmaster] --> PG[(PostgreSQL)]
-  Node <-->|HTTP| ETCD[(etcd)]
+  Node <-->|etcd client| ETCD[(etcd)]
   Node --> API[Node API listen address]
 ```
 
@@ -17,4 +17,3 @@ flowchart LR
 - Ensure data directories have correct permissions (PostgreSQL requires strict ownership/permissions).
 - Keep Unix socket paths short (long paths can cause Postgres startup flakes).
 - Treat TLS and auth tokens as deployment configuration, not as runtime toggles.
-

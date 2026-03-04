@@ -9,6 +9,14 @@ The API is intentionally small: it is meant to express **intent**, not to expose
 - `POST /switchover`: request a planned primary transition
 - `DELETE /ha/switchover`: cancel/clear a pending switchover request
 
+## Optional debug endpoints
+
+When `debug.enabled = true` in the runtime config, the node also serves debugging routes intended for development and incident triage (not the primary operator contract):
+
+- `GET /debug/ui`: minimal debug UI
+- `GET /debug/verbose?since=<sequence>`: structured “what changed” view
+- `GET /debug/snapshot`: raw snapshot dump (kept for backwards compatibility)
+
 ```mermaid
 sequenceDiagram
   participant Op as Operator
@@ -28,4 +36,3 @@ At a high level, the API distinguishes:
 - admin actions that mutate intent
 
 Exact token fields and deployment policy are documented under Operations.
-

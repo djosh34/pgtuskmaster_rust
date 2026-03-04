@@ -18,6 +18,7 @@ stateDiagram-v2
   [*] --> NotTrusted
   NotTrusted --> FailSafe: etcd healthy\nbut membership/leader invariants broken
   FailSafe --> FullQuorum: self present and\nleader (if any) is consistent
+  FailSafe --> NotTrusted: etcd unhealthy / unreachable
   FullQuorum --> NotTrusted: etcd unhealthy / unreachable
 ```
 
@@ -27,4 +28,3 @@ Interpretation:
 - `FullQuorum`: DCS is healthy and consistent enough for normal HA actions.
 
 This is not generic textbook quorum language; it is the system’s explicit safety contract.
-

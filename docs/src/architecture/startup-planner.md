@@ -11,7 +11,7 @@ At a high level, there are three startup outcomes:
 flowchart TD
   Start[Node starts] --> HasData{Local data dir exists?}
   HasData -->|yes| Resume[ResumeExisting]
-  HasData -->|no| HasLeader{DCS has a trusted leader?}
+  HasData -->|no| HasLeader{DCS has evidence of a healthy leader?}
   HasLeader -->|yes| Clone[CloneReplica]
   HasLeader -->|no| Init[InitializePrimary]
 ```
@@ -19,4 +19,3 @@ flowchart TD
 Why this separation matters:
 - Startup decisions affect what “role” the node can safely enter later.
 - Inconsistent coordination (trust degraded) should bias toward safer, more conservative startup paths.
-

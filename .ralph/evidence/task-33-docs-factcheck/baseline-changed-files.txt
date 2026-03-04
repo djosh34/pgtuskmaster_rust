@@ -1,0 +1,3 @@
+.ralph/current_tasks.md
+.ralph/progress/71.jsonl
+.ralph/tasks/story-rust-system-harness/33-task-deep-skeptical-verification-of-doc-facts-and-writing-quality.md

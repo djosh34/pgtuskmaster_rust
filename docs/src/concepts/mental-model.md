@@ -11,15 +11,15 @@ flowchart TB
     Dcs[DCS worker\n\"What does etcd say?\"] --> Bus
     Ha[HA worker\n\"What should we do next?\"] --> Bus
     Proc[Process worker\n\"Perform actions safely\"] --> Bus
-    Api[API worker\n\"Operator controls & status\"] --> Bus
-    Debug[Debug API worker\n\"Explain what changed\"] --> Bus
+    Debug[Debug snapshot worker\n\"Explain what changed\"] --> Bus
+    Bus --> Api[Node API worker\n\"Operator controls & status\"]
   end
 
   PG[(PostgreSQL)] --> PgInfo
   ETCD[(etcd)] --> Dcs
   Proc --> PG
   Ha --> ETCD
-  Api --> Ha
+  Api --> ETCD
 ```
 
 What to look for when debugging behavior:
@@ -27,4 +27,3 @@ What to look for when debugging behavior:
 - If coordination looks wrong or stale: start with `DCS` trust and cache.
 - If the node refuses promotion: check `HA` safety/fencing decisions.
 - If the node is “doing nothing”: check whether `Process` is blocked on a safety precondition.
-

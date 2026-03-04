@@ -19,17 +19,16 @@ sequenceDiagram
   DCS->>DCS: Refresh cache + trust
   DCS-->>HA: Publish DCS view (members/leader/intent/trust)
 
-  API-->>HA: Operator intent (optional)\n(e.g. switchover request)
+  API->>DCS: Write operator intent (optional)\n(e.g. switchover request)
 
   HA->>HA: Decide next safe role/actions
   HA-->>Proc: Action requests (start/stop/rewind/bootstrap)\nwith safety constraints
-  HA-->>DCS: Coordination writes (leader/intent/membership)
+  HA-->>DCS: Coordination writes (leader lease,\nclear switchover)
 
   Proc->>PG: Execute actions
 ```
 
 Important properties:
 - Decisions are **guarded** by safety checks.
-- Actions are **idempotent** over time (the system converges even if a step is retried).
+- Actions are **re-tried conservatively** (the system converges by re-evaluating state on each tick).
 - DCS trust can intentionally block certain actions.
-

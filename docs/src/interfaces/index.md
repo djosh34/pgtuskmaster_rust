@@ -12,8 +12,8 @@ flowchart LR
   Op --> CLI[pgtuskmasterctl]
   CLI --> API
 
-  API --> Runtime[Node Runtime]
-  Runtime --> ETCD[(DCS)]
-  Runtime --> PG[(PostgreSQL)]
+  API --- Runtime[Node Runtime]
+  API -->|intent| ETCD[(DCS)]
+  Runtime -->|coordination| ETCD
+  Runtime -->|control| PG[(PostgreSQL)]
 ```
-

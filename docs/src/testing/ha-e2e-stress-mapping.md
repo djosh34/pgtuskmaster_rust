@@ -28,15 +28,15 @@ This scenario was evidence-backed as the only consistently 3min+ HA e2e test and
 | Write rejections occur (>0) during fail-safe window | `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity` | Ensures fencing/transient failures are exercised. |
 | After fail-safe + grace, commits are near-zero (<= tolerance) | `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity` | Maintains the post-cutoff commit tolerance check. |
 | No split-brain write evidence (no duplicate committed keys; no hard SQL failures) | `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity` | Keeps the existing workload evidence assertions. |
-| Key integrity check on the primary table | `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity` | Validates no duplicate primary keys and at least 1 row. |
+| Best-effort key integrity probe (when a Postgres is reachable) | `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity` | If any node remains queryable, validates no duplicate `(worker_id,seq)` rows and at least 1 row. |
 | Artifacts written + cluster shutdown even on failure | Both | Both tests write stress artifacts and always shut down the fixture. |
 
 ## Thresholds and timing notes
 
-The new tests intentionally reduce fixed wall-clock sleeps and use shorter explicit scenario timeouts to stay under regular `make test` runtime policy:
+The new tests intentionally reduce fixed wall-clock sleeps and rely on explicit per-step timeouts to stay under regular `make test` runtime policy:
 
-- Per-test scenario timeout: `E2E_SHORT_SCENARIO_TIMEOUT = 90s`.
-- HA sampling windows reduced from 8s to 4s in the no-quorum tests.
-- Fencing grace changed from 5s to 3s, with a 5s post-observation tail so the post-cutoff window is still exercised.
+- The “stable primary” wait is bounded (60s in both tests).
+- The “failsafe observed” wait is bounded (60s in the strict-all-nodes test).
+- HA sampling windows are short (4s in the strict-all-nodes test; 2s in the fencing+workload test).
+- The fencing cutoff window uses a 7s grace and an 8s tail sleep before measuring post-cutoff commits.
 - Post-cutoff commit tolerance remains `allowed_post_cutoff_commits = 10`.
-

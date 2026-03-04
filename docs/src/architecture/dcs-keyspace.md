@@ -24,10 +24,14 @@ flowchart TB
   DCSWorker -->|watches/reads| C
   DCSWorker -->|watches/reads| I
 
-  classDef key fill:#eef,stroke:#88a,stroke-width:1px;
+classDef key fill:#eef,stroke:#88a,stroke-width:1px;
 ```
+
+Note: the bootstrap path can also write:
+- `/<scope>/init` (an initialization lock), and
+- optionally `/<scope>/config` (seed config payload),
+before steady-state workers start.
 
 Operational takeaway:
 - DCS health and consistency are treated explicitly via a trust state.
 - When trust degrades, HA decisions should become more conservative.
-

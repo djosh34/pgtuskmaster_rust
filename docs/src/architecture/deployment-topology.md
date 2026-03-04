@@ -35,5 +35,4 @@ flowchart TB
 
 Operational takeaway:
 - etcd availability affects **coordination trust**, but does not directly represent PostgreSQL health.
-- Each node always has local truth (its own PostgreSQL process), and remote truth (DCS + other members’ records).
-
+- Each node has local signals (its own PostgreSQL process), and remote signals (DCS + other members’ records), and the HA logic treats those signals differently when DCS trust degrades.

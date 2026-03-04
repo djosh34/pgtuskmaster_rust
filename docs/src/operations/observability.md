@@ -17,6 +17,5 @@ flowchart LR
 
 Start with:
 - node logs for the current phase and decision points
-- the debug interface (if enabled) for “what changed”
+- the debug routes (if enabled and you have access) for “what changed”
 - the HA state endpoint for a summary of current role/phase
-
