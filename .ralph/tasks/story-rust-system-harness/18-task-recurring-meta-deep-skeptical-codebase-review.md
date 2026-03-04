@@ -52,7 +52,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - `make test`: pass (`gate-make-test.log`)
   - `make lint`: pass (`gate-make-lint.log`)
   - `make test-long`: pass (`gate-make-test-long.log`)
-- Closeout model reset to `normal_high`: pending (done after closeout checklist).
+- Closeout model reset to `normal_high`: done (after gates).
 
 ### 2026-03-04 (fresh run, pass-4 preflight only)
 - Reviewer: codex
@@ -482,6 +482,6 @@ Important: `make test` is wrapped in `timeout 120s` including compilation; warm 
 - [x] Append a new “Exploration” entry for pass-5 including:
   - [x] audited modules/files, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
 - [x] Set `.ralph/model.txt` back to exactly `normal_high`.
-- [ ] Only if pass-5 includes code changes: run `.ralph/task_switch.sh`, commit, and `git push` per repo workflow.
+- [x] Only if pass-5 includes code changes: run `.ralph/task_switch.sh`, commit, and `git push` per repo workflow.
 
 NOW EXECUTE
