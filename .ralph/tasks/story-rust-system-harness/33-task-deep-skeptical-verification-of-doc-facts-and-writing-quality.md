@@ -233,11 +233,11 @@ If any failure occurs:
   - [x] Set `<status>completed</status>`, `<passes>true</passes>`, and `<passing>true</passing>`
   - [x] Add evidence pointer to `.ralph/evidence/task-33-docs-factcheck/` and the verification report file
 - [x] Run `/bin/bash .ralph/task_switch.sh`
-- [ ] `git add -A` (ensure the verification artifact is included)
-- [ ] Commit with:
-  - [ ] `task finished 33-task-deep-skeptical-verification-of-doc-facts-and-writing-quality: <summary + evidence>`
-- [ ] `git push`
-- [ ] Append any learnings/surprises to `AGENTS.md`
+- [x] `git add -A` (ensure the verification artifact is included)
+- [x] Commit with:
+  - [x] `task finished 33-task-deep-skeptical-verification-of-doc-facts-and-writing-quality: <summary + evidence>`
+- [x] `git push`
+- [x] Append any learnings/surprises to `AGENTS.md`
 
-NOW EXECUTE
+DONE
 </execution_plan>
