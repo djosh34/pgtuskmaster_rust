@@ -56,8 +56,8 @@ Please explore and research the codebase first, then implement a fail-closed fix
   - [x] Set `<status>done</status>`, `<passes>true</passes>`, and add `<passing>true</passing>`.
   - [x] Summarize: why the bug no longer reproduces, the key safeguards (strict helper + timestamp failure counter), and the evidence log paths.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
-- [ ] Commit all changes (including `.ralph`) with message: `task finished fencing-cutoff-commit-timestamp-zero-fallback-undercounts: <summary + evidence>`.
-- [ ] `git push`.
+- [x] Commit all changes (including `.ralph`) with message: `task finished fencing-cutoff-commit-timestamp-zero-fallback-undercounts: <summary + evidence>`.
+- [x] `git push`.
 
 DONE
 
