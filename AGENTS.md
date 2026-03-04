@@ -25,9 +25,13 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 
 
 This is greenfield project with 0 users. 
-We don't have legacy at all. If you find legacy, remove it.
-Never plan changes thinking of backwards compatibility.
+We don't have legacy at all. If you find any legacy code/docs, remove it.
+No backwards compatibility allowed!
 You are free and encouraged to make large code/schema changes, if that will improve the codebase.
+
+Regarding subagents, please use the explore_spark subagents. 
+These are incredibly cheap and fast, and you are encouraged to use them in massively parallel fashion: 20-30 at the same time.
+You have to prompt them with very specific questions. Also please prompt multiple 3+ subagents per question you have to compare answers.
 
 
 ## Cross application applicable learnings
