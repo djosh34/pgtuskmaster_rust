@@ -27,5 +27,6 @@
           implementation)
         - [ ] Make sure to add all files, please do not forget commiting any file when completing a task, also the stuff in .ralph
     - [ ] push commits with: `git push`
-    - [ ] Write any learnings/surprises to AGENTS.md
+    - [ ] Write any learnings/surprises to AGENTS.md, only if it is really needed to help future engineers.
+      -  Less in AGENTS.md is better than more
     - [ ] QUIT IMMEDIATELY
