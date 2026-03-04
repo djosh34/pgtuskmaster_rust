@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 07:29:30 PM CET 2026
+Generated: Wed Mar  4 07:59:30 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -106,7 +106,7 @@ In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_
 
 **Path:** `.ralph/tasks/bugs/gate-audit-timeout-silent-pass-hardening.md`
 
-## Bug: Harden make gates against hangs and silent passes <status>not_started</status> <passes>false</passes>
+## Bug: Harden make gates against hangs and silent passes <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 `make test`, `make test-long`, `make lint`, and `make check` currently have uneven timeout behavior and incomplete pass assertions.
@@ -115,7 +115,7 @@ In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_
 
 **Path:** `.ralph/tasks/bugs/kill-path-injection-ha-e2e-util.md`
 
-## Bug: HA e2e util executes PATH-resolved kill for process control <status>not_started</status> <passes>false</passes>
+## Bug: HA e2e util executes PATH-resolved kill for process control <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 `src/test_harness/ha_e2e/util.rs` uses `tokio::process::Command::new("kill")` both to send signals and to probe liveness (`kill -0`).
