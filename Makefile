@@ -3,11 +3,15 @@ MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 
 .PHONY: check test test-long lint docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-timeout
 
+ifneq ($(origin ULTRA_LONG_TESTS),undefined)
+$(error ULTRA_LONG_TESTS must not be set externally; edit Makefile to change the canonical ultra-long test list)
+endif
+
 ULTRA_LONG_TESTS := \
-	ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix \
-	ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql \
-	ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql \
-	ha::e2e_multi_node::e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity
+		ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix \
+		ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql \
+		ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql \
+		ha::e2e_multi_node::e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity
 ULTRA_LONG_SKIP_ARGS := $(foreach t,$(ULTRA_LONG_TESTS),--skip $(t))
 
 # The workspace mount this repo typically lives on can exhibit intermittent
@@ -33,7 +37,28 @@ check:
 	CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo check --all-targets
 
 test: ensure-timeout
-	@if [ "$${RUST_TEST_THREADS:-}" = "1" ]; then echo "RUST_TEST_THREADS=1 is disallowed for make test (parallel must work). Fix parallel flakes instead." >&2; exit 1; fi
+	@set -euo pipefail; \
+	if [ "$${RUST_TEST_THREADS:-}" = "1" ]; then echo "RUST_TEST_THREADS=1 is disallowed for make test (parallel must work). Fix parallel flakes instead." >&2; exit 1; fi; \
+	list_file="$$(mktemp)"; \
+	trap 'rm -f "$${list_file}"' EXIT; \
+	echo "Preflight: listing tests for ultra-long skip-token validation..."; \
+	env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets -- --list > "$${list_file}"; \
+	dupes="$$(printf '%s\n' $(ULTRA_LONG_TESTS) | sort | uniq -d)"; \
+	if [ -n "$${dupes}" ]; then \
+		echo "Ultra-long test list contains duplicates: $${dupes}" >&2; \
+		exit 1; \
+	fi; \
+	for t in $(ULTRA_LONG_TESTS); do \
+		if ! awk -F': ' '{print $$1}' "$${list_file}" | grep -Fx "$$t" >/dev/null; then \
+			echo "Ultra-long test not found (exact): $$t" >&2; \
+			exit 1; \
+		fi; \
+		match_count="$$(awk -F': ' '{print $$1}' "$${list_file}" | grep -F "$$t" | wc -l | tr -d ' ')"; \
+		if [ "$${match_count}" != "1" ]; then \
+			echo "Ultra-long skip token is ambiguous (substring matches $${match_count} tests): $$t" >&2; \
+			exit 1; \
+		fi; \
+	done; \
 	"$(TIMEOUT_BIN)" --kill-after="$(TEST_TIMEOUT_KILL_AFTER_SECS)s" "$(TEST_TIMEOUT_SECS)s" env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets -- $(ULTRA_LONG_SKIP_ARGS)
 
 test-long:
@@ -41,20 +66,26 @@ test-long:
 	@echo "If one becomes short enough for regular development cycles, move it back into make test."
 	@set -e; \
 	if [ -z "$(strip $(ULTRA_LONG_TESTS))" ]; then \
-		if [ "$${ALLOW_EMPTY_ULTRA_LONG_TESTS:-0}" = "1" ]; then \
-			echo "No ultra-long tests configured (ALLOW_EMPTY_ULTRA_LONG_TESTS=1)."; \
-			exit 0; \
-		fi; \
-		echo "No ultra-long tests configured (set ALLOW_EMPTY_ULTRA_LONG_TESTS=1 to allow)."; \
+		echo "No ultra-long tests configured."; \
 		exit 1; \
 	fi; \
 	list_file="$$(mktemp)"; \
 	trap 'rm -f "$${list_file}"' EXIT; \
 	echo "Preflight: listing tests for exact-match validation..."; \
 	env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets -- --list > "$${list_file}"; \
+	dupes="$$(printf '%s\n' $(ULTRA_LONG_TESTS) | sort | uniq -d)"; \
+	if [ -n "$${dupes}" ]; then \
+		echo "Ultra-long test list contains duplicates: $${dupes}" >&2; \
+		exit 1; \
+	fi; \
 	for t in $(ULTRA_LONG_TESTS); do \
 		if ! awk -F': ' '{print $$1}' "$${list_file}" | grep -Fx "$$t" >/dev/null; then \
 			echo "Ultra-long test not found (exact): $$t" >&2; \
+			exit 1; \
+		fi; \
+		match_count="$$(awk -F': ' '{print $$1}' "$${list_file}" | grep -F "$$t" | wc -l | tr -d ' ')"; \
+		if [ "$${match_count}" != "1" ]; then \
+			echo "Ultra-long test name is not unique (substring matches $${match_count} tests): $$t" >&2; \
 			exit 1; \
 		fi; \
 	done; \

@@ -940,13 +940,13 @@ impl ClusterFixture {
         }
     }
 
-    async fn assert_table_key_integrity_best_effort(
+    async fn assert_table_key_integrity_strict(
         &mut self,
         preferred_node_id: &str,
         table_name: &str,
         min_rows: u64,
         per_node_timeout: Duration,
-    ) -> Result<Option<(String, u64)>, WorkerError> {
+    ) -> Result<(String, u64), WorkerError> {
         let mut node_ids = Vec::new();
         if self.node_by_id(preferred_node_id).is_some() {
             node_ids.push(preferred_node_id.to_string());
@@ -958,7 +958,9 @@ impl ClusterFixture {
         }
 
         if node_ids.is_empty() {
-            return Ok(None);
+            return Err(WorkerError::Message(format!(
+                "cannot verify table integrity: no nodes available for {table_name}"
+            )));
         }
 
         let mut errors = Vec::new();
@@ -972,7 +974,7 @@ impl ClusterFixture {
                 )
                 .await
             {
-                Ok(row_count) => return Ok(Some((node_id, row_count))),
+                Ok(row_count) => return Ok((node_id, row_count)),
                 Err(err) => {
                     let message = err.to_string();
                     // Duplicate rows / empty table are hard failures when a node is reachable enough
@@ -987,10 +989,9 @@ impl ClusterFixture {
             }
         }
 
-        self.record(format!(
-            "table integrity best-effort: no node reachable for {table_name}; errors={errors:?}"
-        ));
-        Ok(None)
+        Err(WorkerError::Message(format!(
+            "table integrity could not be verified on any node for {table_name}; errors={errors:?}"
+        )))
     }
 
     fn assert_no_split_brain_write_evidence(
@@ -1492,57 +1493,6 @@ impl ClusterFixture {
         }
     }
 
-    async fn wait_for_no_primary_and_any_failsafe_best_effort(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<(), WorkerError> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut observed_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
-        let mut last_observation: Option<String> = None;
-        loop {
-            if tokio::time::Instant::now() >= deadline {
-                let detail = last_observation
-                    .as_deref()
-                    .map_or_else(|| "none".to_string(), ToString::to_string);
-                return Err(WorkerError::Message(format!(
-                    "timed out waiting for no-quorum fail-safe condition via API (no primary + at least one FailSafe observed; best-effort); last_observation={detail}"
-                )));
-            }
-            self.ensure_runtime_tasks_healthy().await?;
-            let mut poll_details = Vec::new();
-            let mut has_primary = false;
-            for (node_id, state_result) in self
-                .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
-                .await?
-            {
-                match state_result {
-                    Ok(state) => {
-                        if state.ha_phase == "Primary" {
-                            has_primary = true;
-                        }
-                        if state.ha_phase == "FailSafe" {
-                            observed_failsafe_nodes.insert(node_id.clone());
-                        }
-                        poll_details.push(format!(
-                            "{node_id}:phase={} leader={:?}",
-                            state.ha_phase, state.leader
-                        ));
-                    }
-                    Err(err) => poll_details.push(format!("{node_id}:error={err}")),
-                }
-            }
-            if !has_primary && !observed_failsafe_nodes.is_empty() {
-                return Ok(());
-            }
-            last_observation = Some(format!(
-                "observed_failsafe_nodes={:?}; poll={}",
-                observed_failsafe_nodes,
-                poll_details.join(" | ")
-            ));
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
     async fn wait_for_all_nodes_failsafe(&mut self, timeout: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut observed_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
@@ -1951,25 +1901,6 @@ async fn stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
     Ok(ha_e2e::util::unix_now()?.0)
 }
 
-async fn stop_etcd_majority_and_wait_failsafe(
-    fixture: &mut ClusterFixture,
-    stop_count: usize,
-    timeout: Duration,
-) -> Result<u64, WorkerError> {
-    fixture.record("no-quorum: stop etcd majority");
-    let stopped_members = fixture.stop_etcd_majority(stop_count).await?;
-    fixture.record(format!(
-        "no-quorum: etcd members stopped: {}",
-        stopped_members.join(",")
-    ));
-
-    fixture
-        .wait_for_no_primary_and_any_failsafe_best_effort(timeout)
-        .await?;
-    fixture.record("no-quorum: fail-safe observed (best-effort)");
-    Ok(ha_e2e::util::unix_now()?.0)
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
@@ -2195,9 +2126,9 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             stopped_members.join(",")
         ));
         fixture
-            .wait_for_no_primary_and_any_failsafe_best_effort(Duration::from_secs(90))
+            .wait_for_all_nodes_failsafe(Duration::from_secs(90))
             .await?;
-        fixture.record("no-quorum fail-safe observed (best-effort)");
+        fixture.record("no-quorum fail-safe observed on all nodes");
         Ok(())
     })
     .await
@@ -2727,26 +2658,17 @@ async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrit
         }
         ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
 
-        let integrity = fixture
-            .assert_table_key_integrity_best_effort(
+        let (node_id, row_count) = fixture
+            .assert_table_key_integrity_strict(
                 bootstrap_primary.as_str(),
                 table_name.as_str(),
                 1,
                 Duration::from_secs(5),
             )
             .await?;
-        match integrity {
-            Some((node_id, row_count)) => {
-                fixture.record(format!(
-                    "no-quorum fencing key integrity verified on {node_id} with row_count={row_count}"
-                ));
-            }
-            None => {
-                fixture.record(format!(
-                    "no-quorum fencing key integrity probe skipped: no Postgres node reachable for table {table_name}"
-                ));
-            }
-        }
+        fixture.record(format!(
+            "no-quorum fencing key integrity verified on {node_id} with row_count={row_count}"
+        ));
 
         let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         Ok(StressScenarioSummary {

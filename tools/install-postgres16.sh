@@ -23,7 +23,7 @@ if [[ "${ID:-}" != "almalinux" && "${ID_LIKE:-}" != *"rhel"* ]]; then
     exit 1
 fi
 
-for cmd in sudo dnf ln mkdir; do
+for cmd in sudo dnf ln mkdir readlink; do
     if ! command -v "${cmd}" >/dev/null 2>&1; then
         echo "missing required command: ${cmd}" >&2
         exit 1
@@ -43,34 +43,45 @@ sudo dnf -y module enable postgresql:16
 echo "installing postgres16 packages via dnf"
 sudo dnf -y install postgresql postgresql-server
 
-resolve_bin() {
-    local bin_name="$1"
-    local candidate=""
-
-    if command -v "${bin_name}" >/dev/null 2>&1; then
-        candidate="$(command -v "${bin_name}")"
-    fi
-    if [[ -z "${candidate}" && -x "/usr/pgsql-16/bin/${bin_name}" ]]; then
-        candidate="/usr/pgsql-16/bin/${bin_name}"
-    fi
-    if [[ -z "${candidate}" && -x "/usr/lib/postgresql/16/bin/${bin_name}" ]]; then
-        candidate="/usr/lib/postgresql/16/bin/${bin_name}"
-    fi
-    if [[ -z "${candidate}" && -x "/usr/bin/${bin_name}" ]]; then
-        candidate="/usr/bin/${bin_name}"
-    fi
-
-    if [[ -z "${candidate}" ]]; then
-        echo "unable to locate installed binary: ${bin_name}" >&2
+assert_pg16() {
+    local bin_path="$1"
+    local version_out=""
+    if ! version_out="$("${bin_path}" --version 2>&1)"; then
+        echo "failed to run ${bin_path} --version: ${version_out}" >&2
         exit 1
     fi
+    if [[ "${version_out}" != *"PostgreSQL) 16."* ]]; then
+        echo "unexpected postgres major version for ${bin_path}: ${version_out}" >&2
+        exit 1
+    fi
+}
 
-    echo "${candidate}"
+resolve_bin() {
+    local bin_name="$1"
+    local candidates=(
+        "/usr/pgsql-16/bin/${bin_name}"
+        "/usr/lib/postgresql/16/bin/${bin_name}"
+        "/usr/bin/${bin_name}"
+    )
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "${candidate}" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+
+    echo "unable to locate installed binary in trusted locations: ${bin_name}" >&2
+    exit 1
 }
 
 for bin in postgres pg_ctl pg_rewind initdb psql pg_basebackup; do
     source_path="$(resolve_bin "${bin}")"
-    ln -sf "${source_path}" "${BIN_DIR}/${bin}"
+    assert_pg16 "${source_path}"
+    source_real="$(readlink -f "${source_path}")"
+    dest_path="${BIN_DIR}/${bin}"
+    ln -sf "${source_path}" "${dest_path}"
+    dest_real="$(readlink -f "${dest_path}")"
+    echo "linked ${bin}: source=${source_real} dest=${dest_real}"
 done
 
 echo "linked postgres binaries in ${BIN_DIR}"

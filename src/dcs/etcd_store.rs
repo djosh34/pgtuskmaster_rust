@@ -201,11 +201,21 @@ fn run_worker_loop(
                             let result =
                                 execute_write(&endpoints, &mut client, &healthy, &path, value)
                                     .await;
-                            if result.is_err() {
-                                _watcher = None;
-                                watch_stream = None;
-                            }
+                            let invalidate_result = if result.is_err() {
+                                invalidate_watch_session(
+                                    &healthy,
+                                    &events,
+                                    &mut client,
+                                    &mut _watcher,
+                                    &mut watch_stream,
+                                )
+                            } else {
+                                Ok(())
+                            };
                             let _ = response_tx.send(result);
+                            if invalidate_result.is_err() {
+                                return;
+                            }
                         }
                         WorkerCommand::PutIfAbsent {
                             path,
@@ -220,20 +230,40 @@ fn run_worker_loop(
                                 value,
                             )
                             .await;
-                            if result.is_err() {
-                                _watcher = None;
-                                watch_stream = None;
-                            }
+                            let invalidate_result = if result.is_err() {
+                                invalidate_watch_session(
+                                    &healthy,
+                                    &events,
+                                    &mut client,
+                                    &mut _watcher,
+                                    &mut watch_stream,
+                                )
+                            } else {
+                                Ok(())
+                            };
                             let _ = response_tx.send(result);
+                            if invalidate_result.is_err() {
+                                return;
+                            }
                         }
                         WorkerCommand::Delete { path, response_tx } => {
                             let result =
                                 execute_delete(&endpoints, &mut client, &healthy, &path).await;
-                            if result.is_err() {
-                                _watcher = None;
-                                watch_stream = None;
-                            }
+                            let invalidate_result = if result.is_err() {
+                                invalidate_watch_session(
+                                    &healthy,
+                                    &events,
+                                    &mut client,
+                                    &mut _watcher,
+                                    &mut watch_stream,
+                                )
+                            } else {
+                                Ok(())
+                            };
                             let _ = response_tx.send(result);
+                            if invalidate_result.is_err() {
+                                return;
+                            }
                         }
                         WorkerCommand::Shutdown => return,
                     },
@@ -274,30 +304,65 @@ fn run_worker_loop(
             match tokio::time::timeout(WATCH_IDLE_INTERVAL, active_stream.message()).await {
                 Ok(Ok(Some(response))) => {
                     if apply_watch_response(response, &events).is_err() {
-                        healthy.store(false, Ordering::SeqCst);
-                        client = None;
-                        _watcher = None;
-                        watch_stream = None;
+                        if invalidate_watch_session(
+                            &healthy,
+                            &events,
+                            &mut client,
+                            &mut _watcher,
+                            &mut watch_stream,
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
                     } else {
                         healthy.store(true, Ordering::SeqCst);
                     }
                 }
                 Ok(Ok(None)) => {
-                    healthy.store(false, Ordering::SeqCst);
-                    client = None;
-                    _watcher = None;
-                    watch_stream = None;
+                    if invalidate_watch_session(
+                        &healthy,
+                        &events,
+                        &mut client,
+                        &mut _watcher,
+                        &mut watch_stream,
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
                 }
                 Ok(Err(_)) => {
-                    healthy.store(false, Ordering::SeqCst);
-                    client = None;
-                    _watcher = None;
-                    watch_stream = None;
+                    if invalidate_watch_session(
+                        &healthy,
+                        &events,
+                        &mut client,
+                        &mut _watcher,
+                        &mut watch_stream,
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
                 }
                 Err(_) => {}
             }
         }
     });
+}
+
+fn invalidate_watch_session(
+    healthy: &Arc<AtomicBool>,
+    events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    client: &mut Option<Client>,
+    watcher: &mut Option<Watcher>,
+    watch_stream: &mut Option<WatchStream>,
+) -> Result<(), DcsStoreError> {
+    healthy.store(false, Ordering::SeqCst);
+    *client = None;
+    *watcher = None;
+    *watch_stream = None;
+    clear_watch_events(events)
 }
 
 async fn establish_watch_session(
@@ -557,6 +622,14 @@ fn replace_watch_events(
         .map_err(|_| DcsStoreError::Io("events lock poisoned".to_string()))?;
     guard.clear();
     guard.extend(queue);
+    Ok(())
+}
+
+fn clear_watch_events(events: &Arc<Mutex<VecDeque<WatchEvent>>>) -> Result<(), DcsStoreError> {
+    let mut guard = events
+        .lock()
+        .map_err(|_| DcsStoreError::Io("events lock poisoned".to_string()))?;
+    guard.clear();
     Ok(())
 }
 
@@ -1166,9 +1239,16 @@ mod tests {
                     break;
                 }
 
-                // Apply any other events so the cache continues to evolve, but do not accept
-                // reconnect without a reset marker.
-                let _ = refresh_from_etcd_watch(&fixture.scope, &mut cache, events);
+                if events.iter().any(|event| {
+                    event.op == WatchOp::Put && event.path == format!("/{}/leader", fixture.scope)
+                }) {
+                    return Err(boxed_error(
+                        "observed leader PUT before reconnect Reset marker; stale events must be cleared during disconnect window",
+                    ));
+                }
+                return Err(boxed_error(format!(
+                    "observed watch events before reconnect Reset marker: {events:?}"
+                )));
             }
 
             if !observed_reset {
@@ -1199,6 +1279,79 @@ mod tests {
             }
 
             Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn etcd_store_disconnect_clears_pending_queue_before_reconnect_snapshot() -> TestResult {
+        let fixture = RealEtcdFixture::spawn(
+            "dcs-etcd-store-disconnect-clears-queue",
+            "scope-disconnect-clears-queue",
+        )
+        .await?;
+
+        let mut fixture = fixture;
+        let result: TestResult = async {
+            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+
+            let stale_leader = serde_json::to_string(&LeaderRecord {
+                member_id: MemberId("node-stale".to_string()),
+            })
+            .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
+
+            {
+                let mut guard = store
+                    .events
+                    .lock()
+                    .map_err(|_| boxed_error("events lock poisoned"))?;
+                guard.push_back(WatchEvent {
+                    op: WatchOp::Put,
+                    path: format!("/{}/leader", fixture.scope),
+                    value: Some(stale_leader),
+                    revision: 1,
+                });
+            }
+
+            {
+                let _delay_guard = EstablishDelayGuard::new(1000);
+                fixture.restart_clean().await?;
+
+                let unhealthy_deadline = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < unhealthy_deadline {
+                    if !store.healthy() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                if store.healthy() {
+                    return Err(boxed_error(
+                        "expected store to become unhealthy during etcd restart",
+                    ));
+                }
+
+                let events = store.drain_watch_events()?;
+                if !events.is_empty() {
+                    return Err(boxed_error(format!(
+                        "expected disconnect to clear queued watch events before reconnect Reset; observed={events:?}"
+                    )));
+                }
+            }
+
+            let reset_deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < reset_deadline {
+                let events = store.drain_watch_events()?;
+                if events.iter().any(|event| event.op == WatchOp::Reset) {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            Err(boxed_error(
+                "timed out waiting for reconnect Reset marker after etcd restart",
+            ))
         }
         .await;
 
@@ -1270,9 +1423,9 @@ mod tests {
                     break;
                 }
 
-                // Apply any other events so the cache continues to evolve, but do not accept
-                // reconnect without a reset marker.
-                let _ = refresh_from_etcd_watch(&fixture.scope, &mut cache, events);
+                return Err(boxed_error(format!(
+                    "observed watch events before reconnect Reset marker: {events:?}"
+                )));
             }
 
             if !observed_reset {
