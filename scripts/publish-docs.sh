@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DOCS_SOURCE="$REPO_ROOT/docs/book"
 DOCS_TARGET="$REPO_ROOT/../pgtuskmaster-docs"
-DOCS_TARGET_OUT="$DOCS_TARGET/dist/out"
+DOCS_TARGET_DIST="$DOCS_TARGET/dist"
 DOCS_REPO="djosh34/pgtuskmaster-docs"
 MDBOOK_BIN="$REPO_ROOT/.tools/mdbook/bin/mdbook"
 MDBOOK_MERMAID_BIN="$REPO_ROOT/.tools/mdbook/bin/mdbook-mermaid"
@@ -69,16 +69,16 @@ if [[ ! -f "$DOCS_TARGET/wrangler.jsonc" ]]; then
   "name": "pgtuskmaster-docs",
   "compatibility_date": "2026-02-22",
   "assets": {
-    "directory": "./dist/out"
+    "directory": "./dist"
   }
 }
 WRANGLER_EOF
 fi
 
-# Wipe dist/out and replace with fresh mdBook output
-rm -rf "$DOCS_TARGET_OUT"
-mkdir -p "$DOCS_TARGET_OUT"
-cp -r "$DOCS_SOURCE"/. "$DOCS_TARGET_OUT"/
+# Wipe dist and replace with fresh mdBook output
+rm -rf "$DOCS_TARGET_DIST"
+mkdir -p "$DOCS_TARGET_DIST"
+cp -r "$DOCS_SOURCE"/. "$DOCS_TARGET_DIST"/
 
 # Stage everything
 git -C "$DOCS_TARGET" add -A
@@ -94,4 +94,4 @@ fi
 # Push only when this run created a docs sync commit
 git -C "$DOCS_TARGET" push origin main
 
-echo "Docs published to github.com/$DOCS_REPO (dist/out from mdBook)"
+echo "Docs published to github.com/$DOCS_REPO (dist from mdBook)"
