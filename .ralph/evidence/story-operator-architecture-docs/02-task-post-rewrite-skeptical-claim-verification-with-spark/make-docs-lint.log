@@ -1,2 +1,0 @@
-node ./tools/docs-mermaid-lint.mjs
-./tools/docs-architecture-no-code-guard.sh

@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 05:09:20 PM CET 2026
+Generated: Wed Mar  4 06:15:55 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -17,6 +17,15 @@ BDD HTTP contract tests use weak status matching and response-read behavior that
 
 <description>
 HA e2e assertions can pass without reliable cluster-wide observations during unstable windows.
+
+---
+
+**Path:** `.ralph/tasks/bugs/bug-real-binary-provenance-enforcement-gaps.md`
+
+## Bug: Real-binary provenance enforcement gaps in installers and harness <status>not_started</status> <passes>false</passes>
+
+<description>
+Real-binary tooling currently enforces existence/executability but not strong provenance at runtime.
 
 ---
 
@@ -58,6 +67,15 @@ After updating `make test` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo te
 
 ---
 
+**Path:** `.ralph/tasks/bugs/bug-test-harness-runtime-path-dependent-kill-command.md`
+
+## Bug: Test harness runtime kill command is PATH-dependent and bypasses provenance guarantees <status>not_started</status> <passes>false</passes>
+
+<description>
+Real-binary harness paths are intended to be explicit and provenance-controlled, but runtime teardown logic still invokes `kill` by bare name via `Command::new("kill")`.
+
+---
+
 **Path:** `.ralph/tasks/bugs/dcs-watch-refresh-errors-ignored.md`
 
 ## Bug: DCS watch refresh errors are tracked but ignored <status>done</status> <passes>true</passes> <passing>true</passing>
@@ -83,6 +101,15 @@ The etcd DCS store watch worker has subtle correctness issues in bootstrap/recon
 
 <description>
 In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_ms` using `ha_e2e::util::unix_now()`, but on error the code falls back to `0` (`Err(_) => 0`).
+
+---
+
+**Path:** `.ralph/tasks/bugs/gate-audit-timeout-silent-pass-hardening.md`
+
+## Bug: Harden make gates against hangs and silent passes <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test`, `make test-long`, `make lint`, and `make check` currently have uneven timeout behavior and incomplete pass assertions.
 
 ---
 
@@ -502,7 +529,8 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md`
 
-## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes> <passing>true</passing>
+DO NOT PICK THIS TASK UNLESS ALL OTHER TASKS ARE DONE.
+## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes> <passing>true</passing> <priority>very_low</priority>
 NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
 
 <description>
@@ -775,4 +803,3 @@ This is a **RECURRING META-TASK**.
 
 <description>
 **Goal:** Execute full validation gates after the config refactor and convert any failures into actionable bug tasks.
-

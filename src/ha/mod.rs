@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub(crate) mod actions;
 pub(crate) mod decide;
 #[cfg(test)]

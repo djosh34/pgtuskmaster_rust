@@ -7,17 +7,21 @@ description: Continue the Ralph loop. Commits all changes, switches task, and re
 
 Execute these steps in order. Use Bash for all commands.
 
-### 1. Check if Ralph is already running
+### 1. Stop Ralph service first (mandatory)
+
+Always stop the service before any git/task-switch/restart steps, regardless of current state:
+
+```bash
+systemctl --user stop ralph-pgtuskmaster.service
+```
+
+Then confirm it is inactive before continuing:
 
 ```bash
 systemctl --user is-active ralph-pgtuskmaster.service
 ```
 
-- If **active**: stop it first before continuing:
-  ```bash
-  systemctl --user stop ralph-pgtuskmaster.service
-  ```
-- If **inactive**: proceed (this is the expected state)
+Expected output: `inactive`
 
 ### 2. Stage all and clean up unsafe files
 
