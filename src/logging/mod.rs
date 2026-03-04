@@ -473,6 +473,16 @@ impl LogSink for TestSink {
 mod tests {
     use super::*;
 
+    use crate::config::{
+        ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
+        DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig, InlineOrPath,
+        LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig, PgIdentConfig,
+        PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig,
+        PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
+        TlsServerConfig,
+    };
+    use crate::pginfo::conninfo::PgSslMode;
+
     fn unique_temp_root(label: &str) -> PathBuf {
         let pid = std::process::id();
         let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
@@ -505,6 +515,122 @@ mod tests {
             .map(|line| line.to_string())
             .filter(|line| !line.trim().is_empty())
             .collect())
+    }
+
+    fn sample_runtime_config() -> RuntimeConfig {
+        RuntimeConfig {
+            cluster: ClusterConfig {
+                name: "cluster-a".to_string(),
+                member_id: "node-a".to_string(),
+            },
+            postgres: PostgresConfig {
+                data_dir: "/tmp/pgdata".into(),
+                connect_timeout_s: 5,
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 5432,
+                socket_dir: "/tmp/pgtuskmaster/socket".into(),
+                log_file: "/tmp/pgtuskmaster/postgres.log".into(),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port: 5432,
+                local_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: "rewinder".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        username: "postgres".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    replicator: PostgresRoleConfig {
+                        username: "replicator".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    rewinder: PostgresRoleConfig {
+                        username: "rewinder".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                },
+                pg_hba: PgHbaConfig {
+                    source: InlineOrPath::Inline {
+                        content: "local all all trust\n".to_string(),
+                    },
+                },
+                pg_ident: PgIdentConfig {
+                    source: InlineOrPath::Inline {
+                        content: "# empty\n".to_string(),
+                    },
+                },
+            },
+            dcs: DcsConfig {
+                endpoints: vec!["http://127.0.0.1:2379".to_string()],
+                scope: "scope-a".to_string(),
+                init: None,
+            },
+            ha: HaConfig {
+                loop_interval_ms: 1000,
+                lease_ttl_ms: 10_000,
+            },
+            process: ProcessConfig {
+                pg_rewind_timeout_ms: 1000,
+                bootstrap_timeout_ms: 1000,
+                fencing_timeout_ms: 1000,
+                binaries: BinaryPaths {
+                    postgres: "/usr/bin/postgres".into(),
+                    pg_ctl: "/usr/bin/pg_ctl".into(),
+                    pg_rewind: "/usr/bin/pg_rewind".into(),
+                    initdb: "/usr/bin/initdb".into(),
+                    pg_basebackup: "/usr/bin/pg_basebackup".into(),
+                    psql: "/usr/bin/psql".into(),
+                },
+            },
+            logging: LoggingConfig {
+                level: LogLevel::Trace,
+                capture_subprocess_output: true,
+                postgres: PostgresLoggingConfig {
+                    enabled: true,
+                    pg_ctl_log_file: None,
+                    log_dir: None,
+                    archive_command_log_file: None,
+                    poll_interval_ms: 50,
+                    cleanup: LogCleanupConfig {
+                        enabled: false,
+                        max_files: 10,
+                        max_age_seconds: 60,
+                    },
+                },
+                sinks: LoggingSinksConfig {
+                    stderr: StderrSinkConfig { enabled: true },
+                    file: FileSinkConfig {
+                        enabled: false,
+                        path: None,
+                        mode: FileSinkMode::Append,
+                    },
+                },
+            },
+            api: ApiConfig {
+                listen_addr: "127.0.0.1:8080".to_string(),
+                security: ApiSecurityConfig {
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
+                    },
+                    auth: ApiAuthConfig::Disabled,
+                },
+            },
+            debug: DebugConfig { enabled: false },
+        }
     }
 
     #[test]
@@ -632,5 +758,99 @@ mod tests {
 
         let err = sink.emit(&sample_record("x"));
         assert!(matches!(err, Err(LogError::SinkIo(_))));
+    }
+
+    #[test]
+    fn bootstrap_file_enabled_without_path_returns_misconfigured() {
+        let mut cfg = sample_runtime_config();
+        cfg.logging.sinks.stderr.enabled = false;
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = None;
+
+        let res = bootstrap(&cfg);
+        assert!(matches!(res, Err(LogBootstrapError::Misconfigured(_))));
+    }
+
+    #[test]
+    fn bootstrap_file_enabled_with_path_writes_jsonl() -> Result<(), Box<dyn std::error::Error>> {
+        let root = unique_temp_root("bootstrap-file-enabled");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+
+        let path = root.join("app.jsonl");
+
+        let mut cfg = sample_runtime_config();
+        cfg.logging.sinks.stderr.enabled = false;
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = Some(path.clone());
+
+        let system = bootstrap(&cfg)?;
+        system.handle.emit(
+            SeverityText::Info,
+            "hello",
+            LogSource {
+                producer: LogProducer::App,
+                transport: LogTransport::Internal,
+                parser: LogParser::App,
+                origin: "test".to_string(),
+            },
+        )?;
+        drop(system);
+
+        let lines = read_lines(&path)?;
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
+        assert_eq!(v["message"], "hello");
+        assert_eq!(v["severity_text"], "info");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_with_stderr_and_file_still_writes_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = unique_temp_root("bootstrap-stderr-and-file");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+
+        let path = root.join("app.jsonl");
+
+        let mut cfg = sample_runtime_config();
+        cfg.logging.sinks.stderr.enabled = true;
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = Some(path.clone());
+
+        let system = bootstrap(&cfg)?;
+        system.handle.emit(
+            SeverityText::Info,
+            "fanout",
+            LogSource {
+                producer: LogProducer::App,
+                transport: LogTransport::Internal,
+                parser: LogParser::App,
+                origin: "test".to_string(),
+            },
+        )?;
+        drop(system);
+
+        let lines = read_lines(&path)?;
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
+        assert_eq!(v["message"], "fanout");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_with_all_sinks_disabled_is_non_fatal() -> Result<(), LogBootstrapError> {
+        let mut cfg = sample_runtime_config();
+        cfg.logging.sinks.stderr.enabled = false;
+        cfg.logging.sinks.file.enabled = false;
+
+        let system = bootstrap(&cfg)?;
+        let record = sample_record("dropped");
+        let _ = system.handle.emit_record(&record);
+        Ok(())
     }
 }
