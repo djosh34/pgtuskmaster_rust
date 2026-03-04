@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 use pgtuskmaster_rust::{
     api::worker::ApiWorkerCtx,
     config::{
-        ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
-        ProcessConfig, RuntimeConfig, SecurityConfig,
+        ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, LogCleanupConfig,
+        LogLevel, LoggingConfig, PostgresConfig, PostgresLoggingConfig, ProcessConfig, RuntimeConfig,
+        SecurityConfig,
     },
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     state::{new_state_channel, UnixMillis, WorkerError},
@@ -98,6 +99,22 @@ fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
                 initdb: "/usr/bin/initdb".into(),
                 pg_basebackup: "/usr/bin/pg_basebackup".into(),
                 psql: "/usr/bin/psql".into(),
+            },
+        },
+        logging: LoggingConfig {
+            level: LogLevel::Info,
+            capture_subprocess_output: true,
+            postgres: PostgresLoggingConfig {
+                enabled: true,
+                pg_ctl_log_file: None,
+                log_dir: None,
+                archive_command_log_file: None,
+                poll_interval_ms: 200,
+                cleanup: LogCleanupConfig {
+                    enabled: true,
+                    max_files: 10,
+                    max_age_seconds: 60,
+                },
             },
         },
         api: ApiConfig {

@@ -205,6 +205,22 @@ mod tests {
                     psql: "/usr/bin/psql".into(),
                 },
             },
+            logging: crate::config::LoggingConfig {
+                level: crate::config::LogLevel::Info,
+                capture_subprocess_output: true,
+                postgres: crate::config::PostgresLoggingConfig {
+                    enabled: true,
+                    pg_ctl_log_file: None,
+                    log_dir: None,
+                    archive_command_log_file: None,
+                    poll_interval_ms: 200,
+                    cleanup: crate::config::LogCleanupConfig {
+                        enabled: true,
+                        max_files: 10,
+                        max_age_seconds: 60,
+                    },
+                },
+            },
             api: crate::config::schema::ApiConfig {
                 listen_addr: "127.0.0.1:8080".to_string(),
                 read_auth_token: None,

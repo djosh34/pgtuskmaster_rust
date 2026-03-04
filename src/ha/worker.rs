@@ -376,7 +376,8 @@ mod tests {
                 ApiConfig, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
                 SecurityConfig,
             },
-            BinaryPaths, ProcessConfig, RuntimeConfig,
+            BinaryPaths, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig,
+            ProcessConfig, RuntimeConfig,
         },
         dcs::{
             state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
@@ -532,6 +533,22 @@ mod tests {
                     initdb: "/usr/bin/initdb".into(),
                     pg_basebackup: "/usr/bin/pg_basebackup".into(),
                     psql: "/usr/bin/psql".into(),
+                },
+            },
+            logging: LoggingConfig {
+                level: LogLevel::Info,
+                capture_subprocess_output: true,
+                postgres: PostgresLoggingConfig {
+                    enabled: true,
+                    pg_ctl_log_file: None,
+                    log_dir: None,
+                    archive_command_log_file: None,
+                    poll_interval_ms: 200,
+                    cleanup: LogCleanupConfig {
+                        enabled: true,
+                        max_files: 10,
+                        max_age_seconds: 60,
+                    },
                 },
             },
             api: ApiConfig {
@@ -703,6 +720,20 @@ mod tests {
                 Some(next) => next,
                 None => Ok(None),
             }
+        }
+
+        fn drain_output<'a>(
+            &'a mut self,
+            _max_bytes: usize,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Vec<crate::process::jobs::ProcessOutputLine>, ProcessError>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move { Ok(Vec::new()) })
         }
 
         fn cancel<'a>(

@@ -12,6 +12,7 @@ pub mod config;
 pub mod dcs;
 pub(crate) mod debug_api;
 pub(crate) mod ha;
+pub(crate) mod logging;
 pub(crate) mod pginfo;
 pub(crate) mod process;
 pub mod runtime;

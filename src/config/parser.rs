@@ -84,6 +84,34 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     )?;
     validate_timeout("process.fencing_timeout_ms", cfg.process.fencing_timeout_ms)?;
 
+    validate_timeout(
+        "logging.postgres.poll_interval_ms",
+        cfg.logging.postgres.poll_interval_ms,
+    )?;
+    if let Some(path) = cfg.logging.postgres.pg_ctl_log_file.as_ref() {
+        validate_non_empty_path("logging.postgres.pg_ctl_log_file", path)?;
+    }
+    if let Some(path) = cfg.logging.postgres.log_dir.as_ref() {
+        validate_non_empty_path("logging.postgres.log_dir", path)?;
+    }
+    if let Some(path) = cfg.logging.postgres.archive_command_log_file.as_ref() {
+        validate_non_empty_path("logging.postgres.archive_command_log_file", path)?;
+    }
+    if cfg.logging.postgres.cleanup.enabled {
+        if cfg.logging.postgres.cleanup.max_files == 0 {
+            return Err(ConfigError::Validation {
+                field: "logging.postgres.cleanup.max_files",
+                message: "must be greater than zero when cleanup is enabled".to_string(),
+            });
+        }
+        if cfg.logging.postgres.cleanup.max_age_seconds == 0 {
+            return Err(ConfigError::Validation {
+                field: "logging.postgres.cleanup.max_age_seconds",
+                message: "must be greater than zero when cleanup is enabled".to_string(),
+            });
+        }
+    }
+
     if cfg.dcs.endpoints.is_empty() {
         return Err(ConfigError::Validation {
             field: "dcs.endpoints",
@@ -195,8 +223,9 @@ mod tests {
 
     use super::*;
     use crate::config::schema::{
-        ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, PostgresConfig,
-        ProcessConfig, RuntimeConfig, SecurityConfig,
+        ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, LogCleanupConfig,
+        LogLevel, LoggingConfig, PostgresConfig, PostgresLoggingConfig, ProcessConfig, RuntimeConfig,
+        SecurityConfig,
     };
 
     fn base_runtime_config() -> RuntimeConfig {
@@ -234,6 +263,22 @@ mod tests {
                     initdb: PathBuf::from("/usr/bin/initdb"),
                     pg_basebackup: PathBuf::from("/usr/bin/pg_basebackup"),
                     psql: PathBuf::from("/usr/bin/psql"),
+                },
+            },
+            logging: LoggingConfig {
+                level: LogLevel::Info,
+                capture_subprocess_output: true,
+                postgres: PostgresLoggingConfig {
+                    enabled: true,
+                    pg_ctl_log_file: None,
+                    log_dir: None,
+                    archive_command_log_file: None,
+                    poll_interval_ms: 200,
+                    cleanup: LogCleanupConfig {
+                        enabled: true,
+                        max_files: 10,
+                        max_age_seconds: 60,
+                    },
                 },
             },
             api: ApiConfig {

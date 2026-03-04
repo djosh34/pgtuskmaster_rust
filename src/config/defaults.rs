@@ -1,6 +1,6 @@
 use super::schema::{
-    ApiConfig, DebugConfig, PartialRuntimeConfig, PostgresConfig, ProcessConfig, RuntimeConfig,
-    SecurityConfig,
+    ApiConfig, DebugConfig, LogCleanupConfig, LogLevel, LoggingConfig, PartialRuntimeConfig,
+    PostgresConfig, PostgresLoggingConfig, ProcessConfig, RuntimeConfig, SecurityConfig,
 };
 
 const DEFAULT_PG_CONNECT_TIMEOUT_S: u32 = 5;
@@ -16,6 +16,13 @@ const DEFAULT_FENCING_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_API_LISTEN_ADDR: &str = "127.0.0.1:8080";
 const DEFAULT_DEBUG_ENABLED: bool = false;
 const DEFAULT_SECURITY_TLS_ENABLED: bool = false;
+const DEFAULT_LOGGING_LEVEL: LogLevel = LogLevel::Info;
+const DEFAULT_LOGGING_CAPTURE_SUBPROCESS_OUTPUT: bool = true;
+const DEFAULT_LOGGING_POSTGRES_ENABLED: bool = true;
+const DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS: u64 = 200;
+const DEFAULT_LOGGING_CLEANUP_ENABLED: bool = true;
+const DEFAULT_LOGGING_CLEANUP_MAX_FILES: u64 = 50;
+const DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
     let postgres = PostgresConfig {
@@ -63,6 +70,40 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
         binaries: raw.process.binaries,
     };
 
+    let logging_raw = raw.logging.as_ref();
+    let postgres_raw = logging_raw.and_then(|cfg| cfg.postgres.as_ref());
+    let cleanup_raw = postgres_raw.and_then(|cfg| cfg.cleanup.as_ref());
+    let logging = LoggingConfig {
+        level: logging_raw
+            .and_then(|cfg| cfg.level)
+            .unwrap_or(DEFAULT_LOGGING_LEVEL),
+        capture_subprocess_output: logging_raw
+            .and_then(|cfg| cfg.capture_subprocess_output)
+            .unwrap_or(DEFAULT_LOGGING_CAPTURE_SUBPROCESS_OUTPUT),
+        postgres: PostgresLoggingConfig {
+            enabled: postgres_raw
+                .and_then(|cfg| cfg.enabled)
+                .unwrap_or(DEFAULT_LOGGING_POSTGRES_ENABLED),
+            pg_ctl_log_file: postgres_raw.and_then(|cfg| cfg.pg_ctl_log_file.clone()),
+            log_dir: postgres_raw.and_then(|cfg| cfg.log_dir.clone()),
+            archive_command_log_file: postgres_raw.and_then(|cfg| cfg.archive_command_log_file.clone()),
+            poll_interval_ms: postgres_raw
+                .and_then(|cfg| cfg.poll_interval_ms)
+                .unwrap_or(DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS),
+            cleanup: LogCleanupConfig {
+                enabled: cleanup_raw
+                    .and_then(|cfg| cfg.enabled)
+                    .unwrap_or(DEFAULT_LOGGING_CLEANUP_ENABLED),
+                max_files: cleanup_raw
+                    .and_then(|cfg| cfg.max_files)
+                    .unwrap_or(DEFAULT_LOGGING_CLEANUP_MAX_FILES),
+                max_age_seconds: cleanup_raw
+                    .and_then(|cfg| cfg.max_age_seconds)
+                    .unwrap_or(DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS),
+            },
+        },
+    };
+
     let api_raw = raw.api;
     let api = ApiConfig {
         listen_addr: api_raw
@@ -95,6 +136,7 @@ pub fn apply_defaults(raw: PartialRuntimeConfig) -> RuntimeConfig {
         dcs: raw.dcs,
         ha: raw.ha,
         process,
+        logging,
         api,
         debug,
         security,
@@ -108,7 +150,7 @@ mod tests {
     use super::*;
     use crate::config::schema::{
         BinaryPaths, ClusterConfig, DcsConfig, HaConfig, PartialApiConfig, PartialDebugConfig,
-        PartialPostgresConfig, PartialProcessConfig, PartialSecurityConfig,
+        PartialLoggingConfig, PartialPostgresConfig, PartialProcessConfig, PartialSecurityConfig,
     };
 
     fn base_partial() -> PartialRuntimeConfig {
@@ -148,6 +190,7 @@ mod tests {
                     psql: PathBuf::from("/usr/bin/psql"),
                 },
             },
+            logging: None,
             api: None,
             debug: None,
             security: None,
@@ -189,6 +232,28 @@ mod tests {
         assert!(!cfg.debug.enabled);
         assert!(!cfg.security.tls_enabled);
         assert_eq!(cfg.security.auth_token, None);
+        assert_eq!(cfg.logging.level, DEFAULT_LOGGING_LEVEL);
+        assert_eq!(
+            cfg.logging.capture_subprocess_output,
+            DEFAULT_LOGGING_CAPTURE_SUBPROCESS_OUTPUT
+        );
+        assert_eq!(cfg.logging.postgres.enabled, DEFAULT_LOGGING_POSTGRES_ENABLED);
+        assert_eq!(
+            cfg.logging.postgres.poll_interval_ms,
+            DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS
+        );
+        assert_eq!(
+            cfg.logging.postgres.cleanup.enabled,
+            DEFAULT_LOGGING_CLEANUP_ENABLED
+        );
+        assert_eq!(
+            cfg.logging.postgres.cleanup.max_files,
+            DEFAULT_LOGGING_CLEANUP_MAX_FILES
+        );
+        assert_eq!(
+            cfg.logging.postgres.cleanup.max_age_seconds,
+            DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS
+        );
     }
 
     #[test]
@@ -216,6 +281,11 @@ mod tests {
             tls_enabled: Some(true),
             auth_token: Some("token-123".to_string()),
         });
+        raw.logging = Some(PartialLoggingConfig {
+            level: Some(LogLevel::Debug),
+            capture_subprocess_output: Some(false),
+            postgres: None,
+        });
 
         let cfg = apply_defaults(raw);
 
@@ -235,5 +305,7 @@ mod tests {
         assert!(cfg.debug.enabled);
         assert!(cfg.security.tls_enabled);
         assert_eq!(cfg.security.auth_token.as_deref(), Some("token-123"));
+        assert_eq!(cfg.logging.level, LogLevel::Debug);
+        assert!(!cfg.logging.capture_subprocess_output);
     }
 }

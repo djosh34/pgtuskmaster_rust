@@ -1,20 +1,22 @@
 use std::process::Stdio;
 
 use tokio::{
+    io::{AsyncRead, AsyncReadExt},
     process::{Child, Command},
     sync::mpsc::error::TryRecvError,
 };
 
 use crate::{
     config::ProcessConfig,
+    logging::{LogHandle, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText},
     pginfo::state::render_pg_conninfo,
-    state::{UnixMillis, WorkerError, WorkerStatus},
+    state::{JobId, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::{
     jobs::{
         ActiveJob, ActiveJobKind, CancelReason, ProcessCommandSpec, ProcessError, ProcessExit,
-        ProcessHandle,
+        ProcessHandle, ProcessLogIdentity, ProcessOutputLine, ProcessOutputStream,
     },
     state::{
         ActiveRuntime, JobOutcome, ProcessJobKind, ProcessJobRejection, ProcessJobRequest,
@@ -27,6 +29,12 @@ pub(crate) struct TokioCommandRunner;
 
 struct TokioProcessHandle {
     child: Child,
+    stdout: Option<tokio::process::ChildStdout>,
+    stderr: Option<tokio::process::ChildStderr>,
+    stdout_pending: Vec<u8>,
+    stderr_pending: Vec<u8>,
+    stdout_eof: bool,
+    stderr_eof: bool,
 }
 
 impl ProcessHandle for TokioProcessHandle {
@@ -46,6 +54,41 @@ impl ProcessHandle for TokioProcessHandle {
                 ProcessExit::Failure { code: exit.code() }
             }
         }))
+    }
+
+    fn drain_output<'a>(
+        &'a mut self,
+        max_bytes: usize,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<super::jobs::ProcessOutputLine>, ProcessError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            if max_bytes == 0 {
+                return Ok(Vec::new());
+            }
+
+            let mut out = Vec::new();
+            let mut remaining = max_bytes;
+            drain_one_stream(
+                &mut out,
+                &mut remaining,
+                super::jobs::ProcessOutputStream::Stdout,
+                &mut self.stdout,
+                &mut self.stdout_pending,
+                &mut self.stdout_eof,
+            )
+            .await;
+            drain_one_stream(
+                &mut out,
+                &mut remaining,
+                super::jobs::ProcessOutputStream::Stderr,
+                &mut self.stderr,
+                &mut self.stderr_pending,
+                &mut self.stderr_eof,
+            )
+            .await;
+            Ok(out)
+        })
     }
 
     fn cancel<'a>(
@@ -80,16 +123,109 @@ impl super::jobs::ProcessCommandRunner for TokioCommandRunner {
         let mut command = Command::new(&spec.program);
         command
             .args(spec.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdin(Stdio::null());
+        if spec.capture_output {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        } else {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+        }
 
-        let child = command.spawn().map_err(|err| ProcessError::SpawnFailure {
+        let mut child = command.spawn().map_err(|err| ProcessError::SpawnFailure {
             binary: spec.program.display().to_string(),
             message: err.to_string(),
         })?;
 
-        Ok(Box::new(TokioProcessHandle { child }))
+        let stdout = if spec.capture_output {
+            child.stdout.take()
+        } else {
+            None
+        };
+        let stderr = if spec.capture_output {
+            child.stderr.take()
+        } else {
+            None
+        };
+
+        Ok(Box::new(TokioProcessHandle {
+            child,
+            stdout,
+            stderr,
+            stdout_pending: Vec::new(),
+            stderr_pending: Vec::new(),
+            stdout_eof: false,
+            stderr_eof: false,
+        }))
+    }
+}
+
+async fn drain_one_stream(
+    out: &mut Vec<super::jobs::ProcessOutputLine>,
+    remaining: &mut usize,
+    stream: super::jobs::ProcessOutputStream,
+    handle: &mut Option<impl AsyncRead + Unpin>,
+    pending: &mut Vec<u8>,
+    eof: &mut bool,
+) {
+    if *remaining == 0 || *eof {
+        return;
+    }
+    let Some(handle) = handle.as_mut() else {
+        *eof = true;
+        return;
+    };
+
+    let mut buf = vec![0u8; 8192];
+    loop {
+        if *remaining == 0 {
+            break;
+        }
+        let chunk_len = buf.len().min(*remaining);
+        let read_result =
+            tokio::time::timeout(std::time::Duration::from_millis(1), handle.read(&mut buf[..chunk_len]))
+                .await;
+        let read_outcome = match read_result {
+            Ok(Ok(n)) => Ok(n),
+            Ok(Err(err)) => Err(err),
+            Err(_) => {
+                // No data quickly available.
+                break;
+            }
+        };
+
+        match read_outcome {
+            Ok(0) => {
+                *eof = true;
+                if !pending.is_empty() {
+                    out.push(super::jobs::ProcessOutputLine {
+                        stream,
+                        bytes: std::mem::take(pending),
+                    });
+                }
+                break;
+            }
+            Ok(n) => {
+                pending.extend_from_slice(&buf[..n]);
+                *remaining = remaining.saturating_sub(n);
+                while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
+                    let mut line = pending.drain(..=pos).collect::<Vec<u8>>();
+                    if let Some(b'\n') = line.last() {
+                        line.pop();
+                    }
+                    if let Some(b'\r') = line.last() {
+                        line.pop();
+                    }
+                    out.push(super::jobs::ProcessOutputLine { stream, bytes: line });
+                }
+            }
+            Err(err) => {
+                *eof = true;
+                out.push(super::jobs::ProcessOutputLine {
+                    stream,
+                    bytes: format!("stdio read error: {err}").into_bytes(),
+                });
+                break;
+            }
+        }
     }
 }
 
@@ -134,7 +270,12 @@ pub(crate) async fn start_job(
     let timeout_ms = timeout_for_kind(&request.kind, &ctx.config);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
 
-    let command = match build_command(&ctx.config, &request.kind) {
+    let command = match build_command(
+        &ctx.config,
+        &request.id,
+        &request.kind,
+        ctx.capture_subprocess_output,
+    ) {
         Ok(command) => command,
         Err(error) => {
             transition_to_idle(
@@ -150,6 +291,7 @@ pub(crate) async fn start_job(
         }
     };
 
+    let log_identity = command.log_identity.clone();
     let handle = match ctx.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
@@ -179,6 +321,7 @@ pub(crate) async fn start_job(
         started_at: now,
         deadline_at,
         handle,
+        log_identity,
     });
     ctx.state = ProcessState::Running {
         worker: WorkerStatus::Running,
@@ -194,8 +337,18 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
     };
 
     let now = current_time(ctx)?;
+    if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
+        for line in lines {
+            let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+        }
+    }
     if now.0 >= runtime.deadline_at.0 {
         let cancel_result = runtime.handle.cancel().await;
+        if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
+            for line in lines {
+                let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+            }
+        }
         let outcome = match cancel_result {
             Ok(()) => JobOutcome::Timeout {
                 id: runtime.request.id,
@@ -218,6 +371,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             Ok(())
         }
         Ok(Some(ProcessExit::Success)) => {
+            if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
+                for line in lines {
+                    let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+                }
+            }
             let outcome = JobOutcome::Success {
                 id: runtime.request.id,
                 finished_at: now,
@@ -225,6 +383,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             transition_to_idle(ctx, outcome, now)
         }
         Ok(Some(exit)) => {
+            if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
+                for line in lines {
+                    let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+                }
+            }
             let outcome = JobOutcome::Failure {
                 id: runtime.request.id,
                 error: ProcessError::from_exit(exit),
@@ -233,6 +396,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             transition_to_idle(ctx, outcome, now)
         }
         Err(error) => {
+            if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
+                for line in lines {
+                    let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+                }
+            }
             let outcome = JobOutcome::Failure {
                 id: runtime.request.id,
                 error,
@@ -267,6 +435,70 @@ pub(crate) async fn cancel_active_job(
     };
 
     transition_to_idle(ctx, outcome, now)
+}
+
+fn emit_subprocess_line(
+    log: &LogHandle,
+    identity: &ProcessLogIdentity,
+    line: ProcessOutputLine,
+) -> Result<(), crate::logging::LogError> {
+    let (transport, severity) = match line.stream {
+        ProcessOutputStream::Stdout => (LogTransport::ChildStdout, SeverityText::Info),
+        ProcessOutputStream::Stderr => (LogTransport::ChildStderr, SeverityText::Warn),
+    };
+
+    let (message, raw_bytes_hex) = match String::from_utf8(line.bytes) {
+        Ok(message) => (message, None),
+        Err(err) => {
+            let bytes = err.into_bytes();
+            let hex = hex_encode(bytes.as_slice());
+            (format!("non_utf8_bytes_hex={hex}"), Some(hex))
+        }
+    };
+
+    let mut record = LogRecord::new(
+        crate::logging::system_now_unix_millis(),
+        log.hostname().to_string(),
+        severity,
+        message,
+        LogSource {
+            producer: LogProducer::PgTool,
+            transport,
+            parser: LogParser::Raw,
+            origin: "process_worker".to_string(),
+        },
+    );
+
+    record.attributes.insert(
+        "job_id".to_string(),
+        serde_json::Value::String(identity.job_id.0.clone()),
+    );
+    record.attributes.insert(
+        "job_kind".to_string(),
+        serde_json::Value::String(identity.job_kind.clone()),
+    );
+    record.attributes.insert(
+        "binary".to_string(),
+        serde_json::Value::String(identity.binary.clone()),
+    );
+    if let Some(hex) = raw_bytes_hex {
+        record.attributes.insert(
+            "raw_bytes_hex".to_string(),
+            serde_json::Value::String(hex),
+        );
+    }
+
+    log.emit_record(&record)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        out.push(TABLE[(b >> 4) as usize] as char);
+        out.push(TABLE[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn transition_to_idle(
@@ -335,13 +567,16 @@ fn active_kind(kind: &ProcessJobKind) -> ActiveJobKind {
 
 pub(crate) fn build_command(
     config: &ProcessConfig,
+    job_id: &JobId,
     kind: &ProcessJobKind,
+    capture_output: bool,
 ) -> Result<ProcessCommandSpec, ProcessError> {
     match kind {
         ProcessJobKind::Bootstrap(spec) => {
             validate_non_empty_path("bootstrap.data_dir", &spec.data_dir)?;
+            let program = config.binaries.initdb.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.initdb.clone(),
+                program: program.clone(),
                 args: vec![
                     "-D".to_string(),
                     spec.data_dir.display().to_string(),
@@ -350,6 +585,12 @@ pub(crate) fn build_command(
                     "-U".to_string(),
                     "postgres".to_string(),
                 ],
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
         ProcessJobKind::BaseBackup(spec) => {
@@ -364,8 +605,9 @@ pub(crate) fn build_command(
                     "basebackup.source_conninfo.user must not be empty".to_string(),
                 ));
             }
+            let program = config.binaries.pg_basebackup.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.pg_basebackup.clone(),
+                program: program.clone(),
                 args: vec![
                     "-h".to_string(),
                     spec.source_conninfo.host.clone(),
@@ -379,18 +621,31 @@ pub(crate) fn build_command(
                     "-Xs".to_string(),
                     "-R".to_string(),
                 ],
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
         ProcessJobKind::PgRewind(spec) => {
             validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
+            let program = config.binaries.pg_rewind.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.pg_rewind.clone(),
+                program: program.clone(),
                 args: vec![
                     "--target-pgdata".to_string(),
                     spec.target_data_dir.display().to_string(),
                     "--source-server".to_string(),
                     render_pg_conninfo(&spec.source_conninfo),
                 ],
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
         ProcessJobKind::Promote(spec) => {
@@ -405,15 +660,23 @@ pub(crate) fn build_command(
                 args.push("-t".to_string());
                 args.push(wait_seconds.to_string());
             }
+            let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.pg_ctl.clone(),
+                program: program.clone(),
                 args,
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
         ProcessJobKind::Demote(spec) => {
             validate_non_empty_path("demote.data_dir", &spec.data_dir)?;
+            let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.pg_ctl.clone(),
+                program: program.clone(),
                 args: vec![
                     "-D".to_string(),
                     spec.data_dir.display().to_string(),
@@ -422,6 +685,12 @@ pub(crate) fn build_command(
                     spec.mode.as_pg_ctl_arg().to_string(),
                     "-w".to_string(),
                 ],
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
         ProcessJobKind::StartPostgres(spec) => {
@@ -434,8 +703,9 @@ pub(crate) fn build_command(
                 ));
             }
             let wait_seconds = spec.wait_seconds.unwrap_or(30);
+            let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.pg_ctl.clone(),
+                program: program.clone(),
                 args: vec![
                     "-D".to_string(),
                     spec.data_dir.display().to_string(),
@@ -453,12 +723,19 @@ pub(crate) fn build_command(
                     "-t".to_string(),
                     wait_seconds.to_string(),
                 ],
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
         ProcessJobKind::StopPostgres(spec) => {
             validate_non_empty_path("stop_postgres.data_dir", &spec.data_dir)?;
+            let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.pg_ctl.clone(),
+                program: program.clone(),
                 args: vec![
                     "-D".to_string(),
                     spec.data_dir.display().to_string(),
@@ -467,6 +744,12 @@ pub(crate) fn build_command(
                     spec.mode.as_pg_ctl_arg().to_string(),
                     "-w".to_string(),
                 ],
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
         ProcessJobKind::RestartPostgres(spec) => {
@@ -479,8 +762,9 @@ pub(crate) fn build_command(
                 ));
             }
             let wait_seconds = spec.wait_seconds.unwrap_or(30);
+            let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.pg_ctl.clone(),
+                program: program.clone(),
                 args: vec![
                     "-D".to_string(),
                     spec.data_dir.display().to_string(),
@@ -500,12 +784,19 @@ pub(crate) fn build_command(
                     "-t".to_string(),
                     wait_seconds.to_string(),
                 ],
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
         ProcessJobKind::Fencing(spec) => {
             validate_non_empty_path("fencing.data_dir", &spec.data_dir)?;
+            let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
-                program: config.binaries.pg_ctl.clone(),
+                program: program.clone(),
                 args: vec![
                     "-D".to_string(),
                     spec.data_dir.display().to_string(),
@@ -514,8 +805,35 @@ pub(crate) fn build_command(
                     spec.mode.as_pg_ctl_arg().to_string(),
                     "-w".to_string(),
                 ],
+                capture_output,
+                log_identity: ProcessLogIdentity {
+                    job_id: job_id.clone(),
+                    job_kind: job_kind_label(kind).to_string(),
+                    binary: binary_label(program.as_path()),
+                },
             })
         }
+    }
+}
+
+fn job_kind_label(kind: &ProcessJobKind) -> &'static str {
+    match kind {
+        ProcessJobKind::Bootstrap(_) => "bootstrap",
+        ProcessJobKind::BaseBackup(_) => "basebackup",
+        ProcessJobKind::PgRewind(_) => "pg_rewind",
+        ProcessJobKind::Promote(_) => "promote",
+        ProcessJobKind::Demote(_) => "demote",
+        ProcessJobKind::StartPostgres(_) => "start_postgres",
+        ProcessJobKind::StopPostgres(_) => "stop_postgres",
+        ProcessJobKind::RestartPostgres(_) => "restart_postgres",
+        ProcessJobKind::Fencing(_) => "fencing",
+    }
+}
+
+fn binary_label(path: &std::path::Path) -> String {
+    match path.file_name().and_then(|s| s.to_str()) {
+        Some(name) if !name.trim().is_empty() => name.to_string(),
+        _ => path.display().to_string(),
     }
 }
 
@@ -574,6 +892,20 @@ mod tests {
                 Some(result) => result,
                 None => Ok(None),
             }
+        }
+
+        fn drain_output<'a>(
+            &'a mut self,
+            _max_bytes: usize,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Vec<crate::process::jobs::ProcessOutputLine>, ProcessError>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move { Ok(Vec::new()) })
         }
 
         fn cancel<'a>(
@@ -651,6 +983,7 @@ mod tests {
         let config = sample_config();
         let command = build_command(
             &config,
+            &JobId("job-test".to_string()),
             &ProcessJobKind::BaseBackup(BaseBackupSpec {
                 data_dir: PathBuf::from("/tmp/node/data"),
                 source_conninfo: PgConnInfo {
@@ -665,6 +998,7 @@ mod tests {
                 },
                 timeout_ms: Some(30_000),
             }),
+            false,
         );
 
         assert!(command.is_ok());
@@ -719,6 +1053,8 @@ mod tests {
             ProcessWorkerCtx {
                 poll_interval: Duration::from_millis(10),
                 config: sample_config(),
+                log: crate::logging::LogHandle::null(),
+                capture_subprocess_output: false,
                 state: initial,
                 publisher,
                 inbox: rx,
@@ -1014,6 +1350,8 @@ mod tests {
             ProcessWorkerCtx {
                 poll_interval: Duration::from_millis(50),
                 config,
+                log: crate::logging::LogHandle::null(),
+                capture_subprocess_output: false,
                 state: initial,
                 publisher,
                 inbox: rx,
@@ -1592,6 +1930,8 @@ mod tests {
         let mut ctx = ProcessWorkerCtx {
             poll_interval: Duration::from_millis(10),
             config: sample_config(),
+            log: crate::logging::LogHandle::null(),
+            capture_subprocess_output: false,
             state: initial,
             publisher,
             inbox: rx,

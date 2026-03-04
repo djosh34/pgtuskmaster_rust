@@ -4,13 +4,14 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     config::ProcessConfig,
+    logging::LogHandle,
     state::{JobId, StatePublisher, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::jobs::{
     ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, NoopCommandRunner,
     PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessHandle, PromoteSpec,
-    RestartPostgresSpec, StartPostgresSpec, StopPostgresSpec,
+    ProcessLogIdentity, RestartPostgresSpec, StartPostgresSpec, StopPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,11 +95,14 @@ pub(crate) struct ActiveRuntime {
     pub(crate) started_at: UnixMillis,
     pub(crate) deadline_at: UnixMillis,
     pub(crate) handle: Box<dyn ProcessHandle>,
+    pub(crate) log_identity: ProcessLogIdentity,
 }
 
 pub(crate) struct ProcessWorkerCtx {
     pub(crate) poll_interval: Duration,
     pub(crate) config: ProcessConfig,
+    pub(crate) log: LogHandle,
+    pub(crate) capture_subprocess_output: bool,
     pub(crate) state: ProcessState,
     pub(crate) publisher: StatePublisher<ProcessState>,
     pub(crate) inbox: UnboundedReceiver<ProcessJobRequest>,
@@ -117,6 +121,8 @@ impl ProcessWorkerCtx {
         Self {
             poll_interval: Duration::from_millis(10),
             config,
+            log: LogHandle::null(),
+            capture_subprocess_output: false,
             state: ProcessState::Idle {
                 worker: WorkerStatus::Starting,
                 last_outcome: None,

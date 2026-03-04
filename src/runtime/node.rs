@@ -23,6 +23,7 @@ use crate::{
     ha::state::{
         HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
     },
+    logging::{LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText},
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::{
         jobs::{
@@ -78,11 +79,24 @@ pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> 
 pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError> {
     validate_runtime_config(&cfg)?;
 
+    let logging = crate::logging::bootstrap(&cfg);
+    let log = logging.handle.clone();
+    let _ = log.emit(
+        SeverityText::Debug,
+        "runtime starting",
+        LogSource {
+            producer: LogProducer::App,
+            transport: LogTransport::Internal,
+            parser: LogParser::App,
+            origin: "runtime".to_string(),
+        },
+    );
+
     let process_defaults = process_defaults_from_config(&cfg);
     let startup_mode = plan_startup(&cfg, &process_defaults)?;
-    execute_startup(&cfg, &process_defaults, &startup_mode).await?;
+    execute_startup(&cfg, &process_defaults, &startup_mode, &log).await?;
 
-    run_workers(cfg, process_defaults).await
+    run_workers(cfg, process_defaults, log).await
 }
 
 // ?!?!?! WHY LIKE THIS?
@@ -229,6 +243,7 @@ async fn execute_startup(
     cfg: &RuntimeConfig,
     process_defaults: &ProcessDispatchDefaults,
     startup_mode: &StartupMode,
+    log: &crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
     ensure_start_paths(process_defaults, &cfg.postgres.data_dir)?;
 
@@ -240,9 +255,10 @@ async fn execute_startup(
                     data_dir: cfg.postgres.data_dir.clone(),
                     timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
                 }),
+                log,
             )
             .await?;
-            run_start_job(cfg, process_defaults).await
+            run_start_job(cfg, process_defaults, log).await
         }
         StartupMode::CloneReplica {
             source_conninfo, ..
@@ -254,15 +270,16 @@ async fn execute_startup(
                     source_conninfo: source_conninfo.clone(),
                     timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
                 }),
+                log,
             )
             .await?;
-            run_start_job(cfg, process_defaults).await
+            run_start_job(cfg, process_defaults, log).await
         }
         StartupMode::ResumeExisting => {
             if has_postmaster_pid(&cfg.postgres.data_dir) {
                 Ok(())
             } else {
-                run_start_job(cfg, process_defaults).await
+                run_start_job(cfg, process_defaults, log).await
             }
         }
     }
@@ -307,6 +324,7 @@ fn has_postmaster_pid(data_dir: &Path) -> bool {
 async fn run_start_job(
     cfg: &RuntimeConfig,
     process_defaults: &ProcessDispatchDefaults,
+    log: &crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
     run_startup_job(
         cfg,
@@ -319,16 +337,27 @@ async fn run_start_job(
             wait_seconds: Some(30),
             timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
         }),
+        log,
     )
     .await
 }
 
-async fn run_startup_job(cfg: &RuntimeConfig, job: ProcessJobKind) -> Result<(), RuntimeError> {
+async fn run_startup_job(
+    cfg: &RuntimeConfig,
+    job: ProcessJobKind,
+    log: &crate::logging::LogHandle,
+) -> Result<(), RuntimeError> {
     let mut runner = TokioCommandRunner;
     let timeout_ms = timeout_for_kind(&job, &cfg.process);
-    let command = build_command(&cfg.process, &job).map_err(|err| {
-        RuntimeError::StartupExecution(format!("startup command build failed: {err}"))
-    })?;
+    let job_id = crate::state::JobId(format!("startup-{}", std::process::id()));
+    let command = build_command(
+        &cfg.process,
+        &job_id,
+        &job,
+        cfg.logging.capture_subprocess_output,
+    )
+    .map_err(|err| RuntimeError::StartupExecution(format!("startup command build failed: {err}")))?;
+    let log_identity = command.log_identity.clone();
     let command_display = format!("{} {}", command.program.display(), command.args.join(" "));
 
     let mut handle = runner.spawn(command).map_err(|err| {
@@ -341,11 +370,22 @@ async fn run_startup_job(cfg: &RuntimeConfig, job: ProcessJobKind) -> Result<(),
     let deadline = started.0.saturating_add(timeout_ms);
 
     loop {
+        if let Ok(lines) = handle.drain_output(256 * 1024).await {
+            for line in lines {
+                let _ = emit_startup_subprocess_line(log, &log_identity, line);
+            }
+        }
+
         match handle.poll_exit().map_err(|err| {
             RuntimeError::StartupExecution(format!("startup process poll failed: {err}"))
         })? {
             Some(ProcessExit::Success) => return Ok(()),
             Some(ProcessExit::Failure { code }) => {
+                if let Ok(lines) = handle.drain_output(256 * 1024).await {
+                    for line in lines {
+                        let _ = emit_startup_subprocess_line(log, &log_identity, line);
+                    }
+                }
                 return Err(RuntimeError::StartupExecution(format!(
                     "startup command `{command_display}` exited unsuccessfully (code: {code:?})"
                 )));
@@ -360,6 +400,11 @@ async fn run_startup_job(cfg: &RuntimeConfig, job: ProcessJobKind) -> Result<(),
                     "startup command `{command_display}` timeout cancellation failed: {err}"
                 ))
             })?;
+            if let Ok(lines) = handle.drain_output(256 * 1024).await {
+                for line in lines {
+                    let _ = emit_startup_subprocess_line(log, &log_identity, line);
+                }
+            }
             return Err(RuntimeError::StartupExecution(format!(
                 "startup command `{command_display}` timed out after {timeout_ms} ms"
             )));
@@ -369,9 +414,78 @@ async fn run_startup_job(cfg: &RuntimeConfig, job: ProcessJobKind) -> Result<(),
     }
 }
 
+fn emit_startup_subprocess_line(
+    log: &crate::logging::LogHandle,
+    identity: &crate::process::jobs::ProcessLogIdentity,
+    line: crate::process::jobs::ProcessOutputLine,
+) -> Result<(), crate::logging::LogError> {
+    let (transport, severity) = match line.stream {
+        crate::process::jobs::ProcessOutputStream::Stdout => {
+            (crate::logging::LogTransport::ChildStdout, SeverityText::Info)
+        }
+        crate::process::jobs::ProcessOutputStream::Stderr => {
+            (crate::logging::LogTransport::ChildStderr, SeverityText::Warn)
+        }
+    };
+
+    let (message, raw_bytes_hex) = match String::from_utf8(line.bytes) {
+        Ok(message) => (message, None),
+        Err(err) => {
+            let bytes = err.into_bytes();
+            let hex = emit_hex_encode(bytes.as_slice());
+            (format!("non_utf8_bytes_hex={hex}"), Some(hex))
+        }
+    };
+
+    let mut record = LogRecord::new(
+        crate::logging::system_now_unix_millis(),
+        log.hostname().to_string(),
+        severity,
+        message,
+        crate::logging::LogSource {
+            producer: crate::logging::LogProducer::PgTool,
+            transport,
+            parser: crate::logging::LogParser::Raw,
+            origin: "startup".to_string(),
+        },
+    );
+
+    record.attributes.insert(
+        "job_id".to_string(),
+        serde_json::Value::String(identity.job_id.0.clone()),
+    );
+    record.attributes.insert(
+        "job_kind".to_string(),
+        serde_json::Value::String(identity.job_kind.clone()),
+    );
+    record.attributes.insert(
+        "binary".to_string(),
+        serde_json::Value::String(identity.binary.clone()),
+    );
+    if let Some(hex) = raw_bytes_hex {
+        record.attributes.insert(
+            "raw_bytes_hex".to_string(),
+            serde_json::Value::String(hex),
+        );
+    }
+
+    log.emit_record(&record)
+}
+
+fn emit_hex_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        out.push(TABLE[(b >> 4) as usize] as char);
+        out.push(TABLE[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
 async fn run_workers(
     cfg: RuntimeConfig,
     process_defaults: ProcessDispatchDefaults,
+    log: crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
     let now = now_unix_millis()?;
 
@@ -456,6 +570,8 @@ async fn run_workers(
     let process_ctx = ProcessWorkerCtx {
         poll_interval: Duration::from_millis(10),
         config: cfg.process.clone(),
+        log: log.clone(),
+        capture_subprocess_output: cfg.logging.capture_subprocess_output,
         state: initial_process,
         publisher: process_publisher,
         inbox: process_inbox_rx,
@@ -509,6 +625,10 @@ async fn run_workers(
         crate::pginfo::worker::run(pg_ctx),
         crate::dcs::worker::run(dcs_ctx),
         crate::process::worker::run(process_ctx),
+        crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(
+            cfg.clone(),
+            log.clone(),
+        )),
         crate::ha::worker::run(ha_ctx),
         crate::debug_api::worker::run(debug_ctx),
         crate::api::worker::run(api_ctx),
@@ -568,7 +688,8 @@ mod tests {
     use crate::{
         config::{
             ApiConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig,
-            PostgresConfig, ProcessConfig, RuntimeConfig, SecurityConfig,
+            LogCleanupConfig, LogLevel, LoggingConfig, PostgresConfig, PostgresLoggingConfig,
+            ProcessConfig, RuntimeConfig, SecurityConfig,
         },
         dcs::state::{DcsCache, LeaderRecord, MemberRecord, MemberRole},
         pginfo::state::{Readiness, SqlStatus},
@@ -614,6 +735,22 @@ mod tests {
                     initdb: "/usr/bin/initdb".into(),
                     pg_basebackup: "/usr/bin/pg_basebackup".into(),
                     psql: "/usr/bin/psql".into(),
+                },
+            },
+            logging: LoggingConfig {
+                level: LogLevel::Info,
+                capture_subprocess_output: true,
+                postgres: PostgresLoggingConfig {
+                    enabled: true,
+                    pg_ctl_log_file: None,
+                    log_dir: None,
+                    archive_command_log_file: None,
+                    poll_interval_ms: 200,
+                    cleanup: LogCleanupConfig {
+                        enabled: true,
+                        max_files: 10,
+                        max_age_seconds: 60,
+                    },
                 },
             },
             api: ApiConfig {

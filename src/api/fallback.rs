@@ -35,7 +35,10 @@ pub(crate) fn post_fallback_heartbeat(
 mod tests {
     use crate::{
         api::fallback::{get_fallback_cluster, post_fallback_heartbeat, FallbackHeartbeatInput},
-        config::{schema::ClusterConfig, RuntimeConfig},
+        config::{
+            schema::ClusterConfig, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig,
+            RuntimeConfig,
+        },
     };
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -73,6 +76,22 @@ mod tests {
                     initdb: "/usr/bin/initdb".into(),
                     pg_basebackup: "/usr/bin/pg_basebackup".into(),
                     psql: "/usr/bin/psql".into(),
+                },
+            },
+            logging: LoggingConfig {
+                level: LogLevel::Info,
+                capture_subprocess_output: true,
+                postgres: PostgresLoggingConfig {
+                    enabled: true,
+                    pg_ctl_log_file: None,
+                    log_dir: None,
+                    archive_command_log_file: None,
+                    poll_interval_ms: 200,
+                    cleanup: LogCleanupConfig {
+                        enabled: true,
+                        max_files: 10,
+                        max_age_seconds: 60,
+                    },
                 },
             },
             api: crate::config::schema::ApiConfig {

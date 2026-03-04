@@ -93,15 +93,7 @@ impl TcpProxyLink {
                     })?;
 
                 runtime.block_on(async move {
-                    let listener = match TcpListener::bind(listen_addr).await {
-                        Ok(listener) => listener,
-                        Err(err) => {
-                            let _ = startup_tx.send(Err(HarnessError::Io(err)));
-                            return Err(HarnessError::InvalidInput(
-                                "proxy listener bind failed".to_string(),
-                            ));
-                        }
-                    };
+                    let listener = TcpListener::bind(listen_addr).await.map_err(HarnessError::Io)?;
                     let bound_addr = listener.local_addr().map_err(HarnessError::Io)?;
                     let _ = startup_tx.send(Ok(bound_addr));
                     run_listener(
@@ -127,6 +119,76 @@ impl TcpProxyLink {
             name: spec.name,
             listen_addr,
             target_addr: spec.target_addr,
+            mode_tx,
+            shutdown_tx,
+            active,
+            join,
+        })
+    }
+
+    pub(crate) async fn spawn_with_listener(
+        name: String,
+        std_listener: std::net::TcpListener,
+        target_addr: SocketAddr,
+    ) -> Result<Self, HarnessError> {
+        if name.trim().is_empty() {
+            return Err(HarnessError::InvalidInput(
+                "proxy link name must not be empty".to_string(),
+            ));
+        }
+
+        std_listener
+            .set_nonblocking(true)
+            .map_err(HarnessError::Io)?;
+
+        let (mode_tx, mode_rx) = watch::channel(ProxyMode::PassThrough);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let active = Arc::new(Mutex::new(BTreeMap::<u64, AbortHandle>::new()));
+        let conn_seq = Arc::new(AtomicU64::new(1));
+        let active_for_task = Arc::clone(&active);
+        let conn_seq_for_task = Arc::clone(&conn_seq);
+        let (startup_tx, startup_rx) = oneshot::channel::<Result<SocketAddr, HarnessError>>();
+
+        let name_for_thread = name.clone();
+        let join = thread::Builder::new()
+            .name(format!("tcp-proxy-{name_for_thread}"))
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|err| {
+                        HarnessError::InvalidInput(format!(
+                            "build tokio runtime for proxy listener failed: {err}"
+                        ))
+                    })?;
+
+                runtime.block_on(async move {
+                    let listener = TcpListener::from_std(std_listener).map_err(HarnessError::Io)?;
+                    let bound_addr = listener.local_addr().map_err(HarnessError::Io)?;
+                    let _ = startup_tx.send(Ok(bound_addr));
+                    run_listener(
+                        listener,
+                        target_addr,
+                        mode_rx,
+                        shutdown_rx,
+                        active_for_task,
+                        conn_seq_for_task,
+                    )
+                    .await
+                })
+            })
+            .map_err(|err| {
+                HarnessError::InvalidInput(format!("spawn proxy listener thread failed: {err}"))
+            })?;
+
+        let listen_addr = startup_rx.await.map_err(|err| {
+            HarnessError::InvalidInput(format!("proxy listener startup channel failed: {err}"))
+        })??;
+
+        Ok(Self {
+            name,
+            listen_addr,
+            target_addr,
             mode_tx,
             shutdown_tx,
             active,

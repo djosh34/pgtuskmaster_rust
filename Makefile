@@ -6,6 +6,12 @@ MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 ULTRA_LONG_TESTS :=
 ULTRA_LONG_SKIP_ARGS := $(foreach t,$(ULTRA_LONG_TESTS),--skip $(t))
 
+# The workspace mount this repo typically lives on can exhibit intermittent
+# linker/archive flake with incremental artifacts. Disable incremental builds by
+# default for deterministic `make` gates; override with `CARGO_INCREMENTAL=1`
+# if you explicitly want it.
+CARGO_INCREMENTAL ?= 0
+
 TEST_TIMEOUT_SECS ?= 120
 TEST_TIMEOUT_KILL_AFTER_SECS ?= 15
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
@@ -20,11 +26,11 @@ ensure-timeout:
 	@test -n "$(TIMEOUT_BIN)" || (echo "missing timeout binary (install coreutils). Need either 'timeout' (Linux) or 'gtimeout' (macOS)." >&2; exit 1)
 
 check:
-	cargo check --all-targets
+	CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo check --all-targets
 
 test: ensure-timeout
 	@if [ "$${RUST_TEST_THREADS:-}" = "1" ]; then echo "RUST_TEST_THREADS=1 is disallowed for make test (parallel must work). Fix parallel flakes instead." >&2; exit 1; fi
-	"$(TIMEOUT_BIN)" --kill-after="$(TEST_TIMEOUT_KILL_AFTER_SECS)s" "$(TEST_TIMEOUT_SECS)s" cargo test --all-targets -- $(ULTRA_LONG_SKIP_ARGS)
+	"$(TIMEOUT_BIN)" --kill-after="$(TEST_TIMEOUT_KILL_AFTER_SECS)s" "$(TEST_TIMEOUT_SECS)s" env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets -- $(ULTRA_LONG_SKIP_ARGS)
 
 test-long:
 	@echo "test-long runs only ultra-long tests (evidence-backed passed runtime >= 3 minutes)."
@@ -35,20 +41,20 @@ test-long:
 		exit 0; \
 	fi; \
 	for t in $(ULTRA_LONG_TESTS); do \
-		cargo test --all-targets "$$t"; \
+		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets "$$t"; \
 	done
 
 docs-lint:
 	./tools/docs-architecture-no-code-guard.sh
 
 lint: docs-lint
-	cargo clippy --all-targets --all-features -- -D warnings
+	env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --all-targets --all-features -- -D warnings
 	# Strict restriction-lint pass for runtime library builds.
-	cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+	env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 	# Strict restriction-lint pass for test targets.
-	cargo clippy --tests --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+	env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --tests --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 	# Skeptical all-target guard so restrictions are enforced uniformly.
-	cargo clippy --all-targets --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+	env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --all-targets --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 
 docs-build: ensure-mdbook-mermaid
 	PATH="$(CURDIR)/.tools/mdbook/bin:$$PATH" "$(MDBOOK)" build docs

@@ -9,6 +9,7 @@ pub struct RuntimeConfig {
     pub dcs: DcsConfig,
     pub ha: HaConfig,
     pub process: ProcessConfig,
+    pub logging: LoggingConfig,
     pub api: ApiConfig,
     pub debug: DebugConfig,
     pub security: SecurityConfig,
@@ -59,6 +60,44 @@ pub struct ProcessConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct LoggingConfig {
+    pub level: LogLevel,
+    pub capture_subprocess_output: bool,
+    pub postgres: PostgresLoggingConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Fatal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresLoggingConfig {
+    pub enabled: bool,
+    pub pg_ctl_log_file: Option<PathBuf>,
+    pub log_dir: Option<PathBuf>,
+    pub archive_command_log_file: Option<PathBuf>,
+    pub poll_interval_ms: u64,
+    pub cleanup: LogCleanupConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogCleanupConfig {
+    pub enabled: bool,
+    pub max_files: u64,
+    pub max_age_seconds: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BinaryPaths {
     pub postgres: PathBuf,
     pub pg_ctl: PathBuf,
@@ -97,6 +136,7 @@ pub struct PartialRuntimeConfig {
     pub dcs: DcsConfig,
     pub ha: HaConfig,
     pub process: PartialProcessConfig,
+    pub logging: Option<PartialLoggingConfig>,
     pub api: Option<PartialApiConfig>,
     pub debug: Option<PartialDebugConfig>,
     pub security: Option<PartialSecurityConfig>,
@@ -122,6 +162,33 @@ pub struct PartialProcessConfig {
     pub bootstrap_timeout_ms: Option<u64>,
     pub fencing_timeout_ms: Option<u64>,
     pub binaries: BinaryPaths,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialLoggingConfig {
+    pub level: Option<LogLevel>,
+    pub capture_subprocess_output: Option<bool>,
+    pub postgres: Option<PartialPostgresLoggingConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialPostgresLoggingConfig {
+    pub enabled: Option<bool>,
+    pub pg_ctl_log_file: Option<PathBuf>,
+    pub log_dir: Option<PathBuf>,
+    pub archive_command_log_file: Option<PathBuf>,
+    pub poll_interval_ms: Option<u64>,
+    pub cleanup: Option<PartialLogCleanupConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialLogCleanupConfig {
+    pub enabled: Option<bool>,
+    pub max_files: Option<u64>,
+    pub max_age_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

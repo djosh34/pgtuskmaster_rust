@@ -118,6 +118,27 @@ pub(crate) struct ActiveJob {
 pub(crate) struct ProcessCommandSpec {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<String>,
+    pub(crate) capture_output: bool,
+    pub(crate) log_identity: ProcessLogIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessLogIdentity {
+    pub(crate) job_id: JobId,
+    pub(crate) job_kind: String,
+    pub(crate) binary: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessOutputLine {
+    pub(crate) stream: ProcessOutputStream,
+    pub(crate) bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,6 +149,10 @@ pub(crate) enum ProcessExit {
 
 pub(crate) trait ProcessHandle: Send {
     fn poll_exit(&mut self) -> Result<Option<ProcessExit>, ProcessError>;
+    fn drain_output<'a>(
+        &'a mut self,
+        max_bytes: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ProcessOutputLine>, ProcessError>> + Send + 'a>>;
     fn cancel<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<(), ProcessError>> + Send + 'a>>;

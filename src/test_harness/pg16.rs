@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -79,6 +79,13 @@ pub(crate) fn prepare_pgdata_dir(
 }
 
 pub(crate) async fn spawn_pg16(spec: PgInstanceSpec) -> Result<PgHandle, HarnessError> {
+    spawn_pg16_with_conf_lines(spec, &[]).await
+}
+
+pub(crate) async fn spawn_pg16_with_conf_lines(
+    spec: PgInstanceSpec,
+    postgresql_conf_lines: &[String],
+) -> Result<PgHandle, HarnessError> {
     if !spec.postgres_bin.exists() {
         return Err(HarnessError::InvalidInput(format!(
             "postgres binary does not exist: {}",
@@ -96,6 +103,7 @@ pub(crate) async fn spawn_pg16(spec: PgInstanceSpec) -> Result<PgHandle, Harness
     fs::create_dir_all(&spec.log_dir)?;
 
     initialize_pgdata_if_needed(&spec).await?;
+    append_postgresql_conf_lines(&spec.data_dir, postgresql_conf_lines)?;
 
     let stdout_path = spec.log_dir.join("postgres.stdout.log");
     let stderr_path = spec.log_dir.join("postgres.stderr.log");
@@ -129,6 +137,33 @@ pub(crate) async fn spawn_pg16(spec: PgInstanceSpec) -> Result<PgHandle, Harness
         port: spec.port,
         data_dir: spec.data_dir,
     })
+}
+
+fn append_postgresql_conf_lines(
+    data_dir: &Path,
+    lines: &[String],
+) -> Result<(), HarnessError> {
+    if lines.is_empty() {
+        return Ok(());
+    }
+
+    let conf = data_dir.join("postgresql.conf");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(conf)
+        .map_err(HarnessError::Io)?;
+
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        std::io::Write::write_all(&mut file, b"\n").map_err(HarnessError::Io)?;
+        std::io::Write::write_all(&mut file, line.as_bytes()).map_err(HarnessError::Io)?;
+        std::io::Write::write_all(&mut file, b"\n").map_err(HarnessError::Io)?;
+    }
+
+    Ok(())
 }
 
 async fn initialize_pgdata_if_needed(spec: &PgInstanceSpec) -> Result<(), HarnessError> {

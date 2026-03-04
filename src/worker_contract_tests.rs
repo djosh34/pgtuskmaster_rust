@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::{
-    config::{BinaryPaths, ProcessConfig, RuntimeConfig},
+    config::{
+        BinaryPaths, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig, ProcessConfig,
+        RuntimeConfig,
+    },
     dcs::state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx},
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     debug_api::{
@@ -80,6 +83,22 @@ fn sample_runtime_config() -> RuntimeConfig {
                 initdb: "/usr/bin/initdb".into(),
                 pg_basebackup: "/usr/bin/pg_basebackup".into(),
                 psql: "/usr/bin/psql".into(),
+            },
+        },
+        logging: LoggingConfig {
+            level: LogLevel::Info,
+            capture_subprocess_output: true,
+            postgres: PostgresLoggingConfig {
+                enabled: true,
+                pg_ctl_log_file: None,
+                log_dir: None,
+                archive_command_log_file: None,
+                poll_interval_ms: 200,
+                cleanup: LogCleanupConfig {
+                    enabled: true,
+                    max_files: 10,
+                    max_age_seconds: 60,
+                },
             },
         },
         api: crate::config::schema::ApiConfig {

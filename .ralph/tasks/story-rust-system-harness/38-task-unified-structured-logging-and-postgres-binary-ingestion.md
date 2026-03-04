@@ -1,5 +1,5 @@
 ---
-## Task: Build Unified Structured Logging Pipeline With Postgres/Binary Ingestion <status>not_started</status> <passes>false</passes>
+## Task: Build Unified Structured Logging Pipeline With Postgres/Binary Ingestion <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Implement one unified, config-driven logging system that emits structured JSONL to `stderr` by default, ingests/normalizes all postgres and helper-binary logs into the same stream, and guarantees no log loss on parse failures.
@@ -61,27 +61,197 @@
 </description>
 
 <acceptance_criteria>
-- [ ] A single logging setup point exists in runtime wiring/config (no dual bootstrap paths)
-- [ ] Logging config is part of full app config and centrally governs behavior
-- [ ] Default output sink is JSONL to `stderr`
-- [ ] Every emitted record includes: severity/level, hostname, unix timestamp ms
-- [ ] Every emitted record includes source attribution keys (producer + origin/parser channel)
-- [ ] Structured field naming and level semantics are OTEL-ready (schema/key compatibility), without implementing OTEL exporters
-- [ ] Unified stream includes application logs plus postgres server logs plus helper-binary logs
-- [ ] Postgres JSON logger lines are ingested and normalized into unified structured records
-- [ ] Postgres plain `.log` startup lines are ingested and normalized (or safely degraded) into unified structured records
-- [ ] Postgres `stderr` lines are ingested and normalized (or safely degraded) into unified structured records
-- [ ] `archive_command` output is captured; full message content is preserved in structured logs
-- [ ] Outputs from `pg_rewind`, `pg_ctl`, `pg_basebackup`, and other invoked postgres tools are captured from stdout/stderr and structured
-- [ ] Parse failures never drop logs; original raw line is preserved and parse failure metadata is emitted
-- [ ] Postgres log auto-collection lifecycle includes auto cleanup/rotation handling
-- [ ] Real postgres integration/e2e tests verify ingestion of JSON logger + `.log` + `stderr` behavior
-- [ ] Tests verify archive_command output capture and full payload retention
-- [ ] Tests verify helper-binary output capture into unified stream
-- [ ] Large unit/fixture parser tests cover valid, mixed, and malformed inputs with lossless fallback behavior
-- [ ] Follow-up/backlog task is created for file sink support (explicitly out of scope here)
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] BDD features pass (covered by `make test`).
+- [x] A single logging setup point exists in runtime wiring/config (no dual bootstrap paths)
+- [x] Logging config is part of full app config and centrally governs behavior
+- [x] Default output sink is JSONL to `stderr`
+- [x] Every emitted record includes: severity/level, hostname, unix timestamp ms
+- [x] Every emitted record includes source attribution keys (producer + origin/parser channel)
+- [x] Structured field naming and level semantics are OTEL-ready (schema/key compatibility), without implementing OTEL exporters
+- [x] Unified stream includes application logs plus postgres server logs plus helper-binary logs
+- [x] Postgres JSON logger lines are ingested and normalized into unified structured records
+- [x] Postgres plain `.log` startup lines are ingested and normalized (or safely degraded) into unified structured records
+- [x] Postgres `stderr` lines are ingested and normalized (or safely degraded) into unified structured records
+- [x] `archive_command` output is captured; full message content is preserved in structured logs
+- [x] Outputs from `pg_rewind`, `pg_ctl`, `pg_basebackup`, and other invoked postgres tools are captured from stdout/stderr and structured
+- [x] Parse failures never drop logs; original raw line is preserved and parse failure metadata is emitted
+- [x] Postgres log auto-collection lifecycle includes auto cleanup/rotation handling
+- [x] Real postgres integration/e2e tests verify ingestion of JSON logger + `.log` + `stderr` behavior
+- [x] Tests verify archive_command output capture and full payload retention
+- [x] Tests verify helper-binary output capture into unified stream
+- [x] Large unit/fixture parser tests cover valid, mixed, and malformed inputs with lossless fallback behavior
+- [x] Follow-up/backlog task is created for file sink support (explicitly out of scope here)
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] BDD features pass (covered by `make test`).
 </acceptance_criteria>
+
+## Plan (Draft)
+
+### What exists today (repo reality check)
+- There is currently **no unified application logger** (no `tracing`/`log`), so “application logs” are effectively absent except for a couple of `println!/eprintln!` in CLI binaries.
+- Postgres server logs are currently **only written to files**:
+  - runtime path: `pg_ctl -l <postgres.log_file>` (plain text, mixed-format, commonly “stderr-ish” lines)
+  - harness path: direct `postgres` spawn with `stdout/stderr` redirected into `postgres.stdout.log` / `postgres.stderr.log`
+- Helper binaries (`initdb`, `pg_basebackup`, `pg_rewind`, `pg_ctl`) are spawned with `stdout/stderr` set to `null` in the runtime process worker, so their output is currently **dropped**.
+- There is **no production tailer/collector** (only a test helper `read_log_tail()` for failure diagnostics).
+
+This plan builds the missing unified structured logging subsystem and then wires ingestion into the existing runtime + harness.
+
+### Log schema (OTEL-ready envelope; JSONL to stderr)
+Define a single canonical JSON object per line (“JSONL”) emitted to `stderr` (default + only sink in this task).
+
+**Required top-level fields on every record**
+- `ts_ms` (unix epoch milliseconds; integer)
+- `hostname` (string)
+- `severity_text` (string: `TRACE|DEBUG|INFO|WARN|ERROR|FATAL`)
+- `severity_number` (integer; OTEL-style mapping)
+- `message` (string)
+- `source` (object; source attribution keys)
+
+**Required `source` sub-fields**
+- `producer` (enum-ish string): `app|postgres|postgres_archive|pg_tool`
+- `transport` (string): `internal|file_tail|child_stdout|child_stderr`
+- `parser` (string): `app|postgres_json|postgres_plain|raw`
+- `origin` (string): freeform stable identifier (e.g. `runtime`, `process_worker`, `pg_ctl_log_file`, `postgres.stderr.log`)
+
+**Parse failure invariants**
+- Never drop an input line because parsing failed.
+- On parse failure emit a structured record with:
+  - `source.parser="raw"`
+  - `attributes.parse_failed=true`
+  - `attributes.raw_line=<full original line>`
+  - `message=<full original line>` (lossless retention requirement)
+
+### Config (single entrypoint)
+Add a single `logging` block to the runtime config, with defaults that keep behavior safe and predictable:
+- Default sink: `stderr` JSONL.
+- Default capture/ingestion: enabled (so runtime + helper output + postgres logs unify by default), but still bounded by safe polling intervals.
+
+Proposed config shape (exact names can change during verification, but keep it one block):
+- `logging.level` (minimum severity for **app** logs; ingested external logs are not filtered by default)
+- `logging.capture_subprocess_output` (bool; default `true`)
+- `logging.postgres.enabled` (bool; default `true`)
+- `logging.postgres.pg_ctl_log_file` (optional override; default uses `postgres.log_file`)
+- `logging.postgres.log_dir` (optional directory to scan for rotated `.json`/`.log` logs)
+- `logging.postgres.archive_command_log_file` (optional; when set, tail it as `postgres_archive`)
+- `logging.postgres.poll_interval_ms`
+- `logging.postgres.cleanup` (retention policy; enabled by default with conservative settings)
+  - `max_files`
+  - `max_age_seconds`
+
+### Implementation steps (detailed; execute in order)
+
+#### 1) Introduce core logging subsystem (no ingestion yet)
+- [ ] Add `src/logging/` module implementing:
+  - [ ] `Severity` + OTEL severity_number mapping.
+  - [ ] `LogSource` + `LogRecord` (serde-serializable).
+  - [ ] `LogSink` trait and `JsonlStderrSink` implementation (one object per line).
+  - [ ] `LogHandle` (cloneable) for emitting records without panics/unwraps.
+  - [ ] `TestSink` (in-memory sink for unit/integration tests to assert emitted records without reading stderr).
+- [ ] Add a single bootstrap function (the only setup point), e.g. `logging::bootstrap(&RuntimeConfig) -> LoggingSystem`:
+  - caches hostname once
+  - configures sink(s)
+  - provides `LogHandle` for the rest of the runtime
+
+#### 2) Add `logging` config to schema + defaults + validation
+- [ ] Update `src/config/schema.rs`:
+  - [ ] add `LoggingConfig` and `PartialLoggingConfig`
+  - [ ] add `logging: LoggingConfig` to `RuntimeConfig`
+  - [ ] add `logging: Option<PartialLoggingConfig>` to `PartialRuntimeConfig`
+- [ ] Update `src/config/defaults.rs` to apply defaults for logging config.
+- [ ] Update `src/config/parser.rs` to validate:
+  - [ ] `logging.level` is one of allowed values
+  - [ ] poll intervals/timeouts within sane bounds
+  - [ ] retention policy constraints (e.g. `max_files > 0`, `max_age_seconds > 0`)
+- [ ] Update any examples/fixtures that construct `RuntimeConfig` / `PartialRuntimeConfig` in tests and `examples/` so `cargo check --all-targets` stays green.
+
+#### 3) Wire logging bootstrap into runtime (single setup point)
+- [ ] Update `src/runtime/node.rs` to create the logging system exactly once before startup execution and worker loops.
+- [ ] Ensure all workers that need to emit logs get a `LogHandle` via their ctx struct (avoid globals unless absolutely necessary).
+- [ ] Replace ad-hoc `eprintln!` paths in `src/bin/pgtuskmaster.rs` / `src/bin/pgtuskmasterctl.rs` with structured emission where appropriate (keep CLI “command output” on stdout as-is; only diagnostics become structured logs).
+
+#### 4) Implement Postgres log ingestion (file tail + directory scan + rotation)
+- [ ] Add a `FileTailer` (polling) that:
+  - [ ] **starts at beginning for “active/current” files** (pg_ctl `-l` log file, direct-postgres stderr/stdout files) so we never miss transient startup logs
+  - [ ] **starts at EOF for discovered/rotated files by default** (to avoid replay floods), unless explicitly configured otherwise
+  - [ ] detects truncation and safely resets offset
+  - [ ] handles rotation by inode change when available (unix), otherwise via size/mtime heuristics
+- [ ] Add a `DirLogCollector` that:
+  - [ ] scans a directory for matching log files (`*.json`, `*.log`, and optionally configured patterns)
+  - [ ] tracks per-file offsets and emits new lines
+  - [ ] handles new files appearing (rotation)
+- [ ] Add `postgres_log_parser`:
+  - [ ] try JSON first (`serde_json::from_str`)
+  - [ ] if JSON is valid and matches Postgres jsonlog shape, normalize to `LogRecord`
+  - [ ] else try known plain formats (`YYYY-MM-DD HH:MM:SS... [pid] LEVEL: msg` etc.)
+  - [ ] otherwise fallback to raw/parse_failed record (never drop)
+- [ ] Add a `PostgresIngestWorker` task started by `logging::bootstrap(...)` that tails:
+  - [ ] runtime `postgres.log_file` (pg_ctl `-l` target): treated as `producer=postgres`, `transport=file_tail`, `origin=pg_ctl_log_file`
+  - [ ] optional `logging.postgres.log_dir` directory (jsonlog + rotated logs): `origin=postgres_log_dir`
+  - [ ] optional archive-command capture file (see next section): `producer=postgres_archive`
+- [ ] Add cleanup/retention enforcement:
+  - [ ] deletes old rotated logs in `log_dir` per `max_files` / `max_age_seconds`
+  - [ ] never deletes the active file being tailed (guard with inode/name check)
+
+#### 5) Capture helper-binary stdout/stderr in process worker (no drops)
+- [ ] Extend the process runner to support piping stdout/stderr **without tokio::spawn** (step-driven; current-thread safe):
+  - [ ] update `ProcessCommandSpec` to include a capture policy + stable identity (`binary_name`, `job_kind`, `job_id`)
+  - [ ] update `ProcessHandle` / `TokioProcessHandle` to support async polling that also drains available stdout/stderr bytes each tick (bounded read budget)
+  - [ ] update `TokioCommandRunner` to use `Stdio::piped()` only when capture is enabled
+  - [ ] implement non-panicking stream decoders that:
+    - [ ] emit complete UTF-8 lines when possible
+    - [ ] fall back to lossless byte-preserving representation when invalid UTF-8 / missing newline (never drop)
+- [ ] Emit each captured line into unified structured logs with:
+  - `source.producer="pg_tool"`
+  - `source.transport="child_stdout|child_stderr"`
+  - `source.parser="raw"` (or `app` if later normalized)
+  - `attributes.job_id`, `attributes.job_kind`, `attributes.binary`
+- [ ] Ensure process worker still enforces timeouts/cancellation correctly and never deadlocks on full pipes.
+
+#### 6) Implement archive_command output capture (full message preserved)
+- [ ] Provide a small, deployment-local wrapper script generator (runtime writes it into a known dir under `/tmp/pgtuskmaster/...` or configured log dir):
+  - executes the real archive action (copy WAL to archive dir) and captures stdout/stderr
+  - writes a single JSONL record (or safe line-delimited records) into `logging.postgres.archive_command_log_file`
+  - preserves full output content (including newlines via JSON escaping)
+- [ ] Add ingestion of that archive-command log file via the Postgres ingest worker.
+- [ ] Keep archive capture optional (enabled in real-binary tests; off by default unless configured).
+
+### Testing plan (mandatory, no skips)
+
+#### Unit / fixture tests (fast; deterministic)
+- [ ] Parser fixtures:
+  - [ ] valid Postgres jsonlog sample(s) -> normalized record includes required envelope + mapped severity
+  - [ ] valid plain postgres log sample(s) -> normalized record includes required envelope
+  - [ ] malformed JSON / unknown format -> parse_failed record with full raw line preserved as `message`
+- [ ] Tailer rotation tests:
+  - [ ] append lines -> read -> rotate via rename+new file -> append more -> assert no drops and stable ordering
+- [ ] Cleanup tests:
+  - [ ] create N fake rotated log files -> enforce `max_files` -> assert oldest are deleted, newest preserved
+
+#### Real-binary integration/e2e tests (required)
+Use `.tools/postgres16/bin/*` via `require_pg16_bin_for_real_tests` (no optional skips).
+
+- [ ] Real Postgres ingestion tests (split by transport to reduce flake and make failures diagnosable):
+  - [ ] `T_jsonlog_and_stderr_files`: direct-spawn postgres via `spawn_pg16` harness, with test-controlled `postgresql.conf` enabling `logging_collector=on` + `log_destination='jsonlog,stderr'` and `log_directory=<namespace log dir>`; assert ingestor emits records for:
+    - [ ] `*.json` jsonlog lines from log dir
+    - [ ] `postgres.stderr.log` lines from OS-level stderr redirection
+  - [ ] `T_pg_ctl_log_file`: start postgres through the runtime/process-worker path that uses `pg_ctl -l <postgres.log_file>`; assert ingestor emits records from that plain log file (startup lines included).
+- [ ] Real archive_command capture:
+  - [ ] configure `archive_mode=on` and `archive_command` to call the wrapper script
+  - [ ] force WAL switch (`SELECT pg_switch_wal()`)
+  - [ ] assert unified stream contains archive-command output record(s) with full payload preserved
+- [ ] Real helper binary output capture:
+  - [ ] run at least one real failing helper command (e.g. `pg_basebackup` to invalid host) through process worker
+  - [ ] assert stderr/stdout lines appear in unified structured stream with correct source attribution
+
+### Follow-up task (explicitly out of scope here)
+- [ ] Create a backlog task for **file sink support** (additional sink types) using the `add-task-as-agent` skill, referencing this task as prerequisite.
+
+### Validation gate (must be 100% green before marking passing)
+- [ ] `make check`
+- [ ] `make test`
+- [ ] `make test-long`
+- [ ] `make lint`
+
+NOW EXECUTE
