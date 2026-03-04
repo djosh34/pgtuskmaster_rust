@@ -8,8 +8,8 @@ use tokio::task::JoinHandle;
 use crate::cli::client::CliApiClient;
 use crate::config::{
     ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig, DcsConfig,
-    DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig,
-    PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig,
+    DcsInitConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
+    PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig,
     PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
     StderrSinkConfig, TlsServerConfig,
 };
@@ -419,6 +419,92 @@ async fn start_cluster_inner(
             ))
         })?;
 
+        let pg_hba_contents = concat!(
+            "# managed by pgtuskmaster test harness\n",
+            "local all all trust\n",
+            "host all all 127.0.0.1/32 trust\n",
+            "host replication replicator 127.0.0.1/32 trust\n",
+        )
+        .to_string();
+        let pg_ident_contents = "# empty\n".to_string();
+
+        let dcs_endpoints_for_check = dcs_endpoints.clone();
+        let dcs_init_payload = serde_json::json!({
+            "cluster": {
+                "name": config.cluster_name.clone(),
+                "member_id": node_id.clone(),
+            },
+            "postgres": {
+                "data_dir": data_dir.display().to_string(),
+                "connect_timeout_s": 2,
+                "listen_host": "127.0.0.1",
+                "listen_port": pg_port,
+                "socket_dir": socket_dir.display().to_string(),
+                "log_file": log_file.display().to_string(),
+                "rewind_source_host": "127.0.0.1",
+                "rewind_source_port": rewind_source_port,
+                "local_conn_identity": { "user": "postgres", "dbname": "postgres", "ssl_mode": "prefer" },
+                "rewind_conn_identity": { "user": "rewinder", "dbname": "postgres", "ssl_mode": "prefer" },
+                "tls": { "mode": "disabled", "identity": null, "client_auth": null },
+                "roles": {
+                    "superuser": { "username": "postgres", "auth": { "type": "tls" } },
+                    "replicator": { "username": "replicator", "auth": { "type": "tls" } },
+                    "rewinder": { "username": "rewinder", "auth": { "type": "tls" } },
+                },
+                "pg_hba": { "source": { "content": pg_hba_contents.clone() } },
+                "pg_ident": { "source": { "content": pg_ident_contents.clone() } },
+            },
+            "dcs": {
+                "endpoints": dcs_endpoints_for_check.clone(),
+                "scope": config.scope.clone(),
+                "init": null,
+            },
+            "ha": { "loop_interval_ms": 100, "lease_ttl_ms": 2000 },
+            "process": {
+                "pg_rewind_timeout_ms": 5000,
+                "bootstrap_timeout_ms": 30000,
+                "fencing_timeout_ms": 5000,
+                "binaries": {
+                    "postgres": binaries.postgres.display().to_string(),
+                    "pg_ctl": binaries.pg_ctl.display().to_string(),
+                    "pg_rewind": binaries.pg_rewind.display().to_string(),
+                    "initdb": binaries.initdb.display().to_string(),
+                    "pg_basebackup": binaries.pg_basebackup.display().to_string(),
+                    "psql": binaries.psql.display().to_string(),
+                },
+            },
+            "logging": {
+                "level": "info",
+                "capture_subprocess_output": false,
+                "postgres": {
+                    "enabled": false,
+                    "pg_ctl_log_file": null,
+                    "log_dir": null,
+                    "archive_command_log_file": null,
+                    "poll_interval_ms": 200,
+                    "cleanup": { "enabled": true, "max_files": 50, "max_age_seconds": 604800 },
+                },
+                "sinks": {
+                    "stderr": { "enabled": true },
+                    "file": { "enabled": false, "path": null, "mode": "append" },
+                },
+            },
+            "api": {
+                "listen_addr": api_addr.to_string(),
+                "security": {
+                    "tls": { "mode": "disabled", "identity": null, "client_auth": null },
+                    "auth": { "type": "disabled" },
+                },
+            },
+            "debug": { "enabled": false },
+        });
+        let dcs_init_payload_json =
+            serde_json::to_string(&dcs_init_payload).map_err(|err| {
+                WorkerError::Message(format!(
+                    "encode dcs.init.payload_json failed for node {node_id}: {err}"
+                ))
+            })?;
+
         let runtime_cfg = RuntimeConfig {
             cluster: ClusterConfig {
                 name: config.cluster_name.clone(),
@@ -464,19 +550,22 @@ async fn start_cluster_inner(
                 },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: pg_hba_contents.clone(),
                     },
                 },
                 pg_ident: PgIdentConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: pg_ident_contents.clone(),
                     },
                 },
             },
             dcs: DcsConfig {
                 endpoints: dcs_endpoints,
                 scope: config.scope.clone(),
-                init: None,
+                init: Some(DcsInitConfig {
+                    payload_json: dcs_init_payload_json.clone(),
+                    write_on_bootstrap: true,
+                }),
             },
             ha: HaConfig {
                 loop_interval_ms: 100,
@@ -636,6 +725,118 @@ $$;
                 guard.timeouts.command_kill_wait_timeout,
             )
             .await?;
+
+            let primary = guard.nodes.last().ok_or_else(|| {
+                WorkerError::Message("startup expected primary node handle".to_string())
+            })?;
+            let expected_hba_file = primary.data_dir.join("pgtm.pg_hba.conf");
+            let expected_ident_file = primary.data_dir.join("pgtm.pg_ident.conf");
+
+            let hba_file_raw = super::util::run_psql_statement(
+                guard.binaries.psql.as_path(),
+                sql_port,
+                superuser_username,
+                superuser_dbname,
+                "SHOW hba_file;",
+                guard.timeouts.command_timeout,
+                guard.timeouts.command_kill_wait_timeout,
+            )
+            .await?;
+            let ident_file_raw = super::util::run_psql_statement(
+                guard.binaries.psql.as_path(),
+                sql_port,
+                superuser_username,
+                superuser_dbname,
+                "SHOW ident_file;",
+                guard.timeouts.command_timeout,
+                guard.timeouts.command_kill_wait_timeout,
+            )
+            .await?;
+
+            let expected_hba = expected_hba_file.display().to_string();
+            let expected_ident = expected_ident_file.display().to_string();
+            if hba_file_raw.trim() != expected_hba.as_str() {
+                return Err(WorkerError::Message(format!(
+                    "expected SHOW hba_file to be `{expected_hba}`, got: {:?}",
+                    hba_file_raw.trim()
+                )));
+            }
+            if ident_file_raw.trim() != expected_ident.as_str() {
+                return Err(WorkerError::Message(format!(
+                    "expected SHOW ident_file to be `{expected_ident}`, got: {:?}",
+                    ident_file_raw.trim()
+                )));
+            }
+
+            let disk_hba = std::fs::read_to_string(&expected_hba_file).map_err(|err| {
+                WorkerError::Message(format!(
+                    "read managed hba file {} failed: {err}",
+                    expected_hba_file.display()
+                ))
+            })?;
+            if disk_hba != pg_hba_contents {
+                return Err(WorkerError::Message(format!(
+                    "managed hba file did not match configured content; file={} expected_len={} actual_len={}",
+                    expected_hba_file.display(),
+                    pg_hba_contents.len(),
+                    disk_hba.len(),
+                )));
+            }
+            let disk_ident = std::fs::read_to_string(&expected_ident_file).map_err(|err| {
+                WorkerError::Message(format!(
+                    "read managed ident file {} failed: {err}",
+                    expected_ident_file.display()
+                ))
+            })?;
+            if disk_ident != pg_ident_contents {
+                return Err(WorkerError::Message(format!(
+                    "managed ident file did not match configured content; file={} expected_len={} actual_len={}",
+                    expected_ident_file.display(),
+                    pg_ident_contents.len(),
+                    disk_ident.len(),
+                )));
+            }
+
+            let init_key = format!("/{}/init", config.scope.trim_matches('/'));
+            let config_key = format!("/{}/config", config.scope.trim_matches('/'));
+            let mut etcd_client =
+                etcd_client::Client::connect(dcs_endpoints_for_check.clone(), None)
+                    .await
+                    .map_err(|err| {
+                        WorkerError::Message(format!("etcd connect for init/config check failed: {err}"))
+                    })?;
+            let init_response = etcd_client
+                .get(init_key.as_str(), None)
+                .await
+                .map_err(|err| WorkerError::Message(format!("etcd get init key failed: {err}")))?;
+            if init_response.kvs().is_empty() {
+                return Err(WorkerError::Message(format!(
+                    "expected init key to exist at {init_key}"
+                )));
+            }
+
+            let config_response = etcd_client
+                .get(config_key.as_str(), None)
+                .await
+                .map_err(|err| WorkerError::Message(format!("etcd get config key failed: {err}")))?;
+            let Some(kv) = config_response.kvs().first() else {
+                return Err(WorkerError::Message(format!(
+                    "expected config key to exist at {config_key}"
+                )));
+            };
+            let raw = std::str::from_utf8(kv.value()).map_err(|err| {
+                WorkerError::Message(format!("config value not utf8 at {config_key}: {err}"))
+            })?;
+            let decoded: serde_json::Value = serde_json::from_str(raw).map_err(|err| {
+                WorkerError::Message(format!(
+                    "config payload stored in etcd was not valid json at {config_key}: {err}"
+                ))
+            })?;
+            if decoded != dcs_init_payload {
+                return Err(WorkerError::Message(format!(
+                    "etcd config payload mismatch: expected={dcs_init_payload_json} got={raw}"
+                )));
+            }
         }
     }
 

@@ -1091,12 +1091,12 @@ mod tests {
                 },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "local all all trust\n".to_string(),
                     },
                 },
                 pg_ident: PgIdentConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "# empty\n".to_string(),
                     },
                 },
             },
@@ -1925,6 +1925,135 @@ mod tests {
             !response_text.contains("HTTP/1.1 200"),
             "expected plaintext request rejection in required mode, got: {response_text}"
         );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_tls_required_accepts_tls_with_production_tls_builder(
+    ) -> Result<(), WorkerError> {
+        let guard = NamespaceGuard::new("api-tls-required-prod-builder")?;
+        let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
+
+        let _material = write_tls_material(
+            namespace,
+            "required-prod-builder",
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
+        )?;
+
+        let tls_cfg = crate::config::TlsServerConfig {
+            mode: ApiTlsMode::Required,
+            identity: Some(crate::config::TlsServerIdentityConfig {
+                cert_chain: InlineOrPath::Inline {
+                    content: fixture.valid_server.cert_pem.clone(),
+                },
+                private_key: InlineOrPath::Inline {
+                    content: fixture.valid_server.key_pem.clone(),
+                },
+            }),
+            client_auth: None,
+        };
+
+        let server_cfg = crate::tls::build_rustls_server_config(&tls_cfg).map_err(|err| {
+            WorkerError::Message(format!("build production rustls server config failed: {err}"))
+        })?;
+
+        let (mut ctx, _store) = build_ctx(None).await?;
+        ctx.configure_tls(ApiTlsMode::Required, server_cfg)?;
+
+        let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        let (status, _body) = send_tls_request(
+            &mut ctx,
+            client_cfg,
+            "localhost",
+            format_get("/fallback/cluster", None),
+            None,
+        )
+        .await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_mtls_required_works_with_production_tls_builder() -> Result<(), WorkerError> {
+        let guard = NamespaceGuard::new("api-mtls-required-prod-builder")?;
+        let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
+
+        let _material_server = write_tls_material(
+            namespace,
+            "mtls-server-prod-builder",
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
+        )?;
+        let _material_trusted = write_tls_material(
+            namespace,
+            "mtls-trusted-client-prod-builder",
+            Some(fixture.trusted_client_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.trusted_client.cert_pem.as_bytes()),
+            Some(fixture.trusted_client.key_pem.as_bytes()),
+        )?;
+        let _material_untrusted = write_tls_material(
+            namespace,
+            "mtls-untrusted-client-prod-builder",
+            Some(fixture.untrusted_client_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.untrusted_client.cert_pem.as_bytes()),
+            Some(fixture.untrusted_client.key_pem.as_bytes()),
+        )?;
+
+        let tls_cfg = crate::config::TlsServerConfig {
+            mode: ApiTlsMode::Required,
+            identity: Some(crate::config::TlsServerIdentityConfig {
+                cert_chain: InlineOrPath::Inline {
+                    content: fixture.valid_server.cert_pem.clone(),
+                },
+                private_key: InlineOrPath::Inline {
+                    content: fixture.valid_server.key_pem.clone(),
+                },
+            }),
+            client_auth: Some(crate::config::TlsClientAuthConfig {
+                client_ca: InlineOrPath::Inline {
+                    content: fixture.trusted_client_ca.cert.cert_pem.clone(),
+                },
+                require_client_cert: true,
+            }),
+        };
+
+        let server_cfg = crate::tls::build_rustls_server_config(&tls_cfg).map_err(|err| {
+            WorkerError::Message(format!("build production rustls server config failed: {err}"))
+        })?;
+
+        let (mut ctx, _store) = build_ctx(None).await?;
+        ctx.configure_tls(ApiTlsMode::Required, server_cfg)?;
+        ctx.set_require_client_cert(true);
+
+        let trusted_cfg = build_client_config(
+            &fixture.valid_server_ca.cert,
+            Some(&fixture.trusted_client),
+            Some(&fixture.trusted_client_ca.cert),
+        )?;
+        let (status, _body) = send_tls_request(
+            &mut ctx,
+            trusted_cfg,
+            "localhost",
+            format_get("/fallback/cluster", None),
+            None,
+        )
+        .await?;
+        assert!(status.contains("200"), "expected 200, got: {status}");
+
+        let missing_client_cert_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        expect_tls_request_rejected(&mut ctx, missing_client_cert_cfg, "localhost").await?;
+
+        let untrusted_client_cfg = build_client_config(
+            &fixture.valid_server_ca.cert,
+            Some(&fixture.untrusted_client),
+            Some(&fixture.untrusted_client_ca.cert),
+        )?;
+        expect_tls_request_rejected(&mut ctx, untrusted_client_cfg, "localhost").await?;
         Ok(())
     }
 

@@ -471,6 +471,18 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         "postgres.tls.identity.private_key",
         &cfg.postgres.tls,
     )?;
+    validate_tls_client_auth_config(
+        "postgres.tls.client_auth",
+        "postgres.tls.client_auth.client_ca",
+        &cfg.postgres.tls,
+    )?;
+
+    validate_inline_or_path_non_empty("postgres.pg_hba.source", &cfg.postgres.pg_hba.source, false)?;
+    validate_inline_or_path_non_empty(
+        "postgres.pg_ident.source",
+        &cfg.postgres.pg_ident.source,
+        false,
+    )?;
 
     validate_non_empty_path("process.binaries.postgres", &cfg.process.binaries.postgres)?;
     validate_non_empty_path("process.binaries.pg_ctl", &cfg.process.binaries.pg_ctl)?;
@@ -604,6 +616,13 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         "api.security.tls.identity.private_key",
         &cfg.api.security.tls,
     )?;
+    validate_tls_client_auth_config(
+        "api.security.tls.client_auth",
+        "api.security.tls.client_auth.client_ca",
+        &cfg.api.security.tls,
+    )?;
+
+    validate_dcs_init_config(cfg)?;
 
     Ok(())
 }
@@ -693,6 +712,48 @@ fn validate_tls_server_config(
 
     validate_inline_or_path_non_empty(cert_chain_field, &identity.cert_chain, false)?;
     validate_inline_or_path_non_empty(private_key_field, &identity.private_key, false)?;
+    Ok(())
+}
+
+fn validate_tls_client_auth_config(
+    client_auth_field: &'static str,
+    client_ca_field: &'static str,
+    cfg: &TlsServerConfig,
+) -> Result<(), ConfigError> {
+    let Some(client_auth) = cfg.client_auth.as_ref() else {
+        return Ok(());
+    };
+
+    if matches!(cfg.mode, crate::config::ApiTlsMode::Disabled) {
+        return Err(ConfigError::Validation {
+            field: client_auth_field,
+            message: "must not be configured when tls.mode is disabled".to_string(),
+        });
+    }
+
+    validate_inline_or_path_non_empty(client_ca_field, &client_auth.client_ca, false)?;
+    Ok(())
+}
+
+fn validate_dcs_init_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    let Some(init) = cfg.dcs.init.as_ref() else {
+        return Ok(());
+    };
+
+    validate_non_empty("dcs.init.payload_json", init.payload_json.as_str())?;
+
+    let _: serde_json::Value =
+        serde_json::from_str(init.payload_json.as_str()).map_err(|err| ConfigError::Validation {
+            field: "dcs.init.payload_json",
+            message: format!("must be valid JSON: {err}"),
+        })?;
+
+    let _: RuntimeConfig =
+        serde_json::from_str(init.payload_json.as_str()).map_err(|err| ConfigError::Validation {
+            field: "dcs.init.payload_json",
+            message: format!("must decode as a RuntimeConfig JSON document: {err}"),
+        })?;
+
     Ok(())
 }
 
@@ -795,12 +856,12 @@ fn validate_inline_or_path_non_empty(
                     },
                     pg_hba: PgHbaConfig {
                         source: InlineOrPath::Inline {
-                            content: String::new(),
+                            content: "local all all trust\n".to_string(),
                         },
                     },
                     pg_ident: PgIdentConfig {
                         source: InlineOrPath::Inline {
-                            content: String::new(),
+                            content: "# empty\n".to_string(),
                         },
                     },
                 },
@@ -1109,8 +1170,8 @@ local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "pref
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
-pg_hba = { source = { content = "" } }
-pg_ident = { source = { content = "" } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
 unknown = 10
 
 [dcs]
@@ -1172,8 +1233,8 @@ local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "pref
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
-pg_hba = { source = { content = "" } }
-pg_ident = { source = { content = "" } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]
@@ -1230,8 +1291,8 @@ rewind_source_port = 5432
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
-pg_hba = { source = { content = "" } }
-pg_ident = { source = { content = "" } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]

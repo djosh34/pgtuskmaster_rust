@@ -121,12 +121,12 @@ fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
             },
             pg_hba: PgHbaConfig {
                 source: InlineOrPath::Inline {
-                    content: String::new(),
+                    content: "local all all trust\n".to_string(),
                 },
             },
             pg_ident: PgIdentConfig {
                 source: InlineOrPath::Inline {
-                    content: String::new(),
+                    content: "# empty\n".to_string(),
                 },
             },
         },

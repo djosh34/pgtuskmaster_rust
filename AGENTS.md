@@ -27,6 +27,7 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 ## Cross application applicable learnings
 - ... (add here)
 - When moving `pg_basebackup` / `pg_rewind` to use configured non-`postgres` role usernames, real HA e2e must ensure those roles exist on the elected primary *before* starting clone nodes (e.g. `replicator` with `LOGIN REPLICATION`; `rewinder` often needs `SUPERUSER` for `pg_rewind`).
+- If you override Postgres auth via managed `hba_file=...`, remember replication clients (`pg_basebackup`, `replication` DSNs) do **not** match `database=all`; include explicit `host replication <user> ...` rules or basebackup will fail with auth errors.
 - When reading secrets from files for env vars (e.g. `PGPASSWORD`), trim trailing `\n`/`\r` (`trim_end_matches(['\n', '\r'])`) so newline-terminated files don’t break auth and clippy stays clean.
 - When running shell commands that include markdown backticks (for example searching for `` `make test` `` in tasks), always wrap the regex in single quotes; backticks inside double quotes trigger shell command substitution and can accidentally run `make test`.
 - This workspace’s `rg` build may not include PCRE2; avoid `rg -P` and prefer Rust-regex-compatible patterns.

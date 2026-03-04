@@ -12,7 +12,8 @@ use std::{
 };
 
 use etcd_client::{
-    Client, EventType, GetOptions, WatchOptions, WatchResponse, WatchStream, Watcher,
+    Client, Compare, CompareOp, EventType, GetOptions, Txn, TxnOp, WatchOptions, WatchResponse,
+    WatchStream, Watcher,
 };
 
 use super::store::{DcsStore, DcsStoreError, WatchEvent, WatchOp};
@@ -25,6 +26,11 @@ enum WorkerCommand {
         path: String,
         value: String,
         response_tx: mpsc::Sender<Result<(), DcsStoreError>>,
+    },
+    PutIfAbsent {
+        path: String,
+        value: String,
+        response_tx: mpsc::Sender<Result<bool, DcsStoreError>>,
     },
     Delete {
         path: String,
@@ -92,6 +98,27 @@ impl EtcdDcsStore {
             }
         }
     }
+
+    pub(crate) fn put_path_if_absent(
+        &mut self,
+        path: &str,
+        value: String,
+    ) -> Result<bool, DcsStoreError> {
+        let (response_tx, response_rx) = mpsc::channel::<Result<bool, DcsStoreError>>();
+        self.command_tx
+            .send(WorkerCommand::PutIfAbsent {
+                path: path.to_string(),
+                value,
+                response_tx,
+            })
+            .map_err(|err| {
+                DcsStoreError::Io(format!("send put-if-absent command failed: {err}"))
+            })?;
+
+        response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
+            DcsStoreError::Io(format!("timed out waiting for put-if-absent response: {err}"))
+        })?
+    }
 }
 
 fn run_worker_loop(
@@ -143,6 +170,25 @@ fn run_worker_loop(
                             let result =
                                 execute_write(&endpoints, &mut client, &healthy, &path, value)
                                     .await;
+                            if result.is_err() {
+                                _watcher = None;
+                                watch_stream = None;
+                            }
+                            let _ = response_tx.send(result);
+                        }
+                        WorkerCommand::PutIfAbsent {
+                            path,
+                            value,
+                            response_tx,
+                        } => {
+                            let result = execute_put_if_absent(
+                                &endpoints,
+                                &mut client,
+                                &healthy,
+                                &path,
+                                value,
+                            )
+                            .await;
                             if result.is_err() {
                                 _watcher = None;
                                 watch_stream = None;
@@ -284,6 +330,41 @@ async fn execute_delete(
         Ok(_) => {
             healthy.store(true, Ordering::SeqCst);
             Ok(())
+        }
+        Err(err) => {
+            healthy.store(false, Ordering::SeqCst);
+            *client = None;
+            Err(err)
+        }
+    }
+}
+
+async fn execute_put_if_absent(
+    endpoints: &[String],
+    client: &mut Option<Client>,
+    healthy: &Arc<AtomicBool>,
+    path: &str,
+    value: String,
+) -> Result<bool, DcsStoreError> {
+    if client.is_none() {
+        *client = Some(connect_client(endpoints).await?);
+    }
+
+    let Some(active_client) = client.as_mut() else {
+        healthy.store(false, Ordering::SeqCst);
+        return Err(DcsStoreError::Io(
+            "etcd client unavailable for put-if-absent".to_string(),
+        ));
+    };
+
+    let compare = Compare::version(path, CompareOp::Equal, 0);
+    let then_put = TxnOp::put(path, value, None);
+    let txn = Txn::new().when(vec![compare]).and_then(vec![then_put]);
+
+    match timeout_etcd("etcd txn", active_client.txn(txn)).await {
+        Ok(response) => {
+            healthy.store(true, Ordering::SeqCst);
+            Ok(response.succeeded())
         }
         Err(err) => {
             healthy.store(false, Ordering::SeqCst);
@@ -632,12 +713,12 @@ mod tests {
                 },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "local all all trust\n".to_string(),
                     },
                 },
                 pg_ident: PgIdentConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "# empty\n".to_string(),
                     },
                 },
             },
@@ -800,6 +881,63 @@ mod tests {
                 path.as_str(),
                 Duration::from_secs(5),
             )?;
+
+            Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn etcd_store_put_if_absent_claims_only_once_and_does_not_overwrite() -> TestResult {
+        let fixture = RealEtcdFixture::spawn("dcs-etcd-store-put-if-absent", "scope-put").await?;
+
+        let fixture = fixture;
+        let result: TestResult = async {
+            let path_init = format!("/{}/init", fixture.scope);
+            let path_config = format!("/{}/config", fixture.scope);
+
+            let mut store_a = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut store_b = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+
+            let claimed_a = store_a.put_path_if_absent(path_init.as_str(), "init-a".to_string())?;
+            let claimed_b = store_b.put_path_if_absent(path_init.as_str(), "init-b".to_string())?;
+            if claimed_a == claimed_b {
+                return Err(boxed_error(format!(
+                    "expected exactly one init claim to succeed, got claimed_a={claimed_a} claimed_b={claimed_b}"
+                )));
+            }
+
+            let seeded = store_a.put_path_if_absent(path_config.as_str(), "config-v1".to_string())?;
+            if !seeded {
+                return Err(boxed_error("expected config seed to succeed on first write"));
+            }
+            let seeded_again =
+                store_b.put_path_if_absent(path_config.as_str(), "config-v2".to_string())?;
+            if seeded_again {
+                return Err(boxed_error(
+                    "expected config seed to be rejected when key already exists",
+                ));
+            }
+
+            let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
+                .await
+                .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
+            let response = client
+                .get(path_config.as_str(), None)
+                .await
+                .map_err(|err| boxed_error(format!("etcd get config failed: {err}")))?;
+            let Some(kv) = response.kvs().first() else {
+                return Err(boxed_error("expected config key to exist"));
+            };
+            let value = std::str::from_utf8(kv.value())
+                .map_err(|err| boxed_error(format!("config value not utf8: {err}")))?;
+            if value != "config-v1" {
+                return Err(boxed_error(format!(
+                    "expected config to remain 'config-v1', got: {value:?}"
+                )));
+            }
 
             Ok(())
         }

@@ -19,6 +19,7 @@ httparse = "1.10.1"
 etcd-client = "0.14.1"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
 rustls = { version = "0.23.28", features = ["ring"] }
+rustls-pemfile = "2.2.0"
 tokio-rustls = "0.26.4"
 
 [target.'cfg(unix)'.dependencies]

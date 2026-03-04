@@ -14,7 +14,9 @@ pub(crate) mod debug_api;
 pub(crate) mod ha;
 pub(crate) mod logging;
 pub mod pginfo;
+pub(crate) mod postgres_managed;
 pub(crate) mod process;
+pub(crate) mod tls;
 pub mod runtime;
 pub mod state;
 #[cfg(any(test, feature = "test-harness"))]

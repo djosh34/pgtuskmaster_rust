@@ -150,13 +150,13 @@ fn plan_startup(
     let data_dir_state = inspect_data_dir(&cfg.postgres.data_dir)?;
     let cache = probe_dcs_cache(cfg).ok();
 
-    Ok(select_startup_mode(
+    select_startup_mode(
         data_dir_state,
         cache.as_ref(),
         &cfg.cluster.member_id,
         process_defaults,
         cfg.postgres.connect_timeout_s,
-    ))
+    )
 }
 
 fn inspect_data_dir(data_dir: &Path) -> Result<DataDirState, RuntimeError> {
@@ -232,11 +232,15 @@ fn select_startup_mode(
     self_member_id: &str,
     process_defaults: &ProcessDispatchDefaults,
     connect_timeout_s: u32,
-) -> StartupMode {
+) -> Result<StartupMode, RuntimeError> {
     match data_dir_state {
-        DataDirState::Existing => StartupMode::ResumeExisting,
+        DataDirState::Existing => Ok(StartupMode::ResumeExisting),
         DataDirState::Missing | DataDirState::Empty => {
-            let leader = cache.and_then(|snapshot| {
+            let init_lock_present = cache
+                .and_then(|snapshot| snapshot.init_lock.as_ref())
+                .is_some();
+
+            let leader_from_leader_key = cache.and_then(|snapshot| {
                 let leader_record = snapshot.leader.as_ref()?;
                 if leader_record.member_id.0 == self_member_id {
                     return None;
@@ -251,12 +255,38 @@ fn select_startup_mode(
                 }
             });
 
+            let leader_from_members = cache.and_then(|snapshot| {
+                if !init_lock_present {
+                    return None;
+                }
+                snapshot
+                    .members
+                    .values()
+                    .find(|member| {
+                        member.member_id.0 != self_member_id
+                            && member.role == MemberRole::Primary
+                            && member.sql == SqlStatus::Healthy
+                    })
+                    .map(|member| member.member_id.clone())
+            });
+
+            let leader = leader_from_leader_key.or(leader_from_members);
+
             match leader {
-                Some(leader_member_id) => StartupMode::CloneReplica {
+                Some(leader_member_id) => Ok(StartupMode::CloneReplica {
                     leader_member_id,
                     source: default_leader_source(process_defaults, connect_timeout_s),
-                },
-                None => StartupMode::InitializePrimary,
+                }),
+                None => {
+                    if init_lock_present {
+                        Err(RuntimeError::StartupPlanning(
+                            "cluster is already initialized (dcs init lock present) but no healthy primary is available for basebackup"
+                                .to_string(),
+                        ))
+                    } else {
+                        Ok(StartupMode::InitializePrimary)
+                    }
+                }
             }
         }
     }
@@ -271,6 +301,38 @@ fn default_leader_source(
     source
 }
 
+fn claim_dcs_init_lock_and_seed_config(cfg: &RuntimeConfig) -> Result<(), String> {
+    let init_path = format!("/{}/init", cfg.dcs.scope.trim_matches('/'));
+    let config_path = format!("/{}/config", cfg.dcs.scope.trim_matches('/'));
+
+    let mut store = EtcdDcsStore::connect(cfg.dcs.endpoints.clone(), &cfg.dcs.scope)
+        .map_err(|err| format!("connect failed: {err}"))?;
+
+    let encoded_init = serde_json::to_string(&crate::dcs::state::InitLockRecord {
+        holder: MemberId(cfg.cluster.member_id.clone()),
+    })
+    .map_err(|err| format!("encode init lock record failed: {err}"))?;
+
+    let claimed = store
+        .put_path_if_absent(init_path.as_str(), encoded_init)
+        .map_err(|err| format!("init lock write failed at `{init_path}`: {err}"))?;
+    if !claimed {
+        return Err(format!(
+            "cluster already initialized (init lock exists at `{init_path}`)"
+        ));
+    }
+
+    if let Some(init_cfg) = cfg.dcs.init.as_ref() {
+        if init_cfg.write_on_bootstrap {
+            let _seeded = store
+                .put_path_if_absent(config_path.as_str(), init_cfg.payload_json.clone())
+                .map_err(|err| format!("seed config failed at `{config_path}`: {err}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 async fn execute_startup(
     cfg: &RuntimeConfig,
     process_defaults: &ProcessDispatchDefaults,
@@ -281,6 +343,9 @@ async fn execute_startup(
 
     match startup_mode {
         StartupMode::InitializePrimary => {
+            claim_dcs_init_lock_and_seed_config(cfg).map_err(|err| {
+                RuntimeError::StartupExecution(format!("dcs init lock claim failed: {err}"))
+            })?;
             run_startup_job(
                 cfg,
                 ProcessJobKind::Bootstrap(BootstrapSpec {
@@ -359,6 +424,9 @@ async fn run_start_job(
     process_defaults: &ProcessDispatchDefaults,
     log: &crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
+    let managed = crate::postgres_managed::materialize_managed_postgres_config(cfg).map_err(|err| {
+        RuntimeError::StartupExecution(format!("materialize managed postgres config failed: {err}"))
+    })?;
     run_startup_job(
         cfg,
         ProcessJobKind::StartPostgres(StartPostgresSpec {
@@ -367,6 +435,7 @@ async fn run_start_job(
             port: process_defaults.postgres_port,
             socket_dir: process_defaults.socket_dir.clone(),
             log_file: process_defaults.log_file.clone(),
+            extra_postgres_settings: managed.extra_settings,
             wait_seconds: Some(30),
             timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
         }),
@@ -658,6 +727,16 @@ async fn run_workers(
         })?;
     let mut api_ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(api_store));
     api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
+    let server_tls = crate::tls::build_rustls_server_config(&cfg.api.security.tls)
+        .map_err(|err| RuntimeError::Worker(format!("api tls config build failed: {err}")))?;
+    api_ctx
+        .configure_tls(cfg.api.security.tls.mode, server_tls)
+        .map_err(|err| RuntimeError::Worker(format!("api tls configure failed: {err}")))?;
+    let require_client_cert = match cfg.api.security.tls.client_auth.as_ref() {
+        Some(auth) => auth.require_client_cert,
+        None => false,
+    };
+    api_ctx.set_require_client_cert(require_client_cert);
 
     tokio::try_join!(
         crate::pginfo::worker::run(pg_ctx),
@@ -794,12 +873,12 @@ mod tests {
                 },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "local all all trust\n".to_string(),
                     },
                 },
                 pg_ident: PgIdentConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "# empty\n".to_string(),
                     },
                 },
             },
@@ -921,7 +1000,8 @@ mod tests {
     }
 
     #[test]
-    fn select_startup_mode_prefers_clone_when_foreign_healthy_leader_exists() {
+    fn select_startup_mode_prefers_clone_when_foreign_healthy_leader_exists(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = sample_runtime_config();
         let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
 
@@ -958,7 +1038,7 @@ mod tests {
             "node-a",
             &defaults,
             cfg.postgres.connect_timeout_s,
-        );
+        )?;
 
         assert!(matches!(mode, StartupMode::CloneReplica { .. }));
         if let StartupMode::CloneReplica {
@@ -972,10 +1052,12 @@ mod tests {
                 default_leader_source(&defaults, cfg.postgres.connect_timeout_s)
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn select_startup_mode_uses_initialize_when_no_leader_evidence() {
+    fn select_startup_mode_uses_initialize_when_no_leader_evidence(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = sample_runtime_config();
         let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
 
@@ -985,13 +1067,15 @@ mod tests {
             "node-a",
             &defaults,
             cfg.postgres.connect_timeout_s,
-        );
+        )?;
 
         assert_eq!(mode, StartupMode::InitializePrimary);
+        Ok(())
     }
 
     #[test]
-    fn select_startup_mode_uses_resume_when_pgdata_exists() {
+    fn select_startup_mode_uses_resume_when_pgdata_exists() -> Result<(), Box<dyn std::error::Error>>
+    {
         let cfg = sample_runtime_config();
         let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
         let mode = select_startup_mode(
@@ -1000,8 +1084,82 @@ mod tests {
             "node-a",
             &defaults,
             cfg.postgres.connect_timeout_s,
-        );
+        )?;
         assert_eq!(mode, StartupMode::ResumeExisting);
+        Ok(())
+    }
+
+    #[test]
+    fn select_startup_mode_rejects_initialize_when_init_lock_present(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = sample_runtime_config();
+        let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
+
+        let cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: cfg.clone(),
+            init_lock: Some(crate::dcs::state::InitLockRecord {
+                holder: MemberId("node-other".to_string()),
+            }),
+        };
+
+        let result = select_startup_mode(
+            DataDirState::Empty,
+            Some(&cache),
+            "node-a",
+            &defaults,
+            cfg.postgres.connect_timeout_s,
+        );
+
+        assert!(matches!(result, Err(super::RuntimeError::StartupPlanning(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn select_startup_mode_uses_member_records_when_init_lock_present_and_leader_missing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = sample_runtime_config();
+        let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
+
+        let primary_id = MemberId("node-b".to_string());
+        let mut members = BTreeMap::new();
+        members.insert(
+            primary_id.clone(),
+            MemberRecord {
+                member_id: primary_id.clone(),
+                role: MemberRole::Primary,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+
+        let cache = DcsCache {
+            members,
+            leader: None,
+            switchover: None,
+            config: cfg.clone(),
+            init_lock: Some(crate::dcs::state::InitLockRecord {
+                holder: MemberId("node-init".to_string()),
+            }),
+        };
+
+        let mode = select_startup_mode(
+            DataDirState::Empty,
+            Some(&cache),
+            "node-a",
+            &defaults,
+            cfg.postgres.connect_timeout_s,
+        )?;
+
+        assert!(matches!(mode, StartupMode::CloneReplica { .. }));
+        Ok(())
     }
 
     #[test]

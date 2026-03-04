@@ -21,6 +21,8 @@ use super::{
 pub(crate) enum ActionDispatchError {
     #[error("process send failed for action `{action:?}`: {message}")]
     ProcessSend { action: ActionId, message: String },
+    #[error("managed config materialization failed for action `{action:?}`: {message}")]
+    ManagedConfig { action: ActionId, message: String },
     #[error("dcs write failed for action `{action:?}` at `{path}`: {message}")]
     DcsWrite {
         action: ActionId,
@@ -143,6 +145,19 @@ pub(crate) fn dispatch_actions(
                         continue;
                     }
                 };
+                let managed = match crate::postgres_managed::materialize_managed_postgres_config(
+                    &runtime_config,
+                )
+                    {
+                        Ok(value) => value,
+                        Err(err) => {
+                            errors.push(ActionDispatchError::ManagedConfig {
+                                action: action.id(),
+                                message: err.to_string(),
+                            });
+                            continue;
+                        }
+                    };
                 let request = ProcessJobRequest {
                     id: process_job_id(action, index, ctx.state.tick, now.0),
                     kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
@@ -151,6 +166,7 @@ pub(crate) fn dispatch_actions(
                         port: ctx.process_defaults.postgres_port,
                         socket_dir: ctx.process_defaults.socket_dir.clone(),
                         log_file: ctx.process_defaults.log_file.clone(),
+                        extra_postgres_settings: managed.extra_settings,
                         wait_seconds: None,
                         timeout_ms: None,
                     }),
@@ -545,12 +561,12 @@ mod tests {
                 },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "local all all trust\n".to_string(),
                     },
                 },
                 pg_ident: PgIdentConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "# empty\n".to_string(),
                     },
                 },
             },

@@ -476,12 +476,12 @@ mod tests {
                 },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "local all all trust\n".to_string(),
                     },
                 },
                 pg_ident: PgIdentConfig {
                     source: InlineOrPath::Inline {
-                        content: String::new(),
+                        content: "# empty\n".to_string(),
                     },
                 },
             },
@@ -1015,6 +1015,7 @@ mod tests {
                     port,
                     socket_dir: socket_dir.clone(),
                     log_file: log_file.clone(),
+                    extra_postgres_settings: std::collections::BTreeMap::new(),
                     wait_seconds: Some(30),
                     timeout_ms: Some(60_000),
                 }),

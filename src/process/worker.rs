@@ -740,6 +740,20 @@ pub(crate) fn build_command(
                 ));
             }
             let wait_seconds = spec.wait_seconds.unwrap_or(30);
+            let mut option_tokens = vec![
+                "-h".to_string(),
+                spec.host.clone(),
+                "-p".to_string(),
+                spec.port.to_string(),
+                "-k".to_string(),
+                spec.socket_dir.display().to_string(),
+            ];
+            for (key, value) in &spec.extra_postgres_settings {
+                validate_postgres_setting("start_postgres.extra_postgres_settings", key, value)?;
+                option_tokens.push("-c".to_string());
+                option_tokens.push(format!("{key}={value}"));
+            }
+            let options = render_pg_ctl_option_string(&option_tokens)?;
             let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
                 program: program.clone(),
@@ -749,12 +763,7 @@ pub(crate) fn build_command(
                     "-l".to_string(),
                     spec.log_file.display().to_string(),
                     "-o".to_string(),
-                    format!(
-                        "-h {} -p {} -k {}",
-                        spec.host,
-                        spec.port,
-                        spec.socket_dir.display()
-                    ),
+                    options,
                     "start".to_string(),
                     "-w".to_string(),
                     "-t".to_string(),
@@ -801,6 +810,20 @@ pub(crate) fn build_command(
                 ));
             }
             let wait_seconds = spec.wait_seconds.unwrap_or(30);
+            let mut option_tokens = vec![
+                "-h".to_string(),
+                spec.host.clone(),
+                "-p".to_string(),
+                spec.port.to_string(),
+                "-k".to_string(),
+                spec.socket_dir.display().to_string(),
+            ];
+            for (key, value) in &spec.extra_postgres_settings {
+                validate_postgres_setting("restart_postgres.extra_postgres_settings", key, value)?;
+                option_tokens.push("-c".to_string());
+                option_tokens.push(format!("{key}={value}"));
+            }
+            let options = render_pg_ctl_option_string(&option_tokens)?;
             let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
                 program: program.clone(),
@@ -810,12 +833,7 @@ pub(crate) fn build_command(
                     "-l".to_string(),
                     spec.log_file.display().to_string(),
                     "-o".to_string(),
-                    format!(
-                        "-h {} -p {} -k {}",
-                        spec.host,
-                        spec.port,
-                        spec.socket_dir.display()
-                    ),
+                    options,
                     "restart".to_string(),
                     "-m".to_string(),
                     spec.mode.as_pg_ctl_arg().to_string(),
@@ -895,6 +913,75 @@ fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), P
         )));
     }
     Ok(())
+}
+
+fn validate_postgres_setting(
+    field: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), ProcessError> {
+    if key.trim().is_empty() {
+        return Err(ProcessError::InvalidSpec(format!(
+            "{field} postgres setting key must not be empty"
+        )));
+    }
+    for ch in key.chars() {
+        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-') {
+            return Err(ProcessError::InvalidSpec(format!(
+                "{field} invalid postgres setting key `{key}`"
+            )));
+        }
+    }
+
+    if value.contains('\0') || value.contains('\n') || value.contains('\r') {
+        return Err(ProcessError::InvalidSpec(format!(
+            "{field} postgres setting `{key}` contains invalid characters"
+        )));
+    }
+
+    Ok(())
+}
+
+fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError> {
+    let mut out = String::new();
+    for (index, raw) in tokens.iter().enumerate() {
+        let escaped = escape_pg_ctl_option_token(raw.as_str())?;
+        if index > 0 {
+            out.push(' ');
+        }
+        out.push_str(escaped.as_str());
+    }
+    Ok(out)
+}
+
+fn escape_pg_ctl_option_token(token: &str) -> Result<String, ProcessError> {
+    if token.is_empty() {
+        return Err(ProcessError::InvalidSpec(
+            "pg_ctl option token must not be empty".to_string(),
+        ));
+    }
+    if token.contains('\0') || token.contains('\n') || token.contains('\r') {
+        return Err(ProcessError::InvalidSpec(
+            "pg_ctl option token contains invalid characters".to_string(),
+        ));
+    }
+
+    let needs_quotes = token.chars().any(|ch| ch.is_ascii_whitespace());
+    if !needs_quotes {
+        return Ok(token.to_string());
+    }
+
+    let mut out = String::with_capacity(token.len().saturating_add(2));
+    out.push('"');
+    for ch in token.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1006,12 +1093,15 @@ mod tests {
     }
 
     fn sample_start_spec() -> StartPostgresSpec {
+        use std::collections::BTreeMap;
+
         StartPostgresSpec {
             data_dir: PathBuf::from("/tmp/node/data"),
             host: "127.0.0.1".to_string(),
             port: 5544,
             socket_dir: PathBuf::from("/tmp/node/socket"),
             log_file: PathBuf::from("/tmp/node/postgres.log"),
+            extra_postgres_settings: BTreeMap::new(),
             wait_seconds: Some(1),
             timeout_ms: Some(1_000),
         }
@@ -1164,6 +1254,92 @@ mod tests {
         if !spec.env.is_empty() {
             return Err(format!("expected no env vars, got {:?}", spec.env));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn build_command_start_postgres_includes_extra_settings_deterministically() -> Result<(), String>
+    {
+        let config = sample_config();
+        let mut extra_postgres_settings = std::collections::BTreeMap::new();
+        // Insert out of order to ensure deterministic ordering (BTreeMap order).
+        extra_postgres_settings.insert(
+            "ident_file".to_string(),
+            "/tmp/managed/ident.conf".to_string(),
+        );
+        extra_postgres_settings.insert("hba_file".to_string(), "/tmp/managed/hba.conf".to_string());
+
+        let spec = build_command(
+            &config,
+            &JobId("job-start".to_string()),
+            &ProcessJobKind::StartPostgres(StartPostgresSpec {
+                extra_postgres_settings,
+                ..sample_start_spec()
+            }),
+            false,
+        )
+        .map_err(|err| format!("build_command failed: {err}"))?;
+
+        let expected = vec![
+            "-D".to_string(),
+            "/tmp/node/data".to_string(),
+            "-l".to_string(),
+            "/tmp/node/postgres.log".to_string(),
+            "-o".to_string(),
+            "-h 127.0.0.1 -p 5544 -k /tmp/node/socket -c hba_file=/tmp/managed/hba.conf -c ident_file=/tmp/managed/ident.conf".to_string(),
+            "start".to_string(),
+            "-w".to_string(),
+            "-t".to_string(),
+            "1".to_string(),
+        ];
+        assert_eq!(spec.args, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn build_command_restart_postgres_includes_extra_settings_deterministically(
+    ) -> Result<(), String> {
+        let config = sample_config();
+        let mut extra_postgres_settings = std::collections::BTreeMap::new();
+        extra_postgres_settings.insert(
+            "ident_file".to_string(),
+            "/tmp/managed/ident.conf".to_string(),
+        );
+        extra_postgres_settings.insert("hba_file".to_string(), "/tmp/managed/hba.conf".to_string());
+
+        let spec = build_command(
+            &config,
+            &JobId("job-restart".to_string()),
+            &ProcessJobKind::RestartPostgres(RestartPostgresSpec {
+                data_dir: PathBuf::from("/tmp/node/data"),
+                host: "127.0.0.1".to_string(),
+                port: 5544,
+                socket_dir: PathBuf::from("/tmp/node/socket"),
+                log_file: PathBuf::from("/tmp/node/postgres.log"),
+                extra_postgres_settings,
+                mode: ShutdownMode::Fast,
+                wait_seconds: Some(1),
+                timeout_ms: Some(1_000),
+            }),
+            false,
+        )
+        .map_err(|err| format!("build_command failed: {err}"))?;
+
+        let expected = vec![
+            "-D".to_string(),
+            "/tmp/node/data".to_string(),
+            "-l".to_string(),
+            "/tmp/node/postgres.log".to_string(),
+            "-o".to_string(),
+            "-h 127.0.0.1 -p 5544 -k /tmp/node/socket -c hba_file=/tmp/managed/hba.conf -c ident_file=/tmp/managed/ident.conf".to_string(),
+            "restart".to_string(),
+            "-m".to_string(),
+            "fast".to_string(),
+            "-w".to_string(),
+            "-t".to_string(),
+            "1".to_string(),
+        ];
+        assert_eq!(spec.args, expected);
         Ok(())
     }
 
@@ -1694,6 +1870,7 @@ mod tests {
                             port: fixture.port,
                             socket_dir: fixture.socket_dir.clone(),
                             log_file: fixture.log_file.clone(),
+                            extra_postgres_settings: std::collections::BTreeMap::new(),
                             wait_seconds: Some(45),
                             timeout_ms: Some(70_000),
                         }),
@@ -2060,6 +2237,7 @@ mod tests {
                     port: fixture.port,
                     socket_dir: fixture.socket_dir.clone(),
                     log_file: fixture.log_file.clone(),
+                    extra_postgres_settings: std::collections::BTreeMap::new(),
                     mode: ShutdownMode::Fast,
                     wait_seconds: Some(20),
                     timeout_ms: Some(20_000),
