@@ -29,4 +29,4 @@ A strict sequence can be slower than forceful manual promotion. The benefit is l
 
 ## When this matters in operations
 
-If a switchover stalls, treat it as a precondition failure, not immediately as a control-plane bug. Check trust posture, node readiness, and leader lease state first.
+If a switchover stalls, treat it as a precondition wait while trust, lease ownership/state, and PostgreSQL readiness constraints are enforced. Check trust posture, node reachability/readiness, and leader lease state first.

@@ -14,6 +14,7 @@ use crate::{
         self,
         args::Cli,
         client::{AcceptedResponse as CliAcceptedResponse, CliApiClient, HaStateResponse},
+        error::CliError,
     },
     state::WorkerError,
     test_harness::ha_e2e,
@@ -1198,12 +1199,56 @@ impl ClusterFixture {
             "--requested-by".to_string(),
             requested_by.to_string(),
         ];
-        let cli = Cli::try_parse_from(argv).map_err(|err| {
-            WorkerError::Message(format!("parse switchover CLI args failed: {err}"))
-        })?;
-        let output = cli::run(cli).await.map_err(|err| {
-            WorkerError::Message(format!("run switchover CLI command failed: {err}"))
-        })?;
+
+        // The real-binary HA matrix can sporadically hit transient HTTP transport errors while
+        // submitting the switchover request. Fail fast on non-transport errors, but retry a few
+        // times on transport failures to avoid flaking a long-running scenario on a single
+        // connection hiccup.
+        let max_transport_attempts: usize = 5;
+        let mut last_transport_error: Option<String> = None;
+        let mut output: Option<String> = None;
+
+        for attempt in 1..=max_transport_attempts {
+            let cli = Cli::try_parse_from(argv.clone()).map_err(|err| {
+                WorkerError::Message(format!("parse switchover CLI args failed: {err}"))
+            })?;
+            match cli::run(cli).await {
+                Ok(out) => {
+                    output = Some(out);
+                    break;
+                }
+                Err(err) => match err {
+                    CliError::Transport(_) => {
+                        let err_string = err.to_string();
+                        last_transport_error = Some(err_string.clone());
+                        self.record(format!(
+                            "cli request transport failure attempt {attempt}/{max_transport_attempts}: node={node_id} requested_by={requested_by} err={err_string}"
+                        ));
+                        if attempt < max_transport_attempts {
+                            let backoff_ms = 200_u64.saturating_mul(attempt as u64);
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        }
+                    }
+                    _ => {
+                        return Err(WorkerError::Message(format!(
+                            "run switchover CLI command failed: {err}"
+                        )));
+                    }
+                },
+            }
+        }
+
+        let output = match output {
+            Some(out) => out,
+            None => {
+                let last = last_transport_error.unwrap_or_else(|| "transport error".to_string());
+                return Err(WorkerError::Message(format!(
+                    "run switchover CLI command failed after {max_transport_attempts} attempt(s): {last}"
+                )));
+            }
+        };
+
         let accepted =
             serde_json::from_str::<CliAcceptedResponse>(output.as_str()).map_err(|err| {
                 WorkerError::Message(format!(

@@ -19,7 +19,7 @@ flowchart LR
 
 ## Why this exists
 
-A single-source decision model prevents hidden decision channels. Every major transition can be traced back to explicit observed inputs.
+The HA worker uses a single decision function to map explicit inputs (PostgreSQL view, DCS cache/trust, current phase) into a next phase and action set. Operator control inputs (like switchover requests) enter the same pipeline via DCS rather than bypassing it.
 
 ## Tradeoffs
 

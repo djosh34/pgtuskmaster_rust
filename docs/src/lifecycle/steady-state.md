@@ -5,7 +5,7 @@ After startup planning, the runtime enters continuous reconciliation. Each loop 
 In stable operation:
 - one member acts as primary
 - replicas follow the current leader
-- leader lease remains current
+- leader record is re-evaluated each HA loop based on current DCS trust and coordination records
 - switchover intent is empty unless requested
 
 ## Why this exists

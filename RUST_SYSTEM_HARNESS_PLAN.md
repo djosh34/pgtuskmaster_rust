@@ -589,7 +589,7 @@ pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, Ha
   - tokio-cron-scheduler 
     - integrated schedular of backups, and since it is 'integrated' and we have a dcs, you can choose who makes the backup (which node will do scheduling)
   - I say pgbackrest here, but we do need to think about how flexible to make this to support other backup programs
-  - but do integrate with pgbackrest as in, it being a default way including a binary path set in the config just like the other binaries
+  - but do integrate with pgbackrest as in, it being a default way including a binary path set in the config just like the other binaries and being included in docker container
 
 ## HA Admin CLI (`pgtuskmasterctl`)
 

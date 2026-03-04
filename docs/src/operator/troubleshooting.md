@@ -17,12 +17,12 @@ First checks:
 ## Node reports fail-safe unexpectedly
 
 Likely causes:
-- etcd endpoint instability
+- etcd bootstrap/connect/watch session setup failures or timeouts
 - scope mismatch across members
 - inconsistent membership/leader view
 
 First checks:
-- etcd endpoint health and latency
+- etcd transport/connect stability and timeouts
 - `[dcs].scope` consistency on all nodes
 - leader/member records in current scope
 
@@ -41,7 +41,7 @@ First checks:
 ## Rewind/bootstrap loops
 
 Likely causes:
-- rewind identity or privileges incorrect
+- rewind identity/auth misconfigured or database privileges insufficient
 - replication auth rules incomplete
 - source host/port for rewind is invalid
 
@@ -55,12 +55,12 @@ First checks:
 
 Likely causes:
 - overly aggressive timing parameters
-- unstable network to etcd
+- unstable etcd connectivity (watch invalidation and reconnect snapshots)
 - unstable PostgreSQL readiness signals
 
 First checks:
 - `[ha].loop_interval_ms` and `[ha].lease_ttl_ms`
-- network path to etcd endpoints
+- etcd connectivity to configured endpoints (or per-node proxy endpoints, if used)
 - local PostgreSQL logs and readiness probes
 
 ## Why this matters

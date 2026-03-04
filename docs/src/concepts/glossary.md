@@ -10,4 +10,4 @@
 - Fencing: safety behavior that reduces split-brain risk when conflicting evidence appears.
 - Bootstrap: initial data and role setup path at startup.
 - Rewind: divergence-recovery path using `pg_rewind`.
-- Bootstrap recovery: re-clone path when rewind is unsafe or not possible.
+- Bootstrap recovery: local reinitialization (`RunBootstrap` / `initdb`) when rewind is unsafe or fails; basebackup cloning is a separate startup path for joining an existing primary.

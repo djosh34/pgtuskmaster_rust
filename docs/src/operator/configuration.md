@@ -1,8 +1,8 @@
 # Configuration Guide
 
-This chapter starts with one recommended production profile and then explains each section in detail. The goal is to make field choices meaningful, not only syntactically valid.
+This chapter starts with a complete configuration example and then explains each section in detail. The goal is to make field choices meaningful, not only syntactically valid.
 
-## Recommended production profile (baseline)
+## Configuration example (baseline)
 
 ```toml
 config_version = "v2"
@@ -39,6 +39,7 @@ loop_interval_ms = 1000
 lease_ttl_ms = 10000
 
 [process]
+# Example paths: adjust to your PostgreSQL installation.
 binaries = {
   postgres = "/usr/pgsql-16/bin/postgres",
   pg_ctl = "/usr/pgsql-16/bin/pg_ctl",
@@ -89,13 +90,13 @@ Most severe incidents begin with implicit assumptions about identity, auth, or r
 
 - `local_conn_identity` is used for local SQL/control interactions.
 - `rewind_conn_identity` is used for rewind-related connectivity.
-- Operational effect: mismatched user identities will fail validation or later job execution.
-- PostgreSQL implication: rewind user privileges and auth paths must support `pg_rewind` safely.
+- Operational effect: mismatched user identities can fail validation or later job execution.
+- PostgreSQL implication: the rewinder role must be provisioned with enough privileges and correct auth for `pg_rewind`; privilege mistakes surface as runtime command/auth failures (not as a separate privilege validator in this codebase).
 
 ### PostgreSQL roles and auth
 
 - `roles.superuser`, `roles.replicator`, `roles.rewinder` define control identities.
-- Operational effect: missing replication-compatible auth in `pg_hba` causes basebackup and replication connection failures.
+- Operational effect: a common failure mode is missing replication-compatible auth in `pg_hba`, which causes basebackup and replication connection failures.
 - PostgreSQL implication: replication connections require explicit replication rules and do not match generic database rules.
 
 ### `[dcs]`
@@ -107,8 +108,8 @@ Most severe incidents begin with implicit assumptions about identity, auth, or r
 ### `[ha]`
 
 - `loop_interval_ms`: decision cadence.
-- `lease_ttl_ms`: leader lease freshness budget.
-- Operational effect: shorter loops detect change faster but increase control-plane activity; TTL influences sensitivity to lease expiration and failover timing.
+- `lease_ttl_ms`: validated guardrail (must be greater than `loop_interval_ms`).
+- Operational effect: shorter loops detect change faster but increase control-plane activity; `lease_ttl_ms` is currently enforced as a configuration constraint rather than a separately tunable lease-renewal loop.
 
 ### `[process]`
 
@@ -128,8 +129,8 @@ Most severe incidents begin with implicit assumptions about identity, auth, or r
 |---|---|---|
 | Startup fails with missing required secure field | incomplete v2 config | top-level and required nested blocks |
 | `pg_basebackup` auth failures | missing replication HBA rules | `pg_hba` replication entries |
-| Rewind jobs fail on permissions/auth | rewinder identity mismatch or privileges | `rewind_conn_identity` and role grants |
-| Node cannot find binaries | invalid `process.binaries` paths | absolute binary paths |
-| Trust drops repeatedly despite healthy PostgreSQL | etcd endpoint or scope mismatch | `[dcs]` endpoints and `scope` |
+| Rewind jobs fail on permissions/auth | rewinder identity mismatch, missing auth, or insufficient privileges | `rewind_conn_identity` wiring, rewinder auth, and DB grants (privilege failures surface at runtime) |
+| Node cannot find binaries | invalid `process.binaries` paths | `process.binaries` values (path correctness/executability) |
+| Trust drops repeatedly despite healthy PostgreSQL | DCS store is unhealthy (NotTrusted) or membership/leader invariants are inconsistent (FailSafe) | `[dcs]` endpoints and `scope`, plus DCS membership/leader consistency |
 
 For interface-level details, see [Interfaces / Node API](../interfaces/node-api.md) and [Interfaces / CLI Workflows](../interfaces/cli.md).

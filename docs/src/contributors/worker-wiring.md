@@ -4,16 +4,14 @@ Worker composition follows a clear direction: observation feeds decision, decisi
 
 ## High-level wiring
 
-```rust
-// Simplified shape: runtime wires workers with shared state channels.
-// Actual wiring includes config, versioned state, and cancellation handling.
-struct RuntimeWorkers {
-    pginfo: PgInfoWorker,
-    dcs: DcsWorker,
-    ha: HaWorker,
-    process: ProcessWorker,
-    api: ApiWorker,
-}
+```text
+Simplified shape: the runtime wires worker *contexts* with shared state channels.
+
+- pginfo: PostgreSQL observations
+- dcs: DCS cache + trust (started via `crate::dcs::worker::run(...)` using `DcsWorkerCtx`)
+- ha: HA decision loop (phase + actions)
+- process: bounded action execution
+- api: operator-facing HTTP surface
 ```
 
 The runtime starts workers with shared state receivers/senders and coordination store handles. Each worker owns one primary output state and consumes specific upstream inputs.

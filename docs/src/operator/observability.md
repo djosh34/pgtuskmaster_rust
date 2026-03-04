@@ -14,7 +14,7 @@ flowchart LR
 
 ## Why this exists
 
-No single surface explains HA behavior. Logs, API state, and DCS records together provide the full context for role decisions and blocked actions.
+No single surface explains HA behavior. Correlate `/ha/state` with debug payloads (like `/debug/verbose` when enabled), recent logs, and DCS record views rather than relying on any single view.
 
 ## Tradeoffs
 

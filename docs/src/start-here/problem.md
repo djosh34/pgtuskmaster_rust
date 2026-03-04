@@ -1,6 +1,8 @@
 # What Problem This Solves
 
-PostgreSQL high availability fails in predictable ways when operations rely on ad-hoc scripts and implicit assumptions. The common failure mode is not only outage duration. The larger risk is unsafe role changes under partial information, where two nodes can believe they should accept writes.
+PostgreSQL high availability fails in predictable ways when operations rely on ad-hoc scripts and implicit assumptions. The common failure mode is not only outage duration. The larger risk is unsafe role changes under partial information, which can lead to concurrent primaries.
+
+This implementation reduces that risk by funneling role changes through shared DCS-trust-aware HA logic that gates promotion and by validating no-dual-primary windows in failure tests.
 
 This system exists to make role coordination explicit. It turns leader selection, switchover intent, and health observations into an ongoing control loop instead of a one-time manual decision. Operators get a repeatable mechanism for planned and unplanned transitions, with clear constraints when trust in shared coordination degrades.
 

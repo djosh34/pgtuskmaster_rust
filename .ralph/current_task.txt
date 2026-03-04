@@ -1,1 +1,0 @@
-.ralph/tasks/story-operator-architecture-docs/02-task-post-rewrite-skeptical-claim-verification-with-spark.md

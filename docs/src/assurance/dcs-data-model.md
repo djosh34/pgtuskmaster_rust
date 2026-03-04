@@ -24,7 +24,7 @@ The DCS namespace is scoped under `/<scope>/...` and stores coordination records
 
 ## Why this exists
 
-Explicit ownership prevents hidden coordination side effects. If a record is wrong, operators and contributors can identify which component is responsible.
+Explicit ownership prevents hidden coordination side effects by scoping writes to specific key prefixes (and keeping write APIs path-disciplined). If a record is wrong, operators and contributors can identify which component is responsible.
 
 ## Tradeoffs
 

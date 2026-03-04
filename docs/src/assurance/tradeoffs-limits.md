@@ -11,7 +11,7 @@ Every HA design embodies tradeoffs. This system is explicit about prioritizing s
 ## Practical limits
 
 - Coordination quality depends on etcd health and consistent scope usage.
-- Recovery speed depends on rewind/bootstrap prerequisites and network access.
+- Recovery success (and time-to-recovery) is constrained by prerequisites like binary wiring, auth, and network reachability to the source primary, plus configured timeouts.
 - Incorrect auth or path config can block otherwise valid lifecycle transitions.
 
 ## Operational interpretation

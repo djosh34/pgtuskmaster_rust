@@ -13,7 +13,9 @@ flowchart TD
   HasData -->|yes| Resume[Resume existing data]
   HasData -->|no| HasLeader{Healthy leader evidence in DCS?}
   HasLeader -->|yes| Clone[Clone as replica]
-  HasLeader -->|no| Init[Initialize primary]
+  HasLeader -->|no| HasInitLock{Init lock present?}
+  HasInitLock -->|no| Init[Initialize primary]
+  HasInitLock -->|yes| Abort[Refuse init: cluster already initialized]
 ```
 
 ## Why this exists
@@ -22,8 +24,8 @@ Unsafe startup choices can create long-lived divergence. The planner exists to c
 
 ## Tradeoffs
 
-Startup may pause to gather enough evidence before action. That can feel slower than immediate initialization, but it avoids unsafe assumptions about leader availability and data lineage.
+Startup does one DCS cache probe before deciding a mode and then proceeds directly. It is single-pass plan selection, not a prolonged evidence-gathering loop.
 
 ## When this matters in operations
 
-Startup symptoms often determine later failover quality. If bootstrap repeatedly fails, verify binary paths, directory permissions, replication auth, and DCS scope consistency before forcing manual role assumptions.
+Startup symptoms often determine later failover quality. If bootstrap repeatedly fails, common causes include binary wiring, data directory permissions, replication auth, and DCS scope consistency; check these before forcing manual role assumptions.

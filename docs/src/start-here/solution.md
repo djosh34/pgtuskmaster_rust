@@ -23,8 +23,8 @@ Role changes are not single events. They are state transitions with precondition
 
 ## Tradeoffs
 
-A loop-based controller can look cautious, because it revalidates instead of rushing actions. That caution adds decision latency in some cases, but it prevents many unsafe transitions that appear fast only because they skip verification.
+A loop-based controller can look cautious, because it revalidates instead of rushing actions. The loop continuously re-runs decision from fresh state snapshots and uses explicit guards (trust, PostgreSQL reachability, leader availability, switchover intent), so transitions are controlled and repeatable. Safety behavior is bounded by transition logic and validated by fail-safe/fencing/switchover/idempotency tests.
 
 ## When this matters in operations
 
-During incidents, operators can reason about current behavior by asking three questions: what is the node observing, what decision did it make, and what action is blocked or running. That mental model maps directly to logs, API state, and DCS records.
+During incidents, operators can reason about current behavior by asking three questions: what is the node observing, what decision did it make, and what action is blocked or running. In practice, correlate `/ha/state` with debug payloads (`/debug/verbose` or `/debug/snapshot` when enabled), plus DCS record views and relevant logs.

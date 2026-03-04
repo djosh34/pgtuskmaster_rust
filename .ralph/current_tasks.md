@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 03:35:30 PM CET 2026
+Generated: Wed Mar  4 16:27:35 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -219,10 +219,82 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 **Path:** `.ralph/tasks/story-operator-architecture-docs/02-task-post-rewrite-skeptical-claim-verification-with-spark.md`
 
-## Task: Post-Rewrite Skeptical Claim Verification with 15+ Parallel Spark Subagents <status>not_started</status> <passes>false</passes>
+## Task: Post-Rewrite Skeptical Claim Verification with 15+ Parallel Spark Subagents <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** After the operator-doc transformation is complete, run a deep, adversarial verification of every claim in the docs using many independent `spark` subagents, and resolve all mismatches before finalizing docs.
+
+---
+
+**Path:** `.ralph/tasks/story-operator-architecture-docs/03-task-expand-contributor-docs-into-full-implementation-deep-dive.md`
+
+## Task: Expand Contributor Docs into a Full Implementation Deep Dive <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Rewrite the Contributors section into an in-depth engineering deep dive that explains how the code actually works, how modules connect, and how behavior flows through runtime paths, while keeping prose natural, readable, and technically precise.
+
+---
+
+**Path:** `.ralph/tasks/story-operator-architecture-docs/04-task-expand-non-contributor-docs-with-deep-subsubchapters.md`
+
+## Task: Expand Non-Contributor Docs with Deep Subsubchapters While Keeping Strong Overviews <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Vastly deepen the non-contributor documentation by adding long-form, detail-rich subsubchapters and flowing explanations, while preserving the existing high-level overview quality at chapter entry points.
+
+---
+
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/01-task-backup-provider-abstraction-and-pgbackrest-default.md`
+
+## Task: Introduce backup-provider abstraction with pgBackRest as the default provider <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Add a provider abstraction for backup/restore operations and ship pgBackRest as the first-class default integration with explicit runtime config and binary path support.
+
+---
+
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/02-task-managed-archive-recovery-bootstrap-config-takeover.md`
+
+## Task: Own archive/recovery command flow and inject managed config before recovery starts <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Make pgtuskmaster authoritative for archive and restore command behavior, and ensure config takeover happens before PostgreSQL recovery so restores never boot with unsafe/incompatible backup-era config files.
+
+---
+
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/03-task-cluster-restore-endpoint-and-safe-takeover-orchestration.md`
+
+## Task: Add cluster restore endpoint and safe takeover orchestration across HA/DCS <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Provide an admin API endpoint that forces a full restore takeover on one node and safely converges the entire cluster onto the restored timeline under normal pgtuskmaster HA control.
+
+---
+
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/04-task-pgbackrest-json-observability-metrics-and-api-surface.md`
+
+## Task: Build pgBackRest JSON observability with metrics, logs, and API visibility <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Ingest pgBackRest JSON output natively and expose backup/restore observability through structured logs, internal state snapshots, metrics/OTel signals, and API endpoints.
+
+---
+
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/05-task-distributed-backup-scheduler-and-runtime-packaging.md`
+
+## Task: Add distributed backup scheduling and runtime packaging for pgBackRest <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Integrate scheduled backups with tokio-cron-scheduler under DCS coordination, and ensure pgBackRest is available by default in runtime/container environments.
+
+---
+
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/06-task-exhaustive-pgbackrest-fixture-matrix-and-real-e2e.md`
+
+## Task: Build exhaustive fixture-driven pgBackRest test matrix across normal and edge restores <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Create a comprehensive real-binary test matrix that generates diverse backup fixtures and validates backup + restore + takeover behavior end-to-end with deterministic timing and strong diagnostics.
 
 ---
 
@@ -265,6 +337,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -289,15 +370,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
 
 ---
 
@@ -340,6 +412,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+
+---
+
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
@@ -355,16 +437,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
-
----
-
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
 
 ---
 

@@ -1,0 +1,17 @@
+node ./tools/docs-mermaid-lint.mjs
+./tools/docs-architecture-no-code-guard.sh
+env CARGO_INCREMENTAL="0" cargo clippy --all-targets --all-features -- -D warnings
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.92s
+# Strict restriction-lint pass for runtime library builds.
+env CARGO_INCREMENTAL="0" cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.25s
+# Strict restriction-lint pass for test targets.
+env CARGO_INCREMENTAL="0" cargo clippy --tests --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.38s
+# Skeptical all-target guard so restrictions are enforced uniformly.
+env CARGO_INCREMENTAL="0" cargo clippy --all-targets --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.46s

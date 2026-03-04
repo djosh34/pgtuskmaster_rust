@@ -78,3 +78,4 @@
 .ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md
 .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
 .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
+.ralph/tasks/story-operator-architecture-docs/02-task-post-rewrite-skeptical-claim-verification-with-spark.md

@@ -21,7 +21,7 @@ pub(crate) fn decide(world: &HaWorldView) -> HaDecision {
 
 ## Action categories
 
-- local process actions: start, stop, promote, demote, rewind, bootstrap
+- local process actions: start (start postgres), promote, demote, rewind, bootstrap (there is no HA-level stop action)
 - coordination actions: leader lease acquire/release, switchover intent clear
 
 ## Why this structure exists

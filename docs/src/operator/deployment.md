@@ -7,7 +7,7 @@ flowchart TB
   subgraph ETCD[etcd cluster]
     E1[(etcd)]
     E2[(etcd)]
-    E3[(etcd)]
+    EN[(...)]
   end
 
   subgraph N1[Node A]
@@ -49,6 +49,6 @@ During network partitions or etcd instability, nodes may enter conservative stat
 
 - Keep PostgreSQL data directories with strict required permissions.
 - Keep socket paths short and deterministic.
-- Validate that each node can reach every configured etcd endpoint.
+- Validate etcd reachability from each node (endpoints are config-driven; some topologies use per-node proxies rather than a single shared endpoint list).
 - Use consistent scope naming across all nodes in the same cluster.
 - Confirm API security posture before exposing operator endpoints.

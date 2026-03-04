@@ -1,6 +1,6 @@
 # Runtime Topology and Boundaries
 
-A node contains multiple specialized workers with bounded responsibilities. The system boundary is local PostgreSQL management plus DCS coordination.
+A node contains multiple specialized workers with bounded responsibilities. In practice it manages a local PostgreSQL instance and participates in DCS coordination, with additional API/debug/logging workers to expose state and operator controls.
 
 ```mermaid
 flowchart TB

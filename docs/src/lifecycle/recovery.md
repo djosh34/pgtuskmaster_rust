@@ -9,7 +9,7 @@ Common recovery paths:
 
 ## Why this exists
 
-A node that was previously primary can carry divergent history. Recovery ensures that rejoin behavior does not reintroduce stale or conflicting timelines.
+A node that was previously primary can carry divergent history. Recovery and rejoin behavior is driven by explicit process outcomes (success/failure/timeout) plus DCS trust and leader reachability, and it requires a recovery action before rejoin when divergence risk exists.
 
 ## Tradeoffs
 
@@ -17,4 +17,4 @@ Recovery work increases transition time and may require stronger prerequisites (
 
 ## When this matters in operations
 
-If a node repeatedly fails to rejoin, treat identity, replication auth, and rewind connectivity as first-class diagnostics. Do not force eligibility until recovery preconditions are satisfied.
+If a node repeatedly fails to rejoin, treat identity, replication auth, and rewind connectivity as first-class diagnostics. The runtime surfaces these issues through process job outcomes and errors; avoid forcing eligibility until recovery preconditions are satisfied.

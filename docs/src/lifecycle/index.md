@@ -11,4 +11,4 @@ Lifecycle order in this guide:
 5. Fail-safe and fencing
 6. Recovery and rejoin
 
-Use this section when behavior changes over time and you need to understand transition logic, not only static configuration.
+Use this section when behavior changes over time and you need to understand transition logic, not only static configuration. Treat implementation tests as the final source of truth for edge-case behavior.
