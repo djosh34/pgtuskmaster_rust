@@ -587,6 +587,60 @@ mod tests {
     }
 
     #[test]
+    fn refresh_put_then_reset_then_put_keeps_only_post_reset_state() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut cache = sample_cache();
+
+        let stale_json = serde_json::to_string(&crate::dcs::state::LeaderRecord {
+            member_id: MemberId("node-stale".to_string()),
+        })?;
+        let fresh_json = serde_json::to_string(&crate::dcs::state::LeaderRecord {
+            member_id: MemberId("node-fresh".to_string()),
+        })?;
+
+        let result = refresh_from_etcd_watch(
+            "scope-a",
+            &mut cache,
+            vec![
+                WatchEvent {
+                    op: WatchOp::Put,
+                    path: "/scope-a/leader".to_string(),
+                    value: Some(stale_json),
+                    revision: 1,
+                },
+                WatchEvent {
+                    op: WatchOp::Reset,
+                    path: "/scope-a".to_string(),
+                    value: None,
+                    revision: 2,
+                },
+                WatchEvent {
+                    op: WatchOp::Put,
+                    path: "/scope-a/leader".to_string(),
+                    value: Some(fresh_json),
+                    revision: 3,
+                },
+            ],
+        )?;
+
+        assert_eq!(
+            result,
+            RefreshResult {
+                applied: 3,
+                had_errors: false
+            }
+        );
+        assert_eq!(
+            cache.leader,
+            Some(crate::dcs::state::LeaderRecord {
+                member_id: MemberId("node-fresh".to_string())
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn dcs_value_type_is_exercised_to_keep_contracts_live() {
         let _value = DcsValue::Leader(crate::dcs::state::LeaderRecord {
             member_id: MemberId("node-a".to_string()),

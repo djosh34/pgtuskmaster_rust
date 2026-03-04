@@ -99,15 +99,22 @@ impl EtcdDcsStore {
                 let _ = worker_handle.join();
                 Err(err)
             }
-            Err(err) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The worker might still be performing its bootstrap (connect + get + watch).
-                // Avoid leaving a long-lived worker thread behind; request shutdown and close the
-                // command channel before joining.
+                // Request shutdown and close the command channel, but do not join here: joining
+                // would turn this bounded startup timeout into an unbounded connect() call.
                 let _ = command_tx.send(WorkerCommand::Shutdown);
                 drop(command_tx);
-                let _ = worker_handle.join();
+                drop(worker_handle);
                 Err(DcsStoreError::Io(format!(
-                    "timed out waiting for etcd worker startup: {err}"
+                    "timed out waiting for etcd worker startup after {worker_bootstrap_timeout:?}"
+                )))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let worker_panicked = worker_handle.join().is_err();
+                let suffix = if worker_panicked { " (worker panicked)" } else { "" };
+                Err(DcsStoreError::Io(format!(
+                    "etcd worker exited before signaling startup{suffix}"
                 )))
             }
         }
@@ -758,6 +765,30 @@ mod tests {
             self.handle = handle;
             Ok(())
         }
+
+        async fn restart_preserve(&mut self) -> Result<(), HarnessError> {
+            self.handle.shutdown().await?;
+
+            if !self.handle.data_dir.exists() {
+                fs::create_dir_all(&self.handle.data_dir)?;
+            }
+
+            let client_port = self.handle.client_port;
+            let data_dir = self.handle.data_dir.clone();
+            let handle = spawn_etcd3(EtcdInstanceSpec {
+                etcd_bin: self.etcd_bin.clone(),
+                namespace_id: self.namespace_id.clone(),
+                member_name: self.handle.member_name().to_string(),
+                data_dir,
+                log_dir: self.log_dir.clone(),
+                client_port,
+                peer_port: self.peer_port,
+                startup_timeout: Duration::from_secs(10),
+            })
+            .await?;
+            self.handle = handle;
+            Ok(())
+        }
     }
 
     struct EstablishDelayGuard {
@@ -998,22 +1029,24 @@ mod tests {
 
         let fixture = fixture;
         let result: TestResult = async {
-            let _delay_guard = EstablishDelayGuard::new(300);
+            let _delay_guard = EstablishDelayGuard::new(2_500);
             let endpoint = fixture.endpoint.clone();
             let scope = fixture.scope.clone();
 
             let handle = tokio::task::spawn_blocking(move || {
-                EtcdDcsStore::connect_with_worker_bootstrap_timeout(
+                let started_at = Instant::now();
+                let store_result = EtcdDcsStore::connect_with_worker_bootstrap_timeout(
                     vec![endpoint],
                     scope.as_str(),
                     Duration::from_millis(50),
-                )
+                );
+                (started_at.elapsed(), store_result)
             });
 
-            let outcome = tokio::time::timeout(Duration::from_secs(3), handle).await;
-            let store_result = match outcome {
+            let outcome = tokio::time::timeout(Duration::from_secs(2), handle).await;
+            let (elapsed, store_result) = match outcome {
                 Ok(joined) => match joined {
-                    Ok(store_result) => store_result,
+                    Ok(out) => out,
                     Err(err) => {
                         return Err(boxed_error(format!(
                             "connect spawn_blocking join failed: {err}"
@@ -1026,6 +1059,12 @@ mod tests {
                     ));
                 }
             };
+
+            if elapsed >= Duration::from_secs(1) {
+                return Err(boxed_error(format!(
+                    "expected connect() to return promptly after worker bootstrap timeout, elapsed={elapsed:?}",
+                )));
+            }
 
             match store_result {
                 Ok(_) => Err(boxed_error(
@@ -1157,6 +1196,96 @@ mod tests {
                 return Err(boxed_error(
                     "expected init lock record to be cleared by reconnect reset",
                 ));
+            }
+
+            Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn etcd_store_reconnect_applies_non_empty_snapshot_authoritatively() -> TestResult {
+        let fixture = RealEtcdFixture::spawn(
+            "dcs-etcd-store-reconnect-non-empty",
+            "scope-reconnect-non-empty",
+        )
+        .await?;
+
+        let mut fixture = fixture;
+        let result: TestResult = async {
+            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut cache = sample_cache(&fixture.scope);
+
+            let expected_leader = MemberId("node-fresh".to_string());
+            let leader_path = format!("/{}/leader", fixture.scope);
+            let leader_json = serde_json::to_string(&LeaderRecord {
+                member_id: expected_leader.clone(),
+            })
+            .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
+
+            let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
+                .await
+                .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
+            client
+                .put(leader_path.as_str(), leader_json, None)
+                .await
+                .map_err(|err| boxed_error(format!("put leader key failed: {err}")))?;
+
+            wait_for_event(
+                &mut store,
+                WatchOp::Put,
+                leader_path.as_str(),
+                Duration::from_secs(5),
+            )?;
+            let _ = store.drain_watch_events()?;
+
+            cache.leader = Some(LeaderRecord {
+                member_id: MemberId("node-stale".to_string()),
+            });
+
+            fixture.restart_preserve().await?;
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut observed_reset = false;
+            while Instant::now() < deadline {
+                let events = store.drain_watch_events()?;
+                if events.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+
+                if events.iter().any(|event| event.op == WatchOp::Reset) {
+                    if !events.iter().any(|event| {
+                        event.op == WatchOp::Put && event.path == leader_path
+                    }) {
+                        return Err(boxed_error(
+                            "expected reconnect snapshot to include leader PUT from etcd",
+                        ));
+                    }
+
+                    refresh_from_etcd_watch(&fixture.scope, &mut cache, events)?;
+                    observed_reset = true;
+                    break;
+                }
+
+                // Apply any other events so the cache continues to evolve, but do not accept
+                // reconnect without a reset marker.
+                let _ = refresh_from_etcd_watch(&fixture.scope, &mut cache, events);
+            }
+
+            if !observed_reset {
+                return Err(boxed_error(
+                    "timed out waiting for reconnect snapshot reset marker",
+                ));
+            }
+
+            let observed_leader = cache.leader.as_ref().map(|leader| leader.member_id.clone());
+            if observed_leader != Some(expected_leader.clone()) {
+                return Err(boxed_error(format!(
+                    "expected leader to be rebuilt from reconnect snapshot, expected={expected_leader:?} observed={observed_leader:?}",
+                )));
             }
 
             Ok(())

@@ -72,3 +72,4 @@
 .ralph/tasks/story-rust-system-harness/33-task-deep-skeptical-verification-of-doc-facts-and-writing-quality.md
 .ralph/tasks/story-rust-system-harness/39-task-logging-file-sink-backlog.md
 .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
+.ralph/tasks/bugs/etcd-watch-bootstrap-startup-timeout-and-resnapshot-stale-events.md

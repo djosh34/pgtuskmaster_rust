@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 11:27:24 CET 2026
+Generated: Wed Mar  4 11:51:25 CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -70,7 +70,7 @@ After updating `make test` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo te
 
 **Path:** `.ralph/tasks/bugs/etcd-watch-bootstrap-startup-timeout-and-resnapshot-stale-events.md`
 
-## Bug: Etcd watch bootstrap can hang startup and resnapshot can replay stale events <status>not_started</status> <passes>false</passes>
+## Bug: Etcd watch bootstrap can hang startup and resnapshot can replay stale events <status>done</status> <passes>true</passes>
 
 <description>
 The etcd DCS store watch worker has subtle correctness issues in bootstrap/reconnect handling.
