@@ -1,7 +1,7 @@
 MDBOOK := .tools/mdbook/bin/mdbook
 MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 
-.PHONY: check test test-long lint docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-timeout
+.PHONY: check test test-long lint docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-timeout
 
 ifneq ($(origin ULTRA_LONG_TESTS),undefined)
 $(error ULTRA_LONG_TESTS must not be set externally; edit Makefile to change the canonical ultra-long test list)
@@ -29,6 +29,9 @@ ensure-mdbook:
 
 ensure-mdbook-mermaid: ensure-mdbook
 	@test -x "$(MDBOOK_MERMAID)" || (echo "missing mdbook-mermaid binary: run ./tools/install-mdbook-mermaid.sh" >&2; exit 1)
+
+ensure-node:
+	@command -v node >/dev/null 2>&1 || (echo "missing node binary (required for Mermaid docs lint)" >&2; exit 1)
 
 ensure-timeout:
 	@test -n "$(TIMEOUT_BIN)" || (echo "missing timeout binary (install coreutils). Need either 'timeout' (Linux) or 'gtimeout' (macOS)." >&2; exit 1)
@@ -93,7 +96,8 @@ test-long:
 		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets "$$t" -- --exact; \
 	done
 
-docs-lint:
+docs-lint: ensure-node
+	node ./tools/docs-mermaid-lint.mjs
 	./tools/docs-architecture-no-code-guard.sh
 
 lint: docs-lint

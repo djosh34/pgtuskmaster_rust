@@ -31,6 +31,9 @@ if [[ ! -x "$MDBOOK_MERMAID_BIN" ]]; then
 fi
 
 # --- Build docs ---
+echo "Running docs lint (including Mermaid validation)..."
+PATH="$REPO_ROOT/.tools/mdbook/bin:$PATH" make -C "$REPO_ROOT" docs-lint
+
 PATH="$REPO_ROOT/.tools/mdbook/bin:$PATH" "$MDBOOK_BIN" build "$REPO_ROOT/docs"
 
 # --- Sanity checks ---

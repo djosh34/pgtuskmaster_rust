@@ -5,7 +5,7 @@ This repository uses mdBook for documentation.
 ```mermaid
 flowchart LR
   Src[docs/src] --> Build[mdbook build]
-  Build --> Out[docs/book (generated)]
+  Build --> Out["docs/book (generated)"]
 ```
 
 ## Build locally
@@ -28,4 +28,3 @@ Generated output under `docs/book/` must not be committed.
 ```bash
 make docs-hygiene
 ```
-

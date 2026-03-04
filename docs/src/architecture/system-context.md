@@ -14,13 +14,13 @@ flowchart LR
   end
 
   subgraph Node[pgtuskmaster node]
-    API[Node API\n(includes debug routes)]
+    API["Node API\n(includes debug routes)"]
     Runtime[Node Runtime]
     Debug[Debug snapshot worker]
     PG[(PostgreSQL)]
   end
 
-  Operator -->|HTTP control + read\n(including debug)| API
+  Operator -->|"HTTP control + read\n(including debug)"| API
   Clients -->|SQL| PG
 
   Debug --> API

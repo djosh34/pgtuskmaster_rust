@@ -9,12 +9,11 @@ Two different situations must be kept distinct:
 ```mermaid
 flowchart TD
   A[Observe DCS leader record] --> Missing{Leader missing?}
-  Missing -->|yes| PromoteCheck[Consider promotion\n(only if safe)]
-  Missing -->|no| Conflict{Leader record conflicts\nwith local invariants?}
+  Missing -->|yes| PromoteCheck["Consider promotion\n(only if safe)"]
+  Missing -->|no| Conflict{"Leader record conflicts\nwith local invariants?"}
   Conflict -->|yes| Fence[Fencing / demotion path]
   Conflict -->|no| Follow[Follow leader / stay stable]
 ```
 
 Fencing is not a punishment; it is a safety mechanism.
 It is acceptable for the system to become less available temporarily if that prevents two primaries from accepting writes concurrently.
-
