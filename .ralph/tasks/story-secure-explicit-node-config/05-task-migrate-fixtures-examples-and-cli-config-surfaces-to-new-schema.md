@@ -148,11 +148,11 @@ The goal is: every in-repo config producer/consumer either:
   - [x] `make test`
   - [x] `make test-long`
   - [x] `make lint`
-- [ ] 7) Only once all are green:
+- [x] 7) Only once all are green:
   - [x] set `<passing>true</passing>` in this task file
   - [x] `/bin/bash .ralph/task_switch.sh`
-  - [ ] commit: `task finished 05-task-migrate-fixtures-examples-and-cli-config-surfaces-to-new-schema: <summary + evidence>`
-  - [ ] `git push`
+  - [x] commit: `task finished 05-task-migrate-fixtures-examples-and-cli-config-surfaces-to-new-schema: <summary + evidence>`
+  - [x] `git push`
   - [x] record learnings/surprises in `AGENTS.md`
 
 NOW EXECUTE
