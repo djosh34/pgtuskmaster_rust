@@ -2,6 +2,12 @@
 set -u
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  echo "[post-commit] skipped on macOS"
+  exit 0
+fi
+
 PUBLISH_SCRIPT="$REPO_ROOT/scripts/publish-docs.sh"
 
 if [[ ! -x "$PUBLISH_SCRIPT" ]]; then
