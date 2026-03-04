@@ -445,6 +445,7 @@ async fn start_cluster_inner(
             "backup": {
                 "enabled": false,
                 "provider": "pgbackrest",
+                "bootstrap": { "enabled": false, "takeover_policy": "quarantine", "recovery_mode": "default" },
                 "pgbackrest": null,
             },
             "logging": {
@@ -456,7 +457,7 @@ async fn start_cluster_inner(
                     "log_dir": null,
                     "archive_command_log_file": null,
                     "poll_interval_ms": 200,
-                    "cleanup": { "enabled": true, "max_files": 50, "max_age_seconds": 604800 },
+                    "cleanup": { "enabled": true, "max_files": 50, "max_age_seconds": 604800, "protect_recent_seconds": 300 },
                 },
                 "sinks": {
                     "stderr": { "enabled": true },
@@ -566,6 +567,7 @@ async fn start_cluster_inner(
                         enabled: true,
                         max_files: 50,
                         max_age_seconds: 7 * 24 * 60 * 60,
+                        protect_recent_seconds: 300,
                     },
                 },
                 sinks: crate::config::LoggingSinksConfig {

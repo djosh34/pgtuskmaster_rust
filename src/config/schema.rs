@@ -322,6 +322,12 @@ pub struct LogCleanupConfig {
     pub enabled: bool,
     pub max_files: u64,
     pub max_age_seconds: u64,
+    #[serde(default = "default_log_cleanup_protect_recent_seconds")]
+    pub protect_recent_seconds: u64,
+}
+
+fn default_log_cleanup_protect_recent_seconds() -> u64 {
+    300
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -432,6 +438,7 @@ pub struct PartialLogCleanupConfig {
     pub enabled: Option<bool>,
     pub max_files: Option<u64>,
     pub max_age_seconds: Option<u64>,
+    pub protect_recent_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

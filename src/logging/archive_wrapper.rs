@@ -90,14 +90,16 @@ pub(crate) fn ensure_pgbackrest_wal_wrapper(cfg: &RuntimeConfig) -> Result<PathB
     let script_path = parent.join(DEFAULT_PGBACKREST_WAL_WRAPPER_NAME);
     write_pgbackrest_wal_wrapper_script(
         script_path.as_path(),
-        pgbackrest_bin_q.as_str(),
-        stanza_q.as_str(),
-        repo_q.as_str(),
-        pg1_path_q.as_str(),
-        log_file_q.as_str(),
-        log_dir_q.as_str(),
-        push_args.as_str(),
-        get_args.as_str(),
+        PgbackrestWalWrapperScriptArgs {
+            pgbackrest_bin: pgbackrest_bin_q.as_str(),
+            stanza: stanza_q.as_str(),
+            repo: repo_q.as_str(),
+            pg1_path: pg1_path_q.as_str(),
+            log_file: log_file_q.as_str(),
+            log_dir: log_dir_q.as_str(),
+            archive_push_args: push_args.as_str(),
+            archive_get_args: get_args.as_str(),
+        },
     )?;
 
     Ok(script_path)
@@ -145,16 +147,20 @@ fn quote_pgbackrest_option_tokens(field: &str, tokens: &[String]) -> Result<Stri
     Ok(out)
 }
 
+struct PgbackrestWalWrapperScriptArgs<'a> {
+    pgbackrest_bin: &'a str,
+    stanza: &'a str,
+    repo: &'a str,
+    pg1_path: &'a str,
+    log_file: &'a str,
+    log_dir: &'a str,
+    archive_push_args: &'a str,
+    archive_get_args: &'a str,
+}
+
 fn write_pgbackrest_wal_wrapper_script(
     script_path: &Path,
-    pgbackrest_bin: &str,
-    stanza: &str,
-    repo: &str,
-    pg1_path: &str,
-    log_file: &str,
-    log_dir: &str,
-    archive_push_args: &str,
-    archive_get_args: &str,
+    args: PgbackrestWalWrapperScriptArgs<'_>,
 ) -> Result<(), String> {
     let script = format!(
         r#"#!/bin/sh
@@ -172,7 +178,7 @@ PROVIDER='pgbackrest'
 json_escape() {{
   # Escape backslashes and double quotes for JSON string contexts.
   # Note: input is expected to be a single line (newlines should be normalized first).
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/\"/\\\\\"/g'
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/\"/\\\"/g'
 }}
 
 now_ts_ms() {{
@@ -261,14 +267,14 @@ printf '%s\n' "$RECORD" >> "$LOG_FILE"
 
 exit "$STATUS"
 "#,
-        pgbackrest_bin = pgbackrest_bin,
-        stanza = stanza,
-        repo = repo,
-        pg1_path = pg1_path,
-        log_file = log_file,
-        log_dir = log_dir,
-        archive_push_args = archive_push_args,
-        archive_get_args = archive_get_args,
+        pgbackrest_bin = args.pgbackrest_bin,
+        stanza = args.stanza,
+        repo = args.repo,
+        pg1_path = args.pg1_path,
+        log_file = args.log_file,
+        log_dir = args.log_dir,
+        archive_push_args = args.archive_push_args,
+        archive_get_args = args.archive_get_args,
     );
 
     std::fs::write(script_path, script)
@@ -334,8 +340,10 @@ exit 0
     }
 
     fn sample_cfg(pgbackrest_bin: PathBuf, archive_log: PathBuf) -> RuntimeConfig {
-        let mut backup = BackupConfig::default();
-        backup.enabled = true;
+        let mut backup = BackupConfig {
+            enabled: true,
+            ..BackupConfig::default()
+        };
         if let Some(pg_cfg) = backup.pgbackrest.as_mut() {
             pg_cfg.stanza = Some("stanza-a".to_string());
             pg_cfg.repo = Some("1".to_string());
@@ -435,6 +443,7 @@ exit 0
                         enabled: true,
                         max_files: 10,
                         max_age_seconds: 60,
+                        protect_recent_seconds: 300,
                     },
                 },
                 sinks: LoggingSinksConfig {

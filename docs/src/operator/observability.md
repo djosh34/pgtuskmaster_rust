@@ -65,3 +65,13 @@ Operational use:
 
 - Use `backup.event_kind=archive_get` spikes to correlate recovery stalls (WAL fetch failures).
 - Use `backup.status_code != 0` and `backup.output` to diagnose repo/auth/path misconfigurations without shell access.
+
+## Postgres log ingest health
+
+The Postgres ingest worker tails configured inputs and emits internal diagnostic records when ingestion or cleanup encounters errors (instead of failing silently).
+
+What to look for in logs:
+
+- internal log records with `origin=postgres_ingest`
+- stable tags in the message payload: `stage=... kind=... path=...`
+- `suppressed=N` when repeated identical failures are rate-limited

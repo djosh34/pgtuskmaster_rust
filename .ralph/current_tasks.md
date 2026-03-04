@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 11:54:32 PM CET 2026
+Generated: Thu Mar  5 12:55:07 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -133,10 +133,10 @@ In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_
 
 **Path:** `.ralph/tasks/bugs/logging-archive-ingest-silent-failure-and-unsafe-cleanup.md`
 
-## Bug: Archive/restore ingest silently fails and cleanup/path ownership can destroy active observability signals <status>not_started</status> <passes>false</passes>
+## Bug: Postgres ingest silently swallows failures and cleanup/path ownership can destroy active observability signals <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
-Archive/restore observability has several correctness failures in the current logging pipeline:
+Postgres observability ingest has several correctness failures in the current logging pipeline:
 
 ---
 

@@ -39,7 +39,7 @@ use crate::{
 #[derive(Clone, Debug)]
 enum StartupAction {
     ClaimInitLockAndSeedConfig,
-    RunJob(ProcessJobKind),
+    RunJob(Box<ProcessJobKind>),
     TakeoverRestoredDataDir,
     StartPostgres,
 }
@@ -306,12 +306,10 @@ fn select_startup_mode(
                             "cluster is already initialized (dcs init lock present) but no healthy primary is available for basebackup"
                                 .to_string(),
                         ))
+                    } else if restore_bootstrap_enabled {
+                        Ok(StartupMode::RestoreBootstrap)
                     } else {
-                        if restore_bootstrap_enabled {
-                            Ok(StartupMode::RestoreBootstrap)
-                        } else {
-                            Ok(StartupMode::InitializePrimary)
-                        }
+                        Ok(StartupMode::InitializePrimary)
                     }
                 }
             }
@@ -372,7 +370,9 @@ async fn execute_startup(
 
     for action in actions {
         match &action {
-            StartupAction::RunJob(ProcessJobKind::PgBackRestRestore(_)) => {
+            StartupAction::RunJob(job)
+                if matches!(job.as_ref(), ProcessJobKind::PgBackRestRestore(_)) =>
+            {
                 let _ = emit_startup_phase(log, "restore", "pgbackrest restore");
             }
             StartupAction::TakeoverRestoredDataDir => {
@@ -390,7 +390,7 @@ async fn execute_startup(
                     RuntimeError::StartupExecution(format!("dcs init lock claim failed: {err}"))
                 })?;
             }
-            StartupAction::RunJob(job) => run_startup_job(cfg, job, log).await?,
+            StartupAction::RunJob(job) => run_startup_job(cfg, *job, log).await?,
             StartupAction::TakeoverRestoredDataDir => {
                 crate::postgres_managed::takeover_restored_data_dir(
                     cfg,
@@ -434,11 +434,11 @@ fn build_startup_actions(
     match startup_mode {
         StartupMode::InitializePrimary => Ok(vec![
             StartupAction::ClaimInitLockAndSeedConfig,
-            StartupAction::RunJob(ProcessJobKind::Bootstrap(BootstrapSpec {
+            StartupAction::RunJob(Box::new(ProcessJobKind::Bootstrap(BootstrapSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
                 superuser_username: cfg.postgres.roles.superuser.username.clone(),
                 timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
-            })),
+            }))),
             StartupAction::StartPostgres,
         ]),
         StartupMode::RestoreBootstrap => {
@@ -451,17 +451,17 @@ fn build_startup_actions(
             })?;
             Ok(vec![
                 StartupAction::ClaimInitLockAndSeedConfig,
-                StartupAction::RunJob(restore_job.kind),
+                StartupAction::RunJob(Box::new(restore_job.kind)),
                 StartupAction::TakeoverRestoredDataDir,
                 StartupAction::StartPostgres,
             ])
         }
         StartupMode::CloneReplica { source, .. } => Ok(vec![
-            StartupAction::RunJob(ProcessJobKind::BaseBackup(BaseBackupSpec {
+            StartupAction::RunJob(Box::new(ProcessJobKind::BaseBackup(BaseBackupSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
                 source: source.clone(),
                 timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
-            })),
+            }))),
             StartupAction::StartPostgres,
         ]),
         StartupMode::ResumeExisting => {
@@ -1012,6 +1012,7 @@ mod tests {
                         enabled: true,
                         max_files: 10,
                         max_age_seconds: 60,
+                        protect_recent_seconds: 300,
                     },
                 },
                 sinks: crate::config::LoggingSinksConfig {
@@ -1209,17 +1210,18 @@ mod tests {
                 actions.len()
             ))));
         }
-        if !matches!(actions.get(0), Some(StartupAction::ClaimInitLockAndSeedConfig)) {
+        if !matches!(actions.first(), Some(StartupAction::ClaimInitLockAndSeedConfig)) {
             return Err(Box::new(std::io::Error::other(
                 "expected claim init lock action first",
             )));
         }
-        if !matches!(
-            actions.get(1),
-            Some(StartupAction::RunJob(
-                crate::process::state::ProcessJobKind::PgBackRestRestore(_)
-            ))
-        ) {
+        let second_is_restore = match actions.get(1) {
+            Some(StartupAction::RunJob(job)) => {
+                matches!(job.as_ref(), crate::process::state::ProcessJobKind::PgBackRestRestore(_))
+            }
+            _ => false,
+        };
+        if !second_is_restore {
             return Err(Box::new(std::io::Error::other(
                 "expected pgbackrest restore job second",
             )));

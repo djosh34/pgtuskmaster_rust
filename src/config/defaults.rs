@@ -26,6 +26,7 @@ const DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS: u64 = 200;
 const DEFAULT_LOGGING_CLEANUP_ENABLED: bool = true;
 const DEFAULT_LOGGING_CLEANUP_MAX_FILES: u64 = 50;
 const DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
+const DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS: u64 = 300;
 const DEFAULT_LOGGING_SINK_STDERR_ENABLED: bool = true;
 const DEFAULT_LOGGING_SINK_FILE_ENABLED: bool = false;
 const DEFAULT_LOGGING_SINK_FILE_MODE: FileSinkMode = FileSinkMode::Append;
@@ -58,6 +59,7 @@ pub(crate) fn default_logging_config() -> LoggingConfig {
                 enabled: DEFAULT_LOGGING_CLEANUP_ENABLED,
                 max_files: DEFAULT_LOGGING_CLEANUP_MAX_FILES,
                 max_age_seconds: DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS,
+                protect_recent_seconds: DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS,
             },
         },
         sinks: LoggingSinksConfig {

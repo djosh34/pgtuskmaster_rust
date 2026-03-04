@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
 
@@ -17,17 +17,179 @@ pub(crate) struct PostgresIngestWorkerCtx {
     pub(crate) log: LogHandle,
 }
 
+const POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS: u64 = 30_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct IngestErrorKey {
+    stage: String,
+    kind: String,
+    path: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RateLimitDecision {
+    emit: bool,
+    suppressed: u64,
+}
+
+#[derive(Clone, Debug)]
+struct RateLimitState {
+    last_emit_ms: u64,
+    suppressed: u64,
+}
+
+#[derive(Clone, Debug)]
+struct IngestErrorRateLimiter {
+    window_ms: u64,
+    by_key: BTreeMap<IngestErrorKey, RateLimitState>,
+}
+
+impl IngestErrorRateLimiter {
+    fn new(window_ms: u64) -> Self {
+        Self {
+            window_ms,
+            by_key: BTreeMap::new(),
+        }
+    }
+
+    fn record(&mut self, key: IngestErrorKey, now_ms: u64) -> RateLimitDecision {
+        match self.by_key.get_mut(&key) {
+            None => {
+                self.by_key.insert(
+                    key,
+                    RateLimitState {
+                        last_emit_ms: now_ms,
+                        suppressed: 0,
+                    },
+                );
+                RateLimitDecision {
+                    emit: true,
+                    suppressed: 0,
+                }
+            }
+            Some(entry) => {
+                let elapsed_ms = now_ms.saturating_sub(entry.last_emit_ms);
+                if elapsed_ms >= self.window_ms {
+                    let suppressed = entry.suppressed;
+                    entry.last_emit_ms = now_ms;
+                    entry.suppressed = 0;
+                    RateLimitDecision {
+                        emit: true,
+                        suppressed,
+                    }
+                } else {
+                    entry.suppressed = entry.suppressed.saturating_add(1);
+                    RateLimitDecision {
+                        emit: false,
+                        suppressed: 0,
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) async fn run(ctx: PostgresIngestWorkerCtx) -> Result<(), WorkerError> {
     let mut state = PostgresIngestWorkerState::new(&ctx.cfg);
+    let mut limiter = IngestErrorRateLimiter::new(POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS);
+    let mut consecutive_failures = 0u32;
     loop {
         if ctx.cfg.logging.postgres.enabled {
-            let _ = step_once(&ctx, &mut state).await;
+            match step_once(&ctx, &mut state).await {
+                Ok(()) => {
+                    if consecutive_failures > 0 {
+                        emit_ingest_retry_recovered(&ctx.log, consecutive_failures);
+                        consecutive_failures = 0;
+                    }
+                }
+                Err(error) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let now_ms = crate::logging::system_now_unix_millis();
+                    let key = ingest_error_key_best_effort(&error);
+                    let decision = limiter.record(key, now_ms);
+                    if decision.emit {
+                        emit_ingest_step_failure(
+                            &ctx.log,
+                            &error,
+                            consecutive_failures,
+                            decision.suppressed,
+                        );
+                    }
+                }
+            }
         }
         tokio::time::sleep(Duration::from_millis(
             ctx.cfg.logging.postgres.poll_interval_ms,
         ))
         .await;
     }
+}
+
+fn ingest_error_key_best_effort(error: &WorkerError) -> IngestErrorKey {
+    let msg = error.to_string();
+
+    let mut stage = "unknown".to_string();
+    let mut kind = "unknown".to_string();
+    let mut path = "unknown".to_string();
+
+    for token in msg.split_whitespace() {
+        if stage == "unknown" {
+            if let Some(value) = token.strip_prefix("stage=") {
+                stage = value.to_string();
+                continue;
+            }
+        }
+        if kind == "unknown" {
+            if let Some(value) = token.strip_prefix("kind=") {
+                kind = value.to_string();
+                continue;
+            }
+        }
+        if path == "unknown" {
+            if let Some(value) = token.strip_prefix("path=") {
+                path = value.to_string();
+                continue;
+            }
+        }
+        if stage != "unknown" && kind != "unknown" && path != "unknown" {
+            break;
+        }
+    }
+
+    IngestErrorKey { stage, kind, path }
+}
+
+fn emit_ingest_step_failure(
+    log: &LogHandle,
+    error: &WorkerError,
+    attempts: u32,
+    suppressed: u64,
+) {
+    let _ = log.emit(
+        SeverityText::Error,
+        format!(
+            "postgres_ingest step_once failed: attempts={attempts} suppressed={suppressed} error={error}"
+        ),
+        LogSource {
+            producer: LogProducer::App,
+            transport: LogTransport::Internal,
+            parser: LogParser::App,
+            origin: "postgres_ingest".to_string(),
+        },
+    );
+}
+
+fn emit_ingest_retry_recovered(log: &LogHandle, attempts: u32) {
+    let _ = log.emit(
+        SeverityText::Info,
+        format!("postgres_ingest recovered after {attempts} consecutive failed iterations"),
+        LogSource {
+            producer: LogProducer::App,
+            transport: LogTransport::Internal,
+            parser: LogParser::App,
+            origin: "postgres_ingest".to_string(),
+        },
+    );
 }
 
 struct PostgresIngestWorkerState {
@@ -38,12 +200,10 @@ struct PostgresIngestWorkerState {
 
 impl PostgresIngestWorkerState {
     fn new(cfg: &RuntimeConfig) -> Self {
-        let pg_ctl_log_file = cfg
-            .logging
-            .postgres
-            .pg_ctl_log_file
-            .clone()
-            .unwrap_or_else(|| cfg.postgres.log_file.clone());
+        let pg_ctl_log_file = match cfg.logging.postgres.pg_ctl_log_file.clone() {
+            Some(path) => path,
+            None => cfg.postgres.log_file.clone(),
+        };
         let archive_log = cfg
             .logging
             .postgres
@@ -65,56 +225,207 @@ async fn step_once(
 ) -> Result<(), WorkerError> {
     let max_bytes_per_file = 256 * 1024;
 
-    let pg_lines = state.pg_ctl_log.read_new_lines(max_bytes_per_file).await?;
-    for line in pg_lines {
-        emit_postgres_line(
-            &ctx.log,
-            LogProducer::Postgres,
-            LogTransport::FileTail,
-            "pg_ctl_log_file",
-            state.pg_ctl_log.path(),
-            line,
-        )?;
+    #[derive(Clone, Debug)]
+    struct IterationIssue {
+        stage: &'static str,
+        kind: &'static str,
+        path: String,
+        error: String,
+    }
+
+    fn encode_path_token(path: &Path) -> String {
+        path.display().to_string().replace(' ', "%20")
+    }
+
+    fn file_name_best_effort(path: &Path) -> String {
+        match path.file_name() {
+            Some(name) => name.to_string_lossy().to_string(),
+            None => "log".to_string(),
+        }
+    }
+
+    fn push_issue(issues: &mut Vec<IterationIssue>, stage: &'static str, kind: &'static str, path: &Path, error: WorkerError) {
+        issues.push(IterationIssue {
+            stage,
+            kind,
+            path: encode_path_token(path),
+            error: error.to_string(),
+        });
+    }
+
+    let mut issues: Vec<IterationIssue> = Vec::new();
+
+    match state.pg_ctl_log.read_new_lines(max_bytes_per_file).await {
+        Ok(pg_lines) => {
+            for line in pg_lines {
+                if let Err(err) = emit_postgres_line(
+                    &ctx.log,
+                    LogProducer::Postgres,
+                    LogTransport::FileTail,
+                    "pg_ctl_log_file",
+                    state.pg_ctl_log.path(),
+                    line,
+                ) {
+                    push_issue(
+                        &mut issues,
+                        "pg_ctl_log_file.emit",
+                        "log.emit_record",
+                        state.pg_ctl_log.path(),
+                        err,
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            push_issue(
+                &mut issues,
+                "pg_ctl_log_file.read",
+                "tailer.read_new_lines",
+                state.pg_ctl_log.path(),
+                err,
+            );
+        }
     }
 
     if let Some(tailer) = state.archive_log.as_mut() {
-        let archive_lines = tailer.read_new_lines(max_bytes_per_file).await?;
-        for line in archive_lines {
-            emit_postgres_line(
-                &ctx.log,
-                LogProducer::PostgresArchive,
-                LogTransport::FileTail,
-                "archive_command_log_file",
-                tailer.path(),
-                line,
-            )?;
+        match tailer.read_new_lines(max_bytes_per_file).await {
+            Ok(archive_lines) => {
+                for line in archive_lines {
+                    if let Err(err) = emit_postgres_line(
+                        &ctx.log,
+                        LogProducer::PostgresArchive,
+                        LogTransport::FileTail,
+                        "archive_command_log_file",
+                        tailer.path(),
+                        line,
+                    ) {
+                        push_issue(
+                            &mut issues,
+                            "archive_command_log_file.emit",
+                            "log.emit_record",
+                            tailer.path(),
+                            err,
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                push_issue(
+                    &mut issues,
+                    "archive_command_log_file.read",
+                    "tailer.read_new_lines",
+                    tailer.path(),
+                    err,
+                );
+            }
         }
     }
 
     if let Some(dir) = ctx.cfg.logging.postgres.log_dir.as_ref() {
-        discover_log_dir(&mut state.dir_tailers, dir).await?;
+        if let Err(err) = discover_log_dir(&mut state.dir_tailers, dir).await {
+            push_issue(&mut issues, "log_dir.discover", "read_dir", dir, err);
+        }
+
         for (path, tailer) in state.dir_tailers.iter_mut() {
-            let origin = format!("postgres_log_dir:{}", path.file_name().and_then(|s| s.to_str()).unwrap_or("log"));
-            let lines = tailer.read_new_lines(max_bytes_per_file).await?;
-            for line in lines {
-                emit_postgres_line(
-                    &ctx.log,
-                    LogProducer::Postgres,
-                    LogTransport::FileTail,
-                    origin.as_str(),
-                    tailer.path(),
-                    line,
-                )?;
+            let origin = format!("postgres_log_dir:{}", file_name_best_effort(path));
+            match tailer.read_new_lines(max_bytes_per_file).await {
+                Ok(lines) => {
+                    for line in lines {
+                        if let Err(err) = emit_postgres_line(
+                            &ctx.log,
+                            LogProducer::Postgres,
+                            LogTransport::FileTail,
+                            origin.as_str(),
+                            tailer.path(),
+                            line,
+                        ) {
+                            push_issue(
+                                &mut issues,
+                                "log_dir.emit",
+                                "log.emit_record",
+                                tailer.path(),
+                                err,
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    push_issue(
+                        &mut issues,
+                        "log_dir.read",
+                        "tailer.read_new_lines",
+                        tailer.path(),
+                        err,
+                    );
+                }
             }
         }
 
         if ctx.cfg.logging.postgres.cleanup.enabled {
-            let _ = cleanup_log_dir(dir, &ctx.cfg.logging.postgres.cleanup, state.pg_ctl_log.path())
-                .await;
+            let mut protected: Vec<&Path> = vec![state.pg_ctl_log.path()];
+            if let Some(archive) = state.archive_log.as_ref() {
+                if archive.path().parent() == Some(dir.as_path()) {
+                    protected.push(archive.path());
+                }
+            }
+
+            match cleanup_log_dir(
+                dir,
+                &ctx.cfg.logging.postgres.cleanup,
+                protected.as_slice(),
+                SystemTime::now(),
+            )
+            .await
+            {
+                Ok(report) => {
+                    if report.issue_count > 0 {
+                        let stage = "log_dir.cleanup";
+                        let kind = "cleanup.issues";
+                        let error = WorkerError::Message(format!(
+                            "cleanup had issues: issue_count={} first={}",
+                            report.issue_count, report.first_issue
+                        ));
+                        push_issue(&mut issues, stage, kind, dir, error);
+                    }
+                }
+                Err(err) => {
+                    push_issue(&mut issues, "log_dir.cleanup", "cleanup.fatal", dir, err);
+                }
+            }
         }
     }
 
-    Ok(())
+    if issues.is_empty() {
+        return Ok(());
+    }
+
+    let first = match issues.first() {
+        Some(first) => format!(
+            "stage={} kind={} path={} error={}",
+            first.stage, first.kind, first.path, first.error
+        ),
+        None => "stage=unknown kind=unknown path=unknown error=unknown".to_string(),
+    };
+
+    let mut extra = Vec::new();
+    for issue in issues.iter().skip(1).take(2) {
+        extra.push(format!(
+            "stage={} kind={} path={} error={}",
+            issue.stage, issue.kind, issue.path, issue.error
+        ));
+    }
+    let extra_suffix = if extra.is_empty() {
+        String::new()
+    } else {
+        format!(" extra=[{}]", extra.join(" | "))
+    };
+
+    Err(WorkerError::Message(format!(
+        "postgres_ingest iteration_errors count={} {}{}",
+        issues.len(),
+        first,
+        extra_suffix
+    )))
 }
 
 async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), WorkerError> {
@@ -163,11 +474,14 @@ async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), Wo
 async fn cleanup_log_dir(
     dir: &Path,
     cleanup: &LogCleanupConfig,
-    protected_path: &Path,
-) -> Result<(), WorkerError> {
+    protected_paths: &[&Path],
+    now: SystemTime,
+) -> Result<CleanupReport, WorkerError> {
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CleanupReport::empty())
+        }
         Err(err) => {
             return Err(WorkerError::Message(format!(
                 "cleanup read_dir failed for {}: {err}",
@@ -176,16 +490,17 @@ async fn cleanup_log_dir(
         }
     };
 
-    let mut files = Vec::new();
+    let protected_basenames: [&str; 3] =
+        ["postgres.json", "postgres.stderr.log", "postgres.stdout.log"];
+
+    let mut issues: Vec<String> = Vec::new();
+    let mut candidates = Vec::new();
     while let Some(entry) = entries
         .next_entry()
         .await
         .map_err(|err| WorkerError::Message(format!("cleanup readdir entry failed: {err}")))?
     {
         let path = entry.path();
-        if path == protected_path {
-            continue;
-        }
         let is_file = match entry.file_type().await {
             Ok(ft) => ft.is_file(),
             Err(_) => false,
@@ -202,37 +517,139 @@ async fn cleanup_log_dir(
             continue;
         }
 
+        let mut protected = false;
+        for p in protected_paths {
+            if path.as_path() == *p {
+                protected = true;
+                break;
+            }
+        }
+
+        let file_name = match path.file_name() {
+            Some(name) => name.to_string_lossy().to_string(),
+            None => String::new(),
+        };
+        if protected_basenames.contains(&file_name.as_str()) {
+            protected = true;
+        }
+
         let meta = match entry.metadata().await {
             Ok(meta) => meta,
-            Err(_) => continue,
+            Err(err) => {
+                protected = true;
+                issues.push(format!(
+                    "stage=cleanup.metadata kind=metadata path={} error={err}",
+                    path.display()
+                ));
+                candidates.push((path, None, protected));
+                continue;
+            }
         };
-        let modified = meta.modified().ok();
-        files.push((path, modified));
+        let modified = match meta.modified() {
+            Ok(modified) => Some(modified),
+            Err(err) => {
+                protected = true;
+                issues.push(format!(
+                    "stage=cleanup.modified kind=modified path={} error={err}",
+                    path.display()
+                ));
+                candidates.push((path, None, protected));
+                continue;
+            }
+        };
+
+        if !protected {
+            let is_recent = match modified.and_then(|m| now.duration_since(m).ok()) {
+                Some(age) => age.as_secs() <= cleanup.protect_recent_seconds,
+                None => true,
+            };
+            if is_recent {
+                protected = true;
+            }
+        }
+
+        candidates.push((path, modified, protected));
     }
 
-    files.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut eligible = candidates
+        .iter()
+        .filter_map(|(path, modified, protected)| {
+            if *protected {
+                return None;
+            }
+            modified.map(|modified| (path.clone(), modified))
+        })
+        .collect::<Vec<_>>();
 
-    if cleanup.max_files > 0 && (files.len() as u64) > cleanup.max_files {
-        let remove_count = files.len().saturating_sub(cleanup.max_files as usize);
-        for (path, _) in files.iter().take(remove_count) {
-            let _ = tokio::fs::remove_file(path).await;
+    eligible.sort_by(|a, b| {
+        let by_time = a.1.cmp(&b.1);
+        if by_time != std::cmp::Ordering::Equal {
+            return by_time;
+        }
+        a.0.cmp(&b.0)
+    });
+
+    let mut to_remove: Vec<std::path::PathBuf> = Vec::new();
+
+    if cleanup.max_files > 0 && (eligible.len() as u64) > cleanup.max_files {
+        let remove_count = eligible.len().saturating_sub(cleanup.max_files as usize);
+        for (path, _) in eligible.iter().take(remove_count) {
+            to_remove.push(path.clone());
         }
     }
 
     if cleanup.max_age_seconds > 0 {
-        let now = std::time::SystemTime::now();
-        for (path, modified) in files {
-            let Some(modified) = modified else { continue };
+        for (path, modified) in eligible {
             let age = now.duration_since(modified).ok();
             if let Some(age) = age {
                 if age.as_secs() > cleanup.max_age_seconds {
-                    let _ = tokio::fs::remove_file(path).await;
+                    to_remove.push(path);
                 }
             }
         }
     }
 
-    Ok(())
+    for path in to_remove {
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                issues.push(format!(
+                    "stage=cleanup.remove_file kind=remove_file path={} error={err}",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    Ok(CleanupReport::from_issues(issues))
+}
+
+#[derive(Clone, Debug)]
+struct CleanupReport {
+    issue_count: usize,
+    first_issue: String,
+}
+
+impl CleanupReport {
+    fn empty() -> Self {
+        Self {
+            issue_count: 0,
+            first_issue: "<none>".to_string(),
+        }
+    }
+
+    fn from_issues(issues: Vec<String>) -> Self {
+        let issue_count = issues.len();
+        let first_issue = match issues.first() {
+            Some(first) => first.to_string(),
+            None => "<none>".to_string(),
+        };
+        Self {
+            issue_count,
+            first_issue,
+        }
+    }
 }
 
 fn emit_postgres_line(
@@ -334,11 +751,10 @@ struct ParsedLine {
 
 fn normalize_postgres_json(value: Value) -> Option<ParsedLine> {
     let obj = value.as_object()?;
-    let message = obj
-        .get("message")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let message = match obj.get("message").and_then(|v| v.as_str()) {
+        Some(message) => message.to_string(),
+        None => String::new(),
+    };
     if message.trim().is_empty() {
         return None;
     }
@@ -346,8 +762,8 @@ fn normalize_postgres_json(value: Value) -> Option<ParsedLine> {
     let severity_raw = obj
         .get("error_severity")
         .and_then(|v| v.as_str())
-        .or_else(|| obj.get("severity").and_then(|v| v.as_str()))
-        .unwrap_or("INFO");
+        .or_else(|| obj.get("severity").and_then(|v| v.as_str()));
+    let severity_raw = severity_raw.map_or("INFO", |severity| severity);
     let severity = map_pg_severity(severity_raw);
 
     let mut attributes = BTreeMap::new();
@@ -466,7 +882,10 @@ mod tests {
     use crate::state::WorkerError;
     use crate::pginfo::conninfo::PgSslMode;
 
-    use super::{cleanup_log_dir, normalize_postgres_line, map_pg_severity};
+    use super::{
+        cleanup_log_dir, emit_ingest_step_failure, ingest_error_key_best_effort,
+        IngestErrorKey, IngestErrorRateLimiter, map_pg_severity, normalize_postgres_line,
+    };
 
     fn sample_runtime_config() -> RuntimeConfig {
         RuntimeConfig {
@@ -561,6 +980,7 @@ mod tests {
                         enabled: false,
                         max_files: 10,
                         max_age_seconds: 60,
+                        protect_recent_seconds: 300,
                     },
                 },
                 sinks: crate::config::LoggingSinksConfig {
@@ -594,6 +1014,70 @@ mod tests {
             LogHandle::new("host-a".to_string(), sink_dyn, SeverityText::Trace),
             sink,
         )
+    }
+
+    #[test]
+    fn ingest_error_rate_limiter_suppresses_and_reemits_with_count() {
+        let mut limiter = IngestErrorRateLimiter::new(30_000);
+        let key = IngestErrorKey {
+            stage: "a".to_string(),
+            kind: "b".to_string(),
+            path: "c".to_string(),
+        };
+
+        let first = limiter.record(key.clone(), 1_000);
+        assert_eq!(
+            first,
+            super::RateLimitDecision {
+                emit: true,
+                suppressed: 0
+            }
+        );
+
+        let suppressed = limiter.record(key.clone(), 2_000);
+        assert_eq!(
+            suppressed,
+            super::RateLimitDecision {
+                emit: false,
+                suppressed: 0
+            }
+        );
+
+        let reemit = limiter.record(key, 31_000);
+        assert_eq!(
+            reemit,
+            super::RateLimitDecision {
+                emit: true,
+                suppressed: 1
+            }
+        );
+    }
+
+    #[test]
+    fn ingest_error_key_parsing_uses_first_stage_kind_path_tokens() {
+        let err = WorkerError::Message(
+            "postgres_ingest iteration_errors count=2 stage=first kind=k1 path=/a error=x extra=[stage=second kind=k2 path=/b error=y]"
+                .to_string(),
+        );
+        let key = ingest_error_key_best_effort(&err);
+        assert_eq!(key.stage, "first");
+        assert_eq!(key.kind, "k1");
+        assert_eq!(key.path, "/a");
+    }
+
+    #[test]
+    fn emit_ingest_step_failure_emits_internal_error_record() {
+        let (log, sink) = test_log_handle();
+        let err = WorkerError::Message("stage=x kind=y path=/z error=boom".to_string());
+
+        emit_ingest_step_failure(&log, &err, 2, 7);
+
+        let records = sink.take();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].severity_text, SeverityText::Error);
+        assert_eq!(records[0].source.transport, LogTransport::Internal);
+        assert_eq!(records[0].source.origin, "postgres_ingest");
+        assert!(records[0].message.contains("suppressed=7"));
     }
 
     #[test]
@@ -681,19 +1165,21 @@ mod tests {
         for i in 0..5 {
             let path = dir.join(format!("rotated-{i}.log"));
             std::fs::write(&path, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        cleanup_log_dir(
+        let report = cleanup_log_dir(
             dir.as_path(),
             &LogCleanupConfig {
                 enabled: true,
                 max_files: 2,
                 max_age_seconds: 365 * 24 * 60 * 60,
+                protect_recent_seconds: 1,
             },
-            protected.as_path(),
+            &[protected.as_path()],
+            SystemTime::now() + Duration::from_secs(3600),
         )
         .await?;
+        assert_eq!(report.issue_count, 0);
 
         assert!(protected.exists());
         let remaining = std::fs::read_dir(&dir)
@@ -703,6 +1189,89 @@ mod tests {
             .count();
         // protected + max_files
         assert!(remaining <= 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cleanup_log_dir_never_deletes_known_active_signals() -> Result<(), WorkerError> {
+        let dir = temp_dir("protected-basenames");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
+
+        let json = dir.join("postgres.json");
+        let stderr = dir.join("postgres.stderr.log");
+        let stdout = dir.join("postgres.stdout.log");
+        std::fs::write(&json, b"{}\n").map_err(|err| WorkerError::Message(err.to_string()))?;
+        std::fs::write(&stderr, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
+        std::fs::write(&stdout, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
+
+        for i in 0..10 {
+            let path = dir.join(format!("rotated-{i}.log"));
+            std::fs::write(&path, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
+        }
+
+        let report = cleanup_log_dir(
+            dir.as_path(),
+            &LogCleanupConfig {
+                enabled: true,
+                max_files: 1,
+                max_age_seconds: 365 * 24 * 60 * 60,
+                protect_recent_seconds: 1,
+            },
+            &[],
+            SystemTime::now() + Duration::from_secs(3600),
+        )
+        .await?;
+        assert_eq!(report.issue_count, 0);
+
+        assert!(json.exists());
+        assert!(stderr.exists());
+        assert!(stdout.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cleanup_log_dir_surfaces_remove_failures() -> Result<(), WorkerError> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("remove-failure");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
+
+        let old = dir.join("old.log");
+        std::fs::write(&old, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
+
+        let mut perms = std::fs::metadata(&dir)
+            .map_err(|err| WorkerError::Message(err.to_string()))?
+            .permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&dir, perms).map_err(|err| WorkerError::Message(err.to_string()))?;
+
+        let report = cleanup_log_dir(
+            dir.as_path(),
+            &LogCleanupConfig {
+                enabled: true,
+                max_files: 1,
+                max_age_seconds: 1,
+                protect_recent_seconds: 1,
+            },
+            &[],
+            SystemTime::now() + Duration::from_secs(3600),
+        )
+        .await?;
+        assert!(report.issue_count > 0);
+        assert!(old.exists());
+
+        let mut perms = std::fs::metadata(&dir)
+            .map_err(|err| WorkerError::Message(err.to_string()))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&dir, perms).map_err(|err| WorkerError::Message(err.to_string()))?;
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
@@ -1137,12 +1706,12 @@ mod tests {
                                     .attributes
                                     .get("job_kind")
                                     .and_then(|v| v.as_str())
-                                    .unwrap_or("<none>");
+                                    .map_or("<none>", |value| value);
                                 let job_id_attr = record
                                     .attributes
                                     .get("job_id")
                                     .and_then(|v| v.as_str())
-                                    .unwrap_or("<none>");
+                                    .map_or("<none>", |value| value);
                                 if job_kind != "start_postgres" && job_id_attr != start_id.0.as_str() {
                                     continue;
                                 }

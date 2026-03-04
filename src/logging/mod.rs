@@ -611,6 +611,7 @@ mod tests {
                         enabled: false,
                         max_files: 10,
                         max_age_seconds: 60,
+                        protect_recent_seconds: 300,
                     },
                 },
                 sinks: LoggingSinksConfig {

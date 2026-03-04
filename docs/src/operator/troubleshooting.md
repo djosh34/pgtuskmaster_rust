@@ -64,6 +64,7 @@ First checks:
   - look for JSON lines with `backup.event_kind = archive_get|archive_push`
   - correlate by `backup.invocation_id` and `backup.status_code`
 - PgTool subprocess logs (`job_kind=start_postgres|pgbackrest_restore`) for stderr output
+- internal ingest diagnostics (`origin=postgres_ingest`) if expected Postgres/backup signals are missing (look for `stage=... kind=... path=...` and `suppressed=N`)
 
 ## Leader flaps or repeated role churn
 

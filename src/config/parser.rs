@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -413,6 +413,51 @@ fn normalize_tls_server_identity_v2(
     })
 }
 
+fn validate_absolute_path(field: &'static str, path: &Path) -> Result<(), ConfigError> {
+    if !path.is_absolute() {
+        return Err(ConfigError::Validation {
+            field,
+            message: "must be an absolute path".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn normalize_path_lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let _ = out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn validate_postgres_logging_path_invariants(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    if let (Some(log_dir), Some(archive_log)) = (
+        cfg.logging.postgres.log_dir.as_ref(),
+        cfg.logging.postgres.archive_command_log_file.as_ref(),
+    ) {
+        let log_dir = normalize_path_lexical(log_dir);
+        let archive_log = normalize_path_lexical(archive_log);
+        if archive_log.starts_with(&log_dir) {
+            return Err(ConfigError::Validation {
+                field: "logging.postgres.archive_command_log_file",
+                message:
+                    "must not be inside logging.postgres.log_dir (avoid cleanup/tailer coupling)"
+                        .to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_non_empty_path("postgres.data_dir", &cfg.postgres.data_dir)?;
     validate_non_empty("postgres.listen_host", cfg.postgres.listen_host.as_str())?;
@@ -595,12 +640,15 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     )?;
     if let Some(path) = cfg.logging.postgres.pg_ctl_log_file.as_ref() {
         validate_non_empty_path("logging.postgres.pg_ctl_log_file", path)?;
+        validate_absolute_path("logging.postgres.pg_ctl_log_file", path)?;
     }
     if let Some(path) = cfg.logging.postgres.log_dir.as_ref() {
         validate_non_empty_path("logging.postgres.log_dir", path)?;
+        validate_absolute_path("logging.postgres.log_dir", path)?;
     }
     if let Some(path) = cfg.logging.postgres.archive_command_log_file.as_ref() {
         validate_non_empty_path("logging.postgres.archive_command_log_file", path)?;
+        validate_absolute_path("logging.postgres.archive_command_log_file", path)?;
     }
     if cfg.logging.postgres.cleanup.enabled {
         if cfg.logging.postgres.cleanup.max_files == 0 {
@@ -612,6 +660,12 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         if cfg.logging.postgres.cleanup.max_age_seconds == 0 {
             return Err(ConfigError::Validation {
                 field: "logging.postgres.cleanup.max_age_seconds",
+                message: "must be greater than zero when cleanup is enabled".to_string(),
+            });
+        }
+        if cfg.logging.postgres.cleanup.protect_recent_seconds == 0 {
+            return Err(ConfigError::Validation {
+                field: "logging.postgres.cleanup.protect_recent_seconds",
                 message: "must be greater than zero when cleanup is enabled".to_string(),
             });
         }
@@ -628,6 +682,16 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         });
     }
 
+    validate_non_empty_path("postgres.log_file", &cfg.postgres.log_file)?;
+    validate_absolute_path("postgres.log_file", &cfg.postgres.log_file)?;
+
+    if cfg.logging.sinks.file.enabled {
+        if let Some(path) = cfg.logging.sinks.file.path.as_ref() {
+            validate_absolute_path("logging.sinks.file.path", path)?;
+        }
+    }
+
+    validate_postgres_logging_path_invariants(cfg)?;
     validate_logging_path_ownership_invariants(cfg)?;
 
     if cfg.dcs.endpoints.is_empty() {
@@ -792,20 +856,22 @@ fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(),
         return Ok(());
     }
 
-    let effective_pg_ctl_log_file = cfg
-        .logging
-        .postgres
-        .pg_ctl_log_file
-        .as_ref()
-        .unwrap_or(&cfg.postgres.log_file);
+    let effective_pg_ctl_log_file = match cfg.logging.postgres.pg_ctl_log_file.as_ref() {
+        Some(path) => path,
+        None => &cfg.postgres.log_file,
+    };
 
-    let tailed_files: [(&'static str, &Path); 2] = [
-        ("postgres.log_file", &cfg.postgres.log_file),
-        ("logging.postgres.pg_ctl_log_file", effective_pg_ctl_log_file),
+    let sink_path = normalize_path_lexical(sink_path);
+    let postgres_log_file = normalize_path_lexical(&cfg.postgres.log_file);
+    let effective_pg_ctl_log_file = normalize_path_lexical(effective_pg_ctl_log_file);
+
+    let tailed_files: [(&'static str, &PathBuf); 2] = [
+        ("postgres.log_file", &postgres_log_file),
+        ("logging.postgres.pg_ctl_log_file", &effective_pg_ctl_log_file),
     ];
 
     for (field, path) in tailed_files {
-        if sink_path == path {
+        if &sink_path == path {
             return Err(ConfigError::Validation {
                 field: "logging.sinks.file.path",
                 message: format!("must not equal tailed postgres input {field}"),
@@ -814,6 +880,7 @@ fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(),
     }
 
     if let Some(archive_path) = cfg.logging.postgres.archive_command_log_file.as_ref() {
+        let archive_path = normalize_path_lexical(archive_path);
         if sink_path == archive_path {
             return Err(ConfigError::Validation {
                 field: "logging.sinks.file.path",
@@ -825,24 +892,11 @@ fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(),
     }
 
     if let Some(log_dir) = cfg.logging.postgres.log_dir.as_ref() {
-        if sink_path.starts_with(log_dir) {
+        let log_dir = normalize_path_lexical(log_dir);
+        if sink_path.starts_with(&log_dir) {
             return Err(ConfigError::Validation {
                 field: "logging.sinks.file.path",
                 message: "must not be inside logging.postgres.log_dir (would self-ingest)".to_string(),
-            });
-        }
-    }
-
-    if let (Some(log_dir), Some(archive_log)) = (
-        cfg.logging.postgres.log_dir.as_ref(),
-        cfg.logging.postgres.archive_command_log_file.as_ref(),
-    ) {
-        if archive_log.starts_with(log_dir) {
-            return Err(ConfigError::Validation {
-                field: "logging.postgres.archive_command_log_file",
-                message:
-                    "must not be inside logging.postgres.log_dir (avoid cleanup/tailer coupling)"
-                        .to_string(),
             });
         }
     }
@@ -1126,6 +1180,7 @@ fn validate_inline_or_path_non_empty(
                         enabled: true,
                         max_files: 10,
                         max_age_seconds: 60,
+                        protect_recent_seconds: 300,
                     },
                 },
                 sinks: LoggingSinksConfig {
@@ -1312,6 +1367,74 @@ fn validate_inline_or_path_non_empty(
         cfg.logging.sinks.file.path = Some(PathBuf::from("/tmp/pgtuskmaster.jsonl"));
 
         assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_file_sink_equal_to_tailed_log_via_dot_segments() {
+        let mut cfg = base_runtime_config();
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = Some(PathBuf::from("/tmp/pgtuskmaster/./postgres.log"));
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "logging.sinks.file.path",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_file_sink_equal_to_tailed_log_via_parent_segments() {
+        let mut cfg = base_runtime_config();
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path =
+            Some(PathBuf::from("/tmp/pgtuskmaster/tmp/../postgres.log"));
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "logging.sinks.file.path",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_file_sink_inside_log_dir_via_dot_segments() {
+        let mut cfg = base_runtime_config();
+        cfg.logging.postgres.log_dir = Some(PathBuf::from("/tmp/pgtuskmaster/log_dir"));
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path =
+            Some(PathBuf::from("/tmp/pgtuskmaster/log_dir/./out.jsonl"));
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "logging.sinks.file.path",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_archive_command_log_inside_log_dir_via_dot_segments() {
+        let mut cfg = base_runtime_config();
+        cfg.logging.postgres.log_dir = Some(PathBuf::from("/tmp/pgtuskmaster/log_dir"));
+        cfg.logging.postgres.archive_command_log_file =
+            Some(PathBuf::from("/tmp/pgtuskmaster/log_dir/./archive.jsonl"));
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "logging.postgres.archive_command_log_file",
+                ..
+            })
+        ));
     }
 
     #[test]

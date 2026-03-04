@@ -189,7 +189,7 @@ capture_subprocess_output = true
 enabled = true
 archive_command_log_file = "/var/log/pgtuskmaster/archive_command.jsonl"
 poll_interval_ms = 200
-cleanup = { enabled = true, max_files = 50, max_age_seconds = 604800 }
+cleanup = { enabled = true, max_files = 50, max_age_seconds = 604800, protect_recent_seconds = 300 }
 
 [logging.sinks.stderr]
 enabled = true
@@ -208,6 +208,17 @@ restore = ["--repo1-path=/var/lib/pgbackrest"]
 archive_push = ["--repo1-path=/var/lib/pgbackrest"]
 archive_get = ["--repo1-path=/var/lib/pgbackrest"]
 ```
+
+Postgres log ingestion and cleanup notes:
+
+- `logging.postgres.log_dir` (optional) is scanned for `*.log` and `*.json` and tailed for additional observability signals (for example `postgres.json` when you use `jsonlog`).
+- `logging.postgres.cleanup` applies only to `logging.postgres.log_dir` and is designed to be safe-by-default:
+  - it never deletes `postgres.json`, `postgres.stderr.log`, or `postgres.stdout.log`,
+  - it does not delete files modified within `protect_recent_seconds`, and
+  - it treats missing/failed metadata reads conservatively (the file is kept and the cleanup issue is surfaced via internal logs).
+- Path ownership guardrails:
+  - if `logging.sinks.file.enabled = true`, `logging.sinks.file.path` must not overlap tailed Postgres inputs and must not be inside `logging.postgres.log_dir` (to avoid self-ingestion loops),
+  - `logging.postgres.archive_command_log_file` must not be inside `logging.postgres.log_dir` (to avoid cleanup/tailer coupling).
 
 Takeover policy details:
 
