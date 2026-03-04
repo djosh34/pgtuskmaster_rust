@@ -79,3 +79,4 @@ You are free and encouraged to make large code/schema changes, if that will impr
 - Under `cargo clippy -D warnings`, avoid `assert!(false, ...)` patterns (triggers `clippy::assertions_on_constants`); prefer `#[test] -> Result<(), E>` and `return Err(...)` for unreachable branches.
 - If a type becomes part of a public config surface, its defining module must be public (not just the type), otherwise integration tests/examples cannot name the type path (e.g. exposing `PgSslMode` required `pub mod pginfo`).
 - `make test-long` HA scenario matrix can sporadically fail with a transient CLI transport error when submitting `/switchover`; reruns often pass. If it becomes frequent, add retry/backoff in the switchover submit helper and/or an explicit API-readiness check before issuing the request.
+- Under `cargo clippy -D warnings`, prefer `Result::unwrap_or(...)` over manual `match` fallbacks for simple defaulting; `clippy::manual_unwrap_or` is enforced.

@@ -105,6 +105,7 @@ struct SqlWorkloadWorkerStats {
     transient_failures: u64,
     fencing_failures: u64,
     hard_failures: u64,
+    commit_timestamp_capture_failures: u64,
     write_latency_total_ms: u64,
     write_latency_max_ms: u64,
     committed_keys: Vec<String>,
@@ -127,6 +128,7 @@ struct SqlWorkloadStats {
     transient_failures: u64,
     fencing_failures: u64,
     hard_failures: u64,
+    commit_timestamp_capture_failures: u64,
     unique_committed_keys: usize,
     committed_keys: Vec<String>,
     committed_at_unix_ms: Vec<u64>,
@@ -312,11 +314,12 @@ impl ClusterFixture {
     }
 
     fn record(&mut self, message: impl Into<String>) {
-        let now = match ha_e2e::util::unix_now() {
-            Ok(value) => value.0,
-            Err(_) => 0,
+        let stamp = match ha_e2e::util::unix_now() {
+            Ok(value) => value.0.to_string(),
+            Err(err) => format!("time_error:{err}"),
         };
-        self.timeline.push(format!("[{now}] {}", message.into()));
+        self.timeline
+            .push(format!("[{stamp}] {}", message.into()));
     }
 
     fn node_by_id(&self, id: &str) -> Option<&ha_e2e::NodeHandle> {
@@ -568,6 +571,9 @@ impl ClusterFixture {
                         .fencing_failures
                         .saturating_add(worker.fencing_failures);
                     stats.hard_failures = stats.hard_failures.saturating_add(worker.hard_failures);
+                    stats.commit_timestamp_capture_failures = stats
+                        .commit_timestamp_capture_failures
+                        .saturating_add(worker.commit_timestamp_capture_failures);
                     stats
                         .committed_at_unix_ms
                         .extend(worker.committed_at_unix_ms.iter().copied());
@@ -694,6 +700,12 @@ impl ClusterFixture {
     }
 
     fn assert_no_dual_primary_in_samples(stats: &HaObservationStats) -> Result<(), WorkerError> {
+        if stats.sample_count == 0 {
+            return Err(WorkerError::Message(format!(
+                "insufficient HA sample evidence: sample_count=0 api_error_count={}",
+                stats.api_error_count
+            )));
+        }
         if stats.max_concurrent_primaries > 1 {
             return Err(WorkerError::Message(format!(
                 "dual primary observed during sampled window; max_concurrent_primaries={}",
@@ -701,6 +713,60 @@ impl ClusterFixture {
             )));
         }
         Ok(())
+    }
+
+    fn count_commits_after_cutoff_strict(
+        workload: &SqlWorkloadStats,
+        cutoff_ms: u64,
+    ) -> Result<usize, WorkerError> {
+        if workload.commit_timestamp_capture_failures > 0 {
+            return Err(WorkerError::Message(format!(
+                "cannot evaluate fencing cutoff: commit_timestamp_capture_failures={}",
+                workload.commit_timestamp_capture_failures
+            )));
+        }
+        if workload.committed_writes == 0 {
+            return Err(WorkerError::Message(
+                "cannot evaluate fencing cutoff with zero committed writes".to_string(),
+            ));
+        }
+        let committed_writes_usize = usize::try_from(workload.committed_writes).map_err(|_| {
+            WorkerError::Message("committed_writes does not fit into usize".to_string())
+        })?;
+        if workload.committed_at_unix_ms.len() != committed_writes_usize {
+            return Err(WorkerError::Message(format!(
+                "cannot evaluate fencing cutoff: committed_at_unix_ms incomplete (timestamps={} committed_writes={})",
+                workload.committed_at_unix_ms.len(),
+                workload.committed_writes
+            )));
+        }
+        if workload.committed_at_unix_ms.contains(&0) {
+            return Err(WorkerError::Message(
+                "cannot evaluate fencing cutoff: committed_at_unix_ms contains 0 timestamp"
+                    .to_string(),
+            ));
+        }
+
+        Ok(workload
+            .committed_at_unix_ms
+            .iter()
+            .filter(|timestamp| **timestamp > cutoff_ms)
+            .count())
+    }
+
+    fn finalize_no_dual_primary_window(
+        successful_samples: u64,
+        poll_attempts: u64,
+        poll_errors: u64,
+        last_poll_error: Option<&str>,
+    ) -> Result<(), WorkerError> {
+        if successful_samples > 0 {
+            return Ok(());
+        }
+        let detail = last_poll_error.unwrap_or("none");
+        Err(WorkerError::Message(format!(
+            "insufficient evidence for split-brain window assertion: successful_samples=0 poll_attempts={poll_attempts} poll_errors={poll_errors} last_poll_error={detail}"
+        )))
     }
 
     async fn assert_former_primary_demoted_after_transition(
@@ -1394,22 +1460,42 @@ impl ClusterFixture {
 
     async fn assert_no_dual_primary_window(&mut self, window: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
+        let mut poll_attempts = 0u64;
+        let mut successful_samples = 0u64;
+        let mut poll_errors = 0u64;
+        let mut last_poll_error: Option<String> = None;
         loop {
-            if let Ok(states) = self.cluster_ha_states().await {
-                if Self::primary_members(&states).len() > 1 {
-                    return Err(WorkerError::Message(
-                        "split-brain detected: more than one primary".to_string(),
-                    ));
+            poll_attempts = poll_attempts.saturating_add(1);
+            match self.cluster_ha_states().await {
+                Ok(states) => {
+                    successful_samples = successful_samples.saturating_add(1);
+                    if Self::primary_members(&states).len() > 1 {
+                        return Err(WorkerError::Message(
+                            "split-brain detected: more than one primary".to_string(),
+                        ));
+                    }
+                }
+                Err(err) => {
+                    poll_errors = poll_errors.saturating_add(1);
+                    last_poll_error = Some(err.to_string());
                 }
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(());
+                return Self::finalize_no_dual_primary_window(
+                    successful_samples,
+                    poll_attempts,
+                    poll_errors,
+                    last_poll_error.as_deref(),
+                );
             }
             tokio::time::sleep(Duration::from_millis(75)).await;
         }
     }
 
-    async fn wait_for_all_failsafe(&mut self, timeout: Duration) -> Result<(), WorkerError> {
+    async fn wait_for_no_primary_and_any_failsafe_best_effort(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut observed_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
         let mut last_observation: Option<String> = None;
@@ -1419,7 +1505,7 @@ impl ClusterFixture {
                     .as_deref()
                     .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for no-quorum fail-safe condition via API (no primary + at least one FailSafe + all nodes observed); last_observation={detail}"
+                    "timed out waiting for no-quorum fail-safe condition via API (no primary + at least one FailSafe observed; best-effort); last_observation={detail}"
                 )));
             }
             self.ensure_runtime_tasks_healthy().await?;
@@ -1715,11 +1801,21 @@ async fn run_sql_workload_worker(
             Ok(_) => {
                 stats.committed_writes = stats.committed_writes.saturating_add(1);
                 stats.committed_keys.push(format!("{worker_id}:{seq}"));
-                let committed_at = match ha_e2e::util::unix_now() {
-                    Ok(value) => value.0,
-                    Err(_) => 0,
-                };
-                stats.committed_at_unix_ms.push(committed_at);
+                match ha_e2e::util::unix_now() {
+                    Ok(value) => {
+                        stats.committed_at_unix_ms.push(value.0);
+                    }
+                    Err(err) => {
+                        stats.commit_timestamp_capture_failures = stats
+                            .commit_timestamp_capture_failures
+                            .saturating_add(1);
+                        stats.hard_failures = stats.hard_failures.saturating_add(1);
+                        stats.last_error = Some(format!(
+                            "target={} write seq={seq} committed but timestamp capture failed: {err}",
+                            target.node_id
+                        ));
+                    }
+                }
             }
             Err(err) => {
                 let err_text = err.to_string();
@@ -1867,7 +1963,9 @@ async fn stop_etcd_majority_and_wait_failsafe(
         stopped_members.join(",")
     ));
 
-    fixture.wait_for_all_failsafe(timeout).await?;
+    fixture
+        .wait_for_no_primary_and_any_failsafe_best_effort(timeout)
+        .await?;
     fixture.record("no-quorum: fail-safe observed (best-effort)");
     Ok(ha_e2e::util::unix_now()?.0)
 }
@@ -2096,8 +2194,10 @@ async fn e2e_multi_node_real_ha_scenario_matrix() -> Result<(), WorkerError> {
             "no-quorum setup: stopped etcd members={}",
             stopped_members.join(",")
         ));
-        fixture.wait_for_all_failsafe(Duration::from_secs(90)).await?;
-        fixture.record("no-quorum fail-safe observed on all nodes");
+        fixture
+            .wait_for_no_primary_and_any_failsafe_best_effort(Duration::from_secs(90))
+            .await?;
+        fixture.record("no-quorum fail-safe observed (best-effort)");
         Ok(())
     })
     .await
@@ -2617,11 +2717,8 @@ async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrit
         }
 
         let cutoff_ms = quorum_lost_at_ms.saturating_add(fencing_grace_ms);
-        let commits_after_cutoff = workload
-            .committed_at_unix_ms
-            .iter()
-            .filter(|timestamp| **timestamp > cutoff_ms)
-            .count();
+        let commits_after_cutoff =
+            ClusterFixture::count_commits_after_cutoff_strict(&workload, cutoff_ms)?;
         let allowed_post_cutoff_commits = 10usize;
         if commits_after_cutoff > allowed_post_cutoff_commits {
             return Err(WorkerError::Message(format!(
@@ -2693,4 +2790,98 @@ async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrit
     finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
     })
     .await
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn dual_primary_sample_assertion_fails_on_zero_samples() {
+        let stats = HaObservationStats {
+            sample_count: 0,
+            api_error_count: 3,
+            ..HaObservationStats::default()
+        };
+        assert!(ClusterFixture::assert_no_dual_primary_in_samples(&stats).is_err());
+    }
+
+    #[test]
+    fn dual_primary_sample_assertion_fails_on_dual_primary() {
+        let stats = HaObservationStats {
+            sample_count: 1,
+            api_error_count: 0,
+            max_concurrent_primaries: 2,
+            ..HaObservationStats::default()
+        };
+        assert!(ClusterFixture::assert_no_dual_primary_in_samples(&stats).is_err());
+    }
+
+    #[test]
+    fn dual_primary_sample_assertion_passes_with_single_primary() -> Result<(), WorkerError> {
+        let stats = HaObservationStats {
+            sample_count: 1,
+            api_error_count: 0,
+            max_concurrent_primaries: 1,
+            ..HaObservationStats::default()
+        };
+        ClusterFixture::assert_no_dual_primary_in_samples(&stats)
+    }
+
+    #[test]
+    fn split_brain_window_finalization_fails_closed() {
+        let result = ClusterFixture::finalize_no_dual_primary_window(0, 5, 5, Some("boom"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn split_brain_window_finalization_succeeds_with_evidence() -> Result<(), WorkerError> {
+        ClusterFixture::finalize_no_dual_primary_window(1, 5, 4, Some("ignored"))
+    }
+
+    #[test]
+    fn fencing_cutoff_count_fails_when_timestamp_capture_failed() {
+        let workload = SqlWorkloadStats {
+            committed_writes: 1,
+            commit_timestamp_capture_failures: 1,
+            committed_at_unix_ms: vec![1234],
+            ..SqlWorkloadStats::default()
+        };
+        assert!(ClusterFixture::count_commits_after_cutoff_strict(&workload, 1000).is_err());
+    }
+
+    #[test]
+    fn fencing_cutoff_count_fails_when_timestamps_incomplete() {
+        let workload = SqlWorkloadStats {
+            committed_writes: 3,
+            commit_timestamp_capture_failures: 0,
+            committed_at_unix_ms: vec![1001, 1002],
+            ..SqlWorkloadStats::default()
+        };
+        assert!(ClusterFixture::count_commits_after_cutoff_strict(&workload, 1000).is_err());
+    }
+
+    #[test]
+    fn fencing_cutoff_count_fails_on_zero_timestamp() {
+        let workload = SqlWorkloadStats {
+            committed_writes: 1,
+            commit_timestamp_capture_failures: 0,
+            committed_at_unix_ms: vec![0],
+            ..SqlWorkloadStats::default()
+        };
+        assert!(ClusterFixture::count_commits_after_cutoff_strict(&workload, 1000).is_err());
+    }
+
+    #[test]
+    fn fencing_cutoff_count_counts_strictly_greater_than_cutoff() -> Result<(), WorkerError> {
+        let workload = SqlWorkloadStats {
+            committed_writes: 3,
+            commit_timestamp_capture_failures: 0,
+            committed_at_unix_ms: vec![1000, 1001, 999],
+            ..SqlWorkloadStats::default()
+        };
+        let count = ClusterFixture::count_commits_after_cutoff_strict(&workload, 1000)?;
+        assert_eq!(count, 1);
+        Ok(())
+    }
 }

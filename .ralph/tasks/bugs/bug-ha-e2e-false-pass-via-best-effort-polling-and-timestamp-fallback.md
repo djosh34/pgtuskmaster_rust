@@ -1,5 +1,5 @@
 ---
-## Bug: HA e2e false-pass via best-effort polling and timestamp fallback <status>not_started</status> <passes>false</passes>
+## Bug: HA e2e false-pass via best-effort polling and timestamp fallback <status>done</status> <passes>true</passes>
 
 <description>
 HA e2e assertions can pass without reliable cluster-wide observations during unstable windows.
@@ -22,10 +22,10 @@ Expected direction:
 </description>
 
 <acceptance_criteria>
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this bug impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this bug impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 <plan>
