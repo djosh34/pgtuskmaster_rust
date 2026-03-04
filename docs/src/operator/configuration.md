@@ -66,7 +66,7 @@ repo = "1"
 
 [backup.pgbackrest.options]
 # Extra pgBackRest CLI options, per operation. These are appended to the rendered command.
-# For safety, options must not override stanza/repo (no `--stanza*` / `--repo*` tokens).
+# For safety, options must not override managed fields (no `--stanza` / `--repo` / `--pg1-path` tokens).
 backup = []
 info = ["--log-level-console=info"]
 check = []
@@ -153,9 +153,73 @@ Fields:
   - when `true`, the node requires:
     - `process.binaries.pgbackrest` to be set to a valid executable path
     - `[backup.pgbackrest] stanza` and `repo` to be set and non-empty.
+    - `logging.postgres.archive_command_log_file` to be set (pgtuskmaster writes one JSON line per `archive_command`/`restore_command` invocation for observability)
 - `provider`: currently only `pgbackrest` is supported.
 - `[backup.pgbackrest.options]`: extra pgBackRest CLI options per operation (arrays of strings).
-  - For safety and determinism, these option tokens must not override managed fields (no `--stanza*` / `--repo*`).
+  - For safety and determinism, these option tokens must not override managed fields (no `--stanza` / `--repo` / `--pg1-path`).
+
+#### `backup.bootstrap` (restore bootstrap and config takeover)
+
+`backup.bootstrap` controls whether an *uninitialized* node (a node whose `postgres.data_dir` is `Missing|Empty`) is allowed to restore itself from a backup instead of running `initdb`.
+
+When enabled, pgtuskmaster:
+
+- selects a `RestoreBootstrap` startup mode (instead of `InitializePrimary`) when the cluster is uninitialized,
+- runs `pgbackrest restore` to materialize `PGDATA`,
+- performs a deterministic takeover of backup-era config artifacts *before PostgreSQL starts*, and
+- starts PostgreSQL using a pgtuskmaster-owned config file via `-c config_file=...` so backup-era `postgresql.conf` does not apply.
+
+Example:
+
+```toml
+[backup]
+enabled = true
+provider = "pgbackrest"
+
+[backup.bootstrap]
+enabled = true
+takeover_policy = "quarantine" # or "delete"
+recovery_mode = "default"
+
+[logging]
+level = "info"
+capture_subprocess_output = true
+
+[logging.postgres]
+enabled = true
+archive_command_log_file = "/var/log/pgtuskmaster/archive_command.jsonl"
+poll_interval_ms = 200
+cleanup = { enabled = true, max_files = 50, max_age_seconds = 604800 }
+
+[logging.sinks.stderr]
+enabled = true
+
+[logging.sinks.file]
+enabled = false
+mode = "append"
+
+[backup.pgbackrest]
+stanza = "prod-cluster-a"
+repo = "1"
+
+[backup.pgbackrest.options]
+# You typically need to supply repository configuration here (example: repo1-path).
+restore = ["--repo1-path=/var/lib/pgbackrest"]
+archive_push = ["--repo1-path=/var/lib/pgbackrest"]
+archive_get = ["--repo1-path=/var/lib/pgbackrest"]
+```
+
+Takeover policy details:
+
+- `quarantine`: moves conflicting files into a timestamped `PGDATA/pgtm.quarantine.*` directory.
+- `delete`: removes conflicting files.
+
+Conflicting artifacts removed/quarantined during takeover include:
+
+- `postgresql.conf` and `postgresql.auto.conf`
+- `pg_hba.conf` and `pg_ident.conf`
+- `recovery.signal` and `standby.signal` (never inherited)
+- any stale `pgtm.*` managed artifacts
 
 ### `[api]`
 

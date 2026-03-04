@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BackupCommandTemplate {
     pub(crate) args: Vec<String>,
@@ -28,6 +30,7 @@ pub(crate) struct CheckInput {
 pub(crate) struct RestoreInput {
     pub(crate) stanza: String,
     pub(crate) repo: String,
+    pub(crate) pg1_path: PathBuf,
     pub(crate) options: Vec<String>,
 }
 
@@ -35,6 +38,7 @@ pub(crate) struct RestoreInput {
 pub(crate) struct ArchivePushInput {
     pub(crate) stanza: String,
     pub(crate) repo: String,
+    pub(crate) pg1_path: PathBuf,
     pub(crate) wal_path: String,
     pub(crate) options: Vec<String>,
 }
@@ -43,6 +47,7 @@ pub(crate) struct ArchivePushInput {
 pub(crate) struct ArchiveGetInput {
     pub(crate) stanza: String,
     pub(crate) repo: String,
+    pub(crate) pg1_path: PathBuf,
     pub(crate) wal_segment: String,
     pub(crate) destination_path: String,
     pub(crate) options: Vec<String>,

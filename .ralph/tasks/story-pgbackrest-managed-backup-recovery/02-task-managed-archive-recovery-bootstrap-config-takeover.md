@@ -62,8 +62,9 @@
 - [ ] **Explicit restore intent:** restoring a node must never be an implicit side-effect of `backup.enabled`. Add a dedicated config knob that opts a node into running a restore during bootstrap when `PGDATA` is `Missing|Empty`.
 - [ ] **Fail closed:** if restore intent is enabled, require pgBackRest to be fully configured (`process.binaries.pgbackrest`, stanza/repo) and require structured logging configuration for archive/recovery commands (see logging decisions below).
 - [ ] **Pgtuskmaster owns recovery-critical Postgres settings from first boot:** for a restored/cloned `PGDATA`, Postgres must start using a pgtuskmaster-owned config file (`config_file=...`) and *must not* read backup-era `postgresql.auto.conf` / backup-era `archive_command` / backup-era `restore_command`.
+- [ ] **Recovery signal files are owned, not inherited:** restore bootstrap must not “trust” backup-shipped `recovery.signal` / `standby.signal`. For this task, restore bootstrap creates a pgtuskmaster-owned `recovery.signal` (primary-style archive recovery) and removes/quarantines any existing `standby.signal`. (Replica/standby wiring is deferred to task 05.)
 - [ ] **Deterministic purge policy:** takeover must either (a) move conflicting backup-era artifacts into a timestamped quarantine directory under `PGDATA` for forensics, or (b) remove them. The choice must be deterministic and logged.
-- [ ] **No external runtime deps in wrappers:** the archive/restore command wrapper must not depend on `python3` (or other “maybe installed” tools). Only POSIX sh + coreutils (`sed`, `date`, `mkdir`, etc.) is allowed.
+- [ ] **No external runtime deps in wrappers:** the archive/restore command wrapper must not depend on `python3` (or other “maybe installed” tools). It may be (a) POSIX sh + coreutils, or (b) a pgtuskmaster-owned compiled helper/subcommand invoked by a trivial sh wrapper.
 
 ### 1) Exhaustive checklist (files/modules and requirements)
 
@@ -73,19 +74,22 @@
     - [ ] `enabled: bool` (default false)
     - [ ] `provider: BackupProvider` (reuse existing enum; today only pgBackRest)
     - [ ] `takeover_policy: enum { quarantine, delete }` (default quarantine)
-    - [ ] `recovery: enum { default }` for now (leave `standby` for task 03 when we can also set `primary_conninfo`)
+    - [ ] `recovery: enum { default }` for now (leave `standby` for task 05 when we can also set `primary_conninfo`)
 - [ ] `src/config/defaults.rs`: defaults for new bootstrap/restore block.
 - [ ] `src/config/parser.rs`: validation rules:
   - [ ] if `backup.bootstrap.enabled=true`: require `backup.enabled=true`
   - [ ] if `backup.enabled=true`: keep existing pgBackRest validation
   - [ ] if `backup.bootstrap.enabled=true`: require `logging.postgres.archive_command_log_file` (so restore/archive events are always observable during recovery)
+  - [ ] enforce logging path ownership invariants to avoid tail/delete loops and accidental self-ingestion:
+    - [ ] `logging.sinks.file.path` must not equal and must not be under any tailed Postgres input (`postgres.log_file`, `logging.postgres.pg_ctl_log_file`, `logging.postgres.log_dir`, `logging.postgres.archive_command_log_file`)
+    - [ ] `logging.postgres.archive_command_log_file` must not be inside `logging.postgres.log_dir` unless cleanup explicitly excludes it (preferred: keep them disjoint)
   - [ ] validate all new enum fields non-empty / deny unknown fields.
 
 #### Runtime startup orchestration
 - [ ] `src/runtime/node.rs`: extend startup planning + execution:
   - [ ] Add `StartupMode::RestoreBootstrap` variant.
   - [ ] Selection logic: when `PGDATA` is `Missing|Empty` and **no init lock** exists, pick `RestoreBootstrap` if `backup.bootstrap.enabled=true`, else keep existing `InitializePrimary`.
-  - [ ] Keep precedence: if a healthy leader exists, keep using `CloneReplica` (do not silently restore a replica; that is task 03).
+  - [ ] Keep precedence: if a healthy leader exists, keep using `CloneReplica` (do not silently restore a replica; that is task 05).
   - [ ] Execution order for `RestoreBootstrap`:
     - [ ] `PgBackRestRestore` (startup subprocess capture enabled)
     - [ ] `postgres_managed::takeover_restored_data_dir(...)` (must run before any Postgres start)
@@ -100,13 +104,17 @@
       - [ ] `postgresql.auto.conf`
       - [ ] `pg_hba.conf`, `pg_ident.conf` (backup-era security risk)
       - [ ] any existing `pgtm.*` managed artifacts (stale)
-      - [ ] signal files (`recovery.signal`, `standby.signal`) **unless** we explicitly decide to preserve them (for now: remove to avoid “accidental standby”; task 03 can re-introduce with full wiring).
+      - [ ] signal files:
+        - [ ] remove/quarantine any existing `standby.signal` (avoid accidental standby)
+        - [ ] remove/quarantine any existing `recovery.signal` (never inherit backup intent)
+        - [ ] write a fresh pgtuskmaster-owned `recovery.signal` for restore bootstrap so `restore_command` is actually exercised during recovery
     - [ ] Ensure `PGDATA` contains a pgtuskmaster-owned config file, e.g. `PGDATA/pgtm.postgresql.conf`.
       - [ ] File must be valid even if the backup shipped no `postgresql.conf` or shipped an empty one.
       - [ ] The managed config must include *at minimum*:
         - [ ] `archive_command` ownership (wrapper path)
         - [ ] `restore_command` ownership (wrapper path)
         - [ ] logging config overrides that are required for our ingest pipeline (if any)
+      - [ ] Prefer `archive_command` = `<wrapper> archive-push %p` (do not pass `%f` unless we actually need it).
     - [ ] Ensure managed artifacts exist in a strict write order (to make logs/actionable failures deterministic):
       1) create quarantine dir (if enabled)
       2) quarantine/delete conflicting artifacts
@@ -127,9 +135,10 @@
   - [ ] Update job builders to populate `pg1_path` fields.
 - [ ] `src/backup/pgbackrest.rs`:
   - [ ] Render `--pg1-path <path>` for restore and archive operations from typed fields.
-  - [ ] Tighten `validate_option_tokens` to forbid overriding any managed ownership flags:
-    - [ ] `--stanza*`, `--repo*` (already)
-    - [ ] `--pg1-path*` (new)
+  - [ ] Tighten `validate_option_tokens` to forbid overriding any managed ownership flags using **exact option keys**, not prefix matches (to avoid accidentally forbidding legitimate pgBackRest flags like `--repo1-path`):
+    - [ ] forbid `--stanza`, `--stanza=...`
+    - [ ] forbid `--repo`, `--repo=...` (but allow `--repo1-*` / `--repo2-*` etc)
+    - [ ] forbid `--pg1-path`, `--pg1-path=...`
     - [ ] restore-only safety: forbid `--type*` and `--recovery-option*` if we move them into typed fields.
 - [ ] `src/process/worker.rs`:
   - [ ] Update command builder to use the new typed fields and surface precise errors (no `unwrap/expect/panic`).
@@ -147,18 +156,22 @@
       - [ ] capture exit status
       - [ ] append **one JSON line** per invocation to `logging.postgres.archive_command_log_file`
       - [ ] include stable attributes (schema below)
-      - [ ] not depend on python/jq; implement minimal JSON escaping in shell.
+      - [ ] not depend on python/jq; prefer a pgtuskmaster-owned compiled helper/subcommand for JSON emission (or emit fixed-format key-value + base64 payload that Rust parses) to avoid fragile shell escaping.
+      - [ ] ensure per-invocation logging is concurrency-safe (single-write strategy or lock) so multiple concurrent WAL restores do not corrupt the JSONL stream.
   - [ ] Rename the module/file if necessary (`archive_wrapper` → `pgbackrest_command_wrapper`) but keep changes minimal unless the rename clarifies ownership.
 - [ ] `src/logging/postgres_ingest.rs`:
   - [ ] Stop generating wrappers in ingest worker; wrapper creation belongs to startup/managed config and must fail fast if it cannot be created.
   - [ ] Ingest JSONL records from `archive_command_log_file` and normalize into stable attributes:
     - [ ] `backup.event_kind = archive_push|archive_get`
     - [ ] `backup.provider = pgbackrest`
+    - [ ] `backup.schema_version`
+    - [ ] `backup.invocation_id`
+    - [ ] `backup.ts_ms`
     - [ ] `backup.stanza`, `backup.repo`
     - [ ] `backup.pg1_path`
     - [ ] `backup.wal_path` (push) / `backup.wal_segment` + `backup.destination_path` (get)
     - [ ] `backup.status_code`, `backup.success`
-    - [ ] include raw pgBackRest stderr/stdout (truncated) as `backup.output` for operator debugging.
+    - [ ] include raw pgBackRest stderr/stdout (truncated) as `backup.output` for operator debugging, with `backup.output_truncated=true|false` and a fixed max byte contract.
 
 #### Tests
 - [ ] `src/runtime/node.rs`:
@@ -182,6 +195,10 @@
     - [ ] run the startup path that performs takeover then starts Postgres
     - [ ] assert Postgres starts successfully and `SHOW max_connections` reflects defaults (or expected managed baseline), proving backup-era config did not apply.
   - [ ] Add a failure-path test where recovery cannot proceed (e.g., configure `restore_command` to an invalid path) and assert startup fails with actionable `PgTool` + ingest logs.
+  - [ ] Add wrapper concurrency + path-escaping tests:
+    - [ ] wrapper + log file paths containing spaces/quotes are handled correctly (or explicitly rejected by config validation)
+    - [ ] concurrent `archive-get` invocations do not corrupt JSONL (no interleaved half-records)
+  - [ ] Add config validation tests for the new logging path-ownership invariants (reject overlapping sink/source paths).
 
 #### Docs
 - [ ] `docs/src/operator/configuration.md`: document `backup.bootstrap` and the takeover policy, including “what files are removed/quarantined”.
@@ -196,4 +213,4 @@
 - [ ] `make test-long`
 - [ ] `make lint`
 
-TO BE VERIFIED
+NOW EXECUTE

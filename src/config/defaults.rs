@@ -1,5 +1,6 @@
 use super::schema::{
-    BackupConfig, BackupOptions, BackupOptionsV2Input, BinaryPaths, BinaryPathsV2Input,
+    BackupBootstrapConfig, BackupBootstrapConfigV2Input, BackupConfig, BackupOptions,
+    BackupOptionsV2Input, BinaryPaths, BinaryPathsV2Input,
     DebugConfig, FileSinkConfig, FileSinkMode, LogCleanupConfig, LogLevel, LoggingConfig,
     LoggingSinksConfig, PgBackRestConfig, PgBackRestConfigV2Input, PostgresLoggingConfig,
     ProcessConfig, StderrSinkConfig,
@@ -134,14 +135,31 @@ pub(crate) fn normalize_backup_config(
 
     let enabled = input.enabled.unwrap_or(defaults.enabled);
     let provider = input.provider.unwrap_or(defaults.provider);
+    let bootstrap = normalize_backup_bootstrap_config(input.bootstrap, defaults.bootstrap);
 
     let pgbackrest = normalize_pgbackrest_config(input.pgbackrest, defaults.pgbackrest)?;
 
     Ok(BackupConfig {
         enabled,
         provider,
+        bootstrap,
         pgbackrest,
     })
+}
+
+fn normalize_backup_bootstrap_config(
+    input: Option<BackupBootstrapConfigV2Input>,
+    defaults: BackupBootstrapConfig,
+) -> BackupBootstrapConfig {
+    let Some(input) = input else {
+        return defaults;
+    };
+
+    BackupBootstrapConfig {
+        enabled: input.enabled.unwrap_or(defaults.enabled),
+        takeover_policy: input.takeover_policy.unwrap_or(defaults.takeover_policy),
+        recovery_mode: input.recovery_mode.unwrap_or(defaults.recovery_mode),
+    }
 }
 
 fn default_backup_options() -> BackupOptions {

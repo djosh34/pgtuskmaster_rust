@@ -65,7 +65,7 @@
   - [x] defining typed *operations* (backup/info/check/restore/archive_{get,push}) in a new `crate::backup` module
   - [x] defining a provider selection enum (`BackupProvider`) in config and a provider-facing command rendering layer that consumes typed operation inputs (no ad-hoc stringly pgBackRest CLI scattered around)
 - [x] **Process integration:** implement backup operations as typed `ProcessJobKind` variants so subprocess execution stays centralized (timeouts/cancellation/output logging/job_id correlation stays uniform).
-- [x] **Output strategy (this task):** do *not* wire full JSON parsing into runtime state yet (that’s task 04). For now:
+- [x] **Output strategy (this task):** do *not* wire full JSON parsing into runtime state yet (that’s task 06). For now:
   - [x] render pgBackRest commands such that machine output is possible (`--output=json` for `info`/`check` at minimum)
   - [x] rely on existing process-worker line capture + structured log attributes (`job_id`, `job_kind`, `binary`) for observability
   - [x] still define typed output models in `crate::backup` so later tasks can attach parsed JSON without changing public shapes again.

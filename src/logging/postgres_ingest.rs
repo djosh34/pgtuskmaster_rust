@@ -18,18 +18,6 @@ pub(crate) struct PostgresIngestWorkerCtx {
 }
 
 pub(crate) async fn run(ctx: PostgresIngestWorkerCtx) -> Result<(), WorkerError> {
-    if let Ok(Some(path)) = crate::logging::archive_wrapper::ensure_archive_wrapper(&ctx.cfg) {
-        let _ = ctx.log.emit(
-            SeverityText::Info,
-            format!("archive wrapper ready at {}", path.display()),
-            LogSource {
-                producer: LogProducer::App,
-                transport: LogTransport::Internal,
-                parser: LogParser::App,
-                origin: "archive_wrapper".to_string(),
-            },
-        );
-    }
     let mut state = PostgresIngestWorkerState::new(&ctx.cfg);
     loop {
         if ctx.cfg.logging.postgres.enabled {
@@ -363,7 +351,57 @@ fn normalize_postgres_json(value: Value) -> Option<ParsedLine> {
     let severity = map_pg_severity(severity_raw);
 
     let mut attributes = BTreeMap::new();
-    attributes.insert("postgres.json".to_string(), value);
+    attributes.insert("postgres.json".to_string(), value.clone());
+
+    if let Some(pgtm) = obj.get("pgtuskmaster").and_then(|v| v.as_object()) {
+        if let Some(backup) = pgtm.get("backup").and_then(|v| v.as_object()) {
+            if let Some(v) = backup.get("schema_version") {
+                attributes.insert("backup.schema_version".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("provider") {
+                attributes.insert("backup.provider".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("event_kind") {
+                attributes.insert("backup.event_kind".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("invocation_id") {
+                attributes.insert("backup.invocation_id".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("ts_ms") {
+                attributes.insert("backup.ts_ms".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("stanza") {
+                attributes.insert("backup.stanza".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("repo") {
+                attributes.insert("backup.repo".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("pg1_path") {
+                attributes.insert("backup.pg1_path".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("wal_path") {
+                attributes.insert("backup.wal_path".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("wal_segment") {
+                attributes.insert("backup.wal_segment".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("destination_path") {
+                attributes.insert("backup.destination_path".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("status_code") {
+                attributes.insert("backup.status_code".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("success") {
+                attributes.insert("backup.success".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("output") {
+                attributes.insert("backup.output".to_string(), v.clone());
+            }
+            if let Some(v) = backup.get("output_truncated") {
+                attributes.insert("backup.output_truncated".to_string(), v.clone());
+            }
+        }
+    }
 
     Some(ParsedLine {
         severity,
@@ -933,7 +971,6 @@ mod tests {
             let socket_dir = ns.child_dir("sock");
             let log_file = ns.child_dir("runtime/pg_ctl.log");
             let log_dir = ns.child_dir("logs/pg16-node-a");
-            let archive_dir = ns.child_dir("archive/pg16");
             let archive_log = ns.child_dir("logs/archive/archive_command.jsonl");
             std::fs::create_dir_all(&socket_dir).map_err(|err| {
                 WorkerError::Message(format!("create socket_dir failed: {err}"))
@@ -944,7 +981,6 @@ mod tests {
                 })?;
             }
             let _ = std::fs::create_dir_all(&log_dir);
-            let _ = std::fs::create_dir_all(&archive_dir);
             if let Some(parent) = archive_log.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -960,16 +996,17 @@ mod tests {
             cfg.logging.postgres.log_dir = Some(log_dir.clone());
             cfg.logging.postgres.archive_command_log_file = Some(archive_log.clone());
             cfg.logging.postgres.cleanup.enabled = false;
+            cfg.backup.enabled = true;
+            if let Some(pg_cfg) = cfg.backup.pgbackrest.as_mut() {
+                pg_cfg.stanza = Some("stanza-a".to_string());
+                pg_cfg.repo = Some("1".to_string());
+            }
 
             let (log_handle, sink) = test_log_handle();
 
-            let wrapper = crate::logging::archive_wrapper::ensure_archive_wrapper(&cfg)?
-                .ok_or_else(|| WorkerError::Message("archive wrapper was not created".to_string()))?;
-            let archive_cmd = format!(
-                "{} --archive-dir {} \"%p\" \"%f\"",
-                wrapper.display(),
-                archive_dir.display()
-            );
+            let wrapper = crate::logging::archive_wrapper::ensure_pgbackrest_wal_wrapper(&cfg)
+                .map_err(|err| WorkerError::Message(format!("create pgbackrest wal wrapper failed: {err}")))?;
+            let archive_cmd = format!("{} archive-push %p", wrapper.display());
 
             let (publisher, _subscriber) = new_state_channel(
                 ProcessState::Idle {
@@ -1196,7 +1233,10 @@ mod tests {
                 let saw_archive = collected.iter().any(|r| {
                     r.source.producer == crate::logging::LogProducer::PostgresArchive
                         && r.source.parser == crate::logging::LogParser::PostgresJson
-                        && r.message.contains("archive_command status=")
+                        && r.attributes
+                            .get("backup.event_kind")
+                            .and_then(|v| v.as_str())
+                            == Some("archive_push")
                 });
                 if saw_pg_ctl_log && saw_pg_tool && saw_jsonlog && saw_archive {
                     break;
@@ -1241,7 +1281,10 @@ mod tests {
             let saw_archive = all_records.iter().any(|r| {
                 r.source.producer == crate::logging::LogProducer::PostgresArchive
                     && r.source.parser == crate::logging::LogParser::PostgresJson
-                    && r.message.contains("archive_command status=")
+                    && r.attributes
+                        .get("backup.event_kind")
+                        .and_then(|v| v.as_str())
+                        == Some("archive_push")
             });
             if !saw_pg_ctl_log {
                 return Err(WorkerError::Message(

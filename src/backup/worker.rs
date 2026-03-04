@@ -65,6 +65,7 @@ pub(crate) fn pgbackrest_restore_job(cfg: &RuntimeConfig, id: JobId) -> Result<P
         kind: ProcessJobKind::PgBackRestRestore(PgBackRestRestoreSpec {
             stanza,
             repo,
+            pg1_path: cfg.postgres.data_dir.clone(),
             options,
             timeout_ms: None,
         }),
@@ -87,6 +88,7 @@ pub(crate) fn pgbackrest_archive_push_job(
         kind: ProcessJobKind::PgBackRestArchivePush(PgBackRestArchivePushSpec {
             stanza,
             repo,
+            pg1_path: cfg.postgres.data_dir.clone(),
             wal_path,
             options,
             timeout_ms: None,
@@ -116,6 +118,7 @@ pub(crate) fn pgbackrest_archive_get_job(
         kind: ProcessJobKind::PgBackRestArchiveGet(PgBackRestArchiveGetSpec {
             stanza,
             repo,
+            pg1_path: cfg.postgres.data_dir.clone(),
             wal_segment,
             destination_path,
             options,

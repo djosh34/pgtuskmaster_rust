@@ -10,3 +10,4 @@ Read order for most teams:
 2. Deployment and Topology
 3. Observability and Day-2 Operations
 4. Troubleshooting by Symptom
+5. Recovery Bootstrap Runbook

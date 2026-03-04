@@ -7,7 +7,11 @@ use std::{
 
 use thiserror::Error;
 
-use crate::config::{ApiTlsMode, InlineOrPath, RuntimeConfig};
+use crate::config::{ApiTlsMode, BackupTakeoverPolicy, InlineOrPath, RuntimeConfig};
+
+const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
+const MANAGED_RECOVERY_SIGNAL_NAME: &str = "recovery.signal";
+const MANAGED_STANDBY_SIGNAL_NAME: &str = "standby.signal";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedPostgresConfig {
@@ -60,6 +64,29 @@ pub(crate) fn materialize_managed_postgres_config(
         "ident_file".to_string(),
         managed_ident.display().to_string(),
     );
+
+    if cfg.backup.enabled || cfg.backup.bootstrap.enabled {
+        let wrapper = crate::logging::archive_wrapper::ensure_pgbackrest_wal_wrapper(cfg)
+            .map_err(|err| ManagedPostgresError::InvalidConfig { message: err })?;
+
+        extra_settings.insert(
+            "archive_command".to_string(),
+            format!("{} archive-push %p", wrapper.display()),
+        );
+        extra_settings.insert(
+            "restore_command".to_string(),
+            format!("{} archive-get %f %p", wrapper.display()),
+        );
+    }
+
+    if cfg.backup.bootstrap.enabled {
+        let managed_conf = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
+        ensure_managed_postgresql_conf(&managed_conf)?;
+        extra_settings.insert(
+            "config_file".to_string(),
+            managed_conf.display().to_string(),
+        );
+    }
 
     match cfg.postgres.tls.mode {
         ApiTlsMode::Disabled => {
@@ -120,6 +147,134 @@ pub(crate) fn materialize_managed_postgres_config(
         tls_client_ca_path,
         extra_settings,
     })
+}
+
+pub(crate) fn takeover_restored_data_dir(
+    cfg: &RuntimeConfig,
+    policy: BackupTakeoverPolicy,
+    write_recovery_signal: bool,
+) -> Result<(), ManagedPostgresError> {
+    let data_dir = cfg.postgres.data_dir.as_path();
+    if data_dir.as_os_str().is_empty() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "postgres.data_dir must not be empty".to_string(),
+        });
+    }
+
+    // Ensure the directory exists; pgBackRest restore should create it, but we want clear errors if not.
+    fs::create_dir_all(data_dir).map_err(|err| ManagedPostgresError::Io {
+        message: format!("failed to create postgres.data_dir {}: {err}", data_dir.display()),
+    })?;
+
+    let quarantine_dir = if matches!(policy, BackupTakeoverPolicy::Quarantine) {
+        let millis = now_millis()?;
+        Some(data_dir.join(format!("pgtm.quarantine.{millis}")))
+    } else {
+        None
+    };
+    if let Some(dir) = quarantine_dir.as_ref() {
+        fs::create_dir_all(dir).map_err(|err| ManagedPostgresError::Io {
+            message: format!("failed to create quarantine dir {}: {err}", dir.display()),
+        })?;
+    }
+
+    // Remove/quarantine known config artifacts that can interfere with managed startup.
+    // Note: We intentionally remove postgresql.auto.conf so backup-era ALTER SYSTEM settings cannot apply.
+    let explicit_paths = [
+        "postgresql.conf",
+        "postgresql.auto.conf",
+        "pg_hba.conf",
+        "pg_ident.conf",
+        MANAGED_RECOVERY_SIGNAL_NAME,
+        MANAGED_STANDBY_SIGNAL_NAME,
+    ];
+    for name in explicit_paths {
+        quarantine_or_delete_path(&data_dir.join(name), quarantine_dir.as_ref(), policy)?;
+    }
+
+    // Remove/quarantine any stale managed artifacts.
+    let entries = fs::read_dir(data_dir).map_err(|err| ManagedPostgresError::Io {
+        message: format!("failed to read postgres.data_dir {}: {err}", data_dir.display()),
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|err| ManagedPostgresError::Io {
+            message: format!("failed to read_dir entry: {err}"),
+        })?;
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+        if file_name.starts_with("pgtm.") {
+            quarantine_or_delete_path(&path, quarantine_dir.as_ref(), policy)?;
+        }
+    }
+
+    if write_recovery_signal {
+        // Freshly own recovery intent for restore bootstrap: always archive-recovery (not standby).
+        let recovery_signal = data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME);
+        write_atomic(&recovery_signal, b"", Some(0o644))?;
+    }
+
+    // Ensure we can write a managed config_file path before starting Postgres.
+    let managed_conf = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
+    ensure_managed_postgresql_conf(&managed_conf)?;
+
+    Ok(())
+}
+
+fn ensure_managed_postgresql_conf(path: &Path) -> Result<(), ManagedPostgresError> {
+    if path.as_os_str().is_empty() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "managed postgresql.conf path must not be empty".to_string(),
+        });
+    }
+    let contents = b"# managed by pgtuskmaster\n";
+    write_atomic(path, contents, Some(0o644))?;
+    Ok(())
+}
+
+fn quarantine_or_delete_path(
+    path: &Path,
+    quarantine_dir: Option<&PathBuf>,
+    policy: BackupTakeoverPolicy,
+) -> Result<(), ManagedPostgresError> {
+    let meta = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(ManagedPostgresError::Io {
+                message: format!("failed to stat {}: {err}", path.display()),
+            })
+        }
+    };
+    if !meta.is_file() {
+        return Ok(());
+    }
+
+    match policy {
+        BackupTakeoverPolicy::Delete => {
+            fs::remove_file(path).map_err(|err| ManagedPostgresError::Io {
+                message: format!("failed to remove {}: {err}", path.display()),
+            })?;
+        }
+        BackupTakeoverPolicy::Quarantine => {
+            let quarantine_dir = quarantine_dir.ok_or_else(|| ManagedPostgresError::InvalidConfig {
+                message: "quarantine policy requires a quarantine dir".to_string(),
+            })?;
+            let file_name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(name) if !name.is_empty() => name,
+                _ => "managed",
+            };
+            let millis = now_millis()?;
+            let target = quarantine_dir.join(format!("{file_name}.{millis}"));
+            fs::rename(path, &target).map_err(|err| ManagedPostgresError::Io {
+                message: format!(
+                    "failed to quarantine {} to {}: {err}",
+                    path.display(),
+                    target.display()
+                ),
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn load_inline_or_path_string(
@@ -236,6 +391,9 @@ fn now_millis() -> Result<u128, ManagedPostgresError> {
 mod tests {
     use std::{fs, path::PathBuf};
 
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, Instant};
+
     use crate::{
         config::{
             ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
@@ -246,10 +404,22 @@ mod tests {
             TlsServerConfig, TlsServerIdentityConfig,
         },
         pginfo::conninfo::PgSslMode,
+        process::{
+            jobs::{BootstrapSpec, DemoteSpec, ShutdownMode, StartPostgresSpec},
+            state::{ProcessJobKind, ProcessJobRequest, ProcessState},
+            worker::{step_once as process_step_once, TokioCommandRunner},
+        },
+        state::{new_state_channel, JobId, UnixMillis, WorkerStatus},
         test_harness::tls::build_adversarial_tls_fixture,
+        test_harness::{
+            binaries::require_pg16_process_binaries_for_real_tests,
+            namespace::NamespaceGuard,
+            pg16::prepare_pgdata_dir,
+            ports::allocate_ports,
+        },
     };
 
-    use super::materialize_managed_postgres_config;
+    use super::{materialize_managed_postgres_config, takeover_restored_data_dir};
 
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
     type TestResult = Result<(), BoxError>;
@@ -382,6 +552,300 @@ mod tests {
             },
             debug: DebugConfig { enabled: false },
         }
+    }
+
+    async fn wait_for_job_success(
+        ctx: &mut crate::process::state::ProcessWorkerCtx,
+        job_id: &JobId,
+        timeout: Duration,
+    ) -> Result<(), crate::state::WorkerError> {
+        let started = Instant::now();
+        while started.elapsed() < timeout {
+            process_step_once(ctx).await?;
+            if let ProcessState::Idle {
+                last_outcome: Some(outcome),
+                ..
+            } = &ctx.state
+            {
+                match outcome {
+                    crate::process::state::JobOutcome::Success { id, .. } if id == job_id => {
+                        return Ok(())
+                    }
+                    crate::process::state::JobOutcome::Failure { id, error, .. } if id == job_id => {
+                        return Err(crate::state::WorkerError::Message(format!(
+                            "process job {} failed: {error}",
+                            id.0
+                        )));
+                    }
+                    crate::process::state::JobOutcome::Timeout { id, .. } if id == job_id => {
+                        return Err(crate::state::WorkerError::Message(format!(
+                            "process job {} timed out",
+                            id.0
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Err(crate::state::WorkerError::Message(format!(
+            "timed out waiting for job {}",
+            job_id.0
+        )))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn takeover_prevents_backup_era_max_connections_from_affecting_start(
+    ) -> Result<(), crate::state::WorkerError> {
+        let binaries = require_pg16_process_binaries_for_real_tests().map_err(|err| {
+            crate::state::WorkerError::Message(format!(
+                "require pg16 process binaries for test failed: {err}"
+            ))
+        })?;
+
+        let guard = NamespaceGuard::new("takeover-max-connections").map_err(|err| {
+            crate::state::WorkerError::Message(format!("namespace guard failed: {err}"))
+        })?;
+        let ns = guard.namespace().map_err(|err| {
+            crate::state::WorkerError::Message(format!("namespace handle failed: {err}"))
+        })?;
+
+        let mut reservation = allocate_ports(1).map_err(|err| {
+            crate::state::WorkerError::Message(format!("allocate ports failed: {err}"))
+        })?;
+        let port = reservation.as_slice()[0];
+
+        let data_dir = prepare_pgdata_dir(ns, "node-a").map_err(|err| {
+            crate::state::WorkerError::Message(format!("prepare pgdata dir failed: {err}"))
+        })?;
+        let socket_dir = ns.child_dir("sock");
+        let log_file = ns.child_dir("runtime/pg_ctl.log");
+        let archive_log = ns.child_dir("logs/archive/archive_command.jsonl");
+        if let Some(parent) = log_file.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                crate::state::WorkerError::Message(format!("create log parent failed: {err}"))
+            })?;
+        }
+        if let Some(parent) = archive_log.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                crate::state::WorkerError::Message(format!("create archive log parent failed: {err}"))
+            })?;
+        }
+        fs::create_dir_all(&socket_dir).map_err(|err| {
+            crate::state::WorkerError::Message(format!("create socket dir failed: {err}"))
+        })?;
+
+        let mut cfg = sample_runtime_config(
+            data_dir.clone(),
+            TlsServerConfig {
+                mode: ApiTlsMode::Disabled,
+                identity: None,
+                client_auth: None,
+            },
+        );
+        cfg.process.binaries = binaries.clone();
+        cfg.postgres.data_dir = data_dir.clone();
+        cfg.postgres.socket_dir = socket_dir.clone();
+        cfg.postgres.listen_port = port;
+        cfg.postgres.log_file = log_file.clone();
+        cfg.logging.postgres.archive_command_log_file = Some(archive_log);
+        cfg.logging.postgres.cleanup.enabled = false;
+        cfg.backup.enabled = true;
+        cfg.backup.bootstrap.enabled = true;
+        if let Some(pg_cfg) = cfg.backup.pgbackrest.as_mut() {
+            pg_cfg.stanza = Some("stanza-a".to_string());
+            pg_cfg.repo = Some("1".to_string());
+        }
+
+        let initial = ProcessState::Idle {
+            worker: WorkerStatus::Starting,
+            last_outcome: None,
+        };
+        let (publisher, _subscriber) = new_state_channel(initial.clone(), UnixMillis(0));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut process_ctx = crate::process::state::ProcessWorkerCtx {
+            poll_interval: Duration::from_millis(5),
+            config: cfg.process.clone(),
+            log: crate::logging::LogHandle::null(),
+            capture_subprocess_output: true,
+            state: initial,
+            publisher,
+            inbox: rx,
+            command_runner: Box::new(TokioCommandRunner),
+            active_runtime: None,
+            last_rejection: None,
+            now: Box::new(crate::process::worker::system_now_unix_millis),
+        };
+
+        let bootstrap_id = JobId("bootstrap".to_string());
+        tx.send(ProcessJobRequest {
+            id: bootstrap_id.clone(),
+            kind: ProcessJobKind::Bootstrap(BootstrapSpec {
+                data_dir: data_dir.clone(),
+                superuser_username: cfg.postgres.roles.superuser.username.clone(),
+                timeout_ms: Some(30_000),
+            }),
+        })
+        .map_err(|_| crate::state::WorkerError::Message("send bootstrap job failed".to_string()))?;
+        wait_for_job_success(&mut process_ctx, &bootstrap_id, Duration::from_secs(30))
+            .await?;
+
+        // Simulate backup-era config artifacts.
+        fs::write(data_dir.join("postgresql.conf"), b"max_connections=1\n").map_err(|err| {
+            crate::state::WorkerError::Message(format!("write postgresql.conf failed: {err}"))
+        })?;
+        fs::write(data_dir.join("postgresql.auto.conf"), b"max_connections=1\n").map_err(|err| {
+            crate::state::WorkerError::Message(format!("write postgresql.auto.conf failed: {err}"))
+        })?;
+
+        takeover_restored_data_dir(&cfg, crate::config::BackupTakeoverPolicy::Delete, false)
+            .map_err(|err| {
+                crate::state::WorkerError::Message(format!("takeover failed: {err}"))
+            })?;
+
+        let managed = materialize_managed_postgres_config(&cfg).map_err(|err| {
+            crate::state::WorkerError::Message(format!("materialize managed config failed: {err}"))
+        })?;
+
+        reservation
+            .release_port(port)
+            .map_err(|err| crate::state::WorkerError::Message(format!("release port failed: {err}")))?;
+        let start_id = JobId("start".to_string());
+        tx.send(ProcessJobRequest {
+            id: start_id.clone(),
+            kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                data_dir: data_dir.clone(),
+                host: "127.0.0.1".to_string(),
+                port,
+                socket_dir: socket_dir.clone(),
+                log_file: log_file.clone(),
+                extra_postgres_settings: managed.extra_settings.clone(),
+                wait_seconds: Some(30),
+                timeout_ms: Some(60_000),
+            }),
+        })
+        .map_err(|_| crate::state::WorkerError::Message("send start job failed".to_string()))?;
+        wait_for_job_success(&mut process_ctx, &start_id, Duration::from_secs(60))
+            .await?;
+
+        let port_s = port.to_string();
+        let output = tokio::process::Command::new(&binaries.psql)
+            .args([
+                "-h",
+                "127.0.0.1",
+                "-p",
+                port_s.as_str(),
+                "-U",
+                cfg.postgres.roles.superuser.username.as_str(),
+                "-d",
+                cfg.postgres.local_conn_identity.dbname.as_str(),
+                "-tA",
+                "-c",
+                "SHOW max_connections;",
+            ])
+            .output()
+            .await
+            .map_err(|err| crate::state::WorkerError::Message(format!("psql failed: {err}")))?;
+        if !output.status.success() {
+            return Err(crate::state::WorkerError::Message(format!(
+                "psql show max_connections exited unsuccessfully: {:?}",
+                output.status.code()
+            )));
+        }
+        let stdout = String::from_utf8(output.stdout).map_err(|err| {
+            crate::state::WorkerError::Message(format!("psql stdout utf8 decode failed: {err}"))
+        })?;
+        let value = stdout.trim();
+        if value == "1" {
+            return Err(crate::state::WorkerError::Message(
+                "expected max_connections to not be 1 after takeover".to_string(),
+            ));
+        }
+
+        let stop_id = JobId("stop".to_string());
+        tx.send(ProcessJobRequest {
+            id: stop_id.clone(),
+            kind: ProcessJobKind::Demote(DemoteSpec {
+                data_dir,
+                mode: ShutdownMode::Fast,
+                timeout_ms: Some(20_000),
+            }),
+        })
+        .map_err(|_| crate::state::WorkerError::Message("send stop job failed".to_string()))?;
+        wait_for_job_success(&mut process_ctx, &stop_id, Duration::from_secs(30))
+            .await?;
+
+        drop(reservation);
+        Ok(())
+    }
+
+    #[test]
+    fn takeover_quarantines_backup_era_conf_and_writes_recovery_signal() -> TestResult {
+        let dir = temp_dir("takeover-quarantine");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+
+        let cfg = sample_runtime_config(
+            dir.clone(),
+            TlsServerConfig {
+                mode: ApiTlsMode::Disabled,
+                identity: None,
+                client_auth: None,
+            },
+        );
+
+        fs::write(dir.join("postgresql.conf"), b"max_connections=1\n")?;
+        fs::write(dir.join("postgresql.auto.conf"), b"max_connections=1\n")?;
+        fs::write(dir.join("pg_hba.conf"), b"local all all trust\n")?;
+        fs::write(dir.join("pg_ident.conf"), b"# empty\n")?;
+        fs::write(dir.join("standby.signal"), b"")?;
+        fs::write(dir.join("recovery.signal"), b"")?;
+        fs::write(dir.join("pgtm.stale"), b"stale\n")?;
+
+        takeover_restored_data_dir(&cfg, crate::config::BackupTakeoverPolicy::Quarantine, true)
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+        if dir.join("postgresql.conf").exists()
+            || dir.join("postgresql.auto.conf").exists()
+            || dir.join("pg_hba.conf").exists()
+            || dir.join("pg_ident.conf").exists()
+            || dir.join("standby.signal").exists()
+            || dir.join("pgtm.stale").exists()
+        {
+            return Err(Box::new(std::io::Error::other(
+                "expected conflicting files to be removed from data dir",
+            )));
+        }
+        if !dir.join("recovery.signal").exists() {
+            return Err(Box::new(std::io::Error::other(
+                "expected recovery.signal to exist after takeover",
+            )));
+        }
+        if !dir.join("pgtm.postgresql.conf").exists() {
+            return Err(Box::new(std::io::Error::other(
+                "expected managed pgtm.postgresql.conf to be created",
+            )));
+        }
+
+        let mut quarantine_dirs = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("pgtm.quarantine.") {
+                    quarantine_dirs.push(entry.path());
+                }
+            }
+        }
+        if quarantine_dirs.len() != 1 {
+            return Err(Box::new(std::io::Error::other(format!(
+                "expected exactly one quarantine dir, got {}",
+                quarantine_dirs.len()
+            ))));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]

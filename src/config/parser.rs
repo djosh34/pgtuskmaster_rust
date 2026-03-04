@@ -545,6 +545,14 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     }
 
     if cfg.backup.enabled {
+        if cfg.logging.postgres.archive_command_log_file.is_none() {
+            return Err(ConfigError::Validation {
+                field: "logging.postgres.archive_command_log_file",
+                message: "required when backup.enabled is true (archive/restore command events must be observable)"
+                    .to_string(),
+            });
+        }
+
         match cfg.backup.provider {
             BackupProvider::Pgbackrest => {
                 let pgbackrest_bin = cfg.process.binaries.pgbackrest.as_ref().ok_or_else(|| {
@@ -561,6 +569,23 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
                 })?;
                 validate_pgbackrest_required_fields(pg_cfg)?;
             }
+        }
+    }
+
+    if cfg.backup.bootstrap.enabled {
+        if !cfg.backup.enabled {
+            return Err(ConfigError::Validation {
+                field: "backup.bootstrap.enabled",
+                message: "requires backup.enabled = true".to_string(),
+            });
+        }
+
+        if cfg.logging.postgres.archive_command_log_file.is_none() {
+            return Err(ConfigError::Validation {
+                field: "logging.postgres.archive_command_log_file",
+                message: "required when backup.bootstrap.enabled is true (restore/archive must be observable during recovery)"
+                    .to_string(),
+            });
         }
     }
 
@@ -602,6 +627,8 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
             message: "must be configured when logging.sinks.file.enabled is true".to_string(),
         });
     }
+
+    validate_logging_path_ownership_invariants(cfg)?;
 
     if cfg.dcs.endpoints.is_empty() {
         return Err(ConfigError::Validation {
@@ -737,13 +764,89 @@ fn validate_backup_option_tokens(field: &'static str, tokens: &[String]) -> Resu
         }
 
         let trimmed = token.trim_start();
-        if trimmed.starts_with("--stanza") || trimmed.starts_with("--repo") {
+        let key = option_key(trimmed);
+        if matches!(key, "--stanza" | "--repo" | "--pg1-path") {
             return Err(ConfigError::Validation {
                 field,
-                message: "must not override managed fields (stanza/repo) via option tokens".to_string(),
+                message:
+                    "must not override managed fields (stanza/repo/pg1-path) via option tokens"
+                        .to_string(),
             });
         }
     }
+    Ok(())
+}
+
+fn option_key(token: &str) -> &str {
+    let Some(eq) = token.find('=') else {
+        return token;
+    };
+    &token[..eq]
+}
+
+fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    let Some(sink_path) = cfg.logging.sinks.file.path.as_ref() else {
+        return Ok(());
+    };
+    if !cfg.logging.sinks.file.enabled {
+        return Ok(());
+    }
+
+    let effective_pg_ctl_log_file = cfg
+        .logging
+        .postgres
+        .pg_ctl_log_file
+        .as_ref()
+        .unwrap_or(&cfg.postgres.log_file);
+
+    let tailed_files: [(&'static str, &Path); 2] = [
+        ("postgres.log_file", &cfg.postgres.log_file),
+        ("logging.postgres.pg_ctl_log_file", effective_pg_ctl_log_file),
+    ];
+
+    for (field, path) in tailed_files {
+        if sink_path == path {
+            return Err(ConfigError::Validation {
+                field: "logging.sinks.file.path",
+                message: format!("must not equal tailed postgres input {field}"),
+            });
+        }
+    }
+
+    if let Some(archive_path) = cfg.logging.postgres.archive_command_log_file.as_ref() {
+        if sink_path == archive_path {
+            return Err(ConfigError::Validation {
+                field: "logging.sinks.file.path",
+                message:
+                    "must not equal tailed postgres input logging.postgres.archive_command_log_file"
+                        .to_string(),
+            });
+        }
+    }
+
+    if let Some(log_dir) = cfg.logging.postgres.log_dir.as_ref() {
+        if sink_path.starts_with(log_dir) {
+            return Err(ConfigError::Validation {
+                field: "logging.sinks.file.path",
+                message: "must not be inside logging.postgres.log_dir (would self-ingest)".to_string(),
+            });
+        }
+    }
+
+    if let (Some(log_dir), Some(archive_log)) = (
+        cfg.logging.postgres.log_dir.as_ref(),
+        cfg.logging.postgres.archive_command_log_file.as_ref(),
+    ) {
+        if archive_log.starts_with(log_dir) {
+            return Err(ConfigError::Validation {
+                field: "logging.postgres.archive_command_log_file",
+                message:
+                    "must not be inside logging.postgres.log_dir (avoid cleanup/tailer coupling)"
+                        .to_string(),
+            });
+        }
+    }
+
     Ok(())
 }
 

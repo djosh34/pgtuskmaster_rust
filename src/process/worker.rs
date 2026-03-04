@@ -885,6 +885,7 @@ pub(crate) fn build_command(
                 crate::backup::BackupOperation::Restore(crate::backup::RestoreInput {
                     stanza: spec.stanza.clone(),
                     repo: spec.repo.clone(),
+                    pg1_path: spec.pg1_path.clone(),
                     options: spec.options.clone(),
                 }),
             )
@@ -910,6 +911,7 @@ pub(crate) fn build_command(
                 crate::backup::BackupOperation::ArchivePush(crate::backup::ArchivePushInput {
                     stanza: spec.stanza.clone(),
                     repo: spec.repo.clone(),
+                    pg1_path: spec.pg1_path.clone(),
                     wal_path: spec.wal_path.clone(),
                     options: spec.options.clone(),
                 }),
@@ -936,6 +938,7 @@ pub(crate) fn build_command(
                 crate::backup::BackupOperation::ArchiveGet(crate::backup::ArchiveGetInput {
                     stanza: spec.stanza.clone(),
                     repo: spec.repo.clone(),
+                    pg1_path: spec.pg1_path.clone(),
                     wal_segment: spec.wal_segment.clone(),
                     destination_path: spec.destination_path.clone(),
                     options: spec.options.clone(),
@@ -1521,6 +1524,7 @@ mod tests {
             &ProcessJobKind::PgBackRestRestore(crate::process::jobs::PgBackRestRestoreSpec {
                 stanza: "stanza-a".to_string(),
                 repo: "1".to_string(),
+                pg1_path: "/tmp/node/data".into(),
                 options: Vec::new(),
                 timeout_ms: None,
             }),
@@ -1535,6 +1539,7 @@ mod tests {
             &ProcessJobKind::PgBackRestArchivePush(crate::process::jobs::PgBackRestArchivePushSpec {
                 stanza: "stanza-a".to_string(),
                 repo: "1".to_string(),
+                pg1_path: "/tmp/node/data".into(),
                 wal_path: "/tmp/000000010000000000000001".to_string(),
                 options: Vec::new(),
                 timeout_ms: None,
@@ -1553,6 +1558,7 @@ mod tests {
             &ProcessJobKind::PgBackRestArchiveGet(crate::process::jobs::PgBackRestArchiveGetSpec {
                 stanza: "stanza-a".to_string(),
                 repo: "1".to_string(),
+                pg1_path: "/tmp/node/data".into(),
                 wal_segment: "000000010000000000000001".to_string(),
                 destination_path: "/tmp/wal".to_string(),
                 options: Vec::new(),

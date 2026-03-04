@@ -189,6 +189,7 @@ pub struct ProcessConfig {
 pub struct BackupConfig {
     pub enabled: bool,
     pub provider: BackupProvider,
+    pub bootstrap: BackupBootstrapConfig,
     pub pgbackrest: Option<PgBackRestConfig>,
 }
 
@@ -197,6 +198,29 @@ pub struct BackupConfig {
 pub enum BackupProvider {
     #[default]
     Pgbackrest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupBootstrapConfig {
+    pub enabled: bool,
+    pub takeover_policy: BackupTakeoverPolicy,
+    pub recovery_mode: BackupRecoveryMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupTakeoverPolicy {
+    #[default]
+    Quarantine,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupRecoveryMode {
+    #[default]
+    Default,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
@@ -223,6 +247,11 @@ impl Default for BackupConfig {
         Self {
             enabled: false,
             provider: BackupProvider::default(),
+            bootstrap: BackupBootstrapConfig {
+                enabled: false,
+                takeover_policy: BackupTakeoverPolicy::default(),
+                recovery_mode: BackupRecoveryMode::default(),
+            },
             pgbackrest: Some(PgBackRestConfig::default()),
         }
     }
@@ -493,7 +522,16 @@ pub struct BinaryPathsV2Input {
 pub struct BackupConfigV2Input {
     pub enabled: Option<bool>,
     pub provider: Option<BackupProvider>,
+    pub bootstrap: Option<BackupBootstrapConfigV2Input>,
     pub pgbackrest: Option<PgBackRestConfigV2Input>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupBootstrapConfigV2Input {
+    pub enabled: Option<bool>,
+    pub takeover_policy: Option<BackupTakeoverPolicy>,
+    pub recovery_mode: Option<BackupRecoveryMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

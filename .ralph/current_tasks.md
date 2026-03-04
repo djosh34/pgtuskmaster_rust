@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar  4 11:05:13 PM CET 2026
+Generated: Wed Mar  4 11:54:32 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -326,7 +326,25 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/03-task-cluster-restore-endpoint-and-safe-takeover-orchestration.md`
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/03-task-high-prio-remove-shell-archive-wrapper-and-current-wiring.md`
+
+## Task: High Prio Remove Shell Archive Wrapper and Current Wiring <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Completely remove the generated shell archive wrapper implementation and all runtime wiring that depends on it.
+
+---
+
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/04-task-rust-generic-argv-passthrough-binary-for-postgres-archive-restore-logging.md`
+
+## Task: Rust WAL Passthrough Binary for Postgres Archive Restore Logging <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Reintroduce archive/restore observability with a Rust binary command invoked by Postgres that performs passthrough execution and logs invocations via pgtuskmaster.
+
+---
+
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/05-task-cluster-restore-endpoint-and-safe-takeover-orchestration.md`
 
 ## Task: Add cluster restore endpoint and safe takeover orchestration across HA/DCS <status>not_started</status> <passes>false</passes>
 
@@ -335,7 +353,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/04-task-pgbackrest-json-observability-metrics-and-api-surface.md`
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/06-task-pgbackrest-json-observability-metrics-and-api-surface.md`
 
 ## Task: Build pgBackRest JSON observability with metrics, logs, and API visibility <status>not_started</status> <passes>false</passes>
 
@@ -344,7 +362,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/05-task-distributed-backup-scheduler-and-runtime-packaging.md`
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/07-task-distributed-backup-scheduler-and-runtime-packaging.md`
 
 ## Task: Add distributed backup scheduling and runtime packaging for pgBackRest <status>not_started</status> <passes>false</passes>
 
@@ -353,7 +371,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/06-task-exhaustive-pgbackrest-fixture-matrix-and-real-e2e.md`
+**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/08-task-exhaustive-pgbackrest-fixture-matrix-and-real-e2e.md`
 
 ## Task: Build exhaustive fixture-driven pgBackRest test matrix across normal and edge restores <status>not_started</status> <passes>false</passes>
 
@@ -376,8 +394,8 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 ## Task: Implement runtime config schema defaults parser and validation <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
 
 <blocked_by>01-task-core-types-time-errors-watch-channel</blocked_by>
-
-<description>
+<superseded_by>story-pgbackrest-managed-backup-recovery/03-task-high-prio-remove-shell-archive-wrapper-and-current-wiring</superseded_by>
+<superseded_by>story-pgbackrest-managed-backup-recovery/04-task-rust-generic-argv-passthrough-binary-for-postgres-archive-restore-logging</superseded_by>
 
 ---
 
@@ -767,6 +785,15 @@ This is a **RECURRING META-TASK**.
 
 <description>
 **Goal:** Replace the current ultra-long HA e2e stress scenario(s) with multiple shorter real-binary e2e tests that preserve full coverage and must run in parallel.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/42-task-operator-grade-action-logging-and-no-silent-errors.md`
+
+## Task: Enforce Operator-Grade Action Logging And No Silent Error Swallowing <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Make runtime/operator observability explicit and uniform: debug-log all actions and all meaningful runtime flow steps across the codebase so operators can reconstruct exactly what code path executed, in order; info-log important operator lifecycle/default events; warn-log ignorable errors; error-log hard errors; and eliminate silent error swallowing.
 
 ---
 
