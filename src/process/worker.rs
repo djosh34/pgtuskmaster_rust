@@ -15,7 +15,7 @@ use crate::{
 
 use super::{
     jobs::{
-        ActiveJob, ActiveJobKind, CancelReason, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar,
+        ActiveJob, ActiveJobKind, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar,
         ProcessError, ProcessExit, ProcessHandle, ProcessLogIdentity, ProcessOutputLine,
         ProcessOutputStream,
     },
@@ -329,8 +329,6 @@ pub(crate) async fn start_job(
 
     ctx.active_runtime = Some(ActiveRuntime {
         request,
-        timeout_ms,
-        started_at: now,
         deadline_at,
         handle,
         log_identity,
@@ -421,32 +419,6 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             transition_to_idle(ctx, outcome, now)
         }
     }
-}
-
-pub(crate) async fn cancel_active_job(
-    ctx: &mut ProcessWorkerCtx,
-    _reason: CancelReason,
-) -> Result<(), WorkerError> {
-    let mut runtime = match ctx.active_runtime.take() {
-        Some(runtime) => runtime,
-        None => return Ok(()),
-    };
-
-    let now = current_time(ctx)?;
-    let cancel_result = runtime.handle.cancel().await;
-    let outcome = match cancel_result {
-        Ok(()) => JobOutcome::Cancelled {
-            id: runtime.request.id,
-            finished_at: now,
-        },
-        Err(error) => JobOutcome::Failure {
-            id: runtime.request.id,
-            error,
-            finished_at: now,
-        },
-    };
-
-    transition_to_idle(ctx, outcome, now)
 }
 
 fn emit_subprocess_line(
@@ -556,10 +528,6 @@ pub(crate) fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) ->
         ProcessJobKind::StartPostgres(spec) => {
             spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
         }
-        ProcessJobKind::StopPostgres(spec) => spec.timeout_ms.unwrap_or(config.fencing_timeout_ms),
-        ProcessJobKind::RestartPostgres(spec) => {
-            spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
-        }
     }
 }
 
@@ -571,8 +539,6 @@ fn active_kind(kind: &ProcessJobKind) -> ActiveJobKind {
         ProcessJobKind::Promote(_) => ActiveJobKind::Promote,
         ProcessJobKind::Demote(_) => ActiveJobKind::Demote,
         ProcessJobKind::StartPostgres(_) => ActiveJobKind::StartPostgres,
-        ProcessJobKind::StopPostgres(_) => ActiveJobKind::StopPostgres,
-        ProcessJobKind::RestartPostgres(_) => ActiveJobKind::RestartPostgres,
         ProcessJobKind::Fencing(_) => ActiveJobKind::Fencing,
     }
 }
@@ -778,78 +744,6 @@ pub(crate) fn build_command(
                 },
             })
         }
-        ProcessJobKind::StopPostgres(spec) => {
-            validate_non_empty_path("stop_postgres.data_dir", &spec.data_dir)?;
-            let program = config.binaries.pg_ctl.clone();
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "stop".to_string(),
-                    "-m".to_string(),
-                    spec.mode.as_pg_ctl_arg().to_string(),
-                    "-w".to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessJobKind::RestartPostgres(spec) => {
-            validate_non_empty_path("restart_postgres.data_dir", &spec.data_dir)?;
-            validate_non_empty_path("restart_postgres.socket_dir", &spec.socket_dir)?;
-            validate_non_empty_path("restart_postgres.log_file", &spec.log_file)?;
-            if spec.host.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "restart_postgres.host must not be empty".to_string(),
-                ));
-            }
-            let wait_seconds = spec.wait_seconds.unwrap_or(30);
-            let mut option_tokens = vec![
-                "-h".to_string(),
-                spec.host.clone(),
-                "-p".to_string(),
-                spec.port.to_string(),
-                "-k".to_string(),
-                spec.socket_dir.display().to_string(),
-            ];
-            for (key, value) in &spec.extra_postgres_settings {
-                validate_postgres_setting("restart_postgres.extra_postgres_settings", key, value)?;
-                option_tokens.push("-c".to_string());
-                option_tokens.push(format!("{key}={value}"));
-            }
-            let options = render_pg_ctl_option_string(&option_tokens)?;
-            let program = config.binaries.pg_ctl.clone();
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "-l".to_string(),
-                    spec.log_file.display().to_string(),
-                    "-o".to_string(),
-                    options,
-                    "restart".to_string(),
-                    "-m".to_string(),
-                    spec.mode.as_pg_ctl_arg().to_string(),
-                    "-w".to_string(),
-                    "-t".to_string(),
-                    wait_seconds.to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
         ProcessJobKind::Fencing(spec) => {
             validate_non_empty_path("fencing.data_dir", &spec.data_dir)?;
             let program = config.binaries.pg_ctl.clone();
@@ -893,8 +787,6 @@ fn job_kind_label(kind: &ProcessJobKind) -> &'static str {
         ProcessJobKind::Promote(_) => "promote",
         ProcessJobKind::Demote(_) => "demote",
         ProcessJobKind::StartPostgres(_) => "start_postgres",
-        ProcessJobKind::StopPostgres(_) => "stop_postgres",
-        ProcessJobKind::RestartPostgres(_) => "restart_postgres",
         ProcessJobKind::Fencing(_) => "fencing",
     }
 }
@@ -999,17 +891,16 @@ mod tests {
         pginfo::state::{PgConnInfo, PgSslMode},
         process::{
             jobs::{
-                ActiveJob, BaseBackupSpec, BootstrapSpec, CancelReason, DemoteSpec, FencingSpec,
+                ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec,
                 NoopCommandRunner, PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessExit,
                 ProcessEnvValue, ProcessHandle, PromoteSpec, ReplicatorSourceConn,
-                RestartPostgresSpec,
-                RewinderSourceConn, ShutdownMode, StartPostgresSpec, StopPostgresSpec,
+                RewinderSourceConn, ShutdownMode, StartPostgresSpec,
             },
             state::{
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
             },
             worker::{
-                build_command, can_accept_job, cancel_active_job, start_job, step_once,
+                build_command, can_accept_job, start_job, step_once,
                 tick_active_job, TokioCommandRunner,
             },
         },
@@ -1069,7 +960,7 @@ mod tests {
             match self.spawn_results.pop_front() {
                 Some(Ok(handle)) => Ok(Box::new(handle)),
                 Some(Err(err)) => Err(err),
-                None => Err(ProcessError::UnsupportedInput(
+                None => Err(ProcessError::InvalidSpec(
                     "fake runner exhausted spawn queue".to_string(),
                 )),
             }
@@ -1215,7 +1106,6 @@ mod tests {
                 }
                 other => return Err(format!("expected inline secret source, got: {other:?}")),
             },
-            other => return Err(format!("expected secret env value, got: {other:?}")),
         }
         if spec.args.iter().any(|arg| arg.contains("secret")) {
             return Err("password must not appear in args".to_string());
@@ -1288,53 +1178,6 @@ mod tests {
             "-o".to_string(),
             "-h 127.0.0.1 -p 5544 -k /tmp/node/socket -c hba_file=/tmp/managed/hba.conf -c ident_file=/tmp/managed/ident.conf".to_string(),
             "start".to_string(),
-            "-w".to_string(),
-            "-t".to_string(),
-            "1".to_string(),
-        ];
-        assert_eq!(spec.args, expected);
-        Ok(())
-    }
-
-    #[test]
-    fn build_command_restart_postgres_includes_extra_settings_deterministically(
-    ) -> Result<(), String> {
-        let config = sample_config();
-        let mut extra_postgres_settings = std::collections::BTreeMap::new();
-        extra_postgres_settings.insert(
-            "ident_file".to_string(),
-            "/tmp/managed/ident.conf".to_string(),
-        );
-        extra_postgres_settings.insert("hba_file".to_string(), "/tmp/managed/hba.conf".to_string());
-
-        let spec = build_command(
-            &config,
-            &JobId("job-restart".to_string()),
-            &ProcessJobKind::RestartPostgres(RestartPostgresSpec {
-                data_dir: PathBuf::from("/tmp/node/data"),
-                host: "127.0.0.1".to_string(),
-                port: 5544,
-                socket_dir: PathBuf::from("/tmp/node/socket"),
-                log_file: PathBuf::from("/tmp/node/postgres.log"),
-                extra_postgres_settings,
-                mode: ShutdownMode::Fast,
-                wait_seconds: Some(1),
-                timeout_ms: Some(1_000),
-            }),
-            false,
-        )
-        .map_err(|err| format!("build_command failed: {err}"))?;
-
-        let expected = vec![
-            "-D".to_string(),
-            "/tmp/node/data".to_string(),
-            "-l".to_string(),
-            "/tmp/node/postgres.log".to_string(),
-            "-o".to_string(),
-            "-h 127.0.0.1 -p 5544 -k /tmp/node/socket -c hba_file=/tmp/managed/hba.conf -c ident_file=/tmp/managed/ident.conf".to_string(),
-            "restart".to_string(),
-            "-m".to_string(),
-            "fast".to_string(),
             "-w".to_string(),
             "-t".to_string(),
             "1".to_string(),
@@ -1461,8 +1304,7 @@ mod tests {
         match outcome {
             JobOutcome::Success { id, .. }
             | JobOutcome::Failure { id, .. }
-            | JobOutcome::Timeout { id, .. }
-            | JobOutcome::Cancelled { id, .. } => id,
+            | JobOutcome::Timeout { id, .. } => id,
         }
     }
 
@@ -1526,7 +1368,7 @@ mod tests {
         assert!(tx
             .send(ProcessJobRequest {
                 id: JobId("job-b".to_string()),
-                kind: ProcessJobKind::StopPostgres(StopPostgresSpec {
+                kind: ProcessJobKind::Demote(DemoteSpec {
                     data_dir: PathBuf::from("/tmp/node/data"),
                     mode: ShutdownMode::Fast,
                     timeout_ms: Some(10),
@@ -1646,54 +1488,6 @@ mod tests {
         {
             assert_eq!(id, &JobId("job-timeout".to_string()));
         }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn cancel_active_job_emits_cancelled_and_is_noop_when_idle() {
-        let runner = FakeRunner {
-            spawn_results: VecDeque::from(vec![Ok(FakeHandle {
-                polls: VecDeque::from(vec![Ok(None)]),
-                cancel_result: Ok(()),
-            })]),
-        };
-        let (mut ctx, _tx, _subscriber) =
-            test_ctx(Box::new(runner), queued_clock(vec![1, 2, 3, 4]));
-
-        assert_eq!(
-            start_job(
-                &mut ctx,
-                ProcessJobRequest {
-                    id: JobId("job-direct".to_string()),
-                    kind: ProcessJobKind::StartPostgres(sample_start_spec()),
-                },
-            )
-            .await,
-            Ok(())
-        );
-
-        assert_eq!(
-            cancel_active_job(&mut ctx, CancelReason::Shutdown).await,
-            Ok(())
-        );
-        assert!(matches!(
-            &ctx.state,
-            ProcessState::Idle {
-                last_outcome: Some(JobOutcome::Cancelled { .. }),
-                ..
-            }
-        ));
-        if let ProcessState::Idle {
-            last_outcome: Some(JobOutcome::Cancelled { id, .. }),
-            ..
-        } = &ctx.state
-        {
-            assert_eq!(id, &JobId("job-direct".to_string()));
-        }
-
-        assert_eq!(
-            cancel_active_job(&mut ctx, CancelReason::Superseded).await,
-            Ok(())
-        );
     }
 
     fn pg16_binaries() -> Result<BinaryPaths, WorkerError> {
@@ -1889,9 +1683,9 @@ mod tests {
                 let _ = fixture
                     .submit_job_and_wait(
                         cleanup_id.as_str(),
-                        ProcessJobKind::StopPostgres(StopPostgresSpec {
+                        ProcessJobKind::Demote(DemoteSpec {
                             data_dir: fixture.data_dir.clone(),
-                            mode: ShutdownMode::Immediate,
+                            mode: ShutdownMode::Fast,
                             timeout_ms: Some(15_000),
                         }),
                         Duration::from_secs(20),
@@ -2023,28 +1817,6 @@ mod tests {
         }
     }
 
-    fn assert_shutdown_cleanup_outcome(
-        label: &str,
-        outcome: &JobOutcome,
-    ) -> Result<(), WorkerError> {
-        match outcome {
-            JobOutcome::Success { .. } => Ok(()),
-            JobOutcome::Failure {
-                error:
-                    ProcessError::EarlyExit {
-                        code: Some(1) | Some(3),
-                    },
-                ..
-            } => Ok(()),
-            JobOutcome::Failure { error, .. } => Err(WorkerError::Message(format!(
-                "{label} failure is not an expected already-stopped shutdown result: {error:?}"
-            ))),
-            other => Err(WorkerError::Message(format!(
-                "expected {label} cleanup success or already-stopped early-exit, got: {other:?}"
-            ))),
-        }
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn real_bootstrap_job_executes_initdb() -> Result<(), WorkerError> {
         let binaries = pg16_binaries()?;
@@ -2148,10 +1920,10 @@ mod tests {
             .await?;
         assert_promote_outcome(&promote)?;
 
-        let stop = fixture
+        let cleanup = fixture
             .submit_job_and_wait(
-                "stop-after-promote",
-                ProcessJobKind::StopPostgres(StopPostgresSpec {
+                "demote-after-promote",
+                ProcessJobKind::Demote(DemoteSpec {
                     data_dir: fixture.data_dir.clone(),
                     mode: ShutdownMode::Fast,
                     timeout_ms: Some(10_000),
@@ -2159,7 +1931,7 @@ mod tests {
                 Duration::from_secs(20),
             )
             .await?;
-        assert_success_outcome("stop-after-promote", &stop)?;
+        assert_success_outcome("demote-after-promote", &cleanup)?;
         Ok(())
     }
 
@@ -2181,84 +1953,6 @@ mod tests {
             )
             .await?;
         assert_success_outcome("demote", &outcome)?;
-
-        let cleanup = fixture
-            .submit_job_and_wait(
-                "stop-after-demote",
-                ProcessJobKind::StopPostgres(StopPostgresSpec {
-                    data_dir: fixture.data_dir.clone(),
-                    mode: ShutdownMode::Fast,
-                    timeout_ms: Some(10_000),
-                }),
-                Duration::from_secs(20),
-            )
-            .await?;
-        assert_shutdown_cleanup_outcome("stop-after-demote", &cleanup)?;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn real_start_and_stop_jobs_execute_binary_paths() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries()?;
-        let mut fixture =
-            RealProcessFixture::bootstrap_and_start(binaries, "process-start-stop").await?;
-
-        let stop = fixture
-            .submit_job_and_wait(
-                "stop",
-                ProcessJobKind::StopPostgres(StopPostgresSpec {
-                    data_dir: fixture.data_dir.clone(),
-                    mode: ShutdownMode::Fast,
-                    timeout_ms: Some(10_000),
-                }),
-                Duration::from_secs(20),
-            )
-            .await?;
-        if !matches!(stop, JobOutcome::Success { .. }) {
-            return Err(WorkerError::Message(format!(
-                "expected stop success, got: {stop:?}"
-            )));
-        }
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn real_restart_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries()?;
-        let mut fixture =
-            RealProcessFixture::bootstrap_and_start(binaries, "process-restart").await?;
-
-        let restart = fixture
-            .submit_job_and_wait(
-                "restart",
-                ProcessJobKind::RestartPostgres(RestartPostgresSpec {
-                    data_dir: fixture.data_dir.clone(),
-                    host: "127.0.0.1".to_string(),
-                    port: fixture.port,
-                    socket_dir: fixture.socket_dir.clone(),
-                    log_file: fixture.log_file.clone(),
-                    extra_postgres_settings: std::collections::BTreeMap::new(),
-                    mode: ShutdownMode::Fast,
-                    wait_seconds: Some(20),
-                    timeout_ms: Some(20_000),
-                }),
-                Duration::from_secs(30),
-            )
-            .await?;
-        assert_success_outcome("restart", &restart)?;
-
-        let stop = fixture
-            .submit_job_and_wait(
-                "stop-after-restart",
-                ProcessJobKind::StopPostgres(StopPostgresSpec {
-                    data_dir: fixture.data_dir.clone(),
-                    mode: ShutdownMode::Fast,
-                    timeout_ms: Some(10_000),
-                }),
-                Duration::from_secs(20),
-            )
-            .await?;
-        assert_success_outcome("stop-after-restart", &stop)?;
         Ok(())
     }
 
@@ -2273,26 +1967,13 @@ mod tests {
                 "fence",
                 ProcessJobKind::Fencing(FencingSpec {
                     data_dir: fixture.data_dir.clone(),
-                    mode: ShutdownMode::Immediate,
-                    timeout_ms: Some(10_000),
-                }),
-                Duration::from_secs(20),
-            )
-            .await?;
-        assert_success_outcome("fence", &outcome)?;
-
-        let cleanup = fixture
-            .submit_job_and_wait(
-                "stop-after-fencing",
-                ProcessJobKind::StopPostgres(StopPostgresSpec {
-                    data_dir: fixture.data_dir.clone(),
                     mode: ShutdownMode::Fast,
                     timeout_ms: Some(10_000),
                 }),
                 Duration::from_secs(20),
             )
             .await?;
-        assert_shutdown_cleanup_outcome("stop-after-fencing", &cleanup)?;
+        assert_success_outcome("fence", &outcome)?;
         Ok(())
     }
 

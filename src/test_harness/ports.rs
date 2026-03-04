@@ -36,10 +36,6 @@ impl PortReservation {
         &self.ports
     }
 
-    pub(crate) fn into_vec(mut self) -> Vec<u16> {
-        std::mem::take(&mut self.ports)
-    }
-
     pub(crate) fn release_port(&mut self, port: u16) -> Result<(), HarnessError> {
         let index = self
             .ports
@@ -73,10 +69,6 @@ impl PortReservation {
     pub(crate) fn len(&self) -> usize {
         self.listeners.len()
     }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.listeners.is_empty()
-    }
 }
 
 #[cfg(unix)]
@@ -105,10 +97,6 @@ pub(crate) struct HaTopologyPortReservation {
 impl HaTopologyPortReservation {
     pub(crate) fn layout(&self) -> &HaTopologyPorts {
         &self.layout
-    }
-
-    pub(crate) fn into_layout(self) -> HaTopologyPorts {
-        self.layout
     }
 
     pub(crate) fn release_port(&mut self, port: u16) -> Result<(), HarnessError> {

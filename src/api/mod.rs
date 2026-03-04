@@ -8,8 +8,6 @@ pub mod worker;
 pub(crate) enum ApiError {
     #[error("bad request: {0}")]
     BadRequest(String),
-    #[error("unauthorized")]
-    Unauthorized,
     #[error("dcs store error: {0}")]
     DcsStore(String),
     #[error("internal error: {0}")]

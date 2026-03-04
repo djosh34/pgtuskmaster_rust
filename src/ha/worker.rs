@@ -74,8 +74,7 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
     let output = decide(DecideInput {
         current: ctx.state.clone(),
         world,
-    })
-    .map_err(|err| WorkerError::Message(format!("ha decide failed: {err}")))?;
+    });
 
     let dispatch_errors = dispatch_actions(ctx, &output.actions);
     let now = (ctx.now)()?;
@@ -848,13 +847,6 @@ mod tests {
             Ok(())
         }
 
-        fn spawn_count(&self) -> usize {
-            if let Ok(specs) = self.spawned_specs.lock() {
-                return specs.len();
-            }
-            0
-        }
-
         fn any_spawn_contains_arg(&self, needle: &str) -> bool {
             if let Ok(specs) = self.spawned_specs.lock() {
                 return specs
@@ -884,7 +876,7 @@ mod tests {
                     .map_err(|_| ProcessError::OperationFailed)?;
                 match scripts.pop_front() {
                     Some(next) => next,
-                    None => Err(ProcessError::UnsupportedInput(
+                    None => Err(ProcessError::InvalidSpec(
                         "scripted runner queue exhausted".to_string(),
                     )),
                 }

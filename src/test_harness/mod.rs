@@ -12,6 +12,7 @@ pub(crate) mod namespace;
 pub(crate) mod net_proxy;
 pub(crate) mod pg16;
 pub(crate) mod ports;
+pub(crate) mod signals;
 pub(crate) mod tls;
 
 #[derive(Debug, Error)]
@@ -35,6 +36,11 @@ pub(crate) enum HarnessError {
     EarlyExit {
         component: &'static str,
         status: std::process::ExitStatus,
+    },
+    #[error("{component} did not exit within {timeout:?}")]
+    ShutdownTimeout {
+        component: &'static str,
+        timeout: Duration,
     },
     #[error("stale path exists: {path}")]
     StalePath { path: PathBuf },

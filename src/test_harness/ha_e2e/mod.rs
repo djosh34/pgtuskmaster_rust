@@ -1,5 +1,4 @@
 pub(crate) mod config;
-pub(crate) mod faults;
 pub(crate) mod handle;
 pub(crate) mod ops;
 pub(crate) mod startup;
@@ -34,7 +33,6 @@ mod tests {
                 bootstrap_primary_timeout: Duration::from_secs(1),
                 scenario_timeout: Duration::from_secs(1),
             },
-            artifact_root: None,
         };
 
         let result = config.validate();
@@ -59,7 +57,6 @@ mod tests {
                     bootstrap_primary_timeout: Duration::from_secs(90),
                     scenario_timeout: Duration::from_secs(120),
                 },
-                artifact_root: None,
             };
 
             let mut handle = start_cluster(config).await?;

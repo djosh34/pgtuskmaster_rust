@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::state::WorkerError;
@@ -28,7 +27,6 @@ pub(crate) struct TestConfig {
     pub(crate) etcd_members: Vec<String>,
     pub(crate) mode: Mode,
     pub(crate) timeouts: TimeoutConfig,
-    pub(crate) artifact_root: Option<PathBuf>,
 }
 
 impl TestConfig {
@@ -103,4 +101,3 @@ impl TestConfig {
         Ok(())
     }
 }
-

@@ -379,6 +379,5 @@ fn job_outcome_label(outcome: &JobOutcome) -> String {
         JobOutcome::Success { id, .. } => format!("Success({})", id.0),
         JobOutcome::Failure { id, error, .. } => format!("Failure({}: {:?})", id.0, error),
         JobOutcome::Timeout { id, .. } => format!("Timeout({})", id.0),
-        JobOutcome::Cancelled { id, .. } => format!("Cancelled({})", id.0),
     }
 }

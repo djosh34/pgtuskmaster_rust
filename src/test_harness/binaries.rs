@@ -49,15 +49,6 @@ pub(crate) fn require_binary(path: &Path) -> Result<PathBuf, HarnessError> {
     Ok(path.to_path_buf())
 }
 
-pub(crate) fn require_etcd_bin() -> Result<PathBuf, HarnessError> {
-    require_binary(Path::new(ETCD_BIN_PATH))
-}
-
-pub(crate) fn require_pg16_bin(name: &str) -> Result<PathBuf, HarnessError> {
-    let path = Path::new(PG16_BIN_DIR).join(name);
-    require_binary(path.as_path())
-}
-
 fn require_real_binary(path: &Path) -> Result<PathBuf, HarnessError> {
     if !path.exists() {
         return Err(HarnessError::InvalidInput(format!(
@@ -87,17 +78,6 @@ pub(crate) fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryPat
         initdb: require_pg16_bin_for_real_tests("initdb")?,
         pg_basebackup: require_pg16_bin_for_real_tests("pg_basebackup")?,
         psql: require_pg16_bin_for_real_tests("psql")?,
-    })
-}
-
-pub(crate) fn require_pg16_process_binaries() -> Result<BinaryPaths, HarnessError> {
-    Ok(BinaryPaths {
-        postgres: require_pg16_bin("postgres")?,
-        pg_ctl: require_pg16_bin("pg_ctl")?,
-        pg_rewind: require_pg16_bin("pg_rewind")?,
-        initdb: require_pg16_bin("initdb")?,
-        pg_basebackup: require_pg16_bin("pg_basebackup")?,
-        psql: require_pg16_bin("psql")?,
     })
 }
 

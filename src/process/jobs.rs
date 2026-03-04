@@ -66,26 +66,6 @@ pub(crate) struct StartPostgresSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StopPostgresSpec {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) mode: ShutdownMode,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RestartPostgresSpec {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) socket_dir: PathBuf,
-    pub(crate) log_file: PathBuf,
-    pub(crate) extra_postgres_settings: BTreeMap<String, String>,
-    pub(crate) mode: ShutdownMode,
-    pub(crate) wait_seconds: Option<u64>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FencingSpec {
     pub(crate) data_dir: PathBuf,
     pub(crate) mode: ShutdownMode,
@@ -94,17 +74,13 @@ pub(crate) struct FencingSpec {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ShutdownMode {
-    Smart,
     Fast,
-    Immediate,
 }
 
 impl ShutdownMode {
     pub(crate) fn as_pg_ctl_arg(&self) -> &'static str {
         match self {
-            Self::Smart => "smart",
             Self::Fast => "fast",
-            Self::Immediate => "immediate",
         }
     }
 }
@@ -117,8 +93,6 @@ pub(crate) enum ActiveJobKind {
     Promote,
     Demote,
     StartPostgres,
-    StopPostgres,
-    RestartPostgres,
     Fencing,
 }
 
@@ -147,14 +121,12 @@ pub(crate) struct ProcessEnvVar {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProcessEnvValue {
-    Literal(String),
     Secret(SecretSource),
 }
 
 impl ProcessEnvValue {
     pub(crate) fn resolve_string_for_key(&self, key: &str) -> Result<String, ProcessError> {
         match self {
-            Self::Literal(value) => Ok(value.clone()),
             Self::Secret(secret) => resolve_secret_source_string(key, secret),
         }
     }
@@ -200,20 +172,16 @@ pub(crate) trait ProcessCommandRunner: Send {
     fn spawn(&mut self, spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError>;
 }
 
+#[cfg(test)]
 pub(crate) struct NoopCommandRunner;
 
+#[cfg(test)]
 impl ProcessCommandRunner for NoopCommandRunner {
     fn spawn(&mut self, _spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError> {
-        Err(ProcessError::UnsupportedInput(
+        Err(ProcessError::InvalidSpec(
             "noop runner cannot spawn commands".to_string(),
         ))
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CancelReason {
-    Superseded,
-    Shutdown,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -224,16 +192,12 @@ pub(crate) enum ProcessError {
     Busy,
     #[error("invalid job spec: {0}")]
     InvalidSpec(String),
-    #[error("unsupported job input: {0}")]
-    UnsupportedInput(String),
     #[error("failed to resolve secret for env `{key}`: {message}")]
     EnvSecretResolutionFailed { key: String, message: String },
     #[error("spawn failed for `{binary}`: {message}")]
     SpawnFailure { binary: String, message: String },
     #[error("process exited unsuccessfully (code: {code:?})")]
     EarlyExit { code: Option<i32> },
-    #[error("job timed out after {timeout_ms} ms")]
-    Timeout { timeout_ms: u64 },
     #[error("job cancellation failed: {0}")]
     CancelFailure(String),
 }

@@ -9,9 +9,9 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, NoopCommandRunner,
-    PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessHandle, PromoteSpec,
-    ProcessLogIdentity, RestartPostgresSpec, StartPostgresSpec, StopPostgresSpec,
+    ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec,
+    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessLogIdentity, PromoteSpec,
+    StartPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,17 +27,11 @@ pub(crate) enum ProcessState {
 }
 
 impl ProcessState {
+    #[cfg(test)]
     pub(crate) fn running_job_id(&self) -> Option<&JobId> {
         match self {
             Self::Idle { .. } => None,
             Self::Running { active, .. } => Some(&active.id),
-        }
-    }
-
-    pub(crate) fn with_outcome(self, outcome: JobOutcome) -> Self {
-        Self::Idle {
-            worker: WorkerStatus::Running,
-            last_outcome: Some(outcome),
         }
     }
 }
@@ -50,8 +44,6 @@ pub(crate) enum ProcessJobKind {
     Promote(PromoteSpec),
     Demote(DemoteSpec),
     StartPostgres(StartPostgresSpec),
-    StopPostgres(StopPostgresSpec),
-    RestartPostgres(RestartPostgresSpec),
     Fencing(FencingSpec),
 }
 
@@ -83,16 +75,10 @@ pub(crate) enum JobOutcome {
         id: JobId,
         finished_at: UnixMillis,
     },
-    Cancelled {
-        id: JobId,
-        finished_at: UnixMillis,
-    },
 }
 
 pub(crate) struct ActiveRuntime {
     pub(crate) request: ProcessJobRequest,
-    pub(crate) timeout_ms: u64,
-    pub(crate) started_at: UnixMillis,
     pub(crate) deadline_at: UnixMillis,
     pub(crate) handle: Box<dyn ProcessHandle>,
     pub(crate) log_identity: ProcessLogIdentity,
@@ -113,6 +99,7 @@ pub(crate) struct ProcessWorkerCtx {
 }
 
 impl ProcessWorkerCtx {
+    #[cfg(test)]
     pub(crate) fn contract_stub(
         config: ProcessConfig,
         publisher: StatePublisher<ProcessState>,
@@ -129,7 +116,7 @@ impl ProcessWorkerCtx {
             },
             publisher,
             inbox,
-            command_runner: Box::new(NoopCommandRunner),
+            command_runner: Box::new(crate::process::jobs::NoopCommandRunner),
             active_runtime: None,
             last_rejection: None,
             now: Box::new(|| Ok(UnixMillis(0))),

@@ -13,6 +13,8 @@ use crate::{
     test_harness::{ha_e2e, net_proxy::ProxyMode},
 };
 
+use crate::test_harness::ha_e2e::handle::TestClusterHandle;
+
 const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 const E2E_PG_STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -74,7 +76,6 @@ struct PartitionFixture {
     etcd: Option<crate::test_harness::etcd3::EtcdClusterHandle>,
     nodes: Vec<ha_e2e::NodeHandle>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
-    etcd_links_by_node: BTreeMap<String, Vec<String>>,
     etcd_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
     api_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
     pg_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
@@ -100,25 +101,37 @@ impl PartitionFixture {
                 bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
                 scenario_timeout: E2E_SCENARIO_TIMEOUT,
             },
-            artifact_root: None,
         };
 
         let handle = ha_e2e::start_cluster(config).await?;
 
+        let TestClusterHandle {
+            guard,
+            timeouts: _,
+            binaries,
+            superuser_username,
+            superuser_dbname,
+            etcd,
+            nodes,
+            tasks,
+            etcd_proxies,
+            api_proxies,
+            pg_proxies,
+        } = handle;
+
         Ok(Self {
-            _guard: handle.guard,
-            pg_ctl_bin: handle.binaries.pg_ctl.clone(),
-            psql_bin: handle.binaries.psql.clone(),
-            superuser_username: handle.superuser_username,
-            superuser_dbname: handle.superuser_dbname,
-            etcd: handle.etcd,
-            nodes: handle.nodes,
-            tasks: handle.tasks,
-            etcd_links_by_node: handle.etcd_links_by_node,
-            etcd_proxies: handle.etcd_proxies,
-            api_proxies: handle.api_proxies,
-            pg_proxies: handle.pg_proxies,
-            timeline: handle.timeline,
+            _guard: guard,
+            pg_ctl_bin: binaries.pg_ctl.clone(),
+            psql_bin: binaries.psql.clone(),
+            superuser_username,
+            superuser_dbname,
+            etcd,
+            nodes,
+            tasks,
+            etcd_proxies,
+            api_proxies,
+            pg_proxies,
+            timeline: Vec::new(),
         })
     }
 
@@ -135,13 +148,6 @@ impl PartitionFixture {
         self.nodes.iter().map(|node| node.id.clone()).collect()
     }
 
-    fn control_node_id(&self) -> Result<String, WorkerError> {
-        self.nodes
-            .first()
-            .map(|node| node.id.clone())
-            .ok_or_else(|| WorkerError::Message("no nodes available".to_string()))
-    }
-
     fn node_by_id(&self, node_id: &str) -> Option<&ha_e2e::NodeHandle> {
         self.nodes.iter().find(|node| node.id == node_id)
     }
@@ -151,18 +157,23 @@ impl PartitionFixture {
         node_id: &str,
         mode: ProxyMode,
     ) -> Result<(), WorkerError> {
-        let links = self.etcd_links_by_node.get(node_id).ok_or_else(|| {
-            WorkerError::Message(format!("unknown node for etcd partition: {node_id}"))
-        })?;
-        for link_name in links {
-            let link = self.etcd_proxies.get(link_name.as_str()).ok_or_else(|| {
-                WorkerError::Message(format!(
-                    "missing etcd proxy link for node {node_id}: {link_name}"
-                ))
-            })?;
-            link.set_mode(mode.clone()).await.map_err(|err| {
-                WorkerError::Message(format!("set mode on {link_name} failed: {err}"))
-            })?;
+        let prefix = format!("{node_id}-to-");
+        let mut matched = 0usize;
+        for (link_name, link) in &self.etcd_proxies {
+            if link_name.starts_with(prefix.as_str()) && link_name.ends_with("-etcd") {
+                matched = matched.saturating_add(1);
+                link.set_mode(mode.clone()).await.map_err(|err| {
+                    WorkerError::Message(format!(
+                        "set mode on {link_name} failed for node {node_id}: {err}"
+                    ))
+                })?;
+            }
+        }
+
+        if matched == 0 {
+            return Err(WorkerError::Message(format!(
+                "no etcd proxy links found for node for etcd partition: {node_id}"
+            )));
         }
         Ok(())
     }

@@ -22,14 +22,6 @@ pub(crate) struct TlsMaterial {
     pub(crate) key: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum TlsMode {
-    #[default]
-    Disabled,
-    Optional,
-    Required,
-}
-
 pub(crate) fn write_tls_material(
     namespace: &TestNamespace,
     profile: &str,

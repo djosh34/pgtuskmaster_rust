@@ -289,7 +289,7 @@ pub(crate) async fn pg_ctl_stop_immediate(
 
     let pid = read_postmaster_pid(&pid_file)?;
     force_kill_postmaster_pid(pid, &label).await?;
-    if pid_is_alive(pid, &label).await.unwrap_or(false) {
+    if pid_is_alive(pid, &label).await? {
         Err(WorkerError::Message(format!(
             "{label} postgres pid {pid} still alive after fallback kill"
         )))
@@ -323,44 +323,50 @@ fn read_postmaster_pid(pid_file: &Path) -> Result<u32, WorkerError> {
 }
 
 async fn kill_best_effort(pid: u32, signal: &str, label: &str) -> Result<(), WorkerError> {
-    let mut command = Command::new("kill");
-    command.arg(format!("-{signal}")).arg(pid.to_string());
-    match tokio::time::timeout(Duration::from_secs(2), command.status()).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(err)) => Err(WorkerError::Message(format!(
+    #[cfg(unix)]
+    const SIGTERM: i32 = libc::SIGTERM;
+    #[cfg(not(unix))]
+    const SIGTERM: i32 = 15;
+
+    #[cfg(unix)]
+    const SIGKILL: i32 = libc::SIGKILL;
+    #[cfg(not(unix))]
+    const SIGKILL: i32 = 9;
+
+    let signal_num = match signal {
+        "TERM" => SIGTERM,
+        "KILL" => SIGKILL,
+        other => {
+            return Err(WorkerError::Message(format!(
+                "{label} unsupported signal '{other}' for pid={pid}"
+            )));
+        }
+    };
+
+    crate::test_harness::signals::send_signal(pid, signal_num).map_err(|err| {
+        WorkerError::Message(format!(
             "{label} kill -{signal} failed for pid={pid}: {err}"
-        ))),
-        Err(_) => Err(WorkerError::Message(format!(
-            "{label} kill -{signal} timed out for pid={pid}"
-        ))),
-    }
+        ))
+    })
 }
 
 async fn pid_is_alive(pid: u32, label: &str) -> Result<bool, WorkerError> {
-    let mut command = Command::new("kill");
-    command.arg("-0").arg(pid.to_string());
-    match tokio::time::timeout(Duration::from_secs(2), command.status()).await {
-        Ok(Ok(status)) => Ok(status.success()),
-        Ok(Err(err)) => Err(WorkerError::Message(format!(
-            "{label} kill -0 spawn failed for pid={pid}: {err}"
-        ))),
-        Err(_) => Err(WorkerError::Message(format!(
-            "{label} kill -0 timed out for pid={pid}"
-        ))),
-    }
+    crate::test_harness::signals::pid_exists(pid).map_err(|err| {
+        WorkerError::Message(format!("{label} kill -0 failed for pid={pid}: {err}"))
+    })
 }
 
 async fn force_kill_postmaster_pid(pid: u32, label: &str) -> Result<(), WorkerError> {
     let _ = kill_best_effort(pid, "TERM", label).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    if !pid_is_alive(pid, label).await.unwrap_or(false) {
+    if !pid_is_alive(pid, label).await? {
         return Ok(());
     }
 
     let _ = kill_best_effort(pid, "KILL", label).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    if pid_is_alive(pid, label).await.unwrap_or(false) {
+    if pid_is_alive(pid, label).await? {
         Err(WorkerError::Message(format!(
             "{label} postgres pid {pid} still alive after kill"
         )))
@@ -576,5 +582,191 @@ pub(crate) async fn get_ha_state_with_fallback(
                     http_step_timeout.as_secs()
                 ))
             }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    use crate::test_harness::etcd3::EtcdHandle;
+    use crate::test_harness::namespace::NamespaceGuard;
+    use crate::test_harness::pg16::PgHandle;
+
+    const INNER_TEST_NAME: &str = "test_harness::ha_e2e::util::tests::kill_path_inner";
+
+    fn find_absolute_sleep() -> Result<PathBuf, String> {
+        for candidate in ["/bin/sleep", "/usr/bin/sleep"] {
+            let path = Path::new(candidate);
+            if path.exists() {
+                return Ok(path.to_path_buf());
+            }
+        }
+        Err("no absolute sleep binary found at /bin/sleep or /usr/bin/sleep".to_string())
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(path, perms).map_err(|err| {
+            format!("set_permissions failed for {}: {err}", path.display())
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_is_not_resolved_via_path() -> Result<(), String> {
+        let namespace = NamespaceGuard::new("kill-not-path")
+            .map_err(|err| format!("namespace init failed: {err}"))?;
+        let ns = namespace
+            .namespace()
+            .map_err(|err| format!("namespace access failed: {err}"))?;
+
+        let fake_bin_dir = ns.child_dir("fake-bin");
+        fs::create_dir_all(&fake_bin_dir)
+            .map_err(|err| format!("create fake bin dir failed: {err}"))?;
+
+        let marker = ns.child_dir("kill-marker");
+        if marker.exists() {
+            fs::remove_file(&marker)
+                .map_err(|err| format!("remove stale marker failed: {err}"))?;
+        }
+
+        let kill_script = fake_bin_dir.join("kill");
+        let script_body = format!(
+            "#!/bin/sh\nset -eu\ntouch '{}'\nexit 0\n",
+            marker.display()
+        );
+        fs::write(&kill_script, script_body)
+            .map_err(|err| format!("write fake kill failed: {err}"))?;
+        make_executable(&kill_script)?;
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = if original_path.is_empty() {
+            fake_bin_dir.display().to_string()
+        } else {
+            format!("{}:{}", fake_bin_dir.display(), original_path)
+        };
+
+        let test_bin = std::env::current_exe()
+            .map_err(|err| format!("current_exe failed: {err}"))?;
+
+        let status = std::process::Command::new(test_bin)
+            .env("PATH", new_path)
+            .arg("--exact")
+            .arg(INNER_TEST_NAME)
+            .arg("--test-threads")
+            .arg("1")
+            .status()
+            .map_err(|err| format!("spawn inner test failed: {err}"))?;
+
+        if !status.success() {
+            return Err(format!("inner test failed with status {status}"));
+        }
+
+        if marker.exists() {
+            Err("fake kill on PATH was executed".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_path_inner() -> Result<(), String> {
+        let sleep_path = find_absolute_sleep()?;
+
+        // Exercise PgHandle shutdown (previously used `Command::new(\"kill\")`).
+        let pg_child = TokioCommand::new(&sleep_path)
+            .arg("300")
+            .spawn()
+            .map_err(|err| format!("spawn sleep for pg shutdown failed: {err}"))?;
+        let mut pg_handle = PgHandle::new_for_test(pg_child);
+        pg_handle
+            .shutdown()
+            .await
+            .map_err(|err| format!("pg shutdown failed: {err}"))?;
+
+        // Exercise EtcdHandle shutdown (previously used `Command::new(\"kill\")`).
+        let etcd_child = TokioCommand::new(&sleep_path)
+            .arg("300")
+            .spawn()
+            .map_err(|err| format!("spawn sleep for etcd shutdown failed: {err}"))?;
+        let mut etcd_handle = EtcdHandle::new_for_test(etcd_child);
+        etcd_handle
+            .shutdown()
+            .await
+            .map_err(|err| format!("etcd shutdown failed: {err}"))?;
+
+        // Exercise ha_e2e util fallback kill + liveness probe against a PID that we do NOT parent,
+        // so we don't accidentally keep it around as a zombie until `wait()`.
+        let sh_path = Path::new("/bin/sh");
+        if !sh_path.exists() {
+            return Err("expected /bin/sh for test helper".to_string());
+        }
+
+        let shell_script = format!("{} 300 & echo $!; wait", sleep_path.display());
+        let mut wrapper = TokioCommand::new(sh_path);
+        wrapper
+            .arg("-c")
+            .arg(shell_script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut wrapper_child = wrapper
+            .spawn()
+            .map_err(|err| format!("spawn sleep wrapper failed: {err}"))?;
+
+        let stdout = wrapper_child
+            .stdout
+            .take()
+            .ok_or_else(|| "sleep wrapper stdout missing".to_string())?;
+        let mut reader = BufReader::new(stdout);
+        let mut pid_line = String::new();
+        reader
+            .read_line(&mut pid_line)
+            .await
+            .map_err(|err| format!("read pid line failed: {err}"))?;
+
+        let pid: u32 = pid_line.trim().parse().map_err(|err| {
+            format!("parse wrapper pid '{}' failed: {err}", pid_line.trim())
+        })?;
+
+        let label = "kill-path-inner";
+        let alive_before = super::pid_is_alive(pid, label)
+            .await
+            .map_err(|err| format!("pid probe before kill failed: {err}"))?;
+        if !alive_before {
+            return Err("expected wrapper sleep pid to be alive before kill".to_string());
+        }
+
+        super::force_kill_postmaster_pid(pid, label)
+            .await
+            .map_err(|err| format!("force_kill_postmaster_pid failed: {err}"))?;
+
+        let alive_after = super::pid_is_alive(pid, label)
+            .await
+            .map_err(|err| format!("pid probe after kill failed: {err}"))?;
+        if alive_after {
+            return Err("expected pid to be gone after kill".to_string());
+        }
+
+        let wait_status = tokio::time::timeout(Duration::from_secs(5), wrapper_child.wait())
+            .await
+            .map_err(|_| "sleep wrapper did not exit after kill".to_string())?
+            .map_err(|err| format!("sleep wrapper wait failed: {err}"))?;
+
+        if !wait_status.success() {
+            return Err(format!("sleep wrapper exited non-zero: {wait_status}"));
+        }
+
+        Ok(())
     }
 }

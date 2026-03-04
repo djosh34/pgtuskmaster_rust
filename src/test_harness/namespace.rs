@@ -38,11 +38,6 @@ impl NamespaceGuard {
         })
     }
 
-    pub(crate) fn into_inner(mut self) -> Result<TestNamespace, HarnessError> {
-        self.namespace.take().ok_or_else(|| {
-            HarnessError::InvalidInput("namespace guard no longer owns namespace".to_string())
-        })
-    }
 }
 
 impl Drop for NamespaceGuard {

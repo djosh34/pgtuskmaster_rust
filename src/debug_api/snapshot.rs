@@ -11,7 +11,6 @@ use crate::{
 pub(crate) enum AppLifecycle {
     Starting,
     Running,
-    Stopping,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

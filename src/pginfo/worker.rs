@@ -22,7 +22,9 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
 
     ctx.publisher
         .publish(next_state, now)
-        .map_err(|err| WorkerError::Message(format!("pginfo publish failed: {err}")))?;
+        .map_err(|err| {
+            WorkerError::Message(format!("pginfo publish failed for {:?}: {err}", ctx.self_id))
+        })?;
     Ok(())
 }
 

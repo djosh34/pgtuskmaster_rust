@@ -342,6 +342,7 @@ impl LogHandle {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn null() -> Self {
         Self {
             hostname: "unknown".to_string(),

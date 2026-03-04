@@ -19,6 +19,9 @@ log
 # rust build artifacts
 target/
 
+# test/build scratch dirs used by some fixtures
+target_verify_*/
+
 # local tool downloads/installations used by tests
 .tools/
 

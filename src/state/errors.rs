@@ -6,7 +6,7 @@ pub enum WorkerError {
     Message(String),
 }
 
-#[cfg(any(test, feature = "test-harness"))]
+#[cfg(test)]
 impl From<crate::test_harness::HarnessError> for WorkerError {
     fn from(value: crate::test_harness::HarnessError) -> Self {
         Self::Message(format!("test harness error: {value}"))

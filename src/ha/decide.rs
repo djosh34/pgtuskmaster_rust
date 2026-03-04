@@ -1,5 +1,3 @@
-use thiserror::Error;
-
 use crate::{
     dcs::state::DcsTrust,
     pginfo::state::{PgInfoState, SqlStatus},
@@ -11,13 +9,7 @@ use super::{
     state::{DecideInput, DecideOutput, HaPhase},
 };
 
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub(crate) enum DecideError {
-    #[error("decision failed")]
-    Failed,
-}
-
-pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
+pub(crate) fn decide(input: DecideInput) -> DecideOutput {
     let DecideInput { current, world } = input;
     let self_member_id = world.config.value.cluster.member_id.as_str();
     let trust = &world.dcs.value.trust;
@@ -226,7 +218,7 @@ pub(crate) fn decide(input: DecideInput) -> Result<DecideOutput, DecideError> {
     }
     next.pending = actions.clone();
 
-    Ok(DecideOutput { next, actions })
+    DecideOutput { next, actions }
 }
 
 fn is_postgres_reachable(state: &PgInfoState) -> bool {
@@ -289,7 +281,7 @@ mod tests {
         state::{JobId, MemberId, UnixMillis, Version, Versioned, WorkerStatus},
     };
 
-    use super::{decide, DecideError};
+    use super::decide;
 
     struct Case {
         name: &'static str,
@@ -304,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_matrix_cases() -> Result<(), DecideError> {
+    fn transition_matrix_cases() {
         let cases = vec![
             Case {
                 name: "init moves to waiting postgres",
@@ -422,8 +414,9 @@ mod tests {
                 trust: DcsTrust::FullQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-b"),
-                process: process_idle(Some(JobOutcome::Cancelled {
+                process: process_idle(Some(JobOutcome::Failure {
                     id: JobId("job-1".to_string()),
+                    error: crate::process::jobs::ProcessError::OperationFailed,
                     finished_at: UnixMillis(10),
                 })),
                 recent_action_ids: BTreeSet::new(),
@@ -492,7 +485,7 @@ mod tests {
                 ),
             };
 
-            let output = decide(input)?;
+            let output = decide(input);
             assert_eq!(
                 output.next.phase, case.expected_phase,
                 "case: {}",
@@ -506,11 +499,10 @@ mod tests {
             );
             assert_eq!(output.next.tick, 42, "case: {}", case.name);
         }
-        Ok(())
     }
 
     #[test]
-    fn idempotency_suppresses_duplicate_actions() -> Result<(), DecideError> {
+    fn idempotency_suppresses_duplicate_actions() {
         let current = HaState {
             worker: WorkerStatus::Running,
             phase: HaPhase::WaitingDcsTrusted,
@@ -528,19 +520,18 @@ mod tests {
         let first = decide(DecideInput {
             current: current.clone(),
             world: world.clone(),
-        })?;
+        });
         assert_eq!(first.actions, vec![HaAction::AcquireLeaderLease]);
 
         let second = decide(DecideInput {
             current: first.next,
             world,
-        })?;
+        });
         assert_eq!(second.actions, vec![]);
-        Ok(())
     }
 
     #[test]
-    fn idempotency_emits_only_new_mixed_actions() -> Result<(), DecideError> {
+    fn idempotency_emits_only_new_mixed_actions() {
         let mut known_ids = BTreeSet::new();
         known_ids.insert(ActionId::DemoteToReplica);
 
@@ -559,17 +550,16 @@ mod tests {
                 Some("node-b"),
                 process_idle(None),
             ),
-        })?;
+        });
 
         assert_eq!(
             output.actions,
             vec![HaAction::ReleaseLeaderLease, HaAction::FenceNode]
         );
-        Ok(())
     }
 
     #[test]
-    fn fail_safe_holds_without_quorum_and_exits_when_restored() -> Result<(), DecideError> {
+    fn fail_safe_holds_without_quorum_and_exits_when_restored() {
         let start = HaState {
             worker: WorkerStatus::Running,
             phase: HaPhase::FailSafe,
@@ -586,7 +576,7 @@ mod tests {
                 None,
                 process_idle(None),
             ),
-        })?;
+        });
         assert_eq!(held.next.phase, HaPhase::FailSafe);
         assert_eq!(held.actions, vec![HaAction::SignalFailSafe]);
 
@@ -598,13 +588,12 @@ mod tests {
                 None,
                 process_idle(None),
             ),
-        })?;
+        });
         assert_eq!(recovered.next.phase, HaPhase::WaitingDcsTrusted);
-        Ok(())
     }
 
     #[test]
-    fn primary_with_switchover_demotes_releases_and_clears_request() -> Result<(), DecideError> {
+    fn primary_with_switchover_demotes_releases_and_clears_request() {
         let mut snapshot = world(
             DcsTrust::FullQuorum,
             pg_primary(SqlStatus::Healthy),
@@ -624,7 +613,7 @@ mod tests {
                 recent_action_ids: BTreeSet::new(),
             },
             world: snapshot,
-        })?;
+        });
 
         assert_eq!(output.next.phase, HaPhase::Replica);
         assert_eq!(
@@ -635,7 +624,6 @@ mod tests {
                 HaAction::ClearSwitchover,
             ]
         );
-        Ok(())
     }
 
     fn process_idle(last_outcome: Option<JobOutcome>) -> ProcessState {
@@ -845,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn rewinding_while_running_emits_nothing() -> Result<(), DecideError> {
+    fn rewinding_while_running_emits_nothing() {
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -860,15 +848,14 @@ mod tests {
                 Some("node-b"),
                 process_running(),
             ),
-        })?;
+        });
 
         assert_eq!(output.next.phase, HaPhase::Rewinding);
         assert!(output.actions.is_empty());
-        Ok(())
     }
 
     #[test]
-    fn replica_with_unhealthy_leader_becomes_candidate() -> Result<(), DecideError> {
+    fn replica_with_unhealthy_leader_becomes_candidate() {
         let mut snapshot = world(
             DcsTrust::FullQuorum,
             pg_replica(SqlStatus::Healthy),
@@ -899,10 +886,9 @@ mod tests {
                 recent_action_ids: BTreeSet::new(),
             },
             world: snapshot,
-        })?;
+        });
 
         assert_eq!(output.next.phase, HaPhase::CandidateLeader);
         assert_eq!(output.actions, vec![HaAction::AcquireLeaderLease]);
-        Ok(())
     }
 }

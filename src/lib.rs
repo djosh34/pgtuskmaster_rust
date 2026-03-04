@@ -19,7 +19,7 @@ pub(crate) mod process;
 pub(crate) mod tls;
 pub mod runtime;
 pub mod state;
-#[cfg(any(test, feature = "test-harness"))]
+#[cfg(test)]
 pub(crate) mod test_harness;
 
 #[cfg(test)]

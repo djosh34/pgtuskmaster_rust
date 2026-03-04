@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 
-use crate::cli::client::CliApiClient;
 use crate::config::{
     ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig, DcsConfig,
     DcsInitConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
@@ -30,25 +29,18 @@ use crate::test_harness::ports::{allocate_ha_topology_ports, PortReservation};
 use super::config::{Mode, TestConfig};
 use super::handle::{NodeHandle, TestClusterHandle};
 use super::util::{
-    http_timeout_ms, parse_http_endpoint, parse_loopback_socket, reserve_non_overlapping_ports,
+    parse_http_endpoint, parse_loopback_socket, reserve_non_overlapping_ports,
     wait_for_bootstrap_primary, wait_for_node_api_ready_or_task_exit,
 };
 
 struct StartupGuard {
     guard: NamespaceGuard,
-    scope: String,
-    cluster_name: String,
-    mode: Mode,
     binaries: BinaryPaths,
     superuser_username: Option<String>,
     superuser_dbname: Option<String>,
     etcd: Option<EtcdClusterHandle>,
     nodes: Vec<NodeHandle>,
-    api_clients: Vec<CliApiClient>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
-    timeline: Vec<String>,
-    artifact_root: Option<PathBuf>,
-    etcd_links_by_node: BTreeMap<String, Vec<String>>,
     etcd_proxies: BTreeMap<String, TcpProxyLink>,
     api_proxies: BTreeMap<String, TcpProxyLink>,
     pg_proxies: BTreeMap<String, TcpProxyLink>,
@@ -127,20 +119,13 @@ impl StartupGuard {
 
         Ok(TestClusterHandle {
             guard: self.guard,
-            scope: self.scope,
-            cluster_name: self.cluster_name,
-            mode: self.mode,
             timeouts: self.timeouts,
             binaries: self.binaries,
             superuser_username,
             superuser_dbname,
             etcd: self.etcd,
             nodes: self.nodes,
-            api_clients: self.api_clients,
             tasks: self.tasks,
-            timeline: self.timeline,
-            artifact_root: self.artifact_root,
-            etcd_links_by_node: self.etcd_links_by_node,
             etcd_proxies: self.etcd_proxies,
             api_proxies: self.api_proxies,
             pg_proxies: self.pg_proxies,
@@ -165,19 +150,12 @@ pub(crate) async fn start_cluster(config: TestConfig) -> Result<TestClusterHandl
 
     let mut guard = StartupGuard {
         guard: namespace_guard,
-        scope: config.scope.clone(),
-        cluster_name: config.cluster_name.clone(),
-        mode: config.mode,
         binaries: binaries.clone(),
         superuser_username: None,
         superuser_dbname: None,
         etcd: None,
         nodes: Vec::new(),
-        api_clients: Vec::new(),
         tasks: Vec::new(),
-        timeline: Vec::new(),
-        artifact_root: config.artifact_root.clone(),
-        etcd_links_by_node: BTreeMap::new(),
         etcd_proxies: BTreeMap::new(),
         api_proxies: BTreeMap::new(),
         pg_proxies: BTreeMap::new(),
@@ -328,8 +306,6 @@ async fn start_cluster_inner(
         })
     };
 
-    let http_timeout_ms = http_timeout_ms(config.timeouts.http_step_timeout)?;
-
     for (index, (pg_port, api_port)) in node_ports.iter().copied().zip(api_ports).enumerate() {
         let node_id = format!("node-{}", index.saturating_add(1));
         let data_dir = prepare_pgdata_dir(&namespace, &node_id)?;
@@ -406,18 +382,6 @@ async fn start_cluster_inner(
                 ));
             }
         };
-
-        let api_client = CliApiClient::new(
-            format!("http://{api_observe_addr}"),
-            http_timeout_ms,
-            None,
-            None,
-        )
-        .map_err(|err| {
-            WorkerError::Message(format!(
-                "build CliApiClient failed for startup node {node_id}: {err}"
-            ))
-        })?;
 
         let pg_hba_contents = concat!(
             "# managed by pgtuskmaster test harness\n",
@@ -668,9 +632,7 @@ async fn start_cluster_inner(
             api_addr,
             api_observe_addr,
             data_dir,
-            log_file: log_file.clone(),
         });
-        guard.api_clients.push(api_client);
 
         let runtime_task = wait_for_node_api_ready_or_task_exit(
             api_observe_addr,
@@ -920,11 +882,6 @@ async fn spawn_partition_etcd_proxies(
 
         let proxy_url = format!("http://{}", link.listen_addr());
         guard.etcd_proxies.insert(link_name.clone(), link);
-        guard
-            .etcd_links_by_node
-            .entry(node_id.clone())
-            .or_default()
-            .push(link_name);
         dcs_endpoints_by_node.insert(node_id, vec![proxy_url]);
     }
 

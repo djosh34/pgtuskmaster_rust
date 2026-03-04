@@ -9,8 +9,14 @@ use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout, Instant};
 
 use super::binaries::validate_executable_file;
+use super::signals;
 use super::HarnessError;
 use crate::test_harness::namespace::TestNamespace;
+
+#[cfg(unix)]
+const SIGTERM: i32 = libc::SIGTERM;
+#[cfg(not(unix))]
+const SIGTERM: i32 = 15;
 
 #[derive(Debug, Clone)]
 pub(crate) struct EtcdInstanceSpec {
@@ -56,25 +62,37 @@ impl EtcdHandle {
 
     pub(crate) async fn shutdown(&mut self) -> Result<(), HarnessError> {
         if let Some(pid) = self.child.id() {
-            let mut term_cmd = Command::new("kill");
-            term_cmd.arg("-TERM").arg(pid.to_string());
-            let status = timeout(Duration::from_secs(2), term_cmd.status()).await;
-            if let Ok(Ok(exit_status)) = status {
-                if !exit_status.success() {
-                    // Continue with fallback kill path below.
-                }
-            }
+            signals::send_signal(pid, SIGTERM).map_err(HarnessError::Io)?;
         }
 
-        let wait_result = timeout(Duration::from_secs(5), self.child.wait()).await;
+        let wait_timeout = Duration::from_secs(5);
+        let wait_result = timeout(wait_timeout, self.child.wait()).await;
         match wait_result {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(err)) => Err(HarnessError::Io(err)),
             Err(_) => {
                 self.child.start_kill().map_err(HarnessError::Io)?;
-                self.child.wait().await.map_err(HarnessError::Io)?;
-                Ok(())
+                match timeout(wait_timeout, self.child.wait()).await {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(err)) => Err(HarnessError::Io(err)),
+                    Err(_) => Err(HarnessError::ShutdownTimeout {
+                        component: "etcd",
+                        timeout: wait_timeout,
+                    }),
+                }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+impl EtcdHandle {
+    pub(crate) fn new_for_test(child: Child) -> Self {
+        Self {
+            child,
+            member_name: "test-member".to_string(),
+            client_port: 0,
+            data_dir: PathBuf::new(),
         }
     }
 }

@@ -53,9 +53,7 @@ pub(crate) struct ProxyLinkSpec {
 }
 
 pub(crate) struct TcpProxyLink {
-    name: String,
     listen_addr: SocketAddr,
-    target_addr: SocketAddr,
     mode_tx: watch::Sender<ProxyMode>,
     shutdown_tx: watch::Sender<bool>,
     active: Arc<Mutex<BTreeMap<u64, AbortHandle>>>,
@@ -116,9 +114,7 @@ impl TcpProxyLink {
         })??;
 
         Ok(Self {
-            name: spec.name,
             listen_addr,
-            target_addr: spec.target_addr,
             mode_tx,
             shutdown_tx,
             active,
@@ -186,9 +182,7 @@ impl TcpProxyLink {
         })??;
 
         Ok(Self {
-            name,
             listen_addr,
-            target_addr,
             mode_tx,
             shutdown_tx,
             active,
@@ -196,16 +190,8 @@ impl TcpProxyLink {
         })
     }
 
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-
     pub(crate) fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
-    }
-
-    pub(crate) fn target_addr(&self) -> SocketAddr {
-        self.target_addr
     }
 
     pub(crate) async fn set_mode(&self, mode: ProxyMode) -> Result<(), HarnessError> {

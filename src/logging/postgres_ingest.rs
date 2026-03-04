@@ -678,7 +678,7 @@ mod tests {
         use crate::logging::LogRecord;
         use crate::config::RoleAuthConfig;
         use crate::process::jobs::{
-            BaseBackupSpec, BootstrapSpec, ShutdownMode, StartPostgresSpec, StopPostgresSpec,
+            BaseBackupSpec, BootstrapSpec, DemoteSpec, ShutdownMode, StartPostgresSpec,
         };
         use crate::process::state::{ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx};
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
@@ -1204,9 +1204,9 @@ mod tests {
             let stop_id = JobId("stop".to_string());
             tx.send(ProcessJobRequest {
                 id: stop_id.clone(),
-                kind: ProcessJobKind::StopPostgres(StopPostgresSpec {
+                kind: ProcessJobKind::Demote(DemoteSpec {
                     data_dir,
-                    mode: ShutdownMode::Immediate,
+                    mode: ShutdownMode::Fast,
                     timeout_ms: Some(20_000),
                 }),
             })

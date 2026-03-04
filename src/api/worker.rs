@@ -111,13 +111,6 @@ impl ApiWorkerCtx {
         self.require_client_cert = required;
     }
 
-    pub(crate) fn set_debug_snapshot_subscriber(
-        &mut self,
-        subscriber: StateSubscriber<SystemSnapshot>,
-    ) {
-        self.debug_snapshot_subscriber = Some(subscriber);
-    }
-
     pub(crate) fn set_ha_snapshot_subscriber(
         &mut self,
         subscriber: StateSubscriber<SystemSnapshot>,
@@ -266,7 +259,6 @@ fn route_request(
 fn api_error_to_http(err: ApiError) -> HttpResponse {
     match err {
         ApiError::BadRequest(message) => HttpResponse::text(400, "Bad Request", message),
-        ApiError::Unauthorized => HttpResponse::text(401, "Unauthorized", "unauthorized"),
         ApiError::DcsStore(message) => HttpResponse::text(503, "Service Unavailable", message),
         ApiError::Internal(message) => HttpResponse::text(500, "Internal Server Error", message),
     }
@@ -964,7 +956,7 @@ mod tests {
             namespace::NamespaceGuard,
             tls::{
                 build_adversarial_tls_fixture, build_client_config, build_server_config,
-                build_server_config_with_client_auth, write_tls_material, TlsMode,
+                build_server_config_with_client_auth, write_tls_material,
             },
         },
     };
@@ -983,14 +975,6 @@ mod tests {
                 .lock()
                 .map_err(|_| WorkerError::Message("writes lock poisoned".to_string()))?;
             Ok(guard.len())
-        }
-
-        fn writes(&self) -> Result<Vec<(String, String)>, WorkerError> {
-            let guard = self
-                .writes
-                .lock()
-                .map_err(|_| WorkerError::Message("writes lock poisoned".to_string()))?;
-            Ok(guard.clone())
         }
 
         fn delete_count(&self) -> Result<usize, WorkerError> {
@@ -1861,7 +1845,7 @@ mod tests {
 
         let snapshot = sample_debug_snapshot(None);
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_debug_snapshot_subscriber(debug_subscriber);
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
         let response =
             send_plain_request(&mut ctx, format_get("/debug/verbose?since=1", None), None).await?;
@@ -1888,7 +1872,7 @@ mod tests {
 
         let snapshot = sample_debug_snapshot(None);
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_debug_snapshot_subscriber(debug_subscriber);
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
         let response =
             send_plain_request(&mut ctx, format_get("/debug/snapshot", None), None).await?;
@@ -1947,7 +1931,7 @@ mod tests {
 
         let snapshot = sample_debug_snapshot(None);
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_debug_snapshot_subscriber(debug_subscriber);
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
         let response =
             send_plain_request(&mut ctx, format_get("/debug/verbose", None), None).await?;
@@ -2307,9 +2291,6 @@ mod tests {
             Some(fixture.untrusted_client.cert_pem.as_bytes()),
             Some(fixture.untrusted_client.key_pem.as_bytes()),
         )?;
-
-        let mode = TlsMode::Required;
-        assert!(matches!(mode, TlsMode::Required));
 
         let (mut ctx, _store) = build_ctx(None).await?;
         ctx.configure_tls(

@@ -20,6 +20,8 @@ use crate::{
     test_harness::ha_e2e,
 };
 
+use crate::test_harness::ha_e2e::handle::TestClusterHandle;
+
 struct ClusterFixture {
     _guard: crate::test_harness::namespace::NamespaceGuard,
     pg_ctl_bin: PathBuf,
@@ -28,7 +30,6 @@ struct ClusterFixture {
     superuser_dbname: String,
     etcd: Option<crate::test_harness::etcd3::EtcdClusterHandle>,
     nodes: Vec<ha_e2e::NodeHandle>,
-    api_clients: Vec<CliApiClient>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
     timeline: Vec<String>,
 }
@@ -41,7 +42,6 @@ const E2E_PG_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(20);
 const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(45);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
-const E2E_SHORT_SCENARIO_TIMEOUT: Duration = Duration::from_secs(90);
 const STRESS_ARTIFACT_DIR: &str = ".ralph/evidence/27-e2e-ha-stress";
 const STRESS_SUMMARY_SCHEMA_VERSION: u32 = 1;
 
@@ -295,22 +295,34 @@ impl ClusterFixture {
                 bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
                 scenario_timeout: E2E_SCENARIO_TIMEOUT,
             },
-            artifact_root: None,
         };
 
         let handle = ha_e2e::start_cluster(config).await?;
 
+        let TestClusterHandle {
+            guard,
+            timeouts: _,
+            binaries,
+            superuser_username,
+            superuser_dbname,
+            etcd,
+            nodes,
+            tasks,
+            etcd_proxies: _,
+            api_proxies: _,
+            pg_proxies: _,
+        } = handle;
+
         Ok(Self {
-            _guard: handle.guard,
-            pg_ctl_bin: handle.binaries.pg_ctl.clone(),
-            psql_bin: handle.binaries.psql.clone(),
-            superuser_username: handle.superuser_username,
-            superuser_dbname: handle.superuser_dbname,
-            etcd: handle.etcd,
-            nodes: handle.nodes,
-            api_clients: handle.api_clients,
-            tasks: handle.tasks,
-            timeline: handle.timeline,
+            _guard: guard,
+            pg_ctl_bin: binaries.pg_ctl.clone(),
+            psql_bin: binaries.psql.clone(),
+            superuser_username,
+            superuser_dbname,
+            etcd,
+            nodes,
+            tasks,
+            timeline: Vec::new(),
         })
     }
 
@@ -413,10 +425,6 @@ impl ClusterFixture {
         }
     }
 
-    fn node_ids(&self) -> Vec<String> {
-        self.nodes.iter().map(|node| node.id.clone()).collect()
-    }
-
     fn sql_workload_ctx(&self, spec: &SqlWorkloadSpec) -> Result<SqlWorkloadCtx, WorkerError> {
         if spec.worker_count == 0 {
             return Err(WorkerError::Message(
@@ -458,49 +466,6 @@ impl ClusterFixture {
         self.run_sql_on_node_with_retry(bootstrap_primary, sql.as_str(), Duration::from_secs(30))
             .await?;
         Ok(())
-    }
-
-    async fn wait_for_table_readable_on_nodes(
-        &self,
-        table_name: &str,
-        node_ids: &[String],
-        timeout: Duration,
-    ) -> Result<(), WorkerError> {
-        if node_ids.is_empty() {
-            return Err(WorkerError::Message(
-                "table readability check requires at least one node".to_string(),
-            ));
-        }
-        let count_sql = format!("SELECT COUNT(*)::bigint FROM {table_name}");
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut pending: BTreeSet<String> = node_ids.iter().cloned().collect();
-        let mut last_observation = "none".to_string();
-        loop {
-            let pending_nodes: Vec<String> = pending.iter().cloned().collect();
-            for node_id in pending_nodes {
-                match self
-                    .run_sql_on_node(node_id.as_str(), count_sql.as_str())
-                    .await
-                {
-                    Ok(_) => {
-                        let _ = pending.remove(&node_id);
-                    }
-                    Err(err) => {
-                        last_observation =
-                            format!("node={node_id} table readability probe failed: {err}");
-                    }
-                }
-            }
-            if pending.is_empty() {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(WorkerError::Message(format!(
-                    "timed out waiting for table {table_name} readability on nodes={pending:?}; last_observation={last_observation}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
     }
 
     async fn start_sql_workload(
@@ -786,79 +751,6 @@ impl ClusterFixture {
             )));
         }
         Ok(())
-    }
-
-    async fn wait_for_table_digest_convergence(
-        &self,
-        table_name: &str,
-        node_ids: &[String],
-        expected_min_rows: usize,
-        timeout: Duration,
-    ) -> Result<BTreeMap<String, String>, WorkerError> {
-        if node_ids.is_empty() {
-            return Err(WorkerError::Message(
-                "cannot verify table digest convergence with empty node list".to_string(),
-            ));
-        }
-        let expected_min_rows_u64 = u64::try_from(expected_min_rows).unwrap_or(u64::MAX);
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut last_observation = "none".to_string();
-        loop {
-            let mut digests = BTreeMap::new();
-            let mut row_counts = BTreeMap::new();
-            let digest_sql = format!(
-                "SELECT COALESCE(string_agg(worker_id::text || ':' || seq::text || ':' || payload, ',' ORDER BY worker_id, seq), '') FROM {table_name}"
-            );
-            let count_sql = format!("SELECT COUNT(*)::bigint FROM {table_name}");
-            let mut query_failed = false;
-            for node_id in node_ids {
-                let digest_raw = match self.run_sql_on_node(node_id, digest_sql.as_str()).await {
-                    Ok(value) => value,
-                    Err(err) => {
-                        query_failed = true;
-                        last_observation =
-                            format!("node={node_id} digest query failed during convergence: {err}");
-                        break;
-                    }
-                };
-                let count_raw = match self.run_sql_on_node(node_id, count_sql.as_str()).await {
-                    Ok(value) => value,
-                    Err(err) => {
-                        query_failed = true;
-                        last_observation =
-                            format!("node={node_id} count query failed during convergence: {err}");
-                        break;
-                    }
-                };
-                let digest = ha_e2e::util::parse_psql_rows(digest_raw.as_str())
-                    .first()
-                    .cloned()
-                    .unwrap_or_default();
-                let row_count = ha_e2e::util::parse_single_u64(count_raw.as_str())?;
-                digests.insert(node_id.clone(), digest);
-                row_counts.insert(node_id.clone(), row_count);
-            }
-            if !query_failed {
-                let mut digest_values = digests.values();
-                let first_digest = digest_values.next().cloned().unwrap_or_default();
-                let all_equal = digest_values.all(|digest| digest == &first_digest);
-                let all_counts_satisfied = row_counts
-                    .values()
-                    .all(|count| *count >= expected_min_rows_u64);
-                if all_equal && all_counts_satisfied {
-                    return Ok(digests);
-                }
-                last_observation = format!(
-                    "digest mismatch or low row counts; row_counts={row_counts:?} all_equal={all_equal}"
-                );
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(WorkerError::Message(format!(
-                    "timed out waiting for table digest convergence on {table_name}; last_observation={last_observation}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
     }
 
     async fn assert_table_key_integrity_on_node(
@@ -1163,19 +1055,17 @@ impl ClusterFixture {
         let node = self.nodes.get(node_index).ok_or_else(|| {
             WorkerError::Message(format!("invalid node index for API request: {node_index}"))
         })?;
-        Ok((node.id.clone(), format!("http://{}", node.api_addr)))
+        Ok((node.id.clone(), format!("http://{}", node.api_observe_addr)))
     }
 
     fn cli_api_client_for_node_index(
         &self,
         node_index: usize,
     ) -> Result<(String, CliApiClient), WorkerError> {
-        let (node_id, _) = self.node_api_base_url_by_index(node_index)?;
-        let client = self.api_clients.get(node_index).cloned().ok_or_else(|| {
-            WorkerError::Message(format!(
-                "missing cached CliApiClient for node index {node_index}"
-            ))
-        })?;
+        let (node_id, base_url) = self.node_api_base_url_by_index(node_index)?;
+        let timeout_ms = e2e_http_timeout_ms()?;
+        let client = CliApiClient::new(base_url, timeout_ms, None, None)
+            .map_err(|err| WorkerError::Message(format!("build CliApiClient failed: {err}")))?;
         Ok((node_id, client))
     }
 
@@ -1330,7 +1220,7 @@ impl ClusterFixture {
                     "invalid node index for HA state fetch: {node_index}"
                 ))
             })?
-            .api_addr;
+            .api_observe_addr;
         let (node_id, client) = self.cli_api_client_for_node_index(node_index)?;
         ha_e2e::util::get_ha_state_with_fallback(
             &client,
@@ -1438,35 +1328,6 @@ impl ClusterFixture {
             .filter(|state| state.ha_phase == "Primary")
             .map(|state| state.self_member_id.clone())
             .collect()
-    }
-
-    async fn wait_for_primary(&mut self, timeout: Duration) -> Result<String, WorkerError> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut last_error: Option<String> = None;
-        loop {
-            match self.cluster_ha_states().await {
-                Ok(states) => {
-                    let primaries = Self::primary_members(&states);
-                    if primaries.len() == 1 {
-                        if let Some(primary) = primaries.into_iter().next() {
-                            return Ok(primary);
-                        }
-                    }
-                }
-                Err(err) => {
-                    last_error = Some(err.to_string());
-                }
-            }
-            if tokio::time::Instant::now() >= deadline {
-                let detail = last_error
-                    .as_deref()
-                    .map_or_else(|| "none".to_string(), ToString::to_string);
-                return Err(WorkerError::Message(format!(
-                    "timed out waiting for single primary via API; last_error={detail}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
     }
 
     async fn wait_for_primary_change(
