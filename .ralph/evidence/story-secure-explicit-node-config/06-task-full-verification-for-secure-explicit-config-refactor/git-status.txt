@@ -1,0 +1,4 @@
+ M .ralph/current_tasks.md
+ M .ralph/tasks/story-secure-explicit-node-config/06-task-full-verification-for-secure-explicit-config-refactor.md
+?? .ralph/current_task.txt
+?? .ralph/progress/70.jsonl
