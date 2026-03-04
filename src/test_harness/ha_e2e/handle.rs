@@ -37,6 +37,8 @@ pub(crate) struct TestClusterHandle {
     pub(crate) mode: Mode,
     pub(crate) timeouts: TimeoutConfig,
     pub(crate) binaries: BinaryPaths,
+    pub(crate) superuser_username: String,
+    pub(crate) superuser_dbname: String,
     pub(crate) etcd: Option<EtcdClusterHandle>,
     pub(crate) nodes: Vec<NodeHandle>,
     pub(crate) api_clients: Vec<CliApiClient>,
@@ -48,4 +50,3 @@ pub(crate) struct TestClusterHandle {
     pub(crate) api_proxies: BTreeMap<String, TcpProxyLink>,
     pub(crate) pg_proxies: BTreeMap<String, TcpProxyLink>,
 }
-

@@ -27,7 +27,8 @@ use crate::{
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::{
         jobs::{
-            BaseBackupSpec, BootstrapSpec, ProcessCommandRunner, ProcessExit, StartPostgresSpec,
+            BaseBackupSpec, BootstrapSpec, ProcessCommandRunner, ProcessExit, ReplicatorSourceConn,
+            RewinderSourceConn, StartPostgresSpec,
         },
         state::{ProcessJobKind, ProcessState, ProcessWorkerCtx},
         worker::{build_command, system_now_unix_millis, timeout_for_kind, TokioCommandRunner},
@@ -59,7 +60,7 @@ enum StartupMode {
     InitializePrimary,
     CloneReplica {
         leader_member_id: MemberId,
-        source_conninfo: crate::pginfo::state::PgConnInfo,
+        source: ReplicatorSourceConn,
     },
     ResumeExisting,
 }
@@ -103,14 +104,43 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
 
 // ?!?!?! WHY LIKE THIS?
 fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults {
-    let mut defaults = ProcessDispatchDefaults::contract_stub();
-    defaults.postgres_host = cfg.postgres.listen_host.clone();
-    defaults.postgres_port = cfg.postgres.listen_port;
-    defaults.socket_dir = cfg.postgres.socket_dir.clone();
-    defaults.log_file = cfg.postgres.log_file.clone();
-    defaults.rewind_source_conninfo.host = cfg.postgres.rewind_source_host.clone();
-    defaults.rewind_source_conninfo.port = cfg.postgres.rewind_source_port;
-    defaults
+    let basebackup_source = ReplicatorSourceConn {
+        conninfo: crate::pginfo::state::PgConnInfo {
+            host: cfg.postgres.rewind_source_host.clone(),
+            port: cfg.postgres.rewind_source_port,
+            user: cfg.postgres.roles.replicator.username.clone(),
+            dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
+            application_name: None,
+            connect_timeout_s: Some(cfg.postgres.connect_timeout_s),
+            ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
+            options: None,
+        },
+        auth: cfg.postgres.roles.replicator.auth.clone(),
+    };
+
+    let rewind_source = RewinderSourceConn {
+        conninfo: crate::pginfo::state::PgConnInfo {
+            host: cfg.postgres.rewind_source_host.clone(),
+            port: cfg.postgres.rewind_source_port,
+            user: cfg.postgres.roles.rewinder.username.clone(),
+            dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
+            application_name: None,
+            connect_timeout_s: Some(cfg.postgres.connect_timeout_s),
+            ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
+            options: None,
+        },
+        auth: cfg.postgres.roles.rewinder.auth.clone(),
+    };
+
+    ProcessDispatchDefaults {
+        postgres_host: cfg.postgres.listen_host.clone(),
+        postgres_port: cfg.postgres.listen_port,
+        socket_dir: cfg.postgres.socket_dir.clone(),
+        log_file: cfg.postgres.log_file.clone(),
+        basebackup_source,
+        rewind_source,
+        shutdown_mode: crate::process::jobs::ShutdownMode::Fast,
+    }
 }
 
 fn plan_startup(
@@ -224,7 +254,7 @@ fn select_startup_mode(
             match leader {
                 Some(leader_member_id) => StartupMode::CloneReplica {
                     leader_member_id,
-                    source_conninfo: default_leader_conninfo(process_defaults, connect_timeout_s),
+                    source: default_leader_source(process_defaults, connect_timeout_s),
                 },
                 None => StartupMode::InitializePrimary,
             }
@@ -232,13 +262,13 @@ fn select_startup_mode(
     }
 }
 
-fn default_leader_conninfo(
+fn default_leader_source(
     process_defaults: &ProcessDispatchDefaults,
     connect_timeout_s: u32,
-) -> crate::pginfo::state::PgConnInfo {
-    let mut conninfo = process_defaults.rewind_source_conninfo.clone();
-    conninfo.connect_timeout_s = Some(connect_timeout_s);
-    conninfo
+) -> ReplicatorSourceConn {
+    let mut source = process_defaults.basebackup_source.clone();
+    source.conninfo.connect_timeout_s = Some(connect_timeout_s);
+    source
 }
 
 async fn execute_startup(
@@ -255,6 +285,7 @@ async fn execute_startup(
                 cfg,
                 ProcessJobKind::Bootstrap(BootstrapSpec {
                     data_dir: cfg.postgres.data_dir.clone(),
+                    superuser_username: cfg.postgres.roles.superuser.username.clone(),
                     timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
                 }),
                 log,
@@ -263,13 +294,13 @@ async fn execute_startup(
             run_start_job(cfg, process_defaults, log).await
         }
         StartupMode::CloneReplica {
-            source_conninfo, ..
+            source, ..
         } => {
             run_startup_job(
                 cfg,
                 ProcessJobKind::BaseBackup(BaseBackupSpec {
                     data_dir: cfg.postgres.data_dir.clone(),
-                    source_conninfo: source_conninfo.clone(),
+                    source: source.clone(),
                     timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
                 }),
                 log,
@@ -547,6 +578,7 @@ async fn run_workers(
         postgres_dsn: local_postgres_dsn(
             &process_defaults,
             &cfg.postgres.local_conn_identity,
+            cfg.postgres.roles.superuser.username.as_str(),
             cfg.postgres.connect_timeout_s,
         ),
         poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
@@ -647,13 +679,14 @@ async fn run_workers(
 fn local_postgres_dsn(
     process_defaults: &ProcessDispatchDefaults,
     identity: &crate::config::PostgresConnIdentityConfig,
+    superuser_username: &str,
     connect_timeout_s: u32,
 ) -> String {
     format!(
         "host={} port={} user={} dbname={} connect_timeout={} sslmode={}",
         process_defaults.postgres_host,
         process_defaults.postgres_port,
-        identity.user,
+        superuser_username,
         identity.dbname,
         connect_timeout_s,
         identity.ssl_mode.as_str()
@@ -712,7 +745,7 @@ mod tests {
     use crate::pginfo::conninfo::PgSslMode;
 
     use super::{
-        default_leader_conninfo, inspect_data_dir, select_startup_mode, DataDirState, StartupMode,
+        default_leader_source, inspect_data_dir, select_startup_mode, DataDirState, StartupMode,
     };
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -736,7 +769,7 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                 },
                 rewind_conn_identity: PostgresConnIdentityConfig {
-                    user: "postgres".to_string(),
+                    user: "rewinder".to_string(),
                     dbname: "postgres".to_string(),
                     ssl_mode: PgSslMode::Prefer,
                 },
@@ -930,13 +963,13 @@ mod tests {
         assert!(matches!(mode, StartupMode::CloneReplica { .. }));
         if let StartupMode::CloneReplica {
             leader_member_id,
-            source_conninfo,
+            source,
         } = mode
         {
             assert_eq!(leader_member_id, leader_id);
             assert_eq!(
-                source_conninfo,
-                default_leader_conninfo(&defaults, cfg.postgres.connect_timeout_s)
+                source,
+                default_leader_source(&defaults, cfg.postgres.connect_timeout_s)
             );
         }
     }
@@ -969,5 +1002,30 @@ mod tests {
             cfg.postgres.connect_timeout_s,
         );
         assert_eq!(mode, StartupMode::ResumeExisting);
+    }
+
+    #[test]
+    fn runtime_uses_role_specific_users_for_dsn_clone_and_rewind() {
+        let mut cfg = sample_runtime_config();
+        cfg.postgres.roles.superuser.username = "su_admin".to_string();
+        cfg.postgres.roles.replicator.username = "repl_user".to_string();
+        cfg.postgres.roles.rewinder.username = "rewind_user".to_string();
+        cfg.postgres.local_conn_identity.user = "su_admin".to_string();
+        cfg.postgres.rewind_conn_identity.user = "rewind_user".to_string();
+
+        let defaults = super::process_defaults_from_config(&cfg);
+        assert_eq!(defaults.basebackup_source.conninfo.user, "repl_user");
+        assert_eq!(defaults.rewind_source.conninfo.user, "rewind_user");
+
+        let local_dsn = super::local_postgres_dsn(
+            &defaults,
+            &cfg.postgres.local_conn_identity,
+            cfg.postgres.roles.superuser.username.as_str(),
+            cfg.postgres.connect_timeout_s,
+        );
+        assert!(local_dsn.contains("user=su_admin"));
+
+        let leader_source = default_leader_source(&defaults, cfg.postgres.connect_timeout_s);
+        assert_eq!(leader_source.conninfo.user, "repl_user");
     }
 }

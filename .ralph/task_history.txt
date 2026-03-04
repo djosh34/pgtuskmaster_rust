@@ -65,3 +65,4 @@
 .ralph/tasks/story-rust-system-harness/39-task-file-sink-support-for-structured-logging.md
 .ralph/tasks/story-secure-explicit-node-config/01-task-expand-runtime-config-schema-for-explicit-secure-node-startup.md
 .ralph/tasks/story-secure-explicit-node-config/02-task-migrate-parser-defaults-and-validation-to-explicit-enum-driven-config.md
+.ralph/tasks/story-secure-explicit-node-config/03-task-enforce-role-specific-credential-usage-across-runtime.md

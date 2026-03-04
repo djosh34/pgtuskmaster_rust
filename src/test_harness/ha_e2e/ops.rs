@@ -55,6 +55,8 @@ impl TestClusterHandle {
         run_psql_statement(
             self.binaries.psql.as_path(),
             port,
+            self.superuser_username.as_str(),
+            self.superuser_dbname.as_str(),
             sql,
             self.timeouts.command_timeout,
             self.timeouts.command_kill_wait_timeout,

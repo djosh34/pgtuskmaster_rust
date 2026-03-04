@@ -430,6 +430,25 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         cfg.postgres.roles.rewinder.username.as_str(),
     )?;
 
+    if cfg.postgres.local_conn_identity.user != cfg.postgres.roles.superuser.username {
+        return Err(ConfigError::Validation {
+            field: "postgres.local_conn_identity.user",
+            message: format!(
+                "must match postgres.roles.superuser.username (got `{}`, expected `{}`)",
+                cfg.postgres.local_conn_identity.user, cfg.postgres.roles.superuser.username
+            ),
+        });
+    }
+    if cfg.postgres.rewind_conn_identity.user != cfg.postgres.roles.rewinder.username {
+        return Err(ConfigError::Validation {
+            field: "postgres.rewind_conn_identity.user",
+            message: format!(
+                "must match postgres.roles.rewinder.username (got `{}`, expected `{}`)",
+                cfg.postgres.rewind_conn_identity.user, cfg.postgres.roles.rewinder.username
+            ),
+        });
+    }
+
     validate_role_auth(
         "postgres.roles.superuser.auth.password.path",
         "postgres.roles.superuser.auth.password.content",
@@ -751,7 +770,7 @@ fn validate_inline_or_path_non_empty(
                         ssl_mode: PgSslMode::Prefer,
                     },
                     rewind_conn_identity: PostgresConnIdentityConfig {
-                        user: "postgres".to_string(),
+                        user: "rewinder".to_string(),
                         dbname: "postgres".to_string(),
                         ssl_mode: PgSslMode::Prefer,
                     },
@@ -1087,7 +1106,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 rewind_source_host = "127.0.0.1"
 rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
-rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
 pg_hba = { source = { content = "" } }
@@ -1150,7 +1169,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 rewind_source_host = "127.0.0.1"
 rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
-rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
 pg_hba = { source = { content = "" } }
@@ -1208,7 +1227,7 @@ socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
 rewind_source_host = "127.0.0.1"
 rewind_source_port = 5432
-rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
 pg_hba = { source = { content = "" } }

@@ -7,7 +7,7 @@ use tokio::{
 };
 
 use crate::{
-    config::ProcessConfig,
+    config::{ProcessConfig, RoleAuthConfig},
     logging::{LogHandle, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText},
     pginfo::state::render_pg_conninfo,
     state::{JobId, UnixMillis, WorkerError, WorkerStatus},
@@ -15,8 +15,9 @@ use crate::{
 
 use super::{
     jobs::{
-        ActiveJob, ActiveJobKind, CancelReason, ProcessCommandSpec, ProcessError, ProcessExit,
-        ProcessHandle, ProcessLogIdentity, ProcessOutputLine, ProcessOutputStream,
+        ActiveJob, ActiveJobKind, CancelReason, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar,
+        ProcessError, ProcessExit, ProcessHandle, ProcessLogIdentity, ProcessOutputLine,
+        ProcessOutputStream,
     },
     state::{
         ActiveRuntime, JobOutcome, ProcessJobKind, ProcessJobRejection, ProcessJobRequest,
@@ -120,27 +121,38 @@ impl ProcessHandle for TokioProcessHandle {
 
 impl super::jobs::ProcessCommandRunner for TokioCommandRunner {
     fn spawn(&mut self, spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError> {
-        let mut command = Command::new(&spec.program);
-        command
-            .args(spec.args)
-            .stdin(Stdio::null());
-        if spec.capture_output {
+        let ProcessCommandSpec {
+            program,
+            args,
+            env,
+            capture_output,
+            log_identity: _,
+        } = spec;
+        let binary = program.display().to_string();
+
+        let mut command = Command::new(&program);
+        command.args(args).stdin(Stdio::null());
+        for var in env {
+            let value = var.value.resolve_string_for_key(var.key.as_str())?;
+            command.env(var.key, value);
+        }
+        if capture_output {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
         } else {
             command.stdout(Stdio::null()).stderr(Stdio::null());
         }
 
         let mut child = command.spawn().map_err(|err| ProcessError::SpawnFailure {
-            binary: spec.program.display().to_string(),
+            binary,
             message: err.to_string(),
         })?;
 
-        let stdout = if spec.capture_output {
+        let stdout = if capture_output {
             child.stdout.take()
         } else {
             None
         };
-        let stderr = if spec.capture_output {
+        let stderr = if capture_output {
             child.stderr.take()
         } else {
             None
@@ -574,6 +586,11 @@ pub(crate) fn build_command(
     match kind {
         ProcessJobKind::Bootstrap(spec) => {
             validate_non_empty_path("bootstrap.data_dir", &spec.data_dir)?;
+            if spec.superuser_username.trim().is_empty() {
+                return Err(ProcessError::InvalidSpec(
+                    "bootstrap.superuser_username must not be empty".to_string(),
+                ));
+            }
             let program = config.binaries.initdb.clone();
             Ok(ProcessCommandSpec {
                 program: program.clone(),
@@ -583,8 +600,9 @@ pub(crate) fn build_command(
                     "-A".to_string(),
                     "trust".to_string(),
                     "-U".to_string(),
-                    "postgres".to_string(),
+                    spec.superuser_username.clone(),
                 ],
+                env: Vec::new(),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -595,12 +613,12 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::BaseBackup(spec) => {
             validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
-            if spec.source_conninfo.host.trim().is_empty() {
+            if spec.source.conninfo.host.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
                     "basebackup.source_conninfo.host must not be empty".to_string(),
                 ));
             }
-            if spec.source_conninfo.user.trim().is_empty() {
+            if spec.source.conninfo.user.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
                     "basebackup.source_conninfo.user must not be empty".to_string(),
                 ));
@@ -610,17 +628,18 @@ pub(crate) fn build_command(
                 program: program.clone(),
                 args: vec![
                     "-h".to_string(),
-                    spec.source_conninfo.host.clone(),
+                    spec.source.conninfo.host.clone(),
                     "-p".to_string(),
-                    spec.source_conninfo.port.to_string(),
+                    spec.source.conninfo.port.to_string(),
                     "-U".to_string(),
-                    spec.source_conninfo.user.clone(),
+                    spec.source.conninfo.user.clone(),
                     "-D".to_string(),
                     spec.data_dir.display().to_string(),
                     "-Fp".to_string(),
                     "-Xs".to_string(),
                     "-R".to_string(),
                 ],
+                env: role_auth_env(&spec.source.auth),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -631,6 +650,21 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::PgRewind(spec) => {
             validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
+            if spec.source.conninfo.host.trim().is_empty() {
+                return Err(ProcessError::InvalidSpec(
+                    "pg_rewind.source_conninfo.host must not be empty".to_string(),
+                ));
+            }
+            if spec.source.conninfo.user.trim().is_empty() {
+                return Err(ProcessError::InvalidSpec(
+                    "pg_rewind.source_conninfo.user must not be empty".to_string(),
+                ));
+            }
+            if spec.source.conninfo.dbname.trim().is_empty() {
+                return Err(ProcessError::InvalidSpec(
+                    "pg_rewind.source_conninfo.dbname must not be empty".to_string(),
+                ));
+            }
             let program = config.binaries.pg_rewind.clone();
             Ok(ProcessCommandSpec {
                 program: program.clone(),
@@ -638,8 +672,9 @@ pub(crate) fn build_command(
                     "--target-pgdata".to_string(),
                     spec.target_data_dir.display().to_string(),
                     "--source-server".to_string(),
-                    render_pg_conninfo(&spec.source_conninfo),
+                    render_pg_conninfo(&spec.source.conninfo),
                 ],
+                env: role_auth_env(&spec.source.auth),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -664,6 +699,7 @@ pub(crate) fn build_command(
             Ok(ProcessCommandSpec {
                 program: program.clone(),
                 args,
+                env: Vec::new(),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -685,6 +721,7 @@ pub(crate) fn build_command(
                     spec.mode.as_pg_ctl_arg().to_string(),
                     "-w".to_string(),
                 ],
+                env: Vec::new(),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -723,6 +760,7 @@ pub(crate) fn build_command(
                     "-t".to_string(),
                     wait_seconds.to_string(),
                 ],
+                env: Vec::new(),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -744,6 +782,7 @@ pub(crate) fn build_command(
                     spec.mode.as_pg_ctl_arg().to_string(),
                     "-w".to_string(),
                 ],
+                env: Vec::new(),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -784,6 +823,7 @@ pub(crate) fn build_command(
                     "-t".to_string(),
                     wait_seconds.to_string(),
                 ],
+                env: Vec::new(),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -805,6 +845,7 @@ pub(crate) fn build_command(
                     spec.mode.as_pg_ctl_arg().to_string(),
                     "-w".to_string(),
                 ],
+                env: Vec::new(),
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
@@ -813,6 +854,16 @@ pub(crate) fn build_command(
                 },
             })
         }
+    }
+}
+
+fn role_auth_env(auth: &RoleAuthConfig) -> Vec<ProcessEnvVar> {
+    match auth {
+        RoleAuthConfig::Tls => Vec::new(),
+        RoleAuthConfig::Password { password } => vec![ProcessEnvVar {
+            key: "PGPASSWORD".to_string(),
+            value: ProcessEnvValue::Secret(password.clone()),
+        }],
     }
 }
 
@@ -857,14 +908,15 @@ mod tests {
     };
 
     use crate::{
-        config::{BinaryPaths, ProcessConfig},
+        config::{BinaryPaths, InlineOrPath, ProcessConfig, RoleAuthConfig, SecretSource},
         pginfo::state::{PgConnInfo, PgSslMode},
         process::{
             jobs::{
                 ActiveJob, BaseBackupSpec, BootstrapSpec, CancelReason, DemoteSpec, FencingSpec,
                 NoopCommandRunner, PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessExit,
-                ProcessHandle, PromoteSpec, RestartPostgresSpec, ShutdownMode, StartPostgresSpec,
-                StopPostgresSpec,
+                ProcessEnvValue, ProcessHandle, PromoteSpec, ReplicatorSourceConn,
+                RestartPostgresSpec,
+                RewinderSourceConn, ShutdownMode, StartPostgresSpec, StopPostgresSpec,
             },
             state::{
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
@@ -986,15 +1038,18 @@ mod tests {
             &JobId("job-test".to_string()),
             &ProcessJobKind::BaseBackup(BaseBackupSpec {
                 data_dir: PathBuf::from("/tmp/node/data"),
-                source_conninfo: PgConnInfo {
-                    host: "10.0.0.12".to_string(),
-                    port: 5433,
-                    user: "replicator".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: None,
-                    ssl_mode: PgSslMode::Prefer,
-                    options: None,
+                source: ReplicatorSourceConn {
+                    conninfo: PgConnInfo {
+                        host: "10.0.0.12".to_string(),
+                        port: 5433,
+                        user: "replicator".to_string(),
+                        dbname: "postgres".to_string(),
+                        application_name: None,
+                        connect_timeout_s: None,
+                        ssl_mode: PgSslMode::Prefer,
+                        options: None,
+                    },
+                    auth: RoleAuthConfig::Tls,
                 },
                 timeout_ms: Some(30_000),
             }),
@@ -1004,6 +1059,7 @@ mod tests {
         assert!(command.is_ok());
         if let Ok(spec) = command {
             assert_eq!(spec.program, config.binaries.pg_basebackup);
+            assert!(spec.env.is_empty());
             assert_eq!(
                 spec.args,
                 vec![
@@ -1021,6 +1077,151 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn build_command_basebackup_sets_pgpassword_env_for_password_auth() -> Result<(), String> {
+        let config = sample_config();
+        let spec = build_command(
+            &config,
+            &JobId("job-test".to_string()),
+            &ProcessJobKind::BaseBackup(BaseBackupSpec {
+                data_dir: PathBuf::from("/tmp/node/data"),
+                source: ReplicatorSourceConn {
+                    conninfo: PgConnInfo {
+                        host: "10.0.0.12".to_string(),
+                        port: 5433,
+                        user: "replicator".to_string(),
+                        dbname: "postgres".to_string(),
+                        application_name: None,
+                        connect_timeout_s: None,
+                        ssl_mode: PgSslMode::Prefer,
+                        options: None,
+                    },
+                    auth: RoleAuthConfig::Password {
+                        password: SecretSource(InlineOrPath::Inline {
+                            content: "secret\n".to_string(),
+                        }),
+                    },
+                },
+                timeout_ms: Some(30_000),
+            }),
+            false,
+        )
+        .map_err(|err| format!("build_command failed: {err}"))?;
+
+        if spec.env.len() != 1 {
+            return Err(format!("expected 1 env var, got {}", spec.env.len()));
+        }
+        if spec.env[0].key.as_str() != "PGPASSWORD" {
+            return Err(format!("expected env key PGPASSWORD, got {}", spec.env[0].key));
+        }
+        match &spec.env[0].value {
+            ProcessEnvValue::Secret(secret) => match &secret.0 {
+                InlineOrPath::Inline { content } => {
+                    if content.as_str() != "secret\n" {
+                        return Err(format!("unexpected inline secret content: {content:?}"));
+                    }
+                }
+                other => return Err(format!("expected inline secret source, got: {other:?}")),
+            },
+            other => return Err(format!("expected secret env value, got: {other:?}")),
+        }
+        if spec.args.iter().any(|arg| arg.contains("secret")) {
+            return Err("password must not appear in args".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn build_command_bootstrap_uses_configured_superuser_username() -> Result<(), String> {
+        let config = sample_config();
+        let spec = build_command(
+            &config,
+            &JobId("job-test".to_string()),
+            &ProcessJobKind::Bootstrap(BootstrapSpec {
+                data_dir: PathBuf::from("/tmp/node/data"),
+                superuser_username: "su_admin".to_string(),
+                timeout_ms: Some(30_000),
+            }),
+            false,
+        )
+        .map_err(|err| format!("build_command failed: {err}"))?;
+
+        if spec.program != config.binaries.initdb {
+            return Err(format!(
+                "expected initdb binary, got {}",
+                spec.program.display()
+            ));
+        }
+        if spec.args
+            != vec![
+                "-D", "/tmp/node/data", "-A", "trust", "-U", "su_admin",
+            ]
+        {
+            return Err(format!("unexpected bootstrap args: {:?}", spec.args));
+        }
+        if !spec.env.is_empty() {
+            return Err(format!("expected no env vars, got {:?}", spec.env));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn build_command_pg_rewind_sets_pgpassword_env_for_password_auth() -> Result<(), String> {
+        let config = sample_config();
+        let spec = build_command(
+            &config,
+            &JobId("job-test".to_string()),
+            &ProcessJobKind::PgRewind(PgRewindSpec {
+                target_data_dir: PathBuf::from("/tmp/node/data"),
+                source: RewinderSourceConn {
+                    conninfo: PgConnInfo {
+                        host: "10.0.0.12".to_string(),
+                        port: 5433,
+                        user: "rewinder".to_string(),
+                        dbname: "postgres".to_string(),
+                        application_name: None,
+                        connect_timeout_s: None,
+                        ssl_mode: PgSslMode::Prefer,
+                        options: None,
+                    },
+                    auth: RoleAuthConfig::Password {
+                        password: SecretSource(InlineOrPath::Inline {
+                            content: "rewindpass".to_string(),
+                        }),
+                    },
+                },
+                timeout_ms: Some(30_000),
+            }),
+            false,
+        )
+        .map_err(|err| format!("build_command failed: {err}"))?;
+
+        if spec.env.len() != 1 {
+            return Err(format!("expected 1 env var, got {}", spec.env.len()));
+        }
+        if spec.env[0].key.as_str() != "PGPASSWORD" {
+            return Err(format!("expected env key PGPASSWORD, got {}", spec.env[0].key));
+        }
+        if spec.args.iter().any(|arg| arg.contains("rewindpass")) {
+            return Err("password must not appear in args".to_string());
+        }
+        let idx = spec
+            .args
+            .iter()
+            .position(|arg| arg == "--source-server")
+            .ok_or_else(|| "missing --source-server arg".to_string())?;
+        let source = spec
+            .args
+            .get(idx.saturating_add(1))
+            .ok_or_else(|| "missing --source-server value".to_string())?;
+        if !source.contains("user=rewinder") {
+            return Err(format!(
+                "expected --source-server to include user=rewinder, got: {source}"
+            ));
+        }
+        Ok(())
     }
 
     fn queued_clock(times: Vec<u64>) -> Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send> {
@@ -1460,6 +1661,7 @@ mod tests {
                     "bootstrap",
                     ProcessJobKind::Bootstrap(BootstrapSpec {
                         data_dir: fixture.data_dir.clone(),
+                        superuser_username: "postgres".to_string(),
                         timeout_ms: Some(30_000),
                     }),
                     Duration::from_secs(40),
@@ -1683,6 +1885,7 @@ mod tests {
             "bootstrap-1",
             ProcessJobKind::Bootstrap(BootstrapSpec {
                 data_dir: data_dir.clone(),
+                superuser_username: "postgres".to_string(),
                 timeout_ms: Some(30_000),
             }),
             Duration::from_secs(40),
@@ -1722,7 +1925,10 @@ mod tests {
             "rewind-1",
             ProcessJobKind::PgRewind(PgRewindSpec {
                 target_data_dir: data_dir,
-                source_conninfo: sample_rewind_conninfo(),
+                source: RewinderSourceConn {
+                    conninfo: sample_rewind_conninfo(),
+                    auth: RoleAuthConfig::Tls,
+                },
                 timeout_ms: Some(5_000),
             }),
             Duration::from_secs(10),

@@ -23,6 +23,8 @@ struct ClusterFixture {
     _guard: crate::test_harness::namespace::NamespaceGuard,
     pg_ctl_bin: PathBuf,
     psql_bin: PathBuf,
+    superuser_username: String,
+    superuser_dbname: String,
     etcd: Option<crate::test_harness::etcd3::EtcdClusterHandle>,
     nodes: Vec<ha_e2e::NodeHandle>,
     api_clients: Vec<CliApiClient>,
@@ -78,6 +80,8 @@ struct SqlWorkloadTarget {
 #[derive(Clone)]
 struct SqlWorkloadCtx {
     psql_bin: PathBuf,
+    superuser_username: String,
+    superuser_dbname: String,
     scenario_name: String,
     table_name: String,
     interval: Duration,
@@ -297,6 +301,8 @@ impl ClusterFixture {
             _guard: handle.guard,
             pg_ctl_bin: handle.binaries.pg_ctl.clone(),
             psql_bin: handle.binaries.psql.clone(),
+            superuser_username: handle.superuser_username,
+            superuser_dbname: handle.superuser_dbname,
             etcd: handle.etcd,
             nodes: handle.nodes,
             api_clients: handle.api_clients,
@@ -342,6 +348,8 @@ impl ClusterFixture {
         ha_e2e::util::run_psql_statement(
             self.psql_bin.as_path(),
             port,
+            self.superuser_username.as_str(),
+            self.superuser_dbname.as_str(),
             sql,
             E2E_COMMAND_TIMEOUT,
             E2E_COMMAND_KILL_WAIT_TIMEOUT,
@@ -426,6 +434,8 @@ impl ClusterFixture {
             .collect::<Vec<_>>();
         Ok(SqlWorkloadCtx {
             psql_bin: self.psql_bin.clone(),
+            superuser_username: self.superuser_username.clone(),
+            superuser_dbname: self.superuser_dbname.clone(),
             scenario_name: spec.scenario_name.clone(),
             table_name: sanitize_sql_identifier(spec.table_name.as_str()),
             interval: spec.interval(),
@@ -801,6 +811,8 @@ impl ClusterFixture {
             let count_raw = match ha_e2e::util::run_psql_statement(
                 self.psql_bin.as_path(),
                 port,
+                self.superuser_username.as_str(),
+                self.superuser_dbname.as_str(),
                 count_sql.as_str(),
                 E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
                 E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT,
@@ -822,6 +834,8 @@ impl ClusterFixture {
             let duplicate_raw = match ha_e2e::util::run_psql_statement(
                 self.psql_bin.as_path(),
                 port,
+                self.superuser_username.as_str(),
+                self.superuser_dbname.as_str(),
                 duplicate_sql.as_str(),
                 E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
                 E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT,
@@ -1638,6 +1652,8 @@ async fn run_sql_workload_worker(
         match ha_e2e::util::run_psql_statement(
             workload.psql_bin.as_path(),
             target.port,
+            workload.superuser_username.as_str(),
+            workload.superuser_dbname.as_str(),
             write_sql.as_str(),
             E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
             E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT,
@@ -1680,6 +1696,8 @@ async fn run_sql_workload_worker(
         match ha_e2e::util::run_psql_statement(
             workload.psql_bin.as_path(),
             target.port,
+            workload.superuser_username.as_str(),
+            workload.superuser_dbname.as_str(),
             read_sql.as_str(),
             E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
             E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT,

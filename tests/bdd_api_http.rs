@@ -96,7 +96,7 @@ fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
                 ssl_mode: PgSslMode::Prefer,
             },
             rewind_conn_identity: PostgresConnIdentityConfig {
-                user: "postgres".to_string(),
+                user: "rewinder".to_string(),
                 dbname: "postgres".to_string(),
                 ssl_mode: PgSslMode::Prefer,
             },

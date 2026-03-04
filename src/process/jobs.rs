@@ -2,26 +2,40 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 
 use thiserror::Error;
 
+use crate::config::{InlineOrPath, RoleAuthConfig, SecretSource};
 use crate::pginfo::state::PgConnInfo;
 use crate::state::{JobId, UnixMillis};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BootstrapSpec {
     pub(crate) data_dir: PathBuf,
+    pub(crate) superuser_username: String,
     pub(crate) timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplicatorSourceConn {
+    pub(crate) conninfo: PgConnInfo,
+    pub(crate) auth: RoleAuthConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RewinderSourceConn {
+    pub(crate) conninfo: PgConnInfo,
+    pub(crate) auth: RoleAuthConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PgRewindSpec {
     pub(crate) target_data_dir: PathBuf,
-    pub(crate) source_conninfo: PgConnInfo,
+    pub(crate) source: RewinderSourceConn,
     pub(crate) timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaseBackupSpec {
     pub(crate) data_dir: PathBuf,
-    pub(crate) source_conninfo: PgConnInfo,
+    pub(crate) source: ReplicatorSourceConn,
     pub(crate) timeout_ms: Option<u64>,
 }
 
@@ -118,8 +132,30 @@ pub(crate) struct ActiveJob {
 pub(crate) struct ProcessCommandSpec {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<String>,
+    pub(crate) env: Vec<ProcessEnvVar>,
     pub(crate) capture_output: bool,
     pub(crate) log_identity: ProcessLogIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessEnvVar {
+    pub(crate) key: String,
+    pub(crate) value: ProcessEnvValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessEnvValue {
+    Literal(String),
+    Secret(SecretSource),
+}
+
+impl ProcessEnvValue {
+    pub(crate) fn resolve_string_for_key(&self, key: &str) -> Result<String, ProcessError> {
+        match self {
+            Self::Literal(value) => Ok(value.clone()),
+            Self::Secret(secret) => resolve_secret_source_string(key, secret),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,6 +224,8 @@ pub(crate) enum ProcessError {
     InvalidSpec(String),
     #[error("unsupported job input: {0}")]
     UnsupportedInput(String),
+    #[error("failed to resolve secret for env `{key}`: {message}")]
+    EnvSecretResolutionFailed { key: String, message: String },
     #[error("spawn failed for `{binary}`: {message}")]
     SpawnFailure { binary: String, message: String },
     #[error("process exited unsuccessfully (code: {code:?})")]
@@ -205,4 +243,19 @@ impl ProcessError {
             ProcessExit::Failure { code } => Self::EarlyExit { code },
         }
     }
+}
+
+fn resolve_secret_source_string(key: &str, secret: &SecretSource) -> Result<String, ProcessError> {
+    let value = match &secret.0 {
+        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => {
+            std::fs::read_to_string(path).map_err(|err| ProcessError::EnvSecretResolutionFailed {
+                key: key.to_string(),
+                message: format!("failed to read {}: {err}", path.display()),
+            })?
+        }
+        InlineOrPath::Inline { content } => content.clone(),
+    };
+    Ok(value
+        .trim_end_matches(['\n', '\r'])
+        .to_string())
 }

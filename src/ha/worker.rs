@@ -229,7 +229,7 @@ pub(crate) fn dispatch_actions(
                     id: process_job_id(action, index, ctx.state.tick, now.0),
                     kind: ProcessJobKind::PgRewind(PgRewindSpec {
                         target_data_dir: runtime_config.postgres.data_dir.clone(),
-                        source_conninfo: ctx.process_defaults.rewind_source_conninfo.clone(),
+                        source: ctx.process_defaults.rewind_source.clone(),
                         timeout_ms: None,
                     }),
                 };
@@ -255,6 +255,7 @@ pub(crate) fn dispatch_actions(
                     id: process_job_id(action, index, ctx.state.tick, now.0),
                     kind: ProcessJobKind::Bootstrap(BootstrapSpec {
                         data_dir: runtime_config.postgres.data_dir.clone(),
+                        superuser_username: runtime_config.postgres.roles.superuser.username.clone(),
                         timeout_ms: None,
                     }),
                 };
@@ -519,7 +520,7 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                 },
                 rewind_conn_identity: PostgresConnIdentityConfig {
-                    user: "postgres".to_string(),
+                    user: "rewinder".to_string(),
                     dbname: "postgres".to_string(),
                     ssl_mode: PgSslMode::Prefer,
                 },
@@ -671,15 +672,31 @@ mod tests {
             postgres_port: 5432,
             socket_dir: "/tmp/pgtuskmaster/socket".into(),
             log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-            rewind_source_conninfo: PgConnInfo {
-                host: "127.0.0.1".to_string(),
-                port: 5432,
-                user: "postgres".to_string(),
-                dbname: "postgres".to_string(),
-                application_name: None,
-                connect_timeout_s: None,
-                ssl_mode: PgSslMode::Prefer,
-                options: None,
+            basebackup_source: crate::process::jobs::ReplicatorSourceConn {
+                conninfo: PgConnInfo {
+                    host: "127.0.0.1".to_string(),
+                    port: 5432,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: None,
+                    ssl_mode: PgSslMode::Prefer,
+                    options: None,
+                },
+                auth: crate::config::RoleAuthConfig::Tls,
+            },
+            rewind_source: crate::process::jobs::RewinderSourceConn {
+                conninfo: PgConnInfo {
+                    host: "127.0.0.1".to_string(),
+                    port: 5432,
+                    user: "rewinder".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: None,
+                    ssl_mode: PgSslMode::Prefer,
+                    options: None,
+                },
+                auth: crate::config::RoleAuthConfig::Tls,
             },
             shutdown_mode: ShutdownMode::Fast,
         }

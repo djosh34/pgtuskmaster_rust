@@ -40,6 +40,8 @@ struct StartupGuard {
     cluster_name: String,
     mode: Mode,
     binaries: BinaryPaths,
+    superuser_username: Option<String>,
+    superuser_dbname: Option<String>,
     etcd: Option<EtcdClusterHandle>,
     nodes: Vec<NodeHandle>,
     api_clients: Vec<CliApiClient>,
@@ -115,14 +117,23 @@ impl StartupGuard {
         }
     }
 
-    fn into_handle(self) -> TestClusterHandle {
-        TestClusterHandle {
+    fn into_handle(self) -> Result<TestClusterHandle, WorkerError> {
+        let superuser_username = self.superuser_username.ok_or_else(|| {
+            WorkerError::Message("startup missing postgres superuser username".to_string())
+        })?;
+        let superuser_dbname = self.superuser_dbname.ok_or_else(|| {
+            WorkerError::Message("startup missing postgres superuser dbname".to_string())
+        })?;
+
+        Ok(TestClusterHandle {
             guard: self.guard,
             scope: self.scope,
             cluster_name: self.cluster_name,
             mode: self.mode,
             timeouts: self.timeouts,
             binaries: self.binaries,
+            superuser_username,
+            superuser_dbname,
             etcd: self.etcd,
             nodes: self.nodes,
             api_clients: self.api_clients,
@@ -133,7 +144,7 @@ impl StartupGuard {
             etcd_proxies: self.etcd_proxies,
             api_proxies: self.api_proxies,
             pg_proxies: self.pg_proxies,
-        }
+        })
     }
 }
 
@@ -158,6 +169,8 @@ pub(crate) async fn start_cluster(config: TestConfig) -> Result<TestClusterHandl
         cluster_name: config.cluster_name.clone(),
         mode: config.mode,
         binaries: binaries.clone(),
+        superuser_username: None,
+        superuser_dbname: None,
         etcd: None,
         nodes: Vec::new(),
         api_clients: Vec::new(),
@@ -172,7 +185,7 @@ pub(crate) async fn start_cluster(config: TestConfig) -> Result<TestClusterHandl
     };
 
     match start_cluster_inner(&mut guard, config, etcd_bin, binaries).await {
-        Ok(()) => Ok(guard.into_handle()),
+        Ok(()) => guard.into_handle(),
         Err(start_err) => {
             let cleanup_result = guard.cleanup_best_effort().await;
             match cleanup_result {
@@ -426,7 +439,7 @@ async fn start_cluster_inner(
                     ssl_mode: PgSslMode::Prefer,
                 },
                 rewind_conn_identity: PostgresConnIdentityConfig {
-                    user: "postgres".to_string(),
+                    user: "rewinder".to_string(),
                     dbname: "postgres".to_string(),
                     ssl_mode: PgSslMode::Prefer,
                 },
@@ -513,6 +526,33 @@ async fn start_cluster_inner(
             debug: DebugConfig { enabled: false },
         };
 
+        let runtime_superuser_username = runtime_cfg.postgres.roles.superuser.username.clone();
+        let runtime_superuser_dbname = runtime_cfg.postgres.local_conn_identity.dbname.clone();
+        match (&guard.superuser_username, &guard.superuser_dbname) {
+            (None, None) => {
+                guard.superuser_username = Some(runtime_superuser_username);
+                guard.superuser_dbname = Some(runtime_superuser_dbname);
+            }
+            (Some(expected_user), Some(expected_dbname)) => {
+                if expected_user.as_str() != runtime_superuser_username.as_str()
+                    || expected_dbname.as_str() != runtime_superuser_dbname.as_str()
+                {
+                    return Err(WorkerError::Message(format!(
+                        "inconsistent superuser identity across nodes: expected user/dbname {}/{} but got {}/{}",
+                        expected_user,
+                        expected_dbname,
+                        runtime_superuser_username,
+                        runtime_superuser_dbname
+                    )));
+                }
+            }
+            _ => {
+                return Err(WorkerError::Message(
+                    "startup guard superuser identity partially initialized".to_string(),
+                ));
+            }
+        }
+
         topology_reservation
             .release_port(pg_port)
             .map_err(|err| {
@@ -561,6 +601,39 @@ async fn start_cluster_inner(
                 expected_member_id.as_str(),
                 config.timeouts.http_step_timeout,
                 config.timeouts.bootstrap_primary_timeout,
+            )
+            .await?;
+
+            // Clone/basebackup connects using the configured replicator role. Ensure that role
+            // exists on the elected primary before bringing up other nodes.
+            let superuser_username = guard.superuser_username.as_deref().ok_or_else(|| {
+                WorkerError::Message("startup missing postgres superuser username".to_string())
+            })?;
+            let superuser_dbname = guard.superuser_dbname.as_deref().ok_or_else(|| {
+                WorkerError::Message("startup missing postgres superuser dbname".to_string())
+            })?;
+
+            let create_roles_sql = r#"
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'replicator') THEN
+    CREATE ROLE replicator WITH LOGIN REPLICATION;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rewinder') THEN
+    -- pg_rewind typically needs superuser privileges; keep tests conservative.
+    CREATE ROLE rewinder WITH LOGIN SUPERUSER;
+  END IF;
+END
+$$;
+"#;
+            let _ = super::util::run_psql_statement(
+                guard.binaries.psql.as_path(),
+                sql_port,
+                superuser_username,
+                superuser_dbname,
+                create_roles_sql,
+                guard.timeouts.command_timeout,
+                guard.timeouts.command_kill_wait_timeout,
             )
             .await?;
         }

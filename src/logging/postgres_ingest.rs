@@ -451,7 +451,7 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                 },
                 rewind_conn_identity: PostgresConnIdentityConfig {
-                    user: "postgres".to_string(),
+                    user: "rewinder".to_string(),
                     dbname: "postgres".to_string(),
                     ssl_mode: PgSslMode::Prefer,
                 },
@@ -676,6 +676,7 @@ mod tests {
         use tokio::time::Instant;
 
         use crate::logging::LogRecord;
+        use crate::config::RoleAuthConfig;
         use crate::process::jobs::{
             BaseBackupSpec, BootstrapSpec, ShutdownMode, StartPostgresSpec, StopPostgresSpec,
         };
@@ -960,6 +961,7 @@ mod tests {
                 id: bootstrap_id.clone(),
                 kind: ProcessJobKind::Bootstrap(BootstrapSpec {
                     data_dir: data_dir.clone(),
+                    superuser_username: ingest_ctx.cfg.postgres.roles.superuser.username.clone(),
                     timeout_ms: Some(30_000),
                 }),
             })
@@ -1259,15 +1261,18 @@ mod tests {
                 id: job_id.clone(),
                 kind: ProcessJobKind::BaseBackup(BaseBackupSpec {
                     data_dir,
-                    source_conninfo: crate::pginfo::state::PgConnInfo {
-                        host: "127.0.0.1".to_string(),
-                        port: 9,
-                        user: "postgres".to_string(),
-                        dbname: "postgres".to_string(),
-                        application_name: None,
-                        connect_timeout_s: Some(1),
-                        ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
-                        options: None,
+                    source: crate::process::jobs::ReplicatorSourceConn {
+                        conninfo: crate::pginfo::state::PgConnInfo {
+                            host: "127.0.0.1".to_string(),
+                            port: 9,
+                            user: "replicator".to_string(),
+                            dbname: "postgres".to_string(),
+                            application_name: None,
+                            connect_timeout_s: Some(1),
+                            ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
+                            options: None,
+                        },
+                        auth: RoleAuthConfig::Tls,
                     },
                     timeout_ms: Some(5_000),
                 }),

@@ -400,6 +400,8 @@ pub(crate) async fn wait_for_child_exit_with_timeout(
 pub(crate) async fn run_psql_statement(
     psql: &Path,
     port: u16,
+    user: &str,
+    dbname: &str,
     sql: &str,
     command_timeout: Duration,
     command_kill_wait_timeout: Duration,
@@ -411,9 +413,9 @@ pub(crate) async fn run_psql_statement(
         .arg("-p")
         .arg(port.to_string())
         .arg("-U")
-        .arg("postgres")
+        .arg(user)
         .arg("-d")
-        .arg("postgres")
+        .arg(dbname)
         .arg("-v")
         .arg("ON_ERROR_STOP=1")
         .arg("-AXqt")
