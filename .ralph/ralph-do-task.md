@@ -16,6 +16,7 @@
     - [ ] `make test`
     - [ ] `make test-long`
     - [ ] `make lint`
+    - [ ] docs are updated with new/updated/deleted features (remove stale/old docs)
 
 - [ ] only when you're done, and all checks pass:
     - [ ] set in [task name].md
