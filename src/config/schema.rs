@@ -400,16 +400,112 @@ pub struct PartialSecurityConfig {
     pub auth_token: Option<String>,
 }
 
+// -------------------------------
+// v2 input schema (explicit secure)
+// -------------------------------
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfigV2Input {
     pub config_version: ConfigVersion,
     pub cluster: ClusterConfig,
-    pub postgres: PostgresConfig,
+    pub postgres: PostgresConfigV2Input,
     pub dcs: DcsConfig,
     pub ha: HaConfig,
-    pub process: ProcessConfig,
-    pub logging: LoggingConfig,
-    pub api: ApiConfig,
-    pub debug: DebugConfig,
+    pub process: ProcessConfigV2Input,
+    pub logging: Option<LoggingConfig>,
+    pub api: ApiConfigV2Input,
+    pub debug: Option<DebugConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessConfigV2Input {
+    pub pg_rewind_timeout_ms: Option<u64>,
+    pub bootstrap_timeout_ms: Option<u64>,
+    pub fencing_timeout_ms: Option<u64>,
+    pub binaries: BinaryPaths,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiConfigV2Input {
+    pub listen_addr: Option<String>,
+    pub security: Option<ApiSecurityConfigV2Input>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiSecurityConfigV2Input {
+    pub tls: Option<TlsServerConfigV2Input>,
+    pub auth: Option<ApiAuthConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresConfigV2Input {
+    pub data_dir: PathBuf,
+    pub connect_timeout_s: Option<u32>,
+    pub listen_host: String,
+    pub listen_port: u16,
+    pub socket_dir: PathBuf,
+    pub log_file: PathBuf,
+    pub rewind_source_host: String,
+    pub rewind_source_port: u16,
+    pub local_conn_identity: Option<PostgresConnIdentityConfigV2Input>,
+    pub rewind_conn_identity: Option<PostgresConnIdentityConfigV2Input>,
+    pub tls: Option<TlsServerConfigV2Input>,
+    pub roles: Option<PostgresRolesConfigV2Input>,
+    pub pg_hba: Option<PgHbaConfigV2Input>,
+    pub pg_ident: Option<PgIdentConfigV2Input>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresConnIdentityConfigV2Input {
+    pub user: Option<String>,
+    pub dbname: Option<String>,
+    pub ssl_mode: Option<crate::pginfo::conninfo::PgSslMode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresRoleConfigV2Input {
+    pub username: Option<String>,
+    pub auth: Option<RoleAuthConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresRolesConfigV2Input {
+    pub superuser: Option<PostgresRoleConfigV2Input>,
+    pub replicator: Option<PostgresRoleConfigV2Input>,
+    pub rewinder: Option<PostgresRoleConfigV2Input>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgHbaConfigV2Input {
+    pub source: Option<InlineOrPath>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgIdentConfigV2Input {
+    pub source: Option<InlineOrPath>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsServerIdentityConfigV2Input {
+    pub cert_chain: Option<InlineOrPath>,
+    pub private_key: Option<InlineOrPath>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsServerConfigV2Input {
+    pub mode: Option<TlsMode>,
+    pub identity: Option<TlsServerIdentityConfigV2Input>,
+    pub client_auth: Option<TlsClientAuthConfig>,
 }
