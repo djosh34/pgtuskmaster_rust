@@ -10,11 +10,12 @@ use super::util::{parse_psql_rows, parse_single_u64, run_psql_statement, unix_no
 
 impl TestClusterHandle {
     pub(crate) fn record(&mut self, message: impl Into<String>) {
-        let now = match unix_now() {
-            Ok(value) => value.0,
-            Err(_) => 0,
+        let stamp = match unix_now() {
+            Ok(value) => value.0.to_string(),
+            Err(err) => format!("time_error:{err}"),
         };
-        self.timeline.push(format!("[{now}] {}", message.into()));
+        self.timeline
+            .push(format!("[{stamp}] {}", message.into()));
     }
 
     pub(crate) fn node_ids(&self) -> Vec<String> {

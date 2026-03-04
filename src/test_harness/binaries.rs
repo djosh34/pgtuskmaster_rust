@@ -105,21 +105,21 @@ pub(crate) fn require_pg16_process_binaries() -> Result<BinaryPaths, HarnessErro
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{require_binary, require_real_binary};
     use crate::test_harness::HarnessError;
 
+    fn unique_tmp_path(prefix: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        PathBuf::from(format!("/tmp/{prefix}_{pid}_{unique}"))
+    }
+
     #[test]
     fn require_binary_missing_path_returns_invalid_input() {
-        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_millis(),
-            Err(_) => 0,
-        };
-        let missing = PathBuf::from(format!(
-            "/tmp/pgtuskmaster_missing_bin_{millis}_{}",
-            std::process::id()
-        ));
+        let missing = unique_tmp_path("pgtuskmaster_missing_bin");
 
         let result = require_binary(missing.as_path());
         assert!(matches!(result, Err(HarnessError::InvalidInput(_))));
@@ -127,28 +127,14 @@ mod tests {
 
     #[test]
     fn require_real_binary_returns_error_when_missing() {
-        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_millis(),
-            Err(_) => 0,
-        };
-        let missing = PathBuf::from(format!(
-            "/tmp/pgtuskmaster_missing_required_bin_{millis}_{}",
-            std::process::id()
-        ));
+        let missing = unique_tmp_path("pgtuskmaster_missing_required_bin");
         let result = require_real_binary(missing.as_path());
         assert!(matches!(result, Err(HarnessError::InvalidInput(_))));
     }
 
     #[test]
     fn require_real_binary_returns_path_when_present() -> Result<(), HarnessError> {
-        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_millis(),
-            Err(_) => 0,
-        };
-        let present = PathBuf::from(format!(
-            "/tmp/pgtuskmaster_present_bin_{millis}_{}",
-            std::process::id()
-        ));
+        let present = unique_tmp_path("pgtuskmaster_present_bin");
         fs::write(&present, b"bin")?;
         #[cfg(unix)]
         {
@@ -163,14 +149,7 @@ mod tests {
 
     #[test]
     fn require_real_binary_rejects_directories() -> Result<(), HarnessError> {
-        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_millis(),
-            Err(_) => 0,
-        };
-        let dir_path = PathBuf::from(format!(
-            "/tmp/pgtuskmaster_present_bin_dir_{millis}_{}",
-            std::process::id()
-        ));
+        let dir_path = unique_tmp_path("pgtuskmaster_present_bin_dir");
         fs::create_dir_all(&dir_path)?;
         let result = require_real_binary(dir_path.as_path());
         assert!(matches!(result, Err(HarnessError::InvalidInput(_))));
@@ -183,14 +162,7 @@ mod tests {
     fn require_real_binary_rejects_non_executable_files_on_unix() -> Result<(), HarnessError> {
         use std::os::unix::fs::PermissionsExt;
 
-        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_millis(),
-            Err(_) => 0,
-        };
-        let present = PathBuf::from(format!(
-            "/tmp/pgtuskmaster_present_nonexec_bin_{millis}_{}",
-            std::process::id()
-        ));
+        let present = unique_tmp_path("pgtuskmaster_present_nonexec_bin");
         fs::write(&present, b"bin")?;
         fs::set_permissions(&present, fs::Permissions::from_mode(0o644))?;
 

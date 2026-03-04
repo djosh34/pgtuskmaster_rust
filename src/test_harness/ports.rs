@@ -293,10 +293,18 @@ fn unlease_ports_best_effort(ports: &[u16]) -> Result<(), HarnessError> {
     }
 
     let mut guard = LeaseFileGuard::lock()?;
-    let now_ms = unix_now_ms().unwrap_or(0);
+    let now_ms = unix_now_ms().ok();
 
     let mut entries = guard.load_entries();
-    entries.retain(|entry| entry.expires_at_ms > now_ms && !ports.contains(&entry.port));
+    entries.retain(|entry| {
+        if ports.contains(&entry.port) {
+            return false;
+        }
+        match now_ms {
+            Some(now_ms) => entry.expires_at_ms > now_ms,
+            None => true,
+        }
+    });
     guard.store_entries(entries.as_slice())?;
     Ok(())
 }

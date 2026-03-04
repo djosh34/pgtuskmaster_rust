@@ -79,11 +79,12 @@ impl PartitionFixture {
     }
 
     fn record(&mut self, message: impl Into<String>) {
-        let now = match ha_e2e::util::unix_now() {
-            Ok(value) => value.0,
-            Err(_) => 0,
+        let stamp = match ha_e2e::util::unix_now() {
+            Ok(value) => value.0.to_string(),
+            Err(err) => format!("time_error:{err}"),
         };
-        self.timeline.push(format!("[{now}] {}", message.into()));
+        self.timeline
+            .push(format!("[{stamp}] {}", message.into()));
     }
 
     fn node_ids(&self) -> Vec<String> {
