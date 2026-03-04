@@ -79,3 +79,4 @@
 .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
 .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
 .ralph/tasks/story-operator-architecture-docs/02-task-post-rewrite-skeptical-claim-verification-with-spark.md
+.ralph/tasks/story-operator-architecture-docs/03-task-expand-contributor-docs-into-full-implementation-deep-dive.md

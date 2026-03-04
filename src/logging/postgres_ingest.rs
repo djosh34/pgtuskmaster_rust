@@ -771,6 +771,67 @@ mod tests {
             lines.join("\n")
         }
 
+        fn is_transient_psql_failure(stderr: &str) -> bool {
+            let normalized = stderr.to_ascii_lowercase();
+            normalized.contains("the database system is starting up")
+                || normalized.contains("the database system is shutting down")
+                || normalized.contains("not yet accepting connections")
+                || normalized.contains("could not connect to server")
+                || normalized.contains("connection refused")
+        }
+
+        async fn run_psql_query_with_retry(
+            psql_bin: &PathBuf,
+            port: u16,
+            query: &str,
+            timeout: Duration,
+        ) -> Result<(), WorkerError> {
+            let deadline = Instant::now() + timeout;
+            let mut last_stderr = String::new();
+            let mut last_stdout = String::new();
+
+            while Instant::now() < deadline {
+                let mut cmd = Command::new(psql_bin);
+                cmd.arg("-h")
+                    .arg("127.0.0.1")
+                    .arg("-p")
+                    .arg(port.to_string())
+                    .arg("-U")
+                    .arg("postgres")
+                    .arg("-d")
+                    .arg("postgres")
+                    .arg("-c")
+                    .arg(query);
+
+                let output = cmd.output().await.map_err(|err| {
+                    WorkerError::Message(format!("psql spawn failed: {err}"))
+                })?;
+
+                if output.status.success() {
+                    return Ok(());
+                }
+
+                last_stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                last_stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+                if !is_transient_psql_failure(&last_stderr) {
+                    return Err(WorkerError::Message(format!(
+                        "psql exited unsuccessfully: {} (non-transient)\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                        output.status,
+                        last_stdout,
+                        last_stderr
+                    )));
+                }
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            Err(WorkerError::Message(format!(
+                "timed out waiting for psql readiness after {:?}\n--- last stdout ---\n{}\n--- last stderr ---\n{}",
+                timeout, last_stdout, last_stderr
+            )))
+        }
+
         #[tokio::test(flavor = "current_thread")]
         async fn ingests_jsonlog_and_stderr_files_from_real_postgres() -> Result<(), WorkerError> {
             let postgres_bin = require_pg16_bin_for_real_tests("postgres")?;
@@ -827,26 +888,8 @@ mod tests {
             // Prime ingestion offsets and then generate logs.
             ingest_step_once(&ctx, &mut state).await?;
 
-            let mut cmd = Command::new(psql_bin);
-            cmd.arg("-h")
-                .arg("127.0.0.1")
-                .arg("-p")
-                .arg(port.to_string())
-                .arg("-U")
-                .arg("postgres")
-                .arg("-d")
-                .arg("postgres")
-                .arg("-c")
-                .arg("SELECT 1;");
-            let status = cmd
-                .status()
-                .await
-                .map_err(|err| WorkerError::Message(format!("psql spawn failed: {err}")))?;
-            if !status.success() {
-                return Err(WorkerError::Message(format!(
-                    "psql exited unsuccessfully: {status}"
-                )));
-            }
+            run_psql_query_with_retry(&psql_bin, port, "SELECT 1;", Duration::from_secs(10))
+                .await?;
 
             let deadline = Instant::now() + Duration::from_secs(3);
             let mut collected = Vec::new();
