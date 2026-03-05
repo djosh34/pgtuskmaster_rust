@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::{
@@ -229,7 +229,6 @@ fn sample_ha_state() -> HaState {
         phase: HaPhase::Init,
         tick: 0,
         pending: vec![HaAction::SignalFailSafe],
-        recent_action_ids: BTreeSet::new(),
     }
 }
 

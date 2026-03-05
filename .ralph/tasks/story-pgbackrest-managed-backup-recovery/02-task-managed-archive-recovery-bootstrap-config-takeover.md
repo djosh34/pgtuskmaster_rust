@@ -4,6 +4,8 @@
 <description>
 **Goal:** Make pgtuskmaster authoritative for archive and restore command behavior, and ensure config takeover happens before PostgreSQL recovery so restores never boot with unsafe/incompatible backup-era config files.
 
+**PO Directive (2026-03-05):** Use pgBackRest config-method ownership only. Do not rely on repo-local wrapper/hack paths; use minimal CLI flags, with behavior/config sourced from managed config surfaces first.
+
 **Scope:**
 - Replace ad-hoc archive command wrapper behavior with pgBackRest-aware archive control integrated into managed startup.
 - Integrate recovery/restore into startup/bootstrap flow so recovered nodes are brought up using pgtuskmaster-managed config from the first recovery boot.

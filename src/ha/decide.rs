@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{
     dcs::state::{DcsTrust, RestorePhase, RestoreRequestRecord, RestoreStatusRecord},
     pginfo::state::{PgInfoState, SqlStatus},
@@ -6,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    actions::HaAction,
+    actions::{ActionId, HaAction},
     state::{DecideInput, DecideOutput, HaPhase},
 };
 
@@ -67,7 +69,7 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
                 }
 
                 let phase = status.map(|s| &s.phase);
-                let terminal = phase.is_some_and(|phase| is_restore_terminal(phase));
+                let terminal = phase.is_some_and(is_restore_terminal);
                 let orphaned = phase.is_some_and(|phase| matches!(phase, RestorePhase::Orphaned));
 
                 Some(RestoreGuardView {
@@ -162,15 +164,13 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
                     if leader == self_member_id {
                         next.phase = HaPhase::Primary;
                         candidates.push(HaAction::PromoteToPrimary);
+                    } else if should_rewind_from_leader(&world, leader) {
+                        next.phase = HaPhase::Rewinding;
+                        candidates.push(HaAction::StartRewind);
                     } else {
-                        if should_rewind_from_leader(&world, leader) {
-                            next.phase = HaPhase::Rewinding;
-                            candidates.push(HaAction::StartRewind);
-                        } else {
                         candidates.push(HaAction::FollowLeader {
                             leader_member_id: leader.to_string(),
                         });
-                        }
                     }
                 } else {
                     next.phase = HaPhase::CandidateLeader;
@@ -300,17 +300,22 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
         }
     }
 
-    next.recent_action_ids.clear();
-    let mut actions = Vec::new();
-    for action in candidates {
-        let action_id = action.id();
-        if next.recent_action_ids.insert(action_id) {
-            actions.push(action);
-        }
-    }
+    let actions = dedupe_actions_per_tick(candidates);
     next.pending = actions.clone();
 
     DecideOutput { next, actions }
+}
+
+fn dedupe_actions_per_tick(candidates: Vec<HaAction>) -> Vec<HaAction> {
+    let mut seen_action_ids = BTreeSet::<ActionId>::new();
+    let mut actions = Vec::new();
+    for action in candidates {
+        let action_id = action.id();
+        if seen_action_ids.insert(action_id) {
+            actions.push(action);
+        }
+    }
+    actions
 }
 
 struct RestoreGuardView<'a> {
@@ -571,7 +576,7 @@ fn is_available_primary_leader(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     use crate::{
         config::{
@@ -587,7 +592,7 @@ mod tests {
             RestoreRequestRecord, RestoreStatusRecord, SwitchoverRequest,
         },
         ha::{
-            actions::{ActionId, HaAction},
+            actions::HaAction,
             state::{DecideInput, HaPhase, HaState, WorldSnapshot},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus},
@@ -607,7 +612,6 @@ mod tests {
         pg: PgInfoState,
         leader: Option<&'static str>,
         process: ProcessState,
-        recent_action_ids: BTreeSet<ActionId>,
         expected_phase: HaPhase,
         expected_actions: Vec<HaAction>,
     }
@@ -622,7 +626,6 @@ mod tests {
                 pg: pg_unknown(SqlStatus::Unknown),
                 leader: None,
                 process: process_idle(None),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::WaitingPostgresReachable,
                 expected_actions: vec![],
             },
@@ -633,7 +636,6 @@ mod tests {
                 pg: pg_unknown(SqlStatus::Unreachable),
                 leader: None,
                 process: process_idle(None),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::WaitingPostgresReachable,
                 expected_actions: vec![HaAction::StartPostgres],
             },
@@ -644,7 +646,6 @@ mod tests {
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(None),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::WaitingDcsTrusted,
                 expected_actions: vec![],
             },
@@ -655,7 +656,6 @@ mod tests {
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(None),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::Replica,
                 expected_actions: vec![HaAction::FollowLeader {
                     leader_member_id: "node-b".to_string(),
@@ -668,7 +668,6 @@ mod tests {
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(None),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::CandidateLeader,
                 expected_actions: vec![HaAction::AcquireLeaderLease],
             },
@@ -679,7 +678,6 @@ mod tests {
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-a"),
                 process: process_idle(None),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::Primary,
                 expected_actions: vec![HaAction::PromoteToPrimary],
             },
@@ -690,7 +688,6 @@ mod tests {
                 pg: pg_primary(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(None),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::Fencing,
                 expected_actions: vec![
                     HaAction::DemoteToReplica,
@@ -705,7 +702,6 @@ mod tests {
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(None),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::FailSafe,
                 expected_actions: vec![HaAction::SignalFailSafe],
             },
@@ -719,7 +715,6 @@ mod tests {
                     id: JobId("job-1".to_string()),
                     finished_at: UnixMillis(10),
                 })),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::Replica,
                 expected_actions: vec![HaAction::FollowLeader {
                     leader_member_id: "node-b".to_string(),
@@ -736,7 +731,6 @@ mod tests {
                     error: crate::process::jobs::ProcessError::OperationFailed,
                     finished_at: UnixMillis(10),
                 })),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::Bootstrapping,
                 expected_actions: vec![HaAction::WipeDataDir, HaAction::StartBaseBackup],
             },
@@ -750,7 +744,6 @@ mod tests {
                     id: JobId("job-1".to_string()),
                     finished_at: UnixMillis(11),
                 })),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::Fencing,
                 expected_actions: vec![HaAction::FenceNode],
             },
@@ -764,7 +757,6 @@ mod tests {
                     id: JobId("job-2".to_string()),
                     finished_at: UnixMillis(12),
                 })),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::WaitingDcsTrusted,
                 expected_actions: vec![HaAction::ReleaseLeaderLease],
             },
@@ -779,7 +771,6 @@ mod tests {
                     error: crate::process::jobs::ProcessError::OperationFailed,
                     finished_at: UnixMillis(12),
                 })),
-                recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::FailSafe,
                 expected_actions: vec![HaAction::SignalFailSafe],
             },
@@ -792,7 +783,6 @@ mod tests {
                     phase: case.current_phase.clone(),
                     tick: 41,
                     pending: vec![],
-                    recent_action_ids: case.recent_action_ids.clone(),
                 },
                 world: world(
                     case.trust,
@@ -825,7 +815,6 @@ mod tests {
             phase: HaPhase::WaitingDcsTrusted,
             tick: 0,
             pending: vec![],
-            recent_action_ids: BTreeSet::new(),
         };
         let world = world(
             DcsTrust::FullQuorum,
@@ -848,34 +837,17 @@ mod tests {
     }
 
     #[test]
-    fn previous_recent_action_ids_do_not_suppress_actions() {
-        let mut known_ids = BTreeSet::new();
-        known_ids.insert(ActionId::DemoteToReplica);
-
-        let current = HaState {
-            worker: WorkerStatus::Running,
-            phase: HaPhase::Primary,
-            tick: 5,
-            pending: vec![],
-            recent_action_ids: known_ids,
-        };
-        let output = decide(DecideInput {
-            current,
-            world: world(
-                DcsTrust::FullQuorum,
-                pg_primary(SqlStatus::Healthy),
-                Some("node-b"),
-                process_idle(None),
-            ),
-        });
-
+    fn tick_local_dedupe_drops_duplicate_action_ids_preserving_order() {
+        let candidates = vec![
+            HaAction::StartPostgres,
+            HaAction::StartPostgres,
+            HaAction::AcquireLeaderLease,
+            HaAction::AcquireLeaderLease,
+        ];
+        let deduped = super::dedupe_actions_per_tick(candidates);
         assert_eq!(
-            output.actions,
-            vec![
-                HaAction::DemoteToReplica,
-                HaAction::ReleaseLeaderLease,
-                HaAction::FenceNode
-            ]
+            deduped,
+            vec![HaAction::StartPostgres, HaAction::AcquireLeaderLease]
         );
     }
 
@@ -911,7 +883,6 @@ mod tests {
                 phase: HaPhase::CandidateLeader,
                 tick: 0,
                 pending: vec![],
-                recent_action_ids: BTreeSet::new(),
             },
             world,
         });
@@ -953,7 +924,6 @@ mod tests {
                 phase: HaPhase::Replica,
                 tick: 0,
                 pending: vec![],
-                recent_action_ids: BTreeSet::new(),
             },
             world,
         });
@@ -977,7 +947,6 @@ mod tests {
             phase: HaPhase::FailSafe,
             tick: 100,
             pending: vec![],
-            recent_action_ids: BTreeSet::new(),
         };
 
         let held = decide(DecideInput {
@@ -1022,7 +991,6 @@ mod tests {
                 phase: HaPhase::Primary,
                 tick: 10,
                 pending: vec![],
-                recent_action_ids: BTreeSet::new(),
             },
             world: snapshot,
         });
@@ -1257,7 +1225,6 @@ mod tests {
                 phase: HaPhase::Rewinding,
                 tick: 8,
                 pending: vec![],
-                recent_action_ids: BTreeSet::new(),
             },
             world: world(
                 DcsTrust::FullQuorum,
@@ -1300,7 +1267,6 @@ mod tests {
                 phase: HaPhase::Replica,
                 tick: 11,
                 pending: vec![],
-                recent_action_ids: BTreeSet::new(),
             },
             world: snapshot,
         });

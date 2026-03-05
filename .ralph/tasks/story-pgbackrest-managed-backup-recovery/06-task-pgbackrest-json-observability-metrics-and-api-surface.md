@@ -4,6 +4,8 @@
 <description>
 **Goal:** Ingest pgBackRest JSON output natively and expose backup/restore observability through structured logs, internal state snapshots, metrics/OTel signals, and API endpoints.
 
+**PO Directive (2026-03-05):** Use pgBackRest config-method ownership only. Do not rely on repo-local wrapper/hack paths; use minimal CLI flags, with behavior/config sourced from managed config surfaces first.
+
 **Scope:**
 - Parse pgBackRest JSON output for backup/info/check/restore operations and map it into typed Rust structures.
 - Persist latest backup status/history and restore diagnostics in runtime state for operator/API/debug visibility.

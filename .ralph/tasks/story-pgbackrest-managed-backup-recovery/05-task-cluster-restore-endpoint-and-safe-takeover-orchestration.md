@@ -4,6 +4,8 @@
 <description>
 **Goal:** Provide an admin API endpoint that forces a full restore takeover on one node and safely converges the entire cluster onto the restored timeline under normal pgtuskmaster HA control.
 
+**PO Directive (2026-03-05):** Use pgBackRest config-method ownership only. Do not rely on repo-local wrapper/hack paths; use minimal CLI flags, with behavior/config sourced from managed config surfaces first.
+
 **Scope:**
 - Add restore intent endpoint(s) and status endpoint(s) in API layer with admin auth enforcement.
 - Persist restore intents/locks/status in DCS with strict single-flight coordination and explicit ownership.

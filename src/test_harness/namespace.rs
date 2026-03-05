@@ -64,10 +64,10 @@ fn should_keep_namespace() -> bool {
 }
 
 fn parse_env_bool(value: &str) -> bool {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "y" | "on" => true,
-        _ => false,
-    }
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "y" | "on"
+    )
 }
 
 pub(crate) fn create_namespace(test_name: &str) -> Result<TestNamespace, HarnessError> {

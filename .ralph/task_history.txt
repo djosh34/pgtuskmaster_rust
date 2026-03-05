@@ -92,3 +92,4 @@
 .ralph/tasks/story-rust-system-harness/42-task-operator-grade-action-logging-and-no-silent-errors.md
 .ralph/tasks/story-pgbackrest-managed-backup-recovery/02-task-managed-archive-recovery-bootstrap-config-takeover.md
 .ralph/tasks/story-pgbackrest-managed-backup-recovery/04-task-rust-generic-argv-passthrough-binary-for-postgres-archive-restore-logging.md
+.ralph/tasks/story-pgbackrest-managed-backup-recovery/05-task-cluster-restore-endpoint-and-safe-takeover-orchestration.md

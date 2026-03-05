@@ -4,6 +4,8 @@
 <description>
 **Goal:** Completely remove the generated shell archive wrapper implementation and all runtime wiring that depends on it.
 
+**PO Directive (2026-03-05):** Use pgBackRest config-method ownership only. Do not rely on repo-local wrapper/hack paths; use minimal CLI flags, with behavior/config sourced from managed config surfaces first.
+
 **Scope:**
 - Remove the wrapper module and script generation path in [src/logging/archive_wrapper.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/logging/archive_wrapper.rs).
 - Remove managed-postgres wiring that injects wrapper-based `archive_command` / `restore_command` in [src/postgres_managed.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/postgres_managed.rs).

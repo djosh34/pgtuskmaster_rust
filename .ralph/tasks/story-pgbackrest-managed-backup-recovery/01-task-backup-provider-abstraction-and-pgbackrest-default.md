@@ -4,6 +4,8 @@
 <description>
 **Goal:** Add a provider abstraction for backup/restore operations and ship pgBackRest as the first-class default integration with explicit runtime config and binary path support.
 
+**PO Directive (2026-03-05):** Use pgBackRest config-method ownership only. Do not rely on repo-local wrapper/hack paths; use minimal CLI flags, with behavior/config sourced from managed config surfaces first.
+
 **Scope:**
 - Add a new backup provider model that keeps pgBackRest as default while leaving a clean extension seam for future tools.
 - Extend config schema/parser/defaults so backup features are explicitly configured and validated under `config_version = "v2"`.

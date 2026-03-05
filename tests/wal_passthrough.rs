@@ -131,8 +131,6 @@ exit "$PGTUSKMASTER_STUB_EXIT_CODE"
     let expected = vec![
         "--stanza".to_string(),
         "stanza-a".to_string(),
-        "--repo".to_string(),
-        "1".to_string(),
         "--pg1-path".to_string(),
         pgdata_arg.clone(),
         "--opt=hello world".to_string(),
@@ -208,8 +206,6 @@ exit "$PGTUSKMASTER_STUB_EXIT_CODE"
     let expected = vec![
         "--stanza".to_string(),
         "stanza-a".to_string(),
-        "--repo".to_string(),
-        "1".to_string(),
         "--pg1-path".to_string(),
         pgdata_arg.clone(),
         "--spaced=hello world".to_string(),

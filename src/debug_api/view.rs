@@ -96,7 +96,6 @@ pub(crate) struct HaSection {
     pub(crate) phase: String,
     pub(crate) tick: u64,
     pub(crate) pending_actions: usize,
-    pub(crate) recent_action_ids: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -347,7 +346,6 @@ fn to_ha_section(ha: &Versioned<HaState>) -> HaSection {
         phase: format!("{:?}", ha.value.phase),
         tick: ha.value.tick,
         pending_actions: ha.value.pending.len(),
-        recent_action_ids: ha.value.recent_action_ids.len(),
     }
 }
 

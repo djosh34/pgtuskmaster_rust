@@ -4,6 +4,8 @@
 <description>
 **Goal:** Reintroduce archive/restore observability with a Rust binary command invoked by Postgres that performs passthrough execution and logs invocations via pgtuskmaster.
 
+**PO Directive (2026-03-05):** Use pgBackRest config-method ownership only. Do not rely on repo-local wrapper/hack paths; use minimal CLI flags, with behavior/config sourced from managed config surfaces first.
+
 **Scope:**
 - Add a generic Rust passthrough executable command surface dedicated to Postgres archive/restore invocation passthrough with strict exit-code fidelity.
 - Keep Postgres config model with explicit `archive_command` / `restore_command` strings, but route commands to the Rust binary instead of shell wrapper generation, with no shell parsing.

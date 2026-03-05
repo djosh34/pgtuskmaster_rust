@@ -4,6 +4,8 @@
 <description>
 **Goal:** Create a comprehensive real-binary test matrix that generates diverse backup fixtures and validates backup + restore + takeover behavior end-to-end with deterministic timing and strong diagnostics.
 
+**PO Directive (2026-03-05):** Use pgBackRest config-method ownership only. Do not rely on repo-local wrapper/hack paths; use minimal CLI flags, with behavior/config sourced from managed config surfaces first.
+
 **Scope:**
 - Add fixture generation tooling (Rust harness and/or scripts) that creates real pgBackRest backups for many cluster states.
 - Add restore validation scenarios for both pgtuskmaster-origin backups and external/non-pgtuskmaster-origin backups.

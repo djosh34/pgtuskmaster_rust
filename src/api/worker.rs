@@ -1269,7 +1269,7 @@ fn extract_bearer_token(request: &HttpRequest) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -1563,7 +1563,6 @@ mod tests {
             phase: HaPhase::Replica,
             tick: 7,
             pending: vec![HaAction::SignalFailSafe],
-            recent_action_ids: BTreeSet::new(),
         }
     }
 

@@ -407,7 +407,7 @@ impl ClusterFixture {
         let mut reservation = crate::test_harness::ports::allocate_ports(1)?;
         let port = *reservation
             .as_slice()
-            .get(0)
+            .first()
             .ok_or_else(|| WorkerError::Message("external postgres port reservation missing".to_string()))?;
         reservation.release_port(port)?;
 

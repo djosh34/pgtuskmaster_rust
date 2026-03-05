@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use crate::{
     config::RuntimeConfig,
@@ -15,7 +15,7 @@ use crate::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::actions::{ActionId, HaAction};
+use super::actions::HaAction;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HaPhase {
@@ -37,7 +37,6 @@ pub(crate) struct HaState {
     pub(crate) phase: HaPhase,
     pub(crate) tick: u64,
     pub(crate) pending: Vec<HaAction>,
-    pub(crate) recent_action_ids: BTreeSet<ActionId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,7 +158,6 @@ impl HaWorkerCtx {
                 phase: HaPhase::Init,
                 tick: 0,
                 pending: Vec::new(),
-                recent_action_ids: BTreeSet::new(),
             },
             publisher,
             config_subscriber,

@@ -724,7 +724,7 @@ fn format_dispatch_errors(errors: &[ActionDispatchError]) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{BTreeMap, BTreeSet, VecDeque},
+        collections::{BTreeMap, VecDeque},
         sync::{Arc, Mutex},
         time::Duration,
     };
@@ -1044,7 +1044,6 @@ mod tests {
             phase: HaPhase::Init,
             tick: 0,
             pending: Vec::new(),
-            recent_action_ids: BTreeSet::new(),
         }
     }
 
@@ -1339,7 +1338,6 @@ mod tests {
                 phase: initial_phase,
                 tick: 0,
                 pending: Vec::new(),
-                recent_action_ids: BTreeSet::new(),
             };
 
             Self {
@@ -1492,6 +1490,43 @@ mod tests {
         assert_eq!(published.version, Version(1));
         assert_eq!(published.value.phase, HaPhase::WaitingPostgresReachable);
         assert_eq!(published.value.tick, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_dispatches_start_postgres_every_tick_while_unreachable() -> Result<(), WorkerError> {
+        let built = build_context(
+            RecordingStore::default(),
+            Duration::from_millis(100),
+            DcsTrust::FullQuorum,
+        );
+        let mut ctx = built.ctx;
+        let mut process_rx = built.process_rx;
+
+        built.pg_publisher
+            .publish(sample_pg_state(SqlStatus::Unreachable), UnixMillis(50))
+            .map_err(|err| WorkerError::Message(format!("pg publish failed: {err}")))?;
+
+        ctx.state = HaState {
+            worker: WorkerStatus::Running,
+            phase: HaPhase::WaitingPostgresReachable,
+            tick: 0,
+            pending: Vec::new(),
+        };
+
+        step_once(&mut ctx).await?;
+        let first = process_rx.try_recv().map_err(|err| {
+            WorkerError::Message(format!("expected process job request after first tick: {err}"))
+        })?;
+        assert!(matches!(first.kind, ProcessJobKind::StartPostgres(_)));
+
+        step_once(&mut ctx).await?;
+        let second = process_rx.try_recv().map_err(|err| {
+            WorkerError::Message(format!("expected process job request after second tick: {err}"))
+        })?;
+        assert!(matches!(second.kind, ProcessJobKind::StartPostgres(_)));
+
+        assert_ne!(first.id, second.id);
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -4,6 +4,8 @@
 <description>
 **Goal:** Integrate scheduled backups with tokio-cron-scheduler under DCS coordination, and ensure pgBackRest is available by default in runtime/container environments.
 
+**PO Directive (2026-03-05):** Use pgBackRest config-method ownership only. Do not rely on repo-local wrapper/hack paths; use minimal CLI flags, with behavior/config sourced from managed config surfaces first.
+
 **Scope:**
 - Add scheduler worker based on tokio-cron-scheduler for cron-like backup schedules.
 - Coordinate scheduling ownership with DCS so only one eligible node executes each scheduled run.

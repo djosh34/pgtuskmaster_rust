@@ -39,21 +39,22 @@ That separation matters: when HA is wrong, you can usually locate the failure to
 - a dispatch bug (ha/worker)
 - a process execution bug (process).
 
-## Outputs: `HaState` and action idempotency
+## Outputs: `HaState` and per-tick action dedupe
 
 The HA worker publishes a `HaState` which includes:
 
 - `phase`: the lifecycle phase (state machine node)
 - `tick`: an incrementing counter
 - `pending`: the actions selected for this tick
-- `recent_action_ids`: a set used to suppress repeated actions.
 
-Action idempotency is currently implemented as: if the action’s `ActionId` already exists in `recent_action_ids`, it is not re-emitted on future ticks. This is a deliberate “don’t spam side effects” guard, but it also means contributors must think carefully about whether an action should be:
+Before publishing, `decide(...)` performs **per-tick action dedupe**: if the same `ActionId` is produced multiple times in a single decision tick, only the first instance is kept in the output action list.
 
-- “fire once” (lease acquire attempt), or
-- “retryable” (start postgres when unreachable).
+There is intentionally **no cross-tick suppression**. If the world snapshot does not change (for example Postgres remains unreachable), the same process-driving action is expected to be re-issued on every tick until it succeeds.
 
-If you change action semantics, update the idempotency behavior and tests together.
+If you change action semantics, update the dedupe behavior and tests together. The invariants are covered by:
+
+- decision-level tests in `src/ha/decide.rs`
+- worker-level dispatch tests in `src/ha/worker.rs`
 
 ## The core phases (what they mean)
 

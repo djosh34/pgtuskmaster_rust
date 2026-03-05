@@ -1097,7 +1097,6 @@ async fn run_workers(
         phase: HaPhase::Init,
         tick: 0,
         pending: Vec::new(),
-        recent_action_ids: std::collections::BTreeSet::new(),
     };
     let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha, now);
 

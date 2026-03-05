@@ -374,28 +374,26 @@ fn summarize_process(state: &ProcessState) -> String {
 
 fn summarize_ha(state: &HaState) -> String {
     format!(
-        "ha worker={:?} phase={:?} tick={} pending={} recent_action_ids={}",
+        "ha worker={:?} phase={:?} tick={} pending={}",
         state.worker,
         state.phase,
         state.tick,
-        state.pending.len(),
-        state.recent_action_ids.len()
+        state.pending.len()
     )
 }
 
 fn ha_signature(state: &HaState) -> String {
     format!(
-        "ha worker={:?} phase={:?} pending={} recent_action_ids={}",
+        "ha worker={:?} phase={:?} pending={}",
         state.worker,
         state.phase,
-        state.pending.len(),
-        state.recent_action_ids.len()
+        state.pending.len()
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     use crate::{
         config::{
@@ -583,7 +581,6 @@ mod tests {
             phase: HaPhase::Init,
             tick: 0,
             pending: vec![HaAction::SignalFailSafe],
-            recent_action_ids: BTreeSet::new(),
         }
     }
 
