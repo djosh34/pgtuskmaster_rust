@@ -23,6 +23,8 @@ pub(crate) struct ArchiveCommandConfig {
     pub(crate) pg1_path: PathBuf,
     pub(crate) archive_push_options: Vec<String>,
     pub(crate) archive_get_options: Vec<String>,
+    pub(crate) api_local_addr: String,
+    pub(crate) api_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -113,20 +115,26 @@ pub(crate) fn materialize_archive_command_config(
         });
     }
 
+    let api_local_addr = derive_api_local_addr(cfg.api.listen_addr.as_str())?;
+    let api_token = select_api_token(cfg);
+
     let cfg_path = archive_command_config_path(&cfg.postgres.data_dir);
+    validate_absolute_path("postgres.data_dir", cfg.postgres.data_dir.as_path())?;
     let config = ArchiveCommandConfig {
-        pgbackrest_bin: absolutize_path(pgbackrest_bin.as_path())?,
+        pgbackrest_bin: validate_absolute_path("process.binaries.pgbackrest", pgbackrest_bin.as_path())?,
         stanza,
         repo,
-        pg1_path: absolutize_path(cfg.postgres.data_dir.as_path())?,
+        pg1_path: validate_absolute_path("postgres.data_dir", cfg.postgres.data_dir.as_path())?,
         archive_push_options: pg_cfg.options.archive_push.clone(),
         archive_get_options: pg_cfg.options.archive_get.clone(),
+        api_local_addr,
+        api_token,
     };
 
     let json = serde_json::to_vec(&config).map_err(|err| ArchiveCommandError::Decode {
         message: format!("failed to serialize archive command config: {err}"),
     })?;
-    write_atomic(cfg_path.as_path(), &json, Some(0o644))?;
+    write_atomic(cfg_path.as_path(), &json, Some(0o600))?;
     Ok(cfg_path)
 }
 
@@ -195,6 +203,12 @@ pub(crate) fn render_archive_get_from_pgdata(
     })
 }
 
+pub(crate) fn load_archive_command_config(
+    pgdata: &Path,
+) -> Result<ArchiveCommandConfig, ArchiveCommandError> {
+    load_config(pgdata)
+}
+
 fn load_config(pgdata: &Path) -> Result<ArchiveCommandConfig, ArchiveCommandError> {
     let path = archive_command_config_path(pgdata);
     let raw = fs::read(&path).map_err(|err| ArchiveCommandError::Io {
@@ -208,14 +222,56 @@ fn load_config(pgdata: &Path) -> Result<ArchiveCommandConfig, ArchiveCommandErro
     })
 }
 
-fn absolutize_path(path: &Path) -> Result<PathBuf, ArchiveCommandError> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
+fn validate_absolute_path(field: &'static str, path: &Path) -> Result<PathBuf, ArchiveCommandError> {
+    if path.as_os_str().is_empty() {
+        return Err(ArchiveCommandError::InvalidConfig {
+            message: format!("{field} must not be empty"),
+        });
     }
-    let cwd = std::env::current_dir().map_err(|err| ArchiveCommandError::Io {
-        message: format!("failed to read current_dir: {err}"),
-    })?;
-    Ok(cwd.join(path))
+    if !path.is_absolute() {
+        return Err(ArchiveCommandError::InvalidConfig {
+            message: format!("{field} must be an absolute path (got `{}`)", path.display()),
+        });
+    }
+    Ok(path.to_path_buf())
+}
+
+fn derive_api_local_addr(listen_addr: &str) -> Result<String, ArchiveCommandError> {
+    let parsed = listen_addr.parse::<std::net::SocketAddr>();
+    let port = match parsed {
+        Ok(addr) => addr.port(),
+        Err(_) => {
+            let (_host, port) = listen_addr
+                .rsplit_once(':')
+                .ok_or_else(|| ArchiveCommandError::InvalidConfig {
+                    message: format!("api.listen_addr must be host:port (got `{listen_addr}`)"),
+                })?;
+            port.parse::<u16>().map_err(|err| ArchiveCommandError::InvalidConfig {
+                message: format!(
+                    "api.listen_addr port must be a valid u16 (got `{listen_addr}`): {err}"
+                ),
+            })?
+        }
+    };
+    if port == 0 {
+        return Err(ArchiveCommandError::InvalidConfig {
+            message: "api.listen_addr port must not be 0 for wal helper event emission".to_string(),
+        });
+    }
+    Ok(format!("127.0.0.1:{port}"))
+}
+
+fn select_api_token(cfg: &RuntimeConfig) -> Option<String> {
+    match &cfg.api.security.auth {
+        crate::config::ApiAuthConfig::Disabled => None,
+        crate::config::ApiAuthConfig::RoleTokens(tokens) => tokens
+            .read_token
+            .as_deref()
+            .or(tokens.admin_token.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string()),
+    }
 }
 
 fn now_millis() -> Result<u64, ArchiveCommandError> {
@@ -295,6 +351,158 @@ fn write_atomic(path: &Path, contents: &[u8], mode: Option<u32>) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
+
+    use crate::config::{
+        ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BackupOptions,
+        BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
+        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgBackRestConfig,
+        PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig,
+        PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig,
+        RuntimeConfig, StderrSinkConfig, TlsServerConfig,
+    };
+    use crate::pginfo::conninfo::PgSslMode;
+
+    fn unique_temp_root(label: &str) -> PathBuf {
+        let pid = std::process::id();
+        let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_nanos(),
+            Err(_) => 0,
+        };
+        std::env::temp_dir().join(format!("pgtuskmaster-{label}-{pid}-{nanos}"))
+    }
+
+    fn sample_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
+        RuntimeConfig {
+            cluster: ClusterConfig {
+                name: "cluster-a".to_string(),
+                member_id: "node-a".to_string(),
+            },
+            postgres: PostgresConfig {
+                data_dir: data_dir.clone(),
+                connect_timeout_s: 5,
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 5432,
+                socket_dir: data_dir.join("socket"),
+                log_file: data_dir.join("postgres.log"),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port: 5432,
+                local_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: "rewinder".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        username: "postgres".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    replicator: PostgresRoleConfig {
+                        username: "replicator".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    rewinder: PostgresRoleConfig {
+                        username: "rewinder".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                },
+                pg_hba: PgHbaConfig {
+                    source: InlineOrPath::Inline {
+                        content: "local all all trust\n".to_string(),
+                    },
+                },
+                pg_ident: PgIdentConfig {
+                    source: InlineOrPath::Inline {
+                        content: "# empty\n".to_string(),
+                    },
+                },
+            },
+            dcs: DcsConfig {
+                endpoints: vec!["http://127.0.0.1:2379".to_string()],
+                scope: "scope-a".to_string(),
+                init: None,
+            },
+            ha: HaConfig {
+                loop_interval_ms: 1000,
+                lease_ttl_ms: 10_000,
+            },
+            process: ProcessConfig {
+                pg_rewind_timeout_ms: 1000,
+                bootstrap_timeout_ms: 1000,
+                fencing_timeout_ms: 1000,
+                backup_timeout_ms: 1000,
+                binaries: BinaryPaths {
+                    postgres: "/usr/bin/postgres".into(),
+                    pg_ctl: "/usr/bin/pg_ctl".into(),
+                    pg_rewind: "/usr/bin/pg_rewind".into(),
+                    initdb: "/usr/bin/initdb".into(),
+                    pg_basebackup: "/usr/bin/pg_basebackup".into(),
+                    psql: "/usr/bin/psql".into(),
+                    pgbackrest: Some("/usr/bin/pgbackrest".into()),
+                },
+            },
+            backup: BackupConfig {
+                enabled: true,
+                provider: BackupProvider::Pgbackrest,
+                bootstrap: crate::config::BackupBootstrapConfig {
+                    enabled: false,
+                    takeover_policy: Default::default(),
+                    recovery_mode: Default::default(),
+                },
+                pgbackrest: Some(PgBackRestConfig {
+                    stanza: Some("stanza-a".to_string()),
+                    repo: Some("1".to_string()),
+                    options: BackupOptions::default(),
+                }),
+            },
+            logging: LoggingConfig {
+                level: LogLevel::Info,
+                capture_subprocess_output: true,
+                postgres: PostgresLoggingConfig {
+                    enabled: true,
+                    pg_ctl_log_file: None,
+                    log_dir: None,
+                    poll_interval_ms: 200,
+                    cleanup: LogCleanupConfig {
+                        enabled: true,
+                        max_files: 10,
+                        max_age_seconds: 60,
+                        protect_recent_seconds: 300,
+                    },
+                },
+                sinks: LoggingSinksConfig {
+                    stderr: StderrSinkConfig { enabled: true },
+                    file: FileSinkConfig {
+                        enabled: false,
+                        path: None,
+                        mode: FileSinkMode::Append,
+                    },
+                },
+            },
+            api: ApiConfig {
+                listen_addr: "127.0.0.1:8080".to_string(),
+                security: ApiSecurityConfig {
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
+                    },
+                    auth: ApiAuthConfig::Disabled,
+                },
+            },
+            debug: DebugConfig { enabled: false },
+        }
+    }
 
     #[test]
     fn config_path_is_under_pgdata() {
@@ -323,5 +531,19 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&pgdata);
+    }
+
+    #[test]
+    fn materialize_rejects_relative_pgbackrest_bin() {
+        let root = unique_temp_root("archive-command-config");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::create_dir_all(&root);
+
+        let mut cfg = sample_runtime_config(root.clone());
+        cfg.process.binaries.pgbackrest = Some(PathBuf::from("pgbackrest"));
+        let result = materialize_archive_command_config(&cfg);
+        assert!(result.is_err());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

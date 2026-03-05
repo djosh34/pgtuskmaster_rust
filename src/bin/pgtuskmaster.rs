@@ -88,46 +88,27 @@ fn run_node(cli: Cli) -> ExitCode {
 
 fn run_wal(args: WalArgs) -> ExitCode {
     let pgdata = args.pgdata.as_path();
-    let rendered = match args.command {
+    let kind = match args.command {
         WalCommand::ArchivePush { wal_path } => {
-            pgtuskmaster_rust::wal::render_archive_push(pgdata, wal_path.as_str())
+            pgtuskmaster_rust::wal_passthrough::WalPassthroughKind::ArchivePush {
+                wal_path,
+            }
         }
         WalCommand::ArchiveGet {
             wal_segment,
             destination_path,
-        } => pgtuskmaster_rust::wal::render_archive_get(
-            pgdata,
-            wal_segment.as_str(),
-            destination_path.as_str(),
-        ),
+        } => pgtuskmaster_rust::wal_passthrough::WalPassthroughKind::ArchiveGet {
+            wal_segment,
+            destination_path,
+        },
     };
 
-    let rendered = match rendered {
-        Ok(value) => value,
+    let exit = pgtuskmaster_rust::wal_passthrough::run(pgdata, kind);
+    match exit {
+        Ok(value) => ExitCode::from(value.code),
         Err(err) => {
             eprintln!("{err}");
-            return ExitCode::from(1);
-        }
-    };
-
-    let status = std::process::Command::new(&rendered.program)
-        .args(&rendered.args)
-        .status()
-        .map_err(|err| err.to_string());
-    let status = match status {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("failed to execute {}: {err}", rendered.program.display());
-            return ExitCode::from(1);
-        }
-    };
-
-    if status.success() {
-        ExitCode::SUCCESS
-    } else {
-        match status.code() {
-            Some(code) if (0..=255).contains(&code) => ExitCode::from(code as u8),
-            _ => ExitCode::from(1),
+            ExitCode::from(1)
         }
     }
 }

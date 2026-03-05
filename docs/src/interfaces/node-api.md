@@ -8,6 +8,15 @@ The Node API is a compact operational interface for state visibility and planned
 - `POST /switchover`: create planned switchover intent
 - `DELETE /ha/switchover`: cancel or clear pending switchover intent
 
+## Internal ingest endpoints
+
+These endpoints are used by pgtuskmaster-internal helpers (not intended for operators to call directly):
+
+- `POST /events/wal`: ingest a WAL archive/restore passthrough event emitted by `pgtuskmaster wal ...`.
+  - Loopback-only enforcement: requests are rejected unless the peer IP is `127.0.0.1` / `::1`.
+  - Auth role: Read (accepts `read` or `admin` token when auth is enabled).
+  - Emits a structured log event with `event.name=backup.wal_passthrough` and attributes like `invocation_id`, `status_code`, WAL identifiers, and bounded stdout/stderr previews.
+
 ## Fallback endpoints
 
 These endpoints exist for compatibility and minimal external health/identity workflows:

@@ -22,6 +22,7 @@ pub(crate) mod tls;
 pub mod runtime;
 pub mod state;
 pub mod wal;
+pub mod wal_passthrough;
 #[cfg(test)]
 pub(crate) mod test_harness;
 

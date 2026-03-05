@@ -91,3 +91,4 @@
 .ralph/tasks/story-pgbackrest-managed-backup-recovery/03-task-high-prio-remove-shell-archive-wrapper-and-current-wiring.md
 .ralph/tasks/story-rust-system-harness/42-task-operator-grade-action-logging-and-no-silent-errors.md
 .ralph/tasks/story-pgbackrest-managed-backup-recovery/02-task-managed-archive-recovery-bootstrap-config-takeover.md
+.ralph/tasks/story-pgbackrest-managed-backup-recovery/04-task-rust-generic-argv-passthrough-binary-for-postgres-archive-restore-logging.md

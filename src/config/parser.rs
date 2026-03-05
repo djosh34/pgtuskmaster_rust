@@ -539,17 +539,29 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     )?;
 
     validate_non_empty_path("process.binaries.postgres", &cfg.process.binaries.postgres)?;
+    validate_absolute_path("process.binaries.postgres", &cfg.process.binaries.postgres)?;
     validate_non_empty_path("process.binaries.pg_ctl", &cfg.process.binaries.pg_ctl)?;
+    validate_absolute_path("process.binaries.pg_ctl", &cfg.process.binaries.pg_ctl)?;
     validate_non_empty_path(
         "process.binaries.pg_rewind",
         &cfg.process.binaries.pg_rewind,
     )?;
+    validate_absolute_path(
+        "process.binaries.pg_rewind",
+        &cfg.process.binaries.pg_rewind,
+    )?;
     validate_non_empty_path("process.binaries.initdb", &cfg.process.binaries.initdb)?;
+    validate_absolute_path("process.binaries.initdb", &cfg.process.binaries.initdb)?;
     validate_non_empty_path(
         "process.binaries.pg_basebackup",
         &cfg.process.binaries.pg_basebackup,
     )?;
+    validate_absolute_path(
+        "process.binaries.pg_basebackup",
+        &cfg.process.binaries.pg_basebackup,
+    )?;
     validate_non_empty_path("process.binaries.psql", &cfg.process.binaries.psql)?;
+    validate_absolute_path("process.binaries.psql", &cfg.process.binaries.psql)?;
 
     validate_timeout(
         "process.pg_rewind_timeout_ms",
@@ -564,6 +576,7 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
 
     if let Some(path) = cfg.process.binaries.pgbackrest.as_ref() {
         validate_non_empty_path("process.binaries.pgbackrest", path)?;
+        validate_absolute_path("process.binaries.pgbackrest", path)?;
     }
 
     if let Some(pg_cfg) = cfg.backup.pgbackrest.as_ref() {
@@ -580,6 +593,7 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
                     }
                 })?;
                 validate_non_empty_path("process.binaries.pgbackrest", pgbackrest_bin)?;
+                validate_absolute_path("process.binaries.pgbackrest", pgbackrest_bin)?;
 
                 let pg_cfg = cfg.backup.pgbackrest.as_ref().ok_or_else(|| ConfigError::Validation {
                     field: "backup.pgbackrest",
@@ -1168,6 +1182,31 @@ fn validate_inline_or_path_non_empty(
             err,
             Err(ConfigError::Validation {
                 field: "process.binaries.pg_ctl",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_non_absolute_binary_paths() {
+        let mut cfg = base_runtime_config();
+        cfg.process.binaries.pg_ctl = PathBuf::from("pg_ctl");
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "process.binaries.pg_ctl",
+                ..
+            })
+        ));
+
+        let mut cfg = base_runtime_config();
+        cfg.process.binaries.pgbackrest = Some(PathBuf::from("pgbackrest"));
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "process.binaries.pgbackrest",
                 ..
             })
         ));

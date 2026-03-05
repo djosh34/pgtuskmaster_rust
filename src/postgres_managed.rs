@@ -82,7 +82,17 @@ pub(crate) fn materialize_managed_postgres_config(
             }
         })?;
 
-        let helper = crate::self_exe::get_or_fallback();
+        let helper = crate::self_exe::get().map_err(|err| ManagedPostgresError::InvalidConfig {
+            message: format!("failed to resolve self executable path for wal helper: {err}"),
+        })?;
+        if !helper.is_absolute() {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: format!(
+                    "wal helper path must be absolute, got `{}`",
+                    helper.display()
+                ),
+            });
+        }
         let archive_command = render_postgres_wal_helper_command(
             helper.as_path(),
             cfg.postgres.data_dir.as_path(),
@@ -241,7 +251,17 @@ pub(crate) fn takeover_restored_data_dir(
                 message: format!("materialize archive command config failed: {err}"),
             }
         })?;
-        let helper = crate::self_exe::get_or_fallback();
+        let helper = crate::self_exe::get().map_err(|err| ManagedPostgresError::InvalidConfig {
+            message: format!("failed to resolve self executable path for wal helper: {err}"),
+        })?;
+        if !helper.is_absolute() {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: format!(
+                    "wal helper path must be absolute, got `{}`",
+                    helper.display()
+                ),
+            });
+        }
         let archive_command = render_postgres_wal_helper_command(
             helper.as_path(),
             cfg.postgres.data_dir.as_path(),
@@ -727,6 +747,59 @@ mod tests {
             },
             debug: DebugConfig { enabled: false },
         }
+    }
+
+    #[test]
+    fn managed_postgres_config_renders_wal_helper_commands_with_placeholders() -> TestResult {
+        crate::self_exe::init_from_current_exe().map_err(|err| {
+            std::io::Error::other(format!("{err}"))
+        })?;
+
+        let root = temp_dir("managed-wal-helper-render");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root)?;
+
+        let mut cfg = sample_runtime_config(
+            root.clone(),
+            TlsServerConfig {
+                mode: ApiTlsMode::Disabled,
+                identity: None,
+                client_auth: None,
+            },
+        );
+        cfg.backup.enabled = true;
+        cfg.process.binaries.pgbackrest = Some(PathBuf::from("/usr/bin/pgbackrest"));
+        if let Some(pg) = cfg.backup.pgbackrest.as_mut() {
+            pg.stanza = Some("stanza-a".to_string());
+            pg.repo = Some("1".to_string());
+            pg.options.archive_push = vec!["--quote=it's fine".to_string()];
+        }
+
+        let out = materialize_managed_postgres_config(&cfg)?;
+        let archive = out
+            .extra_settings
+            .get("archive_command")
+            .ok_or_else(|| {
+                std::io::Error::other("archive_command missing")
+            })?;
+        let restore = out
+            .extra_settings
+            .get("restore_command")
+            .ok_or_else(|| {
+                std::io::Error::other("restore_command missing")
+            })?;
+
+        assert!(archive.contains("\"wal\""));
+        assert!(archive.contains("\"archive-push\""));
+        assert!(archive.contains("\"%p\""));
+
+        assert!(restore.contains("\"wal\""));
+        assert!(restore.contains("\"archive-get\""));
+        assert!(restore.contains("\"%f\""));
+        assert!(restore.contains("\"%p\""));
+
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
     }
 
     async fn wait_for_job_success(

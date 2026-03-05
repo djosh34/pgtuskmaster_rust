@@ -6,7 +6,7 @@ This runbook describes the intended operator workflow for bringing up a new clus
 
 - `backup.enabled = true`
 - `backup.bootstrap.enabled = true`
-- `process.binaries.pgbackrest` points to an executable `pgbackrest`
+- `process.binaries.pgbackrest` points to an executable `pgbackrest` (absolute path)
 - `backup.pgbackrest.stanza` and `backup.pgbackrest.repo` are set
 - pgBackRest repository configuration is provided via per-operation options (for example `--repo1-path=...`)
 
@@ -54,6 +54,7 @@ Check:
 
 - Postgres logs for repeated WAL restore attempts and error signatures
 - that `restore_command` is owned by pgtuskmaster (it should invoke `pgtuskmaster wal --pgdata <PGDATA> archive-get ...`) and that `PGDATA/pgtm.pgbackrest.archive.json` exists and matches your pgBackRest repo configuration
+- pgtuskmaster structured events for `event.name=backup.wal_passthrough` (these are emitted by the WAL helper via the local node API and include `status_code`, `success`, WAL identifiers, and bounded stdout/stderr previews)
 - PgTool output records for `job_kind=pgbackrest_restore` and `job_kind=start_postgres` (stderr content is captured)
 
 ### Postgres start fails with unexpected settings

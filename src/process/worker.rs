@@ -131,6 +131,12 @@ impl super::jobs::ProcessCommandRunner for TokioCommandRunner {
             log_identity: _,
         } = spec;
         let binary = program.display().to_string();
+        if !program.is_absolute() {
+            return Err(ProcessError::InvalidSpec(format!(
+                "program must be an absolute path, got `{}`",
+                program.display()
+            )));
+        }
 
         let mut command = Command::new(&program);
         command.args(args).stdin(Stdio::null());

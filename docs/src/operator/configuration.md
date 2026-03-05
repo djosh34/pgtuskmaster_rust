@@ -138,6 +138,12 @@ Most severe incidents begin with implicit assumptions about identity, auth, or r
 - Operational effect: missing or wrong paths fail startup or action execution.
 - PostgreSQL implication: rewind/bootstrap capability depends directly on correct binary wiring.
 
+Path rules (fail closed):
+
+- All `process.binaries.*` values must be **absolute paths**.
+- pgtuskmaster never performs `PATH` lookup or “fallback to command name” execution for binaries.
+- Relative paths are rejected during config validation.
+
 ### `[backup]`
 
 Backup/restore operations are provider-driven and executed as process jobs so that:
@@ -151,12 +157,12 @@ Fields:
 - `enabled`:
   - when `false` (default), backup settings are inert and the node does not require pgBackRest wiring.
   - when `true`, the node requires:
-    - `process.binaries.pgbackrest` to be set to a valid executable path
+    - `process.binaries.pgbackrest` to be set to a valid **absolute** executable path
     - `[backup.pgbackrest] stanza` and `repo` to be set and non-empty.
     - Postgres `archive_command` / `restore_command` are owned by pgtuskmaster at startup:
       - pgtuskmaster injects `archive_mode=on`, `archive_command=...`, `restore_command=...`
       - the command wiring invokes `pgtuskmaster wal --pgdata <PGDATA> ...`, which runs pgBackRest `archive-push` / `archive-get`
-      - pgtuskmaster writes a helper config file in `PGDATA/pgtm.pgbackrest.archive.json` so the helper can run pgBackRest with the correct stanza/repo/options deterministically.
+      - pgtuskmaster writes a helper config file in `PGDATA/pgtm.pgbackrest.archive.json` (mode `0600`) so the helper can run pgBackRest with the correct stanza/repo/options deterministically and emit a structured event to the local node API.
 - `provider`: currently only `pgbackrest` is supported.
 - `[backup.pgbackrest.options]`: extra pgBackRest CLI options per operation (arrays of strings).
   - For safety and determinism, these option tokens must not override managed fields (no `--stanza` / `--repo` / `--pg1-path`).
@@ -237,6 +243,7 @@ Conflicting artifacts removed/quarantined during takeover include:
 ### `[api]`
 
 - `listen_addr`: operator access endpoint.
+- The listen port must be a stable non-zero port (do not use `:0`) when WAL helper event emission is enabled (because `pgtuskmaster wal ...` posts to the local node API for `backup.wal_passthrough` events).
 - `security.tls` and `security.auth`: transport and action protection model.
 - Operational effect: mismatched auth policy can block control actions or expose unsafe surfaces.
 

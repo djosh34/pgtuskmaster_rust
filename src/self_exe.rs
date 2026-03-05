@@ -52,9 +52,11 @@ pub(crate) fn set(path: PathBuf) -> Result<(), SelfExeError> {
     }
 }
 
-pub(crate) fn get_or_fallback() -> PathBuf {
+pub(crate) fn get() -> Result<PathBuf, SelfExeError> {
     match SELF_EXE.get() {
-        Some(path) => path.clone(),
-        None => PathBuf::from("pgtuskmaster"),
+        Some(path) => Ok(path.clone()),
+        None => Err(SelfExeError::CurrentExe(
+            "self exe not initialized".to_string(),
+        )),
     }
 }

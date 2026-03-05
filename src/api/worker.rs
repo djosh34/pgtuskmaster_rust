@@ -8,6 +8,7 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use crate::{
     api::{
         controller::{delete_switchover, get_ha_state, post_switchover, SwitchoverRequestInput},
+        events::{ingest_wal_event, WalEventIngestInput},
         fallback::{get_fallback_cluster, post_fallback_heartbeat, FallbackHeartbeatInput},
         ApiError,
     },
@@ -249,7 +250,7 @@ pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
 
     emit_api_auth_decision(ctx, peer, &request, "allowed")?;
 
-    let response = route_request(ctx, &cfg, request);
+    let response = route_request(ctx, &cfg, peer, request);
     let status_code = response.status;
     stream.write_http_response(response).await?;
 
@@ -374,10 +375,26 @@ fn is_fatal_api_step_error(err: &WorkerError) -> bool {
 fn route_request(
     ctx: &mut ApiWorkerCtx,
     cfg: &RuntimeConfig,
+    peer: std::net::SocketAddr,
     request: HttpRequest,
 ) -> HttpResponse {
     let (path, query) = split_path_and_query(&request.path);
     match (request.method.as_str(), path) {
+        ("POST", "/events/wal") => {
+            if !peer.ip().is_loopback() {
+                return HttpResponse::text(403, "Forbidden", "loopback only");
+            }
+            let input = match serde_json::from_slice::<WalEventIngestInput>(&request.body) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
+                }
+            };
+            match ingest_wal_event(&ctx.log, peer, input) {
+                Ok(value) => HttpResponse::json(202, "Accepted", &value),
+                Err(err) => api_error_to_http(err),
+            }
+        }
         ("POST", "/switchover") => {
             let input = match serde_json::from_slice::<SwitchoverRequestInput>(&request.body) {
                 Ok(parsed) => parsed,
@@ -2707,6 +2724,215 @@ mod tests {
         )?;
         expect_tls_request_rejected(&mut ctx, untrusted_client_cfg, "localhost").await?;
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn events_wal_rejects_non_loopback_peer() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-events-wal-non-loopback")?;
+
+        let cfg = sample_runtime_config(None);
+        let (mut ctx, _store, sink) = build_ctx_with_config_and_log(cfg.clone()).await?;
+
+        let input = crate::api::events::WalEventIngestInput {
+            provider: "pgbackrest".to_string(),
+            event_kind: "archive-push".to_string(),
+            invocation_id: "inv-1".to_string(),
+            status_code: 0,
+            success: true,
+            started_at_ms: 1,
+            duration_ms: 1,
+            stdout: "".to_string(),
+            stderr: "".to_string(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            wal_path: Some("/tmp/000000010000000000000001".to_string()),
+            wal_segment: None,
+            destination_path: None,
+            command_program: "/usr/bin/pgbackrest".to_string(),
+            command_args: vec!["archive-push".to_string()],
+        };
+        let body =
+            serde_json::to_vec(&input).map_err(|err| WorkerError::Message(err.to_string()))?;
+
+        let request = super::HttpRequest {
+            method: "POST".to_string(),
+            path: "/events/wal".to_string(),
+            headers: Vec::new(),
+            body,
+        };
+
+        let peer = "10.0.0.1:1234"
+            .parse::<std::net::SocketAddr>()
+            .map_err(|err| WorkerError::Message(format!("peer parse failed: {err}")))?;
+        let response = super::route_request(&mut ctx, &cfg, peer, request);
+        assert_eq!(response.status, 403);
+
+        let records = sink
+            .snapshot()
+            .map_err(|err| WorkerError::Message(err.to_string()))?;
+        let matching = records
+            .iter()
+            .filter(|record| {
+                record
+                    .attributes
+                    .get("event.name")
+                    .and_then(|value| value.as_str())
+                    == Some("backup.wal_passthrough")
+            })
+            .count();
+        assert_eq!(matching, 0);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn events_wal_accepts_and_emits_structured_event() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-events-wal-ingest")?;
+
+        let cfg = sample_runtime_config(None);
+        let (mut ctx, _store, sink) = build_ctx_with_config_and_log(cfg).await?;
+
+        let input = crate::api::events::WalEventIngestInput {
+            provider: "pgbackrest".to_string(),
+            event_kind: "archive-get".to_string(),
+            invocation_id: "inv-2".to_string(),
+            status_code: 37,
+            success: false,
+            started_at_ms: 123,
+            duration_ms: 5,
+            stdout: "stdout-sample".to_string(),
+            stderr: "stderr-sample".to_string(),
+            stdout_truncated: true,
+            stderr_truncated: false,
+            wal_path: None,
+            wal_segment: Some("000000010000000000000001".to_string()),
+            destination_path: Some("/tmp/dest".to_string()),
+            command_program: "/tmp/pgbackrest-stub".to_string(),
+            command_args: vec!["--stanza".to_string(), "stanza-a".to_string()],
+        };
+        let body =
+            serde_json::to_vec(&input).map_err(|err| WorkerError::Message(err.to_string()))?;
+        let response =
+            send_plain_request(&mut ctx, format_post("/events/wal", None, &body), Some(body))
+                .await?;
+        assert_eq!(response.status_code, 202);
+
+        let records = sink
+            .collect_matching(|record| {
+                record
+                    .attributes
+                    .get("event.name")
+                    .and_then(|value| value.as_str())
+                    == Some("backup.wal_passthrough")
+            })
+            .map_err(|err| WorkerError::Message(err.to_string()))?;
+        assert_eq!(records.len(), 1);
+
+        let record = records
+            .first()
+            .ok_or_else(|| WorkerError::Message("expected one record".to_string()))?;
+        assert_eq!(
+            record
+                .attributes
+                .get("event.domain")
+                .and_then(|value| value.as_str()),
+            Some("backup")
+        );
+        assert_eq!(
+            record
+                .attributes
+                .get("provider")
+                .and_then(|value| value.as_str()),
+            Some("pgbackrest")
+        );
+        assert_eq!(
+            record
+                .attributes
+                .get("invocation_id")
+                .and_then(|value| value.as_str()),
+            Some("inv-2")
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn events_wal_accepts_multiple_requests() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-events-wal-concurrency")?;
+
+        let cfg = sample_runtime_config(None);
+        let (mut ctx, _store, sink) = build_ctx_with_config_and_log(cfg).await?;
+        let addr = ctx.local_addr()?;
+
+        let build_body = |id: usize| -> Result<Vec<u8>, WorkerError> {
+            let input = crate::api::events::WalEventIngestInput {
+                provider: "pgbackrest".to_string(),
+                event_kind: "archive-push".to_string(),
+                invocation_id: format!("inv-{id}"),
+                status_code: 0,
+                success: true,
+                started_at_ms: 1,
+                duration_ms: 1,
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                wal_path: Some(format!("/tmp/wal-{id}")),
+                wal_segment: None,
+                destination_path: None,
+                command_program: "/tmp/pgbackrest-stub".to_string(),
+                command_args: vec!["archive-push".to_string()],
+            };
+            serde_json::to_vec(&input).map_err(|err| WorkerError::Message(err.to_string()))
+        };
+
+        let client_task = |id: usize| async move {
+            let body = build_body(id)?;
+            let head = format_post("/events/wal", None, &body);
+            let mut client = TcpStream::connect(addr)
+                .await
+                .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+            client
+                .write_all(head.as_bytes())
+                .await
+                .map_err(|err| WorkerError::Message(format!("client write head failed: {err}")))?;
+            client
+                .write_all(&body)
+                .await
+                .map_err(|err| WorkerError::Message(format!("client write body failed: {err}")))?;
+            read_http_response_framed(&mut client, IO_TIMEOUT).await
+        };
+
+        let client1 = tokio::spawn(client_task(1));
+        let client2 = tokio::spawn(client_task(2));
+        let client3 = tokio::spawn(client_task(3));
+
+        for _ in 0..3 {
+            step_once(&mut ctx).await?;
+        }
+
+        let res1 = client1
+            .await
+            .map_err(|err| WorkerError::Message(format!("join failed: {err}")))??;
+        let res2 = client2
+            .await
+            .map_err(|err| WorkerError::Message(format!("join failed: {err}")))??;
+        let res3 = client3
+            .await
+            .map_err(|err| WorkerError::Message(format!("join failed: {err}")))??;
+        assert_eq!(res1.status_code, 202);
+        assert_eq!(res2.status_code, 202);
+        assert_eq!(res3.status_code, 202);
+
+        let records = sink
+            .collect_matching(|record| {
+                record
+                    .attributes
+                    .get("event.name")
+                    .and_then(|value| value.as_str())
+                    == Some("backup.wal_passthrough")
+            })
+            .map_err(|err| WorkerError::Message(err.to_string()))?;
+        assert_eq!(records.len(), 3);
         Ok(())
     }
 }
