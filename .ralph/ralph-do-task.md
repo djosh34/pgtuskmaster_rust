@@ -4,10 +4,10 @@
     - [ ] from this on we will call that [task name].md
 - [ ] read the [task name].md file from the path specified
 - [ ] complete the work like this:
-    - [ ] Plan first the full solution out in detail (using 5 explore_spark subagents in parallel to speed up the research phase)
+    - [ ] Plan first the full solution out in detail
     - [ ] Make sure to write you full plan to [task name].md so that it is visible for next engineer
         - [ ] Once full plan written, add 'TO BE VERIFIED' and QUIT IMMEDIATELY
-    - [ ] If you read 'TO BE VERIFIED', do a DEEP and SKEPTICAL review of the plan, you must alter at least one thing in the plan, otherwise your research was not deep enough. (Also use 5 explore_spark subagents in parallel for this DEEP SKEPTICAL VERIFICATION)
+    - [ ] If you read 'TO BE VERIFIED', do a DEEP and SKEPTICAL review of the plan, you must alter at least one thing in the plan, otherwise your research was not deep enough.
     - [ ] Once your certain about the plan, replace end of plan with 'NOW EXECUTE'
     - [ ] When you read 'NOW EXECUTE', do not explore, just execute the plan as written, and tick off the boxes when you do them. 
 
