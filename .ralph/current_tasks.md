@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 00:43:41 CET 2026
+Generated: Fri Mar  6 12:55:26 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -403,6 +403,19 @@ The agent must explore the current docs tree, `SUMMARY.md`, and rendered navigat
 
 ---
 
+**Path:** `.ralph/tasks/story-docs-useful-guides/04-task-create-repo-readme.md`
+
+## Task: Create repository README as the front-door quick-start and project overview <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Add a normal, useful root `README.md` that explains what this project is, how to get started quickly, where to go next for deeper docs, and what the license status is.
+
+**Scope:**
+- Create a new root `README.md` for the repository.
+- Keep it concise and practical: brief product explanation, quick-start-oriented getting-started section, common repo-entry information, and links into the mdBook docs for deeper operator/contributor material.
+
+---
+
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
 ## Task: Verify build and static quality gates <status>done</status> <passes>true</passes> <passing>true</passing>
@@ -741,18 +754,6 @@ The agent must explore the whole codebase first, not only HA, then implement the
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
-
-<description>
-**Goal:** Implement DCS ownership rules: trust evaluation, typed key parsing, cache updates, and local member publishing.
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -789,6 +790,18 @@ The agent must explore the whole codebase first, not only HA, then implement the
 **Scope:**
 - Enforce strict clippy policy for both runtime and test targets (no test exceptions).
 - Refactor every current `panic!`, `expect`, and `expect_err` case in `src/` and `tests/` to idiomatic alternatives.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
+
+<description>
+**Goal:** Implement DCS ownership rules: trust evaluation, typed key parsing, cache updates, and local member publishing.
 
 ---
 
@@ -843,19 +856,6 @@ The agent must explore the whole codebase first, not only HA, then implement the
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-**Goal:** Provide deterministic, parallel-safe infrastructure for real integration and e2e tests.
-
-**Scope:**
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
@@ -879,6 +879,19 @@ The agent must explore the whole codebase first, not only HA, then implement the
 **Scope:**
 - Implement an etcd3-backed adapter that satisfies the existing `src/dcs/store.rs` `DcsStore` trait (or evolve the trait minimally if required).
 - Add integration tests that spawn a real etcd3 process (via `src/test_harness/etcd3.rs`) and verify:
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+**Goal:** Provide deterministic, parallel-safe infrastructure for real integration and e2e tests.
+
+**Scope:**
 
 ---
 

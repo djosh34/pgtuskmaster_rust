@@ -113,6 +113,15 @@ start_service() {
   echo "ralph started"
 }
 
+ensure_service_running_for_attach() {
+  if is_active; then
+    echo "ralph already running"
+    return 0
+  fi
+
+  start_service
+}
+
 stop_service() {
   systemctl --user stop "$UNIT_NAME" 2>/dev/null || true
   echo "ralph stopped"
@@ -170,7 +179,7 @@ case "$ACTION" in
     start_service
     ;;
   attach)
-    start_service
+    ensure_service_running_for_attach
     attach_logs
     ;;
 esac

@@ -62,6 +62,26 @@ Use the start-only flag so the command returns immediately after starting the se
 /bin/bash .ralph/ralph.sh --start
 ```
 
-### 6. Report
+### 6. Verify Ralph is actually running and logs are moving
 
-Tell the user that Ralph has been continued and the task has been switched.
+After restarting, confirm the service is active:
+
+```bash
+/bin/bash .ralph/ralph.sh --status
+```
+
+Then check whether fresh logs are appearing by comparing two short snapshots a few seconds apart:
+
+```bash
+journalctl --user -u ralph-worker.service -n 5 --output=short-iso --no-pager
+sleep 5
+journalctl --user -u ralph-worker.service -n 5 --output=short-iso --no-pager
+```
+
+Treat logs as moving only if the second snapshot contains fresh output that was not present in the first one.
+
+### 7. Report
+
+Tell the user that Ralph has been continued and the task has been switched. Also report:
+- whether `ralph-worker.service` is running
+- whether the logs appear to be moving
