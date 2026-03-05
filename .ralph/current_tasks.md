@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar  5 11:06:52 PM CET 2026
+Generated: Thu Mar  5 11:28:52 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -313,16 +313,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 ## Task: Rewrite HA decide into a facts-and-PhaseOutcome match machine <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Replace mutation-driven HA decision code with a pure, match-based state machine that gathers immutable facts once and returns a full `PhaseOutcome` directly from each phase handler.
+**Goal:** Replace mutation-driven HA decision code with a pure, match-based state machine that gathers immutable facts once and returns a full `PhaseOutcome { next_phase, decision }` directly from each phase handler.
 
 ---
 
 **Path:** `.ralph/tasks/story-ha-functional-rewrite/03-task-replace-action-vectors-and-pending-state-with-typed-domain-effect-plan.md`
 
-## Task: Replace action vectors and pending state with a typed domain effect plan <status>not_started</status> <passes>false</passes>
+## Task: Replace action vectors and pending state with HaDecision plus lowered effect plan <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Replace `Vec<HaAction>` planning with a typed domain-level effect plan so the HA state machine describes intent structurally instead of appending low-level commands into a vector.
+**Goal:** Replace `Vec<HaAction>` planning with a high-level `HaDecision` enum plus an inherent `HaDecision::lower(&self) -> HaEffectPlan` step, and remove `pending` entirely from HA state.
 
 ---
 
@@ -331,7 +331,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 ## Task: Untangle HA worker into facts, plan, and apply layers <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Restructure HA runtime code so the worker clearly separates fact collection, pure planning, and effect application without forcing the design into object-heavy “executor” patterns.
+**Goal:** Restructure HA runtime code so the worker clearly separates fact collection, pure decision selection, effect lowering, and effect application without forcing the design into object-heavy “executor” patterns.
 
 ---
 
