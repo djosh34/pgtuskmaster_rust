@@ -95,7 +95,7 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
 
             let blocking_restore = guard
                 .status
-                .map(|status| !matches!(status.phase, RestorePhase::Completed))
+                .map(|status| is_restore_blocking_for_member(&status.phase, is_executor))
                 .unwrap_or(true);
             if blocking_restore {
                 restore_suppressed = true;
@@ -108,7 +108,7 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
                         &mut candidates,
                         &guard,
                         i_am_leader,
-                        has_other_leader_record,
+                        has_available_other_leader,
                         pg_reachable,
                         &world.pg.value,
                         &world.process.value,
@@ -333,6 +333,18 @@ fn is_restore_terminal(phase: &RestorePhase) -> bool {
     )
 }
 
+fn is_restore_blocking_for_member(phase: &RestorePhase, is_executor: bool) -> bool {
+    matches!(
+        phase,
+        RestorePhase::Requested
+            | RestorePhase::FencingPrimaries
+            | RestorePhase::Restoring
+            | RestorePhase::TakeoverManagedConfig
+            | RestorePhase::StartingPostgres
+            | RestorePhase::WaitingPrimary
+    ) || (is_executor && matches!(phase, RestorePhase::Orphaned))
+}
+
 fn restore_status_to_write(guard: &RestoreGuardView<'_>, phase: RestorePhase) -> RestoreStatusRecord {
     let (running_job_id, last_error) = guard
         .status
@@ -375,7 +387,7 @@ fn apply_executor_restore_guard(
     candidates: &mut Vec<HaAction>,
     guard: &RestoreGuardView<'_>,
     i_am_leader: bool,
-    has_other_leader_record: bool,
+    has_available_other_leader: bool,
     pg_reachable: bool,
     pg: &PgInfoState,
     process: &ProcessState,
@@ -426,7 +438,10 @@ fn apply_executor_restore_guard(
             }
 
             // Wait until other nodes have released any leader record before proceeding.
-            if !has_other_leader_record && !pg_reachable && matches!(process, ProcessState::Idle { .. }) {
+            if !has_available_other_leader
+                && !pg_reachable
+                && matches!(process, ProcessState::Idle { .. })
+            {
                 next_phase = RestorePhase::Restoring;
                 status.running_job_id = None;
                 status.last_error = None;
@@ -988,6 +1003,157 @@ mod tests {
                     if matches!(status.phase, RestorePhase::FencingPrimaries)
             )),
             "expected WriteRestoreStatus advancing to FencingPrimaries, got {:?}",
+            output.actions
+        );
+    }
+
+    #[test]
+    fn restore_guard_executor_ignores_unavailable_foreign_leader_when_entering_restore() {
+        let mut world = world(
+            DcsTrust::FullQuorum,
+            pg_unknown(SqlStatus::Unreachable),
+            Some("node-b"),
+            process_idle(None),
+        );
+        world.dcs.value.cache.members.insert(
+            MemberId("node-b".to_string()),
+            MemberRecord {
+                member_id: MemberId("node-b".to_string()),
+                role: MemberRole::Primary,
+                sql: SqlStatus::Unreachable,
+                readiness: Readiness::NotReady,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+        world.dcs.value.cache.restore_request = Some(RestoreRequestRecord {
+            restore_id: "restore-1".to_string(),
+            requested_by: MemberId("operator-a".to_string()),
+            requested_at_ms: UnixMillis(1),
+            executor_member_id: MemberId("node-a".to_string()),
+            reason: None,
+            idempotency_token: None,
+        });
+        world.dcs.value.cache.restore_status = Some(RestoreStatusRecord {
+            restore_id: "restore-1".to_string(),
+            phase: RestorePhase::FencingPrimaries,
+            heartbeat_at_ms: UnixMillis(1),
+            running_job_id: None,
+            last_error: None,
+            updated_at_ms: UnixMillis(1),
+        });
+        world.dcs.value.last_refresh_at = Some(UnixMillis(2));
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Replica,
+                tick: 0,
+                pending: vec![],
+            },
+            world,
+        });
+
+        assert!(
+            output.actions.iter().any(|action| matches!(
+                action,
+                HaAction::WriteRestoreStatus { status }
+                    if matches!(status.phase, RestorePhase::Restoring)
+            )),
+            "expected WriteRestoreStatus advancing to Restoring, got {:?}",
+            output.actions
+        );
+    }
+
+    #[test]
+    fn restore_orphaned_no_longer_suppresses_normal_ha_decisions() {
+        let mut world = world(
+            DcsTrust::FullQuorum,
+            pg_unknown(SqlStatus::Unreachable),
+            None,
+            process_idle(None),
+        );
+        world.dcs.value.cache.restore_request = Some(RestoreRequestRecord {
+            restore_id: "restore-1".to_string(),
+            requested_by: MemberId("operator-a".to_string()),
+            requested_at_ms: UnixMillis(1),
+            executor_member_id: MemberId("node-b".to_string()),
+            reason: None,
+            idempotency_token: None,
+        });
+        world.dcs.value.cache.restore_status = Some(RestoreStatusRecord {
+            restore_id: "restore-1".to_string(),
+            phase: RestorePhase::Orphaned,
+            heartbeat_at_ms: UnixMillis(1),
+            running_job_id: None,
+            last_error: Some("restore executor heartbeat stale; marking orphaned".to_string()),
+            updated_at_ms: UnixMillis(1),
+        });
+        world.dcs.value.last_refresh_at = Some(UnixMillis(2));
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 0,
+                pending: vec![],
+            },
+            world,
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(output.actions, vec![HaAction::StartPostgres]);
+    }
+
+    #[test]
+    fn restore_orphaned_executor_restarts_restore_guard() {
+        let mut world = world(
+            DcsTrust::FullQuorum,
+            pg_unknown(SqlStatus::Unreachable),
+            None,
+            process_idle(None),
+        );
+        world.dcs.value.cache.restore_request = Some(RestoreRequestRecord {
+            restore_id: "restore-1".to_string(),
+            requested_by: MemberId("operator-a".to_string()),
+            requested_at_ms: UnixMillis(1),
+            executor_member_id: MemberId("node-a".to_string()),
+            reason: None,
+            idempotency_token: None,
+        });
+        world.dcs.value.cache.restore_status = Some(RestoreStatusRecord {
+            restore_id: "restore-1".to_string(),
+            phase: RestorePhase::Orphaned,
+            heartbeat_at_ms: UnixMillis(1),
+            running_job_id: Some("stale-job".to_string()),
+            last_error: Some("restore executor heartbeat stale; marking orphaned".to_string()),
+            updated_at_ms: UnixMillis(1),
+        });
+        world.dcs.value.last_refresh_at = Some(UnixMillis(2));
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Replica,
+                tick: 0,
+                pending: vec![],
+            },
+            world,
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert!(
+            output.actions.iter().any(|action| matches!(
+                action,
+                HaAction::WriteRestoreStatus { status }
+                    if matches!(status.phase, RestorePhase::FencingPrimaries)
+                        && status.running_job_id.is_none()
+                        && status.last_error.is_none()
+            )),
+            "expected orphaned executor to restart restore guard, got {:?}",
             output.actions
         );
     }

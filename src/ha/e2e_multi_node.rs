@@ -492,6 +492,7 @@ impl ClusterFixture {
             "pgbackrest stanza-create",
             self.pgbackrest_bin.as_path(),
             &stanza_create_args,
+            Some(source_data_dir.as_path()),
             E2E_COMMAND_TIMEOUT,
             E2E_COMMAND_KILL_WAIT_TIMEOUT,
         )
@@ -506,10 +507,73 @@ impl ClusterFixture {
             "pgbackrest backup",
             self.pgbackrest_bin.as_path(),
             &backup_args,
+            Some(source_data_dir.as_path()),
             Duration::from_secs(120),
             E2E_COMMAND_KILL_WAIT_TIMEOUT,
         )
         .await?;
+
+        let wal_dir = source_data_dir.join("pg_wal");
+        let wal_entries = fs::read_dir(&wal_dir).map_err(|err| {
+            WorkerError::Message(format!(
+                "restore repo prep: read pg_wal {} failed: {err}",
+                wal_dir.display()
+            ))
+        })?;
+        let mut wal_files = Vec::new();
+        for entry in wal_entries {
+            let entry = entry.map_err(|err| {
+                WorkerError::Message(format!(
+                    "restore repo prep: read pg_wal entry in {} failed: {err}",
+                    wal_dir.display()
+                ))
+            })?;
+            let file_type = entry.file_type().map_err(|err| {
+                WorkerError::Message(format!(
+                    "restore repo prep: stat pg_wal entry {} failed: {err}",
+                    entry.path().display()
+                ))
+            })?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy().to_string();
+            if is_archivable_pg_wal_entry(file_name.as_str()) {
+                wal_files.push(file_name);
+            }
+        }
+        wal_files.sort();
+        if wal_files.is_empty() {
+            return Err(WorkerError::Message(format!(
+                "restore repo prep: no archivable WAL files found in {}",
+                wal_dir.display()
+            )));
+        }
+        for wal_file in wal_files {
+            let archive_push_args: Vec<String> = vec![
+                "--stanza".to_string(),
+                stanza.to_string(),
+                "--pg1-path".to_string(),
+                source_data_dir.display().to_string(),
+                format!("--repo1-path={}", repo1_path.display()),
+                "--log-level-console=error".to_string(),
+                "archive-push".to_string(),
+                format!("pg_wal/{wal_file}"),
+            ];
+            self.record(format!(
+                "restore repo prep: pgbackrest archive-push {wal_file}"
+            ));
+            let _ = ha_e2e::util::run_command_capture_output(
+                format!("pgbackrest archive-push {wal_file}").as_str(),
+                self.pgbackrest_bin.as_path(),
+                &archive_push_args,
+                Some(source_data_dir.as_path()),
+                E2E_COMMAND_TIMEOUT,
+                E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            )
+            .await?;
+        }
 
         Ok(proof_token)
     }
@@ -1747,6 +1811,14 @@ impl ClusterFixture {
         self.etcd = None;
         Ok(())
     }
+}
+
+fn is_archivable_pg_wal_entry(file_name: &str) -> bool {
+    let is_wal_segment = file_name.len() == 24
+        && file_name
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_lowercase());
+    is_wal_segment || file_name.ends_with(".history")
 }
 
 async fn run_sql_workload_worker(

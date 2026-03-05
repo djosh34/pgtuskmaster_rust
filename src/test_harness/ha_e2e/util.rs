@@ -492,6 +492,7 @@ pub(crate) async fn run_command_capture_output(
     label: &str,
     program: &Path,
     args: &[String],
+    current_dir: Option<&Path>,
     command_timeout: Duration,
     command_kill_wait_timeout: Duration,
 ) -> Result<String, WorkerError> {
@@ -506,6 +507,9 @@ pub(crate) async fn run_command_capture_output(
     let mut command = Command::new(program);
     for arg in args {
         command.arg(arg);
+    }
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
