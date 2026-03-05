@@ -85,24 +85,23 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
 
         let mut restore_suppressed = false;
         if let Some(guard) = restore_guard {
+            let is_executor = guard.request.executor_member_id.0.as_str() == self_member_id;
             // Orphan detection: once heartbeat is stale, stop blocking HA forever and surface the state.
-            if guard.heartbeat_stale && !guard.terminal && !guard.orphaned {
+            if guard.heartbeat_stale && !guard.terminal && !guard.orphaned && !is_executor {
                 let mut orphaned = restore_status_to_write(&guard, RestorePhase::Orphaned);
                 orphaned.last_error = Some("restore executor heartbeat stale; marking orphaned".to_string());
                 candidates.push(HaAction::WriteRestoreStatus { status: orphaned });
             }
 
-            let blocking_restore = !guard.heartbeat_stale
-                && guard
-                    .status
-                    .map(|status| !matches!(status.phase, RestorePhase::Completed | RestorePhase::Orphaned))
-                    .unwrap_or(true);
+            let blocking_restore = guard
+                .status
+                .map(|status| !matches!(status.phase, RestorePhase::Completed))
+                .unwrap_or(true);
             if blocking_restore {
                 restore_suppressed = true;
                 if switchover_requested {
                     candidates.push(HaAction::ClearSwitchover);
                 }
-                let is_executor = guard.request.executor_member_id.0.as_str() == self_member_id;
                 if is_executor {
                     apply_executor_restore_guard(
                         &mut next,
@@ -381,12 +380,21 @@ fn apply_executor_restore_guard(
     pg: &PgInfoState,
     process: &ProcessState,
 ) {
-    let requested_phase = guard
+    let mut requested_phase = guard
         .status
         .map(|status| status.phase.clone())
         .unwrap_or(RestorePhase::Requested);
 
+    let was_orphaned = matches!(requested_phase, RestorePhase::Orphaned);
+    if was_orphaned {
+        requested_phase = RestorePhase::Requested;
+    }
+
     let mut status = restore_status_to_write(guard, requested_phase.clone());
+    if was_orphaned {
+        status.running_job_id = None;
+        status.last_error = None;
+    }
 
     if let Some(existing) = guard.status {
         if existing.restore_id != guard.request.restore_id {
@@ -432,33 +440,77 @@ fn apply_executor_restore_guard(
                     }
                 }
                 ProcessState::Idle { last_outcome, .. } => {
-                    if let Some(id) = status.running_job_id.as_deref() {
-                        let finished = last_outcome.as_ref().is_some_and(|outcome| match outcome {
-                            JobOutcome::Success { id: out_id, .. }
-                            | JobOutcome::Failure { id: out_id, .. }
-                            | JobOutcome::Timeout { id: out_id, .. } => out_id.0.as_str() == id,
-                        });
-                        if finished {
-                            match last_outcome {
-                                Some(JobOutcome::Success { .. }) => {
+                    let mut observed_restore_outcome = false;
+                    if let Some(outcome) = last_outcome.as_ref() {
+                        // Prefer detecting restore completion by the most recent outcome rather
+                        // than relying solely on `status.running_job_id`. In practice, short jobs
+                        // (or publish ordering) can cause us to miss the Running state and never
+                        // populate `running_job_id`, which would otherwise lead to a stuck
+                        // "restoring" loop.
+                        let (outcome_id, restore_like) = match outcome {
+                            JobOutcome::Success { id, .. } => {
+                                (id, id.0.ends_with("-run_pgbackrest_restore"))
+                            }
+                            JobOutcome::Failure { id, .. } => {
+                                (id, id.0.ends_with("-run_pgbackrest_restore"))
+                            }
+                            JobOutcome::Timeout { id, .. } => {
+                                (id, id.0.ends_with("-run_pgbackrest_restore"))
+                            }
+                        };
+
+                        if restore_like {
+                            observed_restore_outcome = true;
+                            match outcome {
+                                JobOutcome::Success { .. } => {
                                     next_phase = RestorePhase::TakeoverManagedConfig;
                                     status.running_job_id = None;
+                                    status.last_error = None;
                                 }
-                                Some(JobOutcome::Failure { error, .. }) => {
+                                JobOutcome::Failure { error, .. } => {
                                     next_phase = RestorePhase::Failed;
-                                    status.last_error = Some(format!("restore job failed: {error}"));
-                                }
-                                Some(JobOutcome::Timeout { .. }) => {
-                                    next_phase = RestorePhase::Failed;
+                                    status.running_job_id = None;
                                     status.last_error =
-                                        Some("restore job timed out".to_string());
+                                        Some(format!("restore job failed: {error}"));
                                 }
-                                None => {}
+                                JobOutcome::Timeout { .. } => {
+                                    next_phase = RestorePhase::Failed;
+                                    status.running_job_id = None;
+                                    status.last_error = Some("restore job timed out".to_string());
+                                }
+                            }
+                        } else if let Some(expected) = status.running_job_id.as_deref() {
+                            if outcome_id.0.as_str() == expected {
+                                observed_restore_outcome = true;
+                                match outcome {
+                                    JobOutcome::Success { .. } => {
+                                        next_phase = RestorePhase::TakeoverManagedConfig;
+                                        status.running_job_id = None;
+                                        status.last_error = None;
+                                    }
+                                    JobOutcome::Failure { error, .. } => {
+                                        next_phase = RestorePhase::Failed;
+                                        status.last_error =
+                                            Some(format!("restore job failed: {error}"));
+                                    }
+                                    JobOutcome::Timeout { .. } => {
+                                        next_phase = RestorePhase::Failed;
+                                        status.last_error =
+                                            Some("restore job timed out".to_string());
+                                    }
+                                }
                             }
                         }
-                    } else {
-                        // No restore job in flight yet (or we haven't observed it running).
-                        candidates.push(HaAction::RunPgBackRestRestore);
+                    }
+
+                    if !observed_restore_outcome {
+                        if pg_reachable {
+                            candidates.push(HaAction::FenceNode);
+                        } else {
+                            // No restore job in flight yet (or we haven't observed it running).
+                            candidates.push(HaAction::PrepareDataDirForRestore);
+                            candidates.push(HaAction::RunPgBackRestRestore);
+                        }
                     }
                 }
             }

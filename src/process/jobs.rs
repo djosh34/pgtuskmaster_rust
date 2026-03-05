@@ -132,12 +132,14 @@ pub(crate) struct PgBackRestArchiveGetSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ShutdownMode {
     Fast,
+    Immediate,
 }
 
 impl ShutdownMode {
     pub(crate) fn as_pg_ctl_arg(&self) -> &'static str {
         match self {
             Self::Fast => "fast",
+            Self::Immediate => "immediate",
         }
     }
 }

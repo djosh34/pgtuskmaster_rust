@@ -74,6 +74,19 @@ impl ProcessJobKind {
             Self::PgBackRestArchiveGet(_) => "pgbackrest_archive_get",
         }
     }
+
+    pub(crate) fn is_pgbackrest_job(&self) -> bool {
+        matches!(
+            self,
+            Self::PgBackRestVersion(_)
+                | Self::PgBackRestInfo(_)
+                | Self::PgBackRestCheck(_)
+                | Self::PgBackRestBackup(_)
+                | Self::PgBackRestRestore(_)
+                | Self::PgBackRestArchivePush(_)
+                | Self::PgBackRestArchiveGet(_)
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

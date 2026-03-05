@@ -6,6 +6,7 @@ model_supports_reasoning_summaries = true
 
 [features]
 multi_agent = true
+runtime_metrics = true
 
 [profiles.spark]
 model = "gpt-5.3-codex-spark"
@@ -14,7 +15,7 @@ model_reasoning_summary = "none"
 model_supports_reasoning_summaries = false
 
 [profiles.normal_high]
-model = "gpt-5.2"
+model = "gpt-5.4"
 model_reasoning_effort = "high"
 
 [profiles.normal_medium]

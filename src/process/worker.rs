@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, process::Stdio};
+use std::{collections::BTreeMap, fs, path::Path, process::Stdio};
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -323,6 +323,134 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
     tick_active_job(ctx).await
 }
 
+fn ensure_pgbackrest_spool_dir(args: &[String]) -> Result<(), ProcessError> {
+    let mut spool_token: Option<&str> = None;
+
+    let mut index = 0usize;
+    while index < args.len() {
+        let token = args[index].as_str();
+        if let Some(value) = token.strip_prefix("--spool-path=") {
+            spool_token = Some(value);
+            break;
+        }
+        if token == "--spool-path" {
+            if index + 1 >= args.len() {
+                return Err(ProcessError::InvalidSpec(
+                    "pgbackrest --spool-path is missing a value".to_string(),
+                ));
+            }
+            spool_token = Some(args[index + 1].as_str());
+            break;
+        }
+        index = index.saturating_add(1);
+    }
+
+    let Some(spool_token) = spool_token else {
+        // No spool path configured: pgBackRest may default to /var/spool/pgbackrest which is often
+        // not writable. We rely on backup job builders to inject a safe value.
+        return Ok(());
+    };
+    if spool_token.trim().is_empty() {
+        return Err(ProcessError::InvalidSpec(
+            "pgbackrest --spool-path must not be empty".to_string(),
+        ));
+    }
+
+    let spool_path = std::path::Path::new(spool_token);
+    std::fs::create_dir_all(spool_path).map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "failed to create pgbackrest spool dir {}: {err}",
+            spool_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+fn parse_postmaster_pid(pid_file: &Path) -> Result<u32, ProcessError> {
+    let contents = fs::read_to_string(pid_file).map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "read postmaster.pid {} failed: {err}",
+            pid_file.display()
+        ))
+    })?;
+    let first_line = contents.lines().next().ok_or_else(|| {
+        ProcessError::InvalidSpec(format!(
+            "postmaster.pid {} missing pid line",
+            pid_file.display()
+        ))
+    })?;
+    let trimmed = first_line.trim();
+    if trimmed.is_empty() {
+        return Err(ProcessError::InvalidSpec(format!(
+            "postmaster.pid {} pid line is empty",
+            pid_file.display()
+        )));
+    }
+    trimmed.parse::<u32>().map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "parse postmaster.pid pid '{trimmed}' failed: {err}"
+        ))
+    })
+}
+
+fn pid_exists(pid: u32) -> Result<bool, ProcessError> {
+    #[cfg(unix)]
+    {
+        let pid_i32 = i32::try_from(pid).map_err(|err| {
+            ProcessError::InvalidSpec(format!("postmaster pid {pid} i32 conversion failed: {err}"))
+        })?;
+        let rc = unsafe { libc::kill(pid_i32, 0) };
+        if rc == 0 {
+            return Ok(true);
+        }
+        let err = std::io::Error::last_os_error();
+        let raw = err.raw_os_error();
+        if raw == Some(libc::ESRCH) {
+            return Ok(false);
+        }
+        if raw == Some(libc::EPERM) {
+            return Ok(true);
+        }
+        Err(ProcessError::InvalidSpec(format!(
+            "kill(0) failed for pid={pid}: {err}"
+        )))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Ok(true)
+    }
+}
+
+fn remove_file_best_effort(path: &Path) -> Result<(), ProcessError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(ProcessError::InvalidSpec(format!(
+            "remove file {} failed: {err}",
+            path.display()
+        ))),
+    }
+}
+
+fn fencing_preflight_is_already_stopped(data_dir: &Path) -> Result<bool, ProcessError> {
+    let pid_file = data_dir.join("postmaster.pid");
+    if !pid_file.exists() {
+        return Ok(true);
+    }
+
+    let pid = parse_postmaster_pid(&pid_file)?;
+    if pid_exists(pid)? {
+        return Ok(false);
+    }
+
+    // Stale pid file: treat as already fenced to avoid `pg_ctl stop -w` waiting forever.
+    remove_file_best_effort(&pid_file)?;
+    let opts_file = data_dir.join("postmaster.opts");
+    remove_file_best_effort(&opts_file)?;
+    Ok(true)
+}
+
 pub(crate) async fn start_job(
     ctx: &mut ProcessWorkerCtx,
     request: ProcessJobRequest,
@@ -360,6 +488,85 @@ pub(crate) async fn start_job(
     let now = current_time(ctx)?;
     let timeout_ms = timeout_for_kind(&request.kind, &ctx.config);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
+
+    if let ProcessJobKind::Fencing(spec) = &request.kind {
+        match fencing_preflight_is_already_stopped(spec.data_dir.as_path()) {
+            Ok(true) => {
+                let mut attrs = BTreeMap::new();
+                attrs.insert(
+                    "job_id".to_string(),
+                    serde_json::Value::String(request.id.0.clone()),
+                );
+                attrs.insert(
+                    "job_kind".to_string(),
+                    serde_json::Value::String(request.kind.label().to_string()),
+                );
+                attrs.insert(
+                    "data_dir".to_string(),
+                    serde_json::Value::String(spec.data_dir.display().to_string()),
+                );
+                ctx.log
+                    .emit_event(
+                        SeverityText::Info,
+                        "fencing preflight: postgres already stopped",
+                        "process_worker::start_job",
+                        EventMeta::new("process.job.fencing_noop", "process", "ok"),
+                        attrs,
+                    )
+                    .map_err(|err| {
+                        WorkerError::Message(format!("process fencing noop log emit failed: {err}"))
+                    })?;
+                transition_to_idle(
+                    ctx,
+                    JobOutcome::Success {
+                        id: request.id,
+                        finished_at: now,
+                    },
+                    now,
+                )?;
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(error) => {
+                let mut attrs = BTreeMap::new();
+                attrs.insert(
+                    "job_id".to_string(),
+                    serde_json::Value::String(request.id.0.clone()),
+                );
+                attrs.insert(
+                    "job_kind".to_string(),
+                    serde_json::Value::String(request.kind.label().to_string()),
+                );
+                attrs.insert(
+                    "error".to_string(),
+                    serde_json::Value::String(error.to_string()),
+                );
+                ctx.log
+                    .emit_event(
+                        SeverityText::Error,
+                        "fencing preflight failed",
+                        "process_worker::start_job",
+                        EventMeta::new("process.job.fencing_preflight_failed", "process", "failed"),
+                        attrs,
+                    )
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process fencing preflight log emit failed: {err}"
+                        ))
+                    })?;
+                transition_to_idle(
+                    ctx,
+                    JobOutcome::Failure {
+                        id: request.id,
+                        error,
+                        finished_at: now,
+                    },
+                    now,
+                )?;
+                return Ok(());
+            }
+        }
+    }
 
     let command = match build_command(
         &ctx.config,
@@ -405,6 +612,45 @@ pub(crate) async fn start_job(
             return Ok(());
         }
     };
+
+    if request.kind.is_pgbackrest_job() {
+        if let Err(error) = ensure_pgbackrest_spool_dir(&command.args) {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "job_id".to_string(),
+                serde_json::Value::String(request.id.0.clone()),
+            );
+            attrs.insert(
+                "job_kind".to_string(),
+                serde_json::Value::String(request.kind.label().to_string()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(error.to_string()),
+            );
+            ctx.log
+                .emit_event(
+                    SeverityText::Error,
+                    "process preflight failed",
+                    "process_worker::start_job",
+                    EventMeta::new("process.job.preflight_failed", "process", "failed"),
+                    attrs,
+                )
+                .map_err(|err| {
+                    WorkerError::Message(format!("process preflight log emit failed: {err}"))
+                })?;
+            transition_to_idle(
+                ctx,
+                JobOutcome::Failure {
+                    id: request.id,
+                    error,
+                    finished_at: now,
+                },
+                now,
+            )?;
+            return Ok(());
+        }
+    }
 
     let log_identity = command.log_identity.clone();
     let handle = match ctx.command_runner.spawn(command) {

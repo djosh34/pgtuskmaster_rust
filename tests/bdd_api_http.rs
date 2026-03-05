@@ -692,7 +692,7 @@ async fn bdd_api_post_restore_writes_request_and_status_keys() -> Result<(), Wor
 
     let writes = store.writes()?;
     assert_eq!(writes.len(), 2);
-    let paths = vec![writes[0].0.as_str(), writes[1].0.as_str()];
+    let paths = [writes[0].0.as_str(), writes[1].0.as_str()];
     assert!(paths.contains(&"/scope-a/restore/request"));
     assert!(paths.contains(&"/scope-a/restore/status"));
     Ok(())

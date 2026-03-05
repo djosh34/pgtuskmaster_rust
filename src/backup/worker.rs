@@ -60,6 +60,10 @@ pub(crate) fn pgbackrest_backup_job(cfg: &RuntimeConfig, id: JobId) -> Result<Pr
 
 pub(crate) fn pgbackrest_restore_job(cfg: &RuntimeConfig, id: JobId) -> Result<ProcessJobRequest, ProcessError> {
     let (stanza, repo, options) = pgbackrest_required_inputs(cfg, "restore")?;
+    // pgBackRest restore can be materially slower than other operations (especially when `--delta`
+    // is enabled or when restoring into an existing directory tree). Keep a conservative floor so
+    // HA-driven restores don't spuriously time out under small test harness timeouts.
+    let timeout_ms = Some(cfg.process.backup_timeout_ms.max(300_000));
     Ok(ProcessJobRequest {
         id,
         kind: ProcessJobKind::PgBackRestRestore(PgBackRestRestoreSpec {
@@ -67,7 +71,7 @@ pub(crate) fn pgbackrest_restore_job(cfg: &RuntimeConfig, id: JobId) -> Result<P
             repo,
             pg1_path: cfg.postgres.data_dir.clone(),
             options,
-            timeout_ms: None,
+            timeout_ms,
         }),
     })
 }
@@ -167,7 +171,38 @@ fn pgbackrest_required_inputs(
         }
     };
 
+    let options = ensure_pgbackrest_spool_path_option(cfg, options)?;
+
     Ok((stanza, repo, options))
+}
+
+fn ensure_pgbackrest_spool_path_option(
+    cfg: &RuntimeConfig,
+    options: Vec<String>,
+) -> Result<Vec<String>, ProcessError> {
+    if options.iter().any(|token| option_key(token.trim_start()) == "--spool-path") {
+        return Ok(options);
+    }
+
+    let data_dir = cfg.postgres.data_dir.as_path();
+    let parent = data_dir.parent().ok_or_else(|| {
+        ProcessError::InvalidSpec(format!(
+            "pgbackrest requires a writable spool path; postgres.data_dir has no parent: {}",
+            data_dir.display()
+        ))
+    })?;
+    let spool_path = parent.join("pgtm.pgbackrest.spool");
+    let mut out = Vec::with_capacity(options.len() + 1);
+    out.push(format!("--spool-path={}", spool_path.display()));
+    out.extend(options);
+    Ok(out)
+}
+
+fn option_key(token: &str) -> &str {
+    let Some(eq) = token.find('=') else {
+        return token;
+    };
+    &token[..eq]
 }
 
 pub(crate) fn validate_pgbackrest_enabled_config(cfg: &RuntimeConfig) -> Result<(), ProcessError> {
