@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar  5 09:39:33 PM CET 2026
+Generated: Thu Mar  5 10:31:43 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -206,6 +206,16 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 
 ---
 
+**Path:** `.ralph/tasks/bugs/restore-terminal-phases-keep-ha-fencing.md`
+
+## Bug: Restore terminal phases keep HA in repeated fencing <status>not_started</status> <passes>false</passes>
+
+<description>
+`src/ha/decide.rs` treats restore as HA-blocking for every phase except `Completed`, even though `Failed` and `Cancelled` are already modeled as terminal and `Orphaned` is documented as the state that should stop blocking HA forever. That leaves non-executors in the restore guard fencing path and keeps the executor in restore-specific fencing branches on every tick. The real-binary test `ha::e2e_multi_node::e2e_multi_node_restore_takeover_external_repo_converges_cluster` then waits only for `Completed`, so failure/orphan paths can degenerate into a long fencing loop until timeout. Explore the restore guard flow and fixture polling first, then fix the liveness bug.
+</description>
+
+---
+
 **Path:** `.ralph/tasks/bugs/test-harness-binary-check-panics.md`
 
 ## Bug: Test harness binary checks panic instead of returning errors <status>done</status> <passes>true</passes> <passing>true</passing>
@@ -316,75 +326,48 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/01-task-backup-provider-abstraction-and-pgbackrest-default.md`
+**Path:** `.ralph/tasks/story-remove-backup-feature/01-task-remove-backup-config-and-process-surface.md`
 
-## Task: Introduce backup-provider abstraction with pgBackRest as the default provider <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Remove backup config and pgBackRest process vocabulary while keeping basebackup replica cloning <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Add a provider abstraction for backup/restore operations and ship pgBackRest as the first-class default integration with explicit runtime config and binary path support.
+**Goal:** Delete the backup feature's config and process-language surface completely, while preserving `pg_basebackup`-based replica creation as a non-backup bootstrap path.
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/02-task-managed-archive-recovery-bootstrap-config-takeover.md`
+**Path:** `.ralph/tasks/story-remove-backup-feature/02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring.md`
 
-## Task: Own archive/recovery command flow and inject managed config before recovery starts <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Remove runtime restore bootstrap and the archive_command helper/proxy wiring <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Make pgtuskmaster authoritative for archive and restore command behavior, and ensure config takeover happens before PostgreSQL recovery so restores never boot with unsafe/incompatible backup-era config files.
+**Goal:** Delete the runtime-owned restore bootstrap path and the hacky archive/restore helper stack, including the local event-ingest API used only for archive_command/restore_command passthrough logging.
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/03-task-high-prio-remove-shell-archive-wrapper-and-current-wiring.md`
+**Path:** `.ralph/tasks/story-remove-backup-feature/03-task-remove-restore-api-dcs-and-ha-control-plane.md`
 
-## Task: High Prio Remove Shell Archive Wrapper and Current Wiring <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Remove the restore request API, DCS state, and HA restore orchestration <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Completely remove the generated shell archive wrapper implementation and all runtime wiring that depends on it.
+**Goal:** Delete the restore takeover control plane completely so there is no remaining API, DCS keyspace, HA action, or debug surface for cluster restore orchestration.
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/04-task-rust-generic-argv-passthrough-binary-for-postgres-archive-restore-logging.md`
+**Path:** `.ralph/tasks/story-remove-backup-feature/04-task-remove-backup-harness-installers-and-gate-selection.md`
 
-## Task: Rust WAL Passthrough Binary for Postgres Archive Restore Logging <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Remove backup-specific harness, installer, and gate-selection surfaces while preserving real tests for replica cloning <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Reintroduce archive/restore observability with a Rust binary command invoked by Postgres that performs passthrough execution and logs invocations via pgtuskmaster.
+**Goal:** Delete the backup feature's harness and packaging residue so real-binary verification no longer provisions or expects pgBackRest, while preserving real coverage for normal Postgres and replica-clone behavior.
 
 ---
 
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/05-task-cluster-restore-endpoint-and-safe-takeover-orchestration.md`
+**Path:** `.ralph/tasks/story-remove-backup-feature/05-task-remove-backup-docs-and-obsolete-task-artifacts.md`
 
-## Task: Add cluster restore endpoint and safe takeover orchestration across HA/DCS <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Provide an admin API endpoint that forces a full restore takeover on one node and safely converges the entire cluster onto the restored timeline under normal pgtuskmaster HA control.
-
----
-
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/06-task-pgbackrest-json-observability-metrics-and-api-surface.md`
-
-## Task: Build pgBackRest JSON observability with metrics, logs, and API visibility <status>not_started</status> <passes>false</passes>
+## Task: Remove backup feature docs and delete obsolete pgBackRest task artifacts <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Ingest pgBackRest JSON output natively and expose backup/restore observability through structured logs, internal state snapshots, metrics/OTel signals, and API endpoints.
-
----
-
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/07-task-distributed-backup-scheduler-and-runtime-packaging.md`
-
-## Task: Add distributed backup scheduling and runtime packaging for pgBackRest <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Integrate scheduled backups with tokio-cron-scheduler under DCS coordination, and ensure pgBackRest is available by default in runtime/container environments.
-
----
-
-**Path:** `.ralph/tasks/story-pgbackrest-managed-backup-recovery/08-task-exhaustive-pgbackrest-fixture-matrix-and-real-e2e.md`
-
-## Task: Build exhaustive fixture-driven pgBackRest test matrix across normal and edge restores <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Create a comprehensive real-binary test matrix that generates diverse backup fixtures and validates backup + restore + takeover behavior end-to-end with deterministic timing and strong diagnostics.
+**Goal:** Remove all operator/interface/contributor documentation for the backup feature and clean the Ralph task inventory so it no longer contains implementation tasks for a feature we are deliberately deleting.
 
 ---
 
