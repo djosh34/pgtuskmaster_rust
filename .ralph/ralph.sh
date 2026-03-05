@@ -83,8 +83,7 @@ Environment=MODE=$MODE
 ExecStart=/bin/bash $SCRIPT_DIR/ralph-worker.sh $MODE
 KillMode=control-group
 TimeoutStopSec=10
-Restart=always
-RestartSec=2
+Restart=no
 
 [Install]
 WantedBy=default.target

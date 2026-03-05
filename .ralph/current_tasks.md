@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar  5 10:31:43 PM CET 2026
+Generated: Thu Mar  5 11:06:52 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -128,6 +128,15 @@ In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_
 
 <description>
 `HaState.recent_action_ids` is only ever appended to and never cleared in normal operation. `decide` filters candidate actions by this set, so once an action was emitted once (for example `StartPostgres`, `StartRewind`, `RunBootstrap`, or a future restore action), the same action can never be retried later if it failed or if the state machine returns to that decision again. This can stall recovery loops because repeated process-triggering actions are silently dropped as duplicates.</description>
+
+---
+
+**Path:** `.ralph/tasks/bugs/ha-decide-mutation-heavy-control-flow-needs-pure-refactor.md`
+
+## Bug: HA decide mutation-heavy control flow needs pure refactor <status>not_started</status> <passes>false</passes>
+
+<description>
+`src/ha/decide.rs` currently implements deterministic HA decisions through shared mutable state (`next`, `candidates`, restore-status mutation, mutable phase variables) even though the logic should be expressible as pure functions returning complete outcomes. This was detected from PR #1 owner feedback and confirmed by reading the current code.
 
 ---
 
@@ -290,6 +299,51 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md`
+
+## Task: Remove restore control plane before HA functional rewrite <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Delete the restore takeover control plane from HA, DCS, API, CLI, debug, and tests before rewriting HA around a functional state-machine design.
+
+---
+
+**Path:** `.ralph/tasks/story-ha-functional-rewrite/02-task-rewrite-ha-decide-into-facts-and-phase-outcome-match-machine.md`
+
+## Task: Rewrite HA decide into a facts-and-PhaseOutcome match machine <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Replace mutation-driven HA decision code with a pure, match-based state machine that gathers immutable facts once and returns a full `PhaseOutcome` directly from each phase handler.
+
+---
+
+**Path:** `.ralph/tasks/story-ha-functional-rewrite/03-task-replace-action-vectors-and-pending-state-with-typed-domain-effect-plan.md`
+
+## Task: Replace action vectors and pending state with a typed domain effect plan <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Replace `Vec<HaAction>` planning with a typed domain-level effect plan so the HA state machine describes intent structurally instead of appending low-level commands into a vector.
+
+---
+
+**Path:** `.ralph/tasks/story-ha-functional-rewrite/04-task-untangle-ha-worker-into-facts-plan-and-apply-layers.md`
+
+## Task: Untangle HA worker into facts, plan, and apply layers <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Restructure HA runtime code so the worker clearly separates fact collection, pure planning, and effect application without forcing the design into object-heavy “executor” patterns.
+
+---
+
+**Path:** `.ralph/tasks/story-ha-functional-rewrite/05-task-rebuild-ha-tests-around-invariants-and-continuous-observers.md`
+
+## Task: Rebuild HA tests around invariants and continuous observers <status>not_started</status> <passes>false</passes>
+
+<description>
+**Goal:** Rework HA tests so they validate the new functional architecture directly, using immutable builders for pure decision tests and continuous invariant observers for integration/e2e scenarios.
+
+---
+
 **Path:** `.ralph/tasks/story-operator-architecture-docs/01-task-restructure-operator-docs-for-flow-depth-and-rationale.md`
 
 ## Task: Restructure Operator Docs for Better Flow, Depth, and Decision Rationale <status>done</status> <passes>true</passes>
@@ -341,15 +395,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Delete the runtime-owned restore bootstrap path and the hacky archive/restore helper stack, including the local event-ingest API used only for archive_command/restore_command passthrough logging.
-
----
-
-**Path:** `.ralph/tasks/story-remove-backup-feature/03-task-remove-restore-api-dcs-and-ha-control-plane.md`
-
-## Task: Remove the restore request API, DCS state, and HA restore orchestration <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Delete the restore takeover control plane completely so there is no remaining API, DCS keyspace, HA action, or debug surface for cluster restore orchestration.
 
 ---
 
