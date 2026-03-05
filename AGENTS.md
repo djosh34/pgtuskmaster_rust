@@ -23,6 +23,8 @@ All errors must be properly handled. Please add-bug with that skill, if you find
 No test must be optional, especially not tests against real binaries. Instead install them if needed.
 Skipping tests is one of the worst things you can do, giving extremely false confidence. Create bug immediately when spotted with add-bug skill.
 
+We STRONGLY advice against using 'mut', and MOST of the time it can be replaced by pure and functional patterns.
+If you find a place that has a lot of 'mut' and potentially could be refactored, please add a bug using the add-bug skill, that will refactor that entire code block
 
 This is greenfield project with 0 users. 
 We don't have legacy at all. If you find any legacy code/docs, remove it.
