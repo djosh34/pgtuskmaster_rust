@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar  5 02:33:58 PM CET 2026
+Generated: Thu Mar  5 09:39:33 PM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -184,16 +184,6 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 <description>
 `src/test_harness/provenance.rs` calls helper functions that are not defined in scope:
 - `verify_policy_optional_pins`
-
----
-
-**Path:** `.ralph/tasks/bugs/ralph-event-watch-missing-script-path.md`
-
-## Bug: ralph-event-watch service restart loop from missing script path <status>done</status> <passes>true</passes> <passing>true</passing>
-
-<description>
-`ralph-event-watch.service` is in continuous auto-restart with exit code 127 because `ExecStart` points to a non-existent script path:
-`/home/joshazimullah.linux/work_mounts/projects/postgres_operator/PGTuskMaster/ElixirPGTuskMaster/.ralph/event_watch.sh`.
 
 ---
 

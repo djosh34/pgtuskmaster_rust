@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ralph-worker.sh — the actual iteration loop.
-# Not meant to be run directly. Use ralph.sh which manages this via systemd.
+# Not meant to be run directly. Use ralph.sh or the ralph-pgtuskmaster systemd service.
 
 set -euo pipefail
 

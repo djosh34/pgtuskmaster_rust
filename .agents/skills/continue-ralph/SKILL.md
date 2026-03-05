@@ -12,16 +12,16 @@ Execute these steps in order. Use Bash for all commands.
 Always stop the service before any git/task-switch/restart steps, regardless of current state:
 
 ```bash
-systemctl --user stop ralph-pgtuskmaster.service
+/bin/bash .ralph/ralph.sh --stop
 ```
 
-Then confirm it is inactive before continuing:
+Then confirm it is inactive before continuing by checking the script-managed status output:
 
 ```bash
-systemctl --user is-active ralph-pgtuskmaster.service
+/bin/bash .ralph/ralph.sh --status
 ```
 
-Expected output: `inactive`
+Expected status includes `Active: inactive` or `Loaded: not-found`.
 
 ### 2. Stage all and clean up unsafe files
 
@@ -54,15 +54,13 @@ The `|| true` handles the case where there's nothing to commit.
 /bin/bash .ralph/task_switch.sh
 ```
 
-### 5. Start Ralph with timeout
+### 5. Start Ralph without attaching
 
-**CRITICAL**: Use `timeout --signal=QUIT 5s` to prevent hanging. The ralph script attaches to journalctl which blocks forever. We use `--signal=QUIT` (not the default SIGTERM) because ralph.sh traps SIGTERM to *stop* the service, but traps SIGQUIT to *detach* (leave ralph running in background).
+Use the start-only flag so the command returns immediately after starting the service:
 
 ```bash
-timeout --signal=QUIT 5s /bin/bash .ralph/ralph.sh || true
+/bin/bash .ralph/ralph.sh --start
 ```
-
-The `|| true` is needed because timeout exits with code 124+signal when it kills the process, which is expected and fine.
 
 ### 6. Report
 
