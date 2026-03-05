@@ -8,7 +8,6 @@ This runbook describes the intended operator workflow for bringing up a new clus
 - `backup.bootstrap.enabled = true`
 - `process.binaries.pgbackrest` points to an executable `pgbackrest`
 - `backup.pgbackrest.stanza` and `backup.pgbackrest.repo` are set
-- `logging.postgres.archive_command_log_file` is set (required; this is where archive/restore wrapper events are written)
 - pgBackRest repository configuration is provided via per-operation options (for example `--repo1-path=...`)
 
 ## What pgtuskmaster does during restore bootstrap
@@ -25,13 +24,10 @@ When `postgres.data_dir` is `Missing|Empty` and the cluster is uninitialized (no
 
 ## Expected log sequence
 
-Use the runtime logs plus the archive wrapper JSONL log file to confirm progress:
+Use the runtime logs plus PgTool subprocess output to confirm progress:
 
 - Runtime startup markers: `startup phase=restore`, then `startup phase=takeover`, then `startup phase=start`
 - PgTool output records for `job_kind=pgbackrest_restore` and `job_kind=start_postgres`
-- Archive/restore wrapper records in `logging.postgres.archive_command_log_file`:
-  - `backup.event_kind = archive_get` is expected during recovery WAL fetch
-  - failures show `backup.status_code != 0` and `backup.output` with a truncated, single-line error summary
 
 ## Common failure cases and next actions
 
@@ -47,8 +43,8 @@ Check:
 
 Check:
 
-- `logging.postgres.archive_command_log_file` for `backup.event_kind=archive_get` failures
-- `backup.output` for repo/path/auth errors
+- Postgres logs for repeated WAL restore attempts and error signatures
+- PgTool output records for `job_kind=pgbackrest_restore` and `job_kind=start_postgres` (stderr content is captured)
 
 ### Postgres start fails with unexpected settings
 

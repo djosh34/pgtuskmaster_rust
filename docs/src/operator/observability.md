@@ -42,29 +42,11 @@ pgtuskmasterctl switchover cancel
 
 Use planned switchover workflows for controlled role transitions. Avoid ad-hoc out-of-band interventions unless the documented lifecycle path is confirmed blocked.
 
-## Backup / archive command events
+## Backup / restore observability
 
-When `backup.enabled = true`, pgtuskmaster owns `archive_command` and `restore_command` via a generated wrapper and writes **one JSON line per invocation** to `logging.postgres.archive_command_log_file`.
+pgtuskmaster runs backup/restore operations as PgTool subprocess jobs and captures stdout/stderr into log records. Use those PgTool records (for example `job_kind=pgbackrest_restore`) plus the local PostgreSQL logs to debug recovery bootstrap and backup failures.
 
-These records are ingested by the Postgres log ingest worker and normalized into stable attributes on the resulting log records:
-
-- `backup.schema_version` (number)
-- `backup.provider` (`"pgbackrest"`)
-- `backup.event_kind` (`"archive_push"` or `"archive_get"`)
-- `backup.invocation_id` (string)
-- `backup.ts_ms` (number; epoch ms)
-- `backup.stanza`, `backup.repo`, `backup.pg1_path`
-- `backup.wal_path` (push only)
-- `backup.wal_segment`, `backup.destination_path` (get only)
-- `backup.status_code` (number; pgBackRest exit code)
-- `backup.success` (bool)
-- `backup.output` (string; single-line, truncated)
-- `backup.output_truncated` (bool)
-
-Operational use:
-
-- Use `backup.event_kind=archive_get` spikes to correlate recovery stalls (WAL fetch failures).
-- Use `backup.status_code != 0` and `backup.output` to diagnose repo/auth/path misconfigurations without shell access.
+pgtuskmaster does not currently generate its own structured `archive_command` / `restore_command` invocation events, and it does not manage Postgres `archive_command` / `restore_command` wiring in this version.
 
 ## Postgres log ingest health
 

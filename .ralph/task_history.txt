@@ -88,3 +88,4 @@
 .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
 .ralph/tasks/story-pgbackrest-managed-backup-recovery/02-task-managed-archive-recovery-bootstrap-config-takeover.md
 .ralph/tasks/bugs/logging-archive-ingest-silent-failure-and-unsafe-cleanup.md
+.ralph/tasks/story-pgbackrest-managed-backup-recovery/03-task-high-prio-remove-shell-archive-wrapper-and-current-wiring.md

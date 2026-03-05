@@ -65,20 +65,6 @@ pub(crate) fn materialize_managed_postgres_config(
         managed_ident.display().to_string(),
     );
 
-    if cfg.backup.enabled || cfg.backup.bootstrap.enabled {
-        let wrapper = crate::logging::archive_wrapper::ensure_pgbackrest_wal_wrapper(cfg)
-            .map_err(|err| ManagedPostgresError::InvalidConfig { message: err })?;
-
-        extra_settings.insert(
-            "archive_command".to_string(),
-            format!("{} archive-push %p", wrapper.display()),
-        );
-        extra_settings.insert(
-            "restore_command".to_string(),
-            format!("{} archive-get %f %p", wrapper.display()),
-        );
-    }
-
     if cfg.backup.bootstrap.enabled {
         let managed_conf = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
         ensure_managed_postgresql_conf(&managed_conf)?;
@@ -522,7 +508,6 @@ mod tests {
                     enabled: true,
                     pg_ctl_log_file: None,
                     log_dir: None,
-                    archive_command_log_file: None,
                     poll_interval_ms: 200,
                     cleanup: LogCleanupConfig {
                         enabled: true,
@@ -621,15 +606,9 @@ mod tests {
         })?;
         let socket_dir = ns.child_dir("sock");
         let log_file = ns.child_dir("runtime/pg_ctl.log");
-        let archive_log = ns.child_dir("logs/archive/archive_command.jsonl");
         if let Some(parent) = log_file.parent() {
             fs::create_dir_all(parent).map_err(|err| {
                 crate::state::WorkerError::Message(format!("create log parent failed: {err}"))
-            })?;
-        }
-        if let Some(parent) = archive_log.parent() {
-            fs::create_dir_all(parent).map_err(|err| {
-                crate::state::WorkerError::Message(format!("create archive log parent failed: {err}"))
             })?;
         }
         fs::create_dir_all(&socket_dir).map_err(|err| {
@@ -649,7 +628,6 @@ mod tests {
         cfg.postgres.socket_dir = socket_dir.clone();
         cfg.postgres.listen_port = port;
         cfg.postgres.log_file = log_file.clone();
-        cfg.logging.postgres.archive_command_log_file = Some(archive_log);
         cfg.logging.postgres.cleanup.enabled = false;
         cfg.backup.enabled = true;
         cfg.backup.bootstrap.enabled = true;

@@ -13,7 +13,6 @@ use thiserror::Error;
 
 pub(crate) mod postgres_ingest;
 pub(crate) mod tailer;
-pub(crate) mod archive_wrapper;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -58,7 +57,6 @@ impl From<crate::config::LogLevel> for SeverityText {
 pub(crate) enum LogProducer {
     App,
     Postgres,
-    PostgresArchive,
     PgTool,
 }
 
@@ -605,7 +603,6 @@ mod tests {
                     enabled: true,
                     pg_ctl_log_file: None,
                     log_dir: None,
-                    archive_command_log_file: None,
                     poll_interval_ms: 50,
                     cleanup: LogCleanupConfig {
                         enabled: false,

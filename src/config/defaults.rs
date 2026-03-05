@@ -53,7 +53,6 @@ pub(crate) fn default_logging_config() -> LoggingConfig {
             enabled: DEFAULT_LOGGING_POSTGRES_ENABLED,
             pg_ctl_log_file: None,
             log_dir: None,
-            archive_command_log_file: None,
             poll_interval_ms: DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS,
             cleanup: LogCleanupConfig {
                 enabled: DEFAULT_LOGGING_CLEANUP_ENABLED,

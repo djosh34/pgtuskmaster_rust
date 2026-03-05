@@ -439,25 +439,6 @@ fn normalize_path_lexical(path: &Path) -> PathBuf {
     out
 }
 
-fn validate_postgres_logging_path_invariants(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
-    if let (Some(log_dir), Some(archive_log)) = (
-        cfg.logging.postgres.log_dir.as_ref(),
-        cfg.logging.postgres.archive_command_log_file.as_ref(),
-    ) {
-        let log_dir = normalize_path_lexical(log_dir);
-        let archive_log = normalize_path_lexical(archive_log);
-        if archive_log.starts_with(&log_dir) {
-            return Err(ConfigError::Validation {
-                field: "logging.postgres.archive_command_log_file",
-                message:
-                    "must not be inside logging.postgres.log_dir (avoid cleanup/tailer coupling)"
-                        .to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
 pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_non_empty_path("postgres.data_dir", &cfg.postgres.data_dir)?;
     validate_non_empty("postgres.listen_host", cfg.postgres.listen_host.as_str())?;
@@ -590,14 +571,6 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     }
 
     if cfg.backup.enabled {
-        if cfg.logging.postgres.archive_command_log_file.is_none() {
-            return Err(ConfigError::Validation {
-                field: "logging.postgres.archive_command_log_file",
-                message: "required when backup.enabled is true (archive/restore command events must be observable)"
-                    .to_string(),
-            });
-        }
-
         match cfg.backup.provider {
             BackupProvider::Pgbackrest => {
                 let pgbackrest_bin = cfg.process.binaries.pgbackrest.as_ref().ok_or_else(|| {
@@ -617,21 +590,11 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         }
     }
 
-    if cfg.backup.bootstrap.enabled {
-        if !cfg.backup.enabled {
-            return Err(ConfigError::Validation {
-                field: "backup.bootstrap.enabled",
-                message: "requires backup.enabled = true".to_string(),
-            });
-        }
-
-        if cfg.logging.postgres.archive_command_log_file.is_none() {
-            return Err(ConfigError::Validation {
-                field: "logging.postgres.archive_command_log_file",
-                message: "required when backup.bootstrap.enabled is true (restore/archive must be observable during recovery)"
-                    .to_string(),
-            });
-        }
+    if cfg.backup.bootstrap.enabled && !cfg.backup.enabled {
+        return Err(ConfigError::Validation {
+            field: "backup.bootstrap.enabled",
+            message: "requires backup.enabled = true".to_string(),
+        });
     }
 
     validate_timeout(
@@ -645,10 +608,6 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     if let Some(path) = cfg.logging.postgres.log_dir.as_ref() {
         validate_non_empty_path("logging.postgres.log_dir", path)?;
         validate_absolute_path("logging.postgres.log_dir", path)?;
-    }
-    if let Some(path) = cfg.logging.postgres.archive_command_log_file.as_ref() {
-        validate_non_empty_path("logging.postgres.archive_command_log_file", path)?;
-        validate_absolute_path("logging.postgres.archive_command_log_file", path)?;
     }
     if cfg.logging.postgres.cleanup.enabled {
         if cfg.logging.postgres.cleanup.max_files == 0 {
@@ -691,7 +650,6 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         }
     }
 
-    validate_postgres_logging_path_invariants(cfg)?;
     validate_logging_path_ownership_invariants(cfg)?;
 
     if cfg.dcs.endpoints.is_empty() {
@@ -875,18 +833,6 @@ fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(),
             return Err(ConfigError::Validation {
                 field: "logging.sinks.file.path",
                 message: format!("must not equal tailed postgres input {field}"),
-            });
-        }
-    }
-
-    if let Some(archive_path) = cfg.logging.postgres.archive_command_log_file.as_ref() {
-        let archive_path = normalize_path_lexical(archive_path);
-        if sink_path == archive_path {
-            return Err(ConfigError::Validation {
-                field: "logging.sinks.file.path",
-                message:
-                    "must not equal tailed postgres input logging.postgres.archive_command_log_file"
-                        .to_string(),
             });
         }
     }
@@ -1174,7 +1120,6 @@ fn validate_inline_or_path_non_empty(
                     enabled: true,
                     pg_ctl_log_file: None,
                     log_dir: None,
-                    archive_command_log_file: None,
                     poll_interval_ms: 200,
                     cleanup: LogCleanupConfig {
                         enabled: true,
@@ -1415,23 +1360,6 @@ fn validate_inline_or_path_non_empty(
             err,
             Err(ConfigError::Validation {
                 field: "logging.sinks.file.path",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn validate_runtime_config_rejects_archive_command_log_inside_log_dir_via_dot_segments() {
-        let mut cfg = base_runtime_config();
-        cfg.logging.postgres.log_dir = Some(PathBuf::from("/tmp/pgtuskmaster/log_dir"));
-        cfg.logging.postgres.archive_command_log_file =
-            Some(PathBuf::from("/tmp/pgtuskmaster/log_dir/./archive.jsonl"));
-
-        let err = validate_runtime_config(&cfg);
-        assert!(matches!(
-            err,
-            Err(ConfigError::Validation {
-                field: "logging.postgres.archive_command_log_file",
                 ..
             })
         ));

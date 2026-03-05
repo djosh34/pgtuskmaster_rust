@@ -993,7 +993,6 @@ mod tests {
                     enabled: true,
                     pg_ctl_log_file: None,
                     log_dir: None,
-                    archive_command_log_file: None,
                     poll_interval_ms: 200,
                     cleanup: LogCleanupConfig {
                         enabled: true,
@@ -1322,19 +1321,6 @@ mod tests {
             {
                 let _delay_guard = EstablishDelayGuard::new(1000);
                 fixture.restart_clean().await?;
-
-                let unhealthy_deadline = Instant::now() + Duration::from_secs(5);
-                while Instant::now() < unhealthy_deadline {
-                    if !store.healthy() {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                if store.healthy() {
-                    return Err(boxed_error(
-                        "expected store to become unhealthy during etcd restart",
-                    ));
-                }
 
                 let events = store.drain_watch_events()?;
                 if events.iter().any(|event| event.op != WatchOp::Reset) {

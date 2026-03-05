@@ -194,7 +194,6 @@ fn emit_ingest_retry_recovered(log: &LogHandle, attempts: u32) {
 
 struct PostgresIngestWorkerState {
     pg_ctl_log: FileTailer,
-    archive_log: Option<FileTailer>,
     dir_tailers: DirTailers,
 }
 
@@ -204,16 +203,9 @@ impl PostgresIngestWorkerState {
             Some(path) => path,
             None => cfg.postgres.log_file.clone(),
         };
-        let archive_log = cfg
-            .logging
-            .postgres
-            .archive_command_log_file
-            .clone()
-            .map(|path| FileTailer::new(path, StartPosition::Beginning));
 
         Self {
             pg_ctl_log: FileTailer::new(pg_ctl_log_file, StartPosition::Beginning),
-            archive_log,
             dir_tailers: DirTailers::default(),
         }
     }
@@ -287,40 +279,6 @@ async fn step_once(
         }
     }
 
-    if let Some(tailer) = state.archive_log.as_mut() {
-        match tailer.read_new_lines(max_bytes_per_file).await {
-            Ok(archive_lines) => {
-                for line in archive_lines {
-                    if let Err(err) = emit_postgres_line(
-                        &ctx.log,
-                        LogProducer::PostgresArchive,
-                        LogTransport::FileTail,
-                        "archive_command_log_file",
-                        tailer.path(),
-                        line,
-                    ) {
-                        push_issue(
-                            &mut issues,
-                            "archive_command_log_file.emit",
-                            "log.emit_record",
-                            tailer.path(),
-                            err,
-                        );
-                    }
-                }
-            }
-            Err(err) => {
-                push_issue(
-                    &mut issues,
-                    "archive_command_log_file.read",
-                    "tailer.read_new_lines",
-                    tailer.path(),
-                    err,
-                );
-            }
-        }
-    }
-
     if let Some(dir) = ctx.cfg.logging.postgres.log_dir.as_ref() {
         if let Err(err) = discover_log_dir(&mut state.dir_tailers, dir).await {
             push_issue(&mut issues, "log_dir.discover", "read_dir", dir, err);
@@ -362,12 +320,7 @@ async fn step_once(
         }
 
         if ctx.cfg.logging.postgres.cleanup.enabled {
-            let mut protected: Vec<&Path> = vec![state.pg_ctl_log.path()];
-            if let Some(archive) = state.archive_log.as_ref() {
-                if archive.path().parent() == Some(dir.as_path()) {
-                    protected.push(archive.path());
-                }
-            }
+            let protected: Vec<&Path> = vec![state.pg_ctl_log.path()];
 
             match cleanup_log_dir(
                 dir,
@@ -769,56 +722,6 @@ fn normalize_postgres_json(value: Value) -> Option<ParsedLine> {
     let mut attributes = BTreeMap::new();
     attributes.insert("postgres.json".to_string(), value.clone());
 
-    if let Some(pgtm) = obj.get("pgtuskmaster").and_then(|v| v.as_object()) {
-        if let Some(backup) = pgtm.get("backup").and_then(|v| v.as_object()) {
-            if let Some(v) = backup.get("schema_version") {
-                attributes.insert("backup.schema_version".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("provider") {
-                attributes.insert("backup.provider".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("event_kind") {
-                attributes.insert("backup.event_kind".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("invocation_id") {
-                attributes.insert("backup.invocation_id".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("ts_ms") {
-                attributes.insert("backup.ts_ms".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("stanza") {
-                attributes.insert("backup.stanza".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("repo") {
-                attributes.insert("backup.repo".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("pg1_path") {
-                attributes.insert("backup.pg1_path".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("wal_path") {
-                attributes.insert("backup.wal_path".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("wal_segment") {
-                attributes.insert("backup.wal_segment".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("destination_path") {
-                attributes.insert("backup.destination_path".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("status_code") {
-                attributes.insert("backup.status_code".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("success") {
-                attributes.insert("backup.success".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("output") {
-                attributes.insert("backup.output".to_string(), v.clone());
-            }
-            if let Some(v) = backup.get("output_truncated") {
-                attributes.insert("backup.output_truncated".to_string(), v.clone());
-            }
-        }
-    }
-
     Some(ParsedLine {
         severity,
         message,
@@ -974,7 +877,6 @@ mod tests {
                     enabled: true,
                     pg_ctl_log_file: None,
                     log_dir: None,
-                    archive_command_log_file: None,
                     poll_interval_ms: 50,
                     cleanup: LogCleanupConfig {
                         enabled: false,
@@ -1540,7 +1442,6 @@ mod tests {
             let socket_dir = ns.child_dir("sock");
             let log_file = ns.child_dir("runtime/pg_ctl.log");
             let log_dir = ns.child_dir("logs/pg16-node-a");
-            let archive_log = ns.child_dir("logs/archive/archive_command.jsonl");
             std::fs::create_dir_all(&socket_dir).map_err(|err| {
                 WorkerError::Message(format!("create socket_dir failed: {err}"))
             })?;
@@ -1550,9 +1451,6 @@ mod tests {
                 })?;
             }
             let _ = std::fs::create_dir_all(&log_dir);
-            if let Some(parent) = archive_log.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
             let jsonlog_path = log_dir.join("postgres.json");
             let _ = std::fs::write(&jsonlog_path, b"");
 
@@ -1563,19 +1461,9 @@ mod tests {
             cfg.postgres.listen_port = port;
             cfg.postgres.log_file = log_file.clone();
             cfg.logging.postgres.log_dir = Some(log_dir.clone());
-            cfg.logging.postgres.archive_command_log_file = Some(archive_log.clone());
             cfg.logging.postgres.cleanup.enabled = false;
-            cfg.backup.enabled = true;
-            if let Some(pg_cfg) = cfg.backup.pgbackrest.as_mut() {
-                pg_cfg.stanza = Some("stanza-a".to_string());
-                pg_cfg.repo = Some("1".to_string());
-            }
 
             let (log_handle, sink) = test_log_handle();
-
-            let wrapper = crate::logging::archive_wrapper::ensure_pgbackrest_wal_wrapper(&cfg)
-                .map_err(|err| WorkerError::Message(format!("create pgbackrest wal wrapper failed: {err}")))?;
-            let archive_cmd = format!("{} archive-push %p", wrapper.display());
 
             let (publisher, _subscriber) = new_state_channel(
                 ProcessState::Idle {
@@ -1622,7 +1510,7 @@ mod tests {
             wait_for_process_idle_success(&mut process_ctx, &bootstrap_id, Duration::from_secs(30))
                 .await?;
 
-            // Configure postgres logging + archiving after initdb (before first start).
+            // Configure postgres logging after initdb (before first start).
             let conf_path = data_dir.join("postgresql.conf");
             let mut conf = std::fs::OpenOptions::new()
                 .create(true)
@@ -1637,8 +1525,6 @@ mod tests {
                 format!("log_directory = '{}'", log_dir.display()),
                 "log_filename = 'postgres.json'".to_string(),
                 "log_statement = 'all'".to_string(),
-                "archive_mode = on".to_string(),
-                format!("archive_command = '{archive_cmd}'"),
             ];
             for line in conf_lines {
                 if line.trim().is_empty() {
@@ -1694,7 +1580,6 @@ mod tests {
                         {
                             let pg_ctl_tail = tail_file_best_effort(&log_file, 120);
                             let postgres_json_tail = tail_file_best_effort(&jsonlog_path, 120);
-                            let archive_tail = tail_file_best_effort(&archive_log, 120);
                             let postmaster_pid = tail_file_best_effort(&data_dir.join("postmaster.pid"), 60);
 
                             let mut pg_tool_lines = Vec::new();
@@ -1733,14 +1618,12 @@ mod tests {
                             };
 
                             return Err(WorkerError::Message(format!(
-                                "process job {} failed unexpectedly: {error}\n--- pg_ctl log tail {} ---\n{}\n--- postgres jsonlog tail {} ---\n{}\n--- archive_command tail {} ---\n{}\n--- postmaster.pid tail {} ---\n{}\n--- captured pg_tool output (start_postgres) ---\n{}",
+                                "process job {} failed unexpectedly: {error}\n--- pg_ctl log tail {} ---\n{}\n--- postgres jsonlog tail {} ---\n{}\n--- postmaster.pid tail {} ---\n{}\n--- captured pg_tool output (start_postgres) ---\n{}",
                                 start_id.0,
                                 log_file.display(),
                                 pg_ctl_tail,
                                 jsonlog_path.display(),
                                 postgres_json_tail,
-                                archive_log.display(),
-                                archive_tail,
                                 data_dir.join("postmaster.pid").display(),
                                 postmaster_pid,
                                 pg_tool_debug
@@ -1769,7 +1652,7 @@ mod tests {
                 .arg("-d")
                 .arg("postgres")
                 .arg("-c")
-                .arg("SELECT pg_switch_wal();");
+                .arg("SELECT 1;");
             let status = cmd
                 .status()
                 .await
@@ -1799,15 +1682,7 @@ mod tests {
                     r.source.producer == crate::logging::LogProducer::Postgres
                         && r.source.parser == crate::logging::LogParser::PostgresJson
                 });
-                let saw_archive = collected.iter().any(|r| {
-                    r.source.producer == crate::logging::LogProducer::PostgresArchive
-                        && r.source.parser == crate::logging::LogParser::PostgresJson
-                        && r.attributes
-                            .get("backup.event_kind")
-                            .and_then(|v| v.as_str())
-                            == Some("archive_push")
-                });
-                if saw_pg_ctl_log && saw_pg_tool && saw_jsonlog && saw_archive {
+                if saw_pg_ctl_log && saw_pg_tool && saw_jsonlog {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1847,14 +1722,6 @@ mod tests {
                 r.source.producer == crate::logging::LogProducer::Postgres
                     && r.source.parser == crate::logging::LogParser::PostgresJson
             });
-            let saw_archive = all_records.iter().any(|r| {
-                r.source.producer == crate::logging::LogProducer::PostgresArchive
-                    && r.source.parser == crate::logging::LogParser::PostgresJson
-                    && r.attributes
-                        .get("backup.event_kind")
-                        .and_then(|v| v.as_str())
-                        == Some("archive_push")
-            });
             if !saw_pg_ctl_log {
                 return Err(WorkerError::Message(
                     "missing ingested pg_ctl log file records".to_string(),
@@ -1868,11 +1735,6 @@ mod tests {
             if !saw_jsonlog {
                 return Err(WorkerError::Message(
                     "missing ingested postgres jsonlog records".to_string(),
-                ));
-            }
-            if !saw_archive {
-                return Err(WorkerError::Message(
-                    "missing ingested archive_command wrapper records".to_string(),
                 ));
             }
 

@@ -283,7 +283,6 @@ pub struct PostgresLoggingConfig {
     pub enabled: bool,
     pub pg_ctl_log_file: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
-    pub archive_command_log_file: Option<PathBuf>,
     pub poll_interval_ms: u64,
     pub cleanup: LogCleanupConfig,
 }
@@ -427,7 +426,6 @@ pub struct PartialPostgresLoggingConfig {
     pub enabled: Option<bool>,
     pub pg_ctl_log_file: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
-    pub archive_command_log_file: Option<PathBuf>,
     pub poll_interval_ms: Option<u64>,
     pub cleanup: Option<PartialLogCleanupConfig>,
 }

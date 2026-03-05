@@ -67,7 +67,6 @@ Context from investigation:
 ### 1.2: Make `step_once()` resilient (don’t stop at first failure)
 - [x] Refactor `step_once()` to attempt all phases even if one fails:
   - [x] `pg_ctl_log_file` tail/read
-  - [x] `archive_command_log_file` tail/read (if configured)
   - [x] `log_dir` discovery + tail/read (if configured)
   - [x] `log_dir` cleanup (if enabled)
 - [x] Collect per-phase errors with a stable `stage=` tag (string-only is fine; `WorkerError` is currently `Message(String)`).
@@ -95,7 +94,6 @@ Implementation approach inside cleanup (conservative + explicit, but less heuris
 - [x] Add a new cleanup safety knob to config: `logging.postgres.cleanup.protect_recent_seconds` (default: 300s).
 - [x] Build a protected set per cleanup pass:
   - [x] Always protect the `pg_ctl_log_file` path (existing behavior).
-  - [x] Always protect `archive_command_log_file` if configured and it is in the same directory (defensive: do not couple it to log-dir cleanup).
   - [x] Always protect these basenames if present in `log_dir` (default active-signal conventions):
     - [x] `postgres.json`
     - [x] `postgres.stderr.log`
@@ -128,22 +126,19 @@ Rationale:
 - [x] In `src/config/parser.rs`, enforce that the following paths are absolute when set / enabled:
   - [x] `postgres.log_file`
   - [x] `logging.postgres.pg_ctl_log_file` (if set; otherwise `postgres.log_file` applies)
-  - [x] `logging.postgres.archive_command_log_file` (if set)
   - [x] `logging.postgres.log_dir` (if set)
   - [x] `logging.sinks.file.path` (when `logging.sinks.file.enabled=true`)
 - [x] Add a small helper to do *lexical* normalization (`.` and `..` removal) using `Path::components()` (no panics/unwraps).
 - [x] For comparisons, use normalized paths for:
   - [x] equality checks (`sink_path` vs tailed input paths)
   - [x] containment checks (`sink_path` inside `logging.postgres.log_dir`)
-  - [x] containment checks (`archive_command_log_file` inside `logging.postgres.log_dir`)
-- [x] Defer symlink canonicalization to a follow-up (runtime-only hardening), unless we find a safe way to do it without making config validation brittle for paths that don’t exist yet.
+  - [x] Defer symlink canonicalization to a follow-up (runtime-only hardening), unless we find a safe way to do it without making config validation brittle for paths that don’t exist yet.
 
 ### 3.2: Add config validation tests for bypass cases
 - [x] Add tests in `src/config/parser.rs` covering at least:
   - [x] sink path equals tailed file via `./` segment
   - [x] sink path equals tailed file via `..` segment
   - [x] sink path is inside `log_dir` via `./` and `..` segments
-  - [x] archive command log path inside `log_dir` via dot segments
   - [ ] (unix-only) symlink alias cases, if canonicalization is implemented
 
 ---

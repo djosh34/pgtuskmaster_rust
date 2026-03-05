@@ -153,7 +153,6 @@ Fields:
   - when `true`, the node requires:
     - `process.binaries.pgbackrest` to be set to a valid executable path
     - `[backup.pgbackrest] stanza` and `repo` to be set and non-empty.
-    - `logging.postgres.archive_command_log_file` to be set (pgtuskmaster writes one JSON line per `archive_command`/`restore_command` invocation for observability)
 - `provider`: currently only `pgbackrest` is supported.
 - `[backup.pgbackrest.options]`: extra pgBackRest CLI options per operation (arrays of strings).
   - For safety and determinism, these option tokens must not override managed fields (no `--stanza` / `--repo` / `--pg1-path`).
@@ -187,7 +186,6 @@ capture_subprocess_output = true
 
 [logging.postgres]
 enabled = true
-archive_command_log_file = "/var/log/pgtuskmaster/archive_command.jsonl"
 poll_interval_ms = 200
 cleanup = { enabled = true, max_files = 50, max_age_seconds = 604800, protect_recent_seconds = 300 }
 
@@ -218,7 +216,7 @@ Postgres log ingestion and cleanup notes:
   - it treats missing/failed metadata reads conservatively (the file is kept and the cleanup issue is surfaced via internal logs).
 - Path ownership guardrails:
   - if `logging.sinks.file.enabled = true`, `logging.sinks.file.path` must not overlap tailed Postgres inputs and must not be inside `logging.postgres.log_dir` (to avoid self-ingestion loops),
-  - `logging.postgres.archive_command_log_file` must not be inside `logging.postgres.log_dir` (to avoid cleanup/tailer coupling).
+  - `logging.postgres.log_dir` should remain reserved for Postgres-owned log outputs to keep ingestion and cleanup behavior deterministic.
 
 Takeover policy details:
 

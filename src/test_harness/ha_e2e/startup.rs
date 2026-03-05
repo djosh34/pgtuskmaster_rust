@@ -455,7 +455,6 @@ async fn start_cluster_inner(
                     "enabled": false,
                     "pg_ctl_log_file": null,
                     "log_dir": null,
-                    "archive_command_log_file": null,
                     "poll_interval_ms": 200,
                     "cleanup": { "enabled": true, "max_files": 50, "max_age_seconds": 604800, "protect_recent_seconds": 300 },
                 },
@@ -561,7 +560,6 @@ async fn start_cluster_inner(
                     enabled: false,
                     pg_ctl_log_file: None,
                     log_dir: None,
-                    archive_command_log_file: None,
                     poll_interval_ms: 200,
                     cleanup: LogCleanupConfig {
                         enabled: true,

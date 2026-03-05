@@ -110,7 +110,7 @@ Define a single canonical JSON object per line (“JSONL”) emitted to `stderr`
 - `source` (object; source attribution keys)
 
 **Required `source` sub-fields**
-- `producer` (enum-ish string): `app|postgres|postgres_archive|pg_tool`
+- `producer` (enum-ish string): `app|postgres|pg_tool`
 - `transport` (string): `internal|file_tail|child_stdout|child_stderr`
 - `parser` (string): `app|postgres_json|postgres_plain|raw`
 - `origin` (string): freeform stable identifier (e.g. `runtime`, `process_worker`, `pg_ctl_log_file`, `postgres.stderr.log`)
@@ -134,7 +134,6 @@ Proposed config shape (exact names can change during verification, but keep it o
 - `logging.postgres.enabled` (bool; default `true`)
 - `logging.postgres.pg_ctl_log_file` (optional override; default uses `postgres.log_file`)
 - `logging.postgres.log_dir` (optional directory to scan for rotated `.json`/`.log` logs)
-- `logging.postgres.archive_command_log_file` (optional; when set, tail it as `postgres_archive`)
 - `logging.postgres.poll_interval_ms`
 - `logging.postgres.cleanup` (retention policy; enabled by default with conservative settings)
   - `max_files`
@@ -209,13 +208,9 @@ Proposed config shape (exact names can change during verification, but keep it o
   - `attributes.job_id`, `attributes.job_kind`, `attributes.binary`
 - [ ] Ensure process worker still enforces timeouts/cancellation correctly and never deadlocks on full pipes.
 
-#### 6) Implement archive_command output capture (full message preserved)
-- [ ] Provide a small, deployment-local wrapper script generator (runtime writes it into a known dir under `/tmp/pgtuskmaster/...` or configured log dir):
-  - executes the real archive action (copy WAL to archive dir) and captures stdout/stderr
-  - writes a single JSONL record (or safe line-delimited records) into `logging.postgres.archive_command_log_file`
-  - preserves full output content (including newlines via JSON escaping)
-- [ ] Add ingestion of that archive-command log file via the Postgres ingest worker.
-- [ ] Keep archive capture optional (enabled in real-binary tests; off by default unless configured).
+#### 6) (Removed) archive_command wrapper output capture
+- The earlier archive-command wrapper + dedicated tail-input approach was intentionally removed.
+- If archive/restore command observability is reintroduced, it should be done via a Rust-native mechanism (not a runtime-generated shell wrapper and not a separate "archive command log file" input).
 
 ### Testing plan (mandatory, no skips)
 

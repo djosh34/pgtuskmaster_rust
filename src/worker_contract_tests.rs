@@ -140,7 +140,6 @@ fn sample_runtime_config() -> RuntimeConfig {
                 enabled: true,
                 pg_ctl_log_file: None,
                 log_dir: None,
-                archive_command_log_file: None,
                 poll_interval_ms: 200,
                 cleanup: LogCleanupConfig {
                     enabled: true,

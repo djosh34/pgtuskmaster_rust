@@ -56,13 +56,9 @@ First checks:
 Likely causes:
 - `backup.bootstrap.enabled = true` but pgBackRest is not fully configured (missing `process.binaries.pgbackrest`, missing `backup.pgbackrest.stanza/repo`, or missing repo configuration in pgBackRest options)
 - backup-era config artifacts interfering with a managed start (should be quarantined/deleted by takeover; if not, check takeover logs)
-- missing/incorrect `logging.postgres.archive_command_log_file` (required when backup is enabled; restore/archive events are written there)
 
 First checks:
 - config validation errors on startup (they include stable field paths)
-- `logging.postgres.archive_command_log_file` contents:
-  - look for JSON lines with `backup.event_kind = archive_get|archive_push`
-  - correlate by `backup.invocation_id` and `backup.status_code`
 - PgTool subprocess logs (`job_kind=start_postgres|pgbackrest_restore`) for stderr output
 - internal ingest diagnostics (`origin=postgres_ingest`) if expected Postgres/backup signals are missing (look for `stage=... kind=... path=...` and `suppressed=N`)
 
