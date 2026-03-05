@@ -1,4 +1,4 @@
-use std::process::Stdio;
+use std::{collections::BTreeMap, process::Stdio};
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -8,7 +8,10 @@ use tokio::{
 
 use crate::{
     config::{ProcessConfig, RoleAuthConfig},
-    logging::{LogHandle, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText},
+    logging::{
+        EventMeta, LogHandle, LogParser, LogProducer, LogRecord, LogSource, LogTransport,
+        SeverityText,
+    },
     pginfo::state::render_pg_conninfo,
     state::{JobId, UnixMillis, WorkerError, WorkerStatus},
 };
@@ -109,8 +112,7 @@ impl ProcessHandle for TokioProcessHandle {
             self.child
                 .start_kill()
                 .map_err(|err| ProcessError::CancelFailure(err.to_string()))?;
-            let _ = self
-                .child
+            self.child
                 .wait()
                 .await
                 .map_err(|err| ProcessError::CancelFailure(err.to_string()))?;
@@ -246,6 +248,20 @@ pub(crate) fn can_accept_job(state: &ProcessState) -> bool {
 }
 
 pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
+    let mut attrs = BTreeMap::new();
+    attrs.insert(
+        "capture_subprocess_output".to_string(),
+        serde_json::Value::Bool(ctx.capture_subprocess_output),
+    );
+    ctx.log
+        .emit_event(
+            SeverityText::Debug,
+            "process worker run started",
+            "process_worker::run",
+            EventMeta::new("process.worker.run_started", "process", "ok"),
+            attrs,
+        )
+        .map_err(|err| WorkerError::Message(format!("process worker start log emit failed: {err}")))?;
     loop {
         step_once(&mut ctx).await?;
         tokio::time::sleep(ctx.poll_interval).await;
@@ -255,10 +271,47 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
 pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
     match ctx.inbox.try_recv() {
         Ok(request) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "job_id".to_string(),
+                serde_json::Value::String(request.id.0.clone()),
+            );
+            attrs.insert(
+                "job_kind".to_string(),
+                serde_json::Value::String(request.kind.label().to_string()),
+            );
+            ctx.log
+                .emit_event(
+                    SeverityText::Debug,
+                    "process job request received",
+                    "process_worker::step_once",
+                    EventMeta::new("process.worker.request_received", "process", "ok"),
+                    attrs,
+                )
+                .map_err(|err| {
+                    WorkerError::Message(format!("process request log emit failed: {err}"))
+                })?;
             start_job(ctx, request).await?;
         }
         Err(TryRecvError::Empty) => {}
-        Err(TryRecvError::Disconnected) => {}
+        Err(TryRecvError::Disconnected) => {
+            if !ctx.inbox_disconnected_logged {
+                ctx.inbox_disconnected_logged = true;
+                ctx.log
+                    .emit_event(
+                        SeverityText::Warn,
+                        "process worker inbox disconnected",
+                        "process_worker::step_once",
+                        EventMeta::new("process.worker.inbox_disconnected", "process", "failed"),
+                        BTreeMap::new(),
+                    )
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process inbox disconnected log emit failed: {err}"
+                        ))
+                    })?;
+            }
+        }
     }
 
     tick_active_job(ctx).await
@@ -275,6 +328,26 @@ pub(crate) async fn start_job(
             error: ProcessError::Busy,
             rejected_at: now,
         });
+        let mut attrs = BTreeMap::new();
+        attrs.insert(
+            "job_id".to_string(),
+            serde_json::Value::String(ctx.last_rejection.as_ref().map(|r| r.id.0.clone()).unwrap_or_else(|| "unknown".to_string())),
+        );
+        attrs.insert(
+            "job_kind".to_string(),
+            serde_json::Value::String(request.kind.label().to_string()),
+        );
+        ctx.log
+            .emit_event(
+                SeverityText::Warn,
+                "process worker busy; rejecting job",
+                "process_worker::start_job",
+                EventMeta::new("process.worker.busy_reject", "process", "failed"),
+                attrs,
+            )
+            .map_err(|err| {
+                WorkerError::Message(format!("process busy reject log emit failed: {err}"))
+            })?;
         return Ok(());
     }
 
@@ -290,6 +363,30 @@ pub(crate) async fn start_job(
     ) {
         Ok(command) => command,
         Err(error) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "job_id".to_string(),
+                serde_json::Value::String(request.id.0.clone()),
+            );
+            attrs.insert(
+                "job_kind".to_string(),
+                serde_json::Value::String(request.kind.label().to_string()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(error.to_string()),
+            );
+            ctx.log
+                .emit_event(
+                    SeverityText::Error,
+                    "process build command failed",
+                    "process_worker::start_job",
+                    EventMeta::new("process.job.build_command_failed", "process", "failed"),
+                    attrs,
+                )
+                .map_err(|err| {
+                    WorkerError::Message(format!("process build command log emit failed: {err}"))
+                })?;
             transition_to_idle(
                 ctx,
                 JobOutcome::Failure {
@@ -307,6 +404,30 @@ pub(crate) async fn start_job(
     let handle = match ctx.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "job_id".to_string(),
+                serde_json::Value::String(request.id.0.clone()),
+            );
+            attrs.insert(
+                "job_kind".to_string(),
+                serde_json::Value::String(request.kind.label().to_string()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(error.to_string()),
+            );
+            ctx.log
+                .emit_event(
+                    SeverityText::Error,
+                    "process spawn failed",
+                    "process_worker::start_job",
+                    EventMeta::new("process.job.spawn_failed", "process", "failed"),
+                    attrs,
+                )
+                .map_err(|err| {
+                    WorkerError::Message(format!("process spawn log emit failed: {err}"))
+                })?;
             transition_to_idle(
                 ctx,
                 JobOutcome::Failure {
@@ -337,6 +458,28 @@ pub(crate) async fn start_job(
         worker: WorkerStatus::Running,
         active,
     };
+    let mut attrs = BTreeMap::new();
+    attrs.insert(
+        "job_id".to_string(),
+        serde_json::Value::String(ctx.active_runtime.as_ref().map(|rt| rt.request.id.0.clone()).unwrap_or_else(|| "unknown".to_string())),
+    );
+    attrs.insert(
+        "job_kind".to_string(),
+        serde_json::Value::String(ctx.active_runtime.as_ref().map(|rt| rt.request.kind.label().to_string()).unwrap_or_else(|| "unknown".to_string())),
+    );
+    attrs.insert(
+        "binary".to_string(),
+        serde_json::Value::String(ctx.active_runtime.as_ref().map(|rt| rt.log_identity.binary.clone()).unwrap_or_else(|| "unknown".to_string())),
+    );
+    ctx.log
+        .emit_event(
+            SeverityText::Info,
+            "process job started",
+            "process_worker::start_job",
+            EventMeta::new("process.job.started", "process", "ok"),
+            attrs,
+        )
+        .map_err(|err| WorkerError::Message(format!("process job started log emit failed: {err}")))?;
     publish_state(ctx, now)
 }
 
@@ -347,16 +490,72 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
     };
 
     let now = current_time(ctx)?;
-    if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
-        for line in lines {
-            let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+    match runtime.handle.drain_output(256 * 1024).await {
+        Ok(lines) => {
+            for line in lines {
+                if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
+                    emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                }
+            }
+        }
+        Err(err) => {
+            let mut attrs = process_log_identity_attrs(&runtime.log_identity);
+            attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+            ctx.log
+                .emit_event(
+                    SeverityText::Warn,
+                    "process output drain failed",
+                    "process_worker::tick_active_job",
+                    EventMeta::new("process.worker.output_drain_failed", "process", "failed"),
+                    attrs,
+                )
+                .map_err(|emit_err| {
+                    WorkerError::Message(format!("process output drain log emit failed: {emit_err}"))
+                })?;
         }
     }
     if now.0 >= runtime.deadline_at.0 {
+        let mut timeout_attrs = process_log_identity_attrs(&runtime.log_identity);
+        timeout_attrs.insert(
+            "job_id".to_string(),
+            serde_json::Value::String(runtime.request.id.0.clone()),
+        );
+        ctx.log
+            .emit_event(
+                SeverityText::Warn,
+                "process job timed out; cancelling",
+                "process_worker::tick_active_job",
+                EventMeta::new("process.job.timeout", "process", "timeout"),
+                timeout_attrs,
+            )
+            .map_err(|err| {
+                WorkerError::Message(format!("process timeout log emit failed: {err}"))
+            })?;
         let cancel_result = runtime.handle.cancel().await;
-        if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
-            for line in lines {
-                let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+        match runtime.handle.drain_output(256 * 1024).await {
+            Ok(lines) => {
+                for line in lines {
+                    if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
+                        emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                    }
+                }
+            }
+            Err(err) => {
+                let mut attrs = process_log_identity_attrs(&runtime.log_identity);
+                attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+                ctx.log
+                    .emit_event(
+                        SeverityText::Warn,
+                        "process output drain failed",
+                        "process_worker::tick_active_job",
+                        EventMeta::new("process.worker.output_drain_failed", "process", "failed"),
+                        attrs,
+                    )
+                    .map_err(|emit_err| {
+                        WorkerError::Message(format!(
+                            "process output drain log emit failed: {emit_err}"
+                        ))
+                    })?;
             }
         }
         let outcome = match cancel_result {
@@ -381,43 +580,229 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             Ok(())
         }
         Ok(Some(ProcessExit::Success)) => {
-            if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
-                for line in lines {
-                    let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+            match runtime.handle.drain_output(256 * 1024).await {
+                Ok(lines) => {
+                    for line in lines {
+                        if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
+                            emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let mut attrs = process_log_identity_attrs(&runtime.log_identity);
+                    attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+                    ctx.log
+                        .emit_event(
+                            SeverityText::Warn,
+                            "process output drain failed",
+                            "process_worker::tick_active_job",
+                            EventMeta::new("process.worker.output_drain_failed", "process", "failed"),
+                            attrs,
+                        )
+                        .map_err(|emit_err| {
+                            WorkerError::Message(format!(
+                                "process output drain log emit failed: {emit_err}"
+                            ))
+                        })?;
                 }
             }
+            let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Success {
-                id: runtime.request.id,
+                id: job_id.clone(),
                 finished_at: now,
             };
+            let mut attrs = process_log_identity_attrs(&runtime.log_identity);
+            attrs.insert(
+                "job_id".to_string(),
+                serde_json::Value::String(job_id.0.clone()),
+            );
+            ctx.log
+                .emit_event(
+                    SeverityText::Info,
+                    "process job exited successfully",
+                    "process_worker::tick_active_job",
+                    EventMeta::new("process.job.exited", "process", "ok"),
+                    attrs,
+                )
+                .map_err(|err| {
+                    WorkerError::Message(format!("process exit log emit failed: {err}"))
+                })?;
             transition_to_idle(ctx, outcome, now)
         }
         Ok(Some(exit)) => {
-            if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
-                for line in lines {
-                    let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+            match runtime.handle.drain_output(256 * 1024).await {
+                Ok(lines) => {
+                    for line in lines {
+                        if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
+                            emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let mut attrs = process_log_identity_attrs(&runtime.log_identity);
+                    attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+                    ctx.log
+                        .emit_event(
+                            SeverityText::Warn,
+                            "process output drain failed",
+                            "process_worker::tick_active_job",
+                            EventMeta::new("process.worker.output_drain_failed", "process", "failed"),
+                            attrs,
+                        )
+                        .map_err(|emit_err| {
+                            WorkerError::Message(format!(
+                                "process output drain log emit failed: {emit_err}"
+                            ))
+                        })?;
                 }
             }
+            let exit_error = ProcessError::from_exit(exit);
+            let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Failure {
-                id: runtime.request.id,
-                error: ProcessError::from_exit(exit),
+                id: job_id.clone(),
+                error: exit_error.clone(),
                 finished_at: now,
             };
+            let mut attrs = process_log_identity_attrs(&runtime.log_identity);
+            attrs.insert(
+                "job_id".to_string(),
+                serde_json::Value::String(job_id.0.clone()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(exit_error.to_string()),
+            );
+            ctx.log
+                .emit_event(
+                    SeverityText::Warn,
+                    "process job exited unsuccessfully",
+                    "process_worker::tick_active_job",
+                    EventMeta::new("process.job.exited", "process", "failed"),
+                    attrs,
+                )
+                .map_err(|err| {
+                    WorkerError::Message(format!("process exit log emit failed: {err}"))
+                })?;
             transition_to_idle(ctx, outcome, now)
         }
         Err(error) => {
-            if let Ok(lines) = runtime.handle.drain_output(256 * 1024).await {
-                for line in lines {
-                    let _ = emit_subprocess_line(&ctx.log, &runtime.log_identity, line);
+            match runtime.handle.drain_output(256 * 1024).await {
+                Ok(lines) => {
+                    for line in lines {
+                        if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
+                            emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let mut attrs = process_log_identity_attrs(&runtime.log_identity);
+                    attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+                    ctx.log
+                        .emit_event(
+                            SeverityText::Warn,
+                            "process output drain failed",
+                            "process_worker::tick_active_job",
+                            EventMeta::new("process.worker.output_drain_failed", "process", "failed"),
+                            attrs,
+                        )
+                        .map_err(|emit_err| {
+                            WorkerError::Message(format!(
+                                "process output drain log emit failed: {emit_err}"
+                            ))
+                        })?;
                 }
             }
+            let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Failure {
-                id: runtime.request.id,
+                id: job_id.clone(),
                 error,
                 finished_at: now,
             };
+            let mut attrs = process_log_identity_attrs(&runtime.log_identity);
+            attrs.insert(
+                "job_id".to_string(),
+                serde_json::Value::String(job_id.0.clone()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(outcome_error_string(&outcome)),
+            );
+            ctx.log
+                .emit_event(
+                    SeverityText::Error,
+                    "process job poll failed",
+                    "process_worker::tick_active_job",
+                    EventMeta::new("process.job.poll_failed", "process", "failed"),
+                    attrs,
+                )
+                .map_err(|err| {
+                    WorkerError::Message(format!("process poll failure log emit failed: {err}"))
+                })?;
             transition_to_idle(ctx, outcome, now)
         }
+    }
+}
+
+fn process_log_identity_attrs(identity: &ProcessLogIdentity) -> BTreeMap<String, serde_json::Value> {
+    let mut attrs = BTreeMap::new();
+    attrs.insert(
+        "job_id".to_string(),
+        serde_json::Value::String(identity.job_id.0.clone()),
+    );
+    attrs.insert(
+        "job_kind".to_string(),
+        serde_json::Value::String(identity.job_kind.clone()),
+    );
+    attrs.insert(
+        "binary".to_string(),
+        serde_json::Value::String(identity.binary.clone()),
+    );
+    attrs
+}
+
+fn emit_process_output_emit_failed(
+    ctx: &ProcessWorkerCtx,
+    identity: &ProcessLogIdentity,
+    line: &ProcessOutputLine,
+    error: &crate::logging::LogError,
+) -> Result<(), WorkerError> {
+    let mut attrs = process_log_identity_attrs(identity);
+    attrs.insert(
+        "stream".to_string(),
+        serde_json::Value::String(match line.stream {
+            ProcessOutputStream::Stdout => "stdout".to_string(),
+            ProcessOutputStream::Stderr => "stderr".to_string(),
+        }),
+    );
+    attrs.insert(
+        "bytes_len".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(line.bytes.len() as u64)),
+    );
+    attrs.insert(
+        "error".to_string(),
+        serde_json::Value::String(error.to_string()),
+    );
+    ctx.log
+        .emit_event(
+            SeverityText::Warn,
+            "process subprocess output emit failed",
+            "process_worker::emit_subprocess_line",
+            EventMeta::new("process.worker.output_emit_failed", "process", "failed"),
+            attrs,
+        )
+        .map_err(|emit_err| {
+            WorkerError::Message(format!(
+                "process output emit failure log emit failed: {emit_err}"
+            ))
+        })?;
+    Ok(())
+}
+
+fn outcome_error_string(outcome: &JobOutcome) -> String {
+    match outcome {
+        JobOutcome::Success { .. } => "success".to_string(),
+        JobOutcome::Timeout { .. } => "timeout".to_string(),
+        JobOutcome::Failure { error, .. } => error.to_string(),
     }
 }
 
@@ -464,6 +849,13 @@ fn emit_subprocess_line(
     record.attributes.insert(
         "binary".to_string(),
         serde_json::Value::String(identity.binary.clone()),
+    );
+    record.attributes.insert(
+        "stream".to_string(),
+        serde_json::Value::String(match line.stream {
+            ProcessOutputStream::Stdout => "stdout".to_string(),
+            ProcessOutputStream::Stderr => "stderr".to_string(),
+        }),
     );
     if let Some(hex) = raw_bytes_hex {
         record.attributes.insert(
@@ -1086,6 +1478,7 @@ mod tests {
 
     use crate::{
         config::{BinaryPaths, InlineOrPath, ProcessConfig, RoleAuthConfig, SecretSource},
+        logging::{LogHandle, LogSink, SeverityText, TestSink},
         pginfo::state::{PgConnInfo, PgSslMode},
         process::{
             jobs::{
@@ -1108,6 +1501,15 @@ mod tests {
             ports::allocate_ports,
         },
     };
+
+    fn test_log_handle() -> (LogHandle, std::sync::Arc<TestSink>) {
+        let sink = std::sync::Arc::new(TestSink::default());
+        let sink_dyn: std::sync::Arc<dyn LogSink> = sink.clone();
+        (
+            LogHandle::new("host-a".to_string(), sink_dyn, SeverityText::Trace),
+            sink,
+        )
+    }
 
     struct FakeHandle {
         polls: VecDeque<Result<Option<ProcessExit>, ProcessError>>,
@@ -1623,6 +2025,7 @@ mod tests {
                 state: initial,
                 publisher,
                 inbox: rx,
+                inbox_disconnected_logged: false,
                 command_runner: runner,
                 active_runtime: None,
                 last_rejection: None,
@@ -1630,6 +2033,43 @@ mod tests {
             },
             tx,
             subscriber,
+        )
+    }
+
+    fn test_ctx_with_log(
+        runner: Box<dyn ProcessCommandRunner>,
+        now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
+    ) -> (
+        ProcessWorkerCtx,
+        mpsc::UnboundedSender<ProcessJobRequest>,
+        crate::state::StateSubscriber<ProcessState>,
+        std::sync::Arc<TestSink>,
+    ) {
+        let initial = ProcessState::Idle {
+            worker: WorkerStatus::Starting,
+            last_outcome: None,
+        };
+        let (publisher, subscriber) = new_state_channel(initial.clone(), UnixMillis(0));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (log, sink) = test_log_handle();
+        (
+            ProcessWorkerCtx {
+                poll_interval: Duration::from_millis(10),
+                config: sample_config(),
+                log,
+                capture_subprocess_output: false,
+                state: initial,
+                publisher,
+                inbox: rx,
+                inbox_disconnected_logged: false,
+                command_runner: runner,
+                active_runtime: None,
+                last_rejection: None,
+                now,
+            },
+            tx,
+            subscriber,
+            sink,
         )
     }
 
@@ -1689,6 +2129,57 @@ mod tests {
 
         let published = subscriber.latest();
         assert!(matches!(published.value, ProcessState::Running { .. }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_emits_request_received_and_job_started() -> Result<(), WorkerError> {
+        let runner = FakeRunner {
+            spawn_results: VecDeque::from(vec![Ok(FakeHandle {
+                polls: VecDeque::from(vec![Ok(None)]),
+                cancel_result: Ok(()),
+            })]),
+        };
+        let (mut ctx, tx, _subscriber, sink) =
+            test_ctx_with_log(Box::new(runner), queued_clock(vec![10, 11]));
+
+        tx.send(ProcessJobRequest {
+            id: JobId("job-1".to_string()),
+            kind: ProcessJobKind::StartPostgres(sample_start_spec()),
+        })
+        .map_err(|err| WorkerError::Message(format!("send request failed: {err}")))?;
+
+        step_once(&mut ctx).await?;
+
+        let received = sink
+            .collect_matching(|record| {
+                matches!(
+                    record.attributes.get("event.name"),
+                    Some(serde_json::Value::String(name))
+                        if name == "process.worker.request_received"
+                )
+            })
+            .map_err(|err| WorkerError::Message(format!("log snapshot failed: {err}")))?;
+        if received.is_empty() {
+            return Err(WorkerError::Message(
+                "expected process.worker.request_received log event".to_string(),
+            ));
+        }
+
+        let started = sink
+            .collect_matching(|record| {
+                matches!(
+                    record.attributes.get("event.name"),
+                    Some(serde_json::Value::String(name)) if name == "process.job.started"
+                )
+            })
+            .map_err(|err| WorkerError::Message(format!("log snapshot failed: {err}")))?;
+        if started.is_empty() {
+            return Err(WorkerError::Message(
+                "expected process.job.started log event".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1868,6 +2359,7 @@ mod tests {
                 state: initial,
                 publisher,
                 inbox: rx,
+                inbox_disconnected_logged: false,
                 command_runner: Box::new(TokioCommandRunner),
                 active_runtime: None,
                 last_rejection: None,
@@ -2364,6 +2856,7 @@ mod tests {
             state: initial,
             publisher,
             inbox: rx,
+            inbox_disconnected_logged: false,
             command_runner: Box::new(runner),
             active_runtime: None,
             last_rejection: None,

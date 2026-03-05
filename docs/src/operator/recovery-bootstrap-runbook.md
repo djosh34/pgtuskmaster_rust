@@ -26,8 +26,17 @@ When `postgres.data_dir` is `Missing|Empty` and the cluster is uninitialized (no
 
 Use the runtime logs plus PgTool subprocess output to confirm progress:
 
-- Runtime startup markers: `startup phase=restore`, then `startup phase=takeover`, then `startup phase=start`
-- PgTool output records for `job_kind=pgbackrest_restore` and `job_kind=start_postgres`
+- Runtime startup markers (structured events):
+  - `runtime.startup.mode_selected` with `startup_mode=restorebootstrap`
+  - `runtime.startup.action` entries (`event.result=started|ok|failed`) showing:
+    - restore job action(s)
+    - takeover action(s)
+    - start-postgres action(s)
+- Process/PgTool job correlation:
+  - `process.job.started` / `process.job.exited|process.job.timeout` with `job_kind=pgbackrest_restore`
+  - `process.job.started` / `process.job.exited|process.job.timeout` with `job_kind=start_postgres`
+- PostgreSQL tail/ingest breadcrumbs (optional but useful):
+  - `postgres_ingest.iteration` (debug) and `postgres_ingest.step_once_failed` (warn/error) when ingestion or cleanup encounters issues
 
 ## Common failure cases and next actions
 

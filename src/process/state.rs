@@ -55,6 +55,27 @@ pub(crate) enum ProcessJobKind {
     PgBackRestArchiveGet(PgBackRestArchiveGetSpec),
 }
 
+impl ProcessJobKind {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Bootstrap(_) => "bootstrap",
+            Self::BaseBackup(_) => "basebackup",
+            Self::PgRewind(_) => "pg_rewind",
+            Self::Promote(_) => "promote",
+            Self::Demote(_) => "demote",
+            Self::StartPostgres(_) => "start_postgres",
+            Self::Fencing(_) => "fencing",
+            Self::PgBackRestVersion(_) => "pgbackrest_version",
+            Self::PgBackRestInfo(_) => "pgbackrest_info",
+            Self::PgBackRestCheck(_) => "pgbackrest_check",
+            Self::PgBackRestBackup(_) => "pgbackrest_backup",
+            Self::PgBackRestRestore(_) => "pgbackrest_restore",
+            Self::PgBackRestArchivePush(_) => "pgbackrest_archive_push",
+            Self::PgBackRestArchiveGet(_) => "pgbackrest_archive_get",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProcessJobRequest {
     pub(crate) id: JobId,
@@ -100,6 +121,7 @@ pub(crate) struct ProcessWorkerCtx {
     pub(crate) state: ProcessState,
     pub(crate) publisher: StatePublisher<ProcessState>,
     pub(crate) inbox: UnboundedReceiver<ProcessJobRequest>,
+    pub(crate) inbox_disconnected_logged: bool,
     pub(crate) command_runner: Box<dyn ProcessCommandRunner>,
     pub(crate) active_runtime: Option<ActiveRuntime>,
     pub(crate) last_rejection: Option<ProcessJobRejection>,
@@ -124,6 +146,7 @@ impl ProcessWorkerCtx {
             },
             publisher,
             inbox,
+            inbox_disconnected_logged: false,
             command_runner: Box::new(crate::process::jobs::NoopCommandRunner),
             active_runtime: None,
             last_rejection: None,

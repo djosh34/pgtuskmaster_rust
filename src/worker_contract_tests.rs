@@ -268,6 +268,8 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         postgres_dsn: "host=127.0.0.1 port=1 user=postgres dbname=postgres".to_string(),
         poll_interval: Duration::from_millis(10),
         publisher,
+        log: crate::logging::LogHandle::null(),
+        last_emitted_sql_status: None,
     };
     crate::pginfo::worker::step_once(&mut pg_ctx).await?;
     let pg_latest = pg_subscriber.latest();
@@ -288,6 +290,7 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         pg_subscriber: dcs_pg_subscriber,
         publisher: dcs_publisher,
         store: Box::new(ContractStore),
+        log: crate::logging::LogHandle::null(),
         cache: DcsCache {
             members: BTreeMap::new(),
             leader: None,
@@ -296,6 +299,8 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
             init_lock: None,
         },
         last_published_pg_version: None,
+        last_emitted_store_healthy: None,
+        last_emitted_trust: None,
     };
     crate::dcs::worker::step_once(&mut dcs_ctx).await?;
     let dcs_latest = dcs_subscriber.latest();

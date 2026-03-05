@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) use super::conninfo::{render_pg_conninfo, PgConnInfo, PgSslMode};
 use super::query::PgPollData;
+use crate::logging::LogHandle;
 use crate::state::StatePublisher;
 use crate::state::{MemberId, TimelineId, UnixMillis, WalLsn, WorkerStatus};
 
@@ -74,6 +75,8 @@ pub(crate) struct PgInfoWorkerCtx {
     pub(crate) postgres_dsn: String,
     pub(crate) poll_interval: Duration,
     pub(crate) publisher: StatePublisher<PgInfoState>,
+    pub(crate) log: LogHandle,
+    pub(crate) last_emitted_sql_status: Option<SqlStatus>,
 }
 
 pub(crate) fn derive_readiness(sql: &SqlStatus, is_ready: bool) -> Readiness {

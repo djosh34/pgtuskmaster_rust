@@ -19,10 +19,15 @@ const DEFAULT_HISTORY_LIMIT: usize = 300;
 struct DebugObservedState {
     app: AppLifecycle,
     config_version: Version,
+    config_sig: String,
     pg_version: Version,
+    pg_sig: String,
     dcs_version: Version,
+    dcs_sig: String,
     process_version: Version,
+    process_sig: String,
     ha_version: Version,
+    ha_sig: String,
 }
 
 pub(crate) struct DebugApiCtx {
@@ -144,13 +149,25 @@ pub(crate) async fn step_once(ctx: &mut DebugApiCtx) -> Result<(), WorkerError> 
         ha: ctx.ha_subscriber.latest(),
     };
 
+    let config_summary = summarize_config(&snapshot_ctx.config.value);
+    let pg_summary = summarize_pg(&snapshot_ctx.pg.value);
+    let dcs_summary = summarize_dcs(&snapshot_ctx.dcs.value);
+    let process_summary = summarize_process(&snapshot_ctx.process.value);
+    let ha_summary = summarize_ha(&snapshot_ctx.ha.value);
+    let ha_sig = ha_signature(&snapshot_ctx.ha.value);
+
     let observed = DebugObservedState {
         app: snapshot_ctx.app.clone(),
         config_version: snapshot_ctx.config.version,
+        config_sig: config_summary.clone(),
         pg_version: snapshot_ctx.pg.version,
+        pg_sig: pg_summary.clone(),
         dcs_version: snapshot_ctx.dcs.version,
+        dcs_sig: dcs_summary.clone(),
         process_version: snapshot_ctx.process.version,
+        process_sig: process_summary.clone(),
         ha_version: snapshot_ctx.ha.version,
+        ha_sig,
     };
 
     if let Some(previous) = ctx.last_observed.clone() {
@@ -163,49 +180,49 @@ pub(crate) async fn step_once(ctx: &mut DebugApiCtx) -> Result<(), WorkerError> 
                 summarize_app(&observed.app),
             )?;
         }
-        if previous.config_version != observed.config_version {
+        if previous.config_sig != observed.config_sig {
             ctx.record_change(
                 now,
                 DebugDomain::Config,
                 Some(previous.config_version),
                 Some(observed.config_version),
-                summarize_config(&snapshot_ctx.config.value),
+                config_summary.clone(),
             )?;
         }
-        if previous.pg_version != observed.pg_version {
+        if previous.pg_sig != observed.pg_sig {
             ctx.record_change(
                 now,
                 DebugDomain::PgInfo,
                 Some(previous.pg_version),
                 Some(observed.pg_version),
-                summarize_pg(&snapshot_ctx.pg.value),
+                pg_summary.clone(),
             )?;
         }
-        if previous.dcs_version != observed.dcs_version {
+        if previous.dcs_sig != observed.dcs_sig {
             ctx.record_change(
                 now,
                 DebugDomain::Dcs,
                 Some(previous.dcs_version),
                 Some(observed.dcs_version),
-                summarize_dcs(&snapshot_ctx.dcs.value),
+                dcs_summary.clone(),
             )?;
         }
-        if previous.process_version != observed.process_version {
+        if previous.process_sig != observed.process_sig {
             ctx.record_change(
                 now,
                 DebugDomain::Process,
                 Some(previous.process_version),
                 Some(observed.process_version),
-                summarize_process(&snapshot_ctx.process.value),
+                process_summary.clone(),
             )?;
         }
-        if previous.ha_version != observed.ha_version {
+        if previous.ha_sig != observed.ha_sig {
             ctx.record_change(
                 now,
                 DebugDomain::Ha,
                 Some(previous.ha_version),
                 Some(observed.ha_version),
-                summarize_ha(&snapshot_ctx.ha.value),
+                ha_summary.clone(),
             )?;
         }
     } else {
@@ -221,35 +238,35 @@ pub(crate) async fn step_once(ctx: &mut DebugApiCtx) -> Result<(), WorkerError> 
             DebugDomain::Config,
             None,
             Some(observed.config_version),
-            summarize_config(&snapshot_ctx.config.value),
+            config_summary,
         )?;
         ctx.record_change(
             now,
             DebugDomain::PgInfo,
             None,
             Some(observed.pg_version),
-            summarize_pg(&snapshot_ctx.pg.value),
+            pg_summary,
         )?;
         ctx.record_change(
             now,
             DebugDomain::Dcs,
             None,
             Some(observed.dcs_version),
-            summarize_dcs(&snapshot_ctx.dcs.value),
+            dcs_summary,
         )?;
         ctx.record_change(
             now,
             DebugDomain::Process,
             None,
             Some(observed.process_version),
-            summarize_process(&snapshot_ctx.process.value),
+            process_summary,
         )?;
         ctx.record_change(
             now,
             DebugDomain::Ha,
             None,
             Some(observed.ha_version),
-            summarize_ha(&snapshot_ctx.ha.value),
+            ha_summary,
         )?;
     }
 
@@ -361,6 +378,16 @@ fn summarize_ha(state: &HaState) -> String {
         state.worker,
         state.phase,
         state.tick,
+        state.pending.len(),
+        state.recent_action_ids.len()
+    )
+}
+
+fn ha_signature(state: &HaState) -> String {
+    format!(
+        "ha worker={:?} phase={:?} pending={} recent_action_ids={}",
+        state.worker,
+        state.phase,
         state.pending.len(),
         state.recent_action_ids.len()
     )
@@ -724,6 +751,70 @@ mod tests {
             .filter(|event| matches!(event.domain, DebugDomain::Config))
             .collect::<Vec<_>>();
         assert!(!config_events.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_does_not_record_ha_tick_only_changes() -> Result<(), crate::state::WorkerError>
+    {
+        let cfg = sample_runtime_config();
+        let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone(), UnixMillis(1));
+        let (_pg_publisher, pg_subscriber) = new_state_channel(sample_pg_state(), UnixMillis(1));
+        let (_dcs_publisher, dcs_subscriber) =
+            new_state_channel(sample_dcs_state(cfg.clone()), UnixMillis(1));
+        let (_process_publisher, process_subscriber) =
+            new_state_channel(sample_process_state(), UnixMillis(1));
+
+        let initial_ha = sample_ha_state();
+        let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha.clone(), UnixMillis(1));
+
+        let (publisher, subscriber) = new_state_channel(
+            SystemSnapshot {
+                app: AppLifecycle::Starting,
+                config: cfg_subscriber.latest(),
+                pg: pg_subscriber.latest(),
+                dcs: dcs_subscriber.latest(),
+                process: process_subscriber.latest(),
+                ha: ha_subscriber.latest(),
+                generated_at: UnixMillis(1),
+                sequence: 0,
+                changes: Vec::new(),
+                timeline: Vec::new(),
+            },
+            UnixMillis(1),
+        );
+
+        let mut ticks = vec![UnixMillis(2), UnixMillis(3)].into_iter();
+        let mut ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {
+            publisher,
+            config_subscriber: cfg_subscriber,
+            pg_subscriber,
+            dcs_subscriber,
+            process_subscriber,
+            ha_subscriber: ha_subscriber.clone(),
+        });
+        ctx.now = Box::new(move || {
+            ticks
+                .next()
+                .ok_or_else(|| WorkerError::Message("clock exhausted".to_string()))
+        });
+
+        super::step_once(&mut ctx).await?;
+        let before = subscriber.latest();
+        let before_timeline_len = before.value.timeline.len();
+        let before_sequence = before.value.sequence;
+
+        let mut ha_bumped_tick = initial_ha.clone();
+        ha_bumped_tick.tick = ha_bumped_tick.tick.saturating_add(1);
+        ha_publisher
+            .publish(ha_bumped_tick.clone(), UnixMillis(2))
+            .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
+
+        super::step_once(&mut ctx).await?;
+        let after = subscriber.latest();
+        assert_eq!(after.value.timeline.len(), before_timeline_len);
+        assert_eq!(after.value.sequence, before_sequence);
+        assert_eq!(after.value.ha.value.tick, ha_bumped_tick.tick);
         Ok(())
     }
 

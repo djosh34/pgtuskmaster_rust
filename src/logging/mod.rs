@@ -331,6 +331,36 @@ pub(crate) struct LogHandle {
     min_app_severity_number: u8,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct EventMeta {
+    pub(crate) name: String,
+    pub(crate) domain: String,
+    pub(crate) result: String,
+}
+
+impl EventMeta {
+    pub(crate) fn new(
+        name: impl Into<String>,
+        domain: impl Into<String>,
+        result: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            domain: domain.into(),
+            result: result.into(),
+        }
+    }
+}
+
+impl std::fmt::Debug for LogHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogHandle")
+            .field("hostname", &self.hostname)
+            .field("min_app_severity_number", &self.min_app_severity_number)
+            .finish()
+    }
+}
+
 impl LogHandle {
     pub(crate) fn new(hostname: String, sink: Arc<dyn LogSink>, min_app_severity: SeverityText) -> Self {
         Self {
@@ -342,6 +372,14 @@ impl LogHandle {
 
     #[cfg(test)]
     pub(crate) fn null() -> Self {
+        Self {
+            hostname: "unknown".to_string(),
+            sink: Arc::new(NullSink),
+            min_app_severity_number: SeverityText::Trace.number(),
+        }
+    }
+
+    pub(crate) fn disabled() -> Self {
         Self {
             hostname: "unknown".to_string(),
             sink: Arc::new(NullSink),
@@ -369,6 +407,38 @@ impl LogHandle {
             message.into(),
             source,
         );
+        self.sink.emit(&record)
+    }
+
+    pub(crate) fn emit_event(
+        &self,
+        severity_text: SeverityText,
+        message: impl Into<String>,
+        origin: impl Into<String>,
+        meta: EventMeta,
+        mut attributes: BTreeMap<String, Value>,
+    ) -> Result<(), LogError> {
+        if severity_text.number() < self.min_app_severity_number {
+            return Ok(());
+        }
+        attributes.insert("event.name".to_string(), Value::String(meta.name));
+        attributes.insert("event.domain".to_string(), Value::String(meta.domain));
+        attributes.insert("event.result".to_string(), Value::String(meta.result));
+
+        let source = LogSource {
+            producer: LogProducer::App,
+            transport: LogTransport::Internal,
+            parser: LogParser::App,
+            origin: origin.into(),
+        };
+        let mut record = LogRecord::new(
+            system_now_unix_millis(),
+            self.hostname.clone(),
+            severity_text,
+            message.into(),
+            source,
+        );
+        record.attributes = attributes;
         self.sink.emit(&record)
     }
 
@@ -453,6 +523,21 @@ impl TestSink {
             Err(poisoned) => poisoned.into_inner(),
         };
         std::mem::take(&mut *locked)
+    }
+
+    pub(crate) fn snapshot(&self) -> Result<Vec<LogRecord>, LogError> {
+        let locked = self
+            .records
+            .lock()
+            .map_err(|_| LogError::SinkIo("test sink lock poisoned".to_string()))?;
+        Ok(locked.clone())
+    }
+
+    pub(crate) fn collect_matching(
+        &self,
+        matcher: impl Fn(&LogRecord) -> bool,
+    ) -> Result<Vec<LogRecord>, LogError> {
+        Ok(self.snapshot()?.into_iter().filter(matcher).collect())
     }
 }
 

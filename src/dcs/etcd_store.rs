@@ -1080,8 +1080,11 @@ mod tests {
                 pg_subscriber,
                 publisher: dcs_publisher,
                 store: Box::new(store),
+                log: crate::logging::LogHandle::null(),
                 cache: sample_cache(scope),
                 last_published_pg_version: None,
+                last_emitted_store_healthy: None,
+                last_emitted_trust: None,
             },
             dcs_subscriber,
         )

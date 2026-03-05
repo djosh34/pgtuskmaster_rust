@@ -213,7 +213,7 @@ Postgres log ingestion and cleanup notes:
 - `logging.postgres.cleanup` applies only to `logging.postgres.log_dir` and is designed to be safe-by-default:
   - it never deletes `postgres.json`, `postgres.stderr.log`, or `postgres.stdout.log`,
   - it does not delete files modified within `protect_recent_seconds`, and
-  - it treats missing/failed metadata reads conservatively (the file is kept and the cleanup issue is surfaced via internal logs).
+  - it treats missing/failed metadata reads conservatively (the file is kept and the cleanup issue is surfaced via structured ingest events like `postgres_ingest.step_once_failed` plus per-iteration debug breadcrumbs like `postgres_ingest.iteration`).
 - Path ownership guardrails:
   - if `logging.sinks.file.enabled = true`, `logging.sinks.file.path` must not overlap tailed Postgres inputs and must not be inside `logging.postgres.log_dir` (to avoid self-ingestion loops),
   - `logging.postgres.log_dir` should remain reserved for Postgres-owned log outputs to keep ingestion and cleanup behavior deterministic.

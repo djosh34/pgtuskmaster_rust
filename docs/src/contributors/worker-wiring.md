@@ -71,6 +71,18 @@ The key “ownership” rule is:
 
 > If you need to change how some state is computed, change the worker that publishes that state — do not compute it ad-hoc inside consumers.
 
+## Structured logs (operator-grade reconstruction)
+
+In addition to state channels, workers emit structured runtime events via `LogHandle`.
+
+Contributor expectations:
+
+- Prefer `log.emit_event(...)` with explicit `event.name` / `event.domain` / `event.result`.
+- Include correlation attributes (`scope`, `member_id`, plus subsystem ids like `ha_tick`, `job_id`, `api.peer_addr`) so operators can connect intent → dispatch → outcome across workers.
+- Do not silently drop errors in hot loops:
+  - if the error is ignorable and the loop continues, emit a warn event and continue,
+  - if the error breaks invariants, emit an error event and return `Err` so the runtime can fail closed.
+
 ### `pginfo` worker (Postgres observation)
 
 Owns: `StatePublisher<PgInfoState>`

@@ -23,7 +23,7 @@ use crate::{
     ha::state::{
         HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
     },
-    logging::{LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText},
+    logging::{EventMeta, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText},
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::{
         jobs::{
@@ -105,20 +105,40 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         RuntimeError::StartupExecution(format!("logging bootstrap failed: {err}"))
     })?;
     let log = logging.handle.clone();
-    let _ = log.emit(
-        SeverityText::Debug,
-        "runtime starting",
-        LogSource {
-            producer: LogProducer::App,
-            transport: LogTransport::Internal,
-            parser: LogParser::App,
-            origin: "runtime".to_string(),
-        },
+    let startup_run_id = format!(
+        "{}-{}",
+        cfg.cluster.member_id,
+        crate::logging::system_now_unix_millis()
     );
+    let mut start_attrs = BTreeMap::new();
+    start_attrs.insert(
+        "scope".to_string(),
+        serde_json::Value::String(cfg.dcs.scope.clone()),
+    );
+    start_attrs.insert(
+        "member_id".to_string(),
+        serde_json::Value::String(cfg.cluster.member_id.clone()),
+    );
+    start_attrs.insert(
+        "startup_run_id".to_string(),
+        serde_json::Value::String(startup_run_id.clone()),
+    );
+    start_attrs.insert(
+        "logging.level".to_string(),
+        serde_json::Value::String(format!("{:?}", cfg.logging.level).to_lowercase()),
+    );
+    log.emit_event(
+        SeverityText::Info,
+        "runtime starting",
+        "runtime::run_node_from_config",
+        EventMeta::new("runtime.startup.entered", "runtime", "ok"),
+        start_attrs,
+    )
+    .map_err(|err| RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}")))?;
 
     let process_defaults = process_defaults_from_config(&cfg);
-    let startup_mode = plan_startup(&cfg, &process_defaults)?;
-    execute_startup(&cfg, &process_defaults, &startup_mode, &log).await?;
+    let startup_mode = plan_startup(&cfg, &process_defaults, &log, startup_run_id.as_str())?;
+    execute_startup(&cfg, &process_defaults, &startup_mode, &log, startup_run_id.as_str()).await?;
 
     run_workers(cfg, process_defaults, log).await
 }
@@ -167,18 +187,194 @@ fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults 
 fn plan_startup(
     cfg: &RuntimeConfig,
     process_defaults: &ProcessDispatchDefaults,
+    log: &crate::logging::LogHandle,
+    startup_run_id: &str,
 ) -> Result<StartupMode, RuntimeError> {
-    let data_dir_state = inspect_data_dir(&cfg.postgres.data_dir)?;
-    let cache = probe_dcs_cache(cfg).ok();
+    plan_startup_with_probe(cfg, process_defaults, log, startup_run_id, probe_dcs_cache)
+}
 
-    select_startup_mode(
+fn plan_startup_with_probe(
+    cfg: &RuntimeConfig,
+    process_defaults: &ProcessDispatchDefaults,
+    log: &crate::logging::LogHandle,
+    startup_run_id: &str,
+    probe: impl Fn(&RuntimeConfig) -> Result<DcsCache, RuntimeError>,
+) -> Result<StartupMode, RuntimeError> {
+    let data_dir_state = match inspect_data_dir(&cfg.postgres.data_dir) {
+        Ok(value) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "scope".to_string(),
+                serde_json::Value::String(cfg.dcs.scope.clone()),
+            );
+            attrs.insert(
+                "member_id".to_string(),
+                serde_json::Value::String(cfg.cluster.member_id.clone()),
+            );
+            attrs.insert(
+                "startup_run_id".to_string(),
+                serde_json::Value::String(startup_run_id.to_string()),
+            );
+            attrs.insert(
+                "postgres.data_dir".to_string(),
+                serde_json::Value::String(cfg.postgres.data_dir.display().to_string()),
+            );
+            attrs.insert(
+                "data_dir_state".to_string(),
+                serde_json::Value::String(format!("{value:?}").to_lowercase()),
+            );
+            log.emit_event(
+                SeverityText::Debug,
+                "data dir inspected",
+                "runtime::plan_startup",
+                EventMeta::new("runtime.startup.data_dir.inspected", "runtime", "ok"),
+                attrs,
+            )
+            .map_err(|err| {
+                RuntimeError::StartupPlanning(format!("data dir inspection log emit failed: {err}"))
+            })?;
+            value
+        }
+        Err(err) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "scope".to_string(),
+                serde_json::Value::String(cfg.dcs.scope.clone()),
+            );
+            attrs.insert(
+                "member_id".to_string(),
+                serde_json::Value::String(cfg.cluster.member_id.clone()),
+            );
+            attrs.insert(
+                "startup_run_id".to_string(),
+                serde_json::Value::String(startup_run_id.to_string()),
+            );
+            attrs.insert(
+                "postgres.data_dir".to_string(),
+                serde_json::Value::String(cfg.postgres.data_dir.display().to_string()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(err.to_string()),
+            );
+            log.emit_event(
+                SeverityText::Error,
+                "data dir inspection failed",
+                "runtime::plan_startup",
+                EventMeta::new("runtime.startup.data_dir.inspected", "runtime", "failed"),
+                attrs,
+            )
+            .map_err(|emit_err| {
+                RuntimeError::StartupPlanning(format!(
+                    "data dir inspection log emit failed: {emit_err}"
+                ))
+            })?;
+            return Err(err);
+        }
+    };
+
+    let cache = match probe(cfg) {
+        Ok(cache) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "scope".to_string(),
+                serde_json::Value::String(cfg.dcs.scope.clone()),
+            );
+            attrs.insert(
+                "member_id".to_string(),
+                serde_json::Value::String(cfg.cluster.member_id.clone()),
+            );
+            attrs.insert(
+                "startup_run_id".to_string(),
+                serde_json::Value::String(startup_run_id.to_string()),
+            );
+            attrs.insert("dcs_probe_status".to_string(), serde_json::Value::String("ok".to_string()));
+            log.emit_event(
+                SeverityText::Info,
+                "startup dcs cache probe ok",
+                "runtime::plan_startup",
+                EventMeta::new("runtime.startup.dcs_cache_probe", "runtime", "ok"),
+                attrs,
+            )
+            .map_err(|err| {
+                RuntimeError::StartupPlanning(format!("dcs cache probe log emit failed: {err}"))
+            })?;
+            Some(cache)
+        }
+        Err(err) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "scope".to_string(),
+                serde_json::Value::String(cfg.dcs.scope.clone()),
+            );
+            attrs.insert(
+                "member_id".to_string(),
+                serde_json::Value::String(cfg.cluster.member_id.clone()),
+            );
+            attrs.insert(
+                "startup_run_id".to_string(),
+                serde_json::Value::String(startup_run_id.to_string()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(err.to_string()),
+            );
+            attrs.insert(
+                "dcs_probe_status".to_string(),
+                serde_json::Value::String("failed".to_string()),
+            );
+            log.emit_event(
+                SeverityText::Warn,
+                "startup dcs cache probe failed; continuing without cache",
+                "runtime::plan_startup",
+                EventMeta::new("runtime.startup.dcs_cache_probe", "runtime", "failed"),
+                attrs,
+            )
+            .map_err(|emit_err| {
+                RuntimeError::StartupPlanning(format!(
+                    "dcs cache probe log emit failed: {emit_err}"
+                ))
+            })?;
+            None
+        }
+    };
+
+    let startup_mode = select_startup_mode(
         data_dir_state,
         cache.as_ref(),
         &cfg.cluster.member_id,
         process_defaults,
         cfg.postgres.connect_timeout_s,
         cfg.backup.bootstrap.enabled,
+    )?;
+
+    let mut attrs = BTreeMap::new();
+    attrs.insert(
+        "scope".to_string(),
+        serde_json::Value::String(cfg.dcs.scope.clone()),
+    );
+    attrs.insert(
+        "member_id".to_string(),
+        serde_json::Value::String(cfg.cluster.member_id.clone()),
+    );
+    attrs.insert(
+        "startup_run_id".to_string(),
+        serde_json::Value::String(startup_run_id.to_string()),
+    );
+    attrs.insert(
+        "startup_mode".to_string(),
+        serde_json::Value::String(format!("{startup_mode:?}").to_lowercase()),
+    );
+    log.emit_event(
+        SeverityText::Info,
+        "startup mode selected",
+        "runtime::plan_startup",
+        EventMeta::new("runtime.startup.mode_selected", "runtime", "ok"),
+        attrs,
     )
+    .map_err(|err| RuntimeError::StartupPlanning(format!("startup mode log emit failed: {err}")))?;
+
+    Ok(startup_mode)
 }
 
 fn inspect_data_dir(data_dir: &Path) -> Result<DataDirState, RuntimeError> {
@@ -363,34 +559,120 @@ async fn execute_startup(
     process_defaults: &ProcessDispatchDefaults,
     startup_mode: &StartupMode,
     log: &crate::logging::LogHandle,
+    startup_run_id: &str,
 ) -> Result<(), RuntimeError> {
     ensure_start_paths(process_defaults, &cfg.postgres.data_dir)?;
 
     let actions = build_startup_actions(cfg, startup_mode)?;
 
-    for action in actions {
+    let mut planned_attrs = BTreeMap::new();
+    planned_attrs.insert(
+        "scope".to_string(),
+        serde_json::Value::String(cfg.dcs.scope.clone()),
+    );
+    planned_attrs.insert(
+        "member_id".to_string(),
+        serde_json::Value::String(cfg.cluster.member_id.clone()),
+    );
+    planned_attrs.insert(
+        "startup_run_id".to_string(),
+        serde_json::Value::String(startup_run_id.to_string()),
+    );
+    planned_attrs.insert(
+        "startup_mode".to_string(),
+        serde_json::Value::String(format!("{startup_mode:?}").to_lowercase()),
+    );
+    planned_attrs.insert(
+        "startup_actions_total".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(actions.len() as u64)),
+    );
+    log.emit_event(
+        SeverityText::Debug,
+        "startup actions planned",
+        "runtime::execute_startup",
+        EventMeta::new("runtime.startup.actions_planned", "runtime", "ok"),
+        planned_attrs,
+    )
+    .map_err(|err| RuntimeError::StartupExecution(format!("startup actions log emit failed: {err}")))?;
+
+    for (action_index, action) in actions.into_iter().enumerate() {
+        let action_kind = match &action {
+            StartupAction::ClaimInitLockAndSeedConfig => "claim_init_lock_and_seed_config",
+            StartupAction::RunJob(_) => "run_job",
+            StartupAction::TakeoverRestoredDataDir => "takeover_restored_data_dir",
+            StartupAction::StartPostgres => "start_postgres",
+        };
+        let mut step_attrs = BTreeMap::new();
+        step_attrs.insert(
+            "scope".to_string(),
+            serde_json::Value::String(cfg.dcs.scope.clone()),
+        );
+        step_attrs.insert(
+            "member_id".to_string(),
+            serde_json::Value::String(cfg.cluster.member_id.clone()),
+        );
+        step_attrs.insert(
+            "startup_run_id".to_string(),
+            serde_json::Value::String(startup_run_id.to_string()),
+        );
+        step_attrs.insert(
+            "startup_mode".to_string(),
+            serde_json::Value::String(format!("{startup_mode:?}").to_lowercase()),
+        );
+        step_attrs.insert(
+            "startup_action_index".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
+        );
+        step_attrs.insert(
+            "startup_action_kind".to_string(),
+            serde_json::Value::String(action_kind.to_string()),
+        );
+        log.emit_event(
+            SeverityText::Info,
+            "startup action started",
+            "runtime::execute_startup",
+            EventMeta::new("runtime.startup.action", "runtime", "started"),
+            step_attrs.clone(),
+        )
+        .map_err(|err| RuntimeError::StartupExecution(format!("startup action log emit failed: {err}")))?;
+
         match &action {
             StartupAction::RunJob(job)
                 if matches!(job.as_ref(), ProcessJobKind::PgBackRestRestore(_)) =>
             {
-                let _ = emit_startup_phase(log, "restore", "pgbackrest restore");
+                emit_startup_phase(log, "restore", "pgbackrest restore").map_err(|err| {
+                    RuntimeError::StartupExecution(format!("startup phase log emit failed: {err}"))
+                })?;
             }
             StartupAction::TakeoverRestoredDataDir => {
-                let _ = emit_startup_phase(log, "takeover", "managed pre-recovery takeover");
+                emit_startup_phase(log, "takeover", "managed pre-recovery takeover").map_err(
+                    |err| {
+                        RuntimeError::StartupExecution(format!(
+                            "startup phase log emit failed: {err}"
+                        ))
+                    },
+                )?;
             }
             StartupAction::StartPostgres => {
-                let _ = emit_startup_phase(log, "start", "start postgres with managed config");
+                emit_startup_phase(log, "start", "start postgres with managed config").map_err(
+                    |err| {
+                        RuntimeError::StartupExecution(format!(
+                            "startup phase log emit failed: {err}"
+                        ))
+                    },
+                )?;
             }
             _ => {}
         }
 
-        match action {
+        let result = match action {
             StartupAction::ClaimInitLockAndSeedConfig => {
                 claim_dcs_init_lock_and_seed_config(cfg).map_err(|err| {
                     RuntimeError::StartupExecution(format!("dcs init lock claim failed: {err}"))
                 })?;
+                Ok(())
             }
-            StartupAction::RunJob(job) => run_startup_job(cfg, *job, log).await?,
+            StartupAction::RunJob(job) => run_startup_job(cfg, *job, log).await,
             StartupAction::TakeoverRestoredDataDir => {
                 crate::postgres_managed::takeover_restored_data_dir(
                     cfg,
@@ -402,9 +684,46 @@ async fn execute_startup(
                         "takeover restored data dir failed: {err}"
                     ))
                 })?;
+                Ok(())
             }
-            StartupAction::StartPostgres => run_start_job(cfg, process_defaults, log).await?,
-        }
+            StartupAction::StartPostgres => run_start_job(cfg, process_defaults, log).await,
+        };
+
+        match result {
+            Ok(()) => {
+                let done_attrs = step_attrs;
+                log.emit_event(
+                    SeverityText::Info,
+                    "startup action completed",
+                    "runtime::execute_startup",
+                    EventMeta::new("runtime.startup.action", "runtime", "ok"),
+                    done_attrs,
+                )
+                .map_err(|err| {
+                    RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
+                })?;
+            }
+            Err(err) => {
+                let mut failed_attrs = step_attrs;
+                failed_attrs.insert(
+                    "error".to_string(),
+                    serde_json::Value::String(err.to_string()),
+                );
+                log.emit_event(
+                    SeverityText::Error,
+                    "startup action failed",
+                    "runtime::execute_startup",
+                    EventMeta::new("runtime.startup.action", "runtime", "failed"),
+                    failed_attrs,
+                )
+                .map_err(|emit_err| {
+                    RuntimeError::StartupExecution(format!(
+                        "startup action failure log emit failed: {emit_err}"
+                    ))
+                })?;
+                return Err(err);
+            }
+        };
     }
 
     Ok(())
@@ -563,9 +882,51 @@ async fn run_startup_job(
     let deadline = started.0.saturating_add(timeout_ms);
 
     loop {
-        if let Ok(lines) = handle.drain_output(256 * 1024).await {
-            for line in lines {
-                let _ = emit_startup_subprocess_line(log, &log_identity, line);
+        let lines = handle.drain_output(256 * 1024).await.map_err(|err| {
+            RuntimeError::StartupExecution(format!("startup process output drain failed: {err}"))
+        })?;
+        for line in lines {
+            if let Err(err) = emit_startup_subprocess_line(log, &log_identity, line.clone()) {
+                let mut attrs = BTreeMap::new();
+                attrs.insert(
+                    "job_id".to_string(),
+                    serde_json::Value::String(log_identity.job_id.0.clone()),
+                );
+                attrs.insert(
+                    "job_kind".to_string(),
+                    serde_json::Value::String(log_identity.job_kind.clone()),
+                );
+                attrs.insert(
+                    "binary".to_string(),
+                    serde_json::Value::String(log_identity.binary.clone()),
+                );
+                attrs.insert(
+                    "stream".to_string(),
+                    serde_json::Value::String(match line.stream {
+                        crate::process::jobs::ProcessOutputStream::Stdout => "stdout".to_string(),
+                        crate::process::jobs::ProcessOutputStream::Stderr => "stderr".to_string(),
+                    }),
+                );
+                attrs.insert(
+                    "bytes_len".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(line.bytes.len() as u64)),
+                );
+                attrs.insert(
+                    "error".to_string(),
+                    serde_json::Value::String(err.to_string()),
+                );
+                log.emit_event(
+                    SeverityText::Warn,
+                    "startup subprocess line emit failed",
+                    "runtime::run_startup_job",
+                    EventMeta::new("runtime.startup.subprocess_log_emit_failed", "runtime", "failed"),
+                    attrs,
+                )
+                .map_err(|emit_err| {
+                    RuntimeError::StartupExecution(format!(
+                        "startup subprocess emit failure log emit failed: {emit_err}"
+                    ))
+                })?;
             }
         }
 
@@ -574,10 +935,17 @@ async fn run_startup_job(
         })? {
             Some(ProcessExit::Success) => return Ok(()),
             Some(ProcessExit::Failure { code }) => {
-                if let Ok(lines) = handle.drain_output(256 * 1024).await {
-                    for line in lines {
-                        let _ = emit_startup_subprocess_line(log, &log_identity, line);
-                    }
+                let lines = handle.drain_output(256 * 1024).await.map_err(|err| {
+                    RuntimeError::StartupExecution(format!(
+                        "startup process output drain failed: {err}"
+                    ))
+                })?;
+                for line in lines {
+                    emit_startup_subprocess_line(log, &log_identity, line).map_err(|err| {
+                        RuntimeError::StartupExecution(format!(
+                            "startup subprocess line emit failed: {err}"
+                        ))
+                    })?;
                 }
                 return Err(RuntimeError::StartupExecution(format!(
                     "startup command `{command_display}` exited unsuccessfully (code: {code:?})"
@@ -593,10 +961,15 @@ async fn run_startup_job(
                     "startup command `{command_display}` timeout cancellation failed: {err}"
                 ))
             })?;
-            if let Ok(lines) = handle.drain_output(256 * 1024).await {
-                for line in lines {
-                    let _ = emit_startup_subprocess_line(log, &log_identity, line);
-                }
+            let lines = handle.drain_output(256 * 1024).await.map_err(|err| {
+                RuntimeError::StartupExecution(format!(
+                    "startup process output drain failed: {err}"
+                ))
+            })?;
+            for line in lines {
+                emit_startup_subprocess_line(log, &log_identity, line).map_err(|err| {
+                    RuntimeError::StartupExecution(format!("startup subprocess line emit failed: {err}"))
+                })?;
             }
             return Err(RuntimeError::StartupExecution(format!(
                 "startup command `{command_display}` timed out after {timeout_ms} ms"
@@ -654,6 +1027,13 @@ fn emit_startup_subprocess_line(
     record.attributes.insert(
         "binary".to_string(),
         serde_json::Value::String(identity.binary.clone()),
+    );
+    record.attributes.insert(
+        "stream".to_string(),
+        serde_json::Value::String(match line.stream {
+            crate::process::jobs::ProcessOutputStream::Stdout => "stdout".to_string(),
+            crate::process::jobs::ProcessOutputStream::Stderr => "stderr".to_string(),
+        }),
     );
     if let Some(hex) = raw_bytes_hex {
         record.attributes.insert(
@@ -743,6 +1123,8 @@ async fn run_workers(
         ),
         poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
         publisher: pg_publisher,
+        log: log.clone(),
+        last_emitted_sql_status: None,
     };
 
     let dcs_store = EtcdDcsStore::connect(cfg.dcs.endpoints.clone(), &scope)
@@ -754,6 +1136,7 @@ async fn run_workers(
         pg_subscriber: pg_subscriber.clone(),
         publisher: dcs_publisher,
         store: Box::new(dcs_store),
+        log: log.clone(),
         cache: DcsCache {
             members: BTreeMap::new(),
             leader: None,
@@ -762,6 +1145,8 @@ async fn run_workers(
             init_lock: None,
         },
         last_published_pg_version: None,
+        last_emitted_store_healthy: None,
+        last_emitted_trust: None,
     };
 
     let (process_inbox_tx, process_inbox_rx) = mpsc::unbounded_channel();
@@ -773,6 +1158,7 @@ async fn run_workers(
         state: initial_process,
         publisher: process_publisher,
         inbox: process_inbox_rx,
+        inbox_disconnected_logged: false,
         command_runner: Box::new(TokioCommandRunner),
         active_runtime: None,
         last_rejection: None,
@@ -795,6 +1181,7 @@ async fn run_workers(
     ha_ctx.poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
     ha_ctx.now = Box::new(system_now_unix_millis);
     ha_ctx.process_defaults = process_defaults;
+    ha_ctx.log = log.clone();
 
     let mut debug_ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {
         publisher: debug_publisher,
@@ -816,7 +1203,12 @@ async fn run_workers(
             listen_addr: cfg.api.listen_addr.clone(),
             message: err.to_string(),
         })?;
-    let mut api_ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(api_store));
+    let mut api_ctx = ApiWorkerCtx::new(
+        listener,
+        cfg_subscriber,
+        Box::new(api_store),
+        log.clone(),
+    );
     api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
     let server_tls = crate::tls::build_rustls_server_config(&cfg.api.security.tls)
         .map_err(|err| RuntimeError::Worker(format!("api tls config build failed: {err}")))?;
@@ -897,6 +1289,7 @@ mod tests {
         collections::BTreeMap,
         fs, io,
         path::PathBuf,
+        sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -909,6 +1302,7 @@ mod tests {
             ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
         },
         dcs::state::{DcsCache, LeaderRecord, MemberRecord, MemberRole},
+        logging::{LogHandle, LogSink, SeverityText, TestSink},
         pginfo::state::{Readiness, SqlStatus},
         state::{MemberId, UnixMillis, Version},
     };
@@ -918,6 +1312,7 @@ mod tests {
         default_leader_source, inspect_data_dir, select_startup_mode, DataDirState, StartupMode,
     };
     use super::{build_startup_actions, StartupAction};
+    use super::{plan_startup_with_probe, process_defaults_from_config};
 
     fn sample_runtime_config() -> RuntimeConfig {
         RuntimeConfig {
@@ -1056,6 +1451,15 @@ mod tests {
         Ok(())
     }
 
+    fn test_log_handle() -> (LogHandle, Arc<TestSink>) {
+        let sink = Arc::new(TestSink::default());
+        let sink_dyn: Arc<dyn LogSink> = sink.clone();
+        (
+            LogHandle::new("host-a".to_string(), sink_dyn, SeverityText::Trace),
+            sink,
+        )
+    }
+
     #[test]
     fn inspect_data_dir_classifies_missing_empty_and_existing(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1076,6 +1480,76 @@ mod tests {
 
         remove_if_exists(&empty)?;
         remove_if_exists(&existing)?;
+        Ok(())
+    }
+
+    #[test]
+    fn plan_startup_emits_data_dir_and_mode_events_without_network_probe(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cfg = sample_runtime_config();
+        let dir = temp_path("plan-startup-log");
+        remove_if_exists(&dir)?;
+        cfg.postgres.data_dir = dir.clone();
+
+        let process_defaults = process_defaults_from_config(&cfg);
+        let (log, sink) = test_log_handle();
+
+        let _startup_mode = plan_startup_with_probe(
+            &cfg,
+            &process_defaults,
+            &log,
+            "run-1",
+            |_cfg| {
+                Ok(DcsCache {
+                    members: BTreeMap::new(),
+                    leader: None,
+                    switchover: None,
+                    config: cfg.clone(),
+                    init_lock: None,
+                })
+            },
+        )?;
+
+        let inspected = sink.collect_matching(|record| {
+            matches!(
+                record.attributes.get("event.name"),
+                Some(serde_json::Value::String(name))
+                    if name == "runtime.startup.data_dir.inspected"
+            )
+        })?;
+        if inspected.is_empty() {
+            return Err(Box::new(io::Error::other(
+                "expected runtime.startup.data_dir.inspected event",
+            )));
+        }
+
+        let probe = sink.collect_matching(|record| {
+            matches!(
+                record.attributes.get("event.name"),
+                Some(serde_json::Value::String(name))
+                    if name == "runtime.startup.dcs_cache_probe"
+            )
+        })?;
+        if probe.is_empty() {
+            return Err(Box::new(io::Error::other(
+                "expected runtime.startup.dcs_cache_probe event",
+            )));
+        }
+
+        let mode_selected = sink.collect_matching(|record| {
+            matches!(
+                record.attributes.get("event.name"),
+                Some(serde_json::Value::String(name))
+                    if name == "runtime.startup.mode_selected"
+            )
+        })?;
+        if mode_selected.is_empty() {
+            return Err(Box::new(io::Error::other(
+                "expected runtime.startup.mode_selected event",
+            )));
+        }
+
+        remove_if_exists(&dir)?;
         Ok(())
     }
 

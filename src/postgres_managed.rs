@@ -650,6 +650,7 @@ mod tests {
             state: initial,
             publisher,
             inbox: rx,
+            inbox_disconnected_logged: false,
             command_runner: Box::new(TokioCommandRunner),
             active_runtime: None,
             last_rejection: None,

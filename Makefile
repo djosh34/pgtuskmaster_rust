@@ -3,7 +3,7 @@ MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test-long lint docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-timeout guard-makeflags
+.PHONY: check test test-long lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-timeout guard-makeflags
 
 SINGLE_DASH_MAKEFLAGS := $(filter -%,$(MAKEFLAGS))
 SINGLE_DASH_MAKEFLAGS := $(filter-out --%,$(SINGLE_DASH_MAKEFLAGS))
@@ -187,7 +187,11 @@ docs-lint: guard-makeflags ensure-timeout ensure-node
 	"$(GATE_STEP)" --gate docs-lint --step docs_lint.no_code_guard --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(LINT_DOCS_TIMEOUT_SECS)" --kill-after-secs "$(LINT_DOCS_TIMEOUT_KILL_AFTER_SECS)" -- \
 		./tools/docs-architecture-no-code-guard.sh
 
-lint: guard-makeflags ensure-timeout docs-lint
+lint.no_silent_errors: guard-makeflags ensure-timeout
+	"$(GATE_STEP)" --gate lint --step lint.no_silent_errors --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(LINT_DOCS_TIMEOUT_SECS)" --kill-after-secs "$(LINT_DOCS_TIMEOUT_KILL_AFTER_SECS)" -- \
+		./tools/lint-no-silent-errors.sh
+
+lint: guard-makeflags ensure-timeout docs-lint lint.no_silent_errors
 	"$(GATE_STEP)" --gate lint --step lint.clippy.all_targets --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(LINT_CLIPPY_TIMEOUT_SECS)" --kill-after-secs "$(LINT_CLIPPY_TIMEOUT_KILL_AFTER_SECS)" -- \
 		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --all-targets --all-features -- -D warnings
 	# Strict restriction-lint pass for runtime library builds.

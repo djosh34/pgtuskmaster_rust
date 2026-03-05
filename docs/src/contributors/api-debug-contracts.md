@@ -143,6 +143,11 @@ Returns a structured JSON payload built by `src/debug_api/view.rs`:
 
 The `since=<sequence>` query parameter allows clients (including the built-in debug UI) to poll incrementally.
 
+Important semantic rule (to avoid “timeline noise”):
+
+- timeline/change entries are recorded on *semantic* diffs, not just on monotonic `Version` churn
+- for HA specifically, tick-only changes do not generate new timeline entries (the tick is still part of the snapshot, but it is not used as a “did something change?” detector)
+
 ### `GET /debug/ui`
 
 Serves a small HTML/JS page that polls `/debug/verbose` and renders:

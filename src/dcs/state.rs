@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::RuntimeConfig,
+    logging::LogHandle,
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     state::{
         MemberId, StatePublisher, StateSubscriber, TimelineId, UnixMillis, Version, WalLsn,
@@ -80,8 +81,11 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
     pub(crate) publisher: StatePublisher<DcsState>,
     pub(crate) store: Box<dyn DcsStore>,
+    pub(crate) log: LogHandle,
     pub(crate) cache: DcsCache,
     pub(crate) last_published_pg_version: Option<Version>,
+    pub(crate) last_emitted_store_healthy: Option<bool>,
+    pub(crate) last_emitted_trust: Option<DcsTrust>,
 }
 
 pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &MemberId) -> DcsTrust {

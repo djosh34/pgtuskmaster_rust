@@ -42,6 +42,36 @@ pgtuskmasterctl switchover cancel
 
 Use planned switchover workflows for controlled role transitions. Avoid ad-hoc out-of-band interventions unless the documented lifecycle path is confirmed blocked.
 
+## Structured runtime event logs
+
+pgtuskmaster emits structured log records designed for “operator-grade reconstruction”.
+
+Most runtime records include a small event taxonomy in attributes:
+
+- `event.name`: a stable event identifier (machine-friendly)
+- `event.domain`: subsystem (for example `runtime`, `ha`, `process`, `api`, `dcs`, `pginfo`, `postgres_ingest`)
+- `event.result`: outcome label (`ok`, `failed`, `started`, `recovered`, `skipped`, etc.)
+
+Common correlation attributes:
+
+- **Node identity:** `scope`, `member_id`
+- **Startup:** `startup_run_id`
+- **HA:** `ha_tick`, `ha_dispatch_seq`, `action_id`, `action_kind`, `action_index`
+- **Process jobs:** `job_id`, `job_kind`, `binary`
+- **Subprocess output:** `stream` (`stdout|stderr`) when captured
+- **API:** `api.peer_addr`, `api.method`, `api.route_template`, `api.status_code`
+
+Recommended operator workflow:
+
+1. Start from the high-level lifecycle markers (`runtime.startup.*`, `ha.phase.transition`).
+2. Correlate intent → dispatch → outcome:
+   - `ha.action.intent` → `ha.action.dispatch` → `ha.action.result`
+   - `process.job.started` → `process.job.exited|process.job.timeout|process.job.poll_failed`
+3. Use warning/error events as the “why” layer:
+   - DCS: `dcs.local_member.write_failed`, `dcs.watch.*_failed`
+   - PgInfo: `pginfo.poll_failed`, `pginfo.sql_transition`
+   - API: `api.step_once_failed`, `api.tls_handshake_failed`
+
 ## Backup / restore observability
 
 pgtuskmaster runs backup/restore operations as PgTool subprocess jobs and captures stdout/stderr into log records. Use those PgTool records (for example `job_kind=pgbackrest_restore`) plus the local PostgreSQL logs to debug recovery bootstrap and backup failures.
@@ -54,6 +84,10 @@ The Postgres ingest worker tails configured inputs and emits internal diagnostic
 
 What to look for in logs:
 
-- internal log records with `origin=postgres_ingest`
+- internal log records with `event.domain=postgres_ingest` (and usually `origin=postgres_ingest::...`)
+- event identifiers like:
+  - `postgres_ingest.iteration` (debug breadcrumbs)
+  - `postgres_ingest.step_once_failed` (warn/error)
+  - `postgres_ingest.recovered` (recovery marker)
 - stable tags in the message payload: `stage=... kind=... path=...`
 - `suppressed=N` when repeated identical failures are rate-limited

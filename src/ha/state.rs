@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 use crate::{
     config::RuntimeConfig,
     dcs::{state::DcsState, store::DcsHaWriter},
+    logging::LogHandle,
     pginfo::state::{PgConnInfo, PgInfoState, PgSslMode},
     process::{
         jobs::{ReplicatorSourceConn, RewinderSourceConn, ShutdownMode},
@@ -73,6 +74,7 @@ pub(crate) struct HaWorkerCtx {
     pub(crate) self_id: MemberId,
     pub(crate) process_defaults: ProcessDispatchDefaults,
     pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
+    pub(crate) log: LogHandle,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,6 +172,7 @@ impl HaWorkerCtx {
             self_id,
             process_defaults: ProcessDispatchDefaults::contract_stub(),
             now: Box::new(|| Ok(UnixMillis(0))),
+            log: LogHandle::disabled(),
         }
     }
 }

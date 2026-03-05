@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::state::WorkerError;
 
 use super::{
@@ -78,17 +80,82 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     if ctx.last_published_pg_version != Some(pg_snapshot.version) {
         let local_member =
             build_local_member_record(&ctx.self_id, &pg_snapshot.value, now, pg_snapshot.version);
-        if write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member).is_ok() {
-            ctx.last_published_pg_version = Some(pg_snapshot.version);
-            ctx.cache.members.insert(ctx.self_id.clone(), local_member);
-        } else {
-            store_healthy = false;
+        match write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member) {
+            Ok(()) => {
+                ctx.last_published_pg_version = Some(pg_snapshot.version);
+                ctx.cache.members.insert(ctx.self_id.clone(), local_member);
+            }
+            Err(err) => {
+                let mut attrs = BTreeMap::new();
+                attrs.insert(
+                    "scope".to_string(),
+                    serde_json::Value::String(ctx.scope.clone()),
+                );
+                attrs.insert(
+                    "member_id".to_string(),
+                    serde_json::Value::String(ctx.self_id.0.clone()),
+                );
+                attrs.insert(
+                    "error".to_string(),
+                    serde_json::Value::String(err.to_string()),
+                );
+                ctx.log
+                    .emit_event(
+                        match &err {
+                            crate::dcs::store::DcsStoreError::Io(_) => {
+                                crate::logging::SeverityText::Warn
+                            }
+                            _ => crate::logging::SeverityText::Error,
+                        },
+                        "dcs local member write failed",
+                        "dcs_worker::step_once",
+                        crate::logging::EventMeta::new(
+                            "dcs.local_member.write_failed",
+                            "dcs",
+                            "failed",
+                        ),
+                        attrs,
+                    )
+                    .map_err(|emit_err| {
+                        WorkerError::Message(format!(
+                            "dcs local member write log emit failed: {emit_err}"
+                        ))
+                    })?;
+                store_healthy = false;
+            }
         }
     }
 
     let events = match ctx.store.drain_watch_events() {
         Ok(events) => events,
-        Err(_) => {
+        Err(err) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "scope".to_string(),
+                serde_json::Value::String(ctx.scope.clone()),
+            );
+            attrs.insert(
+                "member_id".to_string(),
+                serde_json::Value::String(ctx.self_id.0.clone()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(err.to_string()),
+            );
+            ctx.log
+                .emit_event(
+                    match &err {
+                        crate::dcs::store::DcsStoreError::Io(_) => crate::logging::SeverityText::Warn,
+                        _ => crate::logging::SeverityText::Error,
+                    },
+                    "dcs watch drain failed",
+                    "dcs_worker::step_once",
+                    crate::logging::EventMeta::new("dcs.watch.drain_failed", "dcs", "failed"),
+                    attrs,
+                )
+                .map_err(|emit_err| {
+                    WorkerError::Message(format!("dcs drain log emit failed: {emit_err}"))
+                })?;
             store_healthy = false;
             Vec::new()
         }
@@ -96,10 +163,69 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     match refresh_from_etcd_watch(&ctx.scope, &mut ctx.cache, events) {
         Ok(result) => {
             if result.had_errors {
+                let mut attrs = BTreeMap::new();
+                attrs.insert(
+                    "scope".to_string(),
+                    serde_json::Value::String(ctx.scope.clone()),
+                );
+                attrs.insert(
+                    "member_id".to_string(),
+                    serde_json::Value::String(ctx.self_id.0.clone()),
+                );
+                attrs.insert(
+                    "applied".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(result.applied as u64)),
+                );
+                ctx.log
+                    .emit_event(
+                        crate::logging::SeverityText::Warn,
+                        "dcs watch refresh had errors",
+                        "dcs_worker::step_once",
+                        crate::logging::EventMeta::new(
+                            "dcs.watch.apply_had_errors",
+                            "dcs",
+                            "failed",
+                        ),
+                        attrs,
+                    )
+                    .map_err(|emit_err| {
+                        WorkerError::Message(format!(
+                            "dcs refresh had_errors log emit failed: {emit_err}"
+                        ))
+                    })?;
                 store_healthy = false;
             }
         }
-        Err(_) => {
+        Err(err) => {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(
+                "scope".to_string(),
+                serde_json::Value::String(ctx.scope.clone()),
+            );
+            attrs.insert(
+                "member_id".to_string(),
+                serde_json::Value::String(ctx.self_id.0.clone()),
+            );
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(err.to_string()),
+            );
+            ctx.log
+                .emit_event(
+                    match &err {
+                        crate::dcs::store::DcsStoreError::Io(_) => crate::logging::SeverityText::Warn,
+                        crate::dcs::store::DcsStoreError::InvalidKey(_)
+                        | crate::dcs::store::DcsStoreError::MissingValue(_) => crate::logging::SeverityText::Warn,
+                        _ => crate::logging::SeverityText::Error,
+                    },
+                    "dcs watch refresh failed",
+                    "dcs_worker::step_once",
+                    crate::logging::EventMeta::new("dcs.watch.refresh_failed", "dcs", "failed"),
+                    attrs,
+                )
+                .map_err(|emit_err| {
+                    WorkerError::Message(format!("dcs refresh log emit failed: {emit_err}"))
+                })?;
             store_healthy = false;
         }
     }
@@ -121,6 +247,74 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
         cache: ctx.cache.clone(),
         last_refresh_at: Some(now),
     };
+    if ctx.last_emitted_store_healthy != Some(store_healthy) {
+        ctx.last_emitted_store_healthy = Some(store_healthy);
+        let mut attrs = BTreeMap::new();
+        attrs.insert(
+            "scope".to_string(),
+            serde_json::Value::String(ctx.scope.clone()),
+        );
+        attrs.insert(
+            "member_id".to_string(),
+            serde_json::Value::String(ctx.self_id.0.clone()),
+        );
+        attrs.insert(
+            "store_healthy".to_string(),
+            serde_json::Value::Bool(store_healthy),
+        );
+        ctx.log
+            .emit_event(
+                if store_healthy {
+                    crate::logging::SeverityText::Info
+                } else {
+                    crate::logging::SeverityText::Warn
+                },
+                "dcs store health transition",
+                "dcs_worker::step_once",
+                crate::logging::EventMeta::new(
+                    "dcs.store.health_transition",
+                    "dcs",
+                    if store_healthy { "recovered" } else { "failed" },
+                ),
+                attrs,
+            )
+            .map_err(|emit_err| {
+                WorkerError::Message(format!("dcs health transition log emit failed: {emit_err}"))
+            })?;
+    }
+    if ctx.last_emitted_trust.as_ref() != Some(&next.trust) {
+        let prev = ctx
+            .last_emitted_trust
+            .as_ref()
+            .map(|value| format!("{value:?}").to_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
+        ctx.last_emitted_trust = Some(next.trust.clone());
+        let mut attrs = BTreeMap::new();
+        attrs.insert(
+            "scope".to_string(),
+            serde_json::Value::String(ctx.scope.clone()),
+        );
+        attrs.insert(
+            "member_id".to_string(),
+            serde_json::Value::String(ctx.self_id.0.clone()),
+        );
+        attrs.insert("trust_prev".to_string(), serde_json::Value::String(prev));
+        attrs.insert(
+            "trust_next".to_string(),
+            serde_json::Value::String(format!("{:?}", next.trust).to_lowercase()),
+        );
+        ctx.log
+            .emit_event(
+                crate::logging::SeverityText::Info,
+                "dcs trust transition",
+                "dcs_worker::step_once",
+                crate::logging::EventMeta::new("dcs.trust.transition", "dcs", "ok"),
+                attrs,
+            )
+            .map_err(|emit_err| {
+                WorkerError::Message(format!("dcs trust transition log emit failed: {emit_err}"))
+            })?;
+    }
     ctx.publisher
         .publish(next, now)
         .map_err(|err| WorkerError::Message(format!("dcs publish failed: {err}")))?;
@@ -161,6 +355,7 @@ mod tests {
             store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
             worker::{apply_watch_update, DcsValue, DcsWatchUpdate},
         },
+        logging::{LogHandle, LogSink, SeverityText, TestSink},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
@@ -218,6 +413,42 @@ mod tests {
                 .map_err(|_| DcsStoreError::Io("writes lock poisoned".to_string()))?;
             guard.push((path.to_string(), value));
             Ok(())
+        }
+
+        fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
+            Ok(())
+        }
+
+        fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
+            let mut guard = self
+                .events
+                .lock()
+                .map_err(|_| DcsStoreError::Io("events lock poisoned".to_string()))?;
+            Ok(guard.drain(..).collect())
+        }
+    }
+
+    fn test_log_handle() -> (LogHandle, Arc<TestSink>) {
+        let sink = Arc::new(TestSink::default());
+        let sink_dyn: Arc<dyn LogSink> = sink.clone();
+        (
+            LogHandle::new("host-a".to_string(), sink_dyn, SeverityText::Trace),
+            sink,
+        )
+    }
+
+    #[derive(Clone, Default)]
+    struct FailingWriteStore {
+        events: Arc<Mutex<VecDeque<WatchEvent>>>,
+    }
+
+    impl DcsStore for FailingWriteStore {
+        fn healthy(&self) -> bool {
+            true
+        }
+
+        fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
+            Err(DcsStoreError::Io("boom".to_string()))
         }
 
         fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
@@ -503,8 +734,11 @@ mod tests {
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
             cache: sample_cache(sample_runtime_config()),
             last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
         };
 
         let stepped = step_once(&mut ctx).await;
@@ -523,6 +757,59 @@ mod tests {
             store_probe.first_write_path(),
             Some("/scope-a/member/node-a".to_string())
         );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_emits_local_member_write_failed_event_for_io_error(
+    ) -> Result<(), WorkerError> {
+        let initial_pg = sample_pg();
+        let (_pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
+
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let (log, sink) = test_log_handle();
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: Duration::from_millis(5),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(FailingWriteStore::default()),
+            log,
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
+        };
+
+        step_once(&mut ctx).await?;
+
+        let failures = sink
+            .collect_matching(|record| {
+                matches!(
+                    record.attributes.get("event.name"),
+                    Some(serde_json::Value::String(name))
+                        if name == "dcs.local_member.write_failed"
+                )
+            })
+            .map_err(|err| WorkerError::Message(format!("log snapshot failed: {err}")))?;
+        if failures.is_empty() {
+            return Err(WorkerError::Message(
+                "expected dcs.local_member.write_failed event".to_string(),
+            ));
+        }
+        if !failures.iter().any(|record| record.severity_text == SeverityText::Warn) {
+            return Err(WorkerError::Message(
+                "expected dcs.local_member.write_failed severity warn".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -547,8 +834,11 @@ mod tests {
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
             cache: sample_cache(sample_runtime_config()),
             last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
         };
 
         let first = step_once(&mut ctx).await;
@@ -591,8 +881,11 @@ mod tests {
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
             cache: sample_cache(sample_runtime_config()),
             last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
         };
 
         assert_eq!(step_once(&mut ctx).await, Ok(()));
@@ -631,8 +924,11 @@ mod tests {
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
             cache: sample_cache(sample_runtime_config()),
             last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
         };
 
         assert_eq!(step_once(&mut ctx).await, Ok(()));

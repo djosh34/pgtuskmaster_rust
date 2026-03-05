@@ -165,6 +165,10 @@ impl DirTailers {
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&PathBuf, &mut FileTailer)> {
         self.tailers.iter_mut()
     }
+
+    pub(crate) fn len(&self) -> usize {
+        self.tailers.len()
+    }
 }
 
 #[cfg(test)]

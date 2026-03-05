@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::config::{LogCleanupConfig, RuntimeConfig};
 use crate::logging::{
-    LogHandle, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText,
+    EventMeta, LogHandle, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText,
 };
 use crate::state::WorkerError;
 
@@ -98,7 +98,7 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx) -> Result<(), WorkerError>
             match step_once(&ctx, &mut state).await {
                 Ok(()) => {
                     if consecutive_failures > 0 {
-                        emit_ingest_retry_recovered(&ctx.log, consecutive_failures);
+                        emit_ingest_retry_recovered(&ctx.log, consecutive_failures)?;
                         consecutive_failures = 0;
                     }
                 }
@@ -113,7 +113,7 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx) -> Result<(), WorkerError>
                             &error,
                             consecutive_failures,
                             decision.suppressed,
-                        );
+                        )?;
                     }
                 }
             }
@@ -164,32 +164,45 @@ fn emit_ingest_step_failure(
     error: &WorkerError,
     attempts: u32,
     suppressed: u64,
-) {
-    let _ = log.emit(
-        SeverityText::Error,
-        format!(
-            "postgres_ingest step_once failed: attempts={attempts} suppressed={suppressed} error={error}"
-        ),
-        LogSource {
-            producer: LogProducer::App,
-            transport: LogTransport::Internal,
-            parser: LogParser::App,
-            origin: "postgres_ingest".to_string(),
-        },
+) -> Result<(), WorkerError> {
+    let mut attrs = BTreeMap::new();
+    attrs.insert(
+        "attempts".to_string(),
+        Value::Number(serde_json::Number::from(attempts as u64)),
     );
+    attrs.insert(
+        "suppressed".to_string(),
+        Value::Number(serde_json::Number::from(suppressed)),
+    );
+    attrs.insert("error".to_string(), Value::String(error.to_string()));
+    log.emit_event(
+        SeverityText::Error,
+        "postgres ingest step_once failed",
+        "postgres_ingest::run",
+        EventMeta::new("postgres_ingest.step_once_failed", "postgres_ingest", "failed"),
+        attrs,
+    )
+    .map_err(|err| WorkerError::Message(format!("postgres ingest error log emit failed: {err}")))?;
+    Ok(())
 }
 
-fn emit_ingest_retry_recovered(log: &LogHandle, attempts: u32) {
-    let _ = log.emit(
-        SeverityText::Info,
-        format!("postgres_ingest recovered after {attempts} consecutive failed iterations"),
-        LogSource {
-            producer: LogProducer::App,
-            transport: LogTransport::Internal,
-            parser: LogParser::App,
-            origin: "postgres_ingest".to_string(),
-        },
+fn emit_ingest_retry_recovered(log: &LogHandle, attempts: u32) -> Result<(), WorkerError> {
+    let mut attrs = BTreeMap::new();
+    attrs.insert(
+        "attempts".to_string(),
+        Value::Number(serde_json::Number::from(attempts as u64)),
     );
+    log.emit_event(
+        SeverityText::Info,
+        "postgres ingest recovered",
+        "postgres_ingest::run",
+        EventMeta::new("postgres_ingest.recovered", "postgres_ingest", "recovered"),
+        attrs,
+    )
+    .map_err(|err| {
+        WorkerError::Message(format!("postgres ingest recovered log emit failed: {err}"))
+    })?;
+    Ok(())
 }
 
 struct PostgresIngestWorkerState {
@@ -216,6 +229,9 @@ async fn step_once(
     state: &mut PostgresIngestWorkerState,
 ) -> Result<(), WorkerError> {
     let max_bytes_per_file = 256 * 1024;
+    let mut pg_ctl_lines_emitted: u64 = 0;
+    let mut log_dir_lines_emitted: u64 = 0;
+    let mut log_dir_files_tailed: u64 = 0;
 
     #[derive(Clone, Debug)]
     struct IterationIssue {
@@ -265,6 +281,8 @@ async fn step_once(
                         state.pg_ctl_log.path(),
                         err,
                     );
+                } else {
+                    pg_ctl_lines_emitted = pg_ctl_lines_emitted.saturating_add(1);
                 }
             }
         }
@@ -285,6 +303,7 @@ async fn step_once(
         }
 
         for (path, tailer) in state.dir_tailers.iter_mut() {
+            log_dir_files_tailed = log_dir_files_tailed.saturating_add(1);
             let origin = format!("postgres_log_dir:{}", file_name_best_effort(path));
             match tailer.read_new_lines(max_bytes_per_file).await {
                 Ok(lines) => {
@@ -304,6 +323,8 @@ async fn step_once(
                                 tailer.path(),
                                 err,
                             );
+                        } else {
+                            log_dir_lines_emitted = log_dir_lines_emitted.saturating_add(1);
                         }
                     }
                 }
@@ -349,6 +370,34 @@ async fn step_once(
     }
 
     if issues.is_empty() {
+        let mut attrs = BTreeMap::new();
+        attrs.insert(
+            "pg_ctl_lines_emitted".to_string(),
+            Value::Number(serde_json::Number::from(pg_ctl_lines_emitted)),
+        );
+        attrs.insert(
+            "log_dir_files_tailed".to_string(),
+            Value::Number(serde_json::Number::from(log_dir_files_tailed)),
+        );
+        attrs.insert(
+            "log_dir_lines_emitted".to_string(),
+            Value::Number(serde_json::Number::from(log_dir_lines_emitted)),
+        );
+        attrs.insert(
+            "dir_tailers".to_string(),
+            Value::Number(serde_json::Number::from(state.dir_tailers.len() as u64)),
+        );
+        ctx.log
+            .emit_event(
+                SeverityText::Debug,
+                "postgres ingest iteration ok",
+                "postgres_ingest::step_once",
+                EventMeta::new("postgres_ingest.iteration", "postgres_ingest", "ok"),
+                attrs,
+            )
+            .map_err(|err| {
+                WorkerError::Message(format!("postgres ingest debug log emit failed: {err}"))
+            })?;
         return Ok(());
     }
 
@@ -401,7 +450,12 @@ async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), Wo
         let path = entry.path();
         let is_file = match entry.file_type().await {
             Ok(ft) => ft.is_file(),
-            Err(_) => false,
+            Err(err) => {
+                return Err(WorkerError::Message(format!(
+                    "stage=log_dir.discover kind=file_type path={} error={err}",
+                    path.display()
+                )));
+            }
         };
         if !is_file {
             continue;
@@ -456,7 +510,12 @@ async fn cleanup_log_dir(
         let path = entry.path();
         let is_file = match entry.file_type().await {
             Ok(ft) => ft.is_file(),
-            Err(_) => false,
+            Err(err) => {
+                return Err(WorkerError::Message(format!(
+                    "stage=cleanup.file_type kind=file_type path={} error={err}",
+                    path.display()
+                )));
+            }
         };
         if !is_file {
             continue;
@@ -512,8 +571,17 @@ async fn cleanup_log_dir(
         };
 
         if !protected {
-            let is_recent = match modified.and_then(|m| now.duration_since(m).ok()) {
-                Some(age) => age.as_secs() <= cleanup.protect_recent_seconds,
+            let is_recent = match modified {
+                Some(modified) => match now.duration_since(modified) {
+                    Ok(age) => age.as_secs() <= cleanup.protect_recent_seconds,
+                    Err(err) => {
+                        issues.push(format!(
+                            "stage=cleanup.age kind=duration_since path={} error={err}",
+                            path.display()
+                        ));
+                        true
+                    }
+                },
                 None => true,
             };
             if is_recent {
@@ -553,10 +621,17 @@ async fn cleanup_log_dir(
 
     if cleanup.max_age_seconds > 0 {
         for (path, modified) in eligible {
-            let age = now.duration_since(modified).ok();
-            if let Some(age) = age {
-                if age.as_secs() > cleanup.max_age_seconds {
-                    to_remove.push(path);
+            match now.duration_since(modified) {
+                Ok(age) => {
+                    if age.as_secs() > cleanup.max_age_seconds {
+                        to_remove.push(path);
+                    }
+                }
+                Err(err) => {
+                    issues.push(format!(
+                        "stage=cleanup.age kind=duration_since path={} error={err}",
+                        path.display()
+                    ));
                 }
             }
         }
@@ -774,6 +849,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use serde_json::Value;
+
     use crate::config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
         ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel,
@@ -786,8 +863,9 @@ mod tests {
     use crate::pginfo::conninfo::PgSslMode;
 
     use super::{
-        cleanup_log_dir, emit_ingest_step_failure, ingest_error_key_best_effort,
-        IngestErrorKey, IngestErrorRateLimiter, map_pg_severity, normalize_postgres_line,
+        cleanup_log_dir, decode_line, emit_ingest_step_failure, emit_postgres_line,
+        ingest_error_key_best_effort, IngestErrorKey, IngestErrorRateLimiter, map_pg_severity,
+        normalize_postgres_line,
     };
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -972,14 +1050,26 @@ mod tests {
         let (log, sink) = test_log_handle();
         let err = WorkerError::Message("stage=x kind=y path=/z error=boom".to_string());
 
-        emit_ingest_step_failure(&log, &err, 2, 7);
+        let emitted = emit_ingest_step_failure(&log, &err, 2, 7);
+        assert_eq!(emitted, Ok(()));
 
         let records = sink.take();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].severity_text, SeverityText::Error);
         assert_eq!(records[0].source.transport, LogTransport::Internal);
-        assert_eq!(records[0].source.origin, "postgres_ingest");
-        assert!(records[0].message.contains("suppressed=7"));
+        assert_eq!(records[0].source.origin, "postgres_ingest::run");
+        assert_eq!(
+            records[0].attributes.get("event.name"),
+            Some(&Value::String("postgres_ingest.step_once_failed".to_string()))
+        );
+        assert_eq!(
+            records[0].attributes.get("attempts"),
+            Some(&Value::Number(serde_json::Number::from(2_u64)))
+        );
+        assert_eq!(
+            records[0].attributes.get("suppressed"),
+            Some(&Value::Number(serde_json::Number::from(7_u64)))
+        );
     }
 
     #[test]
@@ -1041,6 +1131,56 @@ mod tests {
             record.attributes.get("raw_line"),
             Some(&serde_json::Value::String(raw.to_string()))
         );
+    }
+
+    #[test]
+    fn decode_line_encodes_non_utf8_bytes_as_hex() {
+        let bytes = [0xff_u8, 0x00, b'a', 0x80];
+        assert_eq!(decode_line(bytes.as_slice()), "non_utf8_bytes_hex=ff006180");
+    }
+
+    #[test]
+    fn normalize_postgres_line_preserves_raw_on_non_utf8_failure() {
+        let (log, _sink) = test_log_handle();
+        let source = LogSource {
+            producer: LogProducer::Postgres,
+            transport: LogTransport::FileTail,
+            parser: LogParser::Raw,
+            origin: "test".to_string(),
+        };
+        let bytes = [0xff_u8, 0x00, b'a', 0x80];
+        let raw = decode_line(bytes.as_slice());
+        let (record, parser) = normalize_postgres_line(&log, raw.as_str(), source);
+        assert_eq!(parser, LogParser::Raw);
+        assert_eq!(record.message, raw);
+        assert_eq!(record.attributes.get("parse_failed"), Some(&Value::Bool(true)));
+        assert_eq!(
+            record.attributes.get("raw_line"),
+            Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
+        );
+    }
+
+    #[test]
+    fn emit_postgres_line_emits_parse_failed_record_for_non_utf8() -> Result<(), WorkerError> {
+        let (log, sink) = test_log_handle();
+        let path = PathBuf::from("/tmp/pg.log");
+        let bytes = vec![0xff_u8, 0x00, b'a', 0x80];
+        emit_postgres_line(
+            &log,
+            LogProducer::Postgres,
+            LogTransport::FileTail,
+            "pg_ctl_log_file",
+            path.as_path(),
+            bytes,
+        )?;
+        let records = sink.take();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].attributes.get("parse_failed"), Some(&Value::Bool(true)));
+        assert_eq!(
+            records[0].attributes.get("raw_line"),
+            Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
+        );
+        Ok(())
     }
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -1484,6 +1624,7 @@ mod tests {
                 },
                 publisher,
                 inbox: rx,
+                inbox_disconnected_logged: false,
                 command_runner: Box::new(TokioCommandRunner),
                 active_runtime: None,
                 last_rejection: None,
@@ -1771,6 +1912,7 @@ mod tests {
                 state: initial,
                 publisher,
                 inbox: rx,
+                inbox_disconnected_logged: false,
                 command_runner: Box::new(TokioCommandRunner),
                 active_runtime: None,
                 last_rejection: None,

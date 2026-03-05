@@ -13,6 +13,10 @@ First checks:
 - runtime process status
 - configured `api.listen_addr`
 - API security settings versus client expectations
+- recent runtime/API events:
+  - `runtime.startup.entered` / `runtime.startup.mode_selected` to confirm startup completed
+  - `api.step_once_failed` (warn/error) for request-loop failures
+  - `api.tls_handshake_failed` / `api.tls_client_cert_missing` for TLS/mTLS policy mismatches
 
 ## Node reports fail-safe unexpectedly
 
@@ -25,6 +29,10 @@ First checks:
 - etcd transport/connect stability and timeouts
 - `[dcs].scope` consistency on all nodes
 - leader/member records in current scope
+- DCS trust/health transitions:
+  - `dcs.store.health_transition` (recovered/failed)
+  - `dcs.trust.transition` (fullquorum/failsafe/nottrusted)
+  - `dcs.watch.drain_failed` / `dcs.watch.refresh_failed` / `dcs.watch.apply_had_errors`
 
 ## Switchover request accepted but no transition
 
@@ -37,6 +45,10 @@ First checks:
 - `/ha/state` phase and trust on relevant nodes
 - DCS switchover intent visibility
 - PostgreSQL readiness on current and target nodes
+- HA + process correlation:
+  - `ha.phase.transition` and `ha.role.transition` to see where progression stops
+  - `ha.action.intent` / `ha.action.dispatch` / `ha.action.result` for per-action outcomes
+  - `process.job.started` / `process.job.exited|process.job.timeout` for side-effect execution
 
 ## Rewind/bootstrap loops
 
@@ -59,8 +71,13 @@ Likely causes:
 
 First checks:
 - config validation errors on startup (they include stable field paths)
-- PgTool subprocess logs (`job_kind=start_postgres|pgbackrest_restore`) for stderr output
-- internal ingest diagnostics (`origin=postgres_ingest`) if expected Postgres/backup signals are missing (look for `stage=... kind=... path=...` and `suppressed=N`)
+- runtime startup plan markers:
+  - `runtime.startup.mode_selected` (which startup mode was chosen)
+  - `runtime.startup.action` (per-action started/ok/failed)
+- PgTool/process job events (`event.domain=process`):
+  - `process.job.started` / `process.job.exited|process.job.timeout` with `job_kind=pgbackrest_restore|start_postgres`
+- internal ingest diagnostics (`event.domain=postgres_ingest`) if expected Postgres/backup signals are missing:
+  - `postgres_ingest.step_once_failed` and `postgres_ingest.iteration` with `stage=... kind=... path=...` and `suppressed=N`
 
 ## Leader flaps or repeated role churn
 

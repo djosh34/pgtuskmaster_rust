@@ -23,6 +23,8 @@ When debug support is enabled in runtime configuration:
 - `GET /debug/verbose` (optionally accepts `?since=<sequence>` to filter)
 - `GET /debug/snapshot`
 
+The debug verbose payload includes a bounded timeline/change stream that is intentionally *semantic*: it does not emit “tick-only churn” entries when the underlying state has not meaningfully changed.
+
 ## Why this exists
 
 The API is intentionally small to keep operational behavior explicit. It is designed around intent and state, not low-level procedure endpoints.
