@@ -53,6 +53,7 @@ Check:
 Check:
 
 - Postgres logs for repeated WAL restore attempts and error signatures
+- that `restore_command` is owned by pgtuskmaster (it should invoke `pgtuskmaster wal --pgdata <PGDATA> archive-get ...`) and that `PGDATA/pgtm.pgbackrest.archive.json` exists and matches your pgBackRest repo configuration
 - PgTool output records for `job_kind=pgbackrest_restore` and `job_kind=start_postgres` (stderr content is captured)
 
 ### Postgres start fails with unexpected settings

@@ -76,7 +76,10 @@ Recommended operator workflow:
 
 pgtuskmaster runs backup/restore operations as PgTool subprocess jobs and captures stdout/stderr into log records. Use those PgTool records (for example `job_kind=pgbackrest_restore`) plus the local PostgreSQL logs to debug recovery bootstrap and backup failures.
 
-pgtuskmaster does not currently generate its own structured `archive_command` / `restore_command` invocation events, and it does not manage Postgres `archive_command` / `restore_command` wiring in this version.
+When `backup.enabled=true`, pgtuskmaster also *owns* Postgres `archive_command` / `restore_command` wiring at startup by injecting settings that invoke the `pgtuskmaster wal ...` helper (which runs pgBackRest `archive-push` / `archive-get` under the hood).
+
+- The helper’s stdout/stderr is emitted as part of PostgreSQL logs (because Postgres executes `archive_command` / `restore_command`).
+- pgtuskmaster does not yet emit a first-class structured “archive invocation” event stream of its own; rely on the Postgres logs + ingest diagnostics for now.
 
 ## Postgres log ingest health
 

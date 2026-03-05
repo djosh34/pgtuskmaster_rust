@@ -153,6 +153,10 @@ Fields:
   - when `true`, the node requires:
     - `process.binaries.pgbackrest` to be set to a valid executable path
     - `[backup.pgbackrest] stanza` and `repo` to be set and non-empty.
+    - Postgres `archive_command` / `restore_command` are owned by pgtuskmaster at startup:
+      - pgtuskmaster injects `archive_mode=on`, `archive_command=...`, `restore_command=...`
+      - the command wiring invokes `pgtuskmaster wal --pgdata <PGDATA> ...`, which runs pgBackRest `archive-push` / `archive-get`
+      - pgtuskmaster writes a helper config file in `PGDATA/pgtm.pgbackrest.archive.json` so the helper can run pgBackRest with the correct stanza/repo/options deterministically.
 - `provider`: currently only `pgbackrest` is supported.
 - `[backup.pgbackrest.options]`: extra pgBackRest CLI options per operation (arrays of strings).
   - For safety and determinism, these option tokens must not override managed fields (no `--stanza` / `--repo` / `--pg1-path`).

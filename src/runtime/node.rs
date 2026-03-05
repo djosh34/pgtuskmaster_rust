@@ -88,6 +88,9 @@ pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> 
 
 pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError> {
     validate_runtime_config(&cfg)?;
+    crate::self_exe::init_from_current_exe().map_err(|err| {
+        RuntimeError::StartupExecution(format!("self executable path init failed: {err}"))
+    })?;
 
     if cfg.backup.enabled {
         match cfg.backup.provider {

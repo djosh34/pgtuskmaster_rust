@@ -12,6 +12,7 @@ use crate::config::{ApiTlsMode, BackupTakeoverPolicy, InlineOrPath, RuntimeConfi
 const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
 const MANAGED_RECOVERY_SIGNAL_NAME: &str = "recovery.signal";
 const MANAGED_STANDBY_SIGNAL_NAME: &str = "standby.signal";
+const MANAGED_ARCHIVE_HELPER_CONFIG_NAME: &str = "pgtm.pgbackrest.archive.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedPostgresConfig {
@@ -72,6 +73,37 @@ pub(crate) fn materialize_managed_postgres_config(
             "config_file".to_string(),
             managed_conf.display().to_string(),
         );
+    }
+
+    if cfg.backup.enabled {
+        crate::backup::archive_command::materialize_archive_command_config(cfg).map_err(|err| {
+            ManagedPostgresError::InvalidConfig {
+                message: format!("materialize archive command config failed: {err}"),
+            }
+        })?;
+
+        let helper = crate::self_exe::get_or_fallback();
+        let archive_command = render_postgres_wal_helper_command(
+            helper.as_path(),
+            cfg.postgres.data_dir.as_path(),
+            WalHelperKind::ArchivePush,
+        )?;
+        let restore_command = render_postgres_wal_helper_command(
+            helper.as_path(),
+            cfg.postgres.data_dir.as_path(),
+            WalHelperKind::ArchiveGet,
+        )?;
+
+        extra_settings.insert("archive_mode".to_string(), "on".to_string());
+        extra_settings.insert("archive_command".to_string(), archive_command.clone());
+        extra_settings.insert("restore_command".to_string(), restore_command.clone());
+
+        let managed_conf = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
+        write_managed_postgresql_conf(
+            managed_conf.as_path(),
+            archive_command.as_str(),
+            restore_command.as_str(),
+        )?;
     }
 
     match cfg.postgres.tls.mode {
@@ -203,6 +235,30 @@ pub(crate) fn takeover_restored_data_dir(
     let managed_conf = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
     ensure_managed_postgresql_conf(&managed_conf)?;
 
+    if cfg.backup.enabled {
+        crate::backup::archive_command::materialize_archive_command_config(cfg).map_err(|err| {
+            ManagedPostgresError::InvalidConfig {
+                message: format!("materialize archive command config failed: {err}"),
+            }
+        })?;
+        let helper = crate::self_exe::get_or_fallback();
+        let archive_command = render_postgres_wal_helper_command(
+            helper.as_path(),
+            cfg.postgres.data_dir.as_path(),
+            WalHelperKind::ArchivePush,
+        )?;
+        let restore_command = render_postgres_wal_helper_command(
+            helper.as_path(),
+            cfg.postgres.data_dir.as_path(),
+            WalHelperKind::ArchiveGet,
+        )?;
+        write_managed_postgresql_conf(
+            managed_conf.as_path(),
+            archive_command.as_str(),
+            restore_command.as_str(),
+        )?;
+    }
+
     Ok(())
 }
 
@@ -214,6 +270,139 @@ fn ensure_managed_postgresql_conf(path: &Path) -> Result<(), ManagedPostgresErro
     }
     let contents = b"# managed by pgtuskmaster\n";
     write_atomic(path, contents, Some(0o644))?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalHelperKind {
+    ArchivePush,
+    ArchiveGet,
+}
+
+fn render_postgres_wal_helper_command(
+    helper_exe: &Path,
+    pgdata: &Path,
+    kind: WalHelperKind,
+) -> Result<String, ManagedPostgresError> {
+    if helper_exe.as_os_str().is_empty() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "wal helper executable path must not be empty".to_string(),
+        });
+    }
+    if pgdata.as_os_str().is_empty() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "postgres.data_dir must not be empty".to_string(),
+        });
+    }
+
+    let mut tokens = vec![
+        helper_exe.display().to_string(),
+        "wal".to_string(),
+        "--pgdata".to_string(),
+        pgdata.display().to_string(),
+    ];
+    match kind {
+        WalHelperKind::ArchivePush => {
+            tokens.push("archive-push".to_string());
+            tokens.push("%p".to_string());
+        }
+        WalHelperKind::ArchiveGet => {
+            tokens.push("archive-get".to_string());
+            tokens.push("%f".to_string());
+            tokens.push("%p".to_string());
+        }
+    }
+
+    render_shell_command_from_tokens(tokens.as_slice())
+}
+
+fn render_shell_command_from_tokens(tokens: &[String]) -> Result<String, ManagedPostgresError> {
+    if tokens.is_empty() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "wal helper command token list must not be empty".to_string(),
+        });
+    }
+    let mut out = String::new();
+    for (idx, token) in tokens.iter().enumerate() {
+        if token.is_empty() {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: "wal helper command token must not be empty".to_string(),
+            });
+        }
+        if token.contains('\0') || token.contains('\n') || token.contains('\r') {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: "wal helper command token contains invalid characters".to_string(),
+            });
+        }
+        if idx > 0 {
+            out.push(' ');
+        }
+        out.push('"');
+        out.push_str(escape_shell_double_quoted(token.as_str())?.as_str());
+        out.push('"');
+    }
+    Ok(out)
+}
+
+fn escape_shell_double_quoted(token: &str) -> Result<String, ManagedPostgresError> {
+    let mut out = String::with_capacity(token.len());
+    for ch in token.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\$"),
+            '`' => out.push_str("\\`"),
+            _ => out.push(ch),
+        }
+    }
+    Ok(out)
+}
+
+fn escape_postgres_conf_single_quoted(value: &str) -> Result<String, ManagedPostgresError> {
+    if value.contains('\0') || value.contains('\n') || value.contains('\r') {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "managed postgresql.conf value contains invalid characters".to_string(),
+        });
+    }
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\'' => out.push_str("''"),
+            _ => out.push(ch),
+        }
+    }
+    Ok(out)
+}
+
+fn write_managed_postgresql_conf(
+    path: &Path,
+    archive_command: &str,
+    restore_command: &str,
+) -> Result<(), ManagedPostgresError> {
+    if path.as_os_str().is_empty() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "managed postgresql.conf path must not be empty".to_string(),
+        });
+    }
+
+    let mut contents = String::new();
+    contents.push_str("# managed by pgtuskmaster\n");
+    contents.push_str("# DO NOT EDIT BY HAND\n");
+    contents.push('\n');
+    contents.push_str("archive_mode = on\n");
+    contents.push_str("archive_command = '");
+    contents.push_str(escape_postgres_conf_single_quoted(archive_command)?.as_str());
+    contents.push_str("'\n");
+    contents.push_str("restore_command = '");
+    contents.push_str(escape_postgres_conf_single_quoted(restore_command)?.as_str());
+    contents.push_str("'\n");
+    contents.push('\n');
+    contents.push_str("# helper config written by pgtuskmaster\n");
+    contents.push_str("# ");
+    contents.push_str(MANAGED_ARCHIVE_HELPER_CONFIG_NAME);
+    contents.push('\n');
+
+    write_atomic(path, contents.as_bytes(), Some(0o644))?;
     Ok(())
 }
 
@@ -829,6 +1018,56 @@ mod tests {
     }
 
     #[test]
+    fn takeover_succeeds_when_backup_shipped_no_postgresql_conf() -> TestResult {
+        let dir = temp_dir("takeover-missing-postgresql-conf");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+
+        let mut cfg = sample_runtime_config(
+            dir.clone(),
+            TlsServerConfig {
+                mode: ApiTlsMode::Disabled,
+                identity: None,
+                client_auth: None,
+            },
+        );
+        cfg.backup.enabled = true;
+        cfg.process.binaries.pgbackrest = Some(PathBuf::from("/usr/bin/pgbackrest"));
+        if let Some(pg_cfg) = cfg.backup.pgbackrest.as_mut() {
+            pg_cfg.stanza = Some("stanza-a".to_string());
+            pg_cfg.repo = Some("1".to_string());
+            pg_cfg.options.archive_push = vec!["--repo1-path=/var/lib/pgbackrest".to_string()];
+            pg_cfg.options.archive_get = vec!["--repo1-path=/var/lib/pgbackrest".to_string()];
+        }
+
+        // Intentionally do not create postgresql.conf / postgresql.auto.conf.
+        takeover_restored_data_dir(&cfg, crate::config::BackupTakeoverPolicy::Delete, true)
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+        if !dir.join("pgtm.pgbackrest.archive.json").exists() {
+            return Err(Box::new(std::io::Error::other(
+                "expected archive helper config file to exist after takeover",
+            )));
+        }
+
+        let managed_conf = dir.join("pgtm.postgresql.conf");
+        if !managed_conf.exists() {
+            return Err(Box::new(std::io::Error::other(
+                "expected managed postgresql.conf to exist after takeover",
+            )));
+        }
+        let contents = fs::read_to_string(&managed_conf)?;
+        if !contents.contains("archive_command") || !contents.contains("restore_command") {
+            return Err(Box::new(std::io::Error::other(
+                "expected managed postgresql.conf to include archive/restore command wiring",
+            )));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
     fn materialize_writes_hba_ident_and_disables_ssl_when_tls_disabled() -> TestResult {
         let dir = temp_dir("plain");
         let _ = fs::remove_dir_all(&dir);
@@ -862,6 +1101,61 @@ mod tests {
         if managed.extra_settings.get("ssl").map(|s| s.as_str()) != Some("off") {
             return Err(Box::new(std::io::Error::other(
                 "expected ssl=off in extra settings",
+            )));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn backup_enabled_materialize_writes_managed_archive_wiring_files() -> TestResult {
+        let dir = temp_dir("managed-archive-wiring");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+
+        let mut cfg = sample_runtime_config(
+            dir.clone(),
+            TlsServerConfig {
+                mode: ApiTlsMode::Disabled,
+                identity: None,
+                client_auth: None,
+            },
+        );
+        cfg.backup.enabled = true;
+        cfg.process.binaries.pgbackrest = Some(PathBuf::from("/usr/bin/pgbackrest"));
+        if let Some(pg_cfg) = cfg.backup.pgbackrest.as_mut() {
+            pg_cfg.stanza = Some("stanza-a".to_string());
+            pg_cfg.repo = Some("1".to_string());
+            pg_cfg.options.archive_push = vec!["--repo1-path=/var/lib/pgbackrest".to_string()];
+            pg_cfg.options.archive_get = vec!["--repo1-path=/var/lib/pgbackrest".to_string()];
+        }
+
+        let _managed = materialize_managed_postgres_config(&cfg)
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+
+        let helper_cfg = dir.join("pgtm.pgbackrest.archive.json");
+        if !helper_cfg.exists() {
+            return Err(Box::new(std::io::Error::other(
+                "expected archive helper config file to exist",
+            )));
+        }
+
+        let managed_conf = dir.join("pgtm.postgresql.conf");
+        if !managed_conf.exists() {
+            return Err(Box::new(std::io::Error::other(
+                "expected managed postgresql.conf to exist",
+            )));
+        }
+        let contents = fs::read_to_string(&managed_conf)?;
+        if !contents.contains("archive_command") || !contents.contains("restore_command") {
+            return Err(Box::new(std::io::Error::other(
+                "expected managed postgresql.conf to include archive/restore command wiring",
+            )));
+        }
+        if !contents.contains("wal") {
+            return Err(Box::new(std::io::Error::other(
+                "expected managed postgresql.conf to invoke wal helper",
             )));
         }
 

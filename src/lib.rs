@@ -17,9 +17,11 @@ pub(crate) mod logging;
 pub mod pginfo;
 pub(crate) mod postgres_managed;
 pub(crate) mod process;
+pub(crate) mod self_exe;
 pub(crate) mod tls;
 pub mod runtime;
 pub mod state;
+pub mod wal;
 #[cfg(test)]
 pub(crate) mod test_harness;
 
