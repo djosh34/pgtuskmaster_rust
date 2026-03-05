@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar  5 11:28:52 PM CET 2026
+Generated: Fri Mar  6 12:00:21 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -263,6 +263,24 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
+**Path:** `.ralph/tasks/story-docs-useful-guides/01-task-rewrite-operator-docs-as-useful-user-guides.md`
+
+## Task: Rewrite operator docs as useful user guides and remove horror pages <status>not_started</status> <passes>false</passes>
+
+<description>
+Rewrite the non-contributor documentation so it reads like a strong operator/product guide instead of a thin or awkwardly templated book.
+
+---
+
+**Path:** `.ralph/tasks/story-docs-useful-guides/02-task-rebuild-contributor-docs-as-codebase-navigation-and-contract-guide.md`
+
+## Task: Rebuild contributor docs as a codebase navigation and design-contract guide <status>not_started</status> <passes>false</passes>
+
+<description>
+Rewrite the contributor documentation so it becomes a genuinely useful guide for understanding the codebase, subsystem boundaries, implementation approach, and design contracts.
+
+---
+
 **Path:** `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
 ## Task: Verify build and static quality gates <status>done</status> <passes>true</passes> <passing>true</passing>
@@ -296,6 +314,33 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Drive failure resolution from created bug tasks and confirm full-suite green status after fixes.
+
+---
+
+**Path:** `.ralph/tasks/story-greenfield-secure-config/01-task-remove-config-versioning-and-restore-a-greenfield-config-contract.md`
+
+## Task: Remove config versioning and restore a greenfield config contract <status>not_started</status> <passes>false</passes>
+
+<description>
+Remove user-facing config versioning from the product and restore a simple greenfield config contract with no fake `v2` framing.
+
+---
+
+**Path:** `.ralph/tasks/story-greenfield-secure-config/02-task-simplify-config-semantics-and-make-secure-mtls-the-documented-default.md`
+
+## Task: Simplify config semantics and make secure mTLS the documented default <status>not_started</status> <passes>false</passes>
+
+<description>
+Rework the config contract and documentation so the supported settings make operational sense and the recommended setup is secure by default.
+
+---
+
+**Path:** `.ralph/tasks/story-greenfield-secure-config/03-task-derive-rewind-source-from-current-primary-instead-of-static-config.md`
+
+## Task: Derive rewind source from the current primary instead of static config <status>not_started</status> <passes>false</passes>
+
+<description>
+Remove static rewind source addressing from the product and derive rewind behavior from current cluster state.
 
 ---
 
@@ -902,4 +947,22 @@ This is a **RECURRING META-TASK**.
 
 <description>
 **Goal:** Execute full validation gates after the config refactor and convert any failures into actionable bug tasks.
+
+---
+
+**Path:** `.ralph/tasks/story-tracing-based-logging/01-task-replace-bespoke-app-logging-with-tracing-based-structured-logging.md`
+
+## Task: Replace bespoke app logging with tracing-based structured logging <status>not_started</status> <passes>false</passes>
+
+<description>
+Replace the custom app-side logging stack with a more standard Rust structured logging architecture based on the `tracing` ecosystem, while preserving structured output and operator usefulness.
+
+---
+
+**Path:** `.ralph/tasks/story-tracing-based-logging/02-task-add-otel-log-export-alongside-default-stderr-jsonl.md`
+
+## Task: Add OTEL log export alongside default stderr JSONL output <status>not_started</status> <passes>false</passes>
+
+<description>
+Add OpenTelemetry log export support alongside the default stderr JSONL output, without forcing trace/span semantics onto the product.
 
