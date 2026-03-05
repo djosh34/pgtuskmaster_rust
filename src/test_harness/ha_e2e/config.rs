@@ -1,11 +1,40 @@
 use std::time::Duration;
 
+use crate::config::{BackupRecoveryMode, BackupTakeoverPolicy};
 use crate::state::WorkerError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
     Plain,
     PartitionProxy,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PgBackRestHarnessOptions {
+    pub(crate) backup: Vec<String>,
+    pub(crate) info: Vec<String>,
+    pub(crate) check: Vec<String>,
+    pub(crate) restore: Vec<String>,
+    pub(crate) archive_push: Vec<String>,
+    pub(crate) archive_get: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PgBackRestHarnessConfig {
+    pub(crate) stanza: String,
+    pub(crate) repo: String,
+    /// Relative to the test namespace root directory.
+    pub(crate) repo1_path_rel: String,
+    pub(crate) options: PgBackRestHarnessOptions,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct BackupHarnessConfig {
+    pub(crate) enabled: bool,
+    pub(crate) bootstrap_enabled: bool,
+    pub(crate) takeover_policy: BackupTakeoverPolicy,
+    pub(crate) recovery_mode: BackupRecoveryMode,
+    pub(crate) pgbackrest: Option<PgBackRestHarnessConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -27,6 +56,7 @@ pub(crate) struct TestConfig {
     pub(crate) etcd_members: Vec<String>,
     pub(crate) mode: Mode,
     pub(crate) timeouts: TimeoutConfig,
+    pub(crate) backup: Option<BackupHarnessConfig>,
 }
 
 impl TestConfig {
@@ -96,6 +126,33 @@ impl TestConfig {
             return Err(WorkerError::Message(
                 "TestConfig.timeouts.scenario_timeout must be non-zero".to_string(),
             ));
+        }
+
+        if let Some(backup) = self.backup.as_ref() {
+            if backup.enabled {
+                let pgbackrest = backup.pgbackrest.as_ref().ok_or_else(|| {
+                    WorkerError::Message(
+                        "TestConfig.backup.enabled requires TestConfig.backup.pgbackrest"
+                            .to_string(),
+                    )
+                })?;
+                if pgbackrest.stanza.trim().is_empty() {
+                    return Err(WorkerError::Message(
+                        "TestConfig.backup.pgbackrest.stanza must not be empty".to_string(),
+                    ));
+                }
+                if pgbackrest.repo.trim().is_empty() {
+                    return Err(WorkerError::Message(
+                        "TestConfig.backup.pgbackrest.repo must not be empty".to_string(),
+                    ));
+                }
+                if pgbackrest.repo1_path_rel.trim().is_empty() {
+                    return Err(WorkerError::Message(
+                        "TestConfig.backup.pgbackrest.repo1_path_rel must not be empty"
+                            .to_string(),
+                    ));
+                }
+            }
         }
 
         Ok(())

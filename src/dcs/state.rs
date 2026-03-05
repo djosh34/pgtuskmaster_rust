@@ -53,6 +53,43 @@ pub(crate) struct SwitchoverRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RestorePhase {
+    Requested,
+    FencingPrimaries,
+    Restoring,
+    TakeoverManagedConfig,
+    StartingPostgres,
+    WaitingPrimary,
+    Completed,
+    Failed,
+    Cancelled,
+    Orphaned,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RestoreRequestRecord {
+    pub(crate) restore_id: String,
+    pub(crate) requested_by: MemberId,
+    pub(crate) requested_at_ms: UnixMillis,
+    pub(crate) executor_member_id: MemberId,
+    pub(crate) reason: Option<String>,
+    pub(crate) idempotency_token: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RestoreStatusRecord {
+    pub(crate) restore_id: String,
+    pub(crate) phase: RestorePhase,
+    pub(crate) heartbeat_at_ms: UnixMillis,
+    pub(crate) running_job_id: Option<String>,
+    pub(crate) last_error: Option<String>,
+    pub(crate) updated_at_ms: UnixMillis,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InitLockRecord {
     pub(crate) holder: MemberId,
 }
@@ -62,6 +99,8 @@ pub(crate) struct DcsCache {
     pub(crate) members: BTreeMap<MemberId, MemberRecord>,
     pub(crate) leader: Option<LeaderRecord>,
     pub(crate) switchover: Option<SwitchoverRequest>,
+    pub(crate) restore_request: Option<RestoreRequestRecord>,
+    pub(crate) restore_status: Option<RestoreStatusRecord>,
     pub(crate) config: RuntimeConfig,
     pub(crate) init_lock: Option<InitLockRecord>,
 }
@@ -301,6 +340,8 @@ mod tests {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
+            restore_request: None,
+            restore_status: None,
             config: sample_runtime_config(),
             init_lock: None,
         }

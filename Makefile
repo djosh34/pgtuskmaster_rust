@@ -24,6 +24,7 @@ endif
 
 ULTRA_LONG_TESTS := \
 		ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix \
+		ha::e2e_multi_node::e2e_multi_node_restore_takeover_external_repo_converges_cluster \
 		ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql \
 		ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql \
 		ha::e2e_multi_node::e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity

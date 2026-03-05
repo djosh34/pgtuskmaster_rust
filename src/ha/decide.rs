@@ -1,7 +1,8 @@
 use crate::{
-    dcs::state::DcsTrust,
+    dcs::state::{DcsTrust, RestorePhase, RestoreRequestRecord, RestoreStatusRecord},
     pginfo::state::{PgInfoState, SqlStatus},
-    process::state::{JobOutcome, ProcessState},
+    process::{jobs::ActiveJobKind, state::{JobOutcome, ProcessState}},
+    state::{MemberId, TimelineId, UnixMillis},
 };
 
 use super::{
@@ -49,6 +50,81 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
         }
         candidates.push(HaAction::SignalFailSafe);
     } else {
+        let restore_request = world.dcs.value.cache.restore_request.as_ref();
+        let restore_status = world.dcs.value.cache.restore_status.as_ref();
+        let restore_guard = match (restore_request, restore_status) {
+            (None, _) => None,
+            (Some(request), status) => {
+                let now = world
+                    .dcs
+                    .value
+                    .last_refresh_at
+                    .unwrap_or(UnixMillis(0));
+                let threshold_ms = world.config.value.ha.lease_ttl_ms.saturating_mul(3);
+                let mut heartbeat_stale = false;
+                if let Some(status) = status {
+                    heartbeat_stale = now.0.saturating_sub(status.heartbeat_at_ms.0) > threshold_ms;
+                }
+
+                let phase = status.map(|s| &s.phase);
+                let terminal = phase.is_some_and(|phase| is_restore_terminal(phase));
+                let orphaned = phase.is_some_and(|phase| matches!(phase, RestorePhase::Orphaned));
+
+                Some(RestoreGuardView {
+                    request,
+                    status,
+                    now,
+                    heartbeat_stale,
+                    terminal,
+                    orphaned,
+                })
+            }
+        };
+
+        let mut restore_suppressed = false;
+        if let Some(guard) = restore_guard {
+            // Orphan detection: once heartbeat is stale, stop blocking HA forever and surface the state.
+            if guard.heartbeat_stale && !guard.terminal && !guard.orphaned {
+                let mut orphaned = restore_status_to_write(&guard, RestorePhase::Orphaned);
+                orphaned.last_error = Some("restore executor heartbeat stale; marking orphaned".to_string());
+                candidates.push(HaAction::WriteRestoreStatus { status: orphaned });
+            }
+
+            let blocking_restore = !guard.heartbeat_stale
+                && guard
+                    .status
+                    .map(|status| !matches!(status.phase, RestorePhase::Completed | RestorePhase::Orphaned))
+                    .unwrap_or(true);
+            if blocking_restore {
+                restore_suppressed = true;
+                if switchover_requested {
+                    candidates.push(HaAction::ClearSwitchover);
+                }
+                let is_executor = guard.request.executor_member_id.0.as_str() == self_member_id;
+                if is_executor {
+                    apply_executor_restore_guard(
+                        &mut next,
+                        &mut candidates,
+                        &guard,
+                        i_am_leader,
+                        has_other_leader_record,
+                        pg_reachable,
+                        &world.pg.value,
+                        &world.process.value,
+                    );
+                } else {
+                    apply_non_executor_restore_guard(
+                        &mut next,
+                        &mut candidates,
+                        i_am_leader,
+                        pg_reachable,
+                        &world.process.value,
+                    );
+                }
+            }
+        }
+
+        if !restore_suppressed {
         match next.phase {
             HaPhase::Init => {
                 next.phase = HaPhase::WaitingPostgresReachable;
@@ -87,9 +163,14 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
                         next.phase = HaPhase::Primary;
                         candidates.push(HaAction::PromoteToPrimary);
                     } else {
+                        if should_rewind_from_leader(&world, leader) {
+                            next.phase = HaPhase::Rewinding;
+                            candidates.push(HaAction::StartRewind);
+                        } else {
                         candidates.push(HaAction::FollowLeader {
                             leader_member_id: leader.to_string(),
                         });
+                        }
                     }
                 } else {
                     next.phase = HaPhase::CandidateLeader;
@@ -150,7 +231,12 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
                     ..
                 } => {
                     next.phase = HaPhase::Bootstrapping;
-                    candidates.push(HaAction::RunBootstrap);
+                    candidates.push(HaAction::WipeDataDir);
+                    if has_available_other_leader {
+                        candidates.push(HaAction::StartBaseBackup);
+                    } else {
+                        candidates.push(HaAction::RunBootstrap);
+                    }
                 }
                 ProcessState::Idle {
                     last_outcome: None, ..
@@ -177,7 +263,12 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
                 ProcessState::Idle {
                     last_outcome: None, ..
                 } => {
-                    candidates.push(HaAction::RunBootstrap);
+                    candidates.push(HaAction::WipeDataDir);
+                    if has_available_other_leader {
+                        candidates.push(HaAction::StartBaseBackup);
+                    } else {
+                        candidates.push(HaAction::RunBootstrap);
+                    }
                 }
             },
             HaPhase::Fencing => match &world.process.value {
@@ -206,19 +297,220 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
                 next.phase = HaPhase::WaitingDcsTrusted;
             }
         }
+        }
     }
 
+    next.recent_action_ids.clear();
     let mut actions = Vec::new();
     for action in candidates {
         let action_id = action.id();
-        if !next.recent_action_ids.contains(&action_id) {
-            next.recent_action_ids.insert(action_id);
+        if next.recent_action_ids.insert(action_id) {
             actions.push(action);
         }
     }
     next.pending = actions.clone();
 
     DecideOutput { next, actions }
+}
+
+struct RestoreGuardView<'a> {
+    request: &'a RestoreRequestRecord,
+    status: Option<&'a RestoreStatusRecord>,
+    now: UnixMillis,
+    heartbeat_stale: bool,
+    terminal: bool,
+    orphaned: bool,
+}
+
+fn is_restore_terminal(phase: &RestorePhase) -> bool {
+    matches!(
+        phase,
+        RestorePhase::Completed | RestorePhase::Failed | RestorePhase::Cancelled
+    )
+}
+
+fn restore_status_to_write(guard: &RestoreGuardView<'_>, phase: RestorePhase) -> RestoreStatusRecord {
+    let (running_job_id, last_error) = guard
+        .status
+        .map(|status| (status.running_job_id.clone(), status.last_error.clone()))
+        .unwrap_or((None, None));
+
+    RestoreStatusRecord {
+        restore_id: guard.request.restore_id.clone(),
+        phase,
+        heartbeat_at_ms: guard.now,
+        running_job_id,
+        last_error,
+        updated_at_ms: guard.now,
+    }
+}
+
+fn apply_non_executor_restore_guard(
+    next: &mut super::state::HaState,
+    candidates: &mut Vec<HaAction>,
+    i_am_leader: bool,
+    pg_reachable: bool,
+    process: &ProcessState,
+) {
+    // Non-executor posture during active restore: never become leader, never remain primary.
+    next.phase = HaPhase::Replica;
+
+    if i_am_leader {
+        candidates.push(HaAction::ReleaseLeaderLease);
+    }
+
+    // Fence regardless of phase when Postgres is reachable: avoid any writes on the old timeline.
+    if pg_reachable && matches!(process, ProcessState::Idle { .. }) {
+        candidates.push(HaAction::FenceNode);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_executor_restore_guard(
+    next: &mut super::state::HaState,
+    candidates: &mut Vec<HaAction>,
+    guard: &RestoreGuardView<'_>,
+    i_am_leader: bool,
+    has_other_leader_record: bool,
+    pg_reachable: bool,
+    pg: &PgInfoState,
+    process: &ProcessState,
+) {
+    let requested_phase = guard
+        .status
+        .map(|status| status.phase.clone())
+        .unwrap_or(RestorePhase::Requested);
+
+    let mut status = restore_status_to_write(guard, requested_phase.clone());
+
+    if let Some(existing) = guard.status {
+        if existing.restore_id != guard.request.restore_id {
+            status.phase = RestorePhase::Failed;
+            status.last_error = Some("restore status restore_id does not match request".to_string());
+            candidates.push(HaAction::WriteRestoreStatus { status });
+            next.phase = HaPhase::Replica;
+            candidates.push(HaAction::FenceNode);
+            if i_am_leader {
+                candidates.push(HaAction::ReleaseLeaderLease);
+            }
+            return;
+        }
+    }
+
+    // Always keep heartbeat fresh while we are the executor.
+    let mut next_phase = requested_phase;
+
+    match next_phase {
+        RestorePhase::Requested => {
+            next_phase = RestorePhase::FencingPrimaries;
+        }
+        RestorePhase::FencingPrimaries => {
+            if i_am_leader {
+                candidates.push(HaAction::ReleaseLeaderLease);
+            }
+            if pg_reachable && matches!(process, ProcessState::Idle { .. }) {
+                candidates.push(HaAction::FenceNode);
+            }
+
+            // Wait until other nodes have released any leader record before proceeding.
+            if !has_other_leader_record && !pg_reachable && matches!(process, ProcessState::Idle { .. }) {
+                next_phase = RestorePhase::Restoring;
+                status.running_job_id = None;
+                status.last_error = None;
+            }
+        }
+        RestorePhase::Restoring => {
+            match process {
+                ProcessState::Running { active, .. } => {
+                    if matches!(active.kind, ActiveJobKind::PgBackRestRestore) {
+                        status.running_job_id = Some(active.id.0.clone());
+                    }
+                }
+                ProcessState::Idle { last_outcome, .. } => {
+                    if let Some(id) = status.running_job_id.as_deref() {
+                        let finished = last_outcome.as_ref().is_some_and(|outcome| match outcome {
+                            JobOutcome::Success { id: out_id, .. }
+                            | JobOutcome::Failure { id: out_id, .. }
+                            | JobOutcome::Timeout { id: out_id, .. } => out_id.0.as_str() == id,
+                        });
+                        if finished {
+                            match last_outcome {
+                                Some(JobOutcome::Success { .. }) => {
+                                    next_phase = RestorePhase::TakeoverManagedConfig;
+                                    status.running_job_id = None;
+                                }
+                                Some(JobOutcome::Failure { error, .. }) => {
+                                    next_phase = RestorePhase::Failed;
+                                    status.last_error = Some(format!("restore job failed: {error}"));
+                                }
+                                Some(JobOutcome::Timeout { .. }) => {
+                                    next_phase = RestorePhase::Failed;
+                                    status.last_error =
+                                        Some("restore job timed out".to_string());
+                                }
+                                None => {}
+                            }
+                        }
+                    } else {
+                        // No restore job in flight yet (or we haven't observed it running).
+                        candidates.push(HaAction::RunPgBackRestRestore);
+                    }
+                }
+            }
+        }
+        RestorePhase::TakeoverManagedConfig => {
+            if pg_reachable {
+                candidates.push(HaAction::FenceNode);
+            } else if matches!(process, ProcessState::Idle { .. }) {
+                candidates.push(HaAction::TakeoverRestoredDataDir);
+                next_phase = RestorePhase::StartingPostgres;
+            }
+        }
+        RestorePhase::StartingPostgres => {
+            if !pg_reachable {
+                if matches!(process, ProcessState::Idle { .. }) {
+                    candidates.push(HaAction::StartPostgres);
+                }
+            } else {
+                next_phase = RestorePhase::WaitingPrimary;
+            }
+        }
+        RestorePhase::WaitingPrimary => {
+            // Ensure we hold the leader lease so non-executors converge under normal HA decisions.
+            if !i_am_leader {
+                candidates.push(HaAction::AcquireLeaderLease);
+            }
+
+            let primary_healthy = matches!(
+                pg,
+                PgInfoState::Primary { common, .. } if matches!(common.sql, SqlStatus::Healthy)
+            );
+            if primary_healthy {
+                next_phase = RestorePhase::Completed;
+            } else if i_am_leader && matches!(pg, PgInfoState::Replica { .. }) {
+                candidates.push(HaAction::PromoteToPrimary);
+            }
+
+            // Avoid a stuck candidate: if Postgres went away, restart it.
+            if !pg_reachable && matches!(process, ProcessState::Idle { .. }) {
+                candidates.push(HaAction::StartPostgres);
+            }
+        }
+        RestorePhase::Failed | RestorePhase::Cancelled => {
+            if i_am_leader {
+                candidates.push(HaAction::ReleaseLeaderLease);
+            }
+            if pg_reachable && matches!(process, ProcessState::Idle { .. }) {
+                candidates.push(HaAction::FenceNode);
+            }
+        }
+        RestorePhase::Completed | RestorePhase::Orphaned => {}
+    }
+
+    status.phase = next_phase;
+
+    candidates.push(HaAction::WriteRestoreStatus { status });
+    next.phase = HaPhase::Replica;
 }
 
 fn is_postgres_reachable(state: &PgInfoState) -> bool {
@@ -228,6 +520,30 @@ fn is_postgres_reachable(state: &PgInfoState) -> bool {
         PgInfoState::Replica { common, .. } => &common.sql,
     };
     matches!(sql, SqlStatus::Healthy)
+}
+
+fn should_rewind_from_leader(world: &super::state::WorldSnapshot, leader_member_id: &str) -> bool {
+    let Some(local_timeline) = pg_timeline(&world.pg.value) else {
+        return false;
+    };
+    let leader_record = world
+        .dcs
+        .value
+        .cache
+        .members
+        .get(&MemberId(leader_member_id.to_string()));
+    let Some(leader_timeline) = leader_record.and_then(|member| member.timeline) else {
+        return false;
+    };
+    local_timeline != leader_timeline
+}
+
+fn pg_timeline(state: &PgInfoState) -> Option<TimelineId> {
+    match state {
+        PgInfoState::Unknown { common } => common.timeline,
+        PgInfoState::Primary { common, .. } => common.timeline,
+        PgInfoState::Replica { common, .. } => common.timeline,
+    }
 }
 
 fn is_available_primary_leader(
@@ -267,7 +583,8 @@ mod tests {
             TlsServerConfig,
         },
         dcs::state::{
-            DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
+            DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, RestorePhase,
+            RestoreRequestRecord, RestoreStatusRecord, SwitchoverRequest,
         },
         ha::{
             actions::{ActionId, HaAction},
@@ -421,7 +738,7 @@ mod tests {
                 })),
                 recent_action_ids: BTreeSet::new(),
                 expected_phase: HaPhase::Bootstrapping,
-                expected_actions: vec![HaAction::RunBootstrap],
+                expected_actions: vec![HaAction::WipeDataDir, HaAction::StartBaseBackup],
             },
             Case {
                 name: "bootstrap failure goes fencing",
@@ -502,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn idempotency_suppresses_duplicate_actions() {
+    fn actions_are_reissued_while_conditions_persist() {
         let current = HaState {
             worker: WorkerStatus::Running,
             phase: HaPhase::WaitingDcsTrusted,
@@ -527,11 +844,11 @@ mod tests {
             current: first.next,
             world,
         });
-        assert_eq!(second.actions, vec![]);
+        assert_eq!(second.actions, vec![HaAction::AcquireLeaderLease]);
     }
 
     #[test]
-    fn idempotency_emits_only_new_mixed_actions() {
+    fn previous_recent_action_ids_do_not_suppress_actions() {
         let mut known_ids = BTreeSet::new();
         known_ids.insert(ActionId::DemoteToReplica);
 
@@ -554,7 +871,102 @@ mod tests {
 
         assert_eq!(
             output.actions,
-            vec![HaAction::ReleaseLeaderLease, HaAction::FenceNode]
+            vec![
+                HaAction::DemoteToReplica,
+                HaAction::ReleaseLeaderLease,
+                HaAction::FenceNode
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_guard_non_executor_suppresses_leadership_and_fences_reachable_postgres() {
+        let mut world = world(
+            DcsTrust::FullQuorum,
+            pg_primary(SqlStatus::Healthy),
+            None,
+            process_idle(None),
+        );
+        world.dcs.value.cache.restore_request = Some(RestoreRequestRecord {
+            restore_id: "restore-1".to_string(),
+            requested_by: MemberId("operator-a".to_string()),
+            requested_at_ms: UnixMillis(1),
+            executor_member_id: MemberId("node-b".to_string()),
+            reason: None,
+            idempotency_token: None,
+        });
+        world.dcs.value.cache.restore_status = Some(RestoreStatusRecord {
+            restore_id: "restore-1".to_string(),
+            phase: RestorePhase::Requested,
+            heartbeat_at_ms: UnixMillis(1),
+            running_job_id: None,
+            last_error: None,
+            updated_at_ms: UnixMillis(1),
+        });
+        world.dcs.value.last_refresh_at = Some(UnixMillis(2));
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::CandidateLeader,
+                tick: 0,
+                pending: vec![],
+                recent_action_ids: BTreeSet::new(),
+            },
+            world,
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert!(output.actions.contains(&HaAction::FenceNode));
+        assert!(!output.actions.contains(&HaAction::AcquireLeaderLease));
+    }
+
+    #[test]
+    fn restore_guard_executor_advances_requested_to_fencing_and_writes_status() {
+        let mut world = world(
+            DcsTrust::FullQuorum,
+            pg_unknown(SqlStatus::Unreachable),
+            None,
+            process_idle(None),
+        );
+        world.dcs.value.cache.restore_request = Some(RestoreRequestRecord {
+            restore_id: "restore-1".to_string(),
+            requested_by: MemberId("operator-a".to_string()),
+            requested_at_ms: UnixMillis(1),
+            executor_member_id: MemberId("node-a".to_string()),
+            reason: None,
+            idempotency_token: None,
+        });
+        world.dcs.value.cache.restore_status = Some(RestoreStatusRecord {
+            restore_id: "restore-1".to_string(),
+            phase: RestorePhase::Requested,
+            heartbeat_at_ms: UnixMillis(1),
+            running_job_id: None,
+            last_error: None,
+            updated_at_ms: UnixMillis(1),
+        });
+        world.dcs.value.last_refresh_at = Some(UnixMillis(2));
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Replica,
+                tick: 0,
+                pending: vec![],
+                recent_action_ids: BTreeSet::new(),
+            },
+            world,
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert!(
+            output.actions.iter().any(|action| matches!(
+                action,
+                HaAction::WriteRestoreStatus { status }
+                    if matches!(status.phase, RestorePhase::FencingPrimaries)
+            )),
+            "expected WriteRestoreStatus advancing to FencingPrimaries, got {:?}",
+            output.actions
         );
     }
 
@@ -825,6 +1237,8 @@ mod tests {
                         members: BTreeMap::new(),
                         leader: leader_record,
                         switchover: None,
+                        restore_request: None,
+                        restore_status: None,
                         config: cfg,
                         init_lock: None,
                     },

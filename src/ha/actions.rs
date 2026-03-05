@@ -1,3 +1,5 @@
+use crate::dcs::state::RestoreStatusRecord;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ActionId {
     AcquireLeaderLease,
@@ -5,8 +7,13 @@ pub(crate) enum ActionId {
     ClearSwitchover,
     FollowLeader(String),
     StartRewind,
+    StartBaseBackup,
     RunBootstrap,
+    RunPgBackRestRestore,
     FenceNode,
+    WipeDataDir,
+    TakeoverRestoredDataDir,
+    WriteRestoreStatus,
     SignalFailSafe,
     StartPostgres,
     PromoteToPrimary,
@@ -20,8 +27,13 @@ pub(crate) enum HaAction {
     ClearSwitchover,
     FollowLeader { leader_member_id: String },
     StartRewind,
+    StartBaseBackup,
     RunBootstrap,
+    RunPgBackRestRestore,
     FenceNode,
+    WipeDataDir,
+    TakeoverRestoredDataDir,
+    WriteRestoreStatus { status: RestoreStatusRecord },
     SignalFailSafe,
     StartPostgres,
     PromoteToPrimary,
@@ -38,8 +50,13 @@ impl HaAction {
                 ActionId::FollowLeader(leader_member_id.clone())
             }
             Self::StartRewind => ActionId::StartRewind,
+            Self::StartBaseBackup => ActionId::StartBaseBackup,
             Self::RunBootstrap => ActionId::RunBootstrap,
+            Self::RunPgBackRestRestore => ActionId::RunPgBackRestRestore,
             Self::FenceNode => ActionId::FenceNode,
+            Self::WipeDataDir => ActionId::WipeDataDir,
+            Self::TakeoverRestoredDataDir => ActionId::TakeoverRestoredDataDir,
+            Self::WriteRestoreStatus { .. } => ActionId::WriteRestoreStatus,
             Self::SignalFailSafe => ActionId::SignalFailSafe,
             Self::StartPostgres => ActionId::StartPostgres,
             Self::PromoteToPrimary => ActionId::PromoteToPrimary,

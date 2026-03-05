@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::{
     config::RuntimeConfig,
-    dcs::state::{DcsState, DcsTrust},
+    dcs::state::{DcsState, DcsTrust, RestorePhase, RestoreRequestRecord, RestoreStatusRecord},
     debug_api::snapshot::{DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot},
     ha::state::HaState,
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
@@ -66,6 +66,16 @@ pub(crate) struct DcsSection {
     pub(crate) member_count: usize,
     pub(crate) leader: Option<String>,
     pub(crate) has_switchover_request: bool,
+    pub(crate) restore: RestoreSection,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct RestoreSection {
+    pub(crate) request: Option<RestoreRequestRecord>,
+    pub(crate) status: Option<RestoreStatusRecord>,
+    pub(crate) blocking: bool,
+    pub(crate) heartbeat_stale: bool,
+    pub(crate) phase: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -166,7 +176,9 @@ pub(crate) fn build_verbose_payload(
                 "/debug/ui",
                 "/fallback/cluster",
                 "/switchover",
+                "/restore",
                 "/ha/state",
+                "/ha/restore",
                 "/ha/switchover",
             ],
         },
@@ -257,6 +269,27 @@ fn to_pg_section(pg: &Versioned<PgInfoState>) -> PgInfoSection {
 }
 
 fn to_dcs_section(dcs: &Versioned<DcsState>) -> DcsSection {
+    let request = dcs.value.cache.restore_request.clone();
+    let status = dcs.value.cache.restore_status.clone();
+    let threshold_ms = dcs
+        .value
+        .cache
+        .config
+        .ha
+        .lease_ttl_ms
+        .saturating_mul(3);
+    let now_ms = dcs.updated_at.0;
+    let heartbeat_stale = status
+        .as_ref()
+        .map(|status| now_ms.saturating_sub(status.heartbeat_at_ms.0) > threshold_ms)
+        .unwrap_or(false);
+    let blocking = request.is_some()
+        && !heartbeat_stale
+        && status
+            .as_ref()
+            .map(|status| !matches!(status.phase, RestorePhase::Completed | RestorePhase::Orphaned))
+            .unwrap_or(true);
+
     DcsSection {
         version: dcs.version.0,
         updated_at_ms: dcs.updated_at.0,
@@ -270,6 +303,15 @@ fn to_dcs_section(dcs: &Versioned<DcsState>) -> DcsSection {
             .as_ref()
             .map(|leader| leader.member_id.0.clone()),
         has_switchover_request: dcs.value.cache.switchover.is_some(),
+        restore: RestoreSection {
+            phase: status
+                .as_ref()
+                .map(|status| format!("{:?}", status.phase).to_lowercase()),
+            request,
+            status,
+            blocking,
+            heartbeat_stale,
+        },
     }
 }
 

@@ -5,6 +5,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::error::CliError;
+#[cfg(test)]
+use crate::dcs::state::{RestoreRequestRecord, RestoreStatusRecord};
+#[cfg(test)]
+use crate::state::MemberId;
 
 #[derive(Clone, Debug)]
 pub struct CliApiClient {
@@ -40,6 +44,41 @@ pub struct HaStateResponse {
     pub ha_tick: u64,
     pub pending_actions: usize,
     pub snapshot_sequence: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RestoreAcceptedResponse {
+    pub accepted: bool,
+    pub restore_id: String,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreRequestInput {
+    requested_by: MemberId,
+    executor_member_id: MemberId,
+    reason: Option<String>,
+    idempotency_token: Option<String>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RestoreDerivedView {
+    pub is_executor: bool,
+    pub heartbeat_stale: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RestoreStatusResponse {
+    pub request: Option<RestoreRequestRecord>,
+    pub status: Option<RestoreStatusRecord>,
+    pub derived: RestoreDerivedView,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -96,6 +135,52 @@ impl CliApiClient {
             "/switchover",
             AuthRole::Admin,
             &body,
+            StatusCode::ACCEPTED,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn post_restore(
+        &self,
+        requested_by: String,
+        executor_member_id: String,
+        reason: Option<String>,
+        idempotency_token: Option<String>,
+    ) -> Result<RestoreAcceptedResponse, CliError> {
+        let body = RestoreRequestInput {
+            requested_by: MemberId(requested_by),
+            executor_member_id: MemberId(executor_member_id),
+            reason,
+            idempotency_token,
+        };
+        self.send_json_with_body(
+            Method::POST,
+            "/restore",
+            AuthRole::Admin,
+            &body,
+            StatusCode::ACCEPTED,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn get_restore_status(&self) -> Result<RestoreStatusResponse, CliError> {
+        self.send_json_no_body(
+            Method::GET,
+            "/ha/restore",
+            AuthRole::Read,
+            StatusCode::OK,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn delete_restore(&self) -> Result<AcceptedResponse, CliError> {
+        self.send_json_no_body(
+            Method::DELETE,
+            "/ha/restore",
+            AuthRole::Admin,
             StatusCode::ACCEPTED,
         )
         .await

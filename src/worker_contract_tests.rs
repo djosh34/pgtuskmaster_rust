@@ -40,8 +40,16 @@ impl DcsStore for ContractStore {
         true
     }
 
+    fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
+        Ok(None)
+    }
+
     fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
         Ok(())
+    }
+
+    fn put_path_if_absent(&mut self, _path: &str, _value: String) -> Result<bool, DcsStoreError> {
+        Ok(true)
     }
 
     fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
@@ -199,6 +207,8 @@ fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
+            restore_request: None,
+            restore_status: None,
             config: cfg,
             init_lock: None,
         },
@@ -295,6 +305,8 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
+            restore_request: None,
+            restore_status: None,
             config: sample_runtime_config(),
             init_lock: None,
         },

@@ -33,6 +33,130 @@ use super::util::{
     wait_for_bootstrap_primary, wait_for_node_api_ready_or_task_exit,
 };
 
+fn takeover_policy_label(value: crate::config::BackupTakeoverPolicy) -> &'static str {
+    match value {
+        crate::config::BackupTakeoverPolicy::Quarantine => "quarantine",
+        crate::config::BackupTakeoverPolicy::Delete => "delete",
+    }
+}
+
+fn recovery_mode_label(value: crate::config::BackupRecoveryMode) -> &'static str {
+    match value {
+        crate::config::BackupRecoveryMode::Default => "default",
+    }
+}
+
+#[derive(Clone)]
+struct ResolvedBackupConfig {
+    runtime: crate::config::BackupConfig,
+    payload: serde_json::Value,
+}
+
+fn resolve_backup_config(
+    namespace: &crate::test_harness::namespace::TestNamespace,
+    config: Option<&super::config::BackupHarnessConfig>,
+) -> Result<ResolvedBackupConfig, WorkerError> {
+    let disabled = ResolvedBackupConfig {
+        runtime: crate::config::BackupConfig {
+            enabled: false,
+            provider: crate::config::BackupProvider::Pgbackrest,
+            bootstrap: crate::config::BackupBootstrapConfig {
+                enabled: false,
+                takeover_policy: crate::config::BackupTakeoverPolicy::Quarantine,
+                recovery_mode: crate::config::BackupRecoveryMode::Default,
+            },
+            pgbackrest: None,
+        },
+        payload: serde_json::json!({
+            "enabled": false,
+            "provider": "pgbackrest",
+            "bootstrap": { "enabled": false, "takeover_policy": "quarantine", "recovery_mode": "default" },
+            "pgbackrest": serde_json::Value::Null,
+        }),
+    };
+
+    let Some(backup) = config else {
+        return Ok(disabled);
+    };
+    if !backup.enabled {
+        return Ok(disabled);
+    }
+
+    let pgbackrest = backup.pgbackrest.as_ref().ok_or_else(|| {
+        WorkerError::Message(
+            "ha_e2e backup.enabled requires backup.pgbackrest to be configured".to_string(),
+        )
+    })?;
+
+    let repo1_path = namespace.child_dir(pgbackrest.repo1_path_rel.as_str());
+    std::fs::create_dir_all(&repo1_path).map_err(|err| {
+        WorkerError::Message(format!(
+            "failed to create pgbackrest repo1-path directory {}: {err}",
+            repo1_path.display()
+        ))
+    })?;
+    let repo1_arg = format!("--repo1-path={}", repo1_path.display());
+
+    let mut options = crate::config::BackupOptions::default();
+    options.backup = std::iter::once(repo1_arg.clone())
+        .chain(pgbackrest.options.backup.iter().cloned())
+        .collect();
+    options.info = std::iter::once(repo1_arg.clone())
+        .chain(pgbackrest.options.info.iter().cloned())
+        .collect();
+    options.check = std::iter::once(repo1_arg.clone())
+        .chain(pgbackrest.options.check.iter().cloned())
+        .collect();
+    options.restore = std::iter::once(repo1_arg.clone())
+        .chain(pgbackrest.options.restore.iter().cloned())
+        .collect();
+    options.archive_push = std::iter::once(repo1_arg.clone())
+        .chain(pgbackrest.options.archive_push.iter().cloned())
+        .collect();
+    options.archive_get = std::iter::once(repo1_arg.clone())
+        .chain(pgbackrest.options.archive_get.iter().cloned())
+        .collect();
+
+    let runtime = crate::config::BackupConfig {
+        enabled: true,
+        provider: crate::config::BackupProvider::Pgbackrest,
+        bootstrap: crate::config::BackupBootstrapConfig {
+            enabled: backup.bootstrap_enabled,
+            takeover_policy: backup.takeover_policy,
+            recovery_mode: backup.recovery_mode,
+        },
+        pgbackrest: Some(crate::config::PgBackRestConfig {
+            stanza: Some(pgbackrest.stanza.clone()),
+            repo: Some(pgbackrest.repo.clone()),
+            options: options.clone(),
+        }),
+    };
+
+    let payload = serde_json::json!({
+        "enabled": true,
+        "provider": "pgbackrest",
+        "bootstrap": {
+            "enabled": backup.bootstrap_enabled,
+            "takeover_policy": takeover_policy_label(backup.takeover_policy),
+            "recovery_mode": recovery_mode_label(backup.recovery_mode),
+        },
+        "pgbackrest": {
+            "stanza": pgbackrest.stanza.clone(),
+            "repo": pgbackrest.repo.clone(),
+            "options": {
+                "backup": options.backup.clone(),
+                "info": options.info.clone(),
+                "check": options.check.clone(),
+                "restore": options.restore.clone(),
+                "archive_push": options.archive_push.clone(),
+                "archive_get": options.archive_get.clone(),
+            }
+        }
+    });
+
+    Ok(ResolvedBackupConfig { runtime, payload })
+}
+
 struct StartupGuard {
     guard: NamespaceGuard,
     binaries: BinaryPaths,
@@ -183,6 +307,7 @@ async fn start_cluster_inner(
     binaries: BinaryPaths,
 ) -> Result<(), WorkerError> {
     let namespace = guard.guard.namespace()?.clone();
+    let resolved_backup = resolve_backup_config(&namespace, config.backup.as_ref())?;
     let etcd_member_count = config.etcd_members.len();
     let mut topology_reservation = allocate_ha_topology_ports(config.node_count, etcd_member_count)?;
     let topology = topology_reservation.layout().clone();
@@ -442,12 +567,8 @@ async fn start_cluster_inner(
                         .map(|path| path.display().to_string()),
                 },
             },
-            "backup": {
-                "enabled": false,
-                "provider": "pgbackrest",
-                "bootstrap": { "enabled": false, "takeover_policy": "quarantine", "recovery_mode": "default" },
-                "pgbackrest": null,
-            },
+            // Intentionally derived from TestConfig so restore/bootstrap scenarios can be tested.
+            "backup": resolved_backup.payload.clone(),
             "logging": {
                 "level": "info",
                 "capture_subprocess_output": false,
@@ -552,7 +673,7 @@ async fn start_cluster_inner(
                 backup_timeout_ms: 30_000,
                 binaries: binaries.clone(),
             },
-            backup: crate::config::BackupConfig::default(),
+            backup: resolved_backup.runtime.clone(),
             logging: LoggingConfig {
                 level: LogLevel::Info,
                 capture_subprocess_output: false,

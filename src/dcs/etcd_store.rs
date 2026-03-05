@@ -23,6 +23,10 @@ const WORKER_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
 const WATCH_IDLE_INTERVAL: Duration = Duration::from_millis(100);
 
 enum WorkerCommand {
+    Read {
+        path: String,
+        response_tx: mpsc::Sender<Result<Option<String>, DcsStoreError>>,
+    },
     Write {
         path: String,
         value: String,
@@ -201,6 +205,24 @@ fn run_worker_loop(
                             let result =
                                 execute_write(&endpoints, &mut client, &healthy, &path, value)
                                     .await;
+                            let invalidate_result = if result.is_err() {
+                                invalidate_watch_session(
+                                    &healthy,
+                                    &events,
+                                    &mut client,
+                                    &mut _watcher,
+                                    &mut watch_stream,
+                                )
+                            } else {
+                                Ok(())
+                            };
+                            let _ = response_tx.send(result);
+                            if invalidate_result.is_err() {
+                                return;
+                            }
+                        }
+                        WorkerCommand::Read { path, response_tx } => {
+                            let result = execute_read(&endpoints, &mut client, &healthy, &path).await;
                             let invalidate_result = if result.is_err() {
                                 invalidate_watch_session(
                                     &healthy,
@@ -659,9 +681,60 @@ async fn apply_test_establish_delay() {
     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 }
 
+async fn execute_read(
+    endpoints: &[String],
+    client: &mut Option<Client>,
+    healthy: &Arc<AtomicBool>,
+    path: &str,
+) -> Result<Option<String>, DcsStoreError> {
+    if client.is_none() {
+        *client = Some(connect_client(endpoints).await?);
+    }
+
+    let Some(active_client) = client.as_mut() else {
+        healthy.store(false, Ordering::SeqCst);
+        return Err(DcsStoreError::Io(
+            "etcd client unavailable for read".to_string(),
+        ));
+    };
+
+    match timeout_etcd("etcd get", active_client.get(path, None)).await {
+        Ok(response) => {
+            healthy.store(true, Ordering::SeqCst);
+            let Some(kv) = response.kvs().first() else {
+                return Ok(None);
+            };
+            let raw = kv.value();
+            let decoded = String::from_utf8(raw.to_vec()).map_err(|err| {
+                DcsStoreError::Io(format!("etcd read value not utf8 for `{path}`: {err}"))
+            })?;
+            Ok(Some(decoded))
+        }
+        Err(err) => {
+            healthy.store(false, Ordering::SeqCst);
+            *client = None;
+            Err(err)
+        }
+    }
+}
+
 impl DcsStore for EtcdDcsStore {
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::SeqCst)
+    }
+
+    fn read_path(&mut self, path: &str) -> Result<Option<String>, DcsStoreError> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.command_tx
+            .send(WorkerCommand::Read {
+                path: path.to_string(),
+                response_tx,
+            })
+            .map_err(|err| DcsStoreError::Io(format!("send read command failed: {err}")))?;
+
+        response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
+            DcsStoreError::Io(format!("timed out waiting for read command: {err}"))
+        })?
     }
 
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
@@ -677,6 +750,10 @@ impl DcsStore for EtcdDcsStore {
         response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
             DcsStoreError::Io(format!("timed out waiting for write command: {err}"))
         })?
+    }
+
+    fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
+        EtcdDcsStore::put_path_if_absent(self, path, value)
     }
 
     fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError> {
@@ -735,7 +812,8 @@ mod tests {
             etcd_store::EtcdDcsStore,
             state::{
                 DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord,
-                MemberRecord, MemberRole, SwitchoverRequest,
+                MemberRecord, MemberRole, RestorePhase, RestoreRequestRecord, RestoreStatusRecord,
+                SwitchoverRequest,
             },
             store::{refresh_from_etcd_watch, DcsStore, DcsStoreError, WatchEvent, WatchOp},
             worker::step_once,
@@ -906,6 +984,35 @@ mod tests {
         }
     }
 
+    fn wait_for_events(
+        store: &mut dyn DcsStore,
+        expected: &[(WatchOp, &str)],
+        timeout: Duration,
+    ) -> Result<(), DcsStoreError> {
+        let deadline = Instant::now() + timeout;
+        let mut seen = vec![false; expected.len()];
+        loop {
+            for event in store.drain_watch_events()? {
+                for (index, (op, path)) in expected.iter().enumerate() {
+                    if event.op == *op && event.path == *path {
+                        if let Some(entry) = seen.get_mut(index) {
+                            *entry = true;
+                        }
+                    }
+                }
+            }
+            if seen.iter().all(|value| *value) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(DcsStoreError::Io(format!(
+                    "timed out waiting for events: expected={expected:?} seen={seen:?}",
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn sample_runtime_config(scope: &str) -> RuntimeConfig {
         RuntimeConfig {
             cluster: ClusterConfig {
@@ -1030,6 +1137,8 @@ mod tests {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
+            restore_request: None,
+            restore_status: None,
             config: sample_runtime_config(scope),
             init_lock: None,
         }
@@ -1194,6 +1303,22 @@ mod tests {
             cache.switchover = Some(SwitchoverRequest {
                 requested_by: MemberId("node-stale".to_string()),
             });
+            cache.restore_request = Some(RestoreRequestRecord {
+                restore_id: "restore-stale".to_string(),
+                requested_by: MemberId("node-stale".to_string()),
+                requested_at_ms: UnixMillis(1),
+                executor_member_id: MemberId("node-stale".to_string()),
+                reason: None,
+                idempotency_token: None,
+            });
+            cache.restore_status = Some(RestoreStatusRecord {
+                restore_id: "restore-stale".to_string(),
+                phase: RestorePhase::Requested,
+                heartbeat_at_ms: UnixMillis(1),
+                running_job_id: None,
+                last_error: None,
+                updated_at_ms: UnixMillis(1),
+            });
             cache.init_lock = Some(InitLockRecord {
                 holder: MemberId("node-stale".to_string()),
             });
@@ -1281,6 +1406,16 @@ mod tests {
             if cache.init_lock.is_some() {
                 return Err(boxed_error(
                     "expected init lock record to be cleared by reconnect reset",
+                ));
+            }
+            if cache.restore_request.is_some() {
+                return Err(boxed_error(
+                    "expected restore request to be cleared by reconnect reset",
+                ));
+            }
+            if cache.restore_status.is_some() {
+                return Err(boxed_error(
+                    "expected restore status to be cleared by reconnect reset",
                 ));
             }
 
@@ -1374,6 +1509,33 @@ mod tests {
             })
             .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
 
+            let expected_restore_request = RestoreRequestRecord {
+                restore_id: "restore-1".to_string(),
+                requested_by: MemberId("node-admin".to_string()),
+                requested_at_ms: UnixMillis(10),
+                executor_member_id: MemberId("node-fresh".to_string()),
+                reason: Some("test".to_string()),
+                idempotency_token: None,
+            };
+            let expected_restore_status = RestoreStatusRecord {
+                restore_id: "restore-1".to_string(),
+                phase: RestorePhase::Requested,
+                heartbeat_at_ms: UnixMillis(11),
+                running_job_id: None,
+                last_error: None,
+                updated_at_ms: UnixMillis(11),
+            };
+            let restore_request_path = format!("/{}/restore/request", fixture.scope);
+            let restore_status_path = format!("/{}/restore/status", fixture.scope);
+            let restore_request_json =
+                serde_json::to_string(&expected_restore_request).map_err(|err| {
+                    boxed_error(format!("encode restore request json failed: {err}"))
+                })?;
+            let restore_status_json =
+                serde_json::to_string(&expected_restore_status).map_err(|err| {
+                    boxed_error(format!("encode restore status json failed: {err}"))
+                })?;
+
             let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
                 .await
                 .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
@@ -1381,17 +1543,44 @@ mod tests {
                 .put(leader_path.as_str(), leader_json, None)
                 .await
                 .map_err(|err| boxed_error(format!("put leader key failed: {err}")))?;
+            client
+                .put(restore_request_path.as_str(), restore_request_json, None)
+                .await
+                .map_err(|err| boxed_error(format!("put restore request key failed: {err}")))?;
+            client
+                .put(restore_status_path.as_str(), restore_status_json, None)
+                .await
+                .map_err(|err| boxed_error(format!("put restore status key failed: {err}")))?;
 
-            wait_for_event(
+            wait_for_events(
                 &mut store,
-                WatchOp::Put,
-                leader_path.as_str(),
+                &[
+                    (WatchOp::Put, leader_path.as_str()),
+                    (WatchOp::Put, restore_request_path.as_str()),
+                    (WatchOp::Put, restore_status_path.as_str()),
+                ],
                 Duration::from_secs(5),
             )?;
             let _ = store.drain_watch_events()?;
 
             cache.leader = Some(LeaderRecord {
                 member_id: MemberId("node-stale".to_string()),
+            });
+            cache.restore_request = Some(RestoreRequestRecord {
+                restore_id: "restore-stale".to_string(),
+                requested_by: MemberId("node-stale".to_string()),
+                requested_at_ms: UnixMillis(1),
+                executor_member_id: MemberId("node-stale".to_string()),
+                reason: None,
+                idempotency_token: None,
+            });
+            cache.restore_status = Some(RestoreStatusRecord {
+                restore_id: "restore-stale".to_string(),
+                phase: RestorePhase::Failed,
+                heartbeat_at_ms: UnixMillis(1),
+                running_job_id: None,
+                last_error: Some("stale".to_string()),
+                updated_at_ms: UnixMillis(1),
             });
 
             fixture.restart_preserve().await?;
@@ -1434,6 +1623,19 @@ mod tests {
             if observed_leader != Some(expected_leader.clone()) {
                 return Err(boxed_error(format!(
                     "expected leader to be rebuilt from reconnect snapshot, expected={expected_leader:?} observed={observed_leader:?}",
+                )));
+            }
+
+            if cache.restore_request.as_ref() != Some(&expected_restore_request) {
+                return Err(boxed_error(format!(
+                    "expected restore request to be rebuilt from reconnect snapshot, expected={expected_restore_request:?} observed={:?}",
+                    cache.restore_request
+                )));
+            }
+            if cache.restore_status.as_ref() != Some(&expected_restore_status) {
+                return Err(boxed_error(format!(
+                    "expected restore status to be rebuilt from reconnect snapshot, expected={expected_restore_status:?} observed={:?}",
+                    cache.restore_status
                 )));
             }
 

@@ -101,6 +101,7 @@ impl PartitionFixture {
                 bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
                 scenario_timeout: E2E_SCENARIO_TIMEOUT,
             },
+            backup: None,
         };
 
         let handle = ha_e2e::start_cluster(config).await?;

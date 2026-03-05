@@ -43,8 +43,30 @@ impl NamespaceGuard {
 impl Drop for NamespaceGuard {
     fn drop(&mut self) {
         if let Some(ns) = self.namespace.take() {
+            if should_keep_namespace() {
+                eprintln!(
+                    "test harness: keeping namespace at {} (set by env PGTM_TEST_KEEP_NAMESPACE=1)",
+                    ns.root_dir.display()
+                );
+                return;
+            }
             let _ = cleanup_namespace(ns);
         }
+    }
+}
+
+fn should_keep_namespace() -> bool {
+    match std::env::var("PGTM_TEST_KEEP_NAMESPACE") {
+        Ok(value) => parse_env_bool(value.as_str()),
+        Err(std::env::VarError::NotPresent) => false,
+        Err(std::env::VarError::NotUnicode(_)) => false,
+    }
+}
+
+fn parse_env_bool(value: &str) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => true,
+        _ => false,
     }
 }
 
@@ -60,7 +82,8 @@ pub(crate) fn create_namespace(test_name: &str) -> Result<TestNamespace, Harness
     let counter = NAMESPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let id = format!("pgtm-{sanitized_name}-{now_ms}-{pid}-{counter}");
     let root_dir = std::env::temp_dir()
-        .join("pgtuskmaster-rust")
+        // Keep this directory name short: postgres unix socket paths are capped (107 bytes on linux).
+        .join("pgtm")
         .join(id.as_str());
 
     fs::create_dir_all(root_dir.join("logs"))?;
@@ -78,6 +101,7 @@ pub(crate) fn cleanup_namespace(ns: TestNamespace) -> Result<(), HarnessError> {
 }
 
 fn sanitize_name(name: &str) -> String {
+    const MAX_LEN: usize = 24;
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return "test".to_string();
@@ -90,6 +114,9 @@ fn sanitize_name(name: &str) -> String {
         } else {
             out.push('-');
         }
+    }
+    if out.len() > MAX_LEN {
+        out.truncate(MAX_LEN);
     }
     out
 }

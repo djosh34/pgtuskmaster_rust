@@ -6,7 +6,8 @@ use super::{
     keys::DcsKey,
     state::{
         build_local_member_record, evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
-        InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest,
+        InitLockRecord, LeaderRecord, MemberRecord, RestoreRequestRecord, RestoreStatusRecord,
+        SwitchoverRequest,
     },
     store::{refresh_from_etcd_watch, write_local_member},
 };
@@ -16,6 +17,8 @@ pub(crate) enum DcsValue {
     Member(MemberRecord),
     Leader(LeaderRecord),
     Switchover(SwitchoverRequest),
+    RestoreRequest(RestoreRequestRecord),
+    RestoreStatus(RestoreStatusRecord),
     Config(Box<crate::config::RuntimeConfig>),
     InitLock(InitLockRecord),
 }
@@ -45,6 +48,12 @@ pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
             (DcsKey::Switchover, DcsValue::Switchover(record)) => {
                 cache.switchover = Some(record);
             }
+            (DcsKey::RestoreRequest, DcsValue::RestoreRequest(record)) => {
+                cache.restore_request = Some(record);
+            }
+            (DcsKey::RestoreStatus, DcsValue::RestoreStatus(record)) => {
+                cache.restore_status = Some(record);
+            }
             (DcsKey::Config, DcsValue::Config(config)) => {
                 cache.config = *config;
             }
@@ -62,6 +71,12 @@ pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
             }
             DcsKey::Switchover => {
                 cache.switchover = None;
+            }
+            DcsKey::RestoreRequest => {
+                cache.restore_request = None;
+            }
+            DcsKey::RestoreStatus => {
+                cache.restore_status = None;
             }
             DcsKey::Config => {}
             DcsKey::InitLock => {
@@ -406,6 +421,10 @@ mod tests {
             self.healthy
         }
 
+        fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
+            Ok(None)
+        }
+
         fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
             let mut guard = self
                 .writes
@@ -413,6 +432,15 @@ mod tests {
                 .map_err(|_| DcsStoreError::Io("writes lock poisoned".to_string()))?;
             guard.push((path.to_string(), value));
             Ok(())
+        }
+
+        fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
+            let mut guard = self
+                .writes
+                .lock()
+                .map_err(|_| DcsStoreError::Io("writes lock poisoned".to_string()))?;
+            guard.push((path.to_string(), value));
+            Ok(true)
         }
 
         fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
@@ -447,7 +475,15 @@ mod tests {
             true
         }
 
+        fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
+            Ok(None)
+        }
+
         fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
+            Err(DcsStoreError::Io("boom".to_string()))
+        }
+
+        fn put_path_if_absent(&mut self, _path: &str, _value: String) -> Result<bool, DcsStoreError> {
             Err(DcsStoreError::Io("boom".to_string()))
         }
 
@@ -609,6 +645,8 @@ mod tests {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
+            restore_request: None,
+            restore_status: None,
             config: cfg,
             init_lock: None,
         }

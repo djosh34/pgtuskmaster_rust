@@ -70,7 +70,10 @@ fn render_archive_push(input: ArchivePushInput) -> Result<BackupCommandTemplate,
     validate_non_empty("wal_path", input.wal_path.as_str())?;
     validate_option_tokens(&input.options)?;
 
-    let mut args = base_args(input.stanza.as_str(), input.repo.as_str());
+    // `archive-push` does not accept `--repo` (pgBackRest selects the repo via `--repo*-path`
+    // configuration/options instead), so do not include it even though we keep `repo` in our
+    // config for consistency with other operations.
+    let mut args = archive_base_args(input.stanza.as_str());
     args.push("--pg1-path".to_string());
     args.push(input.pg1_path.display().to_string());
     args.extend(input.options);
@@ -87,7 +90,10 @@ fn render_archive_get(input: ArchiveGetInput) -> Result<BackupCommandTemplate, S
     validate_non_empty("destination_path", input.destination_path.as_str())?;
     validate_option_tokens(&input.options)?;
 
-    let mut args = base_args(input.stanza.as_str(), input.repo.as_str());
+    // `archive-get` does not accept `--repo` (pgBackRest selects the repo via `--repo*-path`
+    // configuration/options instead), so do not include it even though we keep `repo` in our
+    // config for consistency with other operations.
+    let mut args = archive_base_args(input.stanza.as_str());
     args.push("--pg1-path".to_string());
     args.push(input.pg1_path.display().to_string());
     args.extend(input.options);
@@ -104,6 +110,10 @@ fn base_args(stanza: &str, repo: &str) -> Vec<String> {
         "--repo".to_string(),
         repo.to_string(),
     ]
+}
+
+fn archive_base_args(stanza: &str) -> Vec<String> {
+    vec!["--stanza".to_string(), stanza.to_string()]
 }
 
 fn validate_non_empty(field: &str, value: &str) -> Result<(), String> {

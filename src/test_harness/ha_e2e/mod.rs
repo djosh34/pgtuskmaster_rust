@@ -4,7 +4,10 @@ pub(crate) mod ops;
 pub(crate) mod startup;
 pub(crate) mod util;
 
-pub(crate) use config::{Mode, TestConfig, TimeoutConfig};
+pub(crate) use config::{
+    BackupHarnessConfig, Mode, PgBackRestHarnessConfig, PgBackRestHarnessOptions, TestConfig,
+    TimeoutConfig,
+};
 pub(crate) use handle::NodeHandle;
 pub(crate) use startup::start_cluster;
 
@@ -33,6 +36,7 @@ mod tests {
                 bootstrap_primary_timeout: Duration::from_secs(1),
                 scenario_timeout: Duration::from_secs(1),
             },
+            backup: None,
         };
 
         let result = config.validate();
@@ -57,6 +61,7 @@ mod tests {
                     bootstrap_primary_timeout: Duration::from_secs(90),
                     scenario_timeout: Duration::from_secs(120),
                 },
+                backup: None,
             };
 
             let mut handle = start_cluster(config).await?;

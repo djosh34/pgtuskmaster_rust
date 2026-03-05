@@ -20,6 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 struct RecordingStore {
     writes: Arc<Mutex<Vec<(String, String)>>>,
     deletes: Arc<Mutex<Vec<String>>>,
+    kv: Arc<Mutex<std::collections::BTreeMap<String, String>>>,
 }
 
 impl RecordingStore {
@@ -45,7 +46,22 @@ impl DcsStore for RecordingStore {
         true
     }
 
+    fn read_path(&mut self, path: &str) -> Result<Option<String>, DcsStoreError> {
+        let guard = self
+            .kv
+            .lock()
+            .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?;
+        Ok(guard.get(path).cloned())
+    }
+
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
+        {
+            let mut guard = self
+                .kv
+                .lock()
+                .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?;
+            guard.insert(path.to_string(), value.clone());
+        }
         let mut guard = self
             .writes
             .lock()
@@ -54,7 +70,33 @@ impl DcsStore for RecordingStore {
         Ok(())
     }
 
+    fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
+        {
+            let mut guard = self
+                .kv
+                .lock()
+                .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?;
+            if guard.contains_key(path) {
+                return Ok(false);
+            }
+            guard.insert(path.to_string(), value.clone());
+        }
+        let mut guard = self
+            .writes
+            .lock()
+            .map_err(|_| DcsStoreError::Io("writes lock poisoned".to_string()))?;
+        guard.push((path.to_string(), value));
+        Ok(true)
+    }
+
     fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError> {
+        {
+            let mut guard = self
+                .kv
+                .lock()
+                .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?;
+            guard.remove(path);
+        }
         let mut guard = self
             .deletes
             .lock()
@@ -77,6 +119,133 @@ fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
         None => ApiAuthConfig::Disabled,
     };
 
+    RuntimeConfig {
+        cluster: ClusterConfig {
+            name: "cluster-a".to_string(),
+            member_id: "node-a".to_string(),
+        },
+        postgres: PostgresConfig {
+            data_dir: "/tmp/pgdata".into(),
+            connect_timeout_s: 5,
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 5432,
+            socket_dir: "/tmp/pgtuskmaster/socket".into(),
+            log_file: "/tmp/pgtuskmaster/postgres.log".into(),
+            rewind_source_host: "127.0.0.1".to_string(),
+            rewind_source_port: 5432,
+            local_conn_identity: PostgresConnIdentityConfig {
+                user: "postgres".to_string(),
+                dbname: "postgres".to_string(),
+                ssl_mode: PgSslMode::Prefer,
+            },
+            rewind_conn_identity: PostgresConnIdentityConfig {
+                user: "rewinder".to_string(),
+                dbname: "postgres".to_string(),
+                ssl_mode: PgSslMode::Prefer,
+            },
+            tls: TlsServerConfig {
+                mode: ApiTlsMode::Disabled,
+                identity: None,
+                client_auth: None,
+            },
+            roles: PostgresRolesConfig {
+                superuser: PostgresRoleConfig {
+                    username: "postgres".to_string(),
+                    auth: RoleAuthConfig::Tls,
+                },
+                replicator: PostgresRoleConfig {
+                    username: "replicator".to_string(),
+                    auth: RoleAuthConfig::Tls,
+                },
+                rewinder: PostgresRoleConfig {
+                    username: "rewinder".to_string(),
+                    auth: RoleAuthConfig::Tls,
+                },
+            },
+            pg_hba: PgHbaConfig {
+                source: InlineOrPath::Inline {
+                    content: "local all all trust\n".to_string(),
+                },
+            },
+            pg_ident: PgIdentConfig {
+                source: InlineOrPath::Inline {
+                    content: "# empty\n".to_string(),
+                },
+            },
+        },
+        dcs: DcsConfig {
+            endpoints: vec!["http://127.0.0.1:2379".to_string()],
+            scope: "scope-a".to_string(),
+            init: None,
+        },
+        ha: HaConfig {
+            loop_interval_ms: 1000,
+            lease_ttl_ms: 10_000,
+        },
+        process: ProcessConfig {
+            pg_rewind_timeout_ms: 1000,
+            bootstrap_timeout_ms: 1000,
+            fencing_timeout_ms: 1000,
+            backup_timeout_ms: 1000,
+            binaries: BinaryPaths {
+                postgres: "/usr/bin/postgres".into(),
+                pg_ctl: "/usr/bin/pg_ctl".into(),
+                pg_rewind: "/usr/bin/pg_rewind".into(),
+                initdb: "/usr/bin/initdb".into(),
+                pg_basebackup: "/usr/bin/pg_basebackup".into(),
+                psql: "/usr/bin/psql".into(),
+                pgbackrest: None,
+            },
+        },
+        backup: BackupConfig::default(),
+        logging: LoggingConfig {
+            level: LogLevel::Info,
+            capture_subprocess_output: true,
+            postgres: PostgresLoggingConfig {
+                enabled: true,
+                pg_ctl_log_file: None,
+                log_dir: None,
+                poll_interval_ms: 200,
+                cleanup: LogCleanupConfig {
+                    enabled: true,
+                    max_files: 10,
+                    max_age_seconds: 60,
+                    protect_recent_seconds: 300,
+                },
+            },
+            sinks: pgtuskmaster_rust::config::LoggingSinksConfig {
+                stderr: StderrSinkConfig { enabled: true },
+                file: pgtuskmaster_rust::config::FileSinkConfig {
+                    enabled: false,
+                    path: None,
+                    mode: pgtuskmaster_rust::config::FileSinkMode::Append,
+                },
+            },
+        },
+        api: ApiConfig {
+            listen_addr: "127.0.0.1:0".to_string(),
+            security: ApiSecurityConfig {
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                auth,
+            },
+        },
+        debug: DebugConfig { enabled: true },
+    }
+}
+
+fn sample_runtime_config_role_tokens(read_token: String, admin_token: String) -> RuntimeConfig {
+    let auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+        read_token: Some(read_token),
+        admin_token: Some(admin_token),
+    });
+    sample_runtime_config_with_auth(auth)
+}
+
+fn sample_runtime_config_with_auth(auth: ApiAuthConfig) -> RuntimeConfig {
     RuntimeConfig {
         cluster: ClusterConfig {
             name: "cluster-a".to_string(),
@@ -477,6 +646,323 @@ async fn bdd_api_post_switchover_writes_dcs_key() -> Result<(), WorkerError> {
     let writes = store.writes()?;
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0].0, "/scope-a/switchover");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_post_restore_writes_request_and_status_keys() -> Result<(), WorkerError> {
+    let cfg = sample_runtime_config(None);
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
+
+    let store = RecordingStore::default();
+    let store_for_ctx = store.clone();
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
+    let addr = ctx.local_addr()?;
+
+    let mut client = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    let body = br#"{"requested_by":"operator-a","executor_member_id":"node-a","reason":"test"}"#;
+    let request = format!(
+        "POST /restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    client
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("client write header failed: {err}")))?;
+    client
+        .write_all(body)
+        .await
+        .map_err(|err| WorkerError::Message(format!("client write body failed: {err}")))?;
+
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+
+    let response = read_http_response_framed(&mut client, IO_TIMEOUT).await?;
+    assert_eq!(response.status_code, 202);
+
+    let decoded: serde_json::Value = serde_json::from_slice(&response.body)
+        .map_err(|err| WorkerError::Message(format!("decode response json failed: {err}")))?;
+    assert_eq!(decoded["accepted"], true);
+    assert!(decoded["restore_id"].is_string());
+
+    let writes = store.writes()?;
+    assert_eq!(writes.len(), 2);
+    let paths = vec![writes[0].0.as_str(), writes[1].0.as_str()];
+    assert!(paths.contains(&"/scope-a/restore/request"));
+    assert!(paths.contains(&"/scope-a/restore/status"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_post_restore_rejects_unknown_fields() -> Result<(), WorkerError> {
+    let cfg = sample_runtime_config(None);
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
+
+    let store = RecordingStore::default();
+    let store_for_ctx = store.clone();
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
+    let addr = ctx.local_addr()?;
+
+    let mut client = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    let body = br#"{"requested_by":"operator-a","executor_member_id":"node-a","extra":1}"#;
+    let request = format!(
+        "POST /restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    client
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("client write header failed: {err}")))?;
+    client
+        .write_all(body)
+        .await
+        .map_err(|err| WorkerError::Message(format!("client write body failed: {err}")))?;
+
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+
+    let response = read_http_response_framed(&mut client, IO_TIMEOUT).await?;
+    assert_eq!(response.status_code, 400);
+    let writes = store.writes()?;
+    assert_eq!(writes.len(), 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_post_restore_conflict_returns_409_without_extra_writes() -> Result<(), WorkerError> {
+    let cfg = sample_runtime_config(None);
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
+
+    let store = RecordingStore::default();
+    let store_for_ctx = store.clone();
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
+    let addr = ctx.local_addr()?;
+
+    let body = br#"{"requested_by":"operator-a","executor_member_id":"node-a"}"#;
+    let req_head = format!(
+        "POST /restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+
+    let mut client_a = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    client_a
+        .write_all(req_head.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("first restore header write failed: {err}")))?;
+    client_a
+        .write_all(body)
+        .await
+        .map_err(|err| WorkerError::Message(format!("first restore body write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let response_a = read_http_response_framed(&mut client_a, IO_TIMEOUT).await?;
+    assert_eq!(response_a.status_code, 202);
+
+    let writes_after_first = store.writes()?;
+    assert_eq!(writes_after_first.len(), 2);
+
+    let mut client_b = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    client_b
+        .write_all(req_head.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("second restore header write failed: {err}")))?;
+    client_b
+        .write_all(body)
+        .await
+        .map_err(|err| WorkerError::Message(format!("second restore body write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let response_b = read_http_response_framed(&mut client_b, IO_TIMEOUT).await?;
+    assert_eq!(response_b.status_code, 409);
+
+    let writes_after_second = store.writes()?;
+    assert_eq!(writes_after_second.len(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_restore_status_idle_and_active_payloads() -> Result<(), WorkerError> {
+    let cfg = sample_runtime_config(None);
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
+
+    let store = RecordingStore::default();
+    let store_for_ctx = store.clone();
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
+    let addr = ctx.local_addr()?;
+
+    let mut idle_client = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    idle_client
+        .write_all(b"GET /ha/restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .map_err(|err| WorkerError::Message(format!("idle get write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let idle_response = read_http_response_framed(&mut idle_client, IO_TIMEOUT).await?;
+    assert_eq!(idle_response.status_code, 200);
+    let idle_json: serde_json::Value = serde_json::from_slice(&idle_response.body)
+        .map_err(|err| WorkerError::Message(format!("decode idle json failed: {err}")))?;
+    assert!(idle_json["request"].is_null());
+    assert!(idle_json["status"].is_null());
+    assert_eq!(idle_json["derived"]["is_executor"], false);
+
+    let mut post_client = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    let body = br#"{"requested_by":"operator-a","executor_member_id":"node-a"}"#;
+    let request = format!(
+        "POST /restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    post_client
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("restore post header write failed: {err}")))?;
+    post_client
+        .write_all(body)
+        .await
+        .map_err(|err| WorkerError::Message(format!("restore post body write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let post_response = read_http_response_framed(&mut post_client, IO_TIMEOUT).await?;
+    assert_eq!(post_response.status_code, 202);
+
+    let mut active_client = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+    active_client
+        .write_all(b"GET /ha/restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .map_err(|err| WorkerError::Message(format!("active get write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let active_response = read_http_response_framed(&mut active_client, IO_TIMEOUT).await?;
+    assert_eq!(active_response.status_code, 200);
+    let active_json: serde_json::Value = serde_json::from_slice(&active_response.body)
+        .map_err(|err| WorkerError::Message(format!("decode active json failed: {err}")))?;
+    assert_eq!(active_json["request"]["executor_member_id"], "node-a");
+    assert_eq!(active_json["status"]["phase"], "requested");
+    assert_eq!(active_json["derived"]["is_executor"], true);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_restore_auth_matrix_enforces_admin_and_read_roles() -> Result<(), WorkerError> {
+    let cfg = sample_runtime_config_role_tokens("read".to_string(), "admin".to_string());
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
+
+    let store = RecordingStore::default();
+    let store_for_ctx = store.clone();
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
+    let addr = ctx.local_addr()?;
+
+    let body = br#"{"requested_by":"operator-a","executor_member_id":"node-a"}"#;
+    let head = format!(
+        "POST /restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+
+    let mut missing = tokio::net::TcpStream::connect(addr).await.map_err(|err| {
+        WorkerError::Message(format!("connect failed: {err}"))
+    })?;
+    missing
+        .write_all(head.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("missing header write failed: {err}")))?;
+    missing
+        .write_all(body)
+        .await
+        .map_err(|err| WorkerError::Message(format!("missing body write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let missing_response = read_http_response_framed(&mut missing, IO_TIMEOUT).await?;
+    assert_eq!(missing_response.status_code, 401);
+
+    let mut forbidden = tokio::net::TcpStream::connect(addr).await.map_err(|err| {
+        WorkerError::Message(format!("connect failed: {err}"))
+    })?;
+    let forbidden_head = format!(
+        "POST /restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer read\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    forbidden
+        .write_all(forbidden_head.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("forbidden header write failed: {err}")))?;
+    forbidden
+        .write_all(body)
+        .await
+        .map_err(|err| WorkerError::Message(format!("forbidden body write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let forbidden_response = read_http_response_framed(&mut forbidden, IO_TIMEOUT).await?;
+    assert_eq!(forbidden_response.status_code, 403);
+
+    let mut allowed = tokio::net::TcpStream::connect(addr).await.map_err(|err| {
+        WorkerError::Message(format!("connect failed: {err}"))
+    })?;
+    let allowed_head = format!(
+        "POST /restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer admin\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    allowed
+        .write_all(allowed_head.as_bytes())
+        .await
+        .map_err(|err| WorkerError::Message(format!("allowed header write failed: {err}")))?;
+    allowed
+        .write_all(body)
+        .await
+        .map_err(|err| WorkerError::Message(format!("allowed body write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let allowed_response = read_http_response_framed(&mut allowed, IO_TIMEOUT).await?;
+    assert_eq!(allowed_response.status_code, 202);
+
+    let mut get_read = tokio::net::TcpStream::connect(addr).await.map_err(|err| {
+        WorkerError::Message(format!("connect failed: {err}"))
+    })?;
+    get_read
+        .write_all(
+            b"GET /ha/restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer read\r\n\r\n",
+        )
+        .await
+        .map_err(|err| WorkerError::Message(format!("get read write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let get_read_response = read_http_response_framed(&mut get_read, IO_TIMEOUT).await?;
+    assert_eq!(get_read_response.status_code, 200);
+
+    let mut delete_read = tokio::net::TcpStream::connect(addr).await.map_err(|err| {
+        WorkerError::Message(format!("connect failed: {err}"))
+    })?;
+    delete_read
+        .write_all(
+            b"DELETE /ha/restore HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer read\r\n\r\n",
+        )
+        .await
+        .map_err(|err| WorkerError::Message(format!("delete read write failed: {err}")))?;
+    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
+    let delete_read_response = read_http_response_framed(&mut delete_read, IO_TIMEOUT).await?;
+    assert_eq!(delete_read_response.status_code, 403);
+
     Ok(())
 }
 

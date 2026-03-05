@@ -208,8 +208,10 @@ pub(crate) fn takeover_restored_data_dir(
 
     // Remove/quarantine known config artifacts that can interfere with managed startup.
     // Note: We intentionally remove postgresql.auto.conf so backup-era ALTER SYSTEM settings cannot apply.
+    //
+    // We intentionally keep postgresql.conf: the process worker starts Postgres with `pg_ctl -D <data_dir>`
+    // and does not force a managed `config_file`, so a missing postgresql.conf would prevent startup.
     let explicit_paths = [
-        "postgresql.conf",
         "postgresql.auto.conf",
         "pg_hba.conf",
         "pg_ident.conf",
@@ -1047,8 +1049,7 @@ mod tests {
         takeover_restored_data_dir(&cfg, crate::config::BackupTakeoverPolicy::Quarantine, true)
             .map_err(|err| std::io::Error::other(err.to_string()))?;
 
-        if dir.join("postgresql.conf").exists()
-            || dir.join("postgresql.auto.conf").exists()
+        if dir.join("postgresql.auto.conf").exists()
             || dir.join("pg_hba.conf").exists()
             || dir.join("pg_ident.conf").exists()
             || dir.join("standby.signal").exists()

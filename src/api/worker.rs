@@ -7,7 +7,10 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 use crate::{
     api::{
-        controller::{delete_switchover, get_ha_state, post_switchover, SwitchoverRequestInput},
+        controller::{
+            delete_restore, delete_switchover, get_ha_state, get_restore_status, post_restore,
+            post_switchover, ClusterRestoreRequestInput, SwitchoverRequestInput,
+        },
         events::{ingest_wal_event, WalEventIngestInput},
         fallback::{get_fallback_cluster, post_fallback_heartbeat, FallbackHeartbeatInput},
         ApiError,
@@ -16,7 +19,7 @@ use crate::{
     dcs::store::DcsStore,
     debug_api::{snapshot::SystemSnapshot, view::build_verbose_payload},
     logging::{EventMeta, LogHandle, SeverityText},
-    state::{StateSubscriber, WorkerError},
+    state::{MemberId, StateSubscriber, WorkerError},
 };
 
 #[derive(Clone, Debug, Default)]
@@ -407,7 +410,27 @@ fn route_request(
                 Err(err) => api_error_to_http(err),
             }
         }
+        ("POST", "/restore") => {
+            let input = match serde_json::from_slice::<ClusterRestoreRequestInput>(&request.body) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
+                }
+            };
+            match post_restore(
+                &ctx.scope,
+                &mut *ctx.dcs_store,
+                input,
+            ) {
+                Ok(value) => HttpResponse::json(202, "Accepted", &value),
+                Err(err) => api_error_to_http(err),
+            }
+        }
         ("DELETE", "/ha/switchover") => match delete_switchover(&ctx.scope, &mut *ctx.dcs_store) {
+            Ok(value) => HttpResponse::json(202, "Accepted", &value),
+            Err(err) => api_error_to_http(err),
+        },
+        ("DELETE", "/ha/restore") => match delete_restore(&ctx.scope, &mut *ctx.dcs_store) {
             Ok(value) => HttpResponse::json(202, "Accepted", &value),
             Err(err) => api_error_to_http(err),
         },
@@ -419,6 +442,14 @@ fn route_request(
             let response = get_ha_state(&snapshot);
             HttpResponse::json(200, "OK", &response)
         }
+        ("GET", "/ha/restore") => match get_restore_status(
+            &ctx.scope,
+            &mut *ctx.dcs_store,
+            &MemberId(ctx.member_id.clone()),
+        ) {
+            Ok(value) => HttpResponse::json(200, "OK", &value),
+            Err(err) => api_error_to_http(err),
+        },
         ("GET", "/fallback/cluster") => {
             let view = get_fallback_cluster(cfg);
             HttpResponse::json(200, "OK", &view)
@@ -473,6 +504,7 @@ fn route_request(
 fn api_error_to_http(err: ApiError) -> HttpResponse {
     match err {
         ApiError::BadRequest(message) => HttpResponse::text(400, "Bad Request", message),
+        ApiError::Conflict(message) => HttpResponse::text(409, "Conflict", message),
         ApiError::DcsStore(message) => HttpResponse::text(503, "Service Unavailable", message),
         ApiError::Internal(message) => HttpResponse::text(500, "Internal Server Error", message),
     }
@@ -790,8 +822,10 @@ fn endpoint_role(request: &HttpRequest) -> EndpointRole {
     let (path, _query) = split_path_and_query(&request.path);
     match (request.method.as_str(), path) {
         ("POST", "/switchover")
+        | ("POST", "/restore")
         | ("POST", "/fallback/heartbeat")
-        | ("DELETE", "/ha/switchover") => EndpointRole::Admin,
+        | ("DELETE", "/ha/switchover")
+        | ("DELETE", "/ha/restore") => EndpointRole::Admin,
         _ => EndpointRole::Read,
     }
 }
@@ -1317,6 +1351,10 @@ mod tests {
             true
         }
 
+        fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
+            Ok(None)
+        }
+
         fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
             let mut guard = self
                 .writes
@@ -1324,6 +1362,15 @@ mod tests {
                 .map_err(|_| DcsStoreError::Io("writes lock poisoned".to_string()))?;
             guard.push((path.to_string(), value));
             Ok(())
+        }
+
+        fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
+            let mut guard = self
+                .writes
+                .lock()
+                .map_err(|_| DcsStoreError::Io("writes lock poisoned".to_string()))?;
+            guard.push((path.to_string(), value));
+            Ok(true)
         }
 
         fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError> {
@@ -1494,6 +1541,8 @@ mod tests {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
+                restore_request: None,
+                restore_status: None,
                 config: cfg,
                 init_lock: None,
             },

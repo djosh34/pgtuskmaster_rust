@@ -561,6 +561,8 @@ mod tests {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
+                restore_request: None,
+                restore_status: None,
                 config: cfg,
                 init_lock: None,
             },

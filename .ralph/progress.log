@@ -1,6 +1,0 @@
-- User asked for log instrumentation proposal in src/api/worker.rs.
-- Read progress log at startup with task context and recent status.
-- Inspected src/api/worker.rs plus tests and logging infra in src/logging/mod.rs and process/runtime usage.
-- Found swallowing points in API worker: run ignores step_once errors, timeouts ignored, TLS handshake errors in accept_connection converted to silent drop, parse_content_length match bytes ignored.
-- Confirmed there are no existing structured-log assertions in src/api/worker.rs tests; only response/status assertions.
-- Next step would be to add log handle to ApiWorkerCtx and emit correlation-rich records (peer addr, scope, method/route, optional request-id/header) at accept, parse, authz, routing, and write-failure points, then add unit tests using logging::TestSink.

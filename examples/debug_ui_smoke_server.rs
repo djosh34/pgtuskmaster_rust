@@ -21,8 +21,16 @@ impl DcsStore for SmokeStore {
         true
     }
 
+    fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
+        Ok(None)
+    }
+
     fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
         Ok(())
+    }
+
+    fn put_path_if_absent(&mut self, _path: &str, _value: String) -> Result<bool, DcsStoreError> {
+        Ok(true)
     }
 
     fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {

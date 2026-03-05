@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar  5 04:51:45 CET 2026
+Generated: Thu Mar  5 07:12:30 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -122,6 +122,15 @@ In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_
 
 ---
 
+**Path:** `.ralph/tasks/bugs/ha-action-deduping-suppresses-retry.md`
+
+## Bug: HA action dedupe suppresses legitimate retries <status>not_started</status> <passes>false</passes>
+
+<description>
+`HaState.recent_action_ids` is only ever appended to and never cleared in normal operation. `decide` filters candidate actions by this set, so once an action was emitted once (for example `StartPostgres`, `StartRewind`, `RunBootstrap`, or a future restore action), the same action can never be retried later if it failed or if the state machine returns to that decision again. This can stall recovery loops because repeated process-triggering actions are silently dropped as duplicates.</description>
+
+---
+
 **Path:** `.ralph/tasks/bugs/kill-path-injection-ha-e2e-util.md`
 
 ## Bug: HA e2e util executes PATH-resolved kill for process control <status>done</status> <passes>true</passes> <passing>true</passing>
@@ -214,6 +223,15 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 <description>
 The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/test_harness/binaries.rs) uses `panic!` to report missing binaries. This conflicts with the project policy of no `panic`/`expect`/`unwrap` and makes tests fail via uncontrolled panics rather than structured errors. Refactor `require_binary` (and callers) to return a typed `HarnessError` instead of panicking, and update callers/tests to propagate or assert errors explicitly.
 </description>
+
+---
+
+**Path:** `.ralph/tasks/bugs/unused-backup-recovery-mode-doc-configuration.md`
+
+## Bug: backup.bootstrap.recovery_mode is documented but unused <status>not_started</status> <passes>false</passes>
+
+<description>
+`backup.bootstrap.recovery_mode` is documented in `docs/src/operator/configuration.md` as part of restore bootstrap config and accepted in schema/defaults, but runtime code does not read or branch on this field anywhere in startup/restore paths. It is effectively dead configuration that cannot affect behavior, which makes the docs and operator guidance inaccurate for current behavior.
 
 ---
 
@@ -419,15 +437,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
@@ -452,6 +461,15 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+<passing>true</passing>
 
 ---
 
@@ -494,16 +512,6 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ---
 
-**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-
----
-
 **Path:** `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
@@ -519,6 +527,16 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
+
+---
+
+**Path:** `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
 
 ---
 
