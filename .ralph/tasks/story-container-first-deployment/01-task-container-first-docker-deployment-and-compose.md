@@ -11,7 +11,7 @@
 - Use Docker Compose `configs` for node configs and managed static config payloads; use Docker Compose `secrets` for credential material and private keys.
 - Add an example `.env` file used to parameterize secret-file locations that Compose `secrets.file` references, without injecting database secrets directly as plain env vars.
 - Constrain network exposure so only required inter-node/service ports are reachable internally, while exposing node API, debug API, and PostgreSQL client ports externally.
-- Update operator-facing docs so container deployment is the expected/default path, and non-container/manual deployment is secondary.
+- Update operator-facing docs so container deployment is the expected/default path, non-container/manual deployment is secondary, and the main quick-start path for using the project is the Docker Compose setup created by this task.
 
 **Context from research:**
 - The repository currently has no `Dockerfile`/Compose assets; Docker support is greenfield.
@@ -22,7 +22,7 @@
 - A new operator can run a documented `docker compose up` flow and get a working cluster (etcd3 + pgtuskmaster nodes) without ad-hoc local binary setup.
 - Production and development images are clearly separated with minimal production footprint.
 - Compose assets use `configs` + `secrets` correctly, and secret handling is file-based via Docker secrets.
-- Documentation prioritizes containers as the primary deployment path.
+- Documentation prioritizes containers as the primary deployment path and uses the Compose flow from this task as the real quick-start guide.
 
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
@@ -63,13 +63,13 @@
 - [ ] no service relies on non-secret env vars for credential payloads that should be Docker secrets
 - [ ] Update docs to make containers the primary deployment path:
 - [ ] `docs/src/operator/deployment.md` rewritten to start with container-first deployment flow
-- [ ] `docs/src/quick-start/prerequisites.md` and `docs/src/quick-start/first-run.md` updated to include container-first quick start
+- [ ] `docs/src/quick-start/prerequisites.md` and `docs/src/quick-start/first-run.md` rewritten so the main quick-start/first-use path is the Docker Compose flow created by this task
 - [ ] add/update dedicated container deployment doc page (`docs/src/operator/container-deployment.md` or equivalent) and wire it in `docs/src/SUMMARY.md`
 - [ ] non-container/manual deployment content explicitly marked as advanced/secondary path
+- [ ] a new user can follow the docs produced by this task as the primary quick-start guide for the project
 - [ ] `make docs-lint` passes cleanly
 - [ ] `make docs-build` passes cleanly
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>

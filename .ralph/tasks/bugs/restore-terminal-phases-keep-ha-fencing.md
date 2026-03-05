@@ -1,8 +1,17 @@
 ---
-## Bug: Restore terminal phases keep HA in repeated fencing <status>not_started</status> <passes>false</passes>
+## Bug: Restore terminal phases keep HA in repeated fencing <status>blocked</status> <passes>false</passes>
+
+<blocked_by>05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+<blocked_by>06-task-move-and-split-ha-e2e-tests-after-functional-rewrite</blocked_by>
 
 <description>
-`src/ha/decide.rs` treats restore as HA-blocking for every phase except `Completed`, even though `Failed` and `Cancelled` are already modeled as terminal and `Orphaned` is documented as the state that should stop blocking HA forever. That leaves non-executors in the restore guard fencing path and keeps the executor in restore-specific fencing branches on every tick. The real-binary test `ha::e2e_multi_node::e2e_multi_node_restore_takeover_external_repo_converges_cluster` then waits only for `Completed`, so failure/orphan paths can degenerate into a long fencing loop until timeout. Explore the restore guard flow and fixture polling first, then fix the liveness bug.
+This bug is intentionally deferred until the backup-removal story and the HA functional rewrite story are both fully complete. The restore control plane is being deleted, and the remaining HA core is being restructured; fixing this in the old design first would likely be throwaway work.
+
+Reassess this bug only after those stories complete through their final tasks. Expected outcomes then:
+- most likely the bug is obsolete because restore takeover no longer exists,
+- otherwise a much smaller residual HA liveness bug should be filed against the surviving post-removal design.
+
+Current concern recorded here: `src/ha/decide.rs` treats restore as HA-blocking for every phase except `Completed`, even though `Failed`, `Cancelled`, and `Orphaned` are modeled as terminal/non-blocking outcomes. That can keep nodes in repeated restore-specific fencing behavior and can cause the restore takeover e2e to wait forever for `Completed` instead of converging or failing cleanly.
 </description>
 
 <acceptance_criteria>

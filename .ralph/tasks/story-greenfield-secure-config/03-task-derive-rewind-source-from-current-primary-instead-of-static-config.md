@@ -4,14 +4,12 @@
 <description>
 Remove static rewind source addressing from the product and derive rewind behavior from current cluster state.
 
-The agent must explore the current config schema, HA/runtime flow, DCS/member-state usage, process dispatch, and rewind execution path first, then redesign the rewind source contract so it matches how HA should actually work.
-
-Intended direction:
-- a node should rewind from the current primary/leader, not from a permanently configured host/port
-- static config fields for rewind source host/port should be removed if they are only compensating for missing runtime derivation
-- runtime logic should derive the rewind target from the current cluster leader/member information rather than operator-entered topology fields
-- config should contain only the reusable connection/auth/TLS material needed to connect securely to the eventual rewind source
-- docs and examples should explain rewind in terms of cluster-state discovery rather than a fixed peer endpoint
+The agent must explore the current config schema, HA/runtime flow, DCS/member-state usage, process dispatch, and rewind execution path first, then implement the following fixed product decisions:
+- a node rewinds from the current primary/leader, not from a permanently configured host/port
+- static config fields for rewind source host/port are removed from the user-facing contract
+- runtime logic derives the rewind target from current cluster leader/member information rather than operator-entered topology fields
+- config keeps only the reusable connection/auth/TLS material needed to connect securely to the eventual rewind source
+- docs and examples explain rewind in terms of cluster-state discovery rather than a fixed peer endpoint
 
 This is not only a docs or schema cleanup. The agent must update the runtime behavior and surrounding contracts so rewind source selection is owned by the cluster state model rather than by static node config.
 
@@ -27,5 +25,4 @@ The agent should use parallel subagents after exploration for runtime/HA changes
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>

@@ -22,6 +22,7 @@
 - We agreed on the boundary rule:
   - `DecisionFacts` are only for deciding
   - `HaDecision` must carry enough payload that later lowering does not need the original world facts again
+- We also agreed that `decide` should stop mutating stateful error placeholders such as `last_error`; decision failures or exceptional outcomes should be represented through typed results/contracts rather than hidden mutable state.
 - The intended first-pass signature shape should be treated as the default target unless implementation uncovers a concrete reason to improve it:
   - `fn decide_phase(current: HaPhase, facts: &DecisionFacts) -> PhaseOutcome`
   - `struct PhaseOutcome { next_phase: HaPhase, decision: HaDecision }`
@@ -69,6 +70,7 @@
 - [ ] Ensure `HaDecision` variants carry enough payload for later lowering without requiring `DecisionFacts` or `WorldSnapshot` to be passed again.
 - [ ] Remove the production pattern of mutable `next` state plus mutable `candidates` accumulation from `decide`.
 - [ ] Remove all production decision signatures that accept `&mut HaState` or `&mut Vec<_>`.
+- [ ] Remove mutable `last_error`-style decision bookkeeping and replace it with typed return/error handling that fits the pure decision contract.
 - [ ] Use match-driven phase dispatch as the primary control-flow shape for the HA state machine.
 - [ ] Keep `decide` side-effect free and deterministic from `DecideInput` alone.
 - [ ] `make check` — passes cleanly

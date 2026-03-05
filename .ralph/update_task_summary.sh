@@ -2,7 +2,7 @@
 
 TASKS_DIR=".ralph/tasks"
 OUTPUT_FILE=".ralph/current_tasks.md"
-PREVIEW_LINES=5
+PREVIEW_LINES=8
 
 # Build entire content in a variable
 content="# Current Tasks Summary

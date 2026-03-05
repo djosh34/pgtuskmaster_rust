@@ -1,10 +1,14 @@
 ---
-## Bug: HA decide mutation-heavy control flow needs pure refactor <status>not_started</status> <passes>false</passes>
+## Bug: HA decide mutation-heavy control flow needs pure refactor <status>blocked</status> <passes>false</passes>
+
+<blocked_by>06-task-move-and-split-ha-e2e-tests-after-functional-rewrite</blocked_by>
 
 <description>
-`src/ha/decide.rs` currently implements deterministic HA decisions through shared mutable state (`next`, `candidates`, restore-status mutation, mutable phase variables) even though the logic should be expressible as pure functions returning complete outcomes. This was detected from PR #1 owner feedback and confirmed by reading the current code.
+This bug is intentionally deferred until the HA functional rewrite story is fully complete. It overlaps directly with the planned refactor work, and it does not make sense to force the bug queue to preempt the story that is supposed to absorb most or all of this concern.
 
-Explore and research the codebase first, then fix. Focus on the mutation-heavy HA decision flow, the restore guard helpers that mutate shared structures through `&mut`, and the resulting readability/correctness risks in related HA files.
+Reassess this bug only after `story-ha-functional-rewrite` reaches its final task. At that point, answer a narrower question: how much mutation-heavy control flow is still present in the rewritten design, and what residual bug or cleanup work remains?
+
+Current concern recorded here: `src/ha/decide.rs` implements deterministic HA decisions through shared mutable state (`next`, `candidates`, restore-status mutation, mutable phase variables) even though the logic should be expressible as pure functions returning complete outcomes. This was detected from PR #1 owner feedback and confirmed by reading the current code before the rewrite story was planned.
 </description>
 
 <acceptance_criteria>

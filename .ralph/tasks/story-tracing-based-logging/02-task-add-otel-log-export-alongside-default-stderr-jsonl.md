@@ -4,16 +4,14 @@
 <description>
 Add OpenTelemetry log export support alongside the default stderr JSONL output, without forcing trace/span semantics onto the product.
 
-The agent must explore the current logging pipeline, available Rust ecosystem support, and the runtime configuration surface first, then implement an operator-usable export path that keeps local structured logs working well.
-
-Intended direction:
+The agent must explore the current logging pipeline, available Rust ecosystem support, and the runtime configuration surface first, then implement the following fixed product decisions:
 - default local behavior remains structured JSONL to stderr
-- optional structured file output remains compatible with the same tracing-based pipeline
-- the product can also export logs to an OTEL endpoint
-- the log export design should fit the standard Rust tracing/OpenTelemetry ecosystem cleanly
-- trace IDs and span IDs should not become mandatory product concepts if the current product does not need them
+- optional structured file output remains available through the same tracing-based pipeline
+- the product can export logs to an OTEL endpoint
+- the OTEL integration is for logs, not for forcing distributed tracing semantics into the product
+- trace IDs and span IDs are not required product concepts
 
-This task is about logs, not full tracing. If the implementation uses the tracing ecosystem internally, that is fine, but the operator-facing contract should stay focused on structured logs and log export rather than inventing distributed tracing concepts the product does not use.
+This task is about logs, not full tracing. The operator-facing contract must stay focused on structured logs and log export rather than inventing distributed tracing concepts the product does not use.
 
 The agent should use parallel subagents after exploration for exporter integration, config/runtime wiring, and verification.
 </description>
@@ -27,5 +25,4 @@ The agent should use parallel subagents after exploration for exporter integrati
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>

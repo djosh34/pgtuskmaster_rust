@@ -1,8 +1,18 @@
 ---
-## Bug: HA action dedupe suppresses legitimate retries <status>not_started</status> <passes>false</passes>
+## Bug: HA action dedupe suppresses legitimate retries <status>blocked</status> <passes>false</passes>
+
+<blocked_by>06-task-move-and-split-ha-e2e-tests-after-functional-rewrite</blocked_by>
 
 <description>
-`HaState.recent_action_ids` is only ever appended to and never cleared in normal operation. `decide` filters candidate actions by this set, so once an action was emitted once (for example `StartPostgres`, `StartRewind`, `RunBootstrap`, or a future restore action), the same action can never be retried later if it failed or if the state machine returns to that decision again. This can stall recovery loops because repeated process-triggering actions are silently dropped as duplicates.</description>
+This bug is intentionally deferred until the HA functional rewrite story is fully complete. The current investigation already suggests the original report may be partly or fully stale on current `main`, and the remaining useful work may change shape substantially once the facts/decision/effect-plan/worker refactors land.
+
+Do not pull this bug ahead of the rewrite. Reassess it only after `story-ha-functional-rewrite` is complete through its final task, then decide whether to:
+- close it as stale because the rewrite removed the old failure mode,
+- reduce it to a narrower residual bug in the rewritten HA pipeline, or
+- convert the remaining concern into targeted docs/test hardening only.
+
+Current concern recorded here: `HaState.recent_action_ids` may suppress legitimate retries if it effectively persists beyond a single decision tick, causing repeated process-triggering actions such as `StartPostgres`, `StartRewind`, or `RunBootstrap` to be dropped when they should be re-issued.
+</description>
 
 <acceptance_criteria>
 - [ ] `make check` — passes cleanly
