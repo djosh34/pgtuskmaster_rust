@@ -214,8 +214,8 @@ Planned matrix design if reinstatement is justified:
   - [x] `<status>done</status>` and `<passes>true</passes>` only after the required gates pass
   - [x] `<passing>true</passing>` only after all required gates pass
 - [x] Run `/bin/bash .ralph/task_switch.sh`
-- [ ] Commit all changes, including `.ralph` updates, with the required `task finished ...` message and gate evidence
-- [ ] `git push`
+- [x] Commit all changes, including `.ralph` updates, with the required `task finished ...` message and gate evidence
+- [x] `git push`
 
 ### Guardrails for the execution run
 
