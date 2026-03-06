@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 15:33:32 CET 2026
+Generated: Fri Mar  6 15:54:17 CET 2026
 
 # Task `.ralph/tasks/bugs/rewind-and-basebackup-source-are-static-instead-of-derived-from-current-leader.md`
 
@@ -144,18 +144,6 @@ Make the docs source tree easier to navigate by aligning file names and ordering
 
 <description>
 Audit the project for unexplained magic numbers and replace them with explicit typed constants, configuration, or otherwise well-justified named values.
-```
-
-==============
-
-# Task `.ralph/tasks/story-remove-backup-feature/05-task-remove-backup-docs-and-obsolete-task-artifacts.md`
-
-```
-## Task: Remove backup feature docs and delete obsolete pgBackRest task artifacts <status>not_started</status> <passes>false</passes> <priority>high</priority>
-
-<description>
-**Goal:** Remove all operator/interface/contributor documentation for the backup feature and clean the Ralph task inventory so it no longer contains implementation tasks for a feature we are deliberately deleting.
-This documentation and inventory cleanup belongs to the same high-priority removal story so the repo stops advertising or preserving a feature we have already decided to delete.
 ```
 
 ==============

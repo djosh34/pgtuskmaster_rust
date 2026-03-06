@@ -1,12 +1,7 @@
 ## Task: Implement runtime config schema defaults parser and validation <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>01-task-core-types-time-errors-watch-channel</blocked_by>
-<superseded_by>story-pgbackrest-managed-backup-recovery/03-task-high-prio-remove-shell-archive-wrapper-and-current-wiring</superseded_by>
-<superseded_by>story-pgbackrest-managed-backup-recovery/04-task-rust-generic-argv-passthrough-binary-for-postgres-archive-restore-logging</superseded_by>
-
 <description>
-**Superseded note:** Follow-up review identified the shell archive wrapper path as unacceptable; user feedback was explicit: "this is horrific". The wrapper-based approach introduced brittle shell/script behavior into critical backup paths. New work is split into task 03 in `story-pgbackrest-managed-backup-recovery` (remove it entirely) and task 04 in `story-pgbackrest-managed-backup-recovery` (reintroduce as Rust-native generic passthrough with strict argv-only execution and no PATH-based resolution).
-
 **Goal:** Define and validate the full typed runtime configuration model.
 
 **Scope:**

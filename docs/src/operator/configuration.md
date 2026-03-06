@@ -1,6 +1,6 @@
 # Configuration Guide
 
-This guide describes the current `config_version = "v2"` runtime schema. The backup/pgBackRest configuration surface has been removed. Replica cloning is still supported through `pg_basebackup`.
+This guide describes the current `config_version = "v2"` runtime schema. Replica cloning is supported through `pg_basebackup`.
 
 ## Baseline example
 
@@ -124,7 +124,7 @@ The v2 schema is intentionally fail-closed. Startup should fail before the node 
   - `pg_basebackup`
   - `psql`
 
-Replica cloning still depends on `pg_basebackup`, but the removed backup feature does not.
+Replica cloning depends on `pg_basebackup`.
 
 ### `[logging]`
 
@@ -147,7 +147,6 @@ Replica cloning still depends on `pg_basebackup`, but the removed backup feature
 
 - Initial primary bootstrap uses `initdb`.
 - Replica bootstrap uses `pg_basebackup` against a healthy primary when the DCS view shows one.
-- There is no restore-bootstrap mode and no pgtuskmaster-owned WAL archive/restore helper path.
 
 ## Common misconfigurations
 

@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar  6 15:33:32 CET 2026
+Generated: Fri Mar  6 15:54:17 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -443,6 +443,18 @@ This cleanup is part of the same immediate removal story and should follow the c
 
 ==============
 
+# Task `.ralph/tasks/story-remove-backup-feature/05-task-remove-backup-docs-and-obsolete-task-artifacts.md`
+
+```
+## Task: Remove backup feature docs and delete obsolete pgBackRest task artifacts <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<description>
+**Goal:** Remove all operator/interface/contributor documentation for the backup feature and clean the Ralph task inventory so it no longer contains implementation tasks for a feature we are deliberately deleting.
+This documentation and inventory cleanup belongs to the same high-priority removal story so the repo stops advertising or preserving a feature we have already decided to delete.
+```
+
+==============
+
 # Task `.ralph/tasks/story-rust-system-harness/01-task-core-types-time-errors-watch-channel.md`
 
 ```
@@ -460,8 +472,8 @@ This cleanup is part of the same immediate removal story and should follow the c
 ## Task: Implement runtime config schema defaults parser and validation <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>01-task-core-types-time-errors-watch-channel</blocked_by>
-<superseded_by>story-pgbackrest-managed-backup-recovery/03-task-high-prio-remove-shell-archive-wrapper-and-current-wiring</superseded_by>
-<superseded_by>story-pgbackrest-managed-backup-recovery/04-task-rust-generic-argv-passthrough-binary-for-postgres-archive-restore-logging</superseded_by>
+<description>
+**Goal:** Define and validate the full typed runtime configuration model.
 ```
 
 ==============
