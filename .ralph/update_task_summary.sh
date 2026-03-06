@@ -5,6 +5,11 @@ CURRENT_OUTPUT_FILE=".ralph/current_tasks.md"
 DONE_OUTPUT_FILE=".ralph/current_tasks_done.md"
 PREVIEW_LINES=5
 
+render_preview() {
+    local task_file="$1"
+    head -n "$PREVIEW_LINES" "$task_file"
+}
+
 # Build entire content in variables
 current_content="# Current Tasks Summary
 
@@ -34,7 +39,7 @@ for task_file in "$TASKS_DIR"/*/*.md; do
             done_content+="
 **Path:** \`$task_file\`
 
-$(tail -n +2 "$task_file" | head -n "$PREVIEW_LINES")
+$(render_preview "$task_file")
 "
         else
             if [[ "$first_current" == true ]]; then
@@ -47,7 +52,7 @@ $(tail -n +2 "$task_file" | head -n "$PREVIEW_LINES")
             current_content+="
 **Path:** \`$task_file\`
 
-$(tail -n +2 "$task_file" | head -n "$PREVIEW_LINES")
+$(render_preview "$task_file")
 "
         fi
     fi
