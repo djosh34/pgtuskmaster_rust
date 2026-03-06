@@ -181,10 +181,10 @@ test-long: guard-makeflags ensure-timeout
 		bash -c 'set -euo pipefail; env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets -- --list | tee "$$1" >/dev/null' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test-long --step test_long.preflight_validate_ultra_long --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
 		bash -c 'set -euo pipefail; list_file="$$1"; dupes="$$(printf "%s\n" $(LONG_TESTS) | sort | uniq -d)"; if [ -n "$${dupes}" ]; then echo "Ultra-long test list contains duplicates: $${dupes}" >&2; exit 1; fi; for t in $(LONG_TESTS); do if ! awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -Fx "$$t" >/dev/null; then echo "Ultra-long test not found (exact): $$t" >&2; exit 1; fi; match_count="$$(awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -F "$$t" | wc -l | tr -d " ")"; if [ "$${match_count}" != "1" ]; then echo "Ultra-long test name is not unique (substring matches $${match_count} tests): $$t" >&2; exit 1; fi; done' -- "$${list_file}"; \
-	for t in $(LONG_TESTS); do \
-		"$(GATE_STEP)" --gate test-long --step "test_long.exec.$$t" --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_LONG_PER_TEST_TIMEOUT_SECS)" --kill-after-secs "$(TEST_LONG_PER_TEST_TIMEOUT_KILL_AFTER_SECS)" -- \
-			env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets "$$t" -- --exact; \
-	done
+	metadata_file="$(GATE_EVIDENCE_DIR)/test-long/test-artifacts.jsonl"; \
+	"$(GATE_STEP)" --gate test-long --step test_long.build_no_run --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_LONG_PER_TEST_TIMEOUT_SECS)" --kill-after-secs "$(TEST_LONG_PER_TEST_TIMEOUT_KILL_AFTER_SECS)" -- \
+		bash -c 'set -euo pipefail; metadata_file="$$1"; env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets --no-run --message-format=json > "$${metadata_file}"' -- "$${metadata_file}"; \
+	./tools/test-long-parallel.sh --gate test-long --run-id "$(GATE_RUN_ID)" --steps-jsonl "$(GATE_EVIDENCE_DIR)/test-long/steps.jsonl" --steps-dir "$(GATE_EVIDENCE_DIR)/test-long/steps" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_LONG_PER_TEST_TIMEOUT_SECS)" --kill-after-secs "$(TEST_LONG_PER_TEST_TIMEOUT_KILL_AFTER_SECS)" --metadata-file "$${metadata_file}" -- $(LONG_TESTS)
 
 docs-lint: guard-makeflags ensure-timeout ensure-node
 	@echo "gate evidence: $(GATE_EVIDENCE_DIR)"

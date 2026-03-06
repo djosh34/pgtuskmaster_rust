@@ -136,7 +136,7 @@ The Makefile splits the default test run from “ultra-long” scenarios:
   - skips a curated list of ultra-long tests
   - validates that every skip token is an **exact match** (preflight `-- --list`), so the run fails closed if a test is renamed or missing.
 - `make test-long`:
-  - runs only the ultra-long tests, one by one, with `-- --exact`
+  - builds the workspace test targets once, then runs only the ultra-long tests in parallel via their exact test executables
   - is intended for scenarios that take minutes and are not appropriate for a tight edit/compile loop.
   - is the supported home for the focused real-binary HA coverage:
     - planned switchover under concurrent SQL load
