@@ -13,8 +13,10 @@ pub(crate) const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
 # Backup-era archive and restore settings have been removed.\n\
 # Production TLS material must be supplied by the operator; pgtuskmaster only copies managed runtime files.\n";
 pub(crate) const MANAGED_STANDBY_SIGNAL_NAME: &str = "standby.signal";
+pub(crate) const MANAGED_RECOVERY_SIGNAL_NAME: &str = "recovery.signal";
 
 const RESERVED_EXTRA_GUC_KEYS: &[&str] = &[
+    "archive_cleanup_command",
     "config_file",
     "hba_file",
     "hot_standby",
@@ -23,17 +25,41 @@ const RESERVED_EXTRA_GUC_KEYS: &[&str] = &[
     "port",
     "primary_conninfo",
     "primary_slot_name",
+    "promote_trigger_file",
+    "recovery_end_command",
+    "recovery_min_apply_delay",
+    "recovery_target",
+    "recovery_target_action",
+    "recovery_target_inclusive",
+    "recovery_target_lsn",
+    "recovery_target_name",
+    "recovery_target_time",
+    "recovery_target_timeline",
+    "recovery_target_xid",
+    "restore_command",
     "ssl",
     "ssl_ca_file",
     "ssl_cert_file",
     "ssl_key_file",
+    "trigger_file",
     "unix_socket_directories",
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ManagedRecoverySignal {
+    None,
+    Standby,
+    Recovery,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ManagedPostgresStartIntent {
     Primary,
     Replica {
+        primary_conninfo: PgConnInfo,
+        primary_slot_name: Option<String>,
+    },
+    Recovery {
         primary_conninfo: PgConnInfo,
         primary_slot_name: Option<String>,
     },
@@ -51,8 +77,22 @@ impl ManagedPostgresStartIntent {
         }
     }
 
-    pub(crate) fn creates_standby_signal(&self) -> bool {
-        matches!(self, Self::Replica { .. })
+    pub(crate) fn recovery(
+        primary_conninfo: PgConnInfo,
+        primary_slot_name: Option<String>,
+    ) -> Self {
+        Self::Recovery {
+            primary_conninfo,
+            primary_slot_name,
+        }
+    }
+
+    pub(crate) fn recovery_signal(&self) -> ManagedRecoverySignal {
+        match self {
+            Self::Primary => ManagedRecoverySignal::None,
+            Self::Replica { .. } => ManagedRecoverySignal::Standby,
+            Self::Recovery { .. } => ManagedRecoverySignal::Recovery,
+        }
     }
 }
 
@@ -130,6 +170,10 @@ pub(crate) fn render_managed_postgres_conf(
             push_bool_setting(&mut rendered, "hot_standby", false);
         }
         ManagedPostgresStartIntent::Replica {
+            primary_conninfo,
+            primary_slot_name,
+        }
+        | ManagedPostgresStartIntent::Recovery {
             primary_conninfo,
             primary_slot_name,
         } => {
@@ -288,7 +332,7 @@ mod tests {
     use super::{
         render_managed_postgres_conf, validate_extra_guc_entry, ManagedPostgresConf,
         ManagedPostgresConfError, ManagedPostgresStartIntent, ManagedPostgresTlsConfig,
-        MANAGED_POSTGRESQL_CONF_HEADER,
+        ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER,
     };
 
     fn sample_conf() -> ManagedPostgresConf {
@@ -303,8 +347,8 @@ mod tests {
                 key_file: PathBuf::from("/var/lib/postgresql/data/pgtm.server.key"),
                 ca_file: Some(PathBuf::from("/var/lib/postgresql/data/pgtm.ca.crt")),
             },
-            start_intent: ManagedPostgresStartIntent::Replica {
-                primary_conninfo: PgConnInfo {
+            start_intent: ManagedPostgresStartIntent::replica(
+                PgConnInfo {
                     host: "leader.internal".to_string(),
                     port: 5432,
                     user: "replicator".to_string(),
@@ -314,8 +358,8 @@ mod tests {
                     ssl_mode: PgSslMode::Require,
                     options: Some("-c wal_receiver_status_interval=5s".to_string()),
                 },
-                primary_slot_name: Some("slot_a".to_string()),
-            },
+                Some("slot_a".to_string()),
+            ),
             extra_gucs: BTreeMap::from([
                 (
                     "log_line_prefix".to_string(),
@@ -441,6 +485,35 @@ mod tests {
     }
 
     #[test]
+    fn managed_start_intent_tracks_recovery_signal_state() {
+        assert_eq!(
+            ManagedPostgresStartIntent::primary().recovery_signal(),
+            ManagedRecoverySignal::None
+        );
+        assert_eq!(
+            sample_conf().start_intent.recovery_signal(),
+            ManagedRecoverySignal::Standby
+        );
+        assert_eq!(
+            ManagedPostgresStartIntent::recovery(
+                PgConnInfo {
+                    host: "leader.internal".to_string(),
+                    port: 5432,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: None,
+                    ssl_mode: PgSslMode::Prefer,
+                    options: None,
+                },
+                None,
+            )
+            .recovery_signal(),
+            ManagedRecoverySignal::Recovery
+        );
+    }
+
+    #[test]
     fn validate_extra_guc_entry_rejects_reserved_keys() {
         assert_eq!(
             validate_extra_guc_entry("port", "5432"),
@@ -470,6 +543,22 @@ mod tests {
             Err(ManagedPostgresConfError::InvalidExtraGuc {
                 key: "application_name".to_string(),
                 message: "value must not contain control characters".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_extra_guc_entry_rejects_recovery_override_keys() {
+        assert_eq!(
+            validate_extra_guc_entry("restore_command", "cp /archive/%f %p"),
+            Err(ManagedPostgresConfError::ReservedExtraGuc {
+                key: "restore_command".to_string(),
+            })
+        );
+        assert_eq!(
+            validate_extra_guc_entry("recovery_target_timeline", "latest"),
+            Err(ManagedPostgresConfError::ReservedExtraGuc {
+                key: "recovery_target_timeline".to_string(),
             })
         );
     }

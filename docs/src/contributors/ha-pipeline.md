@@ -119,7 +119,9 @@ The table below is a practical “what will happen if HA chooses effect X?” gu
 Notes:
 
 - The leader and switchover keys are scoped to `cfg.dcs.scope` and rendered as `/{scope}/leader` and `/{scope}/switchover`.
-- `StartPostgres` dispatch calls `postgres_managed::materialize_managed_postgres_config(...)` before enqueuing the job, so the authoritative managed config file `PGDATA/pgtm.postgresql.conf`, `standby.signal`, and the managed side files are regenerated consistently in both startup and HA-driven starts.
+- `StartPostgres` dispatch calls `postgres_managed::materialize_managed_postgres_config(...)` before enqueuing the job, so the authoritative managed config file `PGDATA/pgtm.postgresql.conf`, the managed signal-file set (`standby.signal`, `recovery.signal`, or neither), and the managed side files are regenerated consistently in both startup and HA-driven starts.
+- The same managed-postgres surface also owns quarantining `PGDATA/postgresql.auto.conf` to `PGDATA/pgtm.unmanaged.postgresql.auto.conf` on managed starts. HA and startup planning do not treat `postgresql.auto.conf` as authoritative configuration.
+- When HA needs to preserve previously managed replica follow state without a fresh DCS leader hint, it reuses the shared managed-state reader from `postgres_managed` instead of parsing ad hoc local PostgreSQL files in multiple places.
 - The current dispatch order is fixed by concern inside `apply_effect_plan(...)`: Postgres lifecycle, then lease effects, then switchover cleanup, then replication/recovery, then safety. That order is what enforces “demote before release” and “release before clear/signal” without preserving a generic action vector boundary.
 
 ## Phase transitions: the “story” paths contributors care about

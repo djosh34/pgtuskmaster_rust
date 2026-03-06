@@ -8,15 +8,18 @@ use thiserror::Error;
 
 use crate::{
     config::{ApiTlsMode, InlineOrPath, RuntimeConfig},
+    pginfo::conninfo::parse_pg_conninfo,
     postgres_managed_conf::{
         render_managed_postgres_conf, ManagedPostgresConf, ManagedPostgresConfError,
-        ManagedPostgresStartIntent, ManagedPostgresTlsConfig, MANAGED_POSTGRESQL_CONF_NAME,
-        MANAGED_STANDBY_SIGNAL_NAME,
+        ManagedPostgresStartIntent, ManagedPostgresTlsConfig, ManagedRecoverySignal,
+        MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME, MANAGED_STANDBY_SIGNAL_NAME,
     },
 };
 
 const MANAGED_PG_HBA_CONF_NAME: &str = "pgtm.pg_hba.conf";
 const MANAGED_PG_IDENT_CONF_NAME: &str = "pgtm.pg_ident.conf";
+const POSTGRESQL_AUTO_CONF_NAME: &str = "postgresql.auto.conf";
+const QUARANTINED_POSTGRESQL_AUTO_CONF_NAME: &str = "pgtm.unmanaged.postgresql.auto.conf";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedPostgresConfig {
@@ -27,6 +30,9 @@ pub(crate) struct ManagedPostgresConfig {
     pub(crate) tls_key_path: Option<PathBuf>,
     pub(crate) tls_client_ca_path: Option<PathBuf>,
     pub(crate) standby_signal_path: PathBuf,
+    pub(crate) recovery_signal_path: PathBuf,
+    pub(crate) postgresql_auto_conf_path: PathBuf,
+    pub(crate) quarantined_postgresql_auto_conf_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -35,6 +41,8 @@ pub(crate) enum ManagedPostgresError {
     Io { message: String },
     #[error("invalid config: {message}")]
     InvalidConfig { message: String },
+    #[error("invalid managed postgres state: {message}")]
+    InvalidManagedState { message: String },
 }
 
 pub(crate) fn materialize_managed_postgres_config(
@@ -53,6 +61,15 @@ pub(crate) fn materialize_managed_postgres_config(
     let managed_postgresql_conf =
         absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
     let standby_signal = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_STANDBY_SIGNAL_NAME))?;
+    let recovery_signal =
+        absolutize_path(&cfg.postgres.data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME))?;
+    let postgresql_auto_conf =
+        absolutize_path(&cfg.postgres.data_dir.join(POSTGRESQL_AUTO_CONF_NAME))?;
+    let quarantined_postgresql_auto_conf = absolutize_path(
+        &cfg.postgres
+            .data_dir
+            .join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME),
+    )?;
 
     let hba_contents =
         load_inline_or_path_string("postgres.pg_hba.source", &cfg.postgres.pg_hba.source)?;
@@ -81,11 +98,12 @@ pub(crate) fn materialize_managed_postgres_config(
         Some(0o644),
     )?;
 
-    if start_intent.creates_standby_signal() {
-        write_atomic(&standby_signal, b"", Some(0o644))?;
-    } else {
-        remove_file_if_exists(&standby_signal)?;
-    }
+    quarantine_postgresql_auto_conf(&postgresql_auto_conf, &quarantined_postgresql_auto_conf)?;
+    materialize_recovery_signal_files(
+        start_intent.recovery_signal(),
+        &standby_signal,
+        &recovery_signal,
+    )?;
 
     Ok(ManagedPostgresConfig {
         postgresql_conf_path: managed_postgresql_conf,
@@ -95,7 +113,57 @@ pub(crate) fn materialize_managed_postgres_config(
         tls_key_path: tls_files.key_path,
         tls_client_ca_path: tls_files.client_ca_path,
         standby_signal_path: standby_signal,
+        recovery_signal_path: recovery_signal,
+        postgresql_auto_conf_path: postgresql_auto_conf,
+        quarantined_postgresql_auto_conf_path: quarantined_postgresql_auto_conf,
     })
+}
+
+pub(crate) fn read_existing_replica_start_intent(
+    data_dir: &Path,
+) -> Result<Option<ManagedPostgresStartIntent>, ManagedPostgresError> {
+    let recovery_signal = existing_recovery_signal(data_dir)?;
+    let Some(recovery_signal) = recovery_signal else {
+        return Ok(None);
+    };
+
+    let managed_conf_path = data_dir.join(MANAGED_POSTGRESQL_CONF_NAME);
+    let rendered = fs::read_to_string(&managed_conf_path).map_err(|err| ManagedPostgresError::Io {
+        message: format!(
+            "failed to read existing managed postgres conf {}: {err}",
+            managed_conf_path.display()
+        ),
+    })?;
+
+    let primary_conninfo_raw = parse_managed_string_setting(rendered.as_str(), "primary_conninfo")?
+        .ok_or_else(|| ManagedPostgresError::InvalidManagedState {
+            message: format!(
+                "existing managed replica state at {} is missing primary_conninfo",
+                managed_conf_path.display()
+            ),
+        })?;
+    let primary_conninfo =
+        parse_pg_conninfo(primary_conninfo_raw.as_str()).map_err(|err| {
+            ManagedPostgresError::InvalidManagedState {
+                message: format!(
+                    "existing managed primary_conninfo at {} is invalid: {err}",
+                    managed_conf_path.display()
+                ),
+            }
+        })?;
+    let primary_slot_name = parse_managed_string_setting(rendered.as_str(), "primary_slot_name")?;
+
+    match recovery_signal {
+        ManagedRecoverySignal::Standby => Ok(Some(ManagedPostgresStartIntent::replica(
+            primary_conninfo,
+            primary_slot_name,
+        ))),
+        ManagedRecoverySignal::Recovery => Ok(Some(ManagedPostgresStartIntent::recovery(
+            primary_conninfo,
+            primary_slot_name,
+        ))),
+        ManagedRecoverySignal::None => Ok(None),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,6 +254,26 @@ fn map_managed_conf_error(err: ManagedPostgresConfError) -> ManagedPostgresError
     }
 }
 
+fn existing_recovery_signal(data_dir: &Path) -> Result<Option<ManagedRecoverySignal>, ManagedPostgresError> {
+    let standby_signal_path = data_dir.join(MANAGED_STANDBY_SIGNAL_NAME);
+    let recovery_signal_path = data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME);
+    let standby_present = file_exists(standby_signal_path.as_path())?;
+    let recovery_present = file_exists(recovery_signal_path.as_path())?;
+
+    match (standby_present, recovery_present) {
+        (false, false) => Ok(None),
+        (true, false) => Ok(Some(ManagedRecoverySignal::Standby)),
+        (false, true) => Ok(Some(ManagedRecoverySignal::Recovery)),
+        (true, true) => Err(ManagedPostgresError::InvalidManagedState {
+            message: format!(
+                "conflicting managed recovery signal files exist at {} and {}",
+                standby_signal_path.display(),
+                recovery_signal_path.display()
+            ),
+        }),
+    }
+}
+
 fn load_inline_or_path_string(
     field: &str,
     source: &InlineOrPath,
@@ -231,6 +319,130 @@ fn remove_file_if_exists(path: &Path) -> Result<(), ManagedPostgresError> {
             message: format!("failed to remove {}: {err}", path.display()),
         }),
     }
+}
+
+fn file_exists(path: &Path) -> Result<bool, ManagedPostgresError> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(ManagedPostgresError::Io {
+            message: format!("failed to stat {}: {err}", path.display()),
+        }),
+    }
+}
+
+fn materialize_recovery_signal_files(
+    recovery_signal: ManagedRecoverySignal,
+    standby_signal: &Path,
+    recovery_signal_path: &Path,
+) -> Result<(), ManagedPostgresError> {
+    match recovery_signal {
+        ManagedRecoverySignal::None => {
+            remove_file_if_exists(standby_signal)?;
+            remove_file_if_exists(recovery_signal_path)?;
+        }
+        ManagedRecoverySignal::Standby => {
+            write_atomic(standby_signal, b"", Some(0o644))?;
+            remove_file_if_exists(recovery_signal_path)?;
+        }
+        ManagedRecoverySignal::Recovery => {
+            write_atomic(recovery_signal_path, b"", Some(0o644))?;
+            remove_file_if_exists(standby_signal)?;
+        }
+    }
+    Ok(())
+}
+
+fn quarantine_postgresql_auto_conf(
+    postgresql_auto_conf: &Path,
+    quarantined_postgresql_auto_conf: &Path,
+) -> Result<(), ManagedPostgresError> {
+    match fs::rename(postgresql_auto_conf, quarantined_postgresql_auto_conf) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => {
+            if file_exists(quarantined_postgresql_auto_conf)? {
+                fs::remove_file(quarantined_postgresql_auto_conf).map_err(|remove_err| {
+                    ManagedPostgresError::Io {
+                        message: format!(
+                            "failed to remove previous quarantined auto conf {} after rename error ({err}): {remove_err}",
+                            quarantined_postgresql_auto_conf.display()
+                        ),
+                    }
+                })?;
+                fs::rename(postgresql_auto_conf, quarantined_postgresql_auto_conf).map_err(
+                    |rename_err| ManagedPostgresError::Io {
+                        message: format!(
+                            "failed to quarantine {} to {}: {rename_err}",
+                            postgresql_auto_conf.display(),
+                            quarantined_postgresql_auto_conf.display()
+                        ),
+                    },
+                )
+            } else {
+                Err(ManagedPostgresError::Io {
+                    message: format!(
+                        "failed to quarantine {} to {}: {err}",
+                        postgresql_auto_conf.display(),
+                        quarantined_postgresql_auto_conf.display()
+                    ),
+                })
+            }
+        }
+    }
+}
+
+fn parse_managed_string_setting(
+    contents: &str,
+    key: &str,
+) -> Result<Option<String>, ManagedPostgresError> {
+    let prefix = format!("{key} = '");
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix(prefix.as_str()) {
+            let Some(quoted) = rest.strip_suffix('\'') else {
+                return Err(ManagedPostgresError::InvalidManagedState {
+                    message: format!("managed config setting `{key}` is missing a closing quote"),
+                });
+            };
+            return unescape_managed_string(quoted).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn unescape_managed_string(value: &str) -> Result<String, ManagedPostgresError> {
+    let mut chars = value.chars().peekable();
+    let mut out = String::with_capacity(value.len());
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => {
+                let Some(next) = chars.next() else {
+                    return Err(ManagedPostgresError::InvalidManagedState {
+                        message: "managed config string contains an unescaped single quote"
+                            .to_string(),
+                    });
+                };
+                if next != '\'' {
+                    return Err(ManagedPostgresError::InvalidManagedState {
+                        message: "managed config string contains an unescaped single quote"
+                            .to_string(),
+                    });
+                }
+                out.push('\'');
+            }
+            '\\' => {
+                let Some(next) = chars.next() else {
+                    return Err(ManagedPostgresError::InvalidManagedState {
+                        message: "managed config string ends with a trailing backslash"
+                            .to_string(),
+                    });
+                };
+                out.push(next);
+            }
+            other => out.push(other),
+        }
+    }
+    Ok(out)
 }
 
 fn write_atomic(
@@ -281,7 +493,7 @@ fn write_atomic(
     }
 
     fs::rename(&tmp, path).or_else(|err| {
-        if path.exists() {
+        if file_exists(path)? {
             fs::remove_file(path).map_err(|remove_err| ManagedPostgresError::Io {
                 message: format!(
                     "failed to remove existing {} after rename error ({err}): {remove_err}",
@@ -320,7 +532,11 @@ fn now_millis() -> Result<u128, ManagedPostgresError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::PathBuf};
+    use std::{collections::BTreeMap, fs, io, path::PathBuf, time::Duration};
+
+    use tokio::process::Command;
+    use tokio::time::Instant;
+    use tokio_postgres::NoTls;
 
     use crate::{
         config::{
@@ -332,10 +548,21 @@ mod tests {
             StderrSinkConfig, TlsServerConfig,
         },
         pginfo::{conninfo::PgSslMode, state::PgConnInfo},
-        postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME},
+        postgres_managed_conf::{
+            ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME,
+            MANAGED_RECOVERY_SIGNAL_NAME,
+        },
+        test_harness::{
+            binaries::require_pg16_bin_for_real_tests, namespace::NamespaceGuard,
+            pg16::{prepare_pgdata_dir, spawn_pg16, PgHandle, PgInstanceSpec},
+            ports::allocate_ports,
+        },
     };
 
-    use super::{materialize_managed_postgres_config, ManagedPostgresError};
+    use super::{
+        materialize_managed_postgres_config, read_existing_replica_start_intent,
+        ManagedPostgresError, POSTGRESQL_AUTO_CONF_NAME, QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
+    };
 
     #[test]
     fn materialize_managed_postgres_config_creates_authoritative_postgresql_conf(
@@ -434,6 +661,12 @@ mod tests {
                 managed_replica.standby_signal_path.display()
             ));
         }
+        if managed_replica.recovery_signal_path.exists() {
+            return Err(format!(
+                "expected recovery.signal to be absent at {}",
+                managed_replica.recovery_signal_path.display()
+            ));
+        }
 
         let managed_primary =
             materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
@@ -442,6 +675,101 @@ mod tests {
             return Err(format!(
                 "expected standby.signal to be removed at {}",
                 managed_primary.standby_signal_path.display()
+            ));
+        }
+        if managed_primary.recovery_signal_path.exists() {
+            return Err(format!(
+                "expected recovery.signal to be removed at {}",
+                managed_primary.recovery_signal_path.display()
+            ));
+        }
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_managed_postgres_config_creates_recovery_signal_and_cleans_standby_signal(
+    ) -> Result<(), String> {
+        let data_dir = unique_test_data_dir("recovery-signal");
+        let cfg = sample_runtime_config(data_dir.clone());
+        let standby_signal = data_dir.join("standby.signal");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
+        fs::write(&standby_signal, b"")
+            .map_err(|err| format!("seed standby.signal {} failed: {err}", standby_signal.display()))?;
+
+        let managed = materialize_managed_postgres_config(
+            &cfg,
+            &ManagedPostgresStartIntent::recovery(
+                PgConnInfo {
+                    host: "leader.internal".to_string(),
+                    port: 5432,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: Some(5),
+                    ssl_mode: PgSslMode::Prefer,
+                    options: None,
+                },
+                None,
+            ),
+        )
+        .map_err(|err| format!("materialize recovery config failed: {err}"))?;
+
+        if !managed.recovery_signal_path.exists() {
+            return Err(format!(
+                "expected recovery.signal to exist at {}",
+                managed.recovery_signal_path.display()
+            ));
+        }
+        if managed.standby_signal_path.exists() {
+            return Err(format!(
+                "expected standby.signal to be removed at {}",
+                managed.standby_signal_path.display()
+            ));
+        }
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_managed_postgres_config_quarantines_postgresql_auto_conf() -> Result<(), String> {
+        let data_dir = unique_test_data_dir("postgresql-auto-conf");
+        let cfg = sample_runtime_config(data_dir.clone());
+        let active_auto_conf = data_dir.join(POSTGRESQL_AUTO_CONF_NAME);
+        let quarantined_auto_conf = data_dir.join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME);
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
+        fs::write(&active_auto_conf, "primary_conninfo = 'stale'\n")
+            .map_err(|err| format!("write active auto conf {} failed: {err}", active_auto_conf.display()))?;
+        fs::write(&quarantined_auto_conf, "stale previous quarantine\n")
+            .map_err(|err| format!("write quarantined auto conf {} failed: {err}", quarantined_auto_conf.display()))?;
+
+        let managed =
+            materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
+                .map_err(|err| format!("materialize primary config failed: {err}"))?;
+
+        if managed.postgresql_auto_conf_path.exists() {
+            return Err(format!(
+                "expected active postgresql.auto.conf to be absent at {}",
+                managed.postgresql_auto_conf_path.display()
+            ));
+        }
+        let quarantined = fs::read_to_string(&managed.quarantined_postgresql_auto_conf_path)
+            .map_err(|err| {
+                format!(
+                    "read quarantined auto conf {} failed: {err}",
+                    managed.quarantined_postgresql_auto_conf_path.display()
+                )
+            })?;
+        if quarantined != "primary_conninfo = 'stale'\n" {
+            return Err(format!(
+                "unexpected quarantined auto conf contents at {}: {quarantined}",
+                managed.quarantined_postgresql_auto_conf_path.display()
             ));
         }
 
@@ -514,6 +842,272 @@ mod tests {
         }
         if fs::read_to_string(&ca).map_err(|err| err.to_string())? != "CA" {
             return Err(format!("unexpected ca contents at {}", ca.display()));
+        }
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_managed_postgres_config_real_clone_start_quarantines_auto_conf_and_stale_signal(
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let postgres_bin = require_pg16_bin_for_real_tests("postgres")?;
+        let initdb_bin = require_pg16_bin_for_real_tests("initdb")?;
+        let basebackup_bin = require_pg16_bin_for_real_tests("pg_basebackup")?;
+
+        let guard = NamespaceGuard::new("managed-config-real-start")?;
+        let namespace = guard.namespace()?;
+
+        let primary_data = prepare_pgdata_dir(namespace, "primary")?;
+        let primary_socket = namespace.child_dir("run/primary");
+        let primary_logs = namespace.child_dir("logs/primary");
+        fs::create_dir_all(&primary_socket)?;
+        fs::create_dir_all(&primary_logs)?;
+
+        let primary_reservation = allocate_ports(1)?;
+        let primary_port = primary_reservation.as_slice()[0];
+        drop(primary_reservation);
+
+        let mut primary = spawn_pg16(PgInstanceSpec {
+            postgres_bin: postgres_bin.clone(),
+            initdb_bin: initdb_bin.clone(),
+            data_dir: primary_data,
+            socket_dir: primary_socket,
+            log_dir: primary_logs,
+            port: primary_port,
+            startup_timeout: Duration::from_secs(25),
+        })
+        .await?;
+
+        let primary_dsn = format!(
+            "host=127.0.0.1 port={} user=postgres dbname=postgres",
+            primary_port
+        );
+        let run_result = async {
+            wait_for_postgres_ready(&primary_dsn, Duration::from_secs(20)).await?;
+
+            let replica_data = namespace.child_dir("pg16/replica/data");
+            let replica_parent = replica_data
+                .parent()
+                .ok_or_else(|| real_test_error("replica data dir has no parent"))?;
+            fs::create_dir_all(replica_parent)?;
+
+            let basebackup_output = Command::new(&basebackup_bin)
+                .arg("-h")
+                .arg("127.0.0.1")
+                .arg("-p")
+                .arg(primary_port.to_string())
+                .arg("-D")
+                .arg(&replica_data)
+                .arg("-U")
+                .arg("postgres")
+                .arg("-Fp")
+                .arg("-Xs")
+                .output()
+                .await?;
+            if !basebackup_output.status.success() {
+                return Err(real_test_error(format!(
+                    "pg_basebackup failed with status {}",
+                    basebackup_output.status
+                )));
+            }
+
+            fs::write(replica_data.join(POSTGRESQL_AUTO_CONF_NAME), "port = 1\n")?;
+            fs::write(replica_data.join(MANAGED_RECOVERY_SIGNAL_NAME), b"")?;
+
+            let replica_socket = namespace.child_dir("run/replica");
+            let replica_logs = namespace.child_dir("logs/replica");
+            fs::create_dir_all(&replica_socket)?;
+            fs::create_dir_all(&replica_logs)?;
+
+            let replica_reservation = allocate_ports(1)?;
+            let replica_port = replica_reservation.as_slice()[0];
+            drop(replica_reservation);
+
+            let mut runtime_config = sample_runtime_config(replica_data.clone());
+            runtime_config.postgres.listen_port = replica_port;
+            runtime_config.postgres.socket_dir = replica_socket.clone();
+            runtime_config.postgres.log_file = replica_logs.join("managed-postgres.log");
+            runtime_config.postgres.pg_hba.source = InlineOrPath::Inline {
+                content: concat!(
+                    "local all all trust\n",
+                    "host all all 127.0.0.1/32 trust\n",
+                    "host replication all 127.0.0.1/32 trust\n",
+                )
+                .to_string(),
+            };
+
+            let managed = materialize_managed_postgres_config(
+                &runtime_config,
+                &ManagedPostgresStartIntent::replica(
+                    PgConnInfo {
+                        host: "127.0.0.1".to_string(),
+                        port: primary_port,
+                        user: "postgres".to_string(),
+                        dbname: "postgres".to_string(),
+                        application_name: None,
+                        connect_timeout_s: Some(5),
+                        ssl_mode: PgSslMode::Prefer,
+                        options: None,
+                    },
+                    None,
+                ),
+            )
+            .map_err(|err| real_test_error(format!("materialize managed config failed: {err}")))?;
+
+            if managed.postgresql_auto_conf_path.exists() {
+                return Err(real_test_error(format!(
+                    "expected active postgresql.auto.conf to be absent at {}",
+                    managed.postgresql_auto_conf_path.display()
+                )));
+            }
+            if !managed.quarantined_postgresql_auto_conf_path.exists() {
+                return Err(real_test_error(format!(
+                    "expected quarantined postgresql.auto.conf to exist at {}",
+                    managed.quarantined_postgresql_auto_conf_path.display()
+                )));
+            }
+            if !managed.standby_signal_path.exists() {
+                return Err(real_test_error(format!(
+                    "expected standby.signal to exist at {}",
+                    managed.standby_signal_path.display()
+                )));
+            }
+            if managed.recovery_signal_path.exists() {
+                return Err(real_test_error(format!(
+                    "expected recovery.signal to be absent at {}",
+                    managed.recovery_signal_path.display()
+                )));
+            }
+
+            let stdout_file = fs::File::create(replica_logs.join("postgres.stdout.log"))?;
+            let stderr_file = fs::File::create(replica_logs.join("postgres.stderr.log"))?;
+            let mut replica_child = Command::new(&postgres_bin)
+                .arg("-D")
+                .arg(&replica_data)
+                .arg("-c")
+                .arg(format!("config_file={}", managed.postgresql_conf_path.display()))
+                .stdout(stdout_file)
+                .stderr(stderr_file)
+                .spawn()?;
+
+            let replica_dsn = format!(
+                "host=127.0.0.1 port={} user=postgres dbname=postgres",
+                replica_port
+            );
+            let replica_result = async {
+                wait_for_postgres_ready(&replica_dsn, Duration::from_secs(25)).await?;
+                let (client, connection) = tokio_postgres::connect(&replica_dsn, NoTls).await?;
+                let connection_task = tokio::spawn(connection);
+
+                let port = client.query_one("SHOW port", &[]).await?;
+                let port_text: String = port.get(0);
+                if port_text != replica_port.to_string() {
+                    return Err(real_test_error(format!(
+                        "expected postgres to listen on managed port {}, got {}",
+                        replica_port, port_text
+                    )));
+                }
+
+                let primary_conninfo = client.query_one("SHOW primary_conninfo", &[]).await?;
+                let primary_conninfo_text: String = primary_conninfo.get(0);
+                if !primary_conninfo_text.contains(primary_port.to_string().as_str()) {
+                    return Err(real_test_error(format!(
+                        "expected primary_conninfo to reference primary port {}, got {}",
+                        primary_port, primary_conninfo_text
+                    )));
+                }
+
+                let in_recovery = client.query_one("SELECT pg_is_in_recovery()", &[]).await?;
+                let in_recovery_flag: bool = in_recovery.get(0);
+                if !in_recovery_flag {
+                    return Err(real_test_error(
+                        "expected cloned node to start in recovery".to_string(),
+                    ));
+                }
+
+                drop(client);
+                connection_task.await??;
+                Ok(())
+            }
+            .await;
+
+            let shutdown_result = shutdown_child("replica", &mut replica_child).await;
+            match (replica_result, shutdown_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(err), Ok(())) => Err(err),
+                (Ok(()), Err(err)) => Err(err),
+                (Err(err), Err(clean_err)) => Err(real_test_error(format!(
+                    "{err}; {clean_err}"
+                ))),
+            }
+        }
+        .await;
+
+        let shutdown_primary = shutdown_pg_handle("primary", &mut primary).await;
+        match (run_result, shutdown_primary) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(err)) => Err(err),
+            (Err(err), Err(clean_err)) => Err(real_test_error(format!(
+                "{err}; {clean_err}"
+            ))),
+        }
+    }
+
+    #[test]
+    fn read_existing_replica_start_intent_reads_managed_replica_state() -> Result<(), String> {
+        let data_dir = unique_test_data_dir("read-existing-replica");
+        let cfg = sample_runtime_config(data_dir.clone());
+        let expected =
+            ManagedPostgresStartIntent::replica(sample_replica_conninfo(), Some("slot_a".to_string()));
+
+        materialize_managed_postgres_config(&cfg, &expected)
+            .map_err(|err| format!("materialize managed replica config failed: {err}"))?;
+
+        let actual = read_existing_replica_start_intent(&data_dir)
+            .map_err(|err| format!("read existing replica start intent failed: {err}"))?;
+        if actual != Some(expected.clone()) {
+            return Err(format!(
+                "unexpected existing managed replica state: expected={expected:?} actual={actual:?}"
+            ));
+        }
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn read_existing_replica_start_intent_rejects_conflicting_signal_files() -> Result<(), String> {
+        let data_dir = unique_test_data_dir("conflicting-signals");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
+        let standby_signal = data_dir.join("standby.signal");
+        let recovery_signal = data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME);
+        fs::write(&standby_signal, b"")
+            .map_err(|err| format!("write standby.signal {} failed: {err}", standby_signal.display()))?;
+        fs::write(&recovery_signal, b"").map_err(|err| {
+            format!(
+                "write recovery.signal {} failed: {err}",
+                recovery_signal.display()
+            )
+        })?;
+
+        let actual = read_existing_replica_start_intent(&data_dir);
+        match actual {
+            Err(ManagedPostgresError::InvalidManagedState { message }) => {
+                if !message.contains("conflicting managed recovery signal files") {
+                    return Err(format!("unexpected invalid managed state message: {message}"));
+                }
+            }
+            Ok(value) => {
+                return Err(format!(
+                    "expected conflicting signal files to fail, got {value:?}"
+                ));
+            }
+            Err(err) => return Err(format!("unexpected error variant: {err}")),
         }
 
         fs::remove_dir_all(&data_dir)
@@ -642,5 +1236,70 @@ mod tests {
             },
             debug: DebugConfig { enabled: true },
         }
+    }
+
+    fn sample_replica_conninfo() -> PgConnInfo {
+        sample_replica_conninfo_for_port(5432)
+    }
+
+    fn sample_replica_conninfo_for_port(port: u16) -> PgConnInfo {
+        PgConnInfo {
+            host: "leader.internal".to_string(),
+            port,
+            user: "replicator".to_string(),
+            dbname: "postgres".to_string(),
+            application_name: None,
+            connect_timeout_s: Some(5),
+            ssl_mode: PgSslMode::Prefer,
+            options: None,
+        }
+    }
+
+    async fn wait_for_postgres_ready(
+        dsn: &str,
+        timeout: Duration,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match tokio_postgres::connect(dsn, NoTls).await {
+                Ok((client, connection)) => {
+                    let connection_task = tokio::spawn(connection);
+                    client.simple_query("SELECT 1").await?;
+                    drop(client);
+                    connection_task.await??;
+                    return Ok(());
+                }
+                Err(err) => {
+                    if Instant::now() >= deadline {
+                        return Err(Box::new(err));
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    async fn shutdown_pg_handle(
+        label: &str,
+        handle: &mut PgHandle,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        handle.shutdown().await.map_err(|err| {
+            real_test_error(format!("{label} shutdown failed: {err}"))
+        })
+    }
+
+    async fn shutdown_child(
+        _label: &str,
+        child: &mut tokio::process::Child,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if child.try_wait()?.is_none() {
+            child.start_kill()?;
+            child.wait().await?;
+        }
+        Ok(())
+    }
+
+    fn real_test_error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(io::Error::other(message.into()))
     }
 }

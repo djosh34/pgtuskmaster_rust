@@ -6,7 +6,6 @@ use crate::{
     config::RuntimeConfig,
     dcs::state::MemberRecord,
     ha::decision::HaDecision,
-    pginfo::conninfo::parse_pg_conninfo,
     postgres_managed_conf::ManagedPostgresStartIntent,
     process::{
         jobs::{
@@ -273,90 +272,12 @@ fn start_intent_from_dcs(
 fn existing_replica_start_intent(
     data_dir: &Path,
 ) -> Result<Option<ManagedPostgresStartIntent>, ProcessDispatchError> {
-    let standby_signal_path =
-        data_dir.join(crate::postgres_managed_conf::MANAGED_STANDBY_SIGNAL_NAME);
-    if !standby_signal_path.exists() {
-        return Ok(None);
-    }
-
-    let managed_conf_path =
-        data_dir.join(crate::postgres_managed_conf::MANAGED_POSTGRESQL_CONF_NAME);
-    let rendered = fs::read_to_string(&managed_conf_path).map_err(|err| {
+    crate::postgres_managed::read_existing_replica_start_intent(data_dir).map_err(|err| {
         ProcessDispatchError::ManagedConfig {
             action: ActionId::StartPostgres,
-            message: format!(
-                "read existing managed postgres conf failed at {}: {err}",
-                managed_conf_path.display()
-            ),
+            message: err.to_string(),
         }
-    })?;
-    let primary_conninfo_raw = parse_managed_string_setting(rendered.as_str(), "primary_conninfo")
-        .map_err(|message| ProcessDispatchError::ManagedConfig {
-            action: ActionId::StartPostgres,
-            message,
-        })?
-        .ok_or_else(|| ProcessDispatchError::ManagedConfig {
-            action: ActionId::StartPostgres,
-            message: format!(
-                "existing replica state at {} is missing primary_conninfo",
-                managed_conf_path.display()
-            ),
-        })?;
-    let primary_conninfo = parse_pg_conninfo(primary_conninfo_raw.as_str()).map_err(|err| {
-        ProcessDispatchError::ManagedConfig {
-            action: ActionId::StartPostgres,
-            message: format!(
-                "parse existing primary_conninfo failed at {}: {err}",
-                managed_conf_path.display()
-            ),
-        }
-    })?;
-    let primary_slot_name = parse_managed_string_setting(rendered.as_str(), "primary_slot_name")
-        .map_err(|message| ProcessDispatchError::ManagedConfig {
-            action: ActionId::StartPostgres,
-            message,
-        })?;
-
-    Ok(Some(ManagedPostgresStartIntent::replica(
-        primary_conninfo,
-        primary_slot_name,
-    )))
-}
-
-fn parse_managed_string_setting(contents: &str, key: &str) -> Result<Option<String>, String> {
-    let prefix = format!("{key} = '");
-    for line in contents.lines() {
-        if let Some(rest) = line.strip_prefix(prefix.as_str()) {
-            let Some(quoted) = rest.strip_suffix('\'') else {
-                return Err(format!(
-                    "managed config setting `{key}` is missing a closing quote"
-                ));
-            };
-            return unescape_managed_string(quoted).map(Some);
-        }
-    }
-    Ok(None)
-}
-
-fn unescape_managed_string(quoted: &str) -> Result<String, String> {
-    let mut chars = quoted.chars().peekable();
-    let mut unescaped = String::with_capacity(quoted.len());
-    while let Some(ch) = chars.next() {
-        if ch != '\'' {
-            unescaped.push(ch);
-            continue;
-        }
-        match chars.peek() {
-            Some('\'') => {
-                let _ = chars.next();
-                unescaped.push('\'');
-            }
-            _ => {
-                return Err("managed config string contains an unescaped single quote".to_string());
-            }
-        }
-    }
-    Ok(unescaped)
+    })
 }
 
 fn process_job_id(

@@ -28,7 +28,7 @@ use crate::{
         EventMeta, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText,
     },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-    postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_STANDBY_SIGNAL_NAME},
+    postgres_managed_conf::ManagedPostgresStartIntent,
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, ProcessCommandRunner, ProcessExit, ReplicatorSourceConn,
@@ -495,12 +495,14 @@ fn select_resume_start_intent(
     process_defaults: &ProcessDispatchDefaults,
 ) -> Result<ManagedPostgresStartIntent, RuntimeError> {
     let self_member_id = MemberId(self_member_id.to_string());
-    let standby_signal_present = data_dir.join(MANAGED_STANDBY_SIGNAL_NAME).exists();
+    let existing_managed_replica =
+        crate::postgres_managed::read_existing_replica_start_intent(data_dir)
+            .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
 
     let Some(cache) = cache else {
-        if standby_signal_present {
+        if existing_managed_replica.is_some() {
             return Err(RuntimeError::StartupPlanning(
-                "existing postgres data dir contains standby.signal but startup dcs cache probe was unavailable; cannot rebuild primary_conninfo for authoritative managed config"
+                "existing postgres data dir contains managed replica recovery state but startup dcs cache probe was unavailable; cannot rebuild authoritative startup intent"
                     .to_string(),
             ));
         }
@@ -529,9 +531,9 @@ fn select_resume_start_intent(
         return Ok(ManagedPostgresStartIntent::primary());
     }
 
-    if standby_signal_present {
+    if existing_managed_replica.is_some() {
         return Err(RuntimeError::StartupPlanning(
-            "existing postgres data dir contains standby.signal but no healthy primary is available in DCS to rebuild managed replica config"
+            "existing postgres data dir contains managed replica recovery state but no healthy primary is available in DCS to rebuild authoritative managed config"
                 .to_string(),
         ));
     }
@@ -1336,8 +1338,10 @@ mod tests {
         state::{MemberId, UnixMillis, Version},
     };
 
-    use super::{inspect_data_dir, select_startup_mode, DataDirState, StartupMode};
-    use super::{plan_startup_with_probe, process_defaults_from_config};
+    use super::{
+        inspect_data_dir, plan_startup_with_probe, process_defaults_from_config,
+        select_resume_start_intent, select_startup_mode, DataDirState, StartupMode,
+    };
     use crate::postgres_managed_conf::ManagedPostgresStartIntent;
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -1684,6 +1688,130 @@ mod tests {
                 start_intent: ManagedPostgresStartIntent::primary(),
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn select_resume_start_intent_prefers_dcs_leader_over_local_auto_conf() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let cfg = sample_runtime_config();
+        let defaults = process_defaults_from_config(&cfg);
+        let data_dir = temp_path("resume-dcs-authority");
+        remove_if_exists(&data_dir)?;
+        fs::create_dir_all(&data_dir)?;
+
+        let runtime_config = RuntimeConfig {
+            postgres: PostgresConfig {
+                data_dir: data_dir.clone(),
+                ..cfg.postgres.clone()
+            },
+            ..cfg.clone()
+        };
+        crate::postgres_managed::materialize_managed_postgres_config(
+            &runtime_config,
+            &ManagedPostgresStartIntent::replica(
+                crate::pginfo::state::PgConnInfo {
+                    host: "10.0.0.30".to_string(),
+                    port: 5439,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: Some(2),
+                    ssl_mode: PgSslMode::Prefer,
+                    options: None,
+                },
+                Some("slot_local".to_string()),
+            ),
+        )?;
+        fs::write(
+            data_dir.join("postgresql.auto.conf"),
+            "primary_conninfo = 'host=192.0.2.99 port=6543 user=bad dbname=postgres'\n",
+        )?;
+
+        let leader_id = MemberId("node-b".to_string());
+        let mut members = BTreeMap::new();
+        members.insert(
+            leader_id.clone(),
+            MemberRecord {
+                member_id: leader_id.clone(),
+                postgres_host: "10.0.0.20".to_string(),
+                postgres_port: 5440,
+                role: MemberRole::Primary,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+        let cache = DcsCache {
+            members,
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: runtime_config.clone(),
+            init_lock: None,
+        };
+
+        let intent =
+            select_resume_start_intent(&data_dir, Some(&cache), "node-a", &defaults)?;
+        let expected_source = crate::ha::source_conn::basebackup_source_from_member(
+            &MemberId("node-a".to_string()),
+            cache
+                .members
+                .get(&leader_id)
+                .ok_or_else(|| io::Error::other("leader missing from test cache"))?,
+            &defaults,
+        )?;
+        assert_eq!(
+            intent,
+            ManagedPostgresStartIntent::replica(expected_source.conninfo, None)
+        );
+
+        remove_if_exists(&data_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn select_resume_start_intent_rejects_local_replica_state_without_dcs_authority(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = sample_runtime_config();
+        let defaults = process_defaults_from_config(&cfg);
+        let data_dir = temp_path("resume-without-dcs");
+        remove_if_exists(&data_dir)?;
+        fs::create_dir_all(&data_dir)?;
+
+        let runtime_config = RuntimeConfig {
+            postgres: PostgresConfig {
+                data_dir: data_dir.clone(),
+                ..cfg.postgres.clone()
+            },
+            ..cfg.clone()
+        };
+        crate::postgres_managed::materialize_managed_postgres_config(
+            &runtime_config,
+            &ManagedPostgresStartIntent::replica(
+                crate::pginfo::state::PgConnInfo {
+                    host: "10.0.0.30".to_string(),
+                    port: 5439,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: Some(2),
+                    ssl_mode: PgSslMode::Prefer,
+                    options: None,
+                },
+                Some("slot_local".to_string()),
+            ),
+        )?;
+
+        let result = select_resume_start_intent(&data_dir, None, "node-a", &defaults);
+        assert!(matches!(result, Err(super::RuntimeError::StartupPlanning(_))));
+
+        remove_if_exists(&data_dir)?;
         Ok(())
     }
 

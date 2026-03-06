@@ -368,7 +368,6 @@ mod tests {
                 .arg("postgres")
                 .arg("-Fp")
                 .arg("-Xs")
-                .arg("-R")
                 .output()
                 .await?;
             if !output.status.success() {
@@ -377,6 +376,19 @@ mod tests {
                     output.status
                 )));
             }
+            {
+                use std::io::Write;
+
+                let mut postgresql_conf = fs::OpenOptions::new()
+                    .append(true)
+                    .open(replica_data.join("postgresql.conf"))?;
+                writeln!(
+                    postgresql_conf,
+                    "primary_conninfo = 'host=127.0.0.1 port={} user=postgres dbname=postgres'",
+                    primary_port
+                )?;
+            }
+            fs::write(replica_data.join("standby.signal"), b"")?;
 
             let replica_socket = ns.child_dir("run/replica");
             let replica_logs = ns.child_dir("logs/replica");

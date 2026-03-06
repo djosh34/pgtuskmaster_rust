@@ -113,3 +113,4 @@
 .ralph/tasks/bugs/ha-api-polls-hang-during-no-quorum.md
 .ralph/tasks/story-authoritative-managed-postgres-config/01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer.md
 .ralph/tasks/story-authoritative-managed-postgres-config/02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint.md
+.ralph/tasks/story-authoritative-managed-postgres-config/03-task-take-full-ownership-of-replica-recovery-signal-and-auto-conf-state.md

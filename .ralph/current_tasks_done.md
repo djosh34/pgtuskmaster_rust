@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 12:20:32 AM CET 2026
+Generated: Sat Mar  7 12:45:47 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -307,6 +307,17 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 <blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
 <blocked_by>01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/story-authoritative-managed-postgres-config/03-task-take-full-ownership-of-replica-recovery-signal-and-auto-conf-state.md`
+
+```
+## Task: Take full ownership of replica, recovery signal, and `postgresql.auto.conf` state <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+<blocked_by>01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer,02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint</blocked_by>
 ```
 
 ==============
