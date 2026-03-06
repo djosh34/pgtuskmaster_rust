@@ -135,6 +135,7 @@ mod tests {
         },
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+    use tokio::sync::mpsc::error::TryRecvError;
 
     use crate::{
         config::{
@@ -158,7 +159,8 @@ mod tests {
                 SafetyEffect, SwitchoverEffect,
             },
             state::{
-                HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
+                DecideInput, HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx,
+                ProcessDispatchDefaults,
             },
             worker::{run, step_once},
         },
@@ -527,6 +529,103 @@ mod tests {
         store: RecordingStore,
     }
 
+    #[derive(Clone)]
+    struct HaWorkerTestBuilder {
+        store: RecordingStore,
+        poll_interval: Duration,
+        dcs_trust: DcsTrust,
+        initial_phase: HaPhase,
+        initial_tick: u64,
+        initial_decision: HaDecision,
+        pg_state: PgInfoState,
+        process_state: ProcessState,
+    }
+
+    impl HaWorkerTestBuilder {
+        fn new() -> Self {
+            Self {
+                store: RecordingStore::default(),
+                poll_interval: Duration::from_millis(100),
+                dcs_trust: DcsTrust::FullQuorum,
+                initial_phase: HaPhase::Init,
+                initial_tick: 0,
+                initial_decision: HaDecision::NoChange,
+                pg_state: sample_pg_state(SqlStatus::Healthy),
+                process_state: sample_process_state(),
+            }
+        }
+
+        fn with_store(self, store: RecordingStore) -> Self {
+            Self { store, ..self }
+        }
+
+        fn with_poll_interval(self, poll_interval: Duration) -> Self {
+            Self {
+                poll_interval,
+                ..self
+            }
+        }
+
+        fn with_dcs_trust(self, dcs_trust: DcsTrust) -> Self {
+            Self { dcs_trust, ..self }
+        }
+
+        fn with_phase(self, initial_phase: HaPhase) -> Self {
+            Self {
+                initial_phase,
+                ..self
+            }
+        }
+
+        fn with_tick(self, initial_tick: u64) -> Self {
+            Self {
+                initial_tick,
+                ..self
+            }
+        }
+
+        fn with_pg_state(self, pg_state: PgInfoState) -> Self {
+            Self { pg_state, ..self }
+        }
+
+        fn build(self) -> Result<BuiltContext, WorkerError> {
+            let BuiltContext {
+                mut ctx,
+                ha_subscriber,
+                _config_publisher,
+                pg_publisher,
+                _dcs_publisher,
+                _process_publisher,
+                process_rx,
+                store,
+            } = build_context(self.store, self.poll_interval, self.dcs_trust);
+
+            pg_publisher
+                .publish(self.pg_state, UnixMillis(50))
+                .map_err(|err| WorkerError::Message(format!("pg publish failed: {err}")))?;
+            _process_publisher
+                .publish(self.process_state, UnixMillis(50))
+                .map_err(|err| WorkerError::Message(format!("process publish failed: {err}")))?;
+            ctx.state = HaState {
+                worker: WorkerStatus::Running,
+                phase: self.initial_phase,
+                tick: self.initial_tick,
+                decision: self.initial_decision,
+            };
+
+            Ok(BuiltContext {
+                ctx,
+                ha_subscriber,
+                _config_publisher,
+                pg_publisher,
+                _dcs_publisher,
+                _process_publisher,
+                process_rx,
+                store,
+            })
+        }
+    }
+
     fn build_context(
         store: RecordingStore,
         poll_interval: Duration,
@@ -890,14 +989,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn step_once_uses_subscribers_and_publishes_next_state() {
-        let built = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(100),
-            DcsTrust::FullQuorum,
-        );
-        let mut ctx = built.ctx;
-        let subscriber = built.ha_subscriber;
+    async fn step_once_uses_subscribers_and_publishes_next_state() -> Result<(), WorkerError> {
+        let BuiltContext {
+            mut ctx,
+            ha_subscriber: subscriber,
+            ..
+        } = HaWorkerTestBuilder::new().build()?;
 
         let stepped = step_once(&mut ctx).await;
         assert_eq!(stepped, Ok(()));
@@ -909,30 +1006,21 @@ mod tests {
         assert_eq!(published.version, Version(1));
         assert_eq!(published.value.phase, HaPhase::WaitingPostgresReachable);
         assert_eq!(published.value.tick, 1);
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_dispatches_start_postgres_every_tick_while_unreachable(
     ) -> Result<(), WorkerError> {
-        let built = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(100),
-            DcsTrust::FullQuorum,
-        );
-        let mut ctx = built.ctx;
-        let mut process_rx = built.process_rx;
-
-        built
-            .pg_publisher
-            .publish(sample_pg_state(SqlStatus::Unreachable), UnixMillis(50))
-            .map_err(|err| WorkerError::Message(format!("pg publish failed: {err}")))?;
-
-        ctx.state = HaState {
-            worker: WorkerStatus::Running,
-            phase: HaPhase::WaitingPostgresReachable,
-            tick: 0,
-            decision: HaDecision::NoChange,
-        };
+        let BuiltContext {
+            mut ctx,
+            ha_subscriber: _ha_subscriber,
+            mut process_rx,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_phase(HaPhase::WaitingPostgresReachable)
+            .with_pg_state(sample_pg_state(SqlStatus::Unreachable))
+            .build()?;
 
         step_once(&mut ctx).await?;
         let first = process_rx.try_recv().map_err(|err| {
@@ -955,15 +1043,92 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn apply_effect_plan_maps_dcs_and_process_requests() -> Result<(), WorkerError> {
-        let built = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(100),
-            DcsTrust::FullQuorum,
+    async fn step_once_matches_decide_output_for_same_snapshot() -> Result<(), WorkerError> {
+        let BuiltContext {
+            mut ctx,
+            ha_subscriber,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_phase(HaPhase::WaitingDcsTrusted)
+            .with_tick(7)
+            .build()?;
+
+        let expected = crate::ha::decide::decide(DecideInput {
+            current: ctx.state.clone(),
+            world: super::world_snapshot(&ctx),
+        });
+
+        step_once(&mut ctx).await?;
+
+        assert_eq!(ctx.state.phase, expected.next.phase);
+        assert_eq!(ctx.state.tick, expected.next.tick);
+        assert_eq!(ctx.state.decision, expected.next.decision);
+        assert_eq!(ha_subscriber.latest().value, ctx.state);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_primary_quorum_loss_releases_lease_without_process_dispatch(
+    ) -> Result<(), WorkerError> {
+        let BuiltContext {
+            mut ctx,
+            ha_subscriber: _ha_subscriber,
+            mut process_rx,
+            store,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_phase(HaPhase::Primary)
+            .with_dcs_trust(DcsTrust::NotTrusted)
+            .build()?;
+
+        step_once(&mut ctx).await?;
+
+        assert_eq!(ctx.state.phase, HaPhase::FailSafe);
+        assert_eq!(
+            ctx.state.decision,
+            HaDecision::EnterFailSafe {
+                release_leader_lease: true,
+            }
         );
-        let mut ctx = built.ctx;
-        let mut process_rx = built.process_rx;
-        let store = built.store;
+        assert!(store.has_delete_path("/scope-a/leader"));
+        assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_primary_outage_enqueues_only_recovery_dispatch() -> Result<(), WorkerError> {
+        let BuiltContext {
+            mut ctx,
+            ha_subscriber: _ha_subscriber,
+            mut process_rx,
+            store,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_phase(HaPhase::Primary)
+            .with_pg_state(sample_pg_state(SqlStatus::Unreachable))
+            .build()?;
+
+        step_once(&mut ctx).await?;
+
+        let first = process_rx.try_recv().map_err(|err| {
+            WorkerError::Message(format!("expected a recovery process request: {err}"))
+        })?;
+        assert!(matches!(first.kind, ProcessJobKind::PgRewind(_)));
+        assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(store.writes_len(), 0);
+        assert_eq!(store.deletes_len(), 0);
+        assert_eq!(ctx.state.phase, HaPhase::Rewinding);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn apply_effect_plan_maps_dcs_and_process_requests() -> Result<(), WorkerError> {
+        let BuiltContext {
+            mut ctx,
+            mut process_rx,
+            store,
+            ..
+        } = HaWorkerTestBuilder::new().build()?;
         let plan = HaEffectPlan {
             lease: LeaseEffect::ReleaseLeader,
             switchover: SwitchoverEffect::None,
@@ -1014,10 +1179,12 @@ mod tests {
             fail_write: true,
             ..RecordingStore::default()
         };
-        let built = build_context(store, Duration::from_millis(100), DcsTrust::FullQuorum);
-        let mut ctx = built.ctx;
-        let process_rx = built.process_rx;
-        let store_handle = built.store;
+        let BuiltContext {
+            mut ctx,
+            process_rx,
+            store: store_handle,
+            ..
+        } = HaWorkerTestBuilder::new().with_store(store).build()?;
         drop(process_rx);
 
         let plan = HaEffectPlan {
@@ -1062,13 +1229,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn apply_effect_plan_clears_switchover_key() -> Result<(), WorkerError> {
-        let built = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(100),
-            DcsTrust::FullQuorum,
-        );
-        let mut ctx = built.ctx;
-        let store = built.store;
+        let BuiltContext { mut ctx, store, .. } = HaWorkerTestBuilder::new().build()?;
 
         let ha_tick = ctx.state.tick;
         let plan = HaEffectPlan {
@@ -1264,15 +1425,18 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_reacts_to_interval_tick_and_watcher_change() {
-        let built = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(20),
-            DcsTrust::FullQuorum,
-        );
-        let ctx = built.ctx;
-        let subscriber = built.ha_subscriber;
-        let pg_publisher = built.pg_publisher;
+    async fn run_reacts_to_interval_tick_and_watcher_change() -> Result<(), WorkerError> {
+        let BuiltContext {
+            ctx,
+            ha_subscriber: subscriber,
+            _config_publisher,
+            pg_publisher,
+            _dcs_publisher,
+            _process_publisher,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_poll_interval(Duration::from_millis(20))
+            .build()?;
 
         let handle = tokio::spawn(async move { run(ctx).await });
 
@@ -1287,28 +1451,33 @@ mod tests {
 
         handle.abort();
         let _ = handle.await;
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_first_tick_matches_step_once_for_same_inputs() {
-        let built_step = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(200),
-            DcsTrust::FullQuorum,
-        );
-        let mut step_ctx = built_step.ctx;
+    async fn run_first_tick_matches_step_once_for_same_inputs() -> Result<(), WorkerError> {
+        let BuiltContext {
+            ctx: mut step_ctx,
+            ha_subscriber: _ha_subscriber,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_poll_interval(Duration::from_secs(1))
+            .build()?;
 
         let stepped = step_once(&mut step_ctx).await;
         assert_eq!(stepped, Ok(()));
         let expected = step_ctx.state.clone();
 
-        let built_run = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(200),
-            DcsTrust::FullQuorum,
-        );
-        let run_ctx = built_run.ctx;
-        let run_subscriber = built_run.ha_subscriber;
+        let BuiltContext {
+            ctx: run_ctx,
+            ha_subscriber: run_subscriber,
+            _config_publisher,
+            _dcs_publisher,
+            _process_publisher,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_poll_interval(Duration::from_secs(1))
+            .build()?;
         let handle = tokio::spawn(async move { run(run_ctx).await });
 
         let advanced = wait_for_ha_version(&run_subscriber, 1, Duration::from_millis(250)).await;
@@ -1320,5 +1489,6 @@ mod tests {
 
         handle.abort();
         let _ = handle.await;
+        Ok(())
     }
 }

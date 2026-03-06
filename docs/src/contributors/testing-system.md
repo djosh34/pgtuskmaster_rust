@@ -24,11 +24,12 @@ Evidence style:
 
 - pass typed snapshots into functions
 - assert exact outputs and state transitions
+- prefer immutable builders/helpers for HA world snapshots so each case reads as "facts in -> phase and decision out"
 - avoid spawning real processes or relying on timing.
 
 Representative examples:
 
-- HA transition matrix tests in `src/ha/decide.rs`
+- HA transition matrix and invariants in `src/ha/decide.rs`
 - state channel semantics tests in `src/state/watch_state.rs`.
 
 ### Contract/unit-integration tests (workers in isolation)
@@ -40,6 +41,12 @@ Best for:
 - error handling (faulting worker status, retry behavior).
 
 These tests often use “contract stub” contexts (for example `HaWorkerCtx::contract_stub(...)`) with recording stores or fake inboxes.
+
+Evidence style:
+
+- build the worker context from immutable fixture inputs
+- assert both the published `HaState` and the dispatch side effects chosen for that same snapshot
+- keep "decision shape" and "dispatch boundary" assertions together when the test is about `step_once(...)`.
 
 Representative examples:
 
@@ -71,6 +78,8 @@ Best for:
 - network fault injection (blocked links, latency).
 
 These tests use the harness (`src/test_harness/*`) and are considered required gates: missing binaries are an environment problem to fix, not a reason to skip tests.
+
+For HA specifically, end-to-end assertions should not rely only on a final converged state. Start a continuous observer window around the disruptive action, sample HA state throughout the scenario, and fail closed if there is insufficient evidence to prove invariants such as “never more than one primary”.
 
 #### Real-binary provenance (policy + attestation)
 
@@ -158,11 +167,11 @@ When in doubt, add two tests: one fast (unit/contract) and one realistic (BDD/e2
 This is a deliberately small “map” of important tests and the subsystem boundary they protect:
 
 - `src/ha/decide.rs` tests: HA phase transitions and action selection logic.
-- `src/ha/worker.rs` tests: HA dispatch behavior (DCS writes/deletes, process job enqueueing) and error surfacing.
+- `src/ha/worker.rs` tests: HA dispatch behavior (DCS writes/deletes, process job enqueueing), exact state publication, and error surfacing.
 - `tests/bdd_api_http.rs`: API contract and intent writes (for example switchover endpoints).
 - `tests/bdd_state_watch.rs`: state/watch semantics visible to clients.
 - `tests/cli_binary.rs`: binary-level smoke coverage (packaging, CLI invocation).
-- `src/ha/e2e_*.rs`: multi-node real-binary HA scenarios (leader election, switchover/failover/fencing sequences).
+- `src/ha/e2e_*.rs`: multi-node real-binary HA scenarios with continuous invariant observation across leader election, switchover, failover, and fencing sequences.
 
 ## Flake triage (symptoms → likely causes → next probe)
 

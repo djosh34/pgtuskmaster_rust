@@ -9,6 +9,10 @@ use std::{
 use clap::Parser;
 use tokio::task::JoinHandle;
 
+use super::test_observer::{
+    assert_no_dual_primary_in_samples, HaInvariantObserver, HaObservationStats, HaObserverConfig,
+};
+
 use crate::{
     cli::{
         self,
@@ -146,16 +150,6 @@ struct SqlWorkloadStats {
     committed_at_unix_ms: Vec<u64>,
     worker_stats: Vec<SqlWorkloadWorkerStats>,
     worker_errors: Vec<String>,
-}
-
-#[derive(Default, serde::Serialize)]
-struct HaObservationStats {
-    sample_count: u64,
-    api_error_count: u64,
-    max_concurrent_primaries: usize,
-    leader_change_count: u64,
-    failsafe_sample_count: u64,
-    recent_samples: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -620,8 +614,10 @@ impl ClusterFixture {
         ring_capacity: usize,
     ) -> Result<HaObservationStats, WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
-        let mut stats = HaObservationStats::default();
-        let mut last_leader_signature: Option<String> = None;
+        let mut observer = HaInvariantObserver::new(HaObserverConfig {
+            min_successful_samples: 1,
+            ring_capacity,
+        });
         loop {
             self.ensure_runtime_tasks_healthy().await?;
             match self
@@ -630,89 +626,27 @@ impl ClusterFixture {
             {
                 Ok(polled) => {
                     let mut states = Vec::new();
-                    let mut fragments = Vec::with_capacity(polled.len());
+                    let mut errors = Vec::new();
                     for (node_id, state_result) in polled {
                         match state_result {
-                            Ok(state) => {
-                                let leader = state.leader.as_deref().unwrap_or("none");
-                                fragments.push(format!(
-                                    "{}:{}:leader={leader}",
-                                    state.self_member_id, state.ha_phase
-                                ));
-                                states.push(state);
-                            }
+                            Ok(state) => states.push(state),
                             Err(err) => {
-                                stats.api_error_count = stats.api_error_count.saturating_add(1);
-                                fragments.push(format!("{node_id}:error={err}"));
+                                errors.push(format!("node={node_id} error={err}"));
                             }
                         }
                     }
 
-                    if !states.is_empty() {
-                        stats.sample_count = stats.sample_count.saturating_add(1);
-                        let primaries = Self::primary_members(states.as_slice());
-                        stats.max_concurrent_primaries =
-                            stats.max_concurrent_primaries.max(primaries.len());
-
-                        let mut leaders = states
-                            .iter()
-                            .filter_map(|state| state.leader.clone())
-                            .collect::<Vec<_>>();
-                        leaders.sort();
-                        leaders.dedup();
-                        let leader_signature = leaders.join("|");
-                        if last_leader_signature
-                            .as_deref()
-                            .map(|prior| prior != leader_signature.as_str())
-                            .unwrap_or(false)
-                        {
-                            stats.leader_change_count = stats.leader_change_count.saturating_add(1);
-                        }
-                        last_leader_signature = Some(leader_signature);
-                        if states.iter().all(|state| state.ha_phase == "FailSafe") {
-                            stats.failsafe_sample_count =
-                                stats.failsafe_sample_count.saturating_add(1);
-                        }
-                    }
-
-                    if ring_capacity > 0 {
-                        if stats.recent_samples.len() >= ring_capacity {
-                            let _ = stats.recent_samples.remove(0);
-                        }
-                        stats.recent_samples.push(fragments.join(", "));
-                    }
+                    observer.record_api_states(&states, &errors)?;
                 }
                 Err(err) => {
-                    stats.api_error_count = stats.api_error_count.saturating_add(1);
-                    if ring_capacity > 0 {
-                        if stats.recent_samples.len() >= ring_capacity {
-                            let _ = stats.recent_samples.remove(0);
-                        }
-                        stats.recent_samples.push(format!("api_error:{err}"));
-                    }
+                    observer.record_transport_error(err.to_string());
                 }
             };
             if tokio::time::Instant::now() >= deadline {
-                return Ok(stats);
+                return Ok(observer.into_stats());
             }
             tokio::time::sleep(interval).await;
         }
-    }
-
-    fn assert_no_dual_primary_in_samples(stats: &HaObservationStats) -> Result<(), WorkerError> {
-        if stats.sample_count == 0 {
-            return Err(WorkerError::Message(format!(
-                "insufficient HA sample evidence: sample_count=0 api_error_count={}",
-                stats.api_error_count
-            )));
-        }
-        if stats.max_concurrent_primaries > 1 {
-            return Err(WorkerError::Message(format!(
-                "dual primary observed during sampled window; max_concurrent_primaries={}",
-                stats.max_concurrent_primaries
-            )));
-        }
-        Ok(())
     }
 
     fn count_commits_after_cutoff_strict(
@@ -752,21 +686,6 @@ impl ClusterFixture {
             .iter()
             .filter(|timestamp| **timestamp > cutoff_ms)
             .count())
-    }
-
-    fn finalize_no_dual_primary_window(
-        successful_samples: u64,
-        poll_attempts: u64,
-        poll_errors: u64,
-        last_poll_error: Option<&str>,
-    ) -> Result<(), WorkerError> {
-        if successful_samples > 0 {
-            return Ok(());
-        }
-        let detail = last_poll_error.unwrap_or("none");
-        Err(WorkerError::Message(format!(
-            "insufficient evidence for split-brain window assertion: successful_samples=0 poll_attempts={poll_attempts} poll_errors={poll_errors} last_poll_error={detail}"
-        )))
     }
 
     async fn assert_former_primary_demoted_or_unreachable_after_transition(
@@ -1799,12 +1718,12 @@ impl ClusterFixture {
 
     async fn assert_no_dual_primary_window(&mut self, window: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
-        let mut poll_attempts = 0u64;
-        let mut successful_samples = 0u64;
-        let mut poll_errors = 0u64;
-        let mut last_poll_error: Option<String> = None;
+        let mut observer = HaInvariantObserver::new(HaObserverConfig {
+            min_successful_samples: 1,
+            ring_capacity: 16,
+        });
         loop {
-            poll_attempts = poll_attempts.saturating_add(1);
+            observer.record_poll_attempt();
             self.ensure_runtime_tasks_healthy().await?;
             match self.poll_node_ha_states_best_effort().await {
                 Ok(polled) => {
@@ -1820,65 +1739,20 @@ impl ClusterFixture {
                     if states.is_empty() {
                         let (sql_roles, sql_errors) = self.cluster_sql_roles_best_effort().await?;
                         if sql_roles.is_empty() {
-                            poll_errors = poll_errors.saturating_add(1);
-                            let api_error_summary = if errors.is_empty() {
-                                "none".to_string()
-                            } else {
-                                errors.join(" | ")
-                            };
-                            let sql_error_summary = if sql_errors.is_empty() {
-                                "none".to_string()
-                            } else {
-                                sql_errors.join(" | ")
-                            };
-                            last_poll_error = Some(format!(
-                                "api_errors={api_error_summary}; sql_errors={sql_error_summary}"
-                            ));
+                            observer.record_observation_gap(&errors, &sql_errors);
                         } else {
-                            successful_samples = successful_samples.saturating_add(1);
-                            let sql_primary_count = sql_roles
-                                .iter()
-                                .filter(|(_, role)| role == "primary")
-                                .count();
-                            if sql_primary_count > 1 {
-                                return Err(WorkerError::Message(format!(
-                                    "split-brain detected via SQL roles: observations={} errors={}",
-                                    sql_roles
-                                        .iter()
-                                        .map(|(node_id, role)| format!("{node_id}:{role}"))
-                                        .collect::<Vec<_>>()
-                                        .join(","),
-                                    sql_errors.join(" | ")
-                                )));
-                            }
+                            observer.record_sql_roles(&sql_roles, &sql_errors)?;
                         }
                     } else {
-                        if Self::primary_members(&states).len() > 1 {
-                            return Err(WorkerError::Message(format!(
-                                "split-brain detected: more than one primary; observations={} errors={}",
-                                states
-                                    .iter()
-                                    .map(|state| format!("{}:{}", state.self_member_id, state.ha_phase))
-                                    .collect::<Vec<_>>()
-                                    .join(","),
-                                errors.join(" | ")
-                            )));
-                        }
-                        successful_samples = successful_samples.saturating_add(1);
+                        observer.record_api_states(&states, &errors)?;
                     }
                 }
                 Err(err) => {
-                    poll_errors = poll_errors.saturating_add(1);
-                    last_poll_error = Some(err.to_string());
+                    observer.record_transport_error(err.to_string());
                 }
             }
             if tokio::time::Instant::now() >= deadline {
-                return Self::finalize_no_dual_primary_window(
-                    successful_samples,
-                    poll_attempts,
-                    poll_errors,
-                    last_poll_error.as_deref(),
-                );
+                return observer.finalize_no_dual_primary_window();
             }
             tokio::time::sleep(Duration::from_millis(75)).await;
         }
@@ -2942,7 +2816,7 @@ async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), WorkerEr
         let ha_stats = fixture
             .sample_ha_states_window(Duration::from_secs(4), Duration::from_millis(150), 60)
             .await?;
-        ClusterFixture::assert_no_dual_primary_in_samples(&ha_stats)?;
+        assert_no_dual_primary_in_samples(&ha_stats, 1)?;
 
         let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
         Ok(StressScenarioSummary {
@@ -3140,7 +3014,7 @@ mod unit_tests {
             api_error_count: 3,
             ..HaObservationStats::default()
         };
-        assert!(ClusterFixture::assert_no_dual_primary_in_samples(&stats).is_err());
+        assert!(assert_no_dual_primary_in_samples(&stats, 1).is_err());
     }
 
     #[test]
@@ -3151,7 +3025,7 @@ mod unit_tests {
             max_concurrent_primaries: 2,
             ..HaObservationStats::default()
         };
-        assert!(ClusterFixture::assert_no_dual_primary_in_samples(&stats).is_err());
+        assert!(assert_no_dual_primary_in_samples(&stats, 1).is_err());
     }
 
     #[test]
@@ -3162,18 +3036,7 @@ mod unit_tests {
             max_concurrent_primaries: 1,
             ..HaObservationStats::default()
         };
-        ClusterFixture::assert_no_dual_primary_in_samples(&stats)
-    }
-
-    #[test]
-    fn split_brain_window_finalization_fails_closed() {
-        let result = ClusterFixture::finalize_no_dual_primary_window(0, 5, 5, Some("boom"));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn split_brain_window_finalization_succeeds_with_evidence() -> Result<(), WorkerError> {
-        ClusterFixture::finalize_no_dual_primary_window(1, 5, 4, Some("ignored"))
+        assert_no_dual_primary_in_samples(&stats, 1)
     }
 
     #[test]

@@ -327,6 +327,75 @@ mod tests {
 
     use super::decide;
 
+    #[derive(Clone)]
+    struct WorldBuilder {
+        trust: DcsTrust,
+        pg: PgInfoState,
+        leader: Option<MemberId>,
+        process: ProcessState,
+        members: BTreeMap<MemberId, MemberRecord>,
+        switchover_requested_by: Option<MemberId>,
+    }
+
+    impl WorldBuilder {
+        fn new() -> Self {
+            Self {
+                trust: DcsTrust::FullQuorum,
+                pg: pg_replica(SqlStatus::Healthy),
+                leader: None,
+                process: process_idle(None),
+                members: BTreeMap::new(),
+                switchover_requested_by: None,
+            }
+        }
+
+        fn with_trust(self, trust: DcsTrust) -> Self {
+            Self { trust, ..self }
+        }
+
+        fn with_pg(self, pg: PgInfoState) -> Self {
+            Self { pg, ..self }
+        }
+
+        fn with_process(self, process: ProcessState) -> Self {
+            Self { process, ..self }
+        }
+
+        fn with_leader(self, leader_member_id: &str) -> Self {
+            Self {
+                leader: Some(MemberId(leader_member_id.to_string())),
+                ..self
+            }
+        }
+
+        fn with_switchover_request(self, requested_by: &str) -> Self {
+            Self {
+                switchover_requested_by: Some(MemberId(requested_by.to_string())),
+                ..self
+            }
+        }
+
+        fn with_member(self, record: MemberRecord) -> Self {
+            let members = self
+                .members
+                .into_iter()
+                .chain(std::iter::once((record.member_id.clone(), record)))
+                .collect();
+            Self { members, ..self }
+        }
+
+        fn build(self) -> WorldSnapshot {
+            world(
+                self.trust,
+                self.pg,
+                self.leader,
+                self.process,
+                self.members,
+                self.switchover_requested_by,
+            )
+        }
+    }
+
     struct Case {
         name: &'static str,
         current_phase: HaPhase,
@@ -523,12 +592,11 @@ mod tests {
                     tick: 41,
                     decision: HaDecision::NoChange,
                 },
-                world: world(
-                    case.trust,
-                    case.pg.clone(),
-                    case.leader,
-                    process_clone(&case.process),
-                ),
+                world: WorldBuilder::new()
+                    .with_trust(case.trust)
+                    .with_pg(case.pg.clone())
+                    .with_process(process_clone(&case.process))
+                    .build_with_optional_leader(case.leader),
             };
 
             let output = decide(input);
@@ -559,12 +627,7 @@ mod tests {
             tick: 0,
             decision: HaDecision::NoChange,
         };
-        let world = world(
-            DcsTrust::FullQuorum,
-            pg_replica(SqlStatus::Healthy),
-            None,
-            process_idle(None),
-        );
+        let world = WorldBuilder::new().build();
 
         let first = decide(DecideInput {
             current: current.clone(),
@@ -608,12 +671,7 @@ mod tests {
 
         let held = decide(DecideInput {
             current: start.clone(),
-            world: world(
-                DcsTrust::NotTrusted,
-                pg_replica(SqlStatus::Healthy),
-                None,
-                process_idle(None),
-            ),
+            world: WorldBuilder::new().with_trust(DcsTrust::NotTrusted).build(),
         });
         assert_eq!(held.next.phase, HaPhase::FailSafe);
         assert_eq!(
@@ -625,12 +683,7 @@ mod tests {
 
         let recovered = decide(DecideInput {
             current: start,
-            world: world(
-                DcsTrust::FullQuorum,
-                pg_replica(SqlStatus::Healthy),
-                None,
-                process_idle(None),
-            ),
+            world: WorldBuilder::new().with_trust(DcsTrust::FullQuorum).build(),
         });
         assert_eq!(recovered.next.phase, HaPhase::WaitingDcsTrusted);
         assert_eq!(recovered.outcome.decision, HaDecision::WaitForDcsTrust);
@@ -638,16 +691,6 @@ mod tests {
 
     #[test]
     fn primary_with_switchover_demotes_releases_and_clears_request() {
-        let mut snapshot = world(
-            DcsTrust::FullQuorum,
-            pg_primary(SqlStatus::Healthy),
-            Some("node-a"),
-            process_idle(None),
-        );
-        snapshot.dcs.value.cache.switchover = Some(SwitchoverRequest {
-            requested_by: MemberId("node-b".to_string()),
-        });
-
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -655,7 +698,11 @@ mod tests {
                 tick: 10,
                 decision: HaDecision::NoChange,
             },
-            world: snapshot,
+            world: WorldBuilder::new()
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .with_leader("node-a")
+                .with_switchover_request("node-b")
+                .build(),
         });
 
         assert_eq!(output.next.phase, HaPhase::Replica);
@@ -673,16 +720,6 @@ mod tests {
 
     #[test]
     fn replica_with_self_leader_and_pending_switchover_does_not_repromote() {
-        let mut snapshot = world(
-            DcsTrust::FullQuorum,
-            pg_replica(SqlStatus::Healthy),
-            Some("node-a"),
-            process_idle(None),
-        );
-        snapshot.dcs.value.cache.switchover = Some(SwitchoverRequest {
-            requested_by: MemberId("node-b".to_string()),
-        });
-
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -690,7 +727,10 @@ mod tests {
                 tick: 10,
                 decision: HaDecision::NoChange,
             },
-            world: snapshot,
+            world: WorldBuilder::new()
+                .with_leader("node-a")
+                .with_switchover_request("node-b")
+                .build(),
         });
 
         assert_eq!(output.next.phase, HaPhase::Replica);
@@ -710,12 +750,10 @@ mod tests {
                 tick: 8,
                 decision: HaDecision::NoChange,
             },
-            world: world(
-                DcsTrust::FullQuorum,
-                pg_replica(SqlStatus::Healthy),
-                Some("node-b"),
-                process_running(),
-            ),
+            world: WorldBuilder::new()
+                .with_leader("node-b")
+                .with_process(process_running())
+                .build(),
         });
 
         assert_eq!(output.next.phase, HaPhase::Rewinding);
@@ -724,27 +762,6 @@ mod tests {
 
     #[test]
     fn replica_with_unhealthy_leader_becomes_candidate() {
-        let mut snapshot = world(
-            DcsTrust::FullQuorum,
-            pg_replica(SqlStatus::Healthy),
-            Some("node-b"),
-            process_idle(None),
-        );
-        snapshot.dcs.value.cache.members.insert(
-            MemberId("node-b".to_string()),
-            MemberRecord {
-                member_id: MemberId("node-b".to_string()),
-                role: MemberRole::Unknown,
-                sql: SqlStatus::Unreachable,
-                readiness: Readiness::NotReady,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                updated_at: UnixMillis(1),
-                pg_version: Version(1),
-            },
-        );
-
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -752,11 +769,221 @@ mod tests {
                 tick: 11,
                 decision: HaDecision::NoChange,
             },
-            world: snapshot,
+            world: WorldBuilder::new()
+                .with_leader("node-b")
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    role: MemberRole::Unknown,
+                    sql: SqlStatus::Unreachable,
+                    readiness: Readiness::NotReady,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
         });
 
         assert_eq!(output.next.phase, HaPhase::CandidateLeader);
         assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+    }
+
+    #[test]
+    fn decide_is_deterministic_for_identical_inputs() {
+        let input = DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Primary,
+                tick: 9,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .with_leader("node-b")
+                .build(),
+        };
+
+        let first = decide(input.clone());
+        let second = decide(input.clone());
+        let third = decide(input);
+
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+    }
+
+    #[test]
+    fn non_quorum_trust_always_routes_to_fail_safe() {
+        struct FailSafeCase {
+            name: &'static str,
+            current_phase: HaPhase,
+            trust: DcsTrust,
+            expected_release: bool,
+        }
+
+        let cases = [
+            FailSafeCase {
+                name: "primary loses full quorum and releases lease",
+                current_phase: HaPhase::Primary,
+                trust: DcsTrust::NotTrusted,
+                expected_release: true,
+            },
+            FailSafeCase {
+                name: "replica enters fail safe without lease release",
+                current_phase: HaPhase::Replica,
+                trust: DcsTrust::NotTrusted,
+                expected_release: false,
+            },
+            FailSafeCase {
+                name: "candidate leader in failsafe trust stays lease-neutral",
+                current_phase: HaPhase::CandidateLeader,
+                trust: DcsTrust::FailSafe,
+                expected_release: false,
+            },
+            FailSafeCase {
+                name: "already failsafe still emits failsafe decision",
+                current_phase: HaPhase::FailSafe,
+                trust: DcsTrust::FailSafe,
+                expected_release: false,
+            },
+        ];
+
+        for case in cases {
+            let output = decide(DecideInput {
+                current: HaState {
+                    worker: WorkerStatus::Running,
+                    phase: case.current_phase.clone(),
+                    tick: 3,
+                    decision: HaDecision::NoChange,
+                },
+                world: WorldBuilder::new().with_trust(case.trust).build(),
+            });
+
+            assert_eq!(output.next.phase, HaPhase::FailSafe, "case: {}", case.name);
+            assert_eq!(
+                output.outcome.decision,
+                HaDecision::EnterFailSafe {
+                    release_leader_lease: case.expected_release,
+                },
+                "case: {}",
+                case.name
+            );
+            assert_eq!(
+                assert_plan_has_no_contradictions(&lower_decision(&output.outcome.decision)),
+                Ok(()),
+                "case: {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn lowered_ha_plans_never_encode_contradictory_actions() {
+        let decisions = [
+            HaDecision::NoChange,
+            HaDecision::WaitForPostgres {
+                start_requested: false,
+            },
+            HaDecision::WaitForPostgres {
+                start_requested: true,
+            },
+            HaDecision::WaitForDcsTrust,
+            HaDecision::AttemptLeadership,
+            HaDecision::FollowLeader {
+                leader_member_id: MemberId("node-b".to_string()),
+            },
+            HaDecision::BecomePrimary { promote: false },
+            HaDecision::BecomePrimary { promote: true },
+            HaDecision::StepDown(StepDownPlan {
+                reason: StepDownReason::Switchover,
+                release_leader_lease: true,
+                clear_switchover: true,
+                fence: false,
+            }),
+            HaDecision::StepDown(StepDownPlan {
+                reason: StepDownReason::ForeignLeaderDetected {
+                    leader_member_id: MemberId("node-c".to_string()),
+                },
+                release_leader_lease: true,
+                clear_switchover: false,
+                fence: true,
+            }),
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::Rewind {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
+            },
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::BaseBackup {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
+            },
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::Bootstrap,
+            },
+            HaDecision::FenceNode,
+            HaDecision::ReleaseLeaderLease {
+                reason: LeaseReleaseReason::FencingComplete,
+            },
+            HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            },
+            HaDecision::EnterFailSafe {
+                release_leader_lease: true,
+            },
+        ];
+
+        for decision in decisions {
+            let plan = lower_decision(&decision);
+            assert_eq!(
+                assert_plan_has_no_contradictions(&plan),
+                Ok(()),
+                "decision: {}",
+                decision.label()
+            );
+        }
+    }
+
+    impl WorldBuilder {
+        fn build_with_optional_leader(self, leader: Option<&str>) -> WorldSnapshot {
+            match leader {
+                Some(leader_member_id) => self.with_leader(leader_member_id).build(),
+                None => self.build(),
+            }
+        }
+    }
+
+    fn assert_plan_has_no_contradictions(plan: &HaEffectPlan) -> Result<(), String> {
+        if matches!(plan.replication, ReplicationEffect::FollowLeader { .. })
+            && matches!(plan.postgres, PostgresEffect::Promote)
+        {
+            return Err("plan cannot follow a leader and promote locally".to_string());
+        }
+
+        if matches!(plan.safety, SafetyEffect::SignalFailSafe)
+            && (!matches!(plan.replication, ReplicationEffect::None)
+                || !matches!(plan.postgres, PostgresEffect::None)
+                || !matches!(plan.switchover, SwitchoverEffect::None))
+        {
+            return Err(
+                "fail-safe plan cannot carry replication, postgres, or switchover side effects"
+                    .to_string(),
+            );
+        }
+
+        if matches!(plan.lease, LeaseEffect::AcquireLeader)
+            && matches!(plan.postgres, PostgresEffect::Demote)
+        {
+            return Err("plan cannot acquire the leader lease while demoting postgres".to_string());
+        }
+
+        if matches!(plan.safety, SafetyEffect::FenceNode)
+            && matches!(plan.postgres, PostgresEffect::Promote)
+        {
+            return Err("fence plan cannot promote postgres".to_string());
+        }
+
+        Ok(())
     }
 
     fn process_clone(process: &ProcessState) -> ProcessState {
@@ -837,8 +1064,10 @@ mod tests {
     fn world(
         trust: DcsTrust,
         pg: PgInfoState,
-        leader: Option<&str>,
+        leader: Option<MemberId>,
         process: ProcessState,
+        members: BTreeMap<MemberId, MemberRecord>,
+        switchover_requested_by: Option<MemberId>,
     ) -> WorldSnapshot {
         let cfg = RuntimeConfig {
             cluster: ClusterConfig {
@@ -957,9 +1186,7 @@ mod tests {
             debug: DebugConfig { enabled: true },
         };
 
-        let leader_record = leader.map(|member| LeaderRecord {
-            member_id: MemberId(member.to_string()),
-        });
+        let leader_record = leader.map(|member_id| LeaderRecord { member_id });
 
         WorldSnapshot {
             config: Versioned::new(Version(1), UnixMillis(1), cfg.clone()),
@@ -971,9 +1198,10 @@ mod tests {
                     worker: WorkerStatus::Running,
                     trust,
                     cache: DcsCache {
-                        members: BTreeMap::new(),
+                        members,
                         leader: leader_record,
-                        switchover: None,
+                        switchover: switchover_requested_by
+                            .map(|requested_by| SwitchoverRequest { requested_by }),
                         config: cfg,
                         init_lock: None,
                     },

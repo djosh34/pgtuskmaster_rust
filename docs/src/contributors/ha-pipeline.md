@@ -22,6 +22,12 @@ The canonical loop lives across a small HA pipeline:
 
 The decision function itself is in `src/ha/decide.rs`. It is intentionally structured to be testable as a pure function: given “current state” and “world view”, it returns a `PhaseOutcome { next_phase, decision }`. Effect-plan lowering lives separately in `src/ha/lower.rs`, `src/ha/apply.rs` owns effect application, `src/ha/process_dispatch.rs` owns local process request construction plus managed-config/filesystem preparation, and `src/ha/events.rs` owns the repetitive HA event payload construction.
 
+Contributor test guidance follows the same split:
+
+- `src/ha/decide.rs` should prove exact `DecisionFacts -> PhaseOutcome` mappings and lowered-plan invariants with immutable test builders.
+- `src/ha/worker.rs` should prove `step_once(...)` publishes the same decision-selected state and dispatches the matching side effects for a given snapshot.
+- `src/ha/e2e_*.rs` should keep scenario driving separate from continuous invariant observation; the observer window must cover the fault sequence, not only the final convergence point.
+
 ## Inputs: what HA reads
 
 HA does not probe the world directly. It reads the latest snapshots:
@@ -62,6 +68,7 @@ If you change decision or lowering semantics, update both layers and tests toget
 - decision-level tests in `src/ha/decide.rs`
 - lowering tests in `src/ha/lower.rs`
 - apply-layer tests in `src/ha/apply.rs`, `src/ha/process_dispatch.rs`, and `src/ha/worker.rs`
+- continuous-observer HA scenario tests in `src/ha/e2e_multi_node.rs`, `src/ha/e2e_partition_chaos.rs`, and `src/ha/test_observer.rs`
 
 ## The core phases (what they mean)
 

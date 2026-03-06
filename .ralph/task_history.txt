@@ -101,3 +101,4 @@
 .ralph/tasks/story-ha-functional-rewrite/02-task-rewrite-ha-decide-into-facts-and-phase-outcome-match-machine.md
 .ralph/tasks/story-ha-functional-rewrite/03-task-replace-action-vectors-and-pending-state-with-typed-domain-effect-plan.md
 .ralph/tasks/story-ha-functional-rewrite/04-task-untangle-ha-worker-into-facts-plan-and-apply-layers.md
+.ralph/tasks/story-ha-functional-rewrite/05-task-rebuild-ha-tests-around-invariants-and-continuous-observers.md

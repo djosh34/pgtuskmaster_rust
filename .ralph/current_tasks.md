@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 08:04:25 AM CET 2026
+Generated: Fri Mar  6 08:59:10 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -574,7 +574,7 @@ The agent must explore the current config schema, HA/runtime flow, DCS/member-st
 
 **Path:** `.ralph/tasks/story-ha-functional-rewrite/05-task-rebuild-ha-tests-around-invariants-and-continuous-observers.md`
 
-## Task: Rebuild HA tests around invariants and continuous observers <status>not_started</status> <passes>false</passes>
+## Task: Rebuild HA tests around invariants and continuous observers <status>completed</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Rework HA tests so they validate the new functional architecture directly, using immutable builders for pure decision tests and continuous invariant observers for integration/e2e scenarios.

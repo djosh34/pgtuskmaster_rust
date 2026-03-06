@@ -7,6 +7,8 @@ use std::{
 
 use tokio::task::JoinHandle;
 
+use super::test_observer::{HaInvariantObserver, HaObserverConfig};
+
 use crate::{
     cli::client::{CliApiClient, HaStateResponse},
     state::WorkerError,
@@ -32,50 +34,6 @@ struct StablePrimaryWaitPlan<'a> {
     fallback_timeout: Duration,
     fallback_required_consecutive: usize,
     min_observed_nodes: usize,
-}
-
-fn finalize_no_dual_primary_window(
-    successful_samples: u64,
-    poll_attempts: u64,
-    poll_errors: u64,
-    last_poll_error: Option<&str>,
-) -> Result<(), WorkerError> {
-    if successful_samples == 0 {
-        let detail = last_poll_error.unwrap_or("none");
-        return Err(WorkerError::Message(format!(
-            "unable to assert split-brain absence: no successful HA state samples collected; poll_attempts={poll_attempts} poll_errors={poll_errors} last_error={detail}"
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod unit_tests {
-    use super::finalize_no_dual_primary_window;
-
-    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
-    #[test]
-    fn no_dual_primary_window_finalization_fails_closed_on_zero_samples() -> TestResult {
-        let result = finalize_no_dual_primary_window(0, 5, 5, Some("boom"));
-        if result.is_ok() {
-            return Err(Box::new(std::io::Error::other(
-                "expected Err on zero samples",
-            )));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn no_dual_primary_window_finalization_succeeds_with_samples() -> TestResult {
-        let result = finalize_no_dual_primary_window(1, 5, 4, Some("ignored"));
-        if result.is_err() {
-            return Err(Box::new(std::io::Error::other(
-                "expected Ok when at least one sample exists",
-            )));
-        }
-        Ok(())
-    }
 }
 
 struct PartitionFixture {
@@ -622,71 +580,26 @@ impl PartitionFixture {
 
     async fn assert_no_dual_primary_window(&mut self, window: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
-        let mut poll_attempts = 0u64;
-        let mut successful_samples = 0u64;
-        let mut poll_errors = 0u64;
-        let mut last_poll_error: Option<String> = None;
+        let mut observer = HaInvariantObserver::new(HaObserverConfig {
+            min_successful_samples: 1,
+            ring_capacity: 16,
+        });
         loop {
+            observer.record_poll_attempt();
             let (states, errors) = self.cluster_ha_states_best_effort().await?;
-            poll_attempts = poll_attempts.saturating_add(1);
             if states.is_empty() {
                 let (sql_roles, sql_errors) = self.cluster_sql_roles_best_effort().await?;
                 if sql_roles.is_empty() {
-                    poll_errors = poll_errors.saturating_add(1);
-                    let api_error_summary = if errors.is_empty() {
-                        "none".to_string()
-                    } else {
-                        errors.join(" | ")
-                    };
-                    let sql_error_summary = if sql_errors.is_empty() {
-                        "none".to_string()
-                    } else {
-                        sql_errors.join(" | ")
-                    };
-                    last_poll_error = Some(format!(
-                        "api_errors={api_error_summary}; sql_errors={sql_error_summary}"
-                    ));
+                    observer.record_observation_gap(&errors, &sql_errors);
                 } else {
-                    successful_samples = successful_samples.saturating_add(1);
-                    let sql_primary_count = sql_roles
-                        .iter()
-                        .filter(|(_, role)| role == "primary")
-                        .count();
-                    if sql_primary_count > 1 {
-                        return Err(WorkerError::Message(format!(
-                            "split-brain detected via SQL roles: observations={} errors={}",
-                            sql_roles
-                                .iter()
-                                .map(|(node_id, role)| format!("{node_id}:{role}"))
-                                .collect::<Vec<_>>()
-                                .join(","),
-                            sql_errors.join(" | ")
-                        )));
-                    }
+                    observer.record_sql_roles(&sql_roles, &sql_errors)?;
                 }
             } else {
-                successful_samples = successful_samples.saturating_add(1);
-            }
-            let primary_count = Self::primary_members(states.as_slice()).len();
-            if primary_count > 1 {
-                return Err(WorkerError::Message(format!(
-                    "split-brain detected: more than one primary; observations={} errors={}",
-                    states
-                        .iter()
-                        .map(|state| format!("{}:{}", state.self_member_id, state.ha_phase))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    errors.join(" | ")
-                )));
+                observer.record_api_states(&states, &errors)?;
             }
 
             if tokio::time::Instant::now() >= deadline {
-                return finalize_no_dual_primary_window(
-                    successful_samples,
-                    poll_attempts,
-                    poll_errors,
-                    last_poll_error.as_deref(),
-                );
+                return observer.finalize_no_dual_primary_window();
             }
             tokio::time::sleep(Duration::from_millis(75)).await;
         }
