@@ -1,51 +1,17 @@
-use std::{collections::BTreeMap, fs, path::Path};
-
-use thiserror::Error;
-
 use crate::{
-    dcs::store::{DcsHaWriter, DcsStoreError},
     logging::{EventMeta, SeverityText},
-    process::{
-        jobs::{
-            BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec, PromoteSpec, StartPostgresSpec,
-        },
-        state::{ProcessJobKind, ProcessJobRequest},
-    },
-    state::{JobId, WorkerError, WorkerStatus},
+    state::{WorkerError, WorkerStatus},
 };
 
 use super::{
-    actions::{ActionId, HaAction},
+    apply::{apply_effect_plan, format_dispatch_errors},
     decide::decide,
-    decision::HaDecision,
-    lower::{
-        HaEffectPlan, LeaseEffect, PostgresEffect, ReplicationEffect, SafetyEffect,
-        SwitchoverEffect,
+    events::{
+        emit_ha_decision_selected, emit_ha_effect_plan_selected, ha_base_attrs, ha_role_label,
+        serialize_attr_value,
     },
-    state::{DecideInput, HaPhase, HaWorkerCtx, WorldSnapshot},
+    state::{DecideInput, HaWorkerCtx, WorldSnapshot},
 };
-
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub(crate) enum ActionDispatchError {
-    #[error("process send failed for action `{action:?}`: {message}")]
-    ProcessSend { action: ActionId, message: String },
-    #[error("managed config materialization failed for action `{action:?}`: {message}")]
-    ManagedConfig { action: ActionId, message: String },
-    #[error("filesystem operation failed for action `{action:?}`: {message}")]
-    Filesystem { action: ActionId, message: String },
-    #[error("dcs write failed for action `{action:?}` at `{path}`: {message}")]
-    DcsWrite {
-        action: ActionId,
-        path: String,
-        message: String,
-    },
-    #[error("dcs delete failed for action `{action:?}` at `{path}`: {message}")]
-    DcsDelete {
-        action: ActionId,
-        path: String,
-        message: String,
-    },
-}
 
 pub(crate) async fn run(mut ctx: HaWorkerCtx) -> Result<(), WorkerError> {
     let mut interval = tokio::time::interval(ctx.poll_interval);
@@ -88,7 +54,7 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
 
     emit_ha_decision_selected(ctx, output.next.tick, &output.outcome.decision, &plan)?;
     emit_ha_effect_plan_selected(ctx, output.next.tick, &plan)?;
-    let dispatch_errors = dispatch_effect_plan(ctx, output.next.tick, &plan)?;
+    let dispatch_errors = apply_effect_plan(ctx, output.next.tick, &plan)?;
     let now = (ctx.now)()?;
 
     let worker = if dispatch_errors.is_empty() {
@@ -149,517 +115,6 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
     Ok(())
 }
 
-pub(crate) fn dispatch_effect_plan(
-    ctx: &mut HaWorkerCtx,
-    ha_tick: u64,
-    plan: &HaEffectPlan,
-) -> Result<Vec<ActionDispatchError>, WorkerError> {
-    let mut errors = Vec::new();
-    let leader_key = leader_path(&ctx.scope);
-    let switchover_key = switchover_path(&ctx.scope);
-    let runtime_config = ctx.config_subscriber.latest().value;
-    let dispatch_ctx = EffectDispatchCtx {
-        runtime_config: &runtime_config,
-        leader_key: &leader_key,
-        switchover_key: &switchover_key,
-    };
-    let mut action_index = 0usize;
-
-    action_index = dispatch_postgres_effect(
-        ctx,
-        ha_tick,
-        action_index,
-        &plan.postgres,
-        &dispatch_ctx,
-        &mut errors,
-    )?;
-    action_index = dispatch_lease_effect(
-        ctx,
-        ha_tick,
-        action_index,
-        &plan.lease,
-        &dispatch_ctx,
-        &mut errors,
-    )?;
-    action_index = dispatch_switchover_effect(
-        ctx,
-        ha_tick,
-        action_index,
-        &plan.switchover,
-        &dispatch_ctx,
-        &mut errors,
-    )?;
-    action_index = dispatch_replication_effect(
-        ctx,
-        ha_tick,
-        action_index,
-        &plan.replication,
-        &dispatch_ctx,
-        &mut errors,
-    )?;
-    let _ = dispatch_safety_effect(
-        ctx,
-        ha_tick,
-        action_index,
-        &plan.safety,
-        &dispatch_ctx,
-        &mut errors,
-    )?;
-
-    Ok(errors)
-}
-
-struct EffectDispatchCtx<'a> {
-    runtime_config: &'a crate::config::RuntimeConfig,
-    leader_key: &'a str,
-    switchover_key: &'a str,
-}
-
-fn dispatch_postgres_effect(
-    ctx: &mut HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    effect: &PostgresEffect,
-    dispatch_ctx: &EffectDispatchCtx<'_>,
-    errors: &mut Vec<ActionDispatchError>,
-) -> Result<usize, WorkerError> {
-    match effect {
-        PostgresEffect::None => Ok(action_index),
-        PostgresEffect::Start => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::StartPostgres,
-            dispatch_ctx,
-            errors,
-        ),
-        PostgresEffect::Promote => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::PromoteToPrimary,
-            dispatch_ctx,
-            errors,
-        ),
-        PostgresEffect::Demote => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::DemoteToReplica,
-            dispatch_ctx,
-            errors,
-        ),
-    }
-}
-
-fn dispatch_lease_effect(
-    ctx: &mut HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    effect: &LeaseEffect,
-    dispatch_ctx: &EffectDispatchCtx<'_>,
-    errors: &mut Vec<ActionDispatchError>,
-) -> Result<usize, WorkerError> {
-    match effect {
-        LeaseEffect::None => Ok(action_index),
-        LeaseEffect::AcquireLeader => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::AcquireLeaderLease,
-            dispatch_ctx,
-            errors,
-        ),
-        LeaseEffect::ReleaseLeader => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::ReleaseLeaderLease,
-            dispatch_ctx,
-            errors,
-        ),
-    }
-}
-
-fn dispatch_switchover_effect(
-    ctx: &mut HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    effect: &SwitchoverEffect,
-    dispatch_ctx: &EffectDispatchCtx<'_>,
-    errors: &mut Vec<ActionDispatchError>,
-) -> Result<usize, WorkerError> {
-    match effect {
-        SwitchoverEffect::None => Ok(action_index),
-        SwitchoverEffect::ClearRequest => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::ClearSwitchover,
-            dispatch_ctx,
-            errors,
-        ),
-    }
-}
-
-fn dispatch_replication_effect(
-    ctx: &mut HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    effect: &ReplicationEffect,
-    dispatch_ctx: &EffectDispatchCtx<'_>,
-    errors: &mut Vec<ActionDispatchError>,
-) -> Result<usize, WorkerError> {
-    match effect {
-        ReplicationEffect::None => Ok(action_index),
-        ReplicationEffect::FollowLeader { leader_member_id } => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::FollowLeader {
-                leader_member_id: leader_member_id.0.clone(),
-            },
-            dispatch_ctx,
-            errors,
-        ),
-        ReplicationEffect::RecoverReplica { strategy } => match strategy {
-            crate::ha::decision::RecoveryStrategy::Rewind { .. } => dispatch_effect_action(
-                ctx,
-                ha_tick,
-                action_index,
-                HaAction::StartRewind,
-                dispatch_ctx,
-                errors,
-            ),
-            crate::ha::decision::RecoveryStrategy::BaseBackup { .. } => {
-                let next_index = dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    action_index,
-                    HaAction::WipeDataDir,
-                    dispatch_ctx,
-                    errors,
-                )?;
-                dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    next_index,
-                    HaAction::StartBaseBackup,
-                    dispatch_ctx,
-                    errors,
-                )
-            }
-            crate::ha::decision::RecoveryStrategy::Bootstrap => {
-                let next_index = dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    action_index,
-                    HaAction::WipeDataDir,
-                    dispatch_ctx,
-                    errors,
-                )?;
-                dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    next_index,
-                    HaAction::RunBootstrap,
-                    dispatch_ctx,
-                    errors,
-                )
-            }
-        },
-    }
-}
-
-fn dispatch_safety_effect(
-    ctx: &mut HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    effect: &SafetyEffect,
-    dispatch_ctx: &EffectDispatchCtx<'_>,
-    errors: &mut Vec<ActionDispatchError>,
-) -> Result<usize, WorkerError> {
-    match effect {
-        SafetyEffect::None => Ok(action_index),
-        SafetyEffect::FenceNode => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::FenceNode,
-            dispatch_ctx,
-            errors,
-        ),
-        SafetyEffect::SignalFailSafe => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::SignalFailSafe,
-            dispatch_ctx,
-            errors,
-        ),
-    }
-}
-
-fn dispatch_effect_action(
-    ctx: &mut HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: HaAction,
-    dispatch_ctx: &EffectDispatchCtx<'_>,
-    errors: &mut Vec<ActionDispatchError>,
-) -> Result<usize, WorkerError> {
-    emit_ha_action_intent(ctx, ha_tick, action_index, &action)?;
-    emit_ha_action_dispatch(ctx, ha_tick, action_index, &action)?;
-
-    if let Some(error) = dispatch_action(ctx, ha_tick, action_index, &action, dispatch_ctx)? {
-        errors.push(error);
-    }
-
-    Ok(action_index.saturating_add(1))
-}
-
-fn dispatch_action(
-    ctx: &mut HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: &HaAction,
-    dispatch_ctx: &EffectDispatchCtx<'_>,
-) -> Result<Option<ActionDispatchError>, WorkerError> {
-    match action {
-        HaAction::AcquireLeaderLease => {
-            if let Err(err) = ctx.dcs_store.write_leader_lease(&ctx.scope, &ctx.self_id) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::DcsWrite {
-                    action: action.id(),
-                    path: dispatch_ctx.leader_key.to_string(),
-                    message: dcs_error_message(err),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            emit_ha_lease_transition(ctx, ha_tick, true)?;
-            Ok(None)
-        }
-        HaAction::ReleaseLeaderLease => {
-            if let Err(err) = ctx.dcs_store.delete_leader(&ctx.scope) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::DcsDelete {
-                    action: action.id(),
-                    path: dispatch_ctx.leader_key.to_string(),
-                    message: dcs_error_message(err),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            emit_ha_lease_transition(ctx, ha_tick, false)?;
-            Ok(None)
-        }
-        HaAction::ClearSwitchover => {
-            if let Err(err) = ctx.dcs_store.clear_switchover(&ctx.scope) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::DcsDelete {
-                    action: action.id(),
-                    path: dispatch_ctx.switchover_key.to_string(),
-                    message: dcs_error_message(err),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::StartPostgres => {
-            let managed = match crate::postgres_managed::materialize_managed_postgres_config(
-                dispatch_ctx.runtime_config,
-            ) {
-                Ok(value) => value,
-                Err(err) => {
-                    emit_ha_action_result_failed(
-                        ctx,
-                        ha_tick,
-                        action_index,
-                        action,
-                        err.to_string(),
-                    )?;
-                    return Ok(Some(ActionDispatchError::ManagedConfig {
-                        action: action.id(),
-                        message: err.to_string(),
-                    }));
-                }
-            };
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
-                    data_dir: dispatch_ctx.runtime_config.postgres.data_dir.clone(),
-                    host: ctx.process_defaults.postgres_host.clone(),
-                    port: ctx.process_defaults.postgres_port,
-                    socket_dir: ctx.process_defaults.socket_dir.clone(),
-                    log_file: ctx.process_defaults.log_file.clone(),
-                    extra_postgres_settings: managed.extra_settings,
-                    wait_seconds: None,
-                    timeout_ms: None,
-                }),
-            };
-            if let Err(err) = ctx.process_inbox.send(request) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::ProcessSend {
-                    action: action.id(),
-                    message: err.to_string(),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::PromoteToPrimary => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::Promote(PromoteSpec {
-                    data_dir: dispatch_ctx.runtime_config.postgres.data_dir.clone(),
-                    wait_seconds: None,
-                    timeout_ms: None,
-                }),
-            };
-            if let Err(err) = ctx.process_inbox.send(request) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::ProcessSend {
-                    action: action.id(),
-                    message: err.to_string(),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::DemoteToReplica => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::Demote(DemoteSpec {
-                    data_dir: dispatch_ctx.runtime_config.postgres.data_dir.clone(),
-                    mode: ctx.process_defaults.shutdown_mode.clone(),
-                    timeout_ms: None,
-                }),
-            };
-            if let Err(err) = ctx.process_inbox.send(request) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::ProcessSend {
-                    action: action.id(),
-                    message: err.to_string(),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::StartRewind => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::PgRewind(PgRewindSpec {
-                    target_data_dir: dispatch_ctx.runtime_config.postgres.data_dir.clone(),
-                    source: ctx.process_defaults.rewind_source.clone(),
-                    timeout_ms: None,
-                }),
-            };
-            if let Err(err) = ctx.process_inbox.send(request) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::ProcessSend {
-                    action: action.id(),
-                    message: err.to_string(),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::StartBaseBackup => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::BaseBackup(crate::process::jobs::BaseBackupSpec {
-                    data_dir: dispatch_ctx.runtime_config.postgres.data_dir.clone(),
-                    source: ctx.process_defaults.basebackup_source.clone(),
-                    timeout_ms: Some(dispatch_ctx.runtime_config.process.bootstrap_timeout_ms),
-                }),
-            };
-            if let Err(err) = ctx.process_inbox.send(request) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::ProcessSend {
-                    action: action.id(),
-                    message: err.to_string(),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::RunBootstrap => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::Bootstrap(BootstrapSpec {
-                    data_dir: dispatch_ctx.runtime_config.postgres.data_dir.clone(),
-                    superuser_username: dispatch_ctx
-                        .runtime_config
-                        .postgres
-                        .roles
-                        .superuser
-                        .username
-                        .clone(),
-                    timeout_ms: None,
-                }),
-            };
-            if let Err(err) = ctx.process_inbox.send(request) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::ProcessSend {
-                    action: action.id(),
-                    message: err.to_string(),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::FenceNode => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::Fencing(FencingSpec {
-                    data_dir: dispatch_ctx.runtime_config.postgres.data_dir.clone(),
-                    mode: crate::process::jobs::ShutdownMode::Immediate,
-                    timeout_ms: None,
-                }),
-            };
-            if let Err(err) = ctx.process_inbox.send(request) {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
-                return Ok(Some(ActionDispatchError::ProcessSend {
-                    action: action.id(),
-                    message: err.to_string(),
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::WipeDataDir => {
-            if let Err(err) = wipe_data_dir(dispatch_ctx.runtime_config.postgres.data_dir.as_path())
-            {
-                emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.clone())?;
-                return Ok(Some(ActionDispatchError::Filesystem {
-                    action: action.id(),
-                    message: err,
-                }));
-            }
-
-            emit_ha_action_result_ok(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-        HaAction::FollowLeader { .. } | HaAction::SignalFailSafe => {
-            emit_ha_action_result_skipped(ctx, ha_tick, action_index, action)?;
-            Ok(None)
-        }
-    }
-}
-
-fn dcs_error_message(error: DcsStoreError) -> String {
-    error.to_string()
-}
-
 fn world_snapshot(ctx: &HaWorkerCtx) -> WorldSnapshot {
     WorldSnapshot {
         config: ctx.config_subscriber.latest(),
@@ -669,325 +124,16 @@ fn world_snapshot(ctx: &HaWorkerCtx) -> WorldSnapshot {
     }
 }
 
-fn leader_path(scope: &str) -> String {
-    format!("/{}/leader", scope.trim_matches('/'))
-}
-
-fn switchover_path(scope: &str) -> String {
-    format!("/{}/switchover", scope.trim_matches('/'))
-}
-
-fn wipe_data_dir(data_dir: &Path) -> Result<(), String> {
-    if data_dir.as_os_str().is_empty() {
-        return Err("wipe_data_dir data_dir must not be empty".to_string());
-    }
-    if data_dir.exists() {
-        fs::remove_dir_all(data_dir)
-            .map_err(|err| format!("wipe_data_dir remove_dir_all failed: {err}"))?;
-    }
-    fs::create_dir_all(data_dir)
-        .map_err(|err| format!("wipe_data_dir create_dir_all failed: {err}"))?;
-    Ok(())
-}
-
-fn ha_base_attrs(ctx: &HaWorkerCtx, ha_tick: u64) -> BTreeMap<String, serde_json::Value> {
-    let mut attrs = BTreeMap::new();
-    attrs.insert(
-        "scope".to_string(),
-        serde_json::Value::String(ctx.scope.clone()),
-    );
-    attrs.insert(
-        "member_id".to_string(),
-        serde_json::Value::String(ctx.self_id.0.clone()),
-    );
-    attrs.insert(
-        "ha_tick".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(ha_tick)),
-    );
-    attrs.insert(
-        "ha_dispatch_seq".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(ha_tick)),
-    );
-    attrs
-}
-
-fn emit_ha_action_intent(
-    ctx: &HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: &HaAction,
-) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action_id_label(&action.id())),
-    );
-    if let HaAction::FollowLeader { leader_member_id } = action {
-        attrs.insert(
-            "leader_member_id".to_string(),
-            serde_json::Value::String(leader_member_id.clone()),
-        );
-    }
-    ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "ha action intent",
-            "ha_worker::step_once",
-            EventMeta::new("ha.action.intent", "ha", "ok"),
-            attrs,
-        )
-        .map_err(|err| WorkerError::Message(format!("ha intent log emit failed: {err}")))?;
-    Ok(())
-}
-
-fn emit_ha_decision_selected(
-    ctx: &HaWorkerCtx,
-    ha_tick: u64,
-    decision: &HaDecision,
-    plan: &HaEffectPlan,
-) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert("decision".to_string(), serialize_attr_value(decision)?);
-    attrs.insert(
-        "planned_dispatch_step_count".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(plan.dispatch_step_count() as u64)),
-    );
-    ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "ha decision selected",
-            "ha_worker::step_once",
-            EventMeta::new("ha.decision.selected", "ha", "ok"),
-            attrs,
-        )
-        .map_err(|err| WorkerError::Message(format!("ha decision log emit failed: {err}")))?;
-    Ok(())
-}
-
-fn emit_ha_effect_plan_selected(
-    ctx: &HaWorkerCtx,
-    ha_tick: u64,
-    plan: &HaEffectPlan,
-) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert("effect_plan".to_string(), serialize_attr_value(plan)?);
-    ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "ha effect plan selected",
-            "ha_worker::step_once",
-            EventMeta::new("ha.effect_plan.selected", "ha", "ok"),
-            attrs,
-        )
-        .map_err(|err| WorkerError::Message(format!("ha effect plan log emit failed: {err}")))?;
-    Ok(())
-}
-
-fn emit_ha_action_dispatch(
-    ctx: &HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: &HaAction,
-) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action_id_label(&action.id())),
-    );
-    ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "ha action dispatch",
-            "ha_worker::dispatch_actions",
-            EventMeta::new("ha.action.dispatch", "ha", "ok"),
-            attrs,
-        )
-        .map_err(|err| WorkerError::Message(format!("ha dispatch log emit failed: {err}")))?;
-    Ok(())
-}
-
-fn emit_ha_action_result_ok(
-    ctx: &HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: &HaAction,
-) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action_id_label(&action.id())),
-    );
-    ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "ha action result",
-            "ha_worker::dispatch_actions",
-            EventMeta::new("ha.action.result", "ha", "ok"),
-            attrs,
-        )
-        .map_err(|err| WorkerError::Message(format!("ha result log emit failed: {err}")))?;
-    Ok(())
-}
-
-fn emit_ha_action_result_skipped(
-    ctx: &HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: &HaAction,
-) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action_id_label(&action.id())),
-    );
-    ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "ha action skipped",
-            "ha_worker::dispatch_actions",
-            EventMeta::new("ha.action.result", "ha", "skipped"),
-            attrs,
-        )
-        .map_err(|err| WorkerError::Message(format!("ha result log emit failed: {err}")))?;
-    Ok(())
-}
-
-fn emit_ha_action_result_failed(
-    ctx: &HaWorkerCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: &HaAction,
-    error: String,
-) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action_id_label(&action.id())),
-    );
-    attrs.insert("error".to_string(), serde_json::Value::String(error));
-    ctx.log
-        .emit_event(
-            SeverityText::Warn,
-            "ha action failed",
-            "ha_worker::dispatch_actions",
-            EventMeta::new("ha.action.result", "ha", "failed"),
-            attrs,
-        )
-        .map_err(|err| WorkerError::Message(format!("ha result log emit failed: {err}")))?;
-    Ok(())
-}
-
-fn ha_role_label(phase: &HaPhase) -> &'static str {
-    match phase {
-        HaPhase::Primary => "primary",
-        HaPhase::Replica => "replica",
-        _ => "unknown",
-    }
-}
-
-fn emit_ha_lease_transition(
-    ctx: &HaWorkerCtx,
-    ha_tick: u64,
-    acquired: bool,
-) -> Result<(), WorkerError> {
-    let attrs = ha_base_attrs(ctx, ha_tick);
-    let (name, message) = if acquired {
-        ("ha.lease.acquired", "ha leader lease acquired")
-    } else {
-        ("ha.lease.released", "ha leader lease released")
-    };
-    ctx.log
-        .emit_event(
-            SeverityText::Info,
-            message,
-            "ha_worker::dispatch_actions",
-            EventMeta::new(name, "ha", "ok"),
-            attrs,
-        )
-        .map_err(|err| WorkerError::Message(format!("ha lease log emit failed: {err}")))?;
-    Ok(())
-}
-
-fn process_job_id(
-    scope: &str,
-    self_id: &crate::state::MemberId,
-    action: &HaAction,
-    index: usize,
-    tick: u64,
-) -> JobId {
-    JobId(format!(
-        "ha-{}-{}-{}-{}-{}",
-        scope.trim_matches('/'),
-        self_id.0,
-        tick,
-        index,
-        action_id_label(&action.id()),
-    ))
-}
-
-fn action_id_label(id: &ActionId) -> String {
-    match id {
-        ActionId::AcquireLeaderLease => "acquire_leader_lease".to_string(),
-        ActionId::ReleaseLeaderLease => "release_leader_lease".to_string(),
-        ActionId::ClearSwitchover => "clear_switchover".to_string(),
-        ActionId::FollowLeader(leader) => format!("follow_leader_{}", leader),
-        ActionId::StartRewind => "start_rewind".to_string(),
-        ActionId::StartBaseBackup => "start_basebackup".to_string(),
-        ActionId::RunBootstrap => "run_bootstrap".to_string(),
-        ActionId::FenceNode => "fence_node".to_string(),
-        ActionId::WipeDataDir => "wipe_data_dir".to_string(),
-        ActionId::SignalFailSafe => "signal_failsafe".to_string(),
-        ActionId::StartPostgres => "start_postgres".to_string(),
-        ActionId::PromoteToPrimary => "promote_to_primary".to_string(),
-        ActionId::DemoteToReplica => "demote_to_replica".to_string(),
-    }
-}
-
-fn format_dispatch_errors(errors: &[ActionDispatchError]) -> String {
-    let mut details = String::new();
-    for (index, err) in errors.iter().enumerate() {
-        if index > 0 {
-            details.push_str("; ");
-        }
-        details.push_str(&err.to_string());
-    }
-    format!(
-        "ha dispatch failed with {} error(s): {details}",
-        errors.len()
-    )
-}
-
-fn serialize_attr_value<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, WorkerError> {
-    serde_json::to_value(value)
-        .map_err(|err| WorkerError::Message(format!("ha attr serialization failed: {err}")))
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
         collections::{BTreeMap, VecDeque},
-        sync::{Arc, Mutex},
-        time::Duration,
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc, Mutex,
+        },
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use crate::{
@@ -1005,6 +151,7 @@ mod tests {
         },
         ha::{
             actions::ActionId,
+            apply::{apply_effect_plan, ActionDispatchError},
             decision::HaDecision,
             lower::{
                 lower_decision, HaEffectPlan, LeaseEffect, PostgresEffect, ReplicationEffect,
@@ -1013,7 +160,7 @@ mod tests {
             state::{
                 HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
             },
-            worker::{dispatch_effect_plan, run, step_once, ActionDispatchError},
+            worker::{run, step_once},
         },
         pginfo::state::{
             PgConfig, PgConnInfo, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus,
@@ -1139,6 +286,19 @@ mod tests {
         }
     }
 
+    static TEST_DATA_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_data_dir(label: &str) -> PathBuf {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let sequence = TEST_DATA_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "pgtuskmaster-worker-{label}-{}-{millis}-{sequence}",
+            std::process::id(),
+        ))
+    }
+
     fn sample_runtime_config() -> RuntimeConfig {
         RuntimeConfig {
             cluster: ClusterConfig {
@@ -1146,7 +306,7 @@ mod tests {
                 member_id: "node-a".to_string(),
             },
             postgres: PostgresConfig {
-                data_dir: "/tmp/pgdata".into(),
+                data_dir: unique_test_data_dir("pgdata"),
                 connect_timeout_s: 5,
                 listen_host: "127.0.0.1".to_string(),
                 listen_port: 5432,
@@ -1795,7 +955,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn dispatch_effect_plan_maps_dcs_and_process_requests() -> Result<(), WorkerError> {
+    async fn apply_effect_plan_maps_dcs_and_process_requests() -> Result<(), WorkerError> {
         let built = build_context(
             RecordingStore::default(),
             Duration::from_millis(100),
@@ -1820,10 +980,10 @@ mod tests {
         };
 
         let ha_tick = ctx.state.tick;
-        let acquire_errors = dispatch_effect_plan(&mut ctx, ha_tick, &acquire_only)?;
+        let acquire_errors = apply_effect_plan(&mut ctx, ha_tick, &acquire_only)?;
         assert!(acquire_errors.is_empty());
-        let errors = dispatch_effect_plan(&mut ctx, ha_tick, &plan)?;
-        assert!(errors.is_empty());
+        let errors = apply_effect_plan(&mut ctx, ha_tick, &plan)?;
+        assert!(errors.is_empty(), "dispatch errors were: {errors:?}");
         assert_eq!(store.writes_len(), 1);
         assert_eq!(store.deletes_len(), 1);
         assert_eq!(
@@ -1836,7 +996,10 @@ mod tests {
         if let Ok(job) = request {
             assert!(matches!(job.kind, ProcessJobKind::StartPostgres(_)));
             if let ProcessJobKind::StartPostgres(spec) = job.kind {
-                assert_eq!(spec.data_dir, sample_runtime_config().postgres.data_dir);
+                assert_eq!(
+                    spec.data_dir,
+                    ctx.config_subscriber.latest().value.postgres.data_dir
+                );
                 assert_eq!(spec.host, "127.0.0.1");
                 assert_eq!(spec.port, 5432);
             }
@@ -1845,8 +1008,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn dispatch_effect_plan_is_best_effort_and_reports_typed_errors(
-    ) -> Result<(), WorkerError> {
+    async fn apply_effect_plan_is_best_effort_and_reports_typed_errors() -> Result<(), WorkerError>
+    {
         let store = RecordingStore {
             fail_write: true,
             ..RecordingStore::default()
@@ -1872,8 +1035,8 @@ mod tests {
             safety: SafetyEffect::None,
         };
         let ha_tick = ctx.state.tick;
-        let mut errors = dispatch_effect_plan(&mut ctx, ha_tick, &acquire_only)?;
-        errors.extend(dispatch_effect_plan(&mut ctx, ha_tick, &plan)?);
+        let mut errors = apply_effect_plan(&mut ctx, ha_tick, &acquire_only)?;
+        errors.extend(apply_effect_plan(&mut ctx, ha_tick, &plan)?);
 
         assert_eq!(store_handle.deletes_len(), 1);
         assert_eq!(errors.len(), 2);
@@ -1884,18 +1047,21 @@ mod tests {
                 ..
             }
         )));
-        assert!(errors.iter().any(|err| matches!(
-            err,
-            ActionDispatchError::ProcessSend {
-                action: ActionId::StartPostgres,
-                ..
-            }
-        )));
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                ActionDispatchError::ProcessSend {
+                    action: ActionId::StartPostgres,
+                    ..
+                }
+            )),
+            "dispatch errors were: {errors:?}"
+        );
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn dispatch_effect_plan_clears_switchover_key() -> Result<(), WorkerError> {
+    async fn apply_effect_plan_clears_switchover_key() -> Result<(), WorkerError> {
         let built = build_context(
             RecordingStore::default(),
             Duration::from_millis(100),
@@ -1912,7 +1078,7 @@ mod tests {
             postgres: PostgresEffect::None,
             safety: SafetyEffect::None,
         };
-        let errors = dispatch_effect_plan(&mut ctx, ha_tick, &plan)?;
+        let errors = apply_effect_plan(&mut ctx, ha_tick, &plan)?;
         assert!(errors.is_empty());
         assert!(store.has_delete_path("/scope-a/switchover"));
         Ok(())

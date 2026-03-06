@@ -12,17 +12,15 @@ This chapter is intentionally concrete. It describes:
 
 ## Decision path
 
-The canonical loop lives in `src/ha/worker.rs`:
+The canonical loop lives across a small HA pipeline:
 
-1. Collect a **world snapshot** from input state channels (config/pg/dcs/process).
-2. Run pure decision logic: `ha::decide::decide(DecideInput { current, world })`.
-3. Lower the chosen `HaDecision` into a typed `HaEffectPlan`.
-4. Dispatch side effects for the lowered effect buckets:
-   - DCS writes/deletes (coordination)
-   - process job requests (local side effects).
-5. Publish the updated `HaState` (phase + tick + decision + worker status).
+1. `src/ha/worker.rs` collects a **world snapshot** from input state channels (config/pg/dcs/process).
+2. `src/ha/decide.rs` runs pure decision logic: `ha::decide::decide(DecideInput { current, world })`.
+3. `src/ha/lower.rs` lowers the chosen `HaDecision` into a typed `HaEffectPlan`.
+4. `src/ha/apply.rs` dispatches the effect buckets in deterministic order.
+5. `src/ha/worker.rs` publishes the updated `HaState` (phase + tick + decision + worker status) and emits phase/role transition events.
 
-The decision function itself is in `src/ha/decide.rs`. It is intentionally structured to be testable as a pure function: given “current state” and “world view”, it returns a `PhaseOutcome { next_phase, decision }`. Effect-plan lowering lives separately in `src/ha/lower.rs`, and the worker dispatches that plan in fixed bucket order.
+The decision function itself is in `src/ha/decide.rs`. It is intentionally structured to be testable as a pure function: given “current state” and “world view”, it returns a `PhaseOutcome { next_phase, decision }`. Effect-plan lowering lives separately in `src/ha/lower.rs`, `src/ha/apply.rs` owns effect application, `src/ha/process_dispatch.rs` owns local process request construction plus managed-config/filesystem preparation, and `src/ha/events.rs` owns the repetitive HA event payload construction.
 
 ## Inputs: what HA reads
 
@@ -38,7 +36,7 @@ That separation matters: when HA is wrong, you can usually locate the failure to
 - an incorrect observation (pginfo)
 - an incorrect cache/trust view (dcs)
 - a decision bug (ha/decide)
-- a dispatch bug (ha/worker)
+- an apply/dispatch bug (`ha/apply.rs` or `ha/process_dispatch.rs`)
 - a process execution bug (process).
 
 ## Outputs: `HaState`, `HaDecision`, and the lowered effect plan
@@ -63,7 +61,7 @@ If you change decision or lowering semantics, update both layers and tests toget
 
 - decision-level tests in `src/ha/decide.rs`
 - lowering tests in `src/ha/lower.rs`
-- worker-level dispatch tests in `src/ha/worker.rs`
+- apply-layer tests in `src/ha/apply.rs`, `src/ha/process_dispatch.rs`, and `src/ha/worker.rs`
 
 ## The core phases (what they mean)
 
@@ -86,7 +84,11 @@ There are two side-effect boundaries:
 1. **DCS writes/deletes**: done directly by HA via a DCS store handle.
 2. **Local process jobs**: enqueued to the process worker via an inbox channel.
 
-This split is enforced in `src/ha/worker.rs` in `dispatch_effect_plan(...)`.
+This split is enforced by `src/ha/apply.rs`:
+
+- `apply_effect_plan(...)` owns bucket sequencing and DCS coordination calls.
+- `process_dispatch.rs` owns local process job construction and filesystem preparation.
+- `events.rs` owns decision/plan/action/lease event payload helpers.
 
 ### Effect-plan dispatch matrix
 
@@ -111,7 +113,7 @@ Notes:
 
 - The leader and switchover keys are scoped to `cfg.dcs.scope` and rendered as `/{scope}/leader` and `/{scope}/switchover`.
 - `StartPostgres` dispatch calls `postgres_managed::materialize_managed_postgres_config(...)` before enqueuing the job, so that managed `postgresql.conf`-style settings are applied consistently in both startup and HA-driven starts.
-- The current dispatch order is fixed by concern: Postgres lifecycle, then lease effects, then switchover cleanup, then replication/recovery, then safety. That order is what enforces “demote before release” and “release before clear/signal” without preserving a generic action vector boundary.
+- The current dispatch order is fixed by concern inside `apply_effect_plan(...)`: Postgres lifecycle, then lease effects, then switchover cleanup, then replication/recovery, then safety. That order is what enforces “demote before release” and “release before clear/signal” without preserving a generic action vector boundary.
 
 ## Phase transitions: the “story” paths contributors care about
 
@@ -151,7 +153,7 @@ HA reads the cache and, if it is currently primary and sees the request, it tran
 - `LeaseEffect::ReleaseLeader`
 - `SwitchoverEffect::ClearRequest`.
 
-This is a good example of the “write intent, then react via read model” pattern that keeps control flow explicit.
+This is a good example of the “write intent, then react via read model” pattern that keeps control flow explicit. Publication-time phase and role transition logs still stay in `worker.rs` because they describe the published state boundary, not the apply boundary.
 
 ### Fencing / split-brain path
 

@@ -2427,6 +2427,33 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
         fixture
             .assert_no_dual_primary_window(Duration::from_secs(10))
             .await?;
+        fixture.record(
+            "unassisted failover recovery: confirm SQL-visible primary after API recovery",
+        );
+        let sql_confirmed_primary = fixture
+            .wait_for_stable_primary_via_sql(
+                Duration::from_secs(60),
+                Some(&bootstrap_primary),
+                2,
+                1,
+            )
+            .await?;
+        if sql_confirmed_primary != failover_primary {
+            fixture.record(format!(
+                "unassisted failover SQL confirmation chose primary={sql_confirmed_primary} after API-selected primary={failover_primary}"
+            ));
+        }
+        if let Ok(polled) = fixture
+            .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
+            .await
+        {
+            let states = polled
+                .into_iter()
+                .filter_map(|(_, result)| result.ok())
+                .collect::<Vec<_>>();
+            ClusterFixture::update_phase_history(&mut phase_history, states.as_slice());
+        }
+        let failover_primary = sql_confirmed_primary;
         ClusterFixture::assert_phase_history_contains_failover(
             &phase_history,
             &bootstrap_primary,

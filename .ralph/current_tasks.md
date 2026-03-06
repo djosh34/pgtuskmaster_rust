@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 07:16:03 AM CET 2026
+Generated: Fri Mar  6 08:04:25 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -561,7 +561,7 @@ The agent must explore the current config schema, HA/runtime flow, DCS/member-st
 
 **Path:** `.ralph/tasks/story-ha-functional-rewrite/04-task-untangle-ha-worker-into-facts-plan-and-apply-layers.md`
 
-## Task: Untangle HA worker into facts, plan, and apply layers <status>not_started</status> <passes>false</passes>
+## Task: Untangle HA worker into facts, plan, and apply layers <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Restructure HA runtime code so the worker clearly separates fact collection, pure decision selection, effect lowering, and effect application without forcing the design into object-heavy “executor” patterns.

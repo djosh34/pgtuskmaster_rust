@@ -129,10 +129,12 @@ Inputs:
 - a DCS writer handle (another etcd store instance)
 - an unbounded inbox sender to the process worker.
 
-Reads the latest snapshots, runs decision logic, and then dispatches side effects:
+Reads the latest snapshots, runs decision logic, lowers the selected `HaDecision`, and then applies side effects through the HA apply helpers:
 
-- coordination writes/deletes to etcd (leader lease, switchover clear)
-- process job requests (start postgres, promote/demote, rewind, fencing, bootstrap).
+- `src/ha/apply.rs` owns bucket ordering plus DCS coordination writes/deletes (leader lease, switchover clear)
+- `src/ha/process_dispatch.rs` owns process job requests and local filesystem preparation (start postgres, promote/demote, rewind, fencing, bootstrap)
+- `src/ha/events.rs` owns the repetitive HA decision/plan/action/lease event payload construction
+- `src/ha/worker.rs` keeps orchestration plus published-state phase/role transition logging.
 
 Failure behavior:
 

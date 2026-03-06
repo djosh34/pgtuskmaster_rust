@@ -53,3 +53,23 @@ impl HaAction {
         }
     }
 }
+
+impl ActionId {
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::AcquireLeaderLease => "acquire_leader_lease".to_string(),
+            Self::ReleaseLeaderLease => "release_leader_lease".to_string(),
+            Self::ClearSwitchover => "clear_switchover".to_string(),
+            Self::FollowLeader(leader) => format!("follow_leader_{leader}"),
+            Self::StartRewind => "start_rewind".to_string(),
+            Self::StartBaseBackup => "start_basebackup".to_string(),
+            Self::RunBootstrap => "run_bootstrap".to_string(),
+            Self::FenceNode => "fence_node".to_string(),
+            Self::WipeDataDir => "wipe_data_dir".to_string(),
+            Self::SignalFailSafe => "signal_failsafe".to_string(),
+            Self::StartPostgres => "start_postgres".to_string(),
+            Self::PromoteToPrimary => "promote_to_primary".to_string(),
+            Self::DemoteToReplica => "demote_to_replica".to_string(),
+        }
+    }
+}
