@@ -66,7 +66,9 @@ impl HaDecision {
     pub(crate) fn lower(&self) -> HaEffectPlan {
         match self {
             Self::NoChange | Self::WaitForDcsTrust => HaEffectPlan::default(),
-            Self::WaitForPostgres { start_requested } => HaEffectPlan {
+            Self::WaitForPostgres {
+                start_requested, ..
+            } => HaEffectPlan {
                 postgres: if *start_requested {
                     PostgresEffect::Start
                 } else {

@@ -381,7 +381,10 @@ impl ClusterFixture {
     ) -> Result<String, WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            match self.run_sql_on_node(node_id, sql, E2E_COMMAND_TIMEOUT).await {
+            match self
+                .run_sql_on_node(node_id, sql, E2E_COMMAND_TIMEOUT)
+                .await
+            {
                 Ok(output) => return Ok(output),
                 Err(err) => {
                     if tokio::time::Instant::now() >= deadline {

@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 22:54:31 CET 2026
-
-# Task `.ralph/tasks/story-authoritative-managed-postgres-config/01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer.md`
-
-```
-## Task: Introduce a typed authoritative managed Postgres config model and serializer <status>not_started</status> <passes>false</passes> <priority>high</priority>
-
-<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
-
-<description>
-```
-
-==============
+Generated: Sat Mar  7 12:07:52 AM CET 2026
 
 # Task `.ralph/tasks/story-authoritative-managed-postgres-config/02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint.md`
 

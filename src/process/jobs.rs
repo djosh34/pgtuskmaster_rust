@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, future::Future, path::PathBuf, pin::Pin};
+use std::{future::Future, path::PathBuf, pin::Pin};
 
 use thiserror::Error;
 
@@ -56,11 +56,8 @@ pub(crate) struct DemoteSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StartPostgresSpec {
     pub(crate) data_dir: PathBuf,
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) socket_dir: PathBuf,
+    pub(crate) config_file: PathBuf,
     pub(crate) log_file: PathBuf,
-    pub(crate) extra_postgres_settings: BTreeMap<String, String>,
     pub(crate) wait_seconds: Option<u64>,
     pub(crate) timeout_ms: Option<u64>,
 }

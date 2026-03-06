@@ -12,6 +12,7 @@ use super::schema::{
     RoleAuthConfig, RoleAuthConfigV2Input, RuntimeConfig, RuntimeConfigV2Input, SecretSource,
     TlsServerConfig, TlsServerIdentityConfig,
 };
+use crate::postgres_managed_conf::{validate_extra_guc_entry, ManagedPostgresConfError};
 
 const MIN_TIMEOUT_MS: u64 = 1;
 const MAX_TIMEOUT_MS: u64 = 86_400_000;
@@ -161,7 +162,18 @@ fn normalize_postgres_config_v2(
         roles,
         pg_hba,
         pg_ident,
+        extra_gucs: normalize_postgres_extra_gucs_v2(input.extra_gucs)?,
     })
+}
+
+fn normalize_postgres_extra_gucs_v2(
+    input: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<std::collections::BTreeMap<String, String>, ConfigError> {
+    let extra_gucs = input.unwrap_or_default();
+    for (key, value) in &extra_gucs {
+        validate_extra_guc_for_config(key.as_str(), value.as_str())?;
+    }
+    Ok(extra_gucs)
 }
 
 fn normalize_postgres_conn_identity_v2(
@@ -531,6 +543,9 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         &cfg.postgres.pg_ident.source,
         false,
     )?;
+    for (key, value) in &cfg.postgres.extra_gucs {
+        validate_extra_guc_for_config(key.as_str(), value.as_str())?;
+    }
 
     validate_non_empty_path("process.binaries.postgres", &cfg.process.binaries.postgres)?;
     validate_absolute_path("process.binaries.postgres", &cfg.process.binaries.postgres)?;
@@ -702,6 +717,27 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_dcs_init_config(cfg)?;
 
     Ok(())
+}
+
+fn validate_extra_guc_for_config(key: &str, value: &str) -> Result<(), ConfigError> {
+    validate_extra_guc_entry(key, value).map_err(|err| match err {
+        ManagedPostgresConfError::InvalidExtraGuc { key, message } => ConfigError::Validation {
+            field: "postgres.extra_gucs",
+            message: format!("entry `{key}` invalid: {message}"),
+        },
+        ManagedPostgresConfError::ReservedExtraGuc { key } => ConfigError::Validation {
+            field: "postgres.extra_gucs",
+            message: format!("entry `{key}` is reserved by pgtuskmaster"),
+        },
+        ManagedPostgresConfError::InvalidPrimarySlotName { slot, message } => {
+            ConfigError::Validation {
+                field: "postgres.extra_gucs",
+                message: format!(
+                    "unexpected replica slot validation while checking extra gucs `{slot}`: {message}"
+                ),
+            }
+        }
+    })
 }
 
 fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
@@ -993,6 +1029,7 @@ mod tests {
                         content: "# empty\n".to_string(),
                     },
                 },
+                extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],

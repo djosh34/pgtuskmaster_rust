@@ -140,13 +140,17 @@ fn world_snapshot(ctx: &HaWorkerCtx) -> WorldSnapshot {
     }
 }
 
-fn should_skip_redundant_process_dispatch(current: &crate::ha::state::HaState, next: &crate::ha::state::HaState) -> bool {
+fn should_skip_redundant_process_dispatch(
+    current: &crate::ha::state::HaState,
+    next: &crate::ha::state::HaState,
+) -> bool {
     current.phase == next.phase
         && current.decision == next.decision
         && matches!(
             next.decision,
             crate::ha::decision::HaDecision::WaitForPostgres {
                 start_requested: true,
+                ..
             } | crate::ha::decision::HaDecision::RecoverReplica { .. }
                 | crate::ha::decision::HaDecision::FenceNode
         )
@@ -158,8 +162,8 @@ mod tests {
         collections::{BTreeMap, VecDeque},
         path::PathBuf,
         sync::{
-            mpsc::{self, RecvTimeoutError},
             atomic::{AtomicU64, Ordering},
+            mpsc::{self, RecvTimeoutError},
             Arc, Mutex,
         },
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -422,6 +426,7 @@ mod tests {
                         content: "# empty\n".to_string(),
                     },
                 },
+                extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
@@ -1159,8 +1164,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn step_once_publishes_failsafe_before_blocking_release_leader(
-    ) -> Result<(), WorkerError> {
+    async fn step_once_publishes_failsafe_before_blocking_release_leader() -> Result<(), WorkerError>
+    {
         let (delete_started_tx, delete_started_rx) = mpsc::channel();
         let (delete_release_tx, delete_release_rx) = mpsc::channel();
         let store = RecordingStore {
@@ -1306,8 +1311,15 @@ mod tests {
                     spec.data_dir,
                     ctx.config_subscriber.latest().value.postgres.data_dir
                 );
-                assert_eq!(spec.host, "127.0.0.1");
-                assert_eq!(spec.port, 5432);
+                assert_eq!(
+                    spec.config_file,
+                    ctx.config_subscriber
+                        .latest()
+                        .value
+                        .postgres
+                        .data_dir
+                        .join("pgtm.postgresql.conf")
+                );
             }
         }
         Ok(())

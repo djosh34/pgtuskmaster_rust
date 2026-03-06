@@ -1,4 +1,4 @@
-use std::{fmt, path::PathBuf};
+use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 use serde::Deserialize;
 
@@ -105,6 +105,7 @@ pub struct PostgresConfig {
     pub roles: PostgresRolesConfig,
     pub pg_hba: PgHbaConfig,
     pub pg_ident: PgIdentConfig,
+    pub extra_gucs: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -468,6 +469,7 @@ pub struct PostgresConfigV2Input {
     pub roles: Option<PostgresRolesConfigV2Input>,
     pub pg_hba: Option<PgHbaConfigV2Input>,
     pub pg_ident: Option<PgIdentConfigV2Input>,
+    pub extra_gucs: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

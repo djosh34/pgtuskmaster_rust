@@ -1366,7 +1366,6 @@ pub(crate) fn build_command(
                     spec.data_dir.display().to_string(),
                     "-Fp".to_string(),
                     "-Xs".to_string(),
-                    "-R".to_string(),
                 ],
                 env: role_auth_env(&spec.source.auth),
                 capture_output,
@@ -1461,27 +1460,13 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::StartPostgres(spec) => {
             validate_non_empty_path("start_postgres.data_dir", &spec.data_dir)?;
-            validate_non_empty_path("start_postgres.socket_dir", &spec.socket_dir)?;
+            validate_non_empty_path("start_postgres.config_file", &spec.config_file)?;
             validate_non_empty_path("start_postgres.log_file", &spec.log_file)?;
-            if spec.host.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "start_postgres.host must not be empty".to_string(),
-                ));
-            }
             let wait_seconds = spec.wait_seconds.unwrap_or(30);
-            let mut option_tokens = vec![
-                "-h".to_string(),
-                spec.host.clone(),
-                "-p".to_string(),
-                spec.port.to_string(),
-                "-k".to_string(),
-                spec.socket_dir.display().to_string(),
+            let option_tokens = vec![
+                "-c".to_string(),
+                format!("config_file={}", spec.config_file.display()),
             ];
-            for (key, value) in &spec.extra_postgres_settings {
-                validate_postgres_setting("start_postgres.extra_postgres_settings", key, value)?;
-                option_tokens.push("-c".to_string());
-                option_tokens.push(format!("{key}={value}"));
-            }
             let options = render_pg_ctl_option_string(&option_tokens)?;
             let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
@@ -1570,29 +1555,6 @@ fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), P
     Ok(())
 }
 
-fn validate_postgres_setting(field: &str, key: &str, value: &str) -> Result<(), ProcessError> {
-    if key.trim().is_empty() {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field} postgres setting key must not be empty"
-        )));
-    }
-    for ch in key.chars() {
-        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-') {
-            return Err(ProcessError::InvalidSpec(format!(
-                "{field} invalid postgres setting key `{key}`"
-            )));
-        }
-    }
-
-    if value.contains('\0') || value.contains('\n') || value.contains('\r') {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field} postgres setting `{key}` contains invalid characters"
-        )));
-    }
-
-    Ok(())
-}
-
 fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError> {
     let mut out = String::new();
     for (index, raw) in tokens.iter().enumerate() {
@@ -1649,6 +1611,10 @@ mod tests {
         config::{BinaryPaths, InlineOrPath, ProcessConfig, RoleAuthConfig, SecretSource},
         logging::{LogHandle, LogSink, SeverityText, TestSink},
         pginfo::state::{PgConnInfo, PgSslMode},
+        postgres_managed_conf::{
+            render_managed_postgres_conf, ManagedPostgresConf, ManagedPostgresStartIntent,
+            ManagedPostgresTlsConfig,
+        },
         process::{
             jobs::{
                 ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec,
@@ -1753,15 +1719,10 @@ mod tests {
     }
 
     fn sample_start_spec() -> StartPostgresSpec {
-        use std::collections::BTreeMap;
-
         StartPostgresSpec {
             data_dir: PathBuf::from("/tmp/node/data"),
-            host: "127.0.0.1".to_string(),
-            port: 5544,
-            socket_dir: PathBuf::from("/tmp/node/socket"),
+            config_file: PathBuf::from("/tmp/node/data/pgtm.postgresql.conf"),
             log_file: PathBuf::from("/tmp/node/postgres.log"),
-            extra_postgres_settings: BTreeMap::new(),
             wait_seconds: Some(1),
             timeout_ms: Some(1_000),
         }
@@ -1823,7 +1784,6 @@ mod tests {
                     "/tmp/node/data",
                     "-Fp",
                     "-Xs",
-                    "-R",
                 ]
             );
         }
@@ -1916,24 +1876,12 @@ mod tests {
     }
 
     #[test]
-    fn build_command_start_postgres_includes_extra_settings_deterministically() -> Result<(), String>
-    {
+    fn build_command_start_postgres_uses_managed_config_file_override() -> Result<(), String> {
         let config = sample_config();
-        let mut extra_postgres_settings = std::collections::BTreeMap::new();
-        // Insert out of order to ensure deterministic ordering (BTreeMap order).
-        extra_postgres_settings.insert(
-            "ident_file".to_string(),
-            "/tmp/managed/ident.conf".to_string(),
-        );
-        extra_postgres_settings.insert("hba_file".to_string(), "/tmp/managed/hba.conf".to_string());
-
         let spec = build_command(
             &config,
             &JobId("job-start".to_string()),
-            &ProcessJobKind::StartPostgres(StartPostgresSpec {
-                extra_postgres_settings,
-                ..sample_start_spec()
-            }),
+            &ProcessJobKind::StartPostgres(sample_start_spec()),
             false,
         )
         .map_err(|err| format!("build_command failed: {err}"))?;
@@ -1944,7 +1892,7 @@ mod tests {
             "-l".to_string(),
             "/tmp/node/postgres.log".to_string(),
             "-o".to_string(),
-            "-h 127.0.0.1 -p 5544 -k /tmp/node/socket -c hba_file=/tmp/managed/hba.conf -c ident_file=/tmp/managed/ident.conf".to_string(),
+            "-c config_file=/tmp/node/data/pgtm.postgresql.conf".to_string(),
             "start".to_string(),
             "-w".to_string(),
             "-t".to_string(),
@@ -2510,7 +2458,6 @@ mod tests {
         subscriber: crate::state::StateSubscriber<ProcessState>,
         _guard: NamespaceGuard,
         data_dir: PathBuf,
-        socket_dir: PathBuf,
         log_file: PathBuf,
         port: u16,
     }
@@ -2547,7 +2494,6 @@ mod tests {
                 subscriber,
                 _guard: guard,
                 data_dir,
-                socket_dir,
                 log_file,
                 port,
             };
@@ -2581,16 +2527,18 @@ mod tests {
                     fixture.port = retry_reservation.as_slice()[0];
                     drop(retry_reservation);
                 }
+                let managed_config_file = prepare_real_managed_start_config(
+                    fixture.data_dir.as_path(),
+                    socket_dir.as_path(),
+                    fixture.port,
+                )?;
                 let start = fixture
                     .submit_job_and_wait(
                         "start",
                         ProcessJobKind::StartPostgres(StartPostgresSpec {
                             data_dir: fixture.data_dir.clone(),
-                            host: "127.0.0.1".to_string(),
-                            port: fixture.port,
-                            socket_dir: fixture.socket_dir.clone(),
+                            config_file: managed_config_file,
                             log_file: fixture.log_file.clone(),
-                            extra_postgres_settings: std::collections::BTreeMap::new(),
                             wait_seconds: Some(45),
                             timeout_ms: Some(70_000),
                         }),
@@ -2716,6 +2664,44 @@ mod tests {
             let stdout = String::from_utf8_lossy(&output.stdout);
             Ok(stdout.lines().any(|line| line.trim() == "1"))
         }
+    }
+
+    fn prepare_real_managed_start_config(
+        data_dir: &std::path::Path,
+        socket_dir: &std::path::Path,
+        port: u16,
+    ) -> Result<PathBuf, WorkerError> {
+        let hba_path = data_dir.join("pgtm.pg_hba.conf");
+        let ident_path = data_dir.join("pgtm.pg_ident.conf");
+        let config_path = data_dir.join("pgtm.postgresql.conf");
+
+        fs::write(
+            &hba_path,
+            concat!(
+                "local all all trust\n",
+                "host all all 127.0.0.1/32 trust\n",
+                "host replication all 127.0.0.1/32 trust\n",
+            ),
+        )
+        .map_err(|err| WorkerError::Message(format!("write managed hba failed: {err}")))?;
+        fs::write(&ident_path, "# empty\n")
+            .map_err(|err| WorkerError::Message(format!("write managed ident failed: {err}")))?;
+
+        let rendered = render_managed_postgres_conf(&ManagedPostgresConf {
+            listen_addresses: "127.0.0.1".to_string(),
+            port,
+            unix_socket_directories: socket_dir.to_path_buf(),
+            hba_file: hba_path,
+            ident_file: ident_path,
+            tls: ManagedPostgresTlsConfig::Disabled,
+            start_intent: ManagedPostgresStartIntent::primary(),
+            extra_gucs: std::collections::BTreeMap::new(),
+        })
+        .map_err(|err| WorkerError::Message(format!("render managed conf failed: {err}")))?;
+        fs::write(&config_path, rendered)
+            .map_err(|err| WorkerError::Message(format!("write managed conf failed: {err}")))?;
+
+        Ok(config_path)
     }
 
     fn assert_success_outcome(label: &str, outcome: &JobOutcome) -> Result<(), WorkerError> {

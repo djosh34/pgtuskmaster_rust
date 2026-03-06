@@ -929,7 +929,11 @@ mod tests {
                 },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
-                        content: "local all all trust\n".to_string(),
+                        content: concat!(
+                            "local all all trust\n",
+                            "host all all 127.0.0.1/32 trust\n",
+                        )
+                        .to_string(),
                     },
                 },
                 pg_ident: PgIdentConfig {
@@ -937,6 +941,7 @@ mod tests {
                         content: "# empty\n".to_string(),
                     },
                 },
+                extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
@@ -1631,6 +1636,21 @@ mod tests {
             cfg.postgres.socket_dir = socket_dir.clone();
             cfg.postgres.listen_port = port;
             cfg.postgres.log_file = log_file.clone();
+            cfg.postgres
+                .extra_gucs
+                .insert("log_destination".to_string(), "jsonlog,stderr".to_string());
+            cfg.postgres
+                .extra_gucs
+                .insert("log_filename".to_string(), "postgres.json".to_string());
+            cfg.postgres
+                .extra_gucs
+                .insert("log_directory".to_string(), log_dir.display().to_string());
+            cfg.postgres
+                .extra_gucs
+                .insert("log_statement".to_string(), "all".to_string());
+            cfg.postgres
+                .extra_gucs
+                .insert("logging_collector".to_string(), "on".to_string());
             cfg.logging.postgres.log_dir = Some(log_dir.clone());
             cfg.logging.postgres.cleanup.enabled = false;
 
@@ -1681,37 +1701,13 @@ mod tests {
 
             wait_for_process_idle_success(&mut process_ctx, &bootstrap_id, Duration::from_secs(30))
                 .await?;
-
-            // Configure postgres logging after initdb (before first start).
-            let conf_path = data_dir.join("postgresql.conf");
-            let mut conf = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&conf_path)
-                .map_err(|err| {
-                    WorkerError::Message(format!("open postgresql.conf failed: {err}"))
-                })?;
-            let conf_lines = vec![
-                "logging_collector = on".to_string(),
-                "log_destination = 'jsonlog,stderr'".to_string(),
-                format!("log_directory = '{}'", log_dir.display()),
-                "log_filename = 'postgres.json'".to_string(),
-                "log_statement = 'all'".to_string(),
-            ];
-            for line in conf_lines {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                std::io::Write::write_all(&mut conf, b"\n").map_err(|err| {
-                    WorkerError::Message(format!("write postgresql.conf failed: {err}"))
-                })?;
-                std::io::Write::write_all(&mut conf, line.as_bytes()).map_err(|err| {
-                    WorkerError::Message(format!("write postgresql.conf failed: {err}"))
-                })?;
-                std::io::Write::write_all(&mut conf, b"\n").map_err(|err| {
-                    WorkerError::Message(format!("write postgresql.conf failed: {err}"))
-                })?;
-            }
+            let managed = crate::postgres_managed::materialize_managed_postgres_config(
+                &ingest_ctx.cfg,
+                &crate::postgres_managed_conf::ManagedPostgresStartIntent::primary(),
+            )
+            .map_err(|err| {
+                WorkerError::Message(format!("materialize managed postgres config failed: {err}"))
+            })?;
 
             reservation.release_port(port).map_err(|err| {
                 WorkerError::Message(format!("release reserved port failed: {err}"))
@@ -1721,11 +1717,8 @@ mod tests {
                 id: start_id.clone(),
                 kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
                     data_dir: data_dir.clone(),
-                    host: "127.0.0.1".to_string(),
-                    port,
-                    socket_dir: socket_dir.clone(),
+                    config_file: managed.postgresql_conf_path,
                     log_file: log_file.clone(),
-                    extra_postgres_settings: std::collections::BTreeMap::new(),
                     wait_seconds: Some(30),
                     timeout_ms: Some(60_000),
                 }),

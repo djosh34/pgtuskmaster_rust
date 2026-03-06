@@ -1,5 +1,4 @@
 use serde::{de, Deserialize, Deserializer};
-#[cfg(test)]
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,7 +59,6 @@ pub(crate) struct PgConnInfo {
     pub(crate) options: Option<String>,
 }
 
-#[cfg(test)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum ConnInfoParseError {
     #[error("conninfo syntax error: {0}")]
@@ -77,7 +75,6 @@ pub(crate) enum ConnInfoParseError {
     InvalidValue { key: &'static str, message: String },
 }
 
-#[cfg(test)]
 pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, ConnInfoParseError> {
     let mut cursor = Cursor::new(input);
 
@@ -157,7 +154,6 @@ pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, ConnInfoParse
     })
 }
 
-#[cfg(test)]
 fn assign_once(
     slot: &mut Option<String>,
     key: String,
@@ -216,13 +212,11 @@ fn render_value(value: &str) -> String {
     }
 }
 
-#[cfg(test)]
 struct Cursor<'a> {
     src: &'a str,
     index: usize,
 }
 
-#[cfg(test)]
 impl<'a> Cursor<'a> {
     fn new(src: &'a str) -> Self {
         Self { src, index: 0 }

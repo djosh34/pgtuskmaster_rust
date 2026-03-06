@@ -4,8 +4,7 @@ use std::{
     str,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc,
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -1024,6 +1023,7 @@ mod tests {
                         content: "# empty\n".to_string(),
                     },
                 },
+                extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],

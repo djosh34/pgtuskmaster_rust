@@ -79,6 +79,7 @@ pub enum HaDecisionResponse {
     NoChange,
     WaitForPostgres {
         start_requested: bool,
+        leader_member_id: Option<String>,
     },
     WaitForDcsTrust,
     AttemptLeadership,

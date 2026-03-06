@@ -406,6 +406,7 @@ async fn start_cluster_inner(
                 },
                 "pg_hba": { "source": { "content": pg_hba_contents.clone() } },
                 "pg_ident": { "source": { "content": pg_ident_contents.clone() } },
+                "extra_gucs": {},
             },
             "dcs": {
                 "endpoints": dcs_endpoints_for_check.clone(),
@@ -507,6 +508,7 @@ async fn start_cluster_inner(
                         content: pg_ident_contents.clone(),
                     },
                 },
+                extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: DcsConfig {
                 endpoints: dcs_endpoints,
@@ -677,7 +679,6 @@ $$;
             let expected_hba_file = primary.data_dir.join("pgtm.pg_hba.conf");
             let expected_ident_file = primary.data_dir.join("pgtm.pg_ident.conf");
             let expected_managed_postgresql_conf = primary.data_dir.join("pgtm.postgresql.conf");
-            let expected_config_file = primary.data_dir.join("postgresql.conf");
 
             let hba_file_raw = super::util::run_psql_statement(
                 guard.binaries.psql.as_path(),
@@ -712,7 +713,7 @@ $$;
 
             let expected_hba = expected_hba_file.display().to_string();
             let expected_ident = expected_ident_file.display().to_string();
-            let expected_config = expected_config_file.display().to_string();
+            let expected_config = expected_managed_postgresql_conf.display().to_string();
             if hba_file_raw.trim() != expected_hba.as_str() {
                 return Err(WorkerError::Message(format!(
                     "expected SHOW hba_file to be `{expected_hba}`, got: {:?}",
@@ -773,6 +774,22 @@ $$;
             {
                 return Err(WorkerError::Message(format!(
                     "managed postgresql conf unexpectedly contains backup settings: {:?}",
+                    disk_managed_postgresql_conf
+                )));
+            }
+            if !disk_managed_postgresql_conf.contains(expected_hba.as_str())
+                || !disk_managed_postgresql_conf.contains(expected_ident.as_str())
+            {
+                return Err(WorkerError::Message(format!(
+                    "managed postgresql conf did not reference expected managed hba/ident files: {:?}",
+                    disk_managed_postgresql_conf
+                )));
+            }
+            if !disk_managed_postgresql_conf.contains("listen_addresses = '127.0.0.1'")
+                || !disk_managed_postgresql_conf.contains(format!("port = {pg_port}").as_str())
+            {
+                return Err(WorkerError::Message(format!(
+                    "managed postgresql conf missing expected listen/port settings: {:?}",
                     disk_managed_postgresql_conf
                 )));
             }

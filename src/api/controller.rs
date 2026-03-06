@@ -115,8 +115,12 @@ fn map_ha_phase(value: &HaPhase) -> HaPhaseResponse {
 fn map_ha_decision(value: &HaDecision) -> HaDecisionResponse {
     match value {
         HaDecision::NoChange => HaDecisionResponse::NoChange,
-        HaDecision::WaitForPostgres { start_requested } => HaDecisionResponse::WaitForPostgres {
+        HaDecision::WaitForPostgres {
+            start_requested,
+            leader_member_id,
+        } => HaDecisionResponse::WaitForPostgres {
             start_requested: *start_requested,
+            leader_member_id: leader_member_id.as_ref().map(|leader| leader.0.clone()),
         },
         HaDecision::WaitForDcsTrust => HaDecisionResponse::WaitForDcsTrust,
         HaDecision::AttemptLeadership => HaDecisionResponse::AttemptLeadership,
@@ -177,9 +181,7 @@ fn map_recovery_strategy(value: &RecoveryStrategy) -> RecoveryStrategyResponse {
 fn map_lease_release_reason(value: &LeaseReleaseReason) -> LeaseReleaseReasonResponse {
     match value {
         LeaseReleaseReason::FencingComplete => LeaseReleaseReasonResponse::FencingComplete,
-        LeaseReleaseReason::PostgresUnreachable => {
-            LeaseReleaseReasonResponse::PostgresUnreachable
-        }
+        LeaseReleaseReason::PostgresUnreachable => LeaseReleaseReasonResponse::PostgresUnreachable,
     }
 }
 

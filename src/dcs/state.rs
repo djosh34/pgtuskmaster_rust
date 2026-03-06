@@ -271,6 +271,7 @@ mod tests {
                         content: "# empty\n".to_string(),
                     },
                 },
+                extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: crate::config::schema::DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],

@@ -50,6 +50,7 @@ pub(crate) enum HaDecision {
     NoChange,
     WaitForPostgres {
         start_requested: bool,
+        leader_member_id: Option<MemberId>,
     },
     WaitForDcsTrust,
     AttemptLeadership,
@@ -177,10 +178,7 @@ impl ProcessActivity {
                 }
             }
             ProcessState::Idle {
-                last_outcome:
-                    Some(JobOutcome::Success {
-                        job_kind, ..
-                    }),
+                last_outcome: Some(JobOutcome::Success { job_kind, .. }),
                 ..
             } => {
                 if expected_kinds.contains(job_kind) {
@@ -191,12 +189,7 @@ impl ProcessActivity {
             }
             ProcessState::Idle {
                 last_outcome:
-                    Some(JobOutcome::Failure {
-                        job_kind, ..
-                    }
-                    | JobOutcome::Timeout {
-                        job_kind, ..
-                    }),
+                    Some(JobOutcome::Failure { job_kind, .. } | JobOutcome::Timeout { job_kind, .. }),
                 ..
             } => {
                 if expected_kinds.contains(job_kind) {
@@ -264,8 +257,17 @@ impl HaDecision {
             Self::NoChange | Self::WaitForDcsTrust | Self::AttemptLeadership | Self::FenceNode => {
                 None
             }
-            Self::WaitForPostgres { start_requested } => {
-                Some(format!("start_requested={start_requested}"))
+            Self::WaitForPostgres {
+                start_requested,
+                leader_member_id,
+            } => {
+                let leader_detail = leader_member_id
+                    .as_ref()
+                    .map(|leader| leader.0.as_str())
+                    .unwrap_or("none");
+                Some(format!(
+                    "start_requested={start_requested}, leader_member_id={leader_detail}"
+                ))
             }
             Self::FollowLeader { leader_member_id } => Some(leader_member_id.0.clone()),
             Self::BecomePrimary { promote } => Some(format!("promote={promote}")),

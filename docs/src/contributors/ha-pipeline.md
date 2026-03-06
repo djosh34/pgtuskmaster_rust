@@ -106,7 +106,7 @@ The table below is a practical “what will happen if HA chooses effect X?” gu
 | lease | `AcquireLeader` | DCS write | write leader lease to `/{scope}/leader` |
 | lease | `ReleaseLeader` | DCS delete | delete `/{scope}/leader` |
 | switchover | `ClearRequest` | DCS delete | delete `/{scope}/switchover` |
-| postgres | `Start` | process job | enqueue `ProcessJobKind::StartPostgres` (managed settings materialized first) |
+| postgres | `Start` | process job | enqueue `ProcessJobKind::StartPostgres` after materializing `PGDATA/pgtm.postgresql.conf` and the managed side files |
 | postgres | `Promote` | process job | enqueue `ProcessJobKind::Promote` |
 | postgres | `Demote` | process job | enqueue `ProcessJobKind::Demote` |
 | replication | `RecoverReplica::Rewind { .. }` | process job | enqueue `ProcessJobKind::PgRewind` |
@@ -119,7 +119,7 @@ The table below is a practical “what will happen if HA chooses effect X?” gu
 Notes:
 
 - The leader and switchover keys are scoped to `cfg.dcs.scope` and rendered as `/{scope}/leader` and `/{scope}/switchover`.
-- `StartPostgres` dispatch calls `postgres_managed::materialize_managed_postgres_config(...)` before enqueuing the job, so that managed `postgresql.conf`-style settings are applied consistently in both startup and HA-driven starts.
+- `StartPostgres` dispatch calls `postgres_managed::materialize_managed_postgres_config(...)` before enqueuing the job, so the authoritative managed config file `PGDATA/pgtm.postgresql.conf`, `standby.signal`, and the managed side files are regenerated consistently in both startup and HA-driven starts.
 - The current dispatch order is fixed by concern inside `apply_effect_plan(...)`: Postgres lifecycle, then lease effects, then switchover cleanup, then replication/recovery, then safety. That order is what enforces “demote before release” and “release before clear/signal” without preserving a generic action vector boundary.
 
 ## Phase transitions: the “story” paths contributors care about

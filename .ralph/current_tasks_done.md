@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar  6 22:54:31 CET 2026
+Generated: Sat Mar  7 12:07:52 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -288,6 +288,18 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 
 ==============
 
+# Task `.ralph/tasks/story-authoritative-managed-postgres-config/01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer.md`
+
+```
+## Task: Introduce a typed authoritative managed Postgres config model and serializer <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+
+<description>
+```
+
+==============
+
 # Task `.ralph/tasks/story-full-verification/01-task-verify-build-and-static-gates.md`
 
 ```
@@ -526,18 +538,6 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 ==============
 
-# Task `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-```
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-```
-
-==============
-
 # Task `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ```
@@ -567,6 +567,18 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
+```
+
+==============
+
+# Task `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+```
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
 ```
 
 ==============
@@ -619,18 +631,6 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 ==============
 
-# Task `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-```
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-```
-
-==============
-
 # Task `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ```
@@ -649,6 +649,18 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
+```
+
+==============
+
+# Task `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+```
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
 ```
 
 ==============

@@ -189,6 +189,7 @@ fn sample_runtime_config() -> RuntimeConfig {
                     content: "# empty\n".to_string(),
                 },
             },
+            extra_gucs: std::collections::BTreeMap::new(),
         },
         dcs: DcsConfig {
             endpoints: vec!["http://127.0.0.1:2379".to_string()],
@@ -346,9 +347,9 @@ async fn get_ha_state_via_tcp(addr: SocketAddr) -> Result<HaStateResponse, Worke
         .map_err(|err| WorkerError::Message(format!("api response read failed: {err}")))?;
     let text = String::from_utf8(raw)
         .map_err(|err| WorkerError::Message(format!("api response utf8 failed: {err}")))?;
-    let (head, body) = text.split_once("\r\n\r\n").ok_or_else(|| {
-        WorkerError::Message("api response missing header separator".to_string())
-    })?;
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| WorkerError::Message("api response missing header separator".to_string()))?;
     if !head.starts_with("HTTP/1.1 200") {
         return Err(WorkerError::Message(format!(
             "api returned unexpected response: {head}"
@@ -553,11 +554,11 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks(
-) -> Result<(), WorkerError> {
+async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks() -> Result<(), WorkerError> {
     let runtime_cfg = sample_runtime_config();
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(runtime_cfg.clone(), UnixMillis(1));
-    let (_pg_publisher, pg_subscriber) = new_state_channel(sample_primary_pg_state(), UnixMillis(1));
+    let (_pg_publisher, pg_subscriber) =
+        new_state_channel(sample_primary_pg_state(), UnixMillis(1));
     let (_dcs_publisher, dcs_subscriber) = new_state_channel(
         sample_dcs_state_with_trust(runtime_cfg.clone(), DcsTrust::FullQuorum),
         UnixMillis(1),
@@ -629,9 +630,10 @@ async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks(
         .run_until(async move {
             let api_handle =
                 tokio::task::spawn_local(async move { crate::api::worker::run(api_ctx).await });
-            let debug_handle = tokio::task::spawn_local(async move {
-                crate::debug_api::worker::run(debug_ctx).await
-            });
+            let debug_handle =
+                tokio::task::spawn_local(
+                    async move { crate::debug_api::worker::run(debug_ctx).await },
+                );
             let ha_handle = tokio::task::spawn_local(async move {
                 let result = crate::ha::worker::step_once(&mut ha_ctx).await;
                 (ha_ctx, result)

@@ -9,9 +9,9 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec,
-    PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessHandle, ProcessLogIdentity,
-    PromoteSpec, StartPostgresSpec,
+    ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec,
+    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessLogIdentity, PromoteSpec,
+    StartPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

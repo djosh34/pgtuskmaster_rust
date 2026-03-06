@@ -232,11 +232,9 @@ fn dispatch_replication_effect(
                 )
             }
             crate::ha::decision::RecoveryStrategy::BaseBackup { leader_member_id } => {
-                if let Err(err) = validate_basebackup_source(
-                    ctx,
-                    ActionId::StartBaseBackup,
-                    leader_member_id,
-                ) {
+                if let Err(err) =
+                    validate_basebackup_source(ctx, ActionId::StartBaseBackup, leader_member_id)
+                {
                     errors.push(map_process_dispatch_error(err));
                     return Ok(action_index);
                 }

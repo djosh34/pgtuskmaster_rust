@@ -32,10 +32,7 @@ pub(crate) fn decide_phase(current: &HaState, facts: &DecisionFacts) -> PhaseOut
                 },
             );
         }
-        return PhaseOutcome::new(
-            HaPhase::FailSafe,
-            HaDecision::NoChange,
-        );
+        return PhaseOutcome::new(HaPhase::FailSafe, HaDecision::NoChange);
     }
 
     match current.phase {
@@ -43,6 +40,7 @@ pub(crate) fn decide_phase(current: &HaState, facts: &DecisionFacts) -> PhaseOut
             HaPhase::WaitingPostgresReachable,
             HaDecision::WaitForPostgres {
                 start_requested: false,
+                leader_member_id: None,
             },
         ),
         HaPhase::WaitingPostgresReachable => decide_waiting_postgres_reachable(facts),
@@ -106,10 +104,11 @@ fn decide_waiting_dcs_trusted(current: &HaState, facts: &DecisionFacts) -> Phase
     match follow_target(facts) {
         Some(leader_member_id) => PhaseOutcome::new(
             HaPhase::Replica,
-            HaDecision::FollowLeader {
-                leader_member_id,
-            },
+            HaDecision::FollowLeader { leader_member_id },
         ),
+        None if !facts.postgres_primary => {
+            PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust)
+        }
         None => PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership),
     }
 }
@@ -286,12 +285,7 @@ fn decide_rewinding(facts: &DecisionFacts) -> PhaseOutcome {
 fn decide_bootstrapping(facts: &DecisionFacts) -> PhaseOutcome {
     match facts.bootstrap_activity() {
         ProcessActivity::Running => PhaseOutcome::new(HaPhase::Bootstrapping, HaDecision::NoChange),
-        ProcessActivity::IdleSuccess => PhaseOutcome::new(
-            HaPhase::WaitingPostgresReachable,
-            HaDecision::WaitForPostgres {
-                start_requested: true,
-            },
-        ),
+        ProcessActivity::IdleSuccess => wait_for_postgres(facts),
         ProcessActivity::IdleFailure => PhaseOutcome::new(HaPhase::Fencing, HaDecision::FenceNode),
         ProcessActivity::IdleNoOutcome => match recovery_after_rewind_failure(facts) {
             Some(strategy) => PhaseOutcome::new(
@@ -348,14 +342,15 @@ fn wait_for_postgres(facts: &DecisionFacts) -> PhaseOutcome {
         HaPhase::WaitingPostgresReachable,
         HaDecision::WaitForPostgres {
             start_requested: facts.start_postgres_can_be_requested(),
+            leader_member_id: recovery_leader_member_id(facts)
+                .or_else(|| other_leader_record(facts)),
         },
     )
 }
 
 fn recovery_after_rewind_failure(facts: &DecisionFacts) -> Option<RecoveryStrategy> {
-    recovery_leader_member_id(facts).map(|leader_member_id| RecoveryStrategy::BaseBackup {
-        leader_member_id,
-    })
+    recovery_leader_member_id(facts)
+        .map(|leader_member_id| RecoveryStrategy::BaseBackup { leader_member_id })
 }
 
 fn recovery_leader_member_id(facts: &DecisionFacts) -> Option<MemberId> {
@@ -390,21 +385,18 @@ fn completed_start_postgres(facts: &DecisionFacts) -> bool {
     matches!(
         &facts.process_state,
         crate::process::state::ProcessState::Idle {
-            last_outcome:
-                Some(
-                    crate::process::state::JobOutcome::Success {
-                        job_kind: ActiveJobKind::StartPostgres,
-                        ..
-                    }
-                    | crate::process::state::JobOutcome::Failure {
-                        job_kind: ActiveJobKind::StartPostgres,
-                        ..
-                    }
-                    | crate::process::state::JobOutcome::Timeout {
-                        job_kind: ActiveJobKind::StartPostgres,
-                        ..
-                    }
-                ),
+            last_outcome: Some(
+                crate::process::state::JobOutcome::Success {
+                    job_kind: ActiveJobKind::StartPostgres,
+                    ..
+                } | crate::process::state::JobOutcome::Failure {
+                    job_kind: ActiveJobKind::StartPostgres,
+                    ..
+                } | crate::process::state::JobOutcome::Timeout {
+                    job_kind: ActiveJobKind::StartPostgres,
+                    ..
+                }
+            ),
             ..
         }
     )
@@ -539,6 +531,7 @@ mod tests {
                 expected_phase: HaPhase::WaitingPostgresReachable,
                 expected_decision: HaDecision::WaitForPostgres {
                     start_requested: false,
+                    leader_member_id: None,
                 },
             },
             Case {
@@ -551,6 +544,7 @@ mod tests {
                 expected_phase: HaPhase::WaitingPostgresReachable,
                 expected_decision: HaDecision::WaitForPostgres {
                     start_requested: true,
+                    leader_member_id: None,
                 },
             },
             Case {
@@ -576,14 +570,14 @@ mod tests {
                 },
             },
             Case {
-                name: "waiting dcs becomes candidate when no leader",
+                name: "waiting dcs replica without leader stays waiting",
                 current_phase: HaPhase::WaitingDcsTrusted,
                 trust: DcsTrust::FullQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(None),
-                expected_phase: HaPhase::CandidateLeader,
-                expected_decision: HaDecision::AttemptLeadership,
+                expected_phase: HaPhase::WaitingDcsTrusted,
+                expected_decision: HaDecision::WaitForDcsTrust,
             },
             Case {
                 name: "candidate becomes primary when lease self",
@@ -774,7 +768,9 @@ mod tests {
             tick: 0,
             decision: HaDecision::NoChange,
         };
-        let world = WorldBuilder::new().build();
+        let world = WorldBuilder::new()
+            .with_pg(pg_primary(SqlStatus::Healthy))
+            .build();
 
         let first = decide(DecideInput {
             current: current.clone(),
@@ -874,8 +870,14 @@ mod tests {
                 reason: LeaseReleaseReason::FencingComplete,
             }
         );
-        assert_eq!(lower_decision(&output.outcome.decision).lease, LeaseEffect::ReleaseLeader);
-        assert_eq!(lower_decision(&output.outcome.decision).safety, SafetyEffect::None);
+        assert_eq!(
+            lower_decision(&output.outcome.decision).lease,
+            LeaseEffect::ReleaseLeader
+        );
+        assert_eq!(
+            lower_decision(&output.outcome.decision).safety,
+            SafetyEffect::None
+        );
     }
 
     #[test]
@@ -916,7 +918,9 @@ mod tests {
                 tick: 11,
                 decision: HaDecision::WaitForDcsTrust,
             },
-            world: WorldBuilder::new().with_pg(pg_replica(SqlStatus::Healthy)).build(),
+            world: WorldBuilder::new()
+                .with_pg(pg_replica(SqlStatus::Healthy))
+                .build(),
         });
 
         assert_eq!(output.next.phase, HaPhase::WaitingSwitchoverSuccessor);
@@ -999,6 +1003,7 @@ mod tests {
             output.outcome.decision,
             HaDecision::WaitForPostgres {
                 start_requested: false,
+                leader_member_id: None,
             }
         );
     }
@@ -1051,6 +1056,7 @@ mod tests {
             output.outcome.decision,
             HaDecision::WaitForPostgres {
                 start_requested: true,
+                leader_member_id: Some(MemberId("node-b".to_string())),
             }
         );
     }
@@ -1084,6 +1090,7 @@ mod tests {
             output.outcome.decision,
             HaDecision::WaitForPostgres {
                 start_requested: true,
+                leader_member_id: Some(MemberId("node-b".to_string())),
             }
         );
     }
@@ -1200,7 +1207,10 @@ mod tests {
 
         assert_eq!(output.next.phase, HaPhase::Primary);
         assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
-        assert_eq!(lower_decision(&output.outcome.decision).lease, LeaseEffect::AcquireLeader);
+        assert_eq!(
+            lower_decision(&output.outcome.decision).lease,
+            LeaseEffect::AcquireLeader
+        );
     }
 
     #[test]
@@ -1397,6 +1407,7 @@ mod tests {
             output.outcome.decision,
             HaDecision::WaitForPostgres {
                 start_requested: false,
+                leader_member_id: None,
             }
         );
     }
@@ -1410,6 +1421,7 @@ mod tests {
                 tick: 13,
                 decision: HaDecision::WaitForPostgres {
                     start_requested: true,
+                    leader_member_id: Some(MemberId("node-b".to_string())),
                 },
             },
             world: WorldBuilder::new()
@@ -1437,6 +1449,7 @@ mod tests {
                 tick: 14,
                 decision: HaDecision::WaitForPostgres {
                     start_requested: true,
+                    leader_member_id: None,
                 },
             },
             world: WorldBuilder::new()
@@ -1464,6 +1477,7 @@ mod tests {
                 tick: 14,
                 decision: HaDecision::WaitForPostgres {
                     start_requested: true,
+                    leader_member_id: Some(MemberId("node-b".to_string())),
                 },
             },
             world: WorldBuilder::new()
@@ -1503,6 +1517,7 @@ mod tests {
                 tick: 15,
                 decision: HaDecision::WaitForPostgres {
                     start_requested: true,
+                    leader_member_id: None,
                 },
             },
             world: WorldBuilder::new()
@@ -1530,6 +1545,7 @@ mod tests {
                 tick: 16,
                 decision: HaDecision::WaitForPostgres {
                     start_requested: true,
+                    leader_member_id: None,
                 },
             },
             world: WorldBuilder::new()
@@ -1555,6 +1571,7 @@ mod tests {
                 tick: 17,
                 decision: HaDecision::WaitForPostgres {
                     start_requested: true,
+                    leader_member_id: None,
                 },
             },
             world: WorldBuilder::new()
@@ -1773,7 +1790,11 @@ mod tests {
             });
 
             assert_eq!(output.next.phase, HaPhase::FailSafe, "case: {}", case.name);
-            assert_eq!(output.outcome.decision, case.expected_decision, "case: {}", case.name);
+            assert_eq!(
+                output.outcome.decision, case.expected_decision,
+                "case: {}",
+                case.name
+            );
             assert_eq!(
                 assert_plan_has_no_contradictions(&lower_decision(&output.outcome.decision)),
                 Ok(()),
@@ -1817,9 +1838,11 @@ mod tests {
             HaDecision::NoChange,
             HaDecision::WaitForPostgres {
                 start_requested: false,
+                leader_member_id: None,
             },
             HaDecision::WaitForPostgres {
                 start_requested: true,
+                leader_member_id: None,
             },
             HaDecision::WaitForDcsTrust,
             HaDecision::AttemptLeadership,
@@ -2054,6 +2077,7 @@ mod tests {
                         content: "# empty\n".to_string(),
                     },
                 },
+                extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],

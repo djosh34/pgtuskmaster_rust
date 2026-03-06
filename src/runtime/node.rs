@@ -28,6 +28,7 @@ use crate::{
         EventMeta, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText,
     },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+    postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_STANDBY_SIGNAL_NAME},
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, ProcessCommandRunner, ProcessExit, ReplicatorSourceConn,
@@ -43,7 +44,7 @@ use crate::{
 enum StartupAction {
     ClaimInitLockAndSeedConfig,
     RunJob(Box<ProcessJobKind>),
-    StartPostgres,
+    StartPostgres(ManagedPostgresStartIntent),
 }
 
 #[derive(Debug, Error)]
@@ -67,12 +68,17 @@ pub enum RuntimeError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum StartupMode {
-    InitializePrimary,
+    InitializePrimary {
+        start_intent: ManagedPostgresStartIntent,
+    },
     CloneReplica {
         leader_member_id: MemberId,
         source: ReplicatorSourceConn,
+        start_intent: ManagedPostgresStartIntent,
     },
-    ResumeExisting,
+    ResumeExisting {
+        start_intent: ManagedPostgresStartIntent,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,6 +325,7 @@ fn plan_startup_with_probe(
 
     let startup_mode = select_startup_mode(
         data_dir_state,
+        cfg.postgres.data_dir.as_path(),
         cache.as_ref(),
         &cfg.cluster.member_id,
         process_defaults,
@@ -422,49 +429,33 @@ fn probe_dcs_cache(cfg: &RuntimeConfig) -> Result<DcsCache, RuntimeError> {
 
 fn select_startup_mode(
     data_dir_state: DataDirState,
+    data_dir: &Path,
     cache: Option<&DcsCache>,
     self_member_id: &str,
     process_defaults: &ProcessDispatchDefaults,
 ) -> Result<StartupMode, RuntimeError> {
     match data_dir_state {
-        DataDirState::Existing => Ok(StartupMode::ResumeExisting),
+        DataDirState::Existing => Ok(StartupMode::ResumeExisting {
+            start_intent: select_resume_start_intent(
+                data_dir,
+                cache,
+                self_member_id,
+                process_defaults,
+            )?,
+        }),
         DataDirState::Missing | DataDirState::Empty => {
             let init_lock_present = cache
                 .and_then(|snapshot| snapshot.init_lock.as_ref())
                 .is_some();
             let self_member_id = MemberId(self_member_id.to_string());
 
-            let leader_from_leader_key = cache.and_then(|snapshot| {
-                let leader_record = snapshot.leader.as_ref()?;
-                if leader_record.member_id == self_member_id {
-                    return None;
-                }
-                let member = snapshot.members.get(&leader_record.member_id)?;
-                let eligible =
-                    member.role == MemberRole::Primary && member.sql == SqlStatus::Healthy;
-                if eligible {
-                    Some(member.clone())
+            let leader = leader_from_leader_key(cache, &self_member_id).or_else(|| {
+                if init_lock_present {
+                    foreign_healthy_primary_member(cache, &self_member_id)
                 } else {
                     None
                 }
             });
-
-            let leader_from_members = cache.and_then(|snapshot| {
-                if !init_lock_present {
-                    return None;
-                }
-                snapshot
-                    .members
-                    .values()
-                    .find(|member| {
-                        member.member_id != self_member_id
-                            && member.role == MemberRole::Primary
-                            && member.sql == SqlStatus::Healthy
-                    })
-                    .cloned()
-            });
-
-            let leader = leader_from_leader_key.or(leader_from_members);
 
             match leader {
                 Some(leader_member) => {
@@ -476,6 +467,7 @@ fn select_startup_mode(
                     .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
                     Ok(StartupMode::CloneReplica {
                         leader_member_id: leader_member.member_id.clone(),
+                        start_intent: replica_start_intent_from_source(&source),
                         source,
                     })
                 }
@@ -486,12 +478,112 @@ fn select_startup_mode(
                                 .to_string(),
                         ))
                     } else {
-                        Ok(StartupMode::InitializePrimary)
+                        Ok(StartupMode::InitializePrimary {
+                            start_intent: ManagedPostgresStartIntent::primary(),
+                        })
                     }
                 }
             }
         }
     }
+}
+
+fn select_resume_start_intent(
+    data_dir: &Path,
+    cache: Option<&DcsCache>,
+    self_member_id: &str,
+    process_defaults: &ProcessDispatchDefaults,
+) -> Result<ManagedPostgresStartIntent, RuntimeError> {
+    let self_member_id = MemberId(self_member_id.to_string());
+    let standby_signal_present = data_dir.join(MANAGED_STANDBY_SIGNAL_NAME).exists();
+
+    let Some(cache) = cache else {
+        if standby_signal_present {
+            return Err(RuntimeError::StartupPlanning(
+                "existing postgres data dir contains standby.signal but startup dcs cache probe was unavailable; cannot rebuild primary_conninfo for authoritative managed config"
+                    .to_string(),
+            ));
+        }
+        return Ok(ManagedPostgresStartIntent::primary());
+    };
+
+    if cache
+        .leader
+        .as_ref()
+        .map(|record| record.member_id == self_member_id)
+        .unwrap_or(false)
+    {
+        return Ok(ManagedPostgresStartIntent::primary());
+    }
+
+    if let Some(leader_member) = leader_from_leader_key(Some(cache), &self_member_id)
+        .or_else(|| foreign_healthy_primary_member(Some(cache), &self_member_id))
+    {
+        let source =
+            basebackup_source_from_member(&self_member_id, &leader_member, process_defaults)
+                .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
+        return Ok(replica_start_intent_from_source(&source));
+    }
+
+    if local_primary_member(cache, &self_member_id).is_some() {
+        return Ok(ManagedPostgresStartIntent::primary());
+    }
+
+    if standby_signal_present {
+        return Err(RuntimeError::StartupPlanning(
+            "existing postgres data dir contains standby.signal but no healthy primary is available in DCS to rebuild managed replica config"
+                .to_string(),
+        ));
+    }
+
+    Ok(ManagedPostgresStartIntent::primary())
+}
+
+fn leader_from_leader_key(
+    cache: Option<&DcsCache>,
+    self_member_id: &MemberId,
+) -> Option<crate::dcs::state::MemberRecord> {
+    let snapshot = cache?;
+    let leader_record = snapshot.leader.as_ref()?;
+    if leader_record.member_id == *self_member_id {
+        return None;
+    }
+    let member = snapshot.members.get(&leader_record.member_id)?;
+    let eligible = member.role == MemberRole::Primary && member.sql == SqlStatus::Healthy;
+    if eligible {
+        Some(member.clone())
+    } else {
+        None
+    }
+}
+
+fn foreign_healthy_primary_member(
+    cache: Option<&DcsCache>,
+    self_member_id: &MemberId,
+) -> Option<crate::dcs::state::MemberRecord> {
+    cache?
+        .members
+        .values()
+        .find(|member| {
+            member.member_id != *self_member_id
+                && member.role == MemberRole::Primary
+                && member.sql == SqlStatus::Healthy
+        })
+        .cloned()
+}
+
+fn local_primary_member<'a>(
+    cache: &'a DcsCache,
+    self_member_id: &MemberId,
+) -> Option<&'a crate::dcs::state::MemberRecord> {
+    cache
+        .members
+        .get(self_member_id)
+        .filter(|member| member.role == MemberRole::Primary && member.sql == SqlStatus::Healthy)
+}
+
+fn replica_start_intent_from_source(source: &ReplicatorSourceConn) -> ManagedPostgresStartIntent {
+    ManagedPostgresStartIntent::replica(source.conninfo.clone(), None)
 }
 
 fn claim_dcs_init_lock_and_seed_config(cfg: &RuntimeConfig) -> Result<(), String> {
@@ -573,7 +665,7 @@ async fn execute_startup(
         let action_kind = match &action {
             StartupAction::ClaimInitLockAndSeedConfig => "claim_init_lock_and_seed_config",
             StartupAction::RunJob(_) => "run_job",
-            StartupAction::StartPostgres => "start_postgres",
+            StartupAction::StartPostgres(_) => "start_postgres",
         };
         let mut step_attrs = BTreeMap::new();
         step_attrs.insert(
@@ -611,7 +703,7 @@ async fn execute_startup(
             RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
         })?;
 
-        if let StartupAction::StartPostgres = &action {
+        if let StartupAction::StartPostgres(_) = &action {
             emit_startup_phase(log, "start", "start postgres with managed config").map_err(
                 |err| {
                     RuntimeError::StartupExecution(format!("startup phase log emit failed: {err}"))
@@ -627,7 +719,9 @@ async fn execute_startup(
                 Ok(())
             }
             StartupAction::RunJob(job) => run_startup_job(cfg, *job, log).await,
-            StartupAction::StartPostgres => run_start_job(cfg, process_defaults, log).await,
+            StartupAction::StartPostgres(start_intent) => {
+                run_start_job(cfg, process_defaults, &start_intent, log).await
+            }
         };
 
         match result {
@@ -692,28 +786,32 @@ fn build_startup_actions(
     startup_mode: &StartupMode,
 ) -> Result<Vec<StartupAction>, RuntimeError> {
     match startup_mode {
-        StartupMode::InitializePrimary => Ok(vec![
+        StartupMode::InitializePrimary { start_intent } => Ok(vec![
             StartupAction::ClaimInitLockAndSeedConfig,
             StartupAction::RunJob(Box::new(ProcessJobKind::Bootstrap(BootstrapSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
                 superuser_username: cfg.postgres.roles.superuser.username.clone(),
                 timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
             }))),
-            StartupAction::StartPostgres,
+            StartupAction::StartPostgres(start_intent.clone()),
         ]),
-        StartupMode::CloneReplica { source, .. } => Ok(vec![
+        StartupMode::CloneReplica {
+            source,
+            start_intent,
+            ..
+        } => Ok(vec![
             StartupAction::RunJob(Box::new(ProcessJobKind::BaseBackup(BaseBackupSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
                 source: source.clone(),
                 timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
             }))),
-            StartupAction::StartPostgres,
+            StartupAction::StartPostgres(start_intent.clone()),
         ]),
-        StartupMode::ResumeExisting => {
+        StartupMode::ResumeExisting { start_intent } => {
             if has_postmaster_pid(&cfg.postgres.data_dir) {
                 Ok(Vec::new())
             } else {
-                Ok(vec![StartupAction::StartPostgres])
+                Ok(vec![StartupAction::StartPostgres(start_intent.clone())])
             }
         }
     }
@@ -758,23 +856,19 @@ fn has_postmaster_pid(data_dir: &Path) -> bool {
 async fn run_start_job(
     cfg: &RuntimeConfig,
     process_defaults: &ProcessDispatchDefaults,
+    start_intent: &ManagedPostgresStartIntent,
     log: &crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
-    let managed =
-        crate::postgres_managed::materialize_managed_postgres_config(cfg).map_err(|err| {
-            RuntimeError::StartupExecution(format!(
-                "materialize managed postgres config failed: {err}"
-            ))
-        })?;
+    let managed = crate::postgres_managed::materialize_managed_postgres_config(cfg, start_intent)
+        .map_err(|err| {
+        RuntimeError::StartupExecution(format!("materialize managed postgres config failed: {err}"))
+    })?;
     run_startup_job(
         cfg,
         ProcessJobKind::StartPostgres(StartPostgresSpec {
             data_dir: cfg.postgres.data_dir.clone(),
-            host: process_defaults.postgres_host.clone(),
-            port: process_defaults.postgres_port,
-            socket_dir: process_defaults.socket_dir.clone(),
+            config_file: managed.postgresql_conf_path,
             log_file: process_defaults.log_file.clone(),
-            extra_postgres_settings: managed.extra_settings,
             wait_seconds: Some(30),
             timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
         }),
@@ -1244,6 +1338,7 @@ mod tests {
 
     use super::{inspect_data_dir, select_startup_mode, DataDirState, StartupMode};
     use super::{plan_startup_with_probe, process_defaults_from_config};
+    use crate::postgres_managed_conf::ManagedPostgresStartIntent;
 
     fn sample_runtime_config() -> RuntimeConfig {
         RuntimeConfig {
@@ -1297,6 +1392,7 @@ mod tests {
                         content: "# empty\n".to_string(),
                     },
                 },
+                extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: DcsConfig {
                 endpoints: vec!["http://127.0.0.1:2379".to_string()],
@@ -1524,12 +1620,21 @@ mod tests {
             init_lock: None,
         };
 
-        let mode = select_startup_mode(DataDirState::Empty, Some(&cache), "node-a", &defaults)?;
+        let data_dir = temp_path("startup-mode-clone");
+        remove_if_exists(&data_dir)?;
+        let mode = select_startup_mode(
+            DataDirState::Empty,
+            &data_dir,
+            Some(&cache),
+            "node-a",
+            &defaults,
+        )?;
 
         assert!(matches!(mode, StartupMode::CloneReplica { .. }));
         if let StartupMode::CloneReplica {
             leader_member_id,
             source,
+            ..
         } = mode
         {
             assert_eq!(leader_member_id, leader_id);
@@ -1551,10 +1656,17 @@ mod tests {
     fn select_startup_mode_uses_initialize_when_no_leader_evidence(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
+        let data_dir = temp_path("startup-mode-init");
+        remove_if_exists(&data_dir)?;
 
-        let mode = select_startup_mode(DataDirState::Empty, None, "node-a", &defaults)?;
+        let mode = select_startup_mode(DataDirState::Empty, &data_dir, None, "node-a", &defaults)?;
 
-        assert_eq!(mode, StartupMode::InitializePrimary);
+        assert_eq!(
+            mode,
+            StartupMode::InitializePrimary {
+                start_intent: ManagedPostgresStartIntent::primary(),
+            }
+        );
         Ok(())
     }
 
@@ -1562,8 +1674,16 @@ mod tests {
     fn select_startup_mode_uses_resume_when_pgdata_exists() -> Result<(), Box<dyn std::error::Error>>
     {
         let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
-        let mode = select_startup_mode(DataDirState::Existing, None, "node-a", &defaults)?;
-        assert_eq!(mode, StartupMode::ResumeExisting);
+        let data_dir = temp_path("startup-mode-resume");
+        remove_if_exists(&data_dir)?;
+        let mode =
+            select_startup_mode(DataDirState::Existing, &data_dir, None, "node-a", &defaults)?;
+        assert_eq!(
+            mode,
+            StartupMode::ResumeExisting {
+                start_intent: ManagedPostgresStartIntent::primary(),
+            }
+        );
         Ok(())
     }
 
@@ -1583,7 +1703,15 @@ mod tests {
             }),
         };
 
-        let result = select_startup_mode(DataDirState::Empty, Some(&cache), "node-a", &defaults);
+        let data_dir = temp_path("startup-mode-init-lock");
+        remove_if_exists(&data_dir)?;
+        let result = select_startup_mode(
+            DataDirState::Empty,
+            &data_dir,
+            Some(&cache),
+            "node-a",
+            &defaults,
+        );
 
         assert!(matches!(
             result,
@@ -1627,7 +1755,15 @@ mod tests {
             }),
         };
 
-        let mode = select_startup_mode(DataDirState::Empty, Some(&cache), "node-a", &defaults)?;
+        let data_dir = temp_path("startup-mode-member-fallback");
+        remove_if_exists(&data_dir)?;
+        let mode = select_startup_mode(
+            DataDirState::Empty,
+            &data_dir,
+            Some(&cache),
+            "node-a",
+            &defaults,
+        )?;
 
         assert!(matches!(mode, StartupMode::CloneReplica { .. }));
         Ok(())

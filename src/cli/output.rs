@@ -62,8 +62,14 @@ fn render_text(command_output: &CommandOutput) -> String {
 fn render_decision_text(value: &HaDecisionResponse) -> String {
     match value {
         HaDecisionResponse::NoChange => "no_change".to_string(),
-        HaDecisionResponse::WaitForPostgres { start_requested } => {
-            format!("wait_for_postgres(start_requested={start_requested})")
+        HaDecisionResponse::WaitForPostgres {
+            start_requested,
+            leader_member_id,
+        } => {
+            let leader_detail = leader_member_id.as_deref().unwrap_or("none");
+            format!(
+                "wait_for_postgres(start_requested={start_requested}, leader_member_id={leader_detail})"
+            )
         }
         HaDecisionResponse::WaitForDcsTrust => "wait_for_dcs_trust".to_string(),
         HaDecisionResponse::AttemptLeadership => "attempt_leadership".to_string(),
