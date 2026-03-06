@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 03:16:36 PM CET 2026
+Generated: Fri Mar  6 15:33:32 CET 2026
 
 # Task `.ralph/tasks/bugs/rewind-and-basebackup-source-are-static-instead-of-derived-from-current-leader.md`
 
@@ -144,18 +144,6 @@ Make the docs source tree easier to navigate by aligning file names and ordering
 
 <description>
 Audit the project for unexplained magic numbers and replace them with explicit typed constants, configuration, or otherwise well-justified named values.
-```
-
-==============
-
-# Task `.ralph/tasks/story-remove-backup-feature/04-task-remove-backup-harness-installers-and-gate-selection.md`
-
-```
-## Task: Remove backup-specific harness, installer, and gate-selection surfaces while preserving real tests for replica cloning <status>not_started</status> <passes>false</passes> <priority>high</priority>
-
-<description>
-**Goal:** Delete the backup feature's harness and packaging residue so real-binary verification no longer provisions or expects pgBackRest, while preserving real coverage for normal Postgres and replica-clone behavior.
-This cleanup is part of the same immediate removal story and should follow the code-path deletion without being deferred to a later general cleanup pass.
 ```
 
 ==============

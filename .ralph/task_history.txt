@@ -107,3 +107,4 @@
 .ralph/tasks/story-remove-backup-feature/02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring.md
 .ralph/tasks/story-remove-backup-feature/01-task-remove-backup-config-and-process-surface.md
 .ralph/tasks/story-remove-backup-feature/02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring.md
+.ralph/tasks/story-remove-backup-feature/04-task-remove-backup-harness-installers-and-gate-selection.md

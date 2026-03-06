@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar  6 03:16:36 PM CET 2026
+Generated: Fri Mar  6 15:33:32 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -431,6 +431,18 @@ This is now a top-priority blocker inside backup removal, because the surviving 
 
 ==============
 
+# Task `.ralph/tasks/story-remove-backup-feature/04-task-remove-backup-harness-installers-and-gate-selection.md`
+
+```
+## Task: Remove backup-specific harness, installer, and gate-selection surfaces while preserving real tests for replica cloning <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<description>
+**Goal:** Delete the backup feature's harness and packaging residue so real-binary verification no longer provisions or expects pgBackRest, while preserving real coverage for normal Postgres and replica-clone behavior.
+This cleanup is part of the same immediate removal story and should follow the code-path deletion without being deferred to a later general cleanup pass.
+```
+
+==============
+
 # Task `.ralph/tasks/story-rust-system-harness/01-task-core-types-time-errors-watch-channel.md`
 
 ```
@@ -478,6 +490,18 @@ This is now a top-priority blocker inside backup removal, because the surviving 
 
 ==============
 
+# Task `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+```
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+```
+
+==============
+
 # Task `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ```
@@ -507,18 +531,6 @@ This is now a top-priority blocker inside backup removal, because the surviving 
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
-```
-
-==============
-
-# Task `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-```
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
 ```
 
 ==============
@@ -571,6 +583,18 @@ This is now a top-priority blocker inside backup removal, because the surviving 
 
 ==============
 
+# Task `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+```
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
+```
+
+==============
+
 # Task `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ```
@@ -589,18 +613,6 @@ This is now a top-priority blocker inside backup removal, because the surviving 
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
-```
-
-==============
-
-# Task `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-```
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
 ```
 
 ==============
