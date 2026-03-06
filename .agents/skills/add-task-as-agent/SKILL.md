@@ -24,11 +24,13 @@ This skill creates **focused, parallelizable tasks** from completed research. Us
 ## Task: [Clear Goal Description] <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** [One sentence stating the objective]
+**Goal:** [multiple sentences stating the objective]
+[also include the higher order goal of this task]
 
 **Scope:**
-- [What files/modules/areas are involved]
-- [What specific changes are needed]
+- [Exactly what files/modules/areas are involved]
+- [Exactly what specific changes are needed]
+- [If Applicable, additional find instructions/to find more or less files based on current codebase]
 
 **Context from research:**
 - [which files to edit, which functions to modify, etc]
@@ -37,7 +39,6 @@ This skill creates **focused, parallelizable tasks** from completed research. Us
 **Expected outcome:**
 - [What should be true when done]
 
-**Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
 
 <acceptance_criteria>
