@@ -5,7 +5,6 @@ Before first run, confirm that all runtime dependencies and binaries are present
 ## Required components
 
 - PostgreSQL 16 binaries (`postgres`, `pg_ctl`, `pg_rewind`, `initdb`, `pg_basebackup`, `psql`)
-- If enabling backups: pgBackRest binary (`pgbackrest`) configured as `process.binaries.pgbackrest`
 - etcd endpoint(s) reachable by the node
 - writable local directories for PostgreSQL data, logs, and socket paths
 - runtime config file with `config_version = "v2"`

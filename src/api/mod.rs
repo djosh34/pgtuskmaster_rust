@@ -2,7 +2,6 @@ use std::fmt;
 use thiserror::Error;
 
 pub(crate) mod controller;
-pub(crate) mod events;
 pub(crate) mod fallback;
 pub mod worker;
 

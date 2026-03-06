@@ -15,7 +15,6 @@
   - [Deployment and Topology](./operator/deployment.md)
   - [Observability and Day-2 Operations](./operator/observability.md)
   - [Troubleshooting by Symptom](./operator/troubleshooting.md)
-  - [Recovery Bootstrap Runbook](./operator/recovery-bootstrap-runbook.md)
 
 - [System Lifecycle](./lifecycle/index.md)
   - [Bootstrap and Startup Planning](./lifecycle/bootstrap.md)

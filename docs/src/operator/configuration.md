@@ -1,8 +1,8 @@
 # Configuration Guide
 
-This chapter starts with a complete configuration example and then explains each section in detail. The goal is to make field choices meaningful, not only syntactically valid.
+This guide describes the current `config_version = "v2"` runtime schema. The backup/pgBackRest configuration surface has been removed. Replica cloning is still supported through `pg_basebackup`.
 
-## Configuration example (baseline)
+## Baseline example
 
 ```toml
 config_version = "v2"
@@ -39,7 +39,9 @@ loop_interval_ms = 1000
 lease_ttl_ms = 10000
 
 [process]
-# Example paths: adjust to your PostgreSQL installation.
+pg_rewind_timeout_ms = 120000
+bootstrap_timeout_ms = 300000
+fencing_timeout_ms = 30000
 binaries = {
   postgres = "/usr/pgsql-16/bin/postgres",
   pg_ctl = "/usr/pgsql-16/bin/pg_ctl",
@@ -47,148 +49,7 @@ binaries = {
   initdb = "/usr/pgsql-16/bin/initdb",
   pg_basebackup = "/usr/pgsql-16/bin/pg_basebackup",
   psql = "/usr/pgsql-16/bin/psql",
-  # Only required when backup.enabled = true (see [backup] below).
-  pgbackrest = "/usr/bin/pgbackrest",
 }
-
-[api]
-listen_addr = "0.0.0.0:8080"
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
-
-[backup]
-enabled = false
-provider = "pgbackrest"
-
-[backup.pgbackrest]
-# Required when backup.enabled = true.
-stanza = "prod-cluster-a"
-repo = "1"
-
-[backup.pgbackrest.options]
-# Extra pgBackRest CLI options, per operation. These are appended to the rendered command.
-# For safety, options must not override managed fields (no `--stanza` / `--repo` / `--pg1-path` tokens).
-backup = []
-info = ["--log-level-console=info"]
-check = []
-restore = []
-archive_push = []
-archive_get = []
-```
-
-## Why this exists
-
-The config model is explicit so startup and HA behavior are predictable. The schema is designed to fail closed when required operational or security-sensitive fields are missing.
-
-## Tradeoffs
-
-Explicit configuration is more verbose than permissive auto-discovery. The benefit is deterministic behavior during failover, rewind, and startup planning. The cost is that operators must supply complete, correct field values.
-
-## When this matters in operations
-
-Most severe incidents begin with implicit assumptions about identity, auth, or replication paths. Explicit config makes those assumptions inspectable before failure.
-
-## Field groups and operational effect
-
-### `config_version`
-
-- Purpose: enables strict schema semantics.
-- Operational effect: startup fails early on missing v2-required fields.
-- PostgreSQL implication: prevents launching with incomplete auth or process wiring that would fail later.
-
-### `[cluster]`
-
-- `name`: cluster label for operational context.
-- `member_id`: stable node identity in DCS membership records.
-- Operational effect: unstable IDs can cause role confusion and stale membership records.
-
-### `[postgres]` core paths and listen settings
-
-- `data_dir`, `socket_dir`, `log_file` define local process layout.
-- `listen_host`, `listen_port` define local PostgreSQL network presence.
-- PostgreSQL implication: invalid directory permissions or path length issues can prevent startup; incorrect listen settings can block probes and replication access.
-
-### PostgreSQL identity blocks
-
-- `local_conn_identity` is used for local SQL/control interactions.
-- `rewind_conn_identity` is used for rewind-related connectivity.
-- Operational effect: mismatched user identities can fail validation or later job execution.
-- PostgreSQL implication: the rewinder role must be provisioned with enough privileges and correct auth for `pg_rewind`; privilege mistakes surface as runtime command/auth failures (not as a separate privilege validator in this codebase).
-
-### PostgreSQL roles and auth
-
-- `roles.superuser`, `roles.replicator`, `roles.rewinder` define control identities.
-- Operational effect: a common failure mode is missing replication-compatible auth in `pg_hba`, which causes basebackup and replication connection failures.
-- PostgreSQL implication: replication connections require explicit replication rules and do not match generic database rules.
-
-### `[dcs]`
-
-- `endpoints`: etcd cluster URLs.
-- `scope`: namespace prefix for coordination keys.
-- Operational effect: scope mismatch isolates node views; endpoint instability degrades trust posture.
-
-### `[ha]`
-
-- `loop_interval_ms`: decision cadence.
-- `lease_ttl_ms`: validated guardrail (must be greater than `loop_interval_ms`).
-- Operational effect: shorter loops detect change faster but increase control-plane activity; `lease_ttl_ms` is currently enforced as a configuration constraint rather than a separately tunable lease-renewal loop.
-
-### `[process]`
-
-- `binaries`: explicit tool paths used for local PostgreSQL and recovery actions.
-- Operational effect: missing or wrong paths fail startup or action execution.
-- PostgreSQL implication: rewind/bootstrap capability depends directly on correct binary wiring.
-
-Path rules (fail closed):
-
-- All `process.binaries.*` values must be **absolute paths**.
-- pgtuskmaster never performs `PATH` lookup or “fallback to command name” execution for binaries.
-- Relative paths are rejected during config validation.
-
-### `[backup]`
-
-Backup/restore operations are provider-driven and executed as process jobs so that:
-
-- subprocess execution is centralized (timeouts, cancellation, output capture),
-- orchestration code can stay provider-agnostic, and
-- the provider interface can evolve without leaking pgBackRest CLI strings across the codebase.
-
-Fields:
-
-- `enabled`:
-  - when `false` (default), backup settings are inert and the node does not require pgBackRest wiring.
-  - when `true`, the node requires:
-    - `process.binaries.pgbackrest` to be set to a valid **absolute** executable path
-    - `[backup.pgbackrest] stanza` and `repo` to be set and non-empty.
-    - Postgres `archive_command` / `restore_command` are owned by pgtuskmaster at startup:
-      - pgtuskmaster injects `archive_mode=on`, `archive_command=...`, `restore_command=...`
-      - the command wiring invokes `pgtuskmaster wal --pgdata <PGDATA> ...`, which runs pgBackRest `archive-push` / `archive-get`
-      - pgtuskmaster writes a helper config file in `PGDATA/pgtm.pgbackrest.archive.json` (mode `0600`) so the helper can run pgBackRest with the correct stanza/repo/options deterministically and emit a structured event to the local node API.
-- `provider`: currently only `pgbackrest` is supported.
-- `[backup.pgbackrest.options]`: extra pgBackRest CLI options per operation (arrays of strings).
-  - For safety and determinism, these option tokens must not override managed fields (no `--stanza` / `--repo` / `--pg1-path`).
-
-#### `backup.bootstrap` (restore bootstrap and config takeover)
-
-`backup.bootstrap` controls whether an *uninitialized* node (a node whose `postgres.data_dir` is `Missing|Empty`) is allowed to restore itself from a backup instead of running `initdb`.
-
-When enabled, pgtuskmaster:
-
-- selects a `RestoreBootstrap` startup mode (instead of `InitializePrimary`) when the cluster is uninitialized,
-- runs `pgbackrest restore` to materialize `PGDATA`,
-- performs a deterministic takeover of backup-era config artifacts *before PostgreSQL starts*, and
-- starts PostgreSQL using a pgtuskmaster-owned config file via `-c config_file=...` so backup-era `postgresql.conf` does not apply.
-
-Example:
-
-```toml
-[backup]
-enabled = true
-provider = "pgbackrest"
-
-[backup.bootstrap]
-enabled = true
-takeover_policy = "quarantine" # or "delete"
-recovery_mode = "default"
 
 [logging]
 level = "info"
@@ -206,56 +67,96 @@ enabled = true
 enabled = false
 mode = "append"
 
-[backup.pgbackrest]
-stanza = "prod-cluster-a"
-repo = "1"
+[api]
+listen_addr = "0.0.0.0:8080"
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
-[backup.pgbackrest.options]
-# You typically need to supply repository configuration here (example: repo1-path).
-restore = ["--repo1-path=/var/lib/pgbackrest"]
-archive_push = ["--repo1-path=/var/lib/pgbackrest"]
-archive_get = ["--repo1-path=/var/lib/pgbackrest"]
+[debug]
+enabled = false
 ```
 
-Postgres log ingestion and cleanup notes:
+## Why the schema is explicit
 
-- `logging.postgres.log_dir` (optional) is scanned for `*.log` and `*.json` and tailed for additional observability signals (for example `postgres.json` when you use `jsonlog`).
-- `logging.postgres.cleanup` applies only to `logging.postgres.log_dir` and is designed to be safe-by-default:
-  - it never deletes `postgres.json`, `postgres.stderr.log`, or `postgres.stdout.log`,
-  - it does not delete files modified within `protect_recent_seconds`, and
-  - it treats missing/failed metadata reads conservatively (the file is kept and the cleanup issue is surfaced via structured ingest events like `postgres_ingest.step_once_failed` plus per-iteration debug breadcrumbs like `postgres_ingest.iteration`).
-- Path ownership guardrails:
-  - if `logging.sinks.file.enabled = true`, `logging.sinks.file.path` must not overlap tailed Postgres inputs and must not be inside `logging.postgres.log_dir` (to avoid self-ingestion loops),
-  - `logging.postgres.log_dir` should remain reserved for Postgres-owned log outputs to keep ingestion and cleanup behavior deterministic.
+The v2 schema is intentionally fail-closed. Startup should fail before the node launches if process binaries, auth identities, TLS material, or DCS settings are incomplete.
 
-Takeover policy details:
+## Field groups
 
-- `quarantine`: moves conflicting files into a timestamped `PGDATA/pgtm.quarantine.*` directory.
-- `delete`: removes conflicting files.
+### `config_version`
 
-Conflicting artifacts removed/quarantined during takeover include:
+- Must be `v2`.
+- `v1` is intentionally unsupported.
 
-- `postgresql.conf` and `postgresql.auto.conf`
-- `pg_hba.conf` and `pg_ident.conf`
-- `recovery.signal` and `standby.signal` (never inherited)
-- any stale `pgtm.*` managed artifacts
+### `[cluster]`
+
+- `name` labels the cluster for logs and DCS payloads.
+- `member_id` is the stable node identity used in membership and leadership records.
+
+### `[postgres]`
+
+- `data_dir`, `socket_dir`, and `log_file` define local process layout.
+- `listen_host` and `listen_port` control local PostgreSQL reachability.
+- `rewind_source_host` and `rewind_source_port` are used for rewind and basebackup source connection defaults.
+- `local_conn_identity` is used for local control operations.
+- `rewind_conn_identity` is used for rewind connectivity.
+- `roles.superuser`, `roles.replicator`, and `roles.rewinder` define the PostgreSQL identities used by process jobs.
+- `pg_hba.source` and `pg_ident.source` can be inline content or file-backed content.
+
+### `[dcs]`
+
+- `endpoints` must contain at least one reachable etcd endpoint.
+- `scope` is the namespace prefix for cluster coordination keys.
+- `init` is optional and can seed DCS config during bootstrap when `write_on_bootstrap = true`.
+
+### `[ha]`
+
+- `loop_interval_ms` is the HA decision cadence.
+- `lease_ttl_ms` must be greater than `loop_interval_ms`.
+
+### `[process]`
+
+- `pg_rewind_timeout_ms`, `bootstrap_timeout_ms`, and `fencing_timeout_ms` control subprocess deadlines.
+- `process.binaries.*` values must be absolute paths.
+- The required binaries are:
+  - `postgres`
+  - `pg_ctl`
+  - `pg_rewind`
+  - `initdb`
+  - `pg_basebackup`
+  - `psql`
+
+Replica cloning still depends on `pg_basebackup`, but the removed backup feature does not.
+
+### `[logging]`
+
+- `level` controls application log verbosity.
+- `capture_subprocess_output` determines whether subprocess stdout/stderr is captured into process logs.
+- `logging.postgres` controls PostgreSQL log tailing and cleanup.
+- `logging.sinks.file.path` must not overlap PostgreSQL-owned log inputs.
 
 ### `[api]`
 
-- `listen_addr`: operator access endpoint.
-- The listen port must be a stable non-zero port (do not use `:0`) when WAL helper event emission is enabled (because `pgtuskmaster wal ...` posts to the local node API for `backup.wal_passthrough` events).
-- `security.tls` and `security.auth`: transport and action protection model.
-- Operational effect: mismatched auth policy can block control actions or expose unsafe surfaces.
+- `listen_addr` must be a stable, non-zero listen address.
+- `security.tls` controls API transport security.
+- `security.auth` controls whether the API is open or token-protected.
 
-## Misconfiguration symptoms and likely causes
+### `[debug]`
 
-| Symptom or log pattern | Likely cause | First check |
+- `enabled` controls the debug API surface.
+
+## Operational notes
+
+- Initial primary bootstrap uses `initdb`.
+- Replica bootstrap uses `pg_basebackup` against a healthy primary when the DCS view shows one.
+- There is no restore-bootstrap mode and no pgtuskmaster-owned WAL archive/restore helper path.
+
+## Common misconfigurations
+
+| Symptom | Likely cause | First check |
 |---|---|---|
-| Startup fails with missing required secure field | incomplete v2 config | top-level and required nested blocks |
+| Startup fails with missing required secure field | incomplete v2 config | required nested blocks and binary paths |
 | `pg_basebackup` auth failures | missing replication HBA rules | `pg_hba` replication entries |
-| Rewind jobs fail on permissions/auth | rewinder identity mismatch, missing auth, or insufficient privileges | `rewind_conn_identity` wiring, rewinder auth, and DB grants (privilege failures surface at runtime) |
-| Node cannot find binaries | invalid `process.binaries` paths | `process.binaries` values (path correctness/executability) |
-| Backup enabled fails validation | missing `process.binaries.pgbackrest` or `[backup.pgbackrest] stanza/repo` | `process.binaries.pgbackrest` and `[backup]` configuration |
-| Trust drops repeatedly despite healthy PostgreSQL | DCS store is unhealthy (NotTrusted) or membership/leader invariants are inconsistent (FailSafe) | `[dcs]` endpoints and `scope`, plus DCS membership/leader consistency |
+| Rewind jobs fail | rewinder auth or privilege mismatch | `postgres.rewind_conn_identity` and rewinder role wiring |
+| Node cannot spawn binaries | wrong absolute paths or permissions | `process.binaries.*` |
+| Trust degrades repeatedly | unhealthy or inconsistent DCS connectivity | `[dcs] endpoints` and `scope` |
 
-For interface-level details, see [Interfaces / Node API](../interfaces/node-api.md) and [Interfaces / CLI Workflows](../interfaces/cli.md).
+For interface details, see [Node API](../interfaces/node-api.md) and [CLI Workflows](../interfaces/cli.md).

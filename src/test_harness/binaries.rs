@@ -55,10 +55,6 @@ pub fn require_pg16_bin_for_real_tests(name: &str) -> Result<PathBuf, HarnessErr
     provenance::require_verified_real_binary(name)
 }
 
-pub fn require_pgbackrest_bin_for_real_tests() -> Result<PathBuf, HarnessError> {
-    provenance::require_verified_real_binary("pgbackrest")
-}
-
 pub fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryPaths, HarnessError> {
     Ok(BinaryPaths {
         postgres: require_pg16_bin_for_real_tests("postgres")?,
@@ -67,7 +63,6 @@ pub fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryPaths, Har
         initdb: require_pg16_bin_for_real_tests("initdb")?,
         pg_basebackup: require_pg16_bin_for_real_tests("pg_basebackup")?,
         psql: require_pg16_bin_for_real_tests("psql")?,
-        pgbackrest: Some(require_pgbackrest_bin_for_real_tests()?),
     })
 }
 

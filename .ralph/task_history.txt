@@ -104,3 +104,5 @@
 .ralph/tasks/story-ha-functional-rewrite/05-task-rebuild-ha-tests-around-invariants-and-continuous-observers.md
 .ralph/tasks/story-ha-functional-rewrite/06-task-move-and-split-ha-e2e-tests-after-functional-rewrite.md
 .ralph/tasks/bugs/ha-action-deduping-suppresses-retry.md
+.ralph/tasks/story-remove-backup-feature/02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring.md
+.ralph/tasks/story-remove-backup-feature/01-task-remove-backup-config-and-process-surface.md

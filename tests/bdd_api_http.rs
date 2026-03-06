@@ -5,11 +5,11 @@ use pgtuskmaster_rust::pginfo::conninfo::PgSslMode;
 use pgtuskmaster_rust::{
     api::worker::ApiWorkerCtx,
     config::{
-        ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig,
-        BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath,
-        LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
-        PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
-        ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
+        ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
+        ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel,
+        LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
+        PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
+        RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
     },
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     state::{new_state_channel, UnixMillis, WorkerError},
@@ -186,7 +186,6 @@ fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
             pg_rewind_timeout_ms: 1000,
             bootstrap_timeout_ms: 1000,
             fencing_timeout_ms: 1000,
-            backup_timeout_ms: 1000,
             binaries: BinaryPaths {
                 postgres: "/usr/bin/postgres".into(),
                 pg_ctl: "/usr/bin/pg_ctl".into(),
@@ -194,10 +193,8 @@ fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
                 initdb: "/usr/bin/initdb".into(),
                 pg_basebackup: "/usr/bin/pg_basebackup".into(),
                 psql: "/usr/bin/psql".into(),
-                pgbackrest: None,
             },
         },
-        backup: BackupConfig::default(),
         logging: LoggingConfig {
             level: LogLevel::Info,
             capture_subprocess_output: true,

@@ -9,10 +9,9 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgBackRestArchiveGetSpec,
-    PgBackRestArchivePushSpec, PgBackRestBackupSpec, PgBackRestCheckSpec, PgBackRestInfoSpec,
-    PgBackRestRestoreSpec, PgBackRestVersionSpec, PgRewindSpec, ProcessCommandRunner, ProcessError,
-    ProcessHandle, ProcessLogIdentity, PromoteSpec, StartPostgresSpec,
+    ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec,
+    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessLogIdentity, PromoteSpec,
+    StartPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,13 +45,6 @@ pub(crate) enum ProcessJobKind {
     Demote(DemoteSpec),
     StartPostgres(StartPostgresSpec),
     Fencing(FencingSpec),
-    PgBackRestVersion(PgBackRestVersionSpec),
-    PgBackRestInfo(PgBackRestInfoSpec),
-    PgBackRestCheck(PgBackRestCheckSpec),
-    PgBackRestBackup(PgBackRestBackupSpec),
-    PgBackRestRestore(PgBackRestRestoreSpec),
-    PgBackRestArchivePush(PgBackRestArchivePushSpec),
-    PgBackRestArchiveGet(PgBackRestArchiveGetSpec),
 }
 
 impl ProcessJobKind {
@@ -65,27 +57,7 @@ impl ProcessJobKind {
             Self::Demote(_) => "demote",
             Self::StartPostgres(_) => "start_postgres",
             Self::Fencing(_) => "fencing",
-            Self::PgBackRestVersion(_) => "pgbackrest_version",
-            Self::PgBackRestInfo(_) => "pgbackrest_info",
-            Self::PgBackRestCheck(_) => "pgbackrest_check",
-            Self::PgBackRestBackup(_) => "pgbackrest_backup",
-            Self::PgBackRestRestore(_) => "pgbackrest_restore",
-            Self::PgBackRestArchivePush(_) => "pgbackrest_archive_push",
-            Self::PgBackRestArchiveGet(_) => "pgbackrest_archive_get",
         }
-    }
-
-    pub(crate) fn is_pgbackrest_job(&self) -> bool {
-        matches!(
-            self,
-            Self::PgBackRestVersion(_)
-                | Self::PgBackRestInfo(_)
-                | Self::PgBackRestCheck(_)
-                | Self::PgBackRestBackup(_)
-                | Self::PgBackRestRestore(_)
-                | Self::PgBackRestArchivePush(_)
-                | Self::PgBackRestArchiveGet(_)
-        )
     }
 }
 

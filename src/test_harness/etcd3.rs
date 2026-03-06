@@ -115,10 +115,7 @@ impl EtcdClusterHandle {
             .collect()
     }
 
-    pub async fn shutdown_member(
-        &mut self,
-        member_name: &str,
-    ) -> Result<bool, HarnessError> {
+    pub async fn shutdown_member(&mut self, member_name: &str) -> Result<bool, HarnessError> {
         if let Some(position) = self
             .members
             .iter()
@@ -204,9 +201,7 @@ pub async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, HarnessEr
     }
 }
 
-pub async fn spawn_etcd3_cluster(
-    spec: EtcdClusterSpec,
-) -> Result<EtcdClusterHandle, HarnessError> {
+pub async fn spawn_etcd3_cluster(spec: EtcdClusterSpec) -> Result<EtcdClusterHandle, HarnessError> {
     validate_executable_file(spec.etcd_bin.as_path(), "etcd")?;
     if spec.members.is_empty() {
         return Err(HarnessError::InvalidInput(

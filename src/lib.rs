@@ -7,7 +7,6 @@
 )]
 
 pub mod api;
-pub(crate) mod backup;
 pub mod cli;
 pub mod config;
 pub mod dcs;
@@ -23,8 +22,6 @@ pub mod state;
 #[doc(hidden)]
 pub mod test_harness;
 pub(crate) mod tls;
-pub mod wal;
-pub mod wal_passthrough;
 
 #[cfg(test)]
 mod worker_contract_tests;

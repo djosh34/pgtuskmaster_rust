@@ -26,9 +26,8 @@ fn resolve_self_exe_override(current: &Path) -> Option<PathBuf> {
     }
 
     // When running as a library test (`cargo test --lib`), `current_exe()` points at the libtest
-    // harness under `target/*/deps/`. That binary does not implement the `wal` subcommand used by
-    // our managed `archive_command`/`restore_command`, so prefer the real `pgtuskmaster` binary
-    // when it exists next to the build artifacts.
+    // harness under `target/*/deps/`. Prefer the real `pgtuskmaster` binary when it exists next
+    // to the build artifacts so subprocess-driven tests resolve the executable consistently.
     let deps_dir = current.parent()?;
     if deps_dir.file_name()? != "deps" {
         return None;
@@ -77,19 +76,5 @@ pub(crate) fn set(path: PathBuf) -> Result<(), SelfExeError> {
                 Ok(())
             }
         }
-    }
-}
-
-pub(crate) fn get() -> Result<PathBuf, SelfExeError> {
-    if let Some(path) = SELF_EXE.get() {
-        return Ok(path.clone());
-    }
-
-    init_from_current_exe()?;
-    match SELF_EXE.get() {
-        Some(path) => Ok(path.clone()),
-        None => Err(SelfExeError::CurrentExe(
-            "self exe not initialized".to_string(),
-        )),
     }
 }

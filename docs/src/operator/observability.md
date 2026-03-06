@@ -72,28 +72,6 @@ Recommended operator workflow:
    - PgInfo: `pginfo.poll_failed`, `pginfo.sql_transition`
    - API: `api.step_once_failed`, `api.tls_handshake_failed`
 
-## Backup / restore observability
-
-pgtuskmaster runs backup/restore operations as PgTool subprocess jobs and captures stdout/stderr into log records. Use those PgTool records (for example `job_kind=pgbackrest_restore`) plus the local PostgreSQL logs to debug recovery bootstrap and backup failures.
-
-When `backup.enabled=true`, pgtuskmaster also *owns* Postgres `archive_command` / `restore_command` wiring at startup by injecting settings that invoke the `pgtuskmaster wal ...` helper (which runs pgBackRest `archive-push` / `archive-get` under the hood).
-
-- The helper’s stdout/stderr is emitted as part of PostgreSQL logs (because Postgres executes `archive_command` / `restore_command`).
-- The helper also emits a structured event into the *running node* via `POST /events/wal` (loopback-only). This gives you a centralized, machine-friendly stream of archive/restore invocations in pgtuskmaster logs, even when PostgreSQL log formatting varies.
-
-The emitted event has stable taxonomy:
-
-- `event.domain = backup`
-- `event.name = backup.wal_passthrough`
-- `event.result = ok|error`
-
-Common attributes for correlation and debugging:
-
-- `provider`, `event_kind` (`archive-push` / `archive-get`), `invocation_id`
-- `status_code`, `success`, `duration_ms`
-- `wal_path` (push) OR `wal_segment` + `destination_path` (get)
-- `stdout`, `stderr` (bounded previews) and `stdout_truncated` / `stderr_truncated`
-
 ## Postgres log ingest health
 
 The Postgres ingest worker tails configured inputs and emits internal diagnostic records when ingestion or cleanup encounters errors (instead of failing silently).

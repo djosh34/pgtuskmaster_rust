@@ -42,7 +42,6 @@ use crate::{
 enum StartupAction {
     ClaimInitLockAndSeedConfig,
     RunJob(Box<ProcessJobKind>),
-    TakeoverRestoredDataDir,
     StartPostgres,
 }
 
@@ -68,7 +67,6 @@ pub enum RuntimeError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum StartupMode {
     InitializePrimary,
-    RestoreBootstrap,
     CloneReplica {
         leader_member_id: MemberId,
         source: ReplicatorSourceConn,
@@ -93,18 +91,6 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
     crate::self_exe::init_from_current_exe().map_err(|err| {
         RuntimeError::StartupExecution(format!("self executable path init failed: {err}"))
     })?;
-
-    if cfg.backup.enabled {
-        match cfg.backup.provider {
-            crate::config::BackupProvider::Pgbackrest => {
-                crate::backup::worker::validate_pgbackrest_enabled_config(&cfg).map_err(|err| {
-                    RuntimeError::StartupExecution(format!(
-                        "backup provider configuration failed validation: {err}"
-                    ))
-                })?;
-            }
-        }
-    }
 
     let logging = crate::logging::bootstrap(&cfg).map_err(|err| {
         RuntimeError::StartupExecution(format!("logging bootstrap failed: {err}"))
@@ -362,7 +348,6 @@ fn plan_startup_with_probe(
         &cfg.cluster.member_id,
         process_defaults,
         cfg.postgres.connect_timeout_s,
-        cfg.backup.bootstrap.enabled,
     )?;
 
     let mut attrs = BTreeMap::new();
@@ -467,7 +452,6 @@ fn select_startup_mode(
     self_member_id: &str,
     process_defaults: &ProcessDispatchDefaults,
     connect_timeout_s: u32,
-    restore_bootstrap_enabled: bool,
 ) -> Result<StartupMode, RuntimeError> {
     match data_dir_state {
         DataDirState::Existing => Ok(StartupMode::ResumeExisting),
@@ -519,8 +503,6 @@ fn select_startup_mode(
                             "cluster is already initialized (dcs init lock present) but no healthy primary is available for basebackup"
                                 .to_string(),
                         ))
-                    } else if restore_bootstrap_enabled {
-                        Ok(StartupMode::RestoreBootstrap)
                     } else {
                         Ok(StartupMode::InitializePrimary)
                     }
@@ -618,7 +600,6 @@ async fn execute_startup(
         let action_kind = match &action {
             StartupAction::ClaimInitLockAndSeedConfig => "claim_init_lock_and_seed_config",
             StartupAction::RunJob(_) => "run_job",
-            StartupAction::TakeoverRestoredDataDir => "takeover_restored_data_dir",
             StartupAction::StartPostgres => "start_postgres",
         };
         let mut step_attrs = BTreeMap::new();
@@ -657,33 +638,10 @@ async fn execute_startup(
             RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
         })?;
 
-        match &action {
-            StartupAction::RunJob(job)
-                if matches!(job.as_ref(), ProcessJobKind::PgBackRestRestore(_)) =>
-            {
-                emit_startup_phase(log, "restore", "pgbackrest restore").map_err(|err| {
-                    RuntimeError::StartupExecution(format!("startup phase log emit failed: {err}"))
-                })?;
-            }
-            StartupAction::TakeoverRestoredDataDir => {
-                emit_startup_phase(log, "takeover", "managed pre-recovery takeover").map_err(
-                    |err| {
-                        RuntimeError::StartupExecution(format!(
-                            "startup phase log emit failed: {err}"
-                        ))
-                    },
-                )?;
-            }
-            StartupAction::StartPostgres => {
-                emit_startup_phase(log, "start", "start postgres with managed config").map_err(
-                    |err| {
-                        RuntimeError::StartupExecution(format!(
-                            "startup phase log emit failed: {err}"
-                        ))
-                    },
-                )?;
-            }
-            _ => {}
+        if let StartupAction::StartPostgres = &action {
+            emit_startup_phase(log, "start", "start postgres with managed config").map_err(
+                |err| RuntimeError::StartupExecution(format!("startup phase log emit failed: {err}")),
+            )?;
         }
 
         let result = match action {
@@ -694,19 +652,6 @@ async fn execute_startup(
                 Ok(())
             }
             StartupAction::RunJob(job) => run_startup_job(cfg, *job, log).await,
-            StartupAction::TakeoverRestoredDataDir => {
-                crate::postgres_managed::takeover_restored_data_dir(
-                    cfg,
-                    cfg.backup.bootstrap.takeover_policy,
-                    true,
-                )
-                .map_err(|err| {
-                    RuntimeError::StartupExecution(format!(
-                        "takeover restored data dir failed: {err}"
-                    ))
-                })?;
-                Ok(())
-            }
             StartupAction::StartPostgres => run_start_job(cfg, process_defaults, log).await,
         };
 
@@ -781,21 +726,6 @@ fn build_startup_actions(
             }))),
             StartupAction::StartPostgres,
         ]),
-        StartupMode::RestoreBootstrap => {
-            let restore_job = crate::backup::worker::pgbackrest_restore_job(
-                cfg,
-                crate::state::JobId("startup-restore".to_string()),
-            )
-            .map_err(|err| {
-                RuntimeError::StartupPlanning(format!("build pgbackrest restore job failed: {err}"))
-            })?;
-            Ok(vec![
-                StartupAction::ClaimInitLockAndSeedConfig,
-                StartupAction::RunJob(Box::new(restore_job.kind)),
-                StartupAction::TakeoverRestoredDataDir,
-                StartupAction::StartPostgres,
-            ])
-        }
         StartupMode::CloneReplica { source, .. } => Ok(vec![
             StartupAction::RunJob(Box::new(ProcessJobKind::BaseBackup(BaseBackupSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
@@ -1323,12 +1253,11 @@ mod tests {
     use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         config::{
-            ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
-            ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
-            LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
-            PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
-            PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
-            TlsServerConfig,
+            ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
+            DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel,
+            LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
+            PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
+            RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
         },
         dcs::state::{DcsCache, LeaderRecord, MemberRecord, MemberRole},
         logging::{LogHandle, LogSink, SeverityText, TestSink},
@@ -1336,7 +1265,6 @@ mod tests {
         state::{MemberId, UnixMillis, Version},
     };
 
-    use super::{build_startup_actions, StartupAction};
     use super::{
         default_leader_source, inspect_data_dir, select_startup_mode, DataDirState, StartupMode,
     };
@@ -1410,7 +1338,6 @@ mod tests {
                 pg_rewind_timeout_ms: 1000,
                 bootstrap_timeout_ms: 1000,
                 fencing_timeout_ms: 1000,
-                backup_timeout_ms: 1000,
                 binaries: BinaryPaths {
                     postgres: "/usr/bin/postgres".into(),
                     pg_ctl: "/usr/bin/pg_ctl".into(),
@@ -1418,10 +1345,8 @@ mod tests {
                     initdb: "/usr/bin/initdb".into(),
                     pg_basebackup: "/usr/bin/pg_basebackup".into(),
                     psql: "/usr/bin/psql".into(),
-                    pgbackrest: None,
                 },
             },
-            backup: BackupConfig::default(),
             logging: LoggingConfig {
                 level: LogLevel::Info,
                 capture_subprocess_output: true,
@@ -1630,7 +1555,6 @@ mod tests {
             "node-a",
             &defaults,
             cfg.postgres.connect_timeout_s,
-            cfg.backup.bootstrap.enabled,
         )?;
 
         assert!(matches!(mode, StartupMode::CloneReplica { .. }));
@@ -1660,84 +1584,9 @@ mod tests {
             "node-a",
             &defaults,
             cfg.postgres.connect_timeout_s,
-            cfg.backup.bootstrap.enabled,
         )?;
 
         assert_eq!(mode, StartupMode::InitializePrimary);
-        Ok(())
-    }
-
-    #[test]
-    fn select_startup_mode_uses_restore_bootstrap_when_enabled_and_uninitialized(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut cfg = sample_runtime_config();
-        cfg.backup.enabled = true;
-        cfg.backup.bootstrap.enabled = true;
-        let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
-
-        let mode = select_startup_mode(
-            DataDirState::Empty,
-            None,
-            "node-a",
-            &defaults,
-            cfg.postgres.connect_timeout_s,
-            cfg.backup.bootstrap.enabled,
-        )?;
-
-        assert_eq!(mode, StartupMode::RestoreBootstrap);
-        Ok(())
-    }
-
-    #[test]
-    fn restore_bootstrap_action_order_is_restore_takeover_start(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut cfg = sample_runtime_config();
-        cfg.backup.enabled = true;
-        cfg.backup.bootstrap.enabled = true;
-        if let Some(pg_cfg) = cfg.backup.pgbackrest.as_mut() {
-            pg_cfg.stanza = Some("stanza-a".to_string());
-            pg_cfg.repo = Some("1".to_string());
-        }
-
-        let actions = build_startup_actions(&cfg, &StartupMode::RestoreBootstrap)?;
-        if actions.len() != 4 {
-            return Err(Box::new(std::io::Error::other(format!(
-                "expected 4 actions, got {}",
-                actions.len()
-            ))));
-        }
-        if !matches!(
-            actions.first(),
-            Some(StartupAction::ClaimInitLockAndSeedConfig)
-        ) {
-            return Err(Box::new(std::io::Error::other(
-                "expected claim init lock action first",
-            )));
-        }
-        let second_is_restore = match actions.get(1) {
-            Some(StartupAction::RunJob(job)) => {
-                matches!(
-                    job.as_ref(),
-                    crate::process::state::ProcessJobKind::PgBackRestRestore(_)
-                )
-            }
-            _ => false,
-        };
-        if !second_is_restore {
-            return Err(Box::new(std::io::Error::other(
-                "expected pgbackrest restore job second",
-            )));
-        }
-        if !matches!(actions.get(2), Some(StartupAction::TakeoverRestoredDataDir)) {
-            return Err(Box::new(std::io::Error::other(
-                "expected takeover action third",
-            )));
-        }
-        if !matches!(actions.get(3), Some(StartupAction::StartPostgres)) {
-            return Err(Box::new(std::io::Error::other(
-                "expected start postgres action last",
-            )));
-        }
         Ok(())
     }
 
@@ -1752,7 +1601,6 @@ mod tests {
             "node-a",
             &defaults,
             cfg.postgres.connect_timeout_s,
-            cfg.backup.bootstrap.enabled,
         )?;
         assert_eq!(mode, StartupMode::ResumeExisting);
         Ok(())
@@ -1780,7 +1628,6 @@ mod tests {
             "node-a",
             &defaults,
             cfg.postgres.connect_timeout_s,
-            cfg.backup.bootstrap.enabled,
         );
 
         assert!(matches!(
@@ -1829,7 +1676,6 @@ mod tests {
             "node-a",
             &defaults,
             cfg.postgres.connect_timeout_s,
-            cfg.backup.bootstrap.enabled,
         )?;
 
         assert!(matches!(mode, StartupMode::CloneReplica { .. }));

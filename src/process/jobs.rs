@@ -73,63 +73,6 @@ pub(crate) struct FencingSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgBackRestVersionSpec {}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgBackRestInfoSpec {
-    pub(crate) stanza: String,
-    pub(crate) repo: String,
-    pub(crate) options: Vec<String>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgBackRestCheckSpec {
-    pub(crate) stanza: String,
-    pub(crate) repo: String,
-    pub(crate) options: Vec<String>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgBackRestBackupSpec {
-    pub(crate) stanza: String,
-    pub(crate) repo: String,
-    pub(crate) options: Vec<String>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgBackRestRestoreSpec {
-    pub(crate) stanza: String,
-    pub(crate) repo: String,
-    pub(crate) pg1_path: PathBuf,
-    pub(crate) options: Vec<String>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgBackRestArchivePushSpec {
-    pub(crate) stanza: String,
-    pub(crate) repo: String,
-    pub(crate) pg1_path: PathBuf,
-    pub(crate) wal_path: String,
-    pub(crate) options: Vec<String>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgBackRestArchiveGetSpec {
-    pub(crate) stanza: String,
-    pub(crate) repo: String,
-    pub(crate) pg1_path: PathBuf,
-    pub(crate) wal_segment: String,
-    pub(crate) destination_path: String,
-    pub(crate) options: Vec<String>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ShutdownMode {
     Fast,
     Immediate,
@@ -153,13 +96,6 @@ pub(crate) enum ActiveJobKind {
     Demote,
     StartPostgres,
     Fencing,
-    PgBackRestVersion,
-    PgBackRestInfo,
-    PgBackRestCheck,
-    PgBackRestBackup,
-    PgBackRestRestore,
-    PgBackRestArchivePush,
-    PgBackRestArchiveGet,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

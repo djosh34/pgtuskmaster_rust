@@ -63,22 +63,6 @@ First checks:
 - `pg_hba` replication rules
 - connectivity to `rewind_source_host:rewind_source_port`
 
-## Restore/recovery bootstrap failures
-
-Likely causes:
-- `backup.bootstrap.enabled = true` but pgBackRest is not fully configured (missing `process.binaries.pgbackrest`, missing `backup.pgbackrest.stanza/repo`, or missing repo configuration in pgBackRest options)
-- backup-era config artifacts interfering with a managed start (should be quarantined/deleted by takeover; if not, check takeover logs)
-
-First checks:
-- config validation errors on startup (they include stable field paths)
-- runtime startup plan markers:
-  - `runtime.startup.mode_selected` (which startup mode was chosen)
-  - `runtime.startup.action` (per-action started/ok/failed)
-- PgTool/process job events (`event.domain=process`):
-  - `process.job.started` / `process.job.exited|process.job.timeout` with `job_kind=pgbackrest_restore|start_postgres`
-- internal ingest diagnostics (`event.domain=postgres_ingest`) if expected Postgres/backup signals are missing:
-  - `postgres_ingest.step_once_failed` and `postgres_ingest.iteration` with `stage=... kind=... path=...` and `suppressed=N`
-
 ## Leader flaps or repeated role churn
 
 Likely causes:

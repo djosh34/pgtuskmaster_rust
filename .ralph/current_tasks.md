@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 14:19:21 CET 2026
+Generated: Fri Mar  6 14:54:30 CET 2026
 
 # Task `.ralph/tasks/bugs/rewind-and-basebackup-source-are-static-instead-of-derived-from-current-leader.md`
 
@@ -144,18 +144,6 @@ Make the docs source tree easier to navigate by aligning file names and ordering
 
 <description>
 Audit the project for unexplained magic numbers and replace them with explicit typed constants, configuration, or otherwise well-justified named values.
-```
-
-==============
-
-# Task `.ralph/tasks/story-remove-backup-feature/01-task-remove-backup-config-and-process-surface.md`
-
-```
-## Task: Remove backup config and pgBackRest process vocabulary while keeping basebackup replica cloning <status>not_started</status> <passes>false</passes> <priority>high</priority>
-
-<description>
-**Goal:** Delete the backup feature's config and process-language surface completely, while preserving `pg_basebackup`-based replica creation as a non-backup bootstrap path.
-This story is an immediate blocker: the backup feature must be removed before continuing broader rewrite work, because the leftover pgBackRest/archive/restore surface keeps reintroducing complexity and false dependencies across the runtime.
 ```
 
 ==============

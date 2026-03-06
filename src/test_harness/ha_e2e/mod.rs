@@ -33,7 +33,6 @@ mod tests {
                 bootstrap_primary_timeout: Duration::from_secs(1),
                 scenario_timeout: Duration::from_secs(1),
             },
-            backup: None,
         };
 
         let result = config.validate();
@@ -58,7 +57,6 @@ mod tests {
                     bootstrap_primary_timeout: Duration::from_secs(90),
                     scenario_timeout: Duration::from_secs(120),
                 },
-                backup: None,
             };
 
             let mut handle = start_cluster(config).await?;

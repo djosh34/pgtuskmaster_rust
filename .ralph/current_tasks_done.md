@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar  6 14:19:21 CET 2026
+Generated: Fri Mar  6 14:54:30 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -403,6 +403,18 @@ After the HA functional rewrite lands, move and restructure the HA end-to-end te
 
 <description>
 **Goal:** Rewrite the Contributors section into an in-depth engineering deep dive that explains how the code actually works, how modules connect, and how behavior flows through runtime paths, while keeping prose natural, readable, and technically precise.
+```
+
+==============
+
+# Task `.ralph/tasks/story-remove-backup-feature/01-task-remove-backup-config-and-process-surface.md`
+
+```
+## Task: Remove backup config and pgBackRest process vocabulary while keeping basebackup replica cloning <status>completed</status> <passes>true</passes> <priority>high</priority>
+
+<description>
+**Goal:** Delete the backup feature's config and process-language surface completely, while preserving `pg_basebackup`-based replica creation as a non-backup bootstrap path.
+This story is an immediate blocker: the backup feature must be removed before continuing broader rewrite work, because the leftover pgBackRest/archive/restore surface keeps reintroducing complexity and false dependencies across the runtime.
 ```
 
 ==============

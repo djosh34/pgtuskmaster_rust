@@ -1,10 +1,6 @@
 #![allow(dead_code)]
 
-use pgtuskmaster_rust::{
-    api::HaPhaseResponse,
-    api::HaStateResponse,
-    state::WorkerError,
-};
+use pgtuskmaster_rust::{api::HaPhaseResponse, api::HaStateResponse, state::WorkerError};
 
 #[derive(Clone, Default, serde::Serialize)]
 pub struct HaObservationStats {
@@ -241,7 +237,9 @@ pub fn assert_no_dual_primary_in_samples(
 }
 
 fn len_to_u64(value: usize) -> u64 {
-    u64::try_from(value).ok().map_or(u64::MAX, core::convert::identity)
+    u64::try_from(value)
+        .ok()
+        .map_or(u64::MAX, core::convert::identity)
 }
 
 fn summarize_errors(errors: &[String]) -> String {

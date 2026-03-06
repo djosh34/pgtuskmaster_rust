@@ -101,7 +101,6 @@ To install/refresh prerequisites, run:
 ```bash
 ./tools/install-etcd.sh
 ./tools/install-postgres16.sh
-./tools/install-pgbackrest.sh
 ```
 
 If you suspect tampering or “wrong binary” behavior, capture execve evidence with:

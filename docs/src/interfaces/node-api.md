@@ -8,16 +8,7 @@ The Node API is a compact operational interface for state visibility and planned
 - `POST /switchover`: create planned switchover intent
 - `DELETE /ha/switchover`: cancel or clear pending switchover intent
 
-Recovery bootstrap is not exposed as a mutable node-API control plane; restore/bootstrap remains internal startup behavior and operator runbook territory.
-
-## Internal ingest endpoints
-
-These endpoints are used by pgtuskmaster-internal helpers (not intended for operators to call directly):
-
-- `POST /events/wal`: ingest a WAL archive-and-recovery passthrough event emitted by `pgtuskmaster wal ...`.
-  - Loopback-only enforcement: requests are rejected unless the peer IP is `127.0.0.1` / `::1`.
-  - Auth role: Read (accepts `read` or `admin` token when auth is enabled).
-  - Emits a structured log event with `event.name=backup.wal_passthrough` and attributes like `invocation_id`, `status_code`, WAL identifiers, and bounded stdout/stderr previews.
+There is no backup or restore-bootstrap API surface. Initial primary bootstrap and replica cloning remain internal runtime behavior.
 
 ## Fallback endpoints
 

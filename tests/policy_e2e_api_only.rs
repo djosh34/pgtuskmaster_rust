@@ -38,10 +38,7 @@ const ALLOWED_POST_START_PATTERNS: &[&str] = &[
 fn e2e_sources_must_use_post_start_hands_off_control_paths(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let ha_dirs = [
-        repo_root.join("tests/ha/support"),
-        repo_root.join("tests"),
-    ];
+    let ha_dirs = [repo_root.join("tests/ha/support"), repo_root.join("tests")];
 
     let mut matched_files = 0usize;
     let mut scanned_files: Vec<String> = Vec::new();

@@ -334,49 +334,6 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
     tick_active_job(ctx).await
 }
 
-fn ensure_pgbackrest_spool_dir(args: &[String]) -> Result<(), ProcessError> {
-    let mut spool_token: Option<&str> = None;
-
-    let mut index = 0usize;
-    while index < args.len() {
-        let token = args[index].as_str();
-        if let Some(value) = token.strip_prefix("--spool-path=") {
-            spool_token = Some(value);
-            break;
-        }
-        if token == "--spool-path" {
-            if index + 1 >= args.len() {
-                return Err(ProcessError::InvalidSpec(
-                    "pgbackrest --spool-path is missing a value".to_string(),
-                ));
-            }
-            spool_token = Some(args[index + 1].as_str());
-            break;
-        }
-        index = index.saturating_add(1);
-    }
-
-    let Some(spool_token) = spool_token else {
-        // No spool path configured: pgBackRest may default to /var/spool/pgbackrest which is often
-        // not writable. We rely on backup job builders to inject a safe value.
-        return Ok(());
-    };
-    if spool_token.trim().is_empty() {
-        return Err(ProcessError::InvalidSpec(
-            "pgbackrest --spool-path must not be empty".to_string(),
-        ));
-    }
-
-    let spool_path = std::path::Path::new(spool_token);
-    std::fs::create_dir_all(spool_path).map_err(|err| {
-        ProcessError::InvalidSpec(format!(
-            "failed to create pgbackrest spool dir {}: {err}",
-            spool_path.display()
-        ))
-    })?;
-    Ok(())
-}
-
 fn parse_postmaster_pid(pid_file: &Path) -> Result<u32, ProcessError> {
     let contents = fs::read_to_string(pid_file).map_err(|err| {
         ProcessError::InvalidSpec(format!(
@@ -628,45 +585,6 @@ pub(crate) async fn start_job(
             return Ok(());
         }
     };
-
-    if request.kind.is_pgbackrest_job() {
-        if let Err(error) = ensure_pgbackrest_spool_dir(&command.args) {
-            let mut attrs = BTreeMap::new();
-            attrs.insert(
-                "job_id".to_string(),
-                serde_json::Value::String(request.id.0.clone()),
-            );
-            attrs.insert(
-                "job_kind".to_string(),
-                serde_json::Value::String(request.kind.label().to_string()),
-            );
-            attrs.insert(
-                "error".to_string(),
-                serde_json::Value::String(error.to_string()),
-            );
-            ctx.log
-                .emit_event(
-                    SeverityText::Error,
-                    "process preflight failed",
-                    "process_worker::start_job",
-                    EventMeta::new("process.job.preflight_failed", "process", "failed"),
-                    attrs,
-                )
-                .map_err(|err| {
-                    WorkerError::Message(format!("process preflight log emit failed: {err}"))
-                })?;
-            transition_to_idle(
-                ctx,
-                JobOutcome::Failure {
-                    id: request.id,
-                    error,
-                    finished_at: now,
-                },
-                now,
-            )?;
-            return Ok(());
-        }
-    }
 
     let log_identity = command.log_identity.clone();
     let handle = match ctx.command_runner.spawn(command) {
@@ -1260,23 +1178,6 @@ pub(crate) fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) ->
         ProcessJobKind::StartPostgres(spec) => {
             spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
         }
-        ProcessJobKind::PgBackRestVersion(_) => config.backup_timeout_ms,
-        ProcessJobKind::PgBackRestInfo(spec) => spec.timeout_ms.unwrap_or(config.backup_timeout_ms),
-        ProcessJobKind::PgBackRestCheck(spec) => {
-            spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
-        }
-        ProcessJobKind::PgBackRestBackup(spec) => {
-            spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
-        }
-        ProcessJobKind::PgBackRestRestore(spec) => {
-            spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
-        }
-        ProcessJobKind::PgBackRestArchivePush(spec) => {
-            spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
-        }
-        ProcessJobKind::PgBackRestArchiveGet(spec) => {
-            spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
-        }
     }
 }
 
@@ -1289,13 +1190,6 @@ fn active_kind(kind: &ProcessJobKind) -> ActiveJobKind {
         ProcessJobKind::Demote(_) => ActiveJobKind::Demote,
         ProcessJobKind::StartPostgres(_) => ActiveJobKind::StartPostgres,
         ProcessJobKind::Fencing(_) => ActiveJobKind::Fencing,
-        ProcessJobKind::PgBackRestVersion(_) => ActiveJobKind::PgBackRestVersion,
-        ProcessJobKind::PgBackRestInfo(_) => ActiveJobKind::PgBackRestInfo,
-        ProcessJobKind::PgBackRestCheck(_) => ActiveJobKind::PgBackRestCheck,
-        ProcessJobKind::PgBackRestBackup(_) => ActiveJobKind::PgBackRestBackup,
-        ProcessJobKind::PgBackRestRestore(_) => ActiveJobKind::PgBackRestRestore,
-        ProcessJobKind::PgBackRestArchivePush(_) => ActiveJobKind::PgBackRestArchivePush,
-        ProcessJobKind::PgBackRestArchiveGet(_) => ActiveJobKind::PgBackRestArchiveGet,
     }
 }
 
@@ -1522,193 +1416,6 @@ pub(crate) fn build_command(
                 },
             })
         }
-        ProcessJobKind::PgBackRestVersion(_spec) => {
-            let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec(
-                    "process.binaries.pgbackrest must be configured".to_string(),
-                )
-            })?;
-            validate_non_empty_path("process.binaries.pgbackrest", &program)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec!["--version".to_string()],
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessJobKind::PgBackRestInfo(spec) => {
-            let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec(
-                    "process.binaries.pgbackrest must be configured".to_string(),
-                )
-            })?;
-            validate_non_empty_path("process.binaries.pgbackrest", &program)?;
-            let template = crate::backup::pgbackrest::render(crate::backup::BackupOperation::Info(
-                crate::backup::InfoInput {
-                    stanza: spec.stanza.clone(),
-                    repo: spec.repo.clone(),
-                    options: spec.options.clone(),
-                },
-            ))
-            .map_err(|err| ProcessError::InvalidSpec(format!("pgbackrest info: {err}")))?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: template.args,
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessJobKind::PgBackRestCheck(spec) => {
-            let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec(
-                    "process.binaries.pgbackrest must be configured".to_string(),
-                )
-            })?;
-            validate_non_empty_path("process.binaries.pgbackrest", &program)?;
-            let template = crate::backup::pgbackrest::render(
-                crate::backup::BackupOperation::Check(crate::backup::CheckInput {
-                    stanza: spec.stanza.clone(),
-                    repo: spec.repo.clone(),
-                    options: spec.options.clone(),
-                }),
-            )
-            .map_err(|err| ProcessError::InvalidSpec(format!("pgbackrest check: {err}")))?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: template.args,
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessJobKind::PgBackRestBackup(spec) => {
-            let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec(
-                    "process.binaries.pgbackrest must be configured".to_string(),
-                )
-            })?;
-            validate_non_empty_path("process.binaries.pgbackrest", &program)?;
-            let template = crate::backup::pgbackrest::render(
-                crate::backup::BackupOperation::Backup(crate::backup::BackupInput {
-                    stanza: spec.stanza.clone(),
-                    repo: spec.repo.clone(),
-                    options: spec.options.clone(),
-                }),
-            )
-            .map_err(|err| ProcessError::InvalidSpec(format!("pgbackrest backup: {err}")))?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: template.args,
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessJobKind::PgBackRestRestore(spec) => {
-            let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec(
-                    "process.binaries.pgbackrest must be configured".to_string(),
-                )
-            })?;
-            validate_non_empty_path("process.binaries.pgbackrest", &program)?;
-            let template = crate::backup::pgbackrest::render(
-                crate::backup::BackupOperation::Restore(crate::backup::RestoreInput {
-                    stanza: spec.stanza.clone(),
-                    repo: spec.repo.clone(),
-                    pg1_path: spec.pg1_path.clone(),
-                    options: spec.options.clone(),
-                }),
-            )
-            .map_err(|err| ProcessError::InvalidSpec(format!("pgbackrest restore: {err}")))?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: template.args,
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessJobKind::PgBackRestArchivePush(spec) => {
-            let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec(
-                    "process.binaries.pgbackrest must be configured".to_string(),
-                )
-            })?;
-            validate_non_empty_path("process.binaries.pgbackrest", &program)?;
-            let template = crate::backup::pgbackrest::render(
-                crate::backup::BackupOperation::ArchivePush(crate::backup::ArchivePushInput {
-                    stanza: spec.stanza.clone(),
-                    repo: spec.repo.clone(),
-                    pg1_path: spec.pg1_path.clone(),
-                    wal_path: spec.wal_path.clone(),
-                    options: spec.options.clone(),
-                }),
-            )
-            .map_err(|err| ProcessError::InvalidSpec(format!("pgbackrest archive-push: {err}")))?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: template.args,
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessJobKind::PgBackRestArchiveGet(spec) => {
-            let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec(
-                    "process.binaries.pgbackrest must be configured".to_string(),
-                )
-            })?;
-            validate_non_empty_path("process.binaries.pgbackrest", &program)?;
-            let template = crate::backup::pgbackrest::render(
-                crate::backup::BackupOperation::ArchiveGet(crate::backup::ArchiveGetInput {
-                    stanza: spec.stanza.clone(),
-                    repo: spec.repo.clone(),
-                    pg1_path: spec.pg1_path.clone(),
-                    wal_segment: spec.wal_segment.clone(),
-                    destination_path: spec.destination_path.clone(),
-                    options: spec.options.clone(),
-                }),
-            )
-            .map_err(|err| ProcessError::InvalidSpec(format!("pgbackrest archive-get: {err}")))?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: template.args,
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
     }
 }
 
@@ -1731,13 +1438,6 @@ fn job_kind_label(kind: &ProcessJobKind) -> &'static str {
         ProcessJobKind::Demote(_) => "demote",
         ProcessJobKind::StartPostgres(_) => "start_postgres",
         ProcessJobKind::Fencing(_) => "fencing",
-        ProcessJobKind::PgBackRestVersion(_) => "pgbackrest_version",
-        ProcessJobKind::PgBackRestInfo(_) => "pgbackrest_info",
-        ProcessJobKind::PgBackRestCheck(_) => "pgbackrest_check",
-        ProcessJobKind::PgBackRestBackup(_) => "pgbackrest_backup",
-        ProcessJobKind::PgBackRestRestore(_) => "pgbackrest_restore",
-        ProcessJobKind::PgBackRestArchivePush(_) => "pgbackrest_archive_push",
-        ProcessJobKind::PgBackRestArchiveGet(_) => "pgbackrest_archive_get",
     }
 }
 
@@ -1928,7 +1628,6 @@ mod tests {
             pg_rewind_timeout_ms: 1_000,
             bootstrap_timeout_ms: 1_000,
             fencing_timeout_ms: 1_000,
-            backup_timeout_ms: 1_000,
             binaries: BinaryPaths {
                 postgres: PathBuf::from("/usr/bin/postgres"),
                 pg_ctl: PathBuf::from("/usr/bin/pg_ctl"),
@@ -1936,7 +1635,6 @@ mod tests {
                 initdb: PathBuf::from("/usr/bin/initdb"),
                 pg_basebackup: PathBuf::from("/usr/bin/pg_basebackup"),
                 psql: PathBuf::from("/usr/bin/psql"),
-                pgbackrest: Some(PathBuf::from("/usr/bin/pgbackrest")),
             },
         }
     }
@@ -2203,159 +1901,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn build_command_pgbackrest_version_uses_pgbackrest_binary_and_args() -> Result<(), String> {
-        let config = sample_config();
-        let pg_bin = config
-            .binaries
-            .pgbackrest
-            .clone()
-            .ok_or_else(|| "test config missing pgbackrest".to_string())?;
-        let command = build_command(
-            &config,
-            &JobId("job-test".to_string()),
-            &ProcessJobKind::PgBackRestVersion(crate::process::jobs::PgBackRestVersionSpec {}),
-            true,
-        );
-        let spec = command.map_err(|err| err.to_string())?;
-        assert_eq!(spec.program, pg_bin);
-        assert_eq!(spec.args, vec!["--version"]);
-        Ok(())
-    }
-
-    #[test]
-    fn build_command_pgbackrest_renders_all_operations_deterministically() -> Result<(), String> {
-        let config = sample_config();
-        let pg_bin = config
-            .binaries
-            .pgbackrest
-            .clone()
-            .ok_or_else(|| "test config missing pgbackrest".to_string())?;
-
-        let job_id = JobId("job-test".to_string());
-
-        let info = build_command(
-            &config,
-            &job_id,
-            &ProcessJobKind::PgBackRestInfo(crate::process::jobs::PgBackRestInfoSpec {
-                stanza: "stanza-a".to_string(),
-                repo: "1".to_string(),
-                options: vec!["--log-level-console=info".to_string()],
-                timeout_ms: None,
-            }),
-            true,
-        )
-        .map_err(|err| err.to_string())?;
-        assert_eq!(info.program, pg_bin);
-        assert_eq!(info.args.last().map(String::as_str), Some("info"));
-        assert!(info.args.iter().any(|arg| arg == "--output=json"));
-
-        let check = build_command(
-            &config,
-            &job_id,
-            &ProcessJobKind::PgBackRestCheck(crate::process::jobs::PgBackRestCheckSpec {
-                stanza: "stanza-a".to_string(),
-                repo: "1".to_string(),
-                options: Vec::new(),
-                timeout_ms: None,
-            }),
-            false,
-        )
-        .map_err(|err| err.to_string())?;
-        assert_eq!(check.args.last().map(String::as_str), Some("check"));
-
-        let backup = build_command(
-            &config,
-            &job_id,
-            &ProcessJobKind::PgBackRestBackup(crate::process::jobs::PgBackRestBackupSpec {
-                stanza: "stanza-a".to_string(),
-                repo: "1".to_string(),
-                options: Vec::new(),
-                timeout_ms: None,
-            }),
-            false,
-        )
-        .map_err(|err| err.to_string())?;
-        assert_eq!(backup.args.last().map(String::as_str), Some("backup"));
-
-        let restore = build_command(
-            &config,
-            &job_id,
-            &ProcessJobKind::PgBackRestRestore(crate::process::jobs::PgBackRestRestoreSpec {
-                stanza: "stanza-a".to_string(),
-                repo: "1".to_string(),
-                pg1_path: "/tmp/node/data".into(),
-                options: Vec::new(),
-                timeout_ms: None,
-            }),
-            false,
-        )
-        .map_err(|err| err.to_string())?;
-        assert_eq!(restore.args.last().map(String::as_str), Some("restore"));
-
-        let archive_push = build_command(
-            &config,
-            &job_id,
-            &ProcessJobKind::PgBackRestArchivePush(
-                crate::process::jobs::PgBackRestArchivePushSpec {
-                    stanza: "stanza-a".to_string(),
-                    repo: "1".to_string(),
-                    pg1_path: "/tmp/node/data".into(),
-                    wal_path: "/tmp/000000010000000000000001".to_string(),
-                    options: Vec::new(),
-                    timeout_ms: None,
-                },
-            ),
-            false,
-        )
-        .map_err(|err| err.to_string())?;
-        assert_eq!(
-            archive_push
-                .args
-                .get(archive_push.args.len().saturating_sub(2))
-                .map(String::as_str),
-            Some("archive-push")
-        );
-
-        let archive_get = build_command(
-            &config,
-            &job_id,
-            &ProcessJobKind::PgBackRestArchiveGet(crate::process::jobs::PgBackRestArchiveGetSpec {
-                stanza: "stanza-a".to_string(),
-                repo: "1".to_string(),
-                pg1_path: "/tmp/node/data".into(),
-                wal_segment: "000000010000000000000001".to_string(),
-                destination_path: "/tmp/wal".to_string(),
-                options: Vec::new(),
-                timeout_ms: None,
-            }),
-            false,
-        )
-        .map_err(|err| err.to_string())?;
-        assert_eq!(
-            archive_get
-                .args
-                .get(archive_get.args.len().saturating_sub(3))
-                .map(String::as_str),
-            Some("archive-get")
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn timeout_for_kind_uses_process_backup_timeout_ms_for_pgbackrest_ops() {
-        let mut config = sample_config();
-        config.backup_timeout_ms = 42;
-        let kind = ProcessJobKind::PgBackRestInfo(crate::process::jobs::PgBackRestInfoSpec {
-            stanza: "stanza-a".to_string(),
-            repo: "1".to_string(),
-            options: Vec::new(),
-            timeout_ms: None,
-        });
-        assert_eq!(super::timeout_for_kind(&kind, &config), 42);
-    }
-
     fn queued_clock(times: Vec<u64>) -> Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send> {
         let mut queue: VecDeque<u64> = times.into_iter().collect();
         let mut last = 0_u64;
@@ -2570,9 +2115,23 @@ mod tests {
         assert!(tx
             .send(ProcessJobRequest {
                 id: JobId("job-b".to_string()),
-                kind: ProcessJobKind::PgBackRestVersion(
-                    crate::process::jobs::PgBackRestVersionSpec {}
-                ),
+                kind: ProcessJobKind::BaseBackup(BaseBackupSpec {
+                    data_dir: PathBuf::from("/tmp/node/data-b"),
+                    source: ReplicatorSourceConn {
+                        conninfo: PgConnInfo {
+                            host: "127.0.0.1".to_string(),
+                            port: 5432,
+                            user: "replicator".to_string(),
+                            dbname: "postgres".to_string(),
+                            application_name: None,
+                            connect_timeout_s: None,
+                            ssl_mode: PgSslMode::Prefer,
+                            options: None,
+                        },
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    timeout_ms: Some(30_000),
+                }),
             })
             .is_ok());
         assert_eq!(step_once(&mut ctx).await, Ok(()));
@@ -2700,7 +2259,6 @@ mod tests {
             pg_rewind_timeout_ms: 20_000,
             bootstrap_timeout_ms: 40_000,
             fencing_timeout_ms: 20_000,
-            backup_timeout_ms: 40_000,
             binaries,
         }
     }
@@ -3099,28 +2657,6 @@ mod tests {
             ))),
             Err(err) => Err(WorkerError::Message(format!(
                 "rewind job wait failed: {err}"
-            ))),
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn real_pgbackrest_version_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries()?;
-
-        let (mut ctx, tx, _sub) = real_ctx(real_config(binaries));
-        let outcome = submit_job_and_wait(
-            &tx,
-            &mut ctx,
-            "pgbackrest-version-1",
-            ProcessJobKind::PgBackRestVersion(crate::process::jobs::PgBackRestVersionSpec {}),
-            Duration::from_secs(10),
-        )
-        .await?;
-
-        match outcome {
-            JobOutcome::Success { .. } => Ok(()),
-            other => Err(WorkerError::Message(format!(
-                "expected pgbackrest version job success, got: {other:?}"
             ))),
         }
     }

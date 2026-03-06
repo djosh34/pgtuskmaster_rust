@@ -1,7 +1,7 @@
-#[path = "ha/support/observer.rs"]
-mod observer;
 #[path = "ha/support/multi_node.rs"]
 mod multi_node;
+#[path = "ha/support/observer.rs"]
+mod observer;
 
 #[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_planned_switchover_concurrent_sql(

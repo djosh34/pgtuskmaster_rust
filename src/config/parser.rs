@@ -4,13 +4,13 @@ use thiserror::Error;
 
 use super::defaults::{
     default_api_listen_addr, default_debug_config, default_logging_config,
-    default_postgres_connect_timeout_s, normalize_backup_config, normalize_process_config,
+    default_postgres_connect_timeout_s, normalize_process_config,
 };
 use super::schema::{
-    ApiConfig, ApiSecurityConfig, BackupProvider, ConfigVersion, InlineOrPath, PgBackRestConfig,
-    PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresRoleConfig,
-    PostgresRolesConfig, RoleAuthConfig, RoleAuthConfigV2Input, RuntimeConfig,
-    RuntimeConfigV2Input, SecretSource, TlsServerConfig, TlsServerIdentityConfig,
+    ApiConfig, ApiSecurityConfig, ConfigVersion, InlineOrPath, PgHbaConfig, PgIdentConfig,
+    PostgresConfig, PostgresConnIdentityConfig, PostgresRoleConfig, PostgresRolesConfig,
+    RoleAuthConfig, RoleAuthConfigV2Input, RuntimeConfig, RuntimeConfigV2Input, SecretSource,
+    TlsServerConfig, TlsServerIdentityConfig,
 };
 
 const MIN_TIMEOUT_MS: u64 = 1;
@@ -111,7 +111,6 @@ fn normalize_runtime_config_v2(input: RuntimeConfigV2Input) -> Result<RuntimeCon
 
     let postgres = normalize_postgres_config_v2(input.postgres)?;
     let process = normalize_process_config(input.process)?;
-    let backup = normalize_backup_config(input.backup)?;
     let logging = input.logging.unwrap_or_else(default_logging_config);
     let api = normalize_api_config_v2(input.api)?;
     let debug = input.debug.unwrap_or_else(default_debug_config);
@@ -122,7 +121,6 @@ fn normalize_runtime_config_v2(input: RuntimeConfigV2Input) -> Result<RuntimeCon
         dcs: input.dcs,
         ha: input.ha,
         process,
-        backup,
         logging,
         api,
         debug,
@@ -578,48 +576,6 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         cfg.process.bootstrap_timeout_ms,
     )?;
     validate_timeout("process.fencing_timeout_ms", cfg.process.fencing_timeout_ms)?;
-    validate_timeout("process.backup_timeout_ms", cfg.process.backup_timeout_ms)?;
-
-    if let Some(path) = cfg.process.binaries.pgbackrest.as_ref() {
-        validate_non_empty_path("process.binaries.pgbackrest", path)?;
-        validate_absolute_path("process.binaries.pgbackrest", path)?;
-    }
-
-    if let Some(pg_cfg) = cfg.backup.pgbackrest.as_ref() {
-        validate_pgbackrest_options(pg_cfg)?;
-    }
-
-    if cfg.backup.enabled {
-        match cfg.backup.provider {
-            BackupProvider::Pgbackrest => {
-                let pgbackrest_bin = cfg.process.binaries.pgbackrest.as_ref().ok_or_else(|| {
-                    ConfigError::Validation {
-                        field: "process.binaries.pgbackrest",
-                        message: "required when backup.enabled is true".to_string(),
-                    }
-                })?;
-                validate_non_empty_path("process.binaries.pgbackrest", pgbackrest_bin)?;
-                validate_absolute_path("process.binaries.pgbackrest", pgbackrest_bin)?;
-
-                let pg_cfg =
-                    cfg.backup
-                        .pgbackrest
-                        .as_ref()
-                        .ok_or_else(|| ConfigError::Validation {
-                            field: "backup.pgbackrest",
-                            message: "required when backup.provider is pgbackrest".to_string(),
-                        })?;
-                validate_pgbackrest_required_fields(pg_cfg)?;
-            }
-        }
-    }
-
-    if cfg.backup.bootstrap.enabled && !cfg.backup.enabled {
-        return Err(ConfigError::Validation {
-            field: "backup.bootstrap.enabled",
-            message: "requires backup.enabled = true".to_string(),
-        });
-    }
 
     validate_timeout(
         "logging.postgres.poll_interval_ms",
@@ -756,85 +712,6 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_dcs_init_config(cfg)?;
 
     Ok(())
-}
-
-fn validate_pgbackrest_required_fields(cfg: &PgBackRestConfig) -> Result<(), ConfigError> {
-    let stanza = cfg
-        .stanza
-        .as_deref()
-        .ok_or_else(|| ConfigError::Validation {
-            field: "backup.pgbackrest.stanza",
-            message: "required when backup is enabled".to_string(),
-        })?;
-    validate_non_empty("backup.pgbackrest.stanza", stanza)?;
-
-    let repo = cfg.repo.as_deref().ok_or_else(|| ConfigError::Validation {
-        field: "backup.pgbackrest.repo",
-        message: "required when backup is enabled".to_string(),
-    })?;
-    validate_non_empty("backup.pgbackrest.repo", repo)?;
-
-    Ok(())
-}
-
-fn validate_pgbackrest_options(cfg: &PgBackRestConfig) -> Result<(), ConfigError> {
-    validate_backup_option_tokens("backup.pgbackrest.options.backup", &cfg.options.backup)?;
-    validate_backup_option_tokens("backup.pgbackrest.options.info", &cfg.options.info)?;
-    validate_backup_option_tokens("backup.pgbackrest.options.check", &cfg.options.check)?;
-    validate_backup_option_tokens("backup.pgbackrest.options.restore", &cfg.options.restore)?;
-    validate_backup_option_tokens(
-        "backup.pgbackrest.options.archive_push",
-        &cfg.options.archive_push,
-    )?;
-    validate_backup_option_tokens(
-        "backup.pgbackrest.options.archive_get",
-        &cfg.options.archive_get,
-    )?;
-    Ok(())
-}
-
-fn validate_backup_option_tokens(
-    field: &'static str,
-    tokens: &[String],
-) -> Result<(), ConfigError> {
-    for token in tokens {
-        if token.trim().is_empty() {
-            return Err(ConfigError::Validation {
-                field,
-                message: "must not contain empty option tokens".to_string(),
-            });
-        }
-
-        if token
-            .as_bytes()
-            .iter()
-            .any(|b| matches!(b, 0 | b'\n' | b'\r'))
-        {
-            return Err(ConfigError::Validation {
-                field,
-                message: "must not contain NUL/newline characters".to_string(),
-            });
-        }
-
-        let trimmed = token.trim_start();
-        let key = option_key(trimmed);
-        if matches!(key, "--stanza" | "--repo" | "--pg1-path") {
-            return Err(ConfigError::Validation {
-                field,
-                message:
-                    "must not override managed fields (stanza/repo/pg1-path) via option tokens"
-                        .to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn option_key(token: &str) -> &str {
-    let Some(eq) = token.find('=') else {
-        return token;
-    };
-    &token[..eq]
 }
 
 fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
@@ -1065,8 +942,8 @@ mod tests {
 
     use super::*;
     use crate::config::schema::{
-        ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig,
-        BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
+        ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
+        ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
         InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
         PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
         PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
@@ -1142,7 +1019,6 @@ mod tests {
                 pg_rewind_timeout_ms: 120_000,
                 bootstrap_timeout_ms: 300_000,
                 fencing_timeout_ms: 30_000,
-                backup_timeout_ms: 30_000,
                 binaries: BinaryPaths {
                     postgres: PathBuf::from("/usr/bin/postgres"),
                     pg_ctl: PathBuf::from("/usr/bin/pg_ctl"),
@@ -1150,10 +1026,8 @@ mod tests {
                     initdb: PathBuf::from("/usr/bin/initdb"),
                     pg_basebackup: PathBuf::from("/usr/bin/pg_basebackup"),
                     psql: PathBuf::from("/usr/bin/psql"),
-                    pgbackrest: None,
                 },
             },
-            backup: BackupConfig::default(),
             logging: LoggingConfig {
                 level: LogLevel::Info,
                 capture_subprocess_output: true,
@@ -1223,17 +1097,6 @@ mod tests {
             err,
             Err(ConfigError::Validation {
                 field: "process.binaries.pg_ctl",
-                ..
-            })
-        ));
-
-        let mut cfg = base_runtime_config();
-        cfg.process.binaries.pgbackrest = Some(PathBuf::from("pgbackrest"));
-        let err = validate_runtime_config(&cfg);
-        assert!(matches!(
-            err,
-            Err(ConfigError::Validation {
-                field: "process.binaries.pgbackrest",
                 ..
             })
         ));
