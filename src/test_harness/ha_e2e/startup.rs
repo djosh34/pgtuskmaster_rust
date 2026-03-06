@@ -254,10 +254,6 @@ async fn start_cluster_inner(
         forbidden_ports.insert(*port);
     }
 
-    let rewind_source_port = *node_ports.first().ok_or_else(|| {
-        WorkerError::Message("missing postgres ports for cluster startup".to_string())
-    })?;
-
     let mut cursor = 0usize;
     let mut proxy_reservation = PortReservation::empty();
     let (dcs_endpoints_by_node, proxy_ports) = match config.mode {
@@ -400,8 +396,6 @@ async fn start_cluster_inner(
                 "listen_port": pg_port,
                 "socket_dir": socket_dir.display().to_string(),
                 "log_file": log_file.display().to_string(),
-                "rewind_source_host": "127.0.0.1",
-                "rewind_source_port": rewind_source_port,
                 "local_conn_identity": { "user": "postgres", "dbname": "postgres", "ssl_mode": "prefer" },
                 "rewind_conn_identity": { "user": "rewinder", "dbname": "postgres", "ssl_mode": "prefer" },
                 "tls": { "mode": "disabled", "identity": null, "client_auth": null },
@@ -474,8 +468,6 @@ async fn start_cluster_inner(
                 listen_port: pg_port,
                 socket_dir,
                 log_file: log_file.clone(),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),

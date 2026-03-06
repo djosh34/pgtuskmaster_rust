@@ -25,7 +25,9 @@ store-failure-output = true
 
 [profile.ultra-long]
 fail-fast = false
-test-threads = 16
+# Ultra-long HA scenarios each spawn multiple Postgres and etcd processes; running them serially
+# avoids startup flakiness from resource contention during gate runs.
+test-threads = 1
 default-filter = '''
 test(=e2e_multi_node_stress_planned_switchover_concurrent_sql)
 | test(=e2e_multi_node_stress_unassisted_failover_concurrent_sql)

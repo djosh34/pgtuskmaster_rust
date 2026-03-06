@@ -419,6 +419,23 @@ fn fencing_preflight_is_already_stopped(data_dir: &Path) -> Result<bool, Process
     Ok(true)
 }
 
+fn start_postgres_preflight_is_already_running(data_dir: &Path) -> Result<bool, ProcessError> {
+    let pid_file = data_dir.join("postmaster.pid");
+    if !pid_file.exists() {
+        return Ok(false);
+    }
+
+    let pid = parse_postmaster_pid(&pid_file)?;
+    if pid_exists(pid)? {
+        return Ok(true);
+    }
+
+    remove_file_best_effort(&pid_file)?;
+    let opts_file = data_dir.join("postmaster.opts");
+    remove_file_best_effort(&opts_file)?;
+    Ok(false)
+}
+
 pub(crate) async fn start_job(
     ctx: &mut ProcessWorkerCtx,
     request: ProcessJobRequest,
@@ -493,6 +510,7 @@ pub(crate) async fn start_job(
                     ctx,
                     JobOutcome::Success {
                         id: request.id,
+                        job_kind: active_kind(&request.kind),
                         finished_at: now,
                     },
                     now,
@@ -531,6 +549,94 @@ pub(crate) async fn start_job(
                     ctx,
                     JobOutcome::Failure {
                         id: request.id,
+                        job_kind: active_kind(&request.kind),
+                        error,
+                        finished_at: now,
+                    },
+                    now,
+                )?;
+                return Ok(());
+            }
+        }
+    }
+
+    if let ProcessJobKind::StartPostgres(spec) = &request.kind {
+        match start_postgres_preflight_is_already_running(spec.data_dir.as_path()) {
+            Ok(true) => {
+                let mut attrs = BTreeMap::new();
+                attrs.insert(
+                    "job_id".to_string(),
+                    serde_json::Value::String(request.id.0.clone()),
+                );
+                attrs.insert(
+                    "job_kind".to_string(),
+                    serde_json::Value::String(request.kind.label().to_string()),
+                );
+                attrs.insert(
+                    "data_dir".to_string(),
+                    serde_json::Value::String(spec.data_dir.display().to_string()),
+                );
+                ctx.log
+                    .emit_event(
+                        SeverityText::Info,
+                        "start postgres preflight: postgres already running",
+                        "process_worker::start_job",
+                        EventMeta::new("process.job.start_postgres_noop", "process", "ok"),
+                        attrs,
+                    )
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process start-postgres noop log emit failed: {err}"
+                        ))
+                    })?;
+                transition_to_idle(
+                    ctx,
+                    JobOutcome::Success {
+                        id: request.id,
+                        job_kind: active_kind(&request.kind),
+                        finished_at: now,
+                    },
+                    now,
+                )?;
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(error) => {
+                let mut attrs = BTreeMap::new();
+                attrs.insert(
+                    "job_id".to_string(),
+                    serde_json::Value::String(request.id.0.clone()),
+                );
+                attrs.insert(
+                    "job_kind".to_string(),
+                    serde_json::Value::String(request.kind.label().to_string()),
+                );
+                attrs.insert(
+                    "error".to_string(),
+                    serde_json::Value::String(error.to_string()),
+                );
+                ctx.log
+                    .emit_event(
+                        SeverityText::Error,
+                        "start postgres preflight failed",
+                        "process_worker::start_job",
+                        EventMeta::new(
+                            "process.job.start_postgres_preflight_failed",
+                            "process",
+                            "failed",
+                        ),
+                        attrs,
+                    )
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process start-postgres preflight log emit failed: {err}"
+                        ))
+                    })?;
+                transition_to_idle(
+                    ctx,
+                    JobOutcome::Failure {
+                        id: request.id,
+                        job_kind: active_kind(&request.kind),
                         error,
                         finished_at: now,
                     },
@@ -577,6 +683,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
+                    job_kind: active_kind(&request.kind),
                     error,
                     finished_at: now,
                 },
@@ -618,6 +725,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
+                    job_kind: active_kind(&request.kind),
                     error,
                     finished_at: now,
                 },
@@ -776,10 +884,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
         let outcome = match cancel_result {
             Ok(()) => JobOutcome::Timeout {
                 id: runtime.request.id,
+                job_kind: active_kind(&runtime.request.kind),
                 finished_at: now,
             },
             Err(error) => JobOutcome::Failure {
                 id: runtime.request.id,
+                job_kind: active_kind(&runtime.request.kind),
                 error,
                 finished_at: now,
             },
@@ -838,6 +948,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Success {
                 id: job_id.clone(),
+                job_kind: active_kind(&runtime.request.kind),
                 finished_at: now,
             };
             let mut attrs = process_log_identity_attrs(&runtime.log_identity);
@@ -903,6 +1014,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Failure {
                 id: job_id.clone(),
+                job_kind: active_kind(&runtime.request.kind),
                 error: exit_error.clone(),
                 finished_at: now,
             };
@@ -972,6 +1084,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Failure {
                 id: job_id.clone(),
+                job_kind: active_kind(&runtime.request.kind),
                 error,
                 finished_at: now,
             };
@@ -2040,6 +2153,59 @@ mod tests {
 
         let published = subscriber.latest();
         assert!(matches!(published.value, ProcessState::Running { .. }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn start_job_start_postgres_noops_when_postmaster_is_already_running(
+    ) -> Result<(), WorkerError> {
+        let runner = FakeRunner {
+            spawn_results: VecDeque::new(),
+        };
+        let (mut ctx, tx, subscriber) = test_ctx(Box::new(runner), queued_clock(vec![10, 11]));
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0u128, |duration| duration.as_nanos());
+        let data_dir = std::env::temp_dir().join(format!(
+            "pgtuskmaster-start-noop-{}-{unique}",
+            std::process::id(),
+        ));
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("create data dir failed: {err}")))?;
+        let pid_file = data_dir.join("postmaster.pid");
+        fs::write(&pid_file, format!("{}\n", std::process::id()))
+            .map_err(|err| WorkerError::Message(format!("write pid file failed: {err}")))?;
+
+        let send_result = tx.send(ProcessJobRequest {
+            id: JobId("job-noop".to_string()),
+            kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                data_dir: data_dir.clone(),
+                ..sample_start_spec()
+            }),
+        });
+        assert!(send_result.is_ok());
+
+        let stepped = step_once(&mut ctx).await;
+        assert_eq!(stepped, Ok(()));
+
+        assert!(matches!(
+            &ctx.state,
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Success { .. }),
+                ..
+            }
+        ));
+        let published = subscriber.latest();
+        assert!(matches!(
+            published.value,
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Success { .. }),
+                ..
+            }
+        ));
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("remove data dir failed: {err}")))?;
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -74,8 +74,6 @@ fn sample_runtime_config() -> RuntimeConfig {
             listen_port: 5432,
             socket_dir: "/tmp/pgtuskmaster/socket".into(),
             log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-            rewind_source_host: "127.0.0.1".to_string(),
-            rewind_source_port: 5432,
             local_conn_identity: PostgresConnIdentityConfig {
                 user: "postgres".to_string(),
                 dbname: "postgres".to_string(),
@@ -293,6 +291,8 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         self_id: self_member_id.clone(),
         scope: "scope-a".to_string(),
         poll_interval: Duration::from_millis(10),
+        local_postgres_host: sample_runtime_config().postgres.listen_host.clone(),
+        local_postgres_port: sample_runtime_config().postgres.listen_port,
         pg_subscriber: dcs_pg_subscriber,
         publisher: dcs_publisher,
         store: Box::new(ContractStore),

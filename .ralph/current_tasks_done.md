@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar  6 15:54:17 CET 2026
+Generated: Fri Mar  6 10:09:47 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -236,6 +236,18 @@ Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.
 <description>
 `rg -n "unwrap\(|expect\(|panic!" src tests` shows multiple occurrences (mostly in tests and some src modules like `src/process/worker.rs`, `src/pginfo/state.rs`, `src/pginfo/query.rs`, `src/dcs/worker.rs`, `src/dcs/store.rs`, `src/ha/worker.rs`, `tests/bdd_state_watch.rs`, `src/config/parser.rs`). Policy requires no unwraps/panics/expects anywhere; replace with proper error handling and remove any lint exemptions if present. Explore and confirm current behavior before changing.
 </description>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/rewind-and-basebackup-source-are-static-instead-of-derived-from-current-leader.md`
+
+```
+## Bug: Rewind and basebackup source stay static instead of deriving from the current leader <status>completed</status> <passes>true</passes>
+
+<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+
+<description>
 ```
 
 ==============
@@ -502,18 +514,6 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 ==============
 
-# Task `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
-
-```
-## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
-
-<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-```
-
-==============
-
 # Task `.ralph/tasks/story-rust-system-harness/05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic.md`
 
 ```
@@ -543,6 +543,18 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
+```
+
+==============
+
+# Task `.ralph/tasks/story-rust-system-harness/05-task-dcs-worker-trust-cache-watch-member-publish.md`
+
+```
+## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
+
+<blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
 ```
 
 ==============
@@ -595,18 +607,6 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 ==============
 
-# Task `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
-
-```
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
-
-<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
-
-<description>
-```
-
-==============
-
 # Task `.ralph/tasks/story-rust-system-harness/10a-task-enforce-real-binary-tests-and-ci-prereqs.md`
 
 ```
@@ -625,6 +625,18 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.
+```
+
+==============
+
+# Task `.ralph/tasks/story-rust-system-harness/10-task-test-harness-namespace-ports-pg-etcd-spawners.md`
+
+```
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
+
+<blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
+
+<description>
 ```
 
 ==============

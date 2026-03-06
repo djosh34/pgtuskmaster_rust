@@ -9,9 +9,9 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec,
-    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessLogIdentity, PromoteSpec,
-    StartPostgresSpec,
+    ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec,
+    PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessHandle, ProcessLogIdentity,
+    PromoteSpec, StartPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,15 +78,18 @@ pub(crate) struct ProcessJobRejection {
 pub(crate) enum JobOutcome {
     Success {
         id: JobId,
+        job_kind: ActiveJobKind,
         finished_at: UnixMillis,
     },
     Failure {
         id: JobId,
+        job_kind: ActiveJobKind,
         error: ProcessError,
         finished_at: UnixMillis,
     },
     Timeout {
         id: JobId,
+        job_kind: ActiveJobKind,
         finished_at: UnixMillis,
     },
 }

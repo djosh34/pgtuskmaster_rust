@@ -41,6 +41,8 @@ pub enum DcsStoreError {
     InvalidKey(#[from] DcsKeyParseError),
     #[error("decode failed for key `{key}`: {message}")]
     Decode { key: String, message: String },
+    #[error("path already exists: {0}")]
+    AlreadyExists(String),
     #[error("store I/O error: {0}")]
     Io(String),
 }
@@ -81,7 +83,11 @@ where
             key: path.clone(),
             message: err.to_string(),
         })?;
-        self.write_path(&path, encoded)
+        if self.put_path_if_absent(&path, encoded)? {
+            Ok(())
+        } else {
+            Err(DcsStoreError::AlreadyExists(path))
+        }
     }
 
     fn delete_leader(&mut self, scope: &str) -> Result<(), DcsStoreError> {
@@ -326,8 +332,6 @@ mod tests {
                 listen_port: 5432,
                 socket_dir: "/tmp/pgtuskmaster/socket".into(),
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
@@ -444,6 +448,8 @@ mod tests {
         let mut store = TestDcsStore::new(true);
         let member = MemberRecord {
             member_id: MemberId("node-a".to_string()),
+            postgres_host: "10.0.0.10".to_string(),
+            postgres_port: 5432,
             role: MemberRole::Primary,
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
@@ -466,6 +472,8 @@ mod tests {
         let mut store = TestDcsStore::new(true);
         let encoded = serde_json::to_string(&MemberRecord {
             member_id: MemberId("node-a".to_string()),
+            postgres_host: "10.0.0.11".to_string(),
+            postgres_port: 5433,
             role: MemberRole::Replica,
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
@@ -558,6 +566,8 @@ mod tests {
             MemberId("node-stale".to_string()),
             MemberRecord {
                 member_id: MemberId("node-stale".to_string()),
+                postgres_host: "10.0.0.12".to_string(),
+                postgres_port: 5434,
                 role: MemberRole::Replica,
                 sql: SqlStatus::Healthy,
                 readiness: Readiness::Ready,
@@ -675,6 +685,27 @@ mod tests {
         assert_eq!(store.writes().len(), 1);
         assert_eq!(store.writes()[0].0, "/scope-a/leader");
         assert!(store.writes()[0].1.contains("\"member_id\":\"node-a\""));
+    }
+
+    #[test]
+    fn write_leader_lease_rejects_existing_leader() {
+        let mut store = TestDcsStore::new(true);
+        let first =
+            DcsHaWriter::write_leader_lease(&mut store, "scope-a", &MemberId("node-a".to_string()));
+        let second =
+            DcsHaWriter::write_leader_lease(&mut store, "scope-a", &MemberId("node-b".to_string()));
+
+        assert_eq!(first, Ok(()));
+        assert_eq!(
+            second,
+            Err(DcsStoreError::AlreadyExists("/scope-a/leader".to_string()))
+        );
+        assert_eq!(store.writes().len(), 1);
+        assert!(store.writes()[0].1.contains("\"member_id\":\"node-a\""));
+        assert_eq!(
+            store.read_path("/scope-a/leader"),
+            Ok(Some("{\"member_id\":\"node-a\"}".to_string()))
+        );
     }
 
     #[test]

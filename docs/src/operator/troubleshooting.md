@@ -55,13 +55,13 @@ First checks:
 Likely causes:
 - rewind identity/auth misconfigured or database privileges insufficient
 - replication auth rules incomplete
-- source host/port for rewind is invalid
+- leader/member endpoint advertised in DCS is stale or unreachable
 
 First checks:
 - `postgres.rewind_conn_identity`
 - `postgres.roles.rewinder`
 - `pg_hba` replication rules
-- connectivity to `rewind_source_host:rewind_source_port`
+- current leader/member record in DCS and connectivity to its advertised PostgreSQL endpoint
 
 ## Leader flaps or repeated role churn
 

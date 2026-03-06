@@ -20,6 +20,7 @@ use crate::{
         snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx},
         worker::{DebugApiContractStubInputs, DebugApiCtx},
     },
+    ha::source_conn::basebackup_source_from_member,
     ha::state::{
         HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
     },
@@ -30,7 +31,7 @@ use crate::{
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, ProcessCommandRunner, ProcessExit, ReplicatorSourceConn,
-            RewinderSourceConn, StartPostgresSpec,
+            StartPostgresSpec,
         },
         state::{ProcessJobKind, ProcessState, ProcessWorkerCtx},
         worker::{build_command, system_now_unix_millis, timeout_for_kind, TokioCommandRunner},
@@ -142,41 +143,18 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
 
 // ?!?!?! WHY LIKE THIS?
 fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults {
-    let basebackup_source = ReplicatorSourceConn {
-        conninfo: crate::pginfo::state::PgConnInfo {
-            host: cfg.postgres.rewind_source_host.clone(),
-            port: cfg.postgres.rewind_source_port,
-            user: cfg.postgres.roles.replicator.username.clone(),
-            dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
-            application_name: None,
-            connect_timeout_s: Some(cfg.postgres.connect_timeout_s),
-            ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
-            options: None,
-        },
-        auth: cfg.postgres.roles.replicator.auth.clone(),
-    };
-
-    let rewind_source = RewinderSourceConn {
-        conninfo: crate::pginfo::state::PgConnInfo {
-            host: cfg.postgres.rewind_source_host.clone(),
-            port: cfg.postgres.rewind_source_port,
-            user: cfg.postgres.roles.rewinder.username.clone(),
-            dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
-            application_name: None,
-            connect_timeout_s: Some(cfg.postgres.connect_timeout_s),
-            ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
-            options: None,
-        },
-        auth: cfg.postgres.roles.rewinder.auth.clone(),
-    };
-
     ProcessDispatchDefaults {
         postgres_host: cfg.postgres.listen_host.clone(),
         postgres_port: cfg.postgres.listen_port,
         socket_dir: cfg.postgres.socket_dir.clone(),
         log_file: cfg.postgres.log_file.clone(),
-        basebackup_source,
-        rewind_source,
+        replicator_username: cfg.postgres.roles.replicator.username.clone(),
+        replicator_auth: cfg.postgres.roles.replicator.auth.clone(),
+        rewinder_username: cfg.postgres.roles.rewinder.username.clone(),
+        rewinder_auth: cfg.postgres.roles.rewinder.auth.clone(),
+        remote_dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
+        remote_ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
+        connect_timeout_s: cfg.postgres.connect_timeout_s,
         shutdown_mode: crate::process::jobs::ShutdownMode::Fast,
     }
 }
@@ -344,7 +322,6 @@ fn plan_startup_with_probe(
         cache.as_ref(),
         &cfg.cluster.member_id,
         process_defaults,
-        cfg.postgres.connect_timeout_s,
     )?;
 
     let mut attrs = BTreeMap::new();
@@ -448,7 +425,6 @@ fn select_startup_mode(
     cache: Option<&DcsCache>,
     self_member_id: &str,
     process_defaults: &ProcessDispatchDefaults,
-    connect_timeout_s: u32,
 ) -> Result<StartupMode, RuntimeError> {
     match data_dir_state {
         DataDirState::Existing => Ok(StartupMode::ResumeExisting),
@@ -456,17 +432,18 @@ fn select_startup_mode(
             let init_lock_present = cache
                 .and_then(|snapshot| snapshot.init_lock.as_ref())
                 .is_some();
+            let self_member_id = MemberId(self_member_id.to_string());
 
             let leader_from_leader_key = cache.and_then(|snapshot| {
                 let leader_record = snapshot.leader.as_ref()?;
-                if leader_record.member_id.0 == self_member_id {
+                if leader_record.member_id == self_member_id {
                     return None;
                 }
                 let member = snapshot.members.get(&leader_record.member_id)?;
                 let eligible =
                     member.role == MemberRole::Primary && member.sql == SqlStatus::Healthy;
                 if eligible {
-                    Some(leader_record.member_id.clone())
+                    Some(member.clone())
                 } else {
                     None
                 }
@@ -480,20 +457,28 @@ fn select_startup_mode(
                     .members
                     .values()
                     .find(|member| {
-                        member.member_id.0 != self_member_id
+                        member.member_id != self_member_id
                             && member.role == MemberRole::Primary
                             && member.sql == SqlStatus::Healthy
                     })
-                    .map(|member| member.member_id.clone())
+                    .cloned()
             });
 
             let leader = leader_from_leader_key.or(leader_from_members);
 
             match leader {
-                Some(leader_member_id) => Ok(StartupMode::CloneReplica {
-                    leader_member_id,
-                    source: default_leader_source(process_defaults, connect_timeout_s),
-                }),
+                Some(leader_member) => {
+                    let source = basebackup_source_from_member(
+                        &self_member_id,
+                        &leader_member,
+                        process_defaults,
+                    )
+                    .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
+                    Ok(StartupMode::CloneReplica {
+                        leader_member_id: leader_member.member_id.clone(),
+                        source,
+                    })
+                }
                 None => {
                     if init_lock_present {
                         Err(RuntimeError::StartupPlanning(
@@ -507,15 +492,6 @@ fn select_startup_mode(
             }
         }
     }
-}
-
-fn default_leader_source(
-    process_defaults: &ProcessDispatchDefaults,
-    connect_timeout_s: u32,
-) -> ReplicatorSourceConn {
-    let mut source = process_defaults.basebackup_source.clone();
-    source.conninfo.connect_timeout_s = Some(connect_timeout_s);
-    source
 }
 
 fn claim_dcs_init_lock_and_seed_config(cfg: &RuntimeConfig) -> Result<(), String> {
@@ -1094,6 +1070,8 @@ async fn run_workers(
         self_id: self_id.clone(),
         scope: scope.clone(),
         poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
+        local_postgres_host: cfg.postgres.listen_host.clone(),
+        local_postgres_port: cfg.postgres.listen_port,
         pg_subscriber: pg_subscriber.clone(),
         publisher: dcs_publisher,
         store: Box::new(dcs_store),
@@ -1264,9 +1242,7 @@ mod tests {
         state::{MemberId, UnixMillis, Version},
     };
 
-    use super::{
-        default_leader_source, inspect_data_dir, select_startup_mode, DataDirState, StartupMode,
-    };
+    use super::{inspect_data_dir, select_startup_mode, DataDirState, StartupMode};
     use super::{plan_startup_with_probe, process_defaults_from_config};
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -1282,8 +1258,6 @@ mod tests {
                 listen_port: 5432,
                 socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
                 log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
@@ -1527,6 +1501,8 @@ mod tests {
             leader_id.clone(),
             MemberRecord {
                 member_id: leader_id.clone(),
+                postgres_host: "10.0.0.20".to_string(),
+                postgres_port: 5440,
                 role: MemberRole::Primary,
                 sql: SqlStatus::Healthy,
                 readiness: Readiness::Ready,
@@ -1548,13 +1524,7 @@ mod tests {
             init_lock: None,
         };
 
-        let mode = select_startup_mode(
-            DataDirState::Empty,
-            Some(&cache),
-            "node-a",
-            &defaults,
-            cfg.postgres.connect_timeout_s,
-        )?;
+        let mode = select_startup_mode(DataDirState::Empty, Some(&cache), "node-a", &defaults)?;
 
         assert!(matches!(mode, StartupMode::CloneReplica { .. }));
         if let StartupMode::CloneReplica {
@@ -1565,7 +1535,13 @@ mod tests {
             assert_eq!(leader_member_id, leader_id);
             assert_eq!(
                 source,
-                default_leader_source(&defaults, cfg.postgres.connect_timeout_s)
+                crate::ha::source_conn::basebackup_source_from_member(
+                    &MemberId("node-a".to_string()),
+                    cache.members.get(&leader_id).ok_or_else(|| {
+                        io::Error::other("leader member missing from startup test cache")
+                    })?,
+                    &defaults,
+                )?
             );
         }
         Ok(())
@@ -1574,16 +1550,9 @@ mod tests {
     #[test]
     fn select_startup_mode_uses_initialize_when_no_leader_evidence(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let cfg = sample_runtime_config();
         let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
 
-        let mode = select_startup_mode(
-            DataDirState::Empty,
-            None,
-            "node-a",
-            &defaults,
-            cfg.postgres.connect_timeout_s,
-        )?;
+        let mode = select_startup_mode(DataDirState::Empty, None, "node-a", &defaults)?;
 
         assert_eq!(mode, StartupMode::InitializePrimary);
         Ok(())
@@ -1592,15 +1561,8 @@ mod tests {
     #[test]
     fn select_startup_mode_uses_resume_when_pgdata_exists() -> Result<(), Box<dyn std::error::Error>>
     {
-        let cfg = sample_runtime_config();
         let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
-        let mode = select_startup_mode(
-            DataDirState::Existing,
-            None,
-            "node-a",
-            &defaults,
-            cfg.postgres.connect_timeout_s,
-        )?;
+        let mode = select_startup_mode(DataDirState::Existing, None, "node-a", &defaults)?;
         assert_eq!(mode, StartupMode::ResumeExisting);
         Ok(())
     }
@@ -1621,13 +1583,7 @@ mod tests {
             }),
         };
 
-        let result = select_startup_mode(
-            DataDirState::Empty,
-            Some(&cache),
-            "node-a",
-            &defaults,
-            cfg.postgres.connect_timeout_s,
-        );
+        let result = select_startup_mode(DataDirState::Empty, Some(&cache), "node-a", &defaults);
 
         assert!(matches!(
             result,
@@ -1648,6 +1604,8 @@ mod tests {
             primary_id.clone(),
             MemberRecord {
                 member_id: primary_id.clone(),
+                postgres_host: "10.0.0.21".to_string(),
+                postgres_port: 5441,
                 role: MemberRole::Primary,
                 sql: SqlStatus::Healthy,
                 readiness: Readiness::Ready,
@@ -1669,20 +1627,15 @@ mod tests {
             }),
         };
 
-        let mode = select_startup_mode(
-            DataDirState::Empty,
-            Some(&cache),
-            "node-a",
-            &defaults,
-            cfg.postgres.connect_timeout_s,
-        )?;
+        let mode = select_startup_mode(DataDirState::Empty, Some(&cache), "node-a", &defaults)?;
 
         assert!(matches!(mode, StartupMode::CloneReplica { .. }));
         Ok(())
     }
 
     #[test]
-    fn runtime_uses_role_specific_users_for_dsn_clone_and_rewind() {
+    fn runtime_uses_role_specific_users_for_dsn_clone_and_rewind(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut cfg = sample_runtime_config();
         cfg.postgres.roles.superuser.username = "su_admin".to_string();
         cfg.postgres.roles.replicator.username = "repl_user".to_string();
@@ -1691,8 +1644,8 @@ mod tests {
         cfg.postgres.rewind_conn_identity.user = "rewind_user".to_string();
 
         let defaults = super::process_defaults_from_config(&cfg);
-        assert_eq!(defaults.basebackup_source.conninfo.user, "repl_user");
-        assert_eq!(defaults.rewind_source.conninfo.user, "rewind_user");
+        assert_eq!(defaults.replicator_username, "repl_user");
+        assert_eq!(defaults.rewinder_username, "rewind_user");
 
         let local_dsn = super::local_postgres_dsn(
             &defaults,
@@ -1702,7 +1655,24 @@ mod tests {
         );
         assert!(local_dsn.contains("user=su_admin"));
 
-        let leader_source = default_leader_source(&defaults, cfg.postgres.connect_timeout_s);
+        let leader_source = crate::ha::source_conn::basebackup_source_from_member(
+            &MemberId("node-a".to_string()),
+            &MemberRecord {
+                member_id: MemberId("node-b".to_string()),
+                postgres_host: "10.0.0.30".to_string(),
+                postgres_port: 5442,
+                role: MemberRole::Primary,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+            &defaults,
+        )?;
         assert_eq!(leader_source.conninfo.user, "repl_user");
+        Ok(())
     }
 }

@@ -101,6 +101,7 @@ fn map_ha_phase(value: &HaPhase) -> HaPhaseResponse {
         HaPhase::Init => HaPhaseResponse::Init,
         HaPhase::WaitingPostgresReachable => HaPhaseResponse::WaitingPostgresReachable,
         HaPhase::WaitingDcsTrusted => HaPhaseResponse::WaitingDcsTrusted,
+        HaPhase::WaitingSwitchoverSuccessor => HaPhaseResponse::WaitingSwitchoverSuccessor,
         HaPhase::Replica => HaPhaseResponse::Replica,
         HaPhase::CandidateLeader => HaPhaseResponse::CandidateLeader,
         HaPhase::Primary => HaPhaseResponse::Primary,
@@ -176,6 +177,9 @@ fn map_recovery_strategy(value: &RecoveryStrategy) -> RecoveryStrategyResponse {
 fn map_lease_release_reason(value: &LeaseReleaseReason) -> LeaseReleaseReasonResponse {
     match value {
         LeaseReleaseReason::FencingComplete => LeaseReleaseReasonResponse::FencingComplete,
+        LeaseReleaseReason::PostgresUnreachable => {
+            LeaseReleaseReasonResponse::PostgresUnreachable
+        }
     }
 }
 

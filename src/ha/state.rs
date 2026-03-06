@@ -1,12 +1,12 @@
 use std::{path::PathBuf, time::Duration};
 
 use crate::{
-    config::RuntimeConfig,
+    config::{RoleAuthConfig, RuntimeConfig},
     dcs::{state::DcsState, store::DcsStore},
     logging::LogHandle,
-    pginfo::state::{PgConnInfo, PgInfoState, PgSslMode},
+    pginfo::state::{PgInfoState, PgSslMode},
     process::{
-        jobs::{ReplicatorSourceConn, RewinderSourceConn, ShutdownMode},
+        jobs::ShutdownMode,
         state::{ProcessJobRequest, ProcessState},
     },
     state::{
@@ -24,6 +24,7 @@ pub(crate) enum HaPhase {
     Init,
     WaitingPostgresReachable,
     WaitingDcsTrusted,
+    WaitingSwitchoverSuccessor,
     Replica,
     CandidateLeader,
     Primary,
@@ -84,8 +85,13 @@ pub(crate) struct ProcessDispatchDefaults {
     pub(crate) postgres_port: u16,
     pub(crate) socket_dir: PathBuf,
     pub(crate) log_file: PathBuf,
-    pub(crate) basebackup_source: ReplicatorSourceConn,
-    pub(crate) rewind_source: RewinderSourceConn,
+    pub(crate) replicator_username: String,
+    pub(crate) replicator_auth: RoleAuthConfig,
+    pub(crate) rewinder_username: String,
+    pub(crate) rewinder_auth: RoleAuthConfig,
+    pub(crate) remote_dbname: String,
+    pub(crate) remote_ssl_mode: PgSslMode,
+    pub(crate) connect_timeout_s: u32,
     pub(crate) shutdown_mode: ShutdownMode,
 }
 
@@ -96,32 +102,13 @@ impl ProcessDispatchDefaults {
             postgres_port: 5432,
             socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
             log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
-            basebackup_source: ReplicatorSourceConn {
-                conninfo: PgConnInfo {
-                    host: "127.0.0.1".to_string(),
-                    port: 5432,
-                    user: "replicator".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: None,
-                    ssl_mode: PgSslMode::Prefer,
-                    options: None,
-                },
-                auth: crate::config::RoleAuthConfig::Tls,
-            },
-            rewind_source: RewinderSourceConn {
-                conninfo: PgConnInfo {
-                    host: "127.0.0.1".to_string(),
-                    port: 5432,
-                    user: "rewinder".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: None,
-                    ssl_mode: PgSslMode::Prefer,
-                    options: None,
-                },
-                auth: crate::config::RoleAuthConfig::Tls,
-            },
+            replicator_username: "replicator".to_string(),
+            replicator_auth: crate::config::RoleAuthConfig::Tls,
+            rewinder_username: "rewinder".to_string(),
+            rewinder_auth: crate::config::RoleAuthConfig::Tls,
+            remote_dbname: "postgres".to_string(),
+            remote_ssl_mode: PgSslMode::Prefer,
+            connect_timeout_s: 5,
             shutdown_mode: ShutdownMode::Fast,
         }
     }

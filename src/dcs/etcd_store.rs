@@ -4,7 +4,7 @@ use std::{
     str,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, TryRecvError},
+        mpsc,
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -15,6 +15,7 @@ use etcd_client::{
     Client, Compare, CompareOp, EventType, GetOptions, Txn, TxnOp, WatchOptions, WatchResponse,
     WatchStream, Watcher,
 };
+use tokio::sync::mpsc as tokio_mpsc;
 
 use super::store::{DcsStore, DcsStoreError, WatchEvent, WatchOp};
 
@@ -47,7 +48,7 @@ enum WorkerCommand {
 pub(crate) struct EtcdDcsStore {
     healthy: Arc<AtomicBool>,
     events: Arc<Mutex<VecDeque<WatchEvent>>>,
-    command_tx: mpsc::Sender<WorkerCommand>,
+    command_tx: tokio_mpsc::UnboundedSender<WorkerCommand>,
     worker_handle: Option<JoinHandle<()>>,
 }
 
@@ -70,7 +71,7 @@ impl EtcdDcsStore {
         let scope_prefix = format!("/{}/", scope.trim_matches('/'));
         let healthy = Arc::new(AtomicBool::new(false));
         let events = Arc::new(Mutex::new(VecDeque::new()));
-        let (command_tx, command_rx) = mpsc::channel::<WorkerCommand>();
+        let (command_tx, command_rx) = tokio_mpsc::unbounded_channel::<WorkerCommand>();
         let (startup_tx, startup_rx) = mpsc::channel::<Result<(), DcsStoreError>>();
 
         let worker_healthy = Arc::clone(&healthy);
@@ -141,14 +142,20 @@ impl EtcdDcsStore {
                 response_tx,
             })
             .map_err(|err| {
+                self.mark_unhealthy();
                 DcsStoreError::Io(format!("send put-if-absent command failed: {err}"))
             })?;
 
         response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
+            self.mark_unhealthy();
             DcsStoreError::Io(format!(
                 "timed out waiting for put-if-absent response: {err}"
             ))
         })?
+    }
+
+    fn mark_unhealthy(&self) {
+        self.healthy.store(false, Ordering::SeqCst);
     }
 }
 
@@ -157,7 +164,7 @@ fn run_worker_loop(
     scope_prefix: String,
     healthy: Arc<AtomicBool>,
     events: Arc<Mutex<VecDeque<WatchEvent>>>,
-    command_rx: mpsc::Receiver<WorkerCommand>,
+    mut command_rx: tokio_mpsc::UnboundedReceiver<WorkerCommand>,
     startup_tx: mpsc::Sender<Result<(), DcsStoreError>>,
 ) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -200,126 +207,44 @@ fn run_worker_loop(
         };
 
         loop {
-            loop {
-                match command_rx.try_recv() {
-                    Ok(command) => match command {
-                        WorkerCommand::Write {
-                            path,
-                            value,
-                            response_tx,
-                        } => {
-                            let result =
-                                execute_write(&endpoints, &mut client, &healthy, &path, value)
-                                    .await;
-                            let invalidate_result = if result.is_err() {
-                                invalidate_watch_session(
-                                    &healthy,
-                                    &events,
-                                    &mut client,
-                                    &mut _watcher,
-                                    &mut watch_stream,
-                                )
-                            } else {
-                                Ok(())
-                            };
-                            let _ = response_tx.send(result);
-                            if invalidate_result.is_err() {
-                                return;
-                            }
-                        }
-                        WorkerCommand::Read { path, response_tx } => {
-                            let result =
-                                execute_read(&endpoints, &mut client, &healthy, &path).await;
-                            let invalidate_result = if result.is_err() {
-                                invalidate_watch_session(
-                                    &healthy,
-                                    &events,
-                                    &mut client,
-                                    &mut _watcher,
-                                    &mut watch_stream,
-                                )
-                            } else {
-                                Ok(())
-                            };
-                            let _ = response_tx.send(result);
-                            if invalidate_result.is_err() {
-                                return;
-                            }
-                        }
-                        WorkerCommand::PutIfAbsent {
-                            path,
-                            value,
-                            response_tx,
-                        } => {
-                            let result = execute_put_if_absent(
-                                &endpoints,
-                                &mut client,
-                                &healthy,
-                                &path,
-                                value,
-                            )
-                            .await;
-                            let invalidate_result = if result.is_err() {
-                                invalidate_watch_session(
-                                    &healthy,
-                                    &events,
-                                    &mut client,
-                                    &mut _watcher,
-                                    &mut watch_stream,
-                                )
-                            } else {
-                                Ok(())
-                            };
-                            let _ = response_tx.send(result);
-                            if invalidate_result.is_err() {
-                                return;
-                            }
-                        }
-                        WorkerCommand::Delete { path, response_tx } => {
-                            let result =
-                                execute_delete(&endpoints, &mut client, &healthy, &path).await;
-                            let invalidate_result = if result.is_err() {
-                                invalidate_watch_session(
-                                    &healthy,
-                                    &events,
-                                    &mut client,
-                                    &mut _watcher,
-                                    &mut watch_stream,
-                                )
-                            } else {
-                                Ok(())
-                            };
-                            let _ = response_tx.send(result);
-                            if invalidate_result.is_err() {
-                                return;
-                            }
-                        }
-                        WorkerCommand::Shutdown => return,
-                    },
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => return,
-                }
-            }
-
             if client.is_none() || watch_stream.is_none() {
-                match establish_watch_session(
-                    &endpoints,
-                    &scope_prefix,
-                    &events,
-                    had_successful_session,
-                )
-                .await
-                {
-                    Ok((next_client, next_watcher, next_stream)) => {
-                        had_successful_session = true;
-                        client = Some(next_client);
-                        _watcher = Some(next_watcher);
-                        watch_stream = Some(next_stream);
-                        healthy.store(true, Ordering::SeqCst);
+                tokio::select! {
+                    maybe_command = command_rx.recv() => {
+                        let Some(command) = maybe_command else {
+                            return;
+                        };
+                        if !handle_worker_command(
+                            command,
+                            &endpoints,
+                            &healthy,
+                            &events,
+                            &mut client,
+                            &mut _watcher,
+                            &mut watch_stream,
+                        ).await {
+                            return;
+                        }
                     }
-                    Err(_) => {
-                        healthy.store(false, Ordering::SeqCst);
-                        tokio::time::sleep(WATCH_IDLE_INTERVAL).await;
+                    _ = tokio::time::sleep(WATCH_IDLE_INTERVAL) => {
+                        match establish_watch_session(
+                            &endpoints,
+                            &scope_prefix,
+                            &events,
+                            had_successful_session,
+                        )
+                        .await
+                        {
+                            Ok((next_client, next_watcher, next_stream)) => {
+                                had_successful_session = true;
+                                client = Some(next_client);
+                                _watcher = Some(next_watcher);
+                                watch_stream = Some(next_stream);
+                                healthy.store(true, Ordering::SeqCst);
+                            }
+                            Err(_) => {
+                                healthy.store(false, Ordering::SeqCst);
+                            }
+                        }
                     }
                 }
                 continue;
@@ -330,54 +255,123 @@ fn run_worker_loop(
                 continue;
             };
 
-            match tokio::time::timeout(WATCH_IDLE_INTERVAL, active_stream.message()).await {
-                Ok(Ok(Some(response))) => {
-                    if apply_watch_response(response, &events).is_err() {
-                        if invalidate_watch_session(
-                            &healthy,
-                            &events,
-                            &mut client,
-                            &mut _watcher,
-                            &mut watch_stream,
-                        )
-                        .is_err()
-                        {
-                            return;
+            tokio::select! {
+                maybe_command = command_rx.recv() => {
+                    let Some(command) = maybe_command else {
+                        return;
+                    };
+                    if !handle_worker_command(
+                        command,
+                        &endpoints,
+                        &healthy,
+                        &events,
+                        &mut client,
+                        &mut _watcher,
+                        &mut watch_stream,
+                    ).await {
+                        return;
+                    }
+                }
+                response = active_stream.message() => {
+                    match response {
+                        Ok(Some(response)) => {
+                            if apply_watch_response(response, &events).is_err() {
+                                if invalidate_watch_session(
+                                    &healthy,
+                                    &events,
+                                    &mut client,
+                                    &mut _watcher,
+                                    &mut watch_stream,
+                                )
+                                .is_err()
+                                {
+                                    return;
+                                }
+                            } else {
+                                healthy.store(true, Ordering::SeqCst);
+                            }
                         }
-                    } else {
-                        healthy.store(true, Ordering::SeqCst);
+                        Ok(None) | Err(_) => {
+                            if invalidate_watch_session(
+                                &healthy,
+                                &events,
+                                &mut client,
+                                &mut _watcher,
+                                &mut watch_stream,
+                            )
+                            .is_err()
+                            {
+                                return;
+                            }
+                        }
                     }
                 }
-                Ok(Ok(None)) => {
-                    if invalidate_watch_session(
-                        &healthy,
-                        &events,
-                        &mut client,
-                        &mut _watcher,
-                        &mut watch_stream,
-                    )
-                    .is_err()
-                    {
-                        return;
-                    }
-                }
-                Ok(Err(_)) => {
-                    if invalidate_watch_session(
-                        &healthy,
-                        &events,
-                        &mut client,
-                        &mut _watcher,
-                        &mut watch_stream,
-                    )
-                    .is_err()
-                    {
-                        return;
-                    }
-                }
-                Err(_) => {}
+                _ = tokio::time::sleep(WATCH_IDLE_INTERVAL) => {}
             }
         }
     });
+}
+
+async fn handle_worker_command(
+    command: WorkerCommand,
+    endpoints: &[String],
+    healthy: &Arc<AtomicBool>,
+    events: &Arc<Mutex<VecDeque<WatchEvent>>>,
+    client: &mut Option<Client>,
+    watcher: &mut Option<Watcher>,
+    watch_stream: &mut Option<WatchStream>,
+) -> bool {
+    match command {
+        WorkerCommand::Write {
+            path,
+            value,
+            response_tx,
+        } => {
+            let result = execute_write(endpoints, client, healthy, &path, value).await;
+            let invalidate_result = if result.is_err() {
+                invalidate_watch_session(healthy, events, client, watcher, watch_stream)
+            } else {
+                Ok(())
+            };
+            let _ = response_tx.send(result);
+            invalidate_result.is_ok()
+        }
+        WorkerCommand::Read { path, response_tx } => {
+            let result = execute_read(endpoints, client, healthy, &path).await;
+            let invalidate_result = if result.is_err() {
+                invalidate_watch_session(healthy, events, client, watcher, watch_stream)
+            } else {
+                Ok(())
+            };
+            let _ = response_tx.send(result);
+            invalidate_result.is_ok()
+        }
+        WorkerCommand::PutIfAbsent {
+            path,
+            value,
+            response_tx,
+        } => {
+            let result = execute_put_if_absent(endpoints, client, healthy, &path, value).await;
+            let invalidate_result = if result.is_err() {
+                invalidate_watch_session(healthy, events, client, watcher, watch_stream)
+            } else {
+                Ok(())
+            };
+            let _ = response_tx.send(result);
+            invalidate_result.is_ok()
+        }
+        WorkerCommand::Delete { path, response_tx } => {
+            let result = execute_delete(endpoints, client, healthy, &path).await;
+            let invalidate_result = if result.is_err() {
+                invalidate_watch_session(healthy, events, client, watcher, watch_stream)
+            } else {
+                Ok(())
+            };
+            let _ = response_tx.send(result);
+            invalidate_result.is_ok()
+        }
+        WorkerCommand::Shutdown => false,
+    }
 }
 
 fn invalidate_watch_session(
@@ -737,9 +731,13 @@ impl DcsStore for EtcdDcsStore {
                 path: path.to_string(),
                 response_tx,
             })
-            .map_err(|err| DcsStoreError::Io(format!("send read command failed: {err}")))?;
+            .map_err(|err| {
+                self.mark_unhealthy();
+                DcsStoreError::Io(format!("send read command failed: {err}"))
+            })?;
 
         response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
+            self.mark_unhealthy();
             DcsStoreError::Io(format!("timed out waiting for read command: {err}"))
         })?
     }
@@ -752,9 +750,13 @@ impl DcsStore for EtcdDcsStore {
                 value,
                 response_tx,
             })
-            .map_err(|err| DcsStoreError::Io(format!("send write command failed: {err}")))?;
+            .map_err(|err| {
+                self.mark_unhealthy();
+                DcsStoreError::Io(format!("send write command failed: {err}"))
+            })?;
 
         response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
+            self.mark_unhealthy();
             DcsStoreError::Io(format!("timed out waiting for write command: {err}"))
         })?
     }
@@ -770,9 +772,13 @@ impl DcsStore for EtcdDcsStore {
                 path: path.to_string(),
                 response_tx,
             })
-            .map_err(|err| DcsStoreError::Io(format!("send delete command failed: {err}")))?;
+            .map_err(|err| {
+                self.mark_unhealthy();
+                DcsStoreError::Io(format!("send delete command failed: {err}"))
+            })?;
 
         response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
+            self.mark_unhealthy();
             DcsStoreError::Io(format!("timed out waiting for delete command: {err}"))
         })?
     }
@@ -979,8 +985,6 @@ mod tests {
                 listen_port: 5432,
                 socket_dir: "/tmp/pgtuskmaster/socket".into(),
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
@@ -1134,6 +1138,8 @@ mod tests {
                 self_id,
                 scope: scope.to_string(),
                 poll_interval: Duration::from_millis(50),
+                local_postgres_host: "127.0.0.1".to_string(),
+                local_postgres_port: 5432,
                 pg_subscriber,
                 publisher: dcs_publisher,
                 store: Box::new(store),
@@ -1238,6 +1244,8 @@ mod tests {
                 MemberId("node-stale".to_string()),
                 MemberRecord {
                     member_id: MemberId("node-stale".to_string()),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
                     role: MemberRole::Primary,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,

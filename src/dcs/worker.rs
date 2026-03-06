@@ -76,15 +76,23 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let pg_snapshot = ctx.pg_subscriber.latest();
 
     let mut store_healthy = ctx.store.healthy();
-    let must_publish_local_member = true;
+    let must_publish_local_member = store_healthy;
+    let mut local_member_publish_succeeded = false;
 
     if must_publish_local_member {
-        let local_member =
-            build_local_member_record(&ctx.self_id, &pg_snapshot.value, now, pg_snapshot.version);
+        let local_member = build_local_member_record(
+            &ctx.self_id,
+            ctx.local_postgres_host.as_str(),
+            ctx.local_postgres_port,
+            &pg_snapshot.value,
+            now,
+            pg_snapshot.version,
+        );
         match write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member) {
             Ok(()) => {
                 ctx.last_published_pg_version = Some(pg_snapshot.version);
                 ctx.cache.members.insert(ctx.self_id.clone(), local_member);
+                local_member_publish_succeeded = true;
             }
             Err(err) => {
                 let mut attrs = BTreeMap::new();
@@ -237,7 +245,11 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
         }
     }
 
-    let trust = evaluate_trust(store_healthy, &ctx.cache, &ctx.self_id);
+    let trust = if local_member_publish_succeeded {
+        evaluate_trust(store_healthy, &ctx.cache, &ctx.self_id)
+    } else {
+        DcsTrust::NotTrusted
+    };
     let worker = if store_healthy {
         crate::state::WorkerStatus::Running
     } else {
@@ -406,6 +418,13 @@ mod tests {
             }
             None
         }
+
+        fn first_write_value(&self) -> Option<String> {
+            if let Ok(guard) = self.writes.lock() {
+                return guard.first().map(|(_, value)| value.clone());
+            }
+            None
+        }
     }
 
     impl DcsStore for RecordingStore {
@@ -509,8 +528,6 @@ mod tests {
                 listen_port: 5432,
                 socket_dir: "/tmp/pgtuskmaster/socket".into(),
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
@@ -653,6 +670,8 @@ mod tests {
                 key: DcsKey::Member(member_id.clone()),
                 value: Box::new(DcsValue::Member(MemberRecord {
                     member_id: member_id.clone(),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
                     role: MemberRole::Primary,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,
@@ -760,6 +779,8 @@ mod tests {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
             poll_interval: Duration::from_millis(5),
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -801,13 +822,15 @@ mod tests {
             cache: sample_cache(sample_runtime_config()),
             last_refresh_at: None,
         };
-        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
 
         let (log, sink) = test_log_handle();
         let mut ctx = DcsWorkerCtx {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
             poll_interval: Duration::from_millis(5),
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(FailingWriteStore::default()),
@@ -819,6 +842,9 @@ mod tests {
         };
 
         step_once(&mut ctx).await?;
+
+        let latest = dcs_subscriber.latest();
+        assert_eq!(latest.value.trust, DcsTrust::NotTrusted);
 
         let failures = sink
             .collect_matching(|record| {
@@ -863,6 +889,8 @@ mod tests {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
             poll_interval: Duration::from_millis(5),
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -887,6 +915,49 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn step_once_publishes_local_endpoint_instead_of_cached_config_endpoint(
+    ) -> Result<(), WorkerError> {
+        let initial_pg = sample_pg();
+        let (_pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let store = RecordingStore::new(true);
+        let store_probe = store.clone();
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: Duration::from_millis(5),
+            local_postgres_host: "127.0.0.9".to_string(),
+            local_postgres_port: 6543,
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
+        };
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+        let encoded = store_probe
+            .first_write_value()
+            .ok_or_else(|| WorkerError::Message("expected local member write".to_string()))?;
+        let record: MemberRecord = serde_json::from_str(encoded.as_str()).map_err(|err| {
+            WorkerError::Message(format!("decode written member record failed: {err}"))
+        })?;
+        assert_eq!(record.postgres_host, "127.0.0.9".to_string());
+        assert_eq!(record.postgres_port, 6543);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn step_once_republishes_member_after_unhealthy_tick_even_without_pg_change() {
         let initial_pg = sample_pg();
         let (_pg_publisher, pg_subscriber) = new_state_channel(initial_pg.clone(), UnixMillis(1));
@@ -904,6 +975,8 @@ mod tests {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
             poll_interval: Duration::from_millis(5),
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -943,6 +1016,8 @@ mod tests {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
             poll_interval: Duration::from_millis(5),
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -986,6 +1061,8 @@ mod tests {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
             poll_interval: Duration::from_millis(5),
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),

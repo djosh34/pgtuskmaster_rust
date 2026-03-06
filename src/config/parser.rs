@@ -155,8 +155,6 @@ fn normalize_postgres_config_v2(
         listen_port: input.listen_port,
         socket_dir: input.socket_dir,
         log_file: input.log_file,
-        rewind_source_host: input.rewind_source_host,
-        rewind_source_port: input.rewind_source_port,
         local_conn_identity,
         rewind_conn_identity,
         tls,
@@ -445,14 +443,6 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_port("postgres.listen_port", cfg.postgres.listen_port)?;
     validate_non_empty_path("postgres.socket_dir", &cfg.postgres.socket_dir)?;
     validate_non_empty_path("postgres.log_file", &cfg.postgres.log_file)?;
-    validate_non_empty(
-        "postgres.rewind_source_host",
-        cfg.postgres.rewind_source_host.as_str(),
-    )?;
-    validate_port(
-        "postgres.rewind_source_port",
-        cfg.postgres.rewind_source_port,
-    )?;
 
     validate_non_empty(
         "postgres.local_conn_identity.user",
@@ -964,8 +954,6 @@ mod tests {
                 listen_port: 5432,
                 socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
                 log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
@@ -1370,8 +1358,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1434,8 +1420,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1493,8 +1477,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
@@ -1554,8 +1536,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1619,8 +1599,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1681,8 +1659,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1743,8 +1719,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1806,8 +1780,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1869,8 +1841,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1932,8 +1902,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "not-postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -1995,8 +1963,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -2058,8 +2024,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "required" }
@@ -2121,8 +2085,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled", client_auth = { client_ca = { content = "client-ca" }, require_client_cert = false } }

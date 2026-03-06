@@ -63,6 +63,7 @@ pub enum HaPhaseResponse {
     Init,
     WaitingPostgresReachable,
     WaitingDcsTrusted,
+    WaitingSwitchoverSuccessor,
     Replica,
     CandidateLeader,
     Primary,
@@ -124,6 +125,7 @@ pub enum RecoveryStrategyResponse {
 #[serde(rename_all = "snake_case")]
 pub enum LeaseReleaseReasonResponse {
     FencingComplete,
+    PostgresUnreachable,
 }
 
 impl DcsTrustResponse {
@@ -142,6 +144,7 @@ impl HaPhaseResponse {
             Self::Init => "init",
             Self::WaitingPostgresReachable => "waiting_postgres_reachable",
             Self::WaitingDcsTrusted => "waiting_dcs_trusted",
+            Self::WaitingSwitchoverSuccessor => "waiting_switchover_successor",
             Self::Replica => "replica",
             Self::CandidateLeader => "candidate_leader",
             Self::Primary => "primary",
@@ -157,6 +160,7 @@ impl HaPhaseResponse {
             Self::Init => "Init",
             Self::WaitingPostgresReachable => "WaitingPostgresReachable",
             Self::WaitingDcsTrusted => "WaitingDcsTrusted",
+            Self::WaitingSwitchoverSuccessor => "WaitingSwitchoverSuccessor",
             Self::Replica => "Replica",
             Self::CandidateLeader => "CandidateLeader",
             Self::Primary => "Primary",
@@ -207,6 +211,7 @@ impl fmt::Display for LeaseReleaseReasonResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::FencingComplete => f.write_str("fencing_complete"),
+            Self::PostgresUnreachable => f.write_str("postgres_unreachable"),
         }
     }
 }

@@ -207,8 +207,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
-rewind_source_host = "127.0.0.1"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }

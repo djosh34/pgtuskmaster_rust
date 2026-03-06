@@ -5,5 +5,6 @@ pub(crate) mod decision;
 pub(crate) mod events;
 pub(crate) mod lower;
 pub(crate) mod process_dispatch;
+pub(crate) mod source_conn;
 pub(crate) mod state;
 pub(crate) mod worker;

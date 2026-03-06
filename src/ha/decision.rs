@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    dcs::state::DcsTrust,
+    dcs::state::{DcsTrust, MemberRole},
     pginfo::state::{PgInfoState, SqlStatus},
-    process::state::{JobOutcome, ProcessState},
+    process::{
+        jobs::ActiveJobKind,
+        state::{JobOutcome, ProcessState},
+    },
     state::{MemberId, TimelineId},
 };
 
@@ -14,14 +17,16 @@ pub(crate) struct DecisionFacts {
     pub(crate) self_member_id: MemberId,
     pub(crate) trust: DcsTrust,
     pub(crate) postgres_reachable: bool,
+    pub(crate) postgres_primary: bool,
     pub(crate) leader_member_id: Option<MemberId>,
     pub(crate) active_leader_member_id: Option<MemberId>,
+    pub(crate) available_primary_member_id: Option<MemberId>,
     pub(crate) switchover_requested_by: Option<MemberId>,
     pub(crate) i_am_leader: bool,
     pub(crate) has_other_leader_record: bool,
     pub(crate) has_available_other_leader: bool,
     pub(crate) rewind_required: bool,
-    pub(crate) process_activity: ProcessActivity,
+    pub(crate) process_state: ProcessState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +99,7 @@ pub(crate) enum RecoveryStrategy {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum LeaseReleaseReason {
     FencingComplete,
+    PostgresUnreachable,
 }
 
 impl DecisionFacts {
@@ -109,6 +115,20 @@ impl DecisionFacts {
         let active_leader_member_id = leader_member_id
             .clone()
             .filter(|leader_id| is_available_primary_leader(world, leader_id));
+        let available_primary_member_id = active_leader_member_id.clone().or_else(|| {
+            world
+                .dcs
+                .value
+                .cache
+                .members
+                .values()
+                .find(|member| {
+                    member.member_id != self_member_id
+                        && member.role == MemberRole::Primary
+                        && member.sql == SqlStatus::Healthy
+                })
+                .map(|member| member.member_id.clone())
+        });
         let i_am_leader = leader_member_id.as_ref() == Some(&self_member_id);
         let has_other_leader_record = leader_member_id
             .as_ref()
@@ -123,8 +143,10 @@ impl DecisionFacts {
             self_member_id,
             trust: world.dcs.value.trust.clone(),
             postgres_reachable: is_postgres_reachable(&world.pg.value),
+            postgres_primary: is_local_primary(&world.pg.value),
             leader_member_id,
             active_leader_member_id: active_leader_member_id.clone(),
+            available_primary_member_id: available_primary_member_id.clone(),
             switchover_requested_by: world
                 .dcs
                 .value
@@ -135,31 +157,79 @@ impl DecisionFacts {
             i_am_leader,
             has_other_leader_record,
             has_available_other_leader,
-            rewind_required: active_leader_member_id
+            rewind_required: available_primary_member_id
                 .as_ref()
                 .map(|leader_id| should_rewind_from_leader(world, leader_id))
                 .unwrap_or(false),
-            process_activity: ProcessActivity::from_process_state(&world.process.value),
+            process_state: world.process.value.clone(),
         }
     }
 }
 
 impl ProcessActivity {
-    fn from_process_state(process: &ProcessState) -> Self {
+    fn from_process_state(process: &ProcessState, expected_kinds: &[ActiveJobKind]) -> Self {
         match process {
-            ProcessState::Running { .. } => Self::Running,
+            ProcessState::Running { active, .. } => {
+                if expected_kinds.contains(&active.kind) {
+                    Self::Running
+                } else {
+                    Self::IdleNoOutcome
+                }
+            }
             ProcessState::Idle {
-                last_outcome: Some(JobOutcome::Success { .. }),
+                last_outcome:
+                    Some(JobOutcome::Success {
+                        job_kind, ..
+                    }),
                 ..
-            } => Self::IdleSuccess,
+            } => {
+                if expected_kinds.contains(job_kind) {
+                    Self::IdleSuccess
+                } else {
+                    Self::IdleNoOutcome
+                }
+            }
             ProcessState::Idle {
-                last_outcome: Some(_),
+                last_outcome:
+                    Some(JobOutcome::Failure {
+                        job_kind, ..
+                    }
+                    | JobOutcome::Timeout {
+                        job_kind, ..
+                    }),
                 ..
-            } => Self::IdleFailure,
+            } => {
+                if expected_kinds.contains(job_kind) {
+                    Self::IdleFailure
+                } else {
+                    Self::IdleNoOutcome
+                }
+            }
             ProcessState::Idle {
                 last_outcome: None, ..
             } => Self::IdleNoOutcome,
         }
+    }
+}
+
+impl DecisionFacts {
+    pub(crate) fn start_postgres_can_be_requested(&self) -> bool {
+        !matches!(self.process_state, ProcessState::Running { .. })
+    }
+
+    pub(crate) fn rewind_activity(&self) -> ProcessActivity {
+        ProcessActivity::from_process_state(&self.process_state, &[ActiveJobKind::PgRewind])
+    }
+
+    pub(crate) fn bootstrap_activity(&self) -> ProcessActivity {
+        ProcessActivity::from_process_state(
+            &self.process_state,
+            &[ActiveJobKind::BaseBackup, ActiveJobKind::Bootstrap],
+        )
+    }
+
+    pub(crate) fn fencing_activity(&self) -> ProcessActivity {
+        ProcessActivity::from_process_state(&self.process_state, &[ActiveJobKind::Fencing])
     }
 }
 
@@ -242,6 +312,7 @@ impl LeaseReleaseReason {
     fn label(&self) -> String {
         match self {
             Self::FencingComplete => "fencing_complete".to_string(),
+            Self::PostgresUnreachable => "postgres_unreachable".to_string(),
         }
     }
 }
@@ -253,6 +324,16 @@ fn is_postgres_reachable(state: &PgInfoState) -> bool {
         PgInfoState::Replica { common, .. } => &common.sql,
     };
     matches!(sql, SqlStatus::Healthy)
+}
+
+fn is_local_primary(state: &PgInfoState) -> bool {
+    matches!(
+        state,
+        PgInfoState::Primary {
+            common,
+            ..
+        } if matches!(common.sql, SqlStatus::Healthy)
+    )
 }
 
 fn should_rewind_from_leader(world: &WorldSnapshot, leader_member_id: &MemberId) -> bool {
@@ -289,5 +370,6 @@ fn is_available_primary_leader(world: &WorldSnapshot, leader_member_id: &MemberI
         return true;
     };
 
-    matches!(member.sql, SqlStatus::Healthy)
+    matches!(member.role, crate::dcs::state::MemberRole::Primary)
+        && matches!(member.sql, SqlStatus::Healthy)
 }

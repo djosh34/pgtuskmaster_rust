@@ -1,4 +1,4 @@
-use crate::{dcs::state::DcsTrust, state::MemberId};
+use crate::{dcs::state::DcsTrust, process::jobs::ActiveJobKind, state::MemberId};
 
 use super::{
     decision::{
@@ -11,7 +11,7 @@ use super::{
 pub(crate) fn decide(input: DecideInput) -> DecideOutput {
     let facts = DecisionFacts::from_world(&input.world);
     let current = input.current;
-    let outcome = decide_phase(current.phase.clone(), &facts);
+    let outcome = decide_phase(&current, &facts);
     let next = HaState {
         worker: current.worker,
         phase: outcome.next_phase.clone(),
@@ -22,72 +22,130 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
     DecideOutput { next, outcome }
 }
 
-pub(crate) fn decide_phase(current: HaPhase, facts: &DecisionFacts) -> PhaseOutcome {
+pub(crate) fn decide_phase(current: &HaState, facts: &DecisionFacts) -> PhaseOutcome {
     if !matches!(facts.trust, DcsTrust::FullQuorum) {
-        let release_leader_lease = matches!(current, HaPhase::Primary);
+        if facts.postgres_primary {
+            return PhaseOutcome::new(
+                HaPhase::FailSafe,
+                HaDecision::EnterFailSafe {
+                    release_leader_lease: false,
+                },
+            );
+        }
         return PhaseOutcome::new(
             HaPhase::FailSafe,
-            HaDecision::EnterFailSafe {
-                release_leader_lease,
-            },
+            HaDecision::NoChange,
         );
     }
 
-    match current {
+    match current.phase {
         HaPhase::Init => PhaseOutcome::new(
             HaPhase::WaitingPostgresReachable,
             HaDecision::WaitForPostgres {
                 start_requested: false,
             },
         ),
-        HaPhase::WaitingPostgresReachable => {
-            if facts.postgres_reachable {
-                PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust)
-            } else {
-                PhaseOutcome::new(
-                    HaPhase::WaitingPostgresReachable,
-                    HaDecision::WaitForPostgres {
-                        start_requested: true,
-                    },
-                )
-            }
-        }
-        HaPhase::WaitingDcsTrusted => decide_waiting_dcs_trusted(facts),
+        HaPhase::WaitingPostgresReachable => decide_waiting_postgres_reachable(facts),
+        HaPhase::WaitingDcsTrusted => decide_waiting_dcs_trusted(current, facts),
+        HaPhase::WaitingSwitchoverSuccessor => decide_waiting_switchover_successor(facts),
         HaPhase::Replica => decide_replica(facts),
         HaPhase::CandidateLeader => decide_candidate_leader(facts),
         HaPhase::Primary => decide_primary(facts),
         HaPhase::Rewinding => decide_rewinding(facts),
         HaPhase::Bootstrapping => decide_bootstrapping(facts),
         HaPhase::Fencing => decide_fencing(facts),
-        HaPhase::FailSafe => {
-            PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust)
-        }
+        HaPhase::FailSafe => decide_fail_safe(facts),
     }
 }
 
-fn decide_waiting_dcs_trusted(facts: &DecisionFacts) -> PhaseOutcome {
-    if !facts.postgres_reachable {
-        return wait_for_postgres();
+fn decide_waiting_postgres_reachable(facts: &DecisionFacts) -> PhaseOutcome {
+    if facts.postgres_reachable {
+        return PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust);
     }
 
-    match facts.active_leader_member_id.as_ref() {
-        Some(leader_member_id) if leader_member_id == &facts.self_member_id => PhaseOutcome::new(
+    if completed_start_postgres(facts) {
+        return PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust);
+    }
+
+    wait_for_postgres(facts)
+}
+
+fn decide_waiting_dcs_trusted(current: &HaState, facts: &DecisionFacts) -> PhaseOutcome {
+    if !facts.postgres_reachable {
+        let released_after_fencing = matches!(
+            current.decision,
+            HaDecision::ReleaseLeaderLease {
+                reason: LeaseReleaseReason::FencingComplete,
+            }
+        );
+        if released_after_fencing {
+            if let Some(leader_member_id) =
+                recovery_leader_member_id(facts).or_else(|| other_leader_record(facts))
+            {
+                return PhaseOutcome::new(
+                    HaPhase::Bootstrapping,
+                    HaDecision::RecoverReplica {
+                        strategy: RecoveryStrategy::BaseBackup { leader_member_id },
+                    },
+                );
+            }
+
+            return PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust);
+        }
+
+        return wait_for_postgres(facts);
+    }
+
+    if facts.active_leader_member_id.as_ref() == Some(&facts.self_member_id) {
+        return PhaseOutcome::new(
             HaPhase::Primary,
             HaDecision::BecomePrimary { promote: false },
-        ),
+        );
+    }
+
+    match follow_target(facts) {
         Some(leader_member_id) => PhaseOutcome::new(
             HaPhase::Replica,
             HaDecision::FollowLeader {
-                leader_member_id: leader_member_id.clone(),
+                leader_member_id,
             },
         ),
         None => PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership),
     }
 }
 
+fn decide_waiting_switchover_successor(facts: &DecisionFacts) -> PhaseOutcome {
+    if facts
+        .leader_member_id
+        .as_ref()
+        .map(|leader_member_id| leader_member_id == &facts.self_member_id)
+        .unwrap_or(true)
+    {
+        return PhaseOutcome::new(
+            HaPhase::WaitingSwitchoverSuccessor,
+            HaDecision::WaitForDcsTrust,
+        );
+    }
+
+    if !facts.postgres_reachable {
+        return wait_for_postgres(facts);
+    }
+
+    match follow_target(facts) {
+        Some(leader_member_id) => PhaseOutcome::new(
+            HaPhase::Replica,
+            HaDecision::FollowLeader { leader_member_id },
+        ),
+        None => PhaseOutcome::new(
+            HaPhase::WaitingSwitchoverSuccessor,
+            HaDecision::WaitForDcsTrust,
+        ),
+    }
+}
+
 fn decide_replica(facts: &DecisionFacts) -> PhaseOutcome {
     if !facts.postgres_reachable {
-        return wait_for_postgres();
+        return wait_for_postgres(facts);
     }
 
     if facts.switchover_requested_by.is_some()
@@ -121,25 +179,23 @@ fn decide_replica(facts: &DecisionFacts) -> PhaseOutcome {
 
 fn decide_candidate_leader(facts: &DecisionFacts) -> PhaseOutcome {
     if !facts.postgres_reachable {
-        return wait_for_postgres();
+        return wait_for_postgres(facts);
     }
 
     if facts.i_am_leader {
         return PhaseOutcome::new(
             HaPhase::Primary,
-            HaDecision::BecomePrimary { promote: true },
+            HaDecision::BecomePrimary {
+                promote: !facts.postgres_primary,
+            },
         );
     }
 
-    if let Some(leader_member_id) = facts.active_leader_member_id.as_ref() {
-        if leader_member_id != &facts.self_member_id {
-            return PhaseOutcome::new(
-                HaPhase::Replica,
-                HaDecision::FollowLeader {
-                    leader_member_id: leader_member_id.clone(),
-                },
-            );
-        }
+    if let Some(leader_member_id) = follow_target(facts) {
+        return PhaseOutcome::new(
+            HaPhase::Replica,
+            HaDecision::FollowLeader { leader_member_id },
+        );
     }
 
     PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership)
@@ -148,7 +204,7 @@ fn decide_candidate_leader(facts: &DecisionFacts) -> PhaseOutcome {
 fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
     if facts.switchover_requested_by.is_some() && facts.i_am_leader {
         return PhaseOutcome::new(
-            HaPhase::Replica,
+            HaPhase::WaitingSwitchoverSuccessor,
             HaDecision::StepDown(StepDownPlan {
                 reason: StepDownReason::Switchover,
                 release_leader_lease: true,
@@ -159,17 +215,26 @@ fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
     }
 
     if !facts.postgres_reachable {
-        return PhaseOutcome::new(
-            HaPhase::Rewinding,
-            HaDecision::RecoverReplica {
-                strategy: RecoveryStrategy::Rewind {
-                    leader_member_id: recovery_leader_member_id(facts),
+        if facts.i_am_leader {
+            return PhaseOutcome::new(
+                HaPhase::Rewinding,
+                HaDecision::ReleaseLeaderLease {
+                    reason: LeaseReleaseReason::PostgresUnreachable,
                 },
-            },
-        );
+            );
+        }
+        return match recovery_leader_member_id(facts) {
+            Some(leader_member_id) => PhaseOutcome::new(
+                HaPhase::Rewinding,
+                HaDecision::RecoverReplica {
+                    strategy: RecoveryStrategy::Rewind { leader_member_id },
+                },
+            ),
+            None => PhaseOutcome::new(HaPhase::Rewinding, HaDecision::NoChange),
+        };
     }
 
-    match other_leader_record(facts) {
+    match other_active_leader(facts) {
         Some(leader_member_id) => PhaseOutcome::new(
             HaPhase::Fencing,
             HaDecision::StepDown(StepDownPlan {
@@ -179,12 +244,18 @@ fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
                 fence: true,
             }),
         ),
-        None => PhaseOutcome::new(HaPhase::Primary, HaDecision::NoChange),
+        None => {
+            if facts.i_am_leader {
+                PhaseOutcome::new(HaPhase::Primary, HaDecision::NoChange)
+            } else {
+                PhaseOutcome::new(HaPhase::Primary, HaDecision::AttemptLeadership)
+            }
+        }
     }
 }
 
 fn decide_rewinding(facts: &DecisionFacts) -> PhaseOutcome {
-    match facts.process_activity {
+    match facts.rewind_activity() {
         ProcessActivity::Running => PhaseOutcome::new(HaPhase::Rewinding, HaDecision::NoChange),
         ProcessActivity::IdleSuccess => match follow_target(facts) {
             Some(leader_member_id) => PhaseOutcome::new(
@@ -193,44 +264,47 @@ fn decide_rewinding(facts: &DecisionFacts) -> PhaseOutcome {
             ),
             None => PhaseOutcome::new(HaPhase::Replica, HaDecision::NoChange),
         },
-        ProcessActivity::IdleFailure => PhaseOutcome::new(
-            HaPhase::Bootstrapping,
-            HaDecision::RecoverReplica {
-                strategy: recovery_after_rewind_failure(facts),
-            },
-        ),
-        ProcessActivity::IdleNoOutcome => PhaseOutcome::new(
-            HaPhase::Rewinding,
-            HaDecision::RecoverReplica {
-                strategy: RecoveryStrategy::Rewind {
-                    leader_member_id: recovery_leader_member_id(facts),
+        ProcessActivity::IdleFailure => match recovery_after_rewind_failure(facts) {
+            Some(strategy) => PhaseOutcome::new(
+                HaPhase::Bootstrapping,
+                HaDecision::RecoverReplica { strategy },
+            ),
+            None => PhaseOutcome::new(HaPhase::Rewinding, HaDecision::NoChange),
+        },
+        ProcessActivity::IdleNoOutcome => match recovery_leader_member_id(facts) {
+            Some(leader_member_id) => PhaseOutcome::new(
+                HaPhase::Rewinding,
+                HaDecision::RecoverReplica {
+                    strategy: RecoveryStrategy::Rewind { leader_member_id },
                 },
-            },
-        ),
+            ),
+            None => PhaseOutcome::new(HaPhase::Rewinding, HaDecision::NoChange),
+        },
     }
 }
 
 fn decide_bootstrapping(facts: &DecisionFacts) -> PhaseOutcome {
-    match facts.process_activity {
+    match facts.bootstrap_activity() {
         ProcessActivity::Running => PhaseOutcome::new(HaPhase::Bootstrapping, HaDecision::NoChange),
         ProcessActivity::IdleSuccess => PhaseOutcome::new(
-            HaPhase::Replica,
+            HaPhase::WaitingPostgresReachable,
             HaDecision::WaitForPostgres {
                 start_requested: true,
             },
         ),
         ProcessActivity::IdleFailure => PhaseOutcome::new(HaPhase::Fencing, HaDecision::FenceNode),
-        ProcessActivity::IdleNoOutcome => PhaseOutcome::new(
-            HaPhase::Bootstrapping,
-            HaDecision::RecoverReplica {
-                strategy: recovery_after_rewind_failure(facts),
-            },
-        ),
+        ProcessActivity::IdleNoOutcome => match recovery_after_rewind_failure(facts) {
+            Some(strategy) => PhaseOutcome::new(
+                HaPhase::Bootstrapping,
+                HaDecision::RecoverReplica { strategy },
+            ),
+            None => PhaseOutcome::new(HaPhase::Bootstrapping, HaDecision::NoChange),
+        },
     }
 }
 
 fn decide_fencing(facts: &DecisionFacts) -> PhaseOutcome {
-    match facts.process_activity {
+    match facts.fencing_activity() {
         ProcessActivity::Running => PhaseOutcome::new(HaPhase::Fencing, HaDecision::NoChange),
         ProcessActivity::IdleSuccess => PhaseOutcome::new(
             HaPhase::WaitingDcsTrusted,
@@ -250,36 +324,50 @@ fn decide_fencing(facts: &DecisionFacts) -> PhaseOutcome {
     }
 }
 
-fn wait_for_postgres() -> PhaseOutcome {
+fn decide_fail_safe(facts: &DecisionFacts) -> PhaseOutcome {
+    match facts.fencing_activity() {
+        ProcessActivity::Running => PhaseOutcome::new(HaPhase::FailSafe, HaDecision::NoChange),
+        _ if facts.i_am_leader || facts.postgres_primary => PhaseOutcome::new(
+            HaPhase::FailSafe,
+            if facts.postgres_primary {
+                HaDecision::EnterFailSafe {
+                    release_leader_lease: true,
+                }
+            } else {
+                HaDecision::ReleaseLeaderLease {
+                    reason: LeaseReleaseReason::FencingComplete,
+                }
+            },
+        ),
+        _ => PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust),
+    }
+}
+
+fn wait_for_postgres(facts: &DecisionFacts) -> PhaseOutcome {
     PhaseOutcome::new(
         HaPhase::WaitingPostgresReachable,
         HaDecision::WaitForPostgres {
-            start_requested: true,
+            start_requested: facts.start_postgres_can_be_requested(),
         },
     )
 }
 
-fn recovery_after_rewind_failure(facts: &DecisionFacts) -> RecoveryStrategy {
-    if facts.has_available_other_leader {
-        RecoveryStrategy::BaseBackup {
-            leader_member_id: recovery_leader_member_id(facts),
-        }
-    } else {
-        RecoveryStrategy::Bootstrap
-    }
+fn recovery_after_rewind_failure(facts: &DecisionFacts) -> Option<RecoveryStrategy> {
+    recovery_leader_member_id(facts).map(|leader_member_id| RecoveryStrategy::BaseBackup {
+        leader_member_id,
+    })
 }
 
-fn recovery_leader_member_id(facts: &DecisionFacts) -> MemberId {
+fn recovery_leader_member_id(facts: &DecisionFacts) -> Option<MemberId> {
     facts
-        .active_leader_member_id
+        .available_primary_member_id
         .clone()
-        .or_else(|| facts.leader_member_id.clone())
-        .unwrap_or_else(|| facts.self_member_id.clone())
+        .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
 }
 
 fn follow_target(facts: &DecisionFacts) -> Option<MemberId> {
     facts
-        .active_leader_member_id
+        .available_primary_member_id
         .clone()
         .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
 }
@@ -289,6 +377,37 @@ fn other_leader_record(facts: &DecisionFacts) -> Option<MemberId> {
         .leader_member_id
         .clone()
         .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
+}
+
+fn other_active_leader(facts: &DecisionFacts) -> Option<MemberId> {
+    facts
+        .active_leader_member_id
+        .clone()
+        .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
+}
+
+fn completed_start_postgres(facts: &DecisionFacts) -> bool {
+    matches!(
+        &facts.process_state,
+        crate::process::state::ProcessState::Idle {
+            last_outcome:
+                Some(
+                    crate::process::state::JobOutcome::Success {
+                        job_kind: ActiveJobKind::StartPostgres,
+                        ..
+                    }
+                    | crate::process::state::JobOutcome::Failure {
+                        job_kind: ActiveJobKind::StartPostgres,
+                        ..
+                    }
+                    | crate::process::state::JobOutcome::Timeout {
+                        job_kind: ActiveJobKind::StartPostgres,
+                        ..
+                    }
+                ),
+            ..
+        }
+    )
 }
 
 #[cfg(test)]
@@ -501,9 +620,7 @@ mod tests {
                 leader: None,
                 process: process_idle(None),
                 expected_phase: HaPhase::FailSafe,
-                expected_decision: HaDecision::EnterFailSafe {
-                    release_leader_lease: false,
-                },
+                expected_decision: HaDecision::NoChange,
             },
             Case {
                 name: "rewinding success re-enters replica",
@@ -513,6 +630,7 @@ mod tests {
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Success {
                     id: JobId("job-1".to_string()),
+                    job_kind: ActiveJobKind::PgRewind,
                     finished_at: UnixMillis(10),
                 })),
                 expected_phase: HaPhase::Replica,
@@ -528,6 +646,7 @@ mod tests {
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Failure {
                     id: JobId("job-1".to_string()),
+                    job_kind: ActiveJobKind::PgRewind,
                     error: crate::process::jobs::ProcessError::OperationFailed,
                     finished_at: UnixMillis(10),
                 })),
@@ -539,6 +658,21 @@ mod tests {
                 },
             },
             Case {
+                name: "rewinding failure without active leader waits",
+                current_phase: HaPhase::Rewinding,
+                trust: DcsTrust::FullQuorum,
+                pg: pg_replica(SqlStatus::Healthy),
+                leader: None,
+                process: process_idle(Some(JobOutcome::Failure {
+                    id: JobId("job-1".to_string()),
+                    job_kind: ActiveJobKind::PgRewind,
+                    error: crate::process::jobs::ProcessError::OperationFailed,
+                    finished_at: UnixMillis(10),
+                })),
+                expected_phase: HaPhase::Rewinding,
+                expected_decision: HaDecision::NoChange,
+            },
+            Case {
                 name: "bootstrap failure goes fencing",
                 current_phase: HaPhase::Bootstrapping,
                 trust: DcsTrust::FullQuorum,
@@ -546,10 +680,21 @@ mod tests {
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Timeout {
                     id: JobId("job-1".to_string()),
+                    job_kind: ActiveJobKind::Bootstrap,
                     finished_at: UnixMillis(11),
                 })),
                 expected_phase: HaPhase::Fencing,
                 expected_decision: HaDecision::FenceNode,
+            },
+            Case {
+                name: "bootstrapping without active leader emits nothing",
+                current_phase: HaPhase::Bootstrapping,
+                trust: DcsTrust::FullQuorum,
+                pg: pg_replica(SqlStatus::Healthy),
+                leader: None,
+                process: process_idle(None),
+                expected_phase: HaPhase::Bootstrapping,
+                expected_decision: HaDecision::NoChange,
             },
             Case {
                 name: "fencing success returns waiting dcs",
@@ -559,6 +704,7 @@ mod tests {
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Success {
                     id: JobId("job-2".to_string()),
+                    job_kind: ActiveJobKind::Fencing,
                     finished_at: UnixMillis(12),
                 })),
                 expected_phase: HaPhase::WaitingDcsTrusted,
@@ -574,6 +720,7 @@ mod tests {
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Failure {
                     id: JobId("job-2".to_string()),
+                    job_kind: ActiveJobKind::Fencing,
                     error: crate::process::jobs::ProcessError::OperationFailed,
                     finished_at: UnixMillis(12),
                 })),
@@ -674,12 +821,7 @@ mod tests {
             world: WorldBuilder::new().with_trust(DcsTrust::NotTrusted).build(),
         });
         assert_eq!(held.next.phase, HaPhase::FailSafe);
-        assert_eq!(
-            held.outcome.decision,
-            HaDecision::EnterFailSafe {
-                release_leader_lease: false,
-            }
-        );
+        assert_eq!(held.outcome.decision, HaDecision::NoChange);
 
         let recovered = decide(DecideInput {
             current: start,
@@ -687,6 +829,53 @@ mod tests {
         });
         assert_eq!(recovered.next.phase, HaPhase::WaitingDcsTrusted);
         assert_eq!(recovered.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn no_quorum_failsafe_with_stale_self_lease_but_stopped_postgres_stays_quiescent() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::FailSafe,
+                tick: 44,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_trust(DcsTrust::NotTrusted)
+                .with_leader("node-a")
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::FailSafe);
+        assert_eq!(output.outcome.decision, HaDecision::NoChange);
+    }
+
+    #[test]
+    fn fail_safe_with_restored_quorum_and_stale_self_lease_retries_release_without_refencing() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::FailSafe,
+                tick: 17,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_trust(DcsTrust::FullQuorum)
+                .with_leader("node-a")
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::FailSafe);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::ReleaseLeaderLease {
+                reason: LeaseReleaseReason::FencingComplete,
+            }
+        );
+        assert_eq!(lower_decision(&output.outcome.decision).lease, LeaseEffect::ReleaseLeader);
+        assert_eq!(lower_decision(&output.outcome.decision).safety, SafetyEffect::None);
     }
 
     #[test]
@@ -705,7 +894,7 @@ mod tests {
                 .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert_eq!(output.next.phase, HaPhase::WaitingSwitchoverSuccessor);
         assert_eq!(
             lower_decision(&output.outcome.decision),
             HaEffectPlan {
@@ -716,6 +905,302 @@ mod tests {
                 safety: SafetyEffect::None,
             }
         );
+    }
+
+    #[test]
+    fn waiting_switchover_successor_holds_until_new_leader_exists() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingSwitchoverSuccessor,
+                tick: 11,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new().with_pg(pg_replica(SqlStatus::Healthy)).build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingSwitchoverSuccessor);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn waiting_switchover_successor_does_not_restart_while_demote_runs() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingSwitchoverSuccessor,
+                tick: 12,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_process(process_running(ActiveJobKind::Demote))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingSwitchoverSuccessor);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn waiting_switchover_successor_follows_new_leader_once_visible() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingSwitchoverSuccessor,
+                tick: 13,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_replica(SqlStatus::Healthy))
+                .with_leader("node-b")
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::FollowLeader {
+                leader_member_id: MemberId("node-b".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_postgres_reachable_with_active_demote_does_not_request_start() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingPostgresReachable,
+                tick: 21,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_process(process_running(ActiveJobKind::Demote))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: false,
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_dcs_trusted_after_fencing_with_known_leader_reenters_basebackup() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 34,
+                decision: HaDecision::ReleaseLeaderLease {
+                    reason: LeaseReleaseReason::FencingComplete,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_leader("node-b")
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Bootstrapping);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::BaseBackup {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_dcs_trusted_with_wait_for_dcs_and_known_leader_retries_postgres() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 35,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_leader("node-b")
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: true,
+            }
+        );
+    }
+
+    #[test]
+    fn bootstrapping_success_waits_for_postgres_before_becoming_replica() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Bootstrapping,
+                tick: 35,
+                decision: HaDecision::RecoverReplica {
+                    strategy: RecoveryStrategy::BaseBackup {
+                        leader_member_id: MemberId("node-b".to_string()),
+                    },
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_leader("node-b")
+                .with_process(process_idle(Some(JobOutcome::Success {
+                    id: JobId("job-basebackup".to_string()),
+                    job_kind: ActiveJobKind::BaseBackup,
+                    finished_at: UnixMillis(35),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: true,
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_dcs_trusted_without_leader_follows_healthy_primary_member() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 35,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_replica(SqlStatus::Healthy))
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.20".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::FollowLeader {
+                leader_member_id: MemberId("node-b".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_dcs_trusted_after_fencing_without_leader_waits_for_dcs() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 35,
+                decision: HaDecision::ReleaseLeaderLease {
+                    reason: LeaseReleaseReason::FencingComplete,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn waiting_dcs_trusted_after_fencing_uses_stale_foreign_leader_record_for_basebackup() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 36,
+                decision: HaDecision::ReleaseLeaderLease {
+                    reason: LeaseReleaseReason::FencingComplete,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Replica,
+                    sql: SqlStatus::Unreachable,
+                    readiness: Readiness::NotReady,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build_with_optional_leader(Some("node-b")),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Bootstrapping);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::BaseBackup {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn primary_without_leader_reacquires_lease_without_leaving_primary() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Primary,
+                tick: 12,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Primary);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+        assert_eq!(lower_decision(&output.outcome.decision).lease, LeaseEffect::AcquireLeader);
     }
 
     #[test]
@@ -752,12 +1237,339 @@ mod tests {
             },
             world: WorldBuilder::new()
                 .with_leader("node-b")
-                .with_process(process_running())
+                .with_process(process_running(ActiveJobKind::PgRewind))
                 .build(),
         });
 
         assert_eq!(output.next.phase, HaPhase::Rewinding);
         assert_eq!(lower_decision(&output.outcome.decision).len(), 0);
+    }
+
+    #[test]
+    fn primary_ignores_unavailable_foreign_leader_record_and_reacquires_lease() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Primary,
+                tick: 12,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.20".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Replica,
+                    sql: SqlStatus::Unreachable,
+                    readiness: Readiness::NotReady,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build_with_optional_leader(Some("node-b")),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Primary);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+    }
+
+    #[test]
+    fn primary_outage_without_foreign_leader_waits_in_rewinding_without_self_target() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Primary,
+                tick: 9,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_primary(SqlStatus::Unreachable))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Rewinding);
+        assert_eq!(output.outcome.decision, HaDecision::NoChange);
+        assert_eq!(lower_decision(&output.outcome.decision).len(), 0);
+    }
+
+    #[test]
+    fn primary_outage_with_self_leader_releases_lease_before_rewinding() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Primary,
+                tick: 10,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_primary(SqlStatus::Unreachable))
+                .with_leader("node-a")
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Rewinding);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::ReleaseLeaderLease {
+                reason: LeaseReleaseReason::PostgresUnreachable,
+            }
+        );
+        assert_eq!(
+            lower_decision(&output.outcome.decision).lease,
+            LeaseEffect::ReleaseLeader
+        );
+        assert_eq!(
+            lower_decision(&output.outcome.decision).replication,
+            ReplicationEffect::None
+        );
+    }
+
+    #[test]
+    fn rewinding_without_foreign_leader_and_no_process_outcome_emits_nothing() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Rewinding,
+                tick: 10,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_primary(SqlStatus::Unreachable))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Rewinding);
+        assert_eq!(output.outcome.decision, HaDecision::NoChange);
+        assert_eq!(lower_decision(&output.outcome.decision).len(), 0);
+    }
+
+    #[test]
+    fn rewinding_ignores_stale_start_postgres_failure_until_rewind_runs() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Rewinding,
+                tick: 11,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_leader("node-b")
+                .with_process(process_idle(Some(JobOutcome::Failure {
+                    id: JobId("job-start".to_string()),
+                    job_kind: ActiveJobKind::StartPostgres,
+                    error: crate::process::jobs::ProcessError::OperationFailed,
+                    finished_at: UnixMillis(15),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Rewinding);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::Rewind {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_postgres_does_not_reissue_start_while_start_job_is_running() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingPostgresReachable,
+                tick: 12,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_process(process_running(ActiveJobKind::StartPostgres))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: false,
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_postgres_after_failed_start_with_foreign_leader_waits_for_dcs() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingPostgresReachable,
+                tick: 13,
+                decision: HaDecision::WaitForPostgres {
+                    start_requested: true,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_leader("node-b")
+                .with_process(process_idle(Some(JobOutcome::Failure {
+                    id: JobId("job-start".to_string()),
+                    job_kind: ActiveJobKind::StartPostgres,
+                    error: crate::process::jobs::ProcessError::OperationFailed,
+                    finished_at: UnixMillis(16),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn waiting_postgres_after_failed_start_without_foreign_leader_waits_for_dcs() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingPostgresReachable,
+                tick: 14,
+                decision: HaDecision::WaitForPostgres {
+                    start_requested: true,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_process(process_idle(Some(JobOutcome::Failure {
+                    id: JobId("job-start".to_string()),
+                    job_kind: ActiveJobKind::StartPostgres,
+                    error: crate::process::jobs::ProcessError::OperationFailed,
+                    finished_at: UnixMillis(16),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn waiting_postgres_after_failed_start_without_leader_uses_healthy_primary_member_waits_for_dcs(
+    ) {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingPostgresReachable,
+                tick: 14,
+                decision: HaDecision::WaitForPostgres {
+                    start_requested: true,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.20".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .with_process(process_idle(Some(JobOutcome::Failure {
+                    id: JobId("job-start".to_string()),
+                    job_kind: ActiveJobKind::StartPostgres,
+                    error: crate::process::jobs::ProcessError::OperationFailed,
+                    finished_at: UnixMillis(16),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn waiting_postgres_after_failed_start_as_leader_waits_for_dcs() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingPostgresReachable,
+                tick: 15,
+                decision: HaDecision::WaitForPostgres {
+                    start_requested: true,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_leader("node-a")
+                .with_process(process_idle(Some(JobOutcome::Failure {
+                    id: JobId("job-start".to_string()),
+                    job_kind: ActiveJobKind::StartPostgres,
+                    error: crate::process::jobs::ProcessError::OperationFailed,
+                    finished_at: UnixMillis(16),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn waiting_postgres_after_successful_start_as_follower_waits_for_dcs() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingPostgresReachable,
+                tick: 16,
+                decision: HaDecision::WaitForPostgres {
+                    start_requested: true,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_process(process_idle(Some(JobOutcome::Success {
+                    id: JobId("job-start".to_string()),
+                    job_kind: ActiveJobKind::StartPostgres,
+                    finished_at: UnixMillis(16),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn waiting_postgres_after_successful_start_as_leader_waits_for_dcs() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingPostgresReachable,
+                tick: 17,
+                decision: HaDecision::WaitForPostgres {
+                    start_requested: true,
+                },
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_leader("node-a")
+                .with_process(process_idle(Some(JobOutcome::Success {
+                    id: JobId("job-start".to_string()),
+                    job_kind: ActiveJobKind::StartPostgres,
+                    finished_at: UnixMillis(16),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
     }
 
     #[test]
@@ -773,6 +1585,8 @@ mod tests {
                 .with_leader("node-b")
                 .with_member(MemberRecord {
                     member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
                     role: MemberRole::Unknown,
                     sql: SqlStatus::Unreachable,
                     readiness: Readiness::NotReady,
@@ -787,6 +1601,95 @@ mod tests {
 
         assert_eq!(output.next.phase, HaPhase::CandidateLeader);
         assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+    }
+
+    #[test]
+    fn candidate_leader_with_unhealthy_foreign_leader_keeps_attempting() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::CandidateLeader,
+                tick: 12,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_leader("node-b")
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Unknown,
+                    sql: SqlStatus::Unreachable,
+                    readiness: Readiness::NotReady,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+    }
+
+    #[test]
+    fn candidate_leader_without_leader_follows_healthy_primary_member() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::CandidateLeader,
+                tick: 12,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_replica(SqlStatus::Healthy))
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.20".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::FollowLeader {
+                leader_member_id: MemberId("node-b".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn candidate_leader_with_self_lease_and_primary_postgres_skips_promote() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::CandidateLeader,
+                tick: 13,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .with_leader("node-a")
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Primary);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::BecomePrimary { promote: false }
+        );
     }
 
     #[test]
@@ -818,33 +1721,40 @@ mod tests {
             name: &'static str,
             current_phase: HaPhase,
             trust: DcsTrust,
-            expected_release: bool,
+            pg: PgInfoState,
+            expected_decision: HaDecision,
         }
 
         let cases = [
             FailSafeCase {
-                name: "primary loses full quorum and releases lease",
+                name: "primary loses full quorum and fences without lease release",
                 current_phase: HaPhase::Primary,
                 trust: DcsTrust::NotTrusted,
-                expected_release: true,
+                pg: pg_primary(SqlStatus::Healthy),
+                expected_decision: HaDecision::EnterFailSafe {
+                    release_leader_lease: false,
+                },
             },
             FailSafeCase {
-                name: "replica enters fail safe without lease release",
+                name: "replica enters fail safe without extra actions",
                 current_phase: HaPhase::Replica,
                 trust: DcsTrust::NotTrusted,
-                expected_release: false,
+                pg: pg_replica(SqlStatus::Healthy),
+                expected_decision: HaDecision::NoChange,
             },
             FailSafeCase {
-                name: "candidate leader in failsafe trust stays lease-neutral",
+                name: "candidate leader in failsafe trust stays quiescent",
                 current_phase: HaPhase::CandidateLeader,
                 trust: DcsTrust::FailSafe,
-                expected_release: false,
+                pg: pg_replica(SqlStatus::Healthy),
+                expected_decision: HaDecision::NoChange,
             },
             FailSafeCase {
-                name: "already failsafe still emits failsafe decision",
+                name: "already failsafe replica stays quiescent",
                 current_phase: HaPhase::FailSafe,
                 trust: DcsTrust::FailSafe,
-                expected_release: false,
+                pg: pg_replica(SqlStatus::Healthy),
+                expected_decision: HaDecision::NoChange,
             },
         ];
 
@@ -856,18 +1766,14 @@ mod tests {
                     tick: 3,
                     decision: HaDecision::NoChange,
                 },
-                world: WorldBuilder::new().with_trust(case.trust).build(),
+                world: WorldBuilder::new()
+                    .with_trust(case.trust)
+                    .with_pg(case.pg)
+                    .build(),
             });
 
             assert_eq!(output.next.phase, HaPhase::FailSafe, "case: {}", case.name);
-            assert_eq!(
-                output.outcome.decision,
-                HaDecision::EnterFailSafe {
-                    release_leader_lease: case.expected_release,
-                },
-                "case: {}",
-                case.name
-            );
+            assert_eq!(output.outcome.decision, case.expected_decision, "case: {}", case.name);
             assert_eq!(
                 assert_plan_has_no_contradictions(&lower_decision(&output.outcome.decision)),
                 Ok(()),
@@ -875,6 +1781,34 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn failsafe_retries_fencing_while_local_postgres_is_still_primary() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::FailSafe,
+                tick: 7,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_trust(DcsTrust::FailSafe)
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::FailSafe);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            }
+        );
+        assert_eq!(
+            lower_decision(&output.outcome.decision).safety,
+            SafetyEffect::FenceNode
+        );
     }
 
     #[test]
@@ -1009,12 +1943,12 @@ mod tests {
         }
     }
 
-    fn process_running() -> ProcessState {
+    fn process_running(kind: ActiveJobKind) -> ProcessState {
         ProcessState::Running {
             worker: WorkerStatus::Running,
             active: ActiveJob {
                 id: JobId("active-1".to_string()),
-                kind: ActiveJobKind::StartPostgres,
+                kind,
                 started_at: UnixMillis(1),
                 deadline_at: UnixMillis(2),
             },
@@ -1081,8 +2015,6 @@ mod tests {
                 listen_port: 5432,
                 socket_dir: "/tmp/pgtuskmaster/socket".into(),
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),

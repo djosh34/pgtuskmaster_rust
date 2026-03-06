@@ -33,6 +33,8 @@ pub(crate) enum MemberRole {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MemberRecord {
     pub(crate) member_id: MemberId,
+    pub(crate) postgres_host: String,
+    pub(crate) postgres_port: u16,
     pub(crate) role: MemberRole,
     pub(crate) sql: SqlStatus,
     pub(crate) readiness: Readiness,
@@ -79,6 +81,8 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) self_id: MemberId,
     pub(crate) scope: String,
     pub(crate) poll_interval: Duration,
+    pub(crate) local_postgres_host: String,
+    pub(crate) local_postgres_port: u16,
     pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
     pub(crate) publisher: StatePublisher<DcsState>,
     pub(crate) store: Box<dyn DcsStore>,
@@ -109,6 +113,8 @@ pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &Mem
 
 pub(crate) fn build_local_member_record(
     self_id: &MemberId,
+    postgres_host: &str,
+    postgres_port: u16,
     pg_state: &PgInfoState,
     now: UnixMillis,
     pg_version: Version,
@@ -116,6 +122,8 @@ pub(crate) fn build_local_member_record(
     match pg_state {
         PgInfoState::Unknown { common } => MemberRecord {
             member_id: self_id.clone(),
+            postgres_host: postgres_host.to_string(),
+            postgres_port,
             role: MemberRole::Unknown,
             sql: common.sql.clone(),
             readiness: common.readiness.clone(),
@@ -129,6 +137,8 @@ pub(crate) fn build_local_member_record(
             common, wal_lsn, ..
         } => MemberRecord {
             member_id: self_id.clone(),
+            postgres_host: postgres_host.to_string(),
+            postgres_port,
             role: MemberRole::Primary,
             sql: common.sql.clone(),
             readiness: common.readiness.clone(),
@@ -142,6 +152,8 @@ pub(crate) fn build_local_member_record(
             common, replay_lsn, ..
         } => MemberRecord {
             member_id: self_id.clone(),
+            postgres_host: postgres_host.to_string(),
+            postgres_port,
             role: MemberRole::Replica,
             sql: common.sql.clone(),
             readiness: common.readiness.clone(),
@@ -192,8 +204,6 @@ mod tests {
                 listen_port: 5432,
                 socket_dir: "/tmp/pgtuskmaster/socket".into(),
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
@@ -320,6 +330,8 @@ mod tests {
             self_id.clone(),
             MemberRecord {
                 member_id: self_id.clone(),
+                postgres_host: "127.0.0.1".to_string(),
+                postgres_port: 5432,
                 role: MemberRole::Unknown,
                 sql: SqlStatus::Unknown,
                 readiness: Readiness::Unknown,
@@ -361,8 +373,16 @@ mod tests {
         let unknown = PgInfoState::Unknown {
             common: common(SqlStatus::Unknown, Readiness::Unknown),
         };
-        let unknown_record =
-            build_local_member_record(&self_id, &unknown, UnixMillis(10), Version(11));
+        let unknown_record = build_local_member_record(
+            &self_id,
+            "10.0.0.11",
+            5433,
+            &unknown,
+            UnixMillis(10),
+            Version(11),
+        );
+        assert_eq!(unknown_record.postgres_host, "10.0.0.11".to_string());
+        assert_eq!(unknown_record.postgres_port, 5433);
         assert_eq!(unknown_record.role, MemberRole::Unknown);
         assert_eq!(unknown_record.write_lsn, None);
         assert_eq!(unknown_record.replay_lsn, None);
@@ -374,8 +394,16 @@ mod tests {
                 name: "slot-a".to_string(),
             }],
         };
-        let primary_record =
-            build_local_member_record(&self_id, &primary, UnixMillis(12), Version(13));
+        let primary_record = build_local_member_record(
+            &self_id,
+            "10.0.0.12",
+            5434,
+            &primary,
+            UnixMillis(12),
+            Version(13),
+        );
+        assert_eq!(primary_record.postgres_host, "10.0.0.12".to_string());
+        assert_eq!(primary_record.postgres_port, 5434);
         assert_eq!(primary_record.role, MemberRole::Primary);
         assert_eq!(primary_record.write_lsn, Some(WalLsn(101)));
         assert_eq!(primary_record.replay_lsn, None);
@@ -386,8 +414,16 @@ mod tests {
             follow_lsn: Some(WalLsn(23)),
             upstream: None,
         };
-        let replica_record =
-            build_local_member_record(&self_id, &replica, UnixMillis(14), Version(15));
+        let replica_record = build_local_member_record(
+            &self_id,
+            "10.0.0.13",
+            5435,
+            &replica,
+            UnixMillis(14),
+            Version(15),
+        );
+        assert_eq!(replica_record.postgres_host, "10.0.0.13".to_string());
+        assert_eq!(replica_record.postgres_port, 5435);
         assert_eq!(replica_record.role, MemberRole::Replica);
         assert_eq!(replica_record.write_lsn, None);
         assert_eq!(replica_record.replay_lsn, Some(WalLsn(22)));

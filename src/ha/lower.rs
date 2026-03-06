@@ -115,7 +115,7 @@ impl HaDecision {
                 } else {
                     LeaseEffect::None
                 },
-                safety: SafetyEffect::SignalFailSafe,
+                safety: SafetyEffect::FenceNode,
                 ..HaEffectPlan::default()
             },
         }
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_fail_safe_release_before_signal_in_bucketed_form() {
+    fn lowers_fail_safe_primary_release_into_fencing_plan() {
         let decision = HaDecision::EnterFailSafe {
             release_leader_lease: true,
         };
@@ -247,7 +247,25 @@ mod tests {
                 switchover: SwitchoverEffect::None,
                 replication: ReplicationEffect::None,
                 postgres: PostgresEffect::None,
-                safety: SafetyEffect::SignalFailSafe,
+                safety: SafetyEffect::FenceNode,
+            }
+        );
+    }
+
+    #[test]
+    fn lowers_fail_safe_without_release_into_fencing_plan() {
+        let decision = HaDecision::EnterFailSafe {
+            release_leader_lease: false,
+        };
+
+        assert_eq!(
+            decision.lower(),
+            HaEffectPlan {
+                lease: LeaseEffect::None,
+                switchover: SwitchoverEffect::None,
+                replication: ReplicationEffect::None,
+                postgres: PostgresEffect::None,
+                safety: SafetyEffect::FenceNode,
             }
         );
     }

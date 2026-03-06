@@ -51,10 +51,16 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
         world,
     });
     let plan = output.outcome.decision.lower();
+    let skip_redundant_process_dispatch =
+        should_skip_redundant_process_dispatch(&ctx.state, &output.next);
 
     emit_ha_decision_selected(ctx, output.next.tick, &output.outcome.decision, &plan)?;
     emit_ha_effect_plan_selected(ctx, output.next.tick, &plan)?;
-    let dispatch_errors = apply_effect_plan(ctx, output.next.tick, &plan)?;
+    let dispatch_errors = if skip_redundant_process_dispatch {
+        Vec::new()
+    } else {
+        apply_effect_plan(ctx, output.next.tick, &plan)?
+    };
     let now = (ctx.now)()?;
 
     let worker = if dispatch_errors.is_empty() {
@@ -124,6 +130,18 @@ fn world_snapshot(ctx: &HaWorkerCtx) -> WorldSnapshot {
     }
 }
 
+fn should_skip_redundant_process_dispatch(current: &crate::ha::state::HaState, next: &crate::ha::state::HaState) -> bool {
+    current.phase == next.phase
+        && current.decision == next.decision
+        && matches!(
+            next.decision,
+            crate::ha::decision::HaDecision::WaitForPostgres {
+                start_requested: true,
+            } | crate::ha::decision::HaDecision::RecoverReplica { .. }
+                | crate::ha::decision::HaDecision::FenceNode
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -164,9 +182,7 @@ mod tests {
             },
             worker::{run, step_once},
         },
-        pginfo::state::{
-            PgConfig, PgConnInfo, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus,
-        },
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus},
         process::{
             jobs::{
                 ProcessCommandRunner, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle,
@@ -183,6 +199,7 @@ mod tests {
     struct RecordingStore {
         fail_write: bool,
         fail_delete: bool,
+        reject_put_if_absent: bool,
         writes: Arc<Mutex<Vec<(String, String)>>>,
         deletes: Arc<Mutex<Vec<String>>>,
         events: Arc<Mutex<VecDeque<WatchEvent>>>,
@@ -259,6 +276,9 @@ mod tests {
             if self.fail_write {
                 return Err(DcsStoreError::Io("forced write failure".to_string()));
             }
+            if self.reject_put_if_absent {
+                return Ok(false);
+            }
             let mut guard = self
                 .writes
                 .lock()
@@ -314,8 +334,6 @@ mod tests {
                 listen_port: 5432,
                 socket_dir: "/tmp/pgtuskmaster/socket".into(),
                 log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-                rewind_source_host: "127.0.0.1".to_string(),
-                rewind_source_port: 5432,
                 local_conn_identity: PostgresConnIdentityConfig {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
@@ -417,22 +435,34 @@ mod tests {
         }
     }
 
+    fn sample_pg_common(sql: SqlStatus) -> PgInfoCommon {
+        PgInfoCommon {
+            worker: WorkerStatus::Running,
+            sql,
+            readiness: Readiness::Ready,
+            timeline: None,
+            pg_config: PgConfig {
+                port: None,
+                hot_standby: None,
+                primary_conninfo: None,
+                primary_slot_name: None,
+                extra: BTreeMap::new(),
+            },
+            last_refresh_at: Some(UnixMillis(1)),
+        }
+    }
+
     fn sample_pg_state(sql: SqlStatus) -> PgInfoState {
         PgInfoState::Unknown {
-            common: PgInfoCommon {
-                worker: WorkerStatus::Running,
-                sql,
-                readiness: Readiness::Ready,
-                timeline: None,
-                pg_config: PgConfig {
-                    port: None,
-                    hot_standby: None,
-                    primary_conninfo: None,
-                    primary_slot_name: None,
-                    extra: BTreeMap::new(),
-                },
-                last_refresh_at: Some(UnixMillis(1)),
-            },
+            common: sample_pg_common(sql),
+        }
+    }
+
+    fn sample_primary_pg_state(sql: SqlStatus) -> PgInfoState {
+        PgInfoState::Primary {
+            common: sample_pg_common(sql),
+            wal_lsn: crate::state::WalLsn(1),
+            slots: Vec::new(),
         }
     }
 
@@ -473,32 +503,13 @@ mod tests {
             postgres_port: 5432,
             socket_dir: "/tmp/pgtuskmaster/socket".into(),
             log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-            basebackup_source: crate::process::jobs::ReplicatorSourceConn {
-                conninfo: PgConnInfo {
-                    host: "127.0.0.1".to_string(),
-                    port: 5432,
-                    user: "replicator".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: None,
-                    ssl_mode: PgSslMode::Prefer,
-                    options: None,
-                },
-                auth: crate::config::RoleAuthConfig::Tls,
-            },
-            rewind_source: crate::process::jobs::RewinderSourceConn {
-                conninfo: PgConnInfo {
-                    host: "127.0.0.1".to_string(),
-                    port: 5432,
-                    user: "rewinder".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: None,
-                    ssl_mode: PgSslMode::Prefer,
-                    options: None,
-                },
-                auth: crate::config::RoleAuthConfig::Tls,
-            },
+            replicator_username: "replicator".to_string(),
+            replicator_auth: crate::config::RoleAuthConfig::Tls,
+            rewinder_username: "rewinder".to_string(),
+            rewinder_auth: crate::config::RoleAuthConfig::Tls,
+            remote_dbname: "postgres".to_string(),
+            remote_ssl_mode: PgSslMode::Prefer,
+            connect_timeout_s: 5,
             shutdown_mode: ShutdownMode::Fast,
         }
     }
@@ -809,6 +820,8 @@ mod tests {
                 self_id: MemberId("node-a".to_string()),
                 scope: "scope-a".to_string(),
                 poll_interval: Duration::from_millis(5),
+                local_postgres_host: runtime_config.postgres.listen_host.clone(),
+                local_postgres_port: runtime_config.postgres.listen_port,
                 pg_subscriber: pg_subscriber.clone(),
                 publisher: dcs_publisher,
                 store: Box::new(store.clone()),
@@ -875,8 +888,12 @@ mod tests {
         }
 
         fn publish_pg_sql(&self, status: SqlStatus, now: u64) -> Result<(), WorkerError> {
+            self.publish_pg_sql_state(sample_pg_state(status), now)
+        }
+
+        fn publish_pg_sql_state(&self, state: PgInfoState, now: u64) -> Result<(), WorkerError> {
             self.pg_publisher
-                .publish(sample_pg_state(status), UnixMillis(now))
+                .publish(state, UnixMillis(now))
                 .map(|_| ())
                 .map_err(|err| WorkerError::Message(format!("pg publish failed: {err}")))
         }
@@ -957,6 +974,8 @@ mod tests {
     fn sample_member_record(member_id: &str, role: MemberRole) -> MemberRecord {
         MemberRecord {
             member_id: MemberId(member_id.to_string()),
+            postgres_host: "10.0.0.10".to_string(),
+            postgres_port: 5432,
             role,
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
@@ -1007,7 +1026,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn step_once_dispatches_start_postgres_every_tick_while_unreachable(
+    async fn step_once_suppresses_duplicate_start_postgres_dispatch_while_unreachable(
     ) -> Result<(), WorkerError> {
         let BuiltContext {
             mut ctx,
@@ -1028,14 +1047,7 @@ mod tests {
         assert!(matches!(first.kind, ProcessJobKind::StartPostgres(_)));
 
         step_once(&mut ctx).await?;
-        let second = process_rx.try_recv().map_err(|err| {
-            WorkerError::Message(format!(
-                "expected process job request after second tick: {err}"
-            ))
-        })?;
-        assert!(matches!(second.kind, ProcessJobKind::StartPostgres(_)));
-
-        assert_ne!(first.id, second.id);
+        assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));
         Ok(())
     }
 
@@ -1065,7 +1077,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn step_once_primary_quorum_loss_releases_lease_without_process_dispatch(
+    async fn step_once_primary_quorum_loss_enqueues_fencing_without_releasing_lease(
     ) -> Result<(), WorkerError> {
         let BuiltContext {
             mut ctx,
@@ -1076,6 +1088,7 @@ mod tests {
         } = HaWorkerTestBuilder::new()
             .with_phase(HaPhase::Primary)
             .with_dcs_trust(DcsTrust::NotTrusted)
+            .with_pg_state(sample_primary_pg_state(SqlStatus::Healthy))
             .build()?;
 
         step_once(&mut ctx).await?;
@@ -1084,10 +1097,14 @@ mod tests {
         assert_eq!(
             ctx.state.decision,
             HaDecision::EnterFailSafe {
-                release_leader_lease: true,
+                release_leader_lease: false,
             }
         );
-        assert!(store.has_delete_path("/scope-a/leader"));
+        assert!(!store.has_delete_path("/scope-a/leader"));
+        let request = process_rx.try_recv().map_err(|err| {
+            WorkerError::Message(format!("expected fencing dispatch during fail-safe: {err}"))
+        })?;
+        assert!(matches!(request.kind, ProcessJobKind::Fencing(_)));
         assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));
         Ok(())
     }
@@ -1097,6 +1114,7 @@ mod tests {
         let BuiltContext {
             mut ctx,
             ha_subscriber: _ha_subscriber,
+            _dcs_publisher: dcs_publisher,
             mut process_rx,
             store,
             ..
@@ -1104,6 +1122,18 @@ mod tests {
             .with_phase(HaPhase::Primary)
             .with_pg_state(sample_pg_state(SqlStatus::Unreachable))
             .build()?;
+        let mut dcs_state = sample_dcs_state(sample_runtime_config(), DcsTrust::FullQuorum);
+        let leader_member = sample_member_record("node-b", MemberRole::Primary);
+        dcs_state
+            .cache
+            .members
+            .insert(leader_member.member_id.clone(), leader_member.clone());
+        dcs_state.cache.leader = Some(LeaderRecord {
+            member_id: leader_member.member_id,
+        });
+        dcs_publisher
+            .publish(dcs_state, UnixMillis(60))
+            .map_err(|err| WorkerError::Message(format!("dcs publish failed: {err}")))?;
 
         step_once(&mut ctx).await?;
 
@@ -1243,6 +1273,40 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn apply_effect_plan_surfaces_leader_lease_conflict() -> Result<(), WorkerError> {
+        let store = RecordingStore {
+            reject_put_if_absent: true,
+            ..RecordingStore::default()
+        };
+        let BuiltContext { mut ctx, .. } = HaWorkerTestBuilder::new()
+            .with_store(store.clone())
+            .build()?;
+
+        let ha_tick = ctx.state.tick;
+        let plan = HaEffectPlan {
+            lease: LeaseEffect::AcquireLeader,
+            switchover: SwitchoverEffect::None,
+            replication: ReplicationEffect::None,
+            postgres: PostgresEffect::None,
+            safety: SafetyEffect::None,
+        };
+
+        let errors = apply_effect_plan(&mut ctx, ha_tick, &plan)?;
+
+        assert_eq!(store.writes_len(), 0);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0],
+            ActionDispatchError::DcsWrite {
+                action: ActionId::AcquireLeaderLease,
+                path: "/scope-a/leader".to_string(),
+                message: "path already exists: /scope-a/leader".to_string(),
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn integration_transitions_replica_candidate_primary_and_failsafe() {
         let mut fixture = IntegrationFixture::new(HaPhase::WaitingDcsTrusted);
 
@@ -1301,21 +1365,29 @@ mod tests {
             }
         );
 
+        assert_eq!(
+            fixture.publish_pg_sql_state(sample_primary_pg_state(SqlStatus::Healthy), 20),
+            Ok(())
+        );
         assert_eq!(fixture.push_leader_event("node-z"), Ok(()));
         assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
         let failsafe = fixture.latest_ha();
         assert_eq!(failsafe.phase, HaPhase::FailSafe);
         assert_eq!(
             lower_decision(&failsafe.decision).safety,
-            SafetyEffect::SignalFailSafe
+            SafetyEffect::FenceNode
         );
-        assert!(fixture.store.has_delete_path("/scope-a/leader"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn integration_primary_unreachable_rewinds_then_returns_replica_on_success() {
         let mut fixture = IntegrationFixture::new(HaPhase::Primary);
 
+        assert_eq!(
+            fixture.push_member_event("node-b", MemberRole::Primary),
+            Ok(())
+        );
+        assert_eq!(fixture.push_leader_event("node-b"), Ok(()));
         assert_eq!(fixture.publish_pg_sql(SqlStatus::Unreachable, 20), Ok(()));
         assert_eq!(fixture.queue_process_success(), Ok(()));
         assert_eq!(fixture.step_dcs_ha_process_ha().await, Ok(()));
@@ -1359,7 +1431,21 @@ mod tests {
         assert!(fixture.store.has_delete_path("/scope-a/leader"));
 
         assert_eq!(fixture.queue_process_success(), Ok(()));
+        assert_eq!(fixture.queue_process_success(), Ok(()));
         let process_version_before = fixture.process_subscriber.latest().version;
+        assert_eq!(
+            crate::process::worker::step_once(&mut fixture.process_ctx).await,
+            Ok(())
+        );
+        assert_eq!(step_once(&mut fixture.ha_ctx).await, Ok(()));
+        assert_eq!(fixture.latest_ha().phase, HaPhase::Fencing);
+
+        let process_version_mid = fixture.process_subscriber.latest().version;
+        assert_eq!(
+            process_version_mid.0,
+            process_version_before.0.saturating_add(2)
+        );
+
         assert_eq!(
             crate::process::worker::step_once(&mut fixture.process_ctx).await,
             Ok(())
@@ -1367,10 +1453,7 @@ mod tests {
         assert_eq!(step_once(&mut fixture.ha_ctx).await, Ok(()));
 
         let process_version_after = fixture.process_subscriber.latest().version;
-        assert_eq!(
-            process_version_after.0,
-            process_version_before.0.saturating_add(2)
-        );
+        assert!(process_version_after.0 > process_version_mid.0);
         assert!(matches!(
             fixture.latest_process(),
             ProcessState::Idle {

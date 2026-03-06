@@ -354,7 +354,12 @@ impl ClusterFixture {
         Ok(node.pg_port)
     }
 
-    async fn run_sql_on_node(&self, node_id: &str, sql: &str) -> Result<String, WorkerError> {
+    async fn run_sql_on_node(
+        &self,
+        node_id: &str,
+        sql: &str,
+        command_timeout: Duration,
+    ) -> Result<String, WorkerError> {
         let port = self.postgres_port_by_id(node_id)?;
         ha_e2e::util::run_psql_statement(
             self.psql_bin.as_path(),
@@ -362,7 +367,7 @@ impl ClusterFixture {
             self.superuser_username.as_str(),
             self.superuser_dbname.as_str(),
             sql,
-            E2E_COMMAND_TIMEOUT,
+            command_timeout,
             E2E_COMMAND_KILL_WAIT_TIMEOUT,
         )
         .await
@@ -376,7 +381,7 @@ impl ClusterFixture {
     ) -> Result<String, WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            match self.run_sql_on_node(node_id, sql).await {
+            match self.run_sql_on_node(node_id, sql, E2E_COMMAND_TIMEOUT).await {
                 Ok(output) => return Ok(output),
                 Err(err) => {
                     if tokio::time::Instant::now() >= deadline {
@@ -393,6 +398,14 @@ impl ClusterFixture {
     async fn cluster_sql_roles_best_effort(
         &self,
     ) -> Result<(Vec<(String, String)>, Vec<String>), WorkerError> {
+        self.cluster_sql_roles_best_effort_with_timeout(E2E_COMMAND_TIMEOUT)
+            .await
+    }
+
+    async fn cluster_sql_roles_best_effort_with_timeout(
+        &self,
+        command_timeout: Duration,
+    ) -> Result<(Vec<(String, String)>, Vec<String>), WorkerError> {
         let mut roles = Vec::new();
         let mut errors = Vec::new();
 
@@ -401,6 +414,7 @@ impl ClusterFixture {
                 .run_sql_on_node(
                     node.id.as_str(),
                     "SELECT CASE WHEN pg_is_in_recovery() THEN 'replica' ELSE 'primary' END",
+                    command_timeout,
                 )
                 .await
             {
@@ -431,7 +445,10 @@ impl ClusterFixture {
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
-            let observation = match self.run_sql_on_node(node_id, sql).await {
+            let observation = match self
+                .run_sql_on_node(node_id, sql, E2E_COMMAND_TIMEOUT)
+                .await
+            {
                 Ok(output) => {
                     let rows = ha_e2e::util::parse_psql_rows(output.as_str());
                     if rows == expected_rows {
@@ -1759,6 +1776,7 @@ impl ClusterFixture {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut observed_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
         let mut observed_non_primary_nodes: BTreeSet<String> = BTreeSet::new();
+        let mut fallback_no_primary_since: Option<tokio::time::Instant> = None;
         let mut last_observation: Option<String> = None;
         let mut last_recorded_at = tokio::time::Instant::now();
         let node_count = self.nodes.len();
@@ -1795,12 +1813,17 @@ impl ClusterFixture {
                     continue;
                 }
             };
-            let (sql_roles, sql_errors) = self.cluster_sql_roles_best_effort().await?;
+            let (sql_roles, sql_errors) = self
+                .cluster_sql_roles_best_effort_with_timeout(Duration::from_secs(3))
+                .await?;
             let sql_roles_by_node = sql_roles.into_iter().collect::<BTreeMap<_, _>>();
+            let mut sql_unreachable_nodes: BTreeSet<String> = BTreeSet::new();
+            let mut api_success_count = 0usize;
 
             for (node_id, state_result) in polled {
                 match state_result {
                     Ok(state) => {
+                        api_success_count = api_success_count.saturating_add(1);
                         if state.ha_phase == "Primary" {
                             has_primary = true;
                         } else {
@@ -1827,8 +1850,15 @@ impl ClusterFixture {
                 }
             }
             for (node_id, role) in &sql_roles_by_node {
-                if role != "primary" {
+                if role == "primary" {
+                    has_primary = true;
+                } else {
                     observed_non_primary_nodes.insert(node_id.clone());
+                }
+            }
+            for node in &self.nodes {
+                if !sql_roles_by_node.contains_key(node.id.as_str()) {
+                    sql_unreachable_nodes.insert(node.id.clone());
                 }
             }
 
@@ -1838,10 +1868,33 @@ impl ClusterFixture {
             {
                 return Ok(());
             }
+
+            let fallback_nodes = observed_non_primary_nodes
+                .union(&sql_unreachable_nodes)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+
+            let api_coverage_incomplete = api_success_count < node_count;
+
+            if !has_primary && fallback_nodes.len() == node_count && api_coverage_incomplete {
+                let since =
+                    fallback_no_primary_since.get_or_insert_with(tokio::time::Instant::now);
+                if since.elapsed() >= Duration::from_secs(5) {
+                    self.record(
+                        "no-quorum wait fallback: HA API coverage stayed incomplete while all nodes were either non-primary by API/SQL evidence or SQL-unreachable"
+                            .to_string(),
+                    );
+                    return Ok(());
+                }
+            } else {
+                fallback_no_primary_since = None;
+            }
+
             last_observation = Some(format!(
-                "observed_failsafe_nodes={:?}; observed_non_primary_nodes={:?}; poll={}",
+                "observed_failsafe_nodes={:?}; observed_non_primary_nodes={:?}; sql_unreachable_nodes={:?}; poll={}",
                 observed_failsafe_nodes,
                 observed_non_primary_nodes,
+                sql_unreachable_nodes,
                 poll_details.join(" | ")
             ));
             if !sql_errors.is_empty() {

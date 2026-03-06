@@ -15,7 +15,10 @@ use super::{
         HaEffectPlan, LeaseEffect, PostgresEffect, ReplicationEffect, SafetyEffect,
         SwitchoverEffect,
     },
-    process_dispatch::{dispatch_process_action, ProcessDispatchError, ProcessDispatchOutcome},
+    process_dispatch::{
+        dispatch_process_action, validate_basebackup_source, ProcessDispatchError,
+        ProcessDispatchOutcome,
+    },
     state::HaWorkerCtx,
 };
 
@@ -216,15 +219,27 @@ fn dispatch_replication_effect(
             errors,
         ),
         ReplicationEffect::RecoverReplica { strategy } => match strategy {
-            crate::ha::decision::RecoveryStrategy::Rewind { .. } => dispatch_effect_action(
-                ctx,
-                ha_tick,
-                action_index,
-                HaAction::StartRewind,
-                runtime_config,
-                errors,
-            ),
-            crate::ha::decision::RecoveryStrategy::BaseBackup { .. } => {
+            crate::ha::decision::RecoveryStrategy::Rewind { leader_member_id } => {
+                dispatch_effect_action(
+                    ctx,
+                    ha_tick,
+                    action_index,
+                    HaAction::StartRewind {
+                        leader_member_id: leader_member_id.clone(),
+                    },
+                    runtime_config,
+                    errors,
+                )
+            }
+            crate::ha::decision::RecoveryStrategy::BaseBackup { leader_member_id } => {
+                if let Err(err) = validate_basebackup_source(
+                    ctx,
+                    ActionId::StartBaseBackup,
+                    leader_member_id,
+                ) {
+                    errors.push(map_process_dispatch_error(err));
+                    return Ok(action_index);
+                }
                 let next_index = dispatch_effect_action(
                     ctx,
                     ha_tick,
@@ -237,7 +252,9 @@ fn dispatch_replication_effect(
                     ctx,
                     ha_tick,
                     next_index,
-                    HaAction::StartBaseBackup,
+                    HaAction::StartBaseBackup {
+                        leader_member_id: leader_member_id.clone(),
+                    },
                     runtime_config,
                     errors,
                 )
@@ -481,6 +498,9 @@ fn map_process_dispatch_error(error: ProcessDispatchError) -> ActionDispatchErro
         }
         ProcessDispatchError::Filesystem { action, message } => {
             ActionDispatchError::Filesystem { action, message }
+        }
+        ProcessDispatchError::SourceSelection { action, message } => {
+            ActionDispatchError::ProcessSend { action, message }
         }
         ProcessDispatchError::UnsupportedAction { action } => ActionDispatchError::ProcessSend {
             action,

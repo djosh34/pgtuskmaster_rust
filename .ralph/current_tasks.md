@@ -1,15 +1,15 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 15:54:17 CET 2026
+Generated: Fri Mar  6 10:09:47 PM CET 2026
 
-# Task `.ralph/tasks/bugs/rewind-and-basebackup-source-are-static-instead-of-derived-from-current-leader.md`
+# Task `.ralph/tasks/bugs/ha-api-polls-hang-during-no-quorum.md`
 
 ```
-## Bug: Rewind and basebackup source stay static instead of deriving from the current leader <status>not_started</status> <passes>false</passes>
-
-<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+## Bug: HA API polls hang during no-quorum fail-safe observation <status>not_started</status> <passes>false</passes>
 
 <description>
+During `make test-long`, `e2e_no_quorum_enters_failsafe_strict_all_nodes` can hang indefinitely after etcd quorum loss.
+Live debugging showed that all nodes had already become non-primary by SQL evidence, but every `GET /ha/state` call to the node APIs hung instead of returning a `FailSafe` phase snapshot.
 ```
 
 ==============

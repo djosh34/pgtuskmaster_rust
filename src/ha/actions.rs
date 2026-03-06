@@ -1,3 +1,5 @@
+use crate::state::MemberId;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ActionId {
     AcquireLeaderLease,
@@ -21,8 +23,8 @@ pub(crate) enum HaAction {
     ReleaseLeaderLease,
     ClearSwitchover,
     FollowLeader { leader_member_id: String },
-    StartRewind,
-    StartBaseBackup,
+    StartRewind { leader_member_id: MemberId },
+    StartBaseBackup { leader_member_id: MemberId },
     RunBootstrap,
     FenceNode,
     WipeDataDir,
@@ -41,8 +43,8 @@ impl HaAction {
             Self::FollowLeader { leader_member_id } => {
                 ActionId::FollowLeader(leader_member_id.clone())
             }
-            Self::StartRewind => ActionId::StartRewind,
-            Self::StartBaseBackup => ActionId::StartBaseBackup,
+            Self::StartRewind { .. } => ActionId::StartRewind,
+            Self::StartBaseBackup { .. } => ActionId::StartBaseBackup,
             Self::RunBootstrap => ActionId::RunBootstrap,
             Self::FenceNode => ActionId::FenceNode,
             Self::WipeDataDir => ActionId::WipeDataDir,

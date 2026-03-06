@@ -17,8 +17,6 @@ listen_host = "127.0.0.1"
 listen_port = 5432
 socket_dir = "/var/run/pgtuskmaster/sock"
 log_file = "/var/log/pgtuskmaster/postgres.log"
-rewind_source_host = "10.0.0.10"
-rewind_source_port = 5432
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
@@ -95,9 +93,9 @@ The v2 schema is intentionally fail-closed. Startup should fail before the node 
 
 - `data_dir`, `socket_dir`, and `log_file` define local process layout.
 - `listen_host` and `listen_port` control local PostgreSQL reachability.
-- `rewind_source_host` and `rewind_source_port` are used for rewind and basebackup source connection defaults.
 - `local_conn_identity` is used for local control operations.
-- `rewind_conn_identity` is used for rewind connectivity.
+- `rewind_conn_identity` supplies the configured identity for rewind connections. Basebackup and rewind still use role-specific credentials from `roles.replicator` and `roles.rewinder`.
+- Basebackup and rewind source host/port are not configured statically. The node derives the source endpoint from the current leader/member PostgreSQL endpoint published in DCS.
 - `roles.superuser`, `roles.replicator`, and `roles.rewinder` define the PostgreSQL identities used by process jobs.
 - `pg_hba.source` and `pg_ident.source` can be inline content or file-backed content.
 
@@ -146,7 +144,8 @@ Replica cloning depends on `pg_basebackup`.
 ## Operational notes
 
 - Initial primary bootstrap uses `initdb`.
-- Replica bootstrap uses `pg_basebackup` against a healthy primary when the DCS view shows one.
+- Replica bootstrap uses `pg_basebackup` against the current healthy primary endpoint advertised in DCS.
+- Rewind also targets the current leader/member endpoint from DCS instead of a statically configured source host/port.
 
 ## Common misconfigurations
 
