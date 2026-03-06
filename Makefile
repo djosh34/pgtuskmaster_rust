@@ -113,11 +113,19 @@ check:
 check: guard-makeflags ensure-timeout
 
 test: guard-makeflags ensure-nextest
-	cargo nextest run --workspace --all-targets --profile default --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
+	@set -euo pipefail; \
+	status=0; \
+	cargo nextest run --workspace --all-targets --profile default --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" || status="$$?"; \
+	python3 ./tools/export-nextest-junit-logs.py ./target/nextest/default/junit.xml ./target/nextest/default/logs; \
+	exit "$$status"
 
 test-long: guard-makeflags ensure-nextest
 	@echo "test-long runs only the ultra-long HA scenarios via the nextest ultra-long profile."
-	cargo nextest run --workspace --all-targets --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
+	@set -euo pipefail; \
+	status=0; \
+	cargo nextest run --workspace --all-targets --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" || status="$$?"; \
+	python3 ./tools/export-nextest-junit-logs.py ./target/nextest/ultra-long/junit.xml ./target/nextest/ultra-long/logs; \
+	exit "$$status"
 
 docs-lint: guard-makeflags ensure-timeout ensure-node
 	@echo "gate evidence: $(GATE_EVIDENCE_DIR)"
