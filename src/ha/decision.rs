@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{
     dcs::state::DcsTrust,
     pginfo::state::{PgInfoState, SqlStatus},
@@ -36,23 +38,36 @@ pub(crate) struct PhaseOutcome {
     pub(crate) decision: HaDecision,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum HaDecision {
     #[default]
     NoChange,
-    WaitForPostgres { start_requested: bool },
+    WaitForPostgres {
+        start_requested: bool,
+    },
     WaitForDcsTrust,
     AttemptLeadership,
-    FollowLeader { leader_member_id: MemberId },
-    BecomePrimary { promote: bool },
+    FollowLeader {
+        leader_member_id: MemberId,
+    },
+    BecomePrimary {
+        promote: bool,
+    },
     StepDown(StepDownPlan),
-    RecoverReplica(RecoveryPlan),
+    RecoverReplica {
+        strategy: RecoveryStrategy,
+    },
     FenceNode,
-    ReleaseLeaderLease { reason: LeaseReleaseReason },
-    EnterFailSafe { release_leader_lease: bool },
+    ReleaseLeaderLease {
+        reason: LeaseReleaseReason,
+    },
+    EnterFailSafe {
+        release_leader_lease: bool,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StepDownPlan {
     pub(crate) reason: StepDownReason,
     pub(crate) release_leader_lease: bool,
@@ -60,26 +75,23 @@ pub(crate) struct StepDownPlan {
     pub(crate) fence: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum StepDownReason {
     Switchover,
-    ConflictingLeader { leader_member_id: MemberId },
+    ForeignLeaderDetected { leader_member_id: MemberId },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RecoveryPlan {
-    pub(crate) strategy: RecoveryStrategy,
-    pub(crate) leader_member_id: Option<MemberId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RecoveryStrategy {
-    Rewind,
-    BaseBackup,
+    Rewind { leader_member_id: MemberId },
+    BaseBackup { leader_member_id: MemberId },
     Bootstrap,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum LeaseReleaseReason {
     FencingComplete,
 }
@@ -170,7 +182,7 @@ impl HaDecision {
             Self::FollowLeader { .. } => "follow_leader",
             Self::BecomePrimary { .. } => "become_primary",
             Self::StepDown(_) => "step_down",
-            Self::RecoverReplica(_) => "recover_replica",
+            Self::RecoverReplica { .. } => "recover_replica",
             Self::FenceNode => "fence_node",
             Self::ReleaseLeaderLease { .. } => "release_leader_lease",
             Self::EnterFailSafe { .. } => "enter_fail_safe",
@@ -182,36 +194,23 @@ impl HaDecision {
             Self::NoChange | Self::WaitForDcsTrust | Self::AttemptLeadership | Self::FenceNode => {
                 None
             }
-            Self::WaitForPostgres { start_requested } => Some(
-                if *start_requested {
-                    "start_requested"
-                } else {
-                    "waiting_only"
-                }
-                .to_string(),
-            ),
+            Self::WaitForPostgres { start_requested } => {
+                Some(format!("start_requested={start_requested}"))
+            }
             Self::FollowLeader { leader_member_id } => Some(leader_member_id.0.clone()),
-            Self::BecomePrimary { promote } => Some(
-                if *promote {
-                    "promote"
-                } else {
-                    "already_leader"
-                }
-                .to_string(),
-            ),
-            Self::StepDown(plan) => Some(plan.reason.label()),
-            Self::RecoverReplica(plan) => Some(plan.strategy.label()),
+            Self::BecomePrimary { promote } => Some(format!("promote={promote}")),
+            Self::StepDown(plan) => Some(format!(
+                "reason={}, release_leader_lease={}, clear_switchover={}, fence={}",
+                plan.reason.label(),
+                plan.release_leader_lease,
+                plan.clear_switchover,
+                plan.fence
+            )),
+            Self::RecoverReplica { strategy } => Some(strategy.label()),
             Self::ReleaseLeaderLease { reason } => Some(reason.label()),
             Self::EnterFailSafe {
                 release_leader_lease,
-            } => Some(
-                if *release_leader_lease {
-                    "release_leader_lease"
-                } else {
-                    "hold_local_state"
-                }
-                .to_string(),
-            ),
+            } => Some(format!("release_leader_lease={release_leader_lease}")),
         }
     }
 }
@@ -220,8 +219,8 @@ impl StepDownReason {
     fn label(&self) -> String {
         match self {
             Self::Switchover => "switchover".to_string(),
-            Self::ConflictingLeader { leader_member_id } => {
-                format!("conflicting_leader:{}", leader_member_id.0)
+            Self::ForeignLeaderDetected { leader_member_id } => {
+                format!("foreign_leader_detected:{}", leader_member_id.0)
             }
         }
     }
@@ -230,8 +229,10 @@ impl StepDownReason {
 impl RecoveryStrategy {
     fn label(&self) -> String {
         match self {
-            Self::Rewind => "rewind".to_string(),
-            Self::BaseBackup => "basebackup".to_string(),
+            Self::Rewind { leader_member_id } => format!("rewind:{}", leader_member_id.0),
+            Self::BaseBackup { leader_member_id } => {
+                format!("base_backup:{}", leader_member_id.0)
+            }
             Self::Bootstrap => "bootstrap".to_string(),
         }
     }

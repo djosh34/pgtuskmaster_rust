@@ -2109,11 +2109,11 @@ mod tests {
         assert_eq!(decoded["leader"], serde_json::Value::Null);
         assert_eq!(decoded["switchover_requested_by"], serde_json::Value::Null);
         assert_eq!(decoded["member_count"], 0);
-        assert_eq!(decoded["dcs_trust"], "FullQuorum");
-        assert_eq!(decoded["ha_phase"], "Replica");
+        assert_eq!(decoded["dcs_trust"], "full_quorum");
+        assert_eq!(decoded["ha_phase"], "replica");
         assert_eq!(decoded["ha_tick"], 7);
-        assert_eq!(decoded["ha_decision"], "enter_fail_safe");
-        assert_eq!(decoded["ha_decision_detail"], "hold_local_state");
+        assert_eq!(decoded["ha_decision"]["kind"], "enter_fail_safe");
+        assert_eq!(decoded["ha_decision"]["release_leader_lease"], false);
         assert_eq!(decoded["snapshot_sequence"], 2);
         Ok(())
     }

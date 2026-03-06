@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 06:17:00 AM CET 2026
+Generated: Fri Mar  6 07:16:03 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -548,7 +548,7 @@ The agent must explore the current config schema, HA/runtime flow, DCS/member-st
 
 **Path:** `.ralph/tasks/story-ha-functional-rewrite/03-task-replace-action-vectors-and-pending-state-with-typed-domain-effect-plan.md`
 
-## Task: Replace action vectors and pending state with HaDecision plus lowered effect plan <status>not_started</status> <passes>false</passes>
+## Task: Replace action vectors and pending state with HaDecision plus lowered effect plan <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Replace `Vec<HaAction>` planning with a high-level `HaDecision` enum plus an inherent `HaDecision::lower(&self) -> HaEffectPlan` step, and remove `pending` entirely from HA state.

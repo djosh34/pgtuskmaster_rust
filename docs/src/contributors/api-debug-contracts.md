@@ -81,9 +81,9 @@ That design choice matters:
 
 - cluster identity (cluster name, scope, self member id)
 - current leader and switchover request (if any)
-- DCS trust label
-- HA phase and tick
-- HA decision label and optional decision detail
+- typed DCS trust enum
+- typed HA phase enum plus tick
+- typed HA decision payload
 - the snapshot sequence (useful for polling clients).
 
 This endpoint is the best “simple operational signal” to rely on. It should remain small and understandable even as internal debug views become more detailed.

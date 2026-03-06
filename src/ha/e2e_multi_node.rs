@@ -959,7 +959,7 @@ impl ClusterFixture {
             phase_history
                 .entry(state.self_member_id.clone())
                 .or_default()
-                .insert(state.ha_phase.clone());
+                .insert(state.ha_phase.to_string());
         }
     }
 
@@ -1174,17 +1174,19 @@ impl ClusterFixture {
         former_primary: &str,
         new_primary: &str,
     ) -> Result<(), WorkerError> {
+        const PRIMARY_PHASE: &str = "primary";
+
         let former_phases = phase_history.get(former_primary).ok_or_else(|| {
             WorkerError::Message(format!(
                 "missing phase history for former primary {former_primary}"
             ))
         })?;
-        if !former_phases.contains("Primary") {
+        if !former_phases.contains(PRIMARY_PHASE) {
             return Err(WorkerError::Message(format!(
                 "former primary {former_primary} never observed in Primary phase"
             )));
         }
-        if !former_phases.iter().any(|phase| phase != "Primary") {
+        if !former_phases.iter().any(|phase| phase != PRIMARY_PHASE) {
             return Err(WorkerError::Message(format!(
                 "former primary {former_primary} never observed leaving Primary phase"
             )));
@@ -1195,7 +1197,7 @@ impl ClusterFixture {
                 "missing phase history for promoted primary {new_primary}"
             ))
         })?;
-        if !promoted_phases.contains("Primary") {
+        if !promoted_phases.contains(PRIMARY_PHASE) {
             return Err(WorkerError::Message(format!(
                 "new primary {new_primary} never observed in Primary phase"
             )));
@@ -2572,10 +2574,12 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
             .wait_for_stable_primary_resilient(
                 StablePrimaryWaitPlan {
                     context: "stress switchover primary convergence",
-                    timeout: Duration::from_secs(45),
+                    // Keep enough global scenario budget for an explicit second switchover
+                    // request when the first accepted intent does not move leadership.
+                    timeout: Duration::from_secs(25),
                     excluded_primary: Some(&bootstrap_primary),
                     required_consecutive: 2,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: Duration::from_secs(35),
                     fallback_required_consecutive: 1,
                     min_observed_nodes: 1,
                 },
@@ -2593,7 +2597,7 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
                         &bootstrap_primary,
                         "e2e-stress-switchover-retry",
                         2,
-                        Duration::from_secs(75),
+                        Duration::from_secs(35),
                         1,
                         &mut phase_history,
                     )

@@ -15,7 +15,8 @@ use crate::{
 
 use super::store::DcsStore;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum DcsTrust {
     FullQuorum,
     FailSafe,

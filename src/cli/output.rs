@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::cli::{
     args::OutputFormat,
-    client::{AcceptedResponse, HaStateResponse},
+    client::{AcceptedResponse, HaDecisionResponse, HaStateResponse},
     error::CliError,
     CommandOutput,
 };
@@ -41,7 +41,6 @@ fn render_text(command_output: &CommandOutput) -> String {
             let value = value.as_ref();
             let leader = value.leader.as_deref().unwrap_or("<none>");
             let switchover = value.switchover_requested_by.as_deref().unwrap_or("<none>");
-            let decision_detail = value.ha_decision_detail.as_deref().unwrap_or("<none>");
             [
                 format!("cluster_name={}", value.cluster_name),
                 format!("scope={}", value.scope),
@@ -52,8 +51,7 @@ fn render_text(command_output: &CommandOutput) -> String {
                 format!("dcs_trust={}", value.dcs_trust),
                 format!("ha_phase={}", value.ha_phase),
                 format!("ha_tick={}", value.ha_tick),
-                format!("ha_decision={}", value.ha_decision),
-                format!("ha_decision_detail={decision_detail}"),
+                format!("ha_decision={}", render_decision_text(&value.ha_decision)),
                 format!("snapshot_sequence={}", value.snapshot_sequence),
             ]
             .join("\n")
@@ -61,11 +59,46 @@ fn render_text(command_output: &CommandOutput) -> String {
     }
 }
 
+fn render_decision_text(value: &HaDecisionResponse) -> String {
+    match value {
+        HaDecisionResponse::NoChange => "no_change".to_string(),
+        HaDecisionResponse::WaitForPostgres { start_requested } => {
+            format!("wait_for_postgres(start_requested={start_requested})")
+        }
+        HaDecisionResponse::WaitForDcsTrust => "wait_for_dcs_trust".to_string(),
+        HaDecisionResponse::AttemptLeadership => "attempt_leadership".to_string(),
+        HaDecisionResponse::FollowLeader { leader_member_id } => {
+            format!("follow_leader(leader_member_id={leader_member_id})")
+        }
+        HaDecisionResponse::BecomePrimary { promote } => {
+            format!("become_primary(promote={promote})")
+        }
+        HaDecisionResponse::StepDown {
+            reason,
+            release_leader_lease,
+            clear_switchover,
+            fence,
+        } => format!(
+            "step_down(reason={reason}, release_leader_lease={release_leader_lease}, clear_switchover={clear_switchover}, fence={fence})"
+        ),
+        HaDecisionResponse::RecoverReplica { strategy } => {
+            format!("recover_replica(strategy={strategy})")
+        }
+        HaDecisionResponse::FenceNode => "fence_node".to_string(),
+        HaDecisionResponse::ReleaseLeaderLease { reason } => {
+            format!("release_leader_lease(reason={reason})")
+        }
+        HaDecisionResponse::EnterFailSafe {
+            release_leader_lease,
+        } => format!("enter_fail_safe(release_leader_lease={release_leader_lease})"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::cli::{
         args::OutputFormat,
-        client::{AcceptedResponse, HaStateResponse},
+        client::{AcceptedResponse, HaDecisionResponse, HaStateResponse},
         output::render_output,
         CommandOutput,
     };
@@ -80,11 +113,10 @@ mod tests {
                 leader: Some("node-a".to_string()),
                 switchover_requested_by: None,
                 member_count: 3,
-                dcs_trust: "FullQuorum".to_string(),
-                ha_phase: "Primary".to_string(),
+                dcs_trust: crate::api::DcsTrustResponse::FullQuorum,
+                ha_phase: crate::api::HaPhaseResponse::Primary,
                 ha_tick: 9,
-                ha_decision: "become_primary".to_string(),
-                ha_decision_detail: Some("promote".to_string()),
+                ha_decision: HaDecisionResponse::BecomePrimary { promote: true },
                 snapshot_sequence: 77,
             })),
             OutputFormat::Text,
@@ -95,7 +127,7 @@ mod tests {
         assert!(rendered.contains("cluster_name=cluster-a"));
         assert!(rendered.contains("leader=node-a"));
         assert!(rendered.contains("switchover_requested_by=<none>"));
-        assert!(rendered.contains("ha_decision=become_primary"));
+        assert!(rendered.contains("ha_decision=become_primary(promote=true)"));
     }
 
     #[test]

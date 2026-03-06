@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+pub(crate) use crate::api::{AcceptedResponse, HaDecisionResponse, HaStateResponse};
 use crate::cli::error::CliError;
 
 #[derive(Clone, Debug)]
@@ -18,29 +19,6 @@ pub struct CliApiClient {
 enum AuthRole {
     Read,
     Admin,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AcceptedResponse {
-    pub accepted: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HaStateResponse {
-    pub cluster_name: String,
-    pub scope: String,
-    pub self_member_id: String,
-    pub leader: Option<String>,
-    pub switchover_requested_by: Option<String>,
-    pub member_count: usize,
-    pub dcs_trust: String,
-    pub ha_phase: String,
-    pub ha_tick: u64,
-    pub ha_decision: String,
-    pub ha_decision_detail: Option<String>,
-    pub snapshot_sequence: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -213,7 +191,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use crate::cli::client::{CliApiClient, CliError};
+    use crate::cli::client::{CliApiClient, CliError, HaDecisionResponse};
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedRequest {
@@ -225,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_uses_read_token_when_configured() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"FullQuorum","ha_phase":"Primary","ha_tick":1,"ha_decision":"become_primary","ha_decision_detail":"promote","snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(
@@ -236,6 +214,10 @@ mod tests {
         )?;
         let state = client.get_ha_state().await?;
         assert_eq!(state.cluster_name, "cluster-a");
+        assert_eq!(
+            state.ha_decision,
+            HaDecisionResponse::BecomePrimary { promote: true }
+        );
 
         let request = handle_request(handle).await?;
         assert_eq!(request.method, "GET");
@@ -246,7 +228,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_falls_back_to_admin_token_when_read_missing() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"FullQuorum","ha_phase":"Primary","ha_tick":1,"ha_decision":"become_primary","ha_decision_detail":"promote","snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(

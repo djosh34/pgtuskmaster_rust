@@ -2,7 +2,7 @@ use crate::{dcs::state::DcsTrust, state::MemberId};
 
 use super::{
     decision::{
-        DecisionFacts, HaDecision, LeaseReleaseReason, PhaseOutcome, ProcessActivity, RecoveryPlan,
+        DecisionFacts, HaDecision, LeaseReleaseReason, PhaseOutcome, ProcessActivity,
         RecoveryStrategy, StepDownPlan, StepDownReason,
     },
     state::{DecideInput, DecideOutput, HaPhase, HaState},
@@ -90,6 +90,12 @@ fn decide_replica(facts: &DecisionFacts) -> PhaseOutcome {
         return wait_for_postgres();
     }
 
+    if facts.switchover_requested_by.is_some()
+        && facts.active_leader_member_id.as_ref() == Some(&facts.self_member_id)
+    {
+        return PhaseOutcome::new(HaPhase::Replica, HaDecision::NoChange);
+    }
+
     match facts.active_leader_member_id.as_ref() {
         Some(leader_member_id) if leader_member_id == &facts.self_member_id => PhaseOutcome::new(
             HaPhase::Primary,
@@ -97,10 +103,11 @@ fn decide_replica(facts: &DecisionFacts) -> PhaseOutcome {
         ),
         Some(leader_member_id) if facts.rewind_required => PhaseOutcome::new(
             HaPhase::Rewinding,
-            HaDecision::RecoverReplica(RecoveryPlan {
-                strategy: RecoveryStrategy::Rewind,
-                leader_member_id: Some(leader_member_id.clone()),
-            }),
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::Rewind {
+                    leader_member_id: leader_member_id.clone(),
+                },
+            },
         ),
         Some(leader_member_id) => PhaseOutcome::new(
             HaPhase::Replica,
@@ -154,10 +161,11 @@ fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
     if !facts.postgres_reachable {
         return PhaseOutcome::new(
             HaPhase::Rewinding,
-            HaDecision::RecoverReplica(RecoveryPlan {
-                strategy: RecoveryStrategy::Rewind,
-                leader_member_id: facts.active_leader_member_id.clone(),
-            }),
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::Rewind {
+                    leader_member_id: recovery_leader_member_id(facts),
+                },
+            },
         );
     }
 
@@ -165,7 +173,7 @@ fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
         Some(leader_member_id) => PhaseOutcome::new(
             HaPhase::Fencing,
             HaDecision::StepDown(StepDownPlan {
-                reason: StepDownReason::ConflictingLeader { leader_member_id },
+                reason: StepDownReason::ForeignLeaderDetected { leader_member_id },
                 release_leader_lease: true,
                 clear_switchover: false,
                 fence: true,
@@ -187,14 +195,17 @@ fn decide_rewinding(facts: &DecisionFacts) -> PhaseOutcome {
         },
         ProcessActivity::IdleFailure => PhaseOutcome::new(
             HaPhase::Bootstrapping,
-            HaDecision::RecoverReplica(recovery_after_rewind_failure(facts)),
+            HaDecision::RecoverReplica {
+                strategy: recovery_after_rewind_failure(facts),
+            },
         ),
         ProcessActivity::IdleNoOutcome => PhaseOutcome::new(
             HaPhase::Rewinding,
-            HaDecision::RecoverReplica(RecoveryPlan {
-                strategy: RecoveryStrategy::Rewind,
-                leader_member_id: facts.active_leader_member_id.clone(),
-            }),
+            HaDecision::RecoverReplica {
+                strategy: RecoveryStrategy::Rewind {
+                    leader_member_id: recovery_leader_member_id(facts),
+                },
+            },
         ),
     }
 }
@@ -211,7 +222,9 @@ fn decide_bootstrapping(facts: &DecisionFacts) -> PhaseOutcome {
         ProcessActivity::IdleFailure => PhaseOutcome::new(HaPhase::Fencing, HaDecision::FenceNode),
         ProcessActivity::IdleNoOutcome => PhaseOutcome::new(
             HaPhase::Bootstrapping,
-            HaDecision::RecoverReplica(recovery_after_rewind_failure(facts)),
+            HaDecision::RecoverReplica {
+                strategy: recovery_after_rewind_failure(facts),
+            },
         ),
     }
 }
@@ -246,18 +259,22 @@ fn wait_for_postgres() -> PhaseOutcome {
     )
 }
 
-fn recovery_after_rewind_failure(facts: &DecisionFacts) -> RecoveryPlan {
+fn recovery_after_rewind_failure(facts: &DecisionFacts) -> RecoveryStrategy {
     if facts.has_available_other_leader {
-        RecoveryPlan {
-            strategy: RecoveryStrategy::BaseBackup,
-            leader_member_id: facts.active_leader_member_id.clone(),
+        RecoveryStrategy::BaseBackup {
+            leader_member_id: recovery_leader_member_id(facts),
         }
     } else {
-        RecoveryPlan {
-            strategy: RecoveryStrategy::Bootstrap,
-            leader_member_id: None,
-        }
+        RecoveryStrategy::Bootstrap
     }
+}
+
+fn recovery_leader_member_id(facts: &DecisionFacts) -> MemberId {
+    facts
+        .active_leader_member_id
+        .clone()
+        .or_else(|| facts.leader_member_id.clone())
+        .unwrap_or_else(|| facts.self_member_id.clone())
 }
 
 fn follow_target(facts: &DecisionFacts) -> Option<MemberId> {
@@ -292,10 +309,12 @@ mod tests {
         },
         ha::{
             decision::{
-                HaDecision, LeaseReleaseReason, RecoveryPlan, RecoveryStrategy, StepDownPlan,
-                StepDownReason,
+                HaDecision, LeaseReleaseReason, RecoveryStrategy, StepDownPlan, StepDownReason,
             },
-            lower::lower_decision,
+            lower::{
+                lower_decision, HaEffectPlan, LeaseEffect, PostgresEffect, ReplicationEffect,
+                SafetyEffect, SwitchoverEffect,
+            },
             state::{DecideInput, HaPhase, HaState, WorldSnapshot},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus},
@@ -397,7 +416,7 @@ mod tests {
                 process: process_idle(None),
                 expected_phase: HaPhase::Fencing,
                 expected_decision: HaDecision::StepDown(StepDownPlan {
-                    reason: StepDownReason::ConflictingLeader {
+                    reason: StepDownReason::ForeignLeaderDetected {
                         leader_member_id: MemberId("node-b".to_string()),
                     },
                     release_leader_lease: true,
@@ -444,10 +463,11 @@ mod tests {
                     finished_at: UnixMillis(10),
                 })),
                 expected_phase: HaPhase::Bootstrapping,
-                expected_decision: HaDecision::RecoverReplica(RecoveryPlan {
-                    strategy: RecoveryStrategy::BaseBackup,
-                    leader_member_id: Some(MemberId("node-b".to_string())),
-                }),
+                expected_decision: HaDecision::RecoverReplica {
+                    strategy: RecoveryStrategy::BaseBackup {
+                        leader_member_id: MemberId("node-b".to_string()),
+                    },
+                },
             },
             Case {
                 name: "bootstrap failure goes fencing",
@@ -552,7 +572,13 @@ mod tests {
         });
         assert_eq!(
             lower_decision(&first.outcome.decision),
-            vec![crate::ha::actions::HaAction::AcquireLeaderLease]
+            HaEffectPlan {
+                lease: LeaseEffect::AcquireLeader,
+                switchover: SwitchoverEffect::None,
+                replication: ReplicationEffect::None,
+                postgres: PostgresEffect::None,
+                safety: SafetyEffect::None,
+            }
         );
 
         let second = decide(DecideInput {
@@ -561,7 +587,13 @@ mod tests {
         });
         assert_eq!(
             lower_decision(&second.outcome.decision),
-            vec![crate::ha::actions::HaAction::AcquireLeaderLease]
+            HaEffectPlan {
+                lease: LeaseEffect::AcquireLeader,
+                switchover: SwitchoverEffect::None,
+                replication: ReplicationEffect::None,
+                postgres: PostgresEffect::None,
+                safety: SafetyEffect::None,
+            }
         );
     }
 
@@ -629,11 +661,43 @@ mod tests {
         assert_eq!(output.next.phase, HaPhase::Replica);
         assert_eq!(
             lower_decision(&output.outcome.decision),
-            vec![
-                crate::ha::actions::HaAction::DemoteToReplica,
-                crate::ha::actions::HaAction::ReleaseLeaderLease,
-                crate::ha::actions::HaAction::ClearSwitchover,
-            ]
+            HaEffectPlan {
+                lease: LeaseEffect::ReleaseLeader,
+                switchover: SwitchoverEffect::ClearRequest,
+                replication: ReplicationEffect::None,
+                postgres: PostgresEffect::Demote,
+                safety: SafetyEffect::None,
+            }
+        );
+    }
+
+    #[test]
+    fn replica_with_self_leader_and_pending_switchover_does_not_repromote() {
+        let mut snapshot = world(
+            DcsTrust::FullQuorum,
+            pg_replica(SqlStatus::Healthy),
+            Some("node-a"),
+            process_idle(None),
+        );
+        snapshot.dcs.value.cache.switchover = Some(SwitchoverRequest {
+            requested_by: MemberId("node-b".to_string()),
+        });
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Replica,
+                tick: 10,
+                decision: HaDecision::NoChange,
+            },
+            world: snapshot,
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert_eq!(output.outcome.decision, HaDecision::NoChange);
+        assert_eq!(
+            lower_decision(&output.outcome.decision),
+            HaEffectPlan::default()
         );
     }
 
@@ -655,7 +719,7 @@ mod tests {
         });
 
         assert_eq!(output.next.phase, HaPhase::Rewinding);
-        assert!(lower_decision(&output.outcome.decision).is_empty());
+        assert_eq!(lower_decision(&output.outcome.decision).len(), 0);
     }
 
     #[test]

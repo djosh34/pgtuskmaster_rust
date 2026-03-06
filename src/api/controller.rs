@@ -1,12 +1,22 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{AcceptedResponse, ApiError, ApiResult, HaStateResponse},
+    api::{
+        AcceptedResponse, ApiError, ApiResult, DcsTrustResponse, HaDecisionResponse,
+        HaPhaseResponse, HaStateResponse, LeaseReleaseReasonResponse, RecoveryStrategyResponse,
+        StepDownReasonResponse,
+    },
     dcs::{
-        state::SwitchoverRequest,
+        state::{DcsTrust, SwitchoverRequest},
         store::{DcsHaWriter, DcsStore},
     },
     debug_api::snapshot::SystemSnapshot,
+    ha::{
+        decision::{
+            HaDecision, LeaseReleaseReason, RecoveryStrategy, StepDownPlan, StepDownReason,
+        },
+        state::HaPhase,
+    },
     state::{MemberId, Versioned},
 };
 
@@ -49,8 +59,6 @@ pub(crate) fn delete_switchover(
 }
 
 pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateResponse {
-    let decision = &snapshot.value.ha.value.decision;
-
     HaStateResponse {
         cluster_name: snapshot.value.config.value.cluster.name.clone(),
         scope: snapshot.value.config.value.dcs.scope.clone(),
@@ -72,12 +80,102 @@ pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateRespo
             .as_ref()
             .map(|switchover| switchover.requested_by.0.clone()),
         member_count: snapshot.value.dcs.value.cache.members.len(),
-        dcs_trust: format!("{:?}", snapshot.value.dcs.value.trust),
-        ha_phase: format!("{:?}", snapshot.value.ha.value.phase),
+        dcs_trust: map_dcs_trust(&snapshot.value.dcs.value.trust),
+        ha_phase: map_ha_phase(&snapshot.value.ha.value.phase),
         ha_tick: snapshot.value.ha.value.tick,
-        ha_decision: decision.label().to_string(),
-        ha_decision_detail: decision.detail(),
+        ha_decision: map_ha_decision(&snapshot.value.ha.value.decision),
         snapshot_sequence: snapshot.value.sequence,
+    }
+}
+
+fn map_dcs_trust(value: &DcsTrust) -> DcsTrustResponse {
+    match value {
+        DcsTrust::FullQuorum => DcsTrustResponse::FullQuorum,
+        DcsTrust::FailSafe => DcsTrustResponse::FailSafe,
+        DcsTrust::NotTrusted => DcsTrustResponse::NotTrusted,
+    }
+}
+
+fn map_ha_phase(value: &HaPhase) -> HaPhaseResponse {
+    match value {
+        HaPhase::Init => HaPhaseResponse::Init,
+        HaPhase::WaitingPostgresReachable => HaPhaseResponse::WaitingPostgresReachable,
+        HaPhase::WaitingDcsTrusted => HaPhaseResponse::WaitingDcsTrusted,
+        HaPhase::Replica => HaPhaseResponse::Replica,
+        HaPhase::CandidateLeader => HaPhaseResponse::CandidateLeader,
+        HaPhase::Primary => HaPhaseResponse::Primary,
+        HaPhase::Rewinding => HaPhaseResponse::Rewinding,
+        HaPhase::Bootstrapping => HaPhaseResponse::Bootstrapping,
+        HaPhase::Fencing => HaPhaseResponse::Fencing,
+        HaPhase::FailSafe => HaPhaseResponse::FailSafe,
+    }
+}
+
+fn map_ha_decision(value: &HaDecision) -> HaDecisionResponse {
+    match value {
+        HaDecision::NoChange => HaDecisionResponse::NoChange,
+        HaDecision::WaitForPostgres { start_requested } => HaDecisionResponse::WaitForPostgres {
+            start_requested: *start_requested,
+        },
+        HaDecision::WaitForDcsTrust => HaDecisionResponse::WaitForDcsTrust,
+        HaDecision::AttemptLeadership => HaDecisionResponse::AttemptLeadership,
+        HaDecision::FollowLeader { leader_member_id } => HaDecisionResponse::FollowLeader {
+            leader_member_id: leader_member_id.0.clone(),
+        },
+        HaDecision::BecomePrimary { promote } => {
+            HaDecisionResponse::BecomePrimary { promote: *promote }
+        }
+        HaDecision::StepDown(plan) => map_step_down_plan(plan),
+        HaDecision::RecoverReplica { strategy } => HaDecisionResponse::RecoverReplica {
+            strategy: map_recovery_strategy(strategy),
+        },
+        HaDecision::FenceNode => HaDecisionResponse::FenceNode,
+        HaDecision::ReleaseLeaderLease { reason } => HaDecisionResponse::ReleaseLeaderLease {
+            reason: map_lease_release_reason(reason),
+        },
+        HaDecision::EnterFailSafe {
+            release_leader_lease,
+        } => HaDecisionResponse::EnterFailSafe {
+            release_leader_lease: *release_leader_lease,
+        },
+    }
+}
+
+fn map_step_down_plan(value: &StepDownPlan) -> HaDecisionResponse {
+    HaDecisionResponse::StepDown {
+        reason: map_step_down_reason(&value.reason),
+        release_leader_lease: value.release_leader_lease,
+        clear_switchover: value.clear_switchover,
+        fence: value.fence,
+    }
+}
+
+fn map_step_down_reason(value: &StepDownReason) -> StepDownReasonResponse {
+    match value {
+        StepDownReason::Switchover => StepDownReasonResponse::Switchover,
+        StepDownReason::ForeignLeaderDetected { leader_member_id } => {
+            StepDownReasonResponse::ForeignLeaderDetected {
+                leader_member_id: leader_member_id.0.clone(),
+            }
+        }
+    }
+}
+
+fn map_recovery_strategy(value: &RecoveryStrategy) -> RecoveryStrategyResponse {
+    match value {
+        RecoveryStrategy::Rewind { leader_member_id } => RecoveryStrategyResponse::Rewind {
+            leader_member_id: leader_member_id.0.clone(),
+        },
+        RecoveryStrategy::BaseBackup { leader_member_id } => RecoveryStrategyResponse::BaseBackup {
+            leader_member_id: leader_member_id.0.clone(),
+        },
+        RecoveryStrategy::Bootstrap => RecoveryStrategyResponse::Bootstrap,
+    }
+}
+
+fn map_lease_release_reason(value: &LeaseReleaseReason) -> LeaseReleaseReasonResponse {
+    match value {
+        LeaseReleaseReason::FencingComplete => LeaseReleaseReasonResponse::FencingComplete,
     }
 }
 
