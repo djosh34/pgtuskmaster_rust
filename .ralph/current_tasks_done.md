@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar  6 03:05:34 PM CET 2026
+Generated: Fri Mar  6 03:16:36 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -415,6 +415,18 @@ After the HA functional rewrite lands, move and restructure the HA end-to-end te
 <description>
 **Goal:** Delete the backup feature's config and process-language surface completely, while preserving `pg_basebackup`-based replica creation as a non-backup bootstrap path.
 This story is an immediate blocker: the backup feature must be removed before continuing broader rewrite work, because the leftover pgBackRest/archive/restore surface keeps reintroducing complexity and false dependencies across the runtime.
+```
+
+==============
+
+# Task `.ralph/tasks/story-remove-backup-feature/02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring.md`
+
+```
+## Task: Remove runtime restore bootstrap and the archive_command helper/proxy wiring <status>completed</status> <passes>true</passes> <priority>high</priority>
+
+<description>
+**Goal:** Delete the runtime-owned restore bootstrap path and the hacky archive/restore helper stack, including the local event-ingest API used only for archive_command/restore_command passthrough logging.
+This is now a top-priority blocker inside backup removal, because the surviving `archive_command`, `restore_command`, helper JSON sidecar, and WAL passthrough path are the most disruptive remaining pieces for debugging and further refactoring.
 ```
 
 ==============

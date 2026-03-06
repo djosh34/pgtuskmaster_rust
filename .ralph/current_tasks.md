@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 03:05:34 PM CET 2026
+Generated: Fri Mar  6 03:16:36 PM CET 2026
 
 # Task `.ralph/tasks/bugs/rewind-and-basebackup-source-are-static-instead-of-derived-from-current-leader.md`
 
@@ -144,18 +144,6 @@ Make the docs source tree easier to navigate by aligning file names and ordering
 
 <description>
 Audit the project for unexplained magic numbers and replace them with explicit typed constants, configuration, or otherwise well-justified named values.
-```
-
-==============
-
-# Task `.ralph/tasks/story-remove-backup-feature/02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring.md`
-
-```
-## Task: Remove runtime restore bootstrap and the archive_command helper/proxy wiring <status>not_started</status> <passes>false</passes> <priority>high</priority>
-
-<description>
-**Goal:** Delete the runtime-owned restore bootstrap path and the hacky archive/restore helper stack, including the local event-ingest API used only for archive_command/restore_command passthrough logging.
-This is now a top-priority blocker inside backup removal, because the surviving `archive_command`, `restore_command`, helper JSON sidecar, and WAL passthrough path are the most disruptive remaining pieces for debugging and further refactoring.
 ```
 
 ==============

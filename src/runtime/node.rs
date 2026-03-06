@@ -88,9 +88,6 @@ pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> 
 
 pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError> {
     validate_runtime_config(&cfg)?;
-    crate::self_exe::init_from_current_exe().map_err(|err| {
-        RuntimeError::StartupExecution(format!("self executable path init failed: {err}"))
-    })?;
 
     let logging = crate::logging::bootstrap(&cfg).map_err(|err| {
         RuntimeError::StartupExecution(format!("logging bootstrap failed: {err}"))
@@ -640,7 +637,9 @@ async fn execute_startup(
 
         if let StartupAction::StartPostgres = &action {
             emit_startup_phase(log, "start", "start postgres with managed config").map_err(
-                |err| RuntimeError::StartupExecution(format!("startup phase log emit failed: {err}")),
+                |err| {
+                    RuntimeError::StartupExecution(format!("startup phase log emit failed: {err}"))
+                },
             )?;
         }
 

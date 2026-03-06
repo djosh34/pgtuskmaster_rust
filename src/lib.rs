@@ -17,7 +17,6 @@ pub mod pginfo;
 pub(crate) mod postgres_managed;
 pub(crate) mod process;
 pub mod runtime;
-pub(crate) mod self_exe;
 pub mod state;
 #[doc(hidden)]
 pub mod test_harness;

@@ -1,4 +1,4 @@
-## Task: Remove runtime restore bootstrap and the archive_command helper/proxy wiring <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Remove runtime restore bootstrap and the archive_command helper/proxy wiring <status>completed</status> <passes>true</passes> <priority>high</priority>
 
 <description>
 **Goal:** Delete the runtime-owned restore bootstrap path and the hacky archive/restore helper stack, including the local event-ingest API used only for archive_command/restore_command passthrough logging.
@@ -52,30 +52,30 @@ This is now a top-priority blocker inside backup removal, because the surviving 
 </description>
 
 <acceptance_criteria>
-- [ ] Remove the `cfg.backup.enabled` validation gate from `src/runtime/node.rs`.
-- [ ] Remove `StartupMode::RestoreBootstrap`, `StartupAction::TakeoverRestoredDataDir`, and all restore-bootstrap planning/execution branches from `src/runtime/node.rs`.
-- [ ] Keep `InitializePrimary`, `CloneReplica`, and `ResumeExisting` startup modes working.
-- [ ] Keep the `BaseBackup` replica-clone startup path intact in `src/runtime/node.rs`.
-- [ ] Delete `src/backup/archive_command.rs`.
-- [ ] Remove helper-config generation, archive/restore command rendering, recovery-signal takeover cleanup, and backup-specific `pgtm.postgresql.conf` ownership from `src/postgres_managed.rs`.
-- [ ] Preserve non-backup managed config responsibilities in `src/postgres_managed.rs`, especially HBA/ident/TLS file ownership and `extra_settings` needed for normal startup.
-- [ ] Keep `pgtm.postgresql.conf` in `src/postgres_managed.rs`, but remove all backup-owned contents and behavior from it:
+- [x] Remove the `cfg.backup.enabled` validation gate from `src/runtime/node.rs`.
+- [x] Remove `StartupMode::RestoreBootstrap`, `StartupAction::TakeoverRestoredDataDir`, and all restore-bootstrap planning/execution branches from `src/runtime/node.rs`.
+- [x] Keep `InitializePrimary`, `CloneReplica`, and `ResumeExisting` startup modes working.
+- [x] Keep the `BaseBackup` replica-clone startup path intact in `src/runtime/node.rs`.
+- [x] Delete `src/backup/archive_command.rs`.
+- [x] Remove helper-config generation, archive/restore command rendering, recovery-signal takeover cleanup, and backup-specific `pgtm.postgresql.conf` ownership from `src/postgres_managed.rs`.
+- [x] Preserve non-backup managed config responsibilities in `src/postgres_managed.rs`, especially HBA/ident/TLS file ownership and `extra_settings` needed for normal startup.
+- [x] Keep `pgtm.postgresql.conf` in `src/postgres_managed.rs`, but remove all backup-owned contents and behavior from it:
   - no `archive_mode = on`
   - no `archive_command = '...'`
   - no `restore_command = '...'`
   - no helper-config comments referencing `pgtm.pgbackrest.archive.json`
   - no restore-bootstrap-only behavior tied specifically to pgBackRest
-- [ ] Keep any remaining non-backup `config_file=pgtm.postgresql.conf` startup wiring intact in this task.
-- [ ] Remove `src/wal.rs`, `src/wal_passthrough.rs`, and all references to them.
-- [ ] Remove the `Wal` subcommand and helper execution mode from `src/bin/pgtuskmaster.rs`.
-- [ ] Remove `src/api/events.rs` and the `/events/wal` route/authorization/serialization logic from `src/api/worker.rs`.
-- [ ] Remove `src/self_exe.rs` if it becomes unused after helper deletion; otherwise reduce it to only the remaining legitimate use and document why it still exists.
-- [ ] Delete all references to `archive_command`, `restore_command`, `archive_mode`, `pgtm.pgbackrest.archive.json`, `backup.wal_passthrough`, and `wal passthrough invocation` from `src/`.
-- [ ] Verify that `materialize_managed_postgres_config` and startup tests still pass for non-backup flows.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Keep any remaining non-backup `config_file=pgtm.postgresql.conf` startup wiring intact in this task.
+- [x] Remove `src/wal.rs`, `src/wal_passthrough.rs`, and all references to them.
+- [x] Remove the `Wal` subcommand and helper execution mode from `src/bin/pgtuskmaster.rs`.
+- [x] Remove `src/api/events.rs` and the `/events/wal` route/authorization/serialization logic from `src/api/worker.rs`.
+- [x] Remove `src/self_exe.rs` if it becomes unused after helper deletion; otherwise reduce it to only the remaining legitimate use and document why it still exists.
+- [x] Delete all references to `archive_command`, `restore_command`, `archive_mode`, `pgtm.pgbackrest.archive.json`, `backup.wal_passthrough`, and `wal passthrough invocation` from `src/`.
+- [x] Verify that `materialize_managed_postgres_config` and startup tests still pass for non-backup flows.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ## Detailed Execution Plan (Draft 1, 2026-03-06)
@@ -208,4 +208,4 @@ This is now a top-priority blocker inside backup removal, because the surviving 
 - Prefer extending the existing HA startup test to assert the default `config_file` plus the managed artifact on disk, instead of adding a separate new startup harness.
 - Docs still appear likely to need no change unless execution discovers a contributor-facing statement that claims the helper surface still exists.
 
-NOW EXECUTE
+COMPLETED

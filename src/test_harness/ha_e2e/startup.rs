@@ -684,6 +684,8 @@ $$;
             })?;
             let expected_hba_file = primary.data_dir.join("pgtm.pg_hba.conf");
             let expected_ident_file = primary.data_dir.join("pgtm.pg_ident.conf");
+            let expected_managed_postgresql_conf = primary.data_dir.join("pgtm.postgresql.conf");
+            let expected_config_file = primary.data_dir.join("postgresql.conf");
 
             let hba_file_raw = super::util::run_psql_statement(
                 guard.binaries.psql.as_path(),
@@ -705,9 +707,20 @@ $$;
                 guard.timeouts.command_kill_wait_timeout,
             )
             .await?;
+            let config_file_raw = super::util::run_psql_statement(
+                guard.binaries.psql.as_path(),
+                sql_port,
+                superuser_username,
+                superuser_dbname,
+                "SHOW config_file;",
+                guard.timeouts.command_timeout,
+                guard.timeouts.command_kill_wait_timeout,
+            )
+            .await?;
 
             let expected_hba = expected_hba_file.display().to_string();
             let expected_ident = expected_ident_file.display().to_string();
+            let expected_config = expected_config_file.display().to_string();
             if hba_file_raw.trim() != expected_hba.as_str() {
                 return Err(WorkerError::Message(format!(
                     "expected SHOW hba_file to be `{expected_hba}`, got: {:?}",
@@ -718,6 +731,12 @@ $$;
                 return Err(WorkerError::Message(format!(
                     "expected SHOW ident_file to be `{expected_ident}`, got: {:?}",
                     ident_file_raw.trim()
+                )));
+            }
+            if config_file_raw.trim() != expected_config.as_str() {
+                return Err(WorkerError::Message(format!(
+                    "expected SHOW config_file to be `{expected_config}`, got: {:?}",
+                    config_file_raw.trim()
                 )));
             }
 
@@ -747,6 +766,22 @@ $$;
                     expected_ident_file.display(),
                     pg_ident_contents.len(),
                     disk_ident.len(),
+                )));
+            }
+            let disk_managed_postgresql_conf =
+                std::fs::read_to_string(&expected_managed_postgresql_conf).map_err(|err| {
+                    WorkerError::Message(format!(
+                        "read managed postgresql conf {} failed: {err}",
+                        expected_managed_postgresql_conf.display()
+                    ))
+                })?;
+            if disk_managed_postgresql_conf.contains("archive_mode")
+                || disk_managed_postgresql_conf.contains("archive_command")
+                || disk_managed_postgresql_conf.contains("restore_command")
+            {
+                return Err(WorkerError::Message(format!(
+                    "managed postgresql conf unexpectedly contains backup settings: {:?}",
+                    disk_managed_postgresql_conf
                 )));
             }
 

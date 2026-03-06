@@ -9,6 +9,13 @@ use thiserror::Error;
 
 use crate::config::{ApiTlsMode, InlineOrPath, RuntimeConfig};
 
+const MANAGED_PG_HBA_CONF_NAME: &str = "pgtm.pg_hba.conf";
+const MANAGED_PG_IDENT_CONF_NAME: &str = "pgtm.pg_ident.conf";
+const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
+const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
+# This file is managed by pgtuskmaster.\n\
+# Backup-era archive and restore settings have been removed.\n";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedPostgresConfig {
     pub(crate) hba_path: PathBuf,
@@ -37,8 +44,10 @@ pub(crate) fn materialize_managed_postgres_config(
         });
     }
 
-    let managed_hba = absolutize_path(&cfg.postgres.data_dir.join("pgtm.pg_hba.conf"))?;
-    let managed_ident = absolutize_path(&cfg.postgres.data_dir.join("pgtm.pg_ident.conf"))?;
+    let managed_hba = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_PG_HBA_CONF_NAME))?;
+    let managed_ident = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_PG_IDENT_CONF_NAME))?;
+    let managed_postgresql_conf =
+        absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
 
     let hba_contents =
         load_inline_or_path_string("postgres.pg_hba.source", &cfg.postgres.pg_hba.source)?;
@@ -47,6 +56,11 @@ pub(crate) fn materialize_managed_postgres_config(
 
     write_atomic(&managed_hba, hba_contents.as_bytes(), Some(0o644))?;
     write_atomic(&managed_ident, ident_contents.as_bytes(), Some(0o644))?;
+    write_atomic(
+        &managed_postgresql_conf,
+        MANAGED_POSTGRESQL_CONF_HEADER.as_bytes(),
+        Some(0o644),
+    )?;
 
     let mut tls_cert_path = None;
     let mut tls_key_path = None;
@@ -243,4 +257,206 @@ fn now_millis() -> Result<u128, ManagedPostgresError> {
             message: format!("clock error: {err}"),
         })?;
     Ok(duration.as_millis())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf};
+
+    use crate::{
+        config::{
+            ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
+            DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig, InlineOrPath,
+            LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
+            PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
+            PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
+            StderrSinkConfig, TlsServerConfig,
+        },
+        pginfo::conninfo::PgSslMode,
+    };
+
+    use super::materialize_managed_postgres_config;
+
+    #[test]
+    fn materialize_managed_postgres_config_creates_backup_free_postgresql_conf(
+    ) -> Result<(), String> {
+        let data_dir = unique_test_data_dir("postgresql-conf");
+        let cfg = sample_runtime_config(data_dir.clone());
+
+        let _managed = materialize_managed_postgres_config(&cfg)
+            .map_err(|err| format!("materialize managed config failed: {err}"))?;
+
+        let managed_postgresql_conf = data_dir.join(super::MANAGED_POSTGRESQL_CONF_NAME);
+        let postgresql_conf = fs::read_to_string(&managed_postgresql_conf).map_err(|err| {
+            format!(
+                "read managed postgresql conf {} failed: {err}",
+                managed_postgresql_conf.display()
+            )
+        })?;
+
+        if !postgresql_conf.starts_with(super::MANAGED_POSTGRESQL_CONF_HEADER) {
+            return Err(format!(
+                "managed postgresql conf missing expected header: {:?}",
+                postgresql_conf
+            ));
+        }
+        if postgresql_conf.contains("archive_mode")
+            || postgresql_conf.contains("archive_command")
+            || postgresql_conf.contains("restore_command")
+        {
+            return Err(format!(
+                "managed postgresql conf unexpectedly contains backup settings: {:?}",
+                postgresql_conf
+            ));
+        }
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_managed_postgres_config_does_not_add_config_file_override() -> Result<(), String>
+    {
+        let data_dir = unique_test_data_dir("extra-settings");
+        let cfg = sample_runtime_config(data_dir.clone());
+
+        let managed = materialize_managed_postgres_config(&cfg)
+            .map_err(|err| format!("materialize managed config failed: {err}"))?;
+
+        if managed.extra_settings.contains_key("config_file") {
+            return Err(format!(
+                "managed postgres settings unexpectedly contain config_file: {:?}",
+                managed.extra_settings
+            ));
+        }
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
+        Ok(())
+    }
+
+    fn unique_test_data_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "pgtuskmaster-postgres-managed-{label}-{}-{}",
+            std::process::id(),
+            crate::logging::system_now_unix_millis()
+        ))
+    }
+
+    fn sample_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
+        RuntimeConfig {
+            cluster: ClusterConfig {
+                name: "cluster-a".to_string(),
+                member_id: "node-a".to_string(),
+            },
+            postgres: PostgresConfig {
+                data_dir,
+                connect_timeout_s: 5,
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 5432,
+                socket_dir: "/tmp/pgtuskmaster/socket".into(),
+                log_file: "/tmp/pgtuskmaster/postgres.log".into(),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port: 5432,
+                local_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: "rewinder".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        username: "postgres".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    replicator: PostgresRoleConfig {
+                        username: "replicator".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                    rewinder: PostgresRoleConfig {
+                        username: "rewinder".to_string(),
+                        auth: RoleAuthConfig::Tls,
+                    },
+                },
+                pg_hba: PgHbaConfig {
+                    source: InlineOrPath::Inline {
+                        content: "local all all trust\n".to_string(),
+                    },
+                },
+                pg_ident: PgIdentConfig {
+                    source: InlineOrPath::Inline {
+                        content: "# empty\n".to_string(),
+                    },
+                },
+            },
+            dcs: DcsConfig {
+                endpoints: vec!["http://127.0.0.1:2379".to_string()],
+                scope: "scope-a".to_string(),
+                init: None,
+            },
+            ha: HaConfig {
+                loop_interval_ms: 1_000,
+                lease_ttl_ms: 10_000,
+            },
+            process: ProcessConfig {
+                pg_rewind_timeout_ms: 1_000,
+                bootstrap_timeout_ms: 1_000,
+                fencing_timeout_ms: 1_000,
+                binaries: BinaryPaths {
+                    postgres: "/usr/bin/postgres".into(),
+                    pg_ctl: "/usr/bin/pg_ctl".into(),
+                    pg_rewind: "/usr/bin/pg_rewind".into(),
+                    initdb: "/usr/bin/initdb".into(),
+                    pg_basebackup: "/usr/bin/pg_basebackup".into(),
+                    psql: "/usr/bin/psql".into(),
+                },
+            },
+            logging: LoggingConfig {
+                level: LogLevel::Info,
+                capture_subprocess_output: true,
+                postgres: PostgresLoggingConfig {
+                    enabled: true,
+                    pg_ctl_log_file: None,
+                    log_dir: None,
+                    poll_interval_ms: 200,
+                    cleanup: LogCleanupConfig {
+                        enabled: true,
+                        max_files: 10,
+                        max_age_seconds: 60,
+                        protect_recent_seconds: 300,
+                    },
+                },
+                sinks: LoggingSinksConfig {
+                    stderr: StderrSinkConfig { enabled: true },
+                    file: FileSinkConfig {
+                        enabled: false,
+                        path: None,
+                        mode: FileSinkMode::Append,
+                    },
+                },
+            },
+            api: ApiConfig {
+                listen_addr: "127.0.0.1:8080".to_string(),
+                security: ApiSecurityConfig {
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
+                    },
+                    auth: ApiAuthConfig::Disabled,
+                },
+            },
+            debug: DebugConfig { enabled: true },
+        }
+    }
 }
