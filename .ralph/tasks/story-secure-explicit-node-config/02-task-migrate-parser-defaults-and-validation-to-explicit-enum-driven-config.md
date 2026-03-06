@@ -1,5 +1,5 @@
 ---
-## Task: Migrate parser/defaults/validation to explicit enum-driven config semantics <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Migrate parser/defaults/validation to explicit enum-driven config semantics <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Remove hidden config inference by moving defaulting/validation behavior to explicit enum-driven semantics while preserving safe startup requirements.
@@ -145,7 +145,7 @@
     - tests for safe defaults only (timeouts/logging/bind defaults)
     - tests proving sensitive fields are not synthesized in v2 normalization (i.e., missing fields must error)
 
-### 6) Gates (must be green before marking passing)
+### 6) Gates (must be green before marking done)
 
 - [x] `make check`
 - [x] `make lint`

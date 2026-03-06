@@ -1,5 +1,5 @@
 ---
-## Bug: Remove writable HA leader API control path and enforce HA-loop-only leadership transitions <status>completed</status> <passes>true</passes> <passing>true</passing>
+## Bug: Remove writable HA leader API control path and enforce HA-loop-only leadership transitions <status>completed</status> <passes>true</passes>
 
 <description>
 Investigation found that writable `/ha/leader` was introduced by task `22-task-ha-admin-api-read-write-surface` as part of a "full HA admin API read and write surface". In runtime code, `src/api/worker.rs` routes `POST /ha/leader` and `DELETE /ha/leader` to controller handlers in `src/api/controller.rs` that call `DcsHaWriter::write_leader_lease` / `delete_leader`, so external callers can directly mutate the leader key outside autonomous HA-loop decision flow.
@@ -124,7 +124,7 @@ Directly impacted usages discovered during investigation:
 - [x] For `make test` and `make lint`, store grep evidence for `congratulations` and `evaluation failed`.
 
 ### 9) Closeout once execution is complete
-- [x] Update this task file checklist/status/passing tags only after all gates are green.
+- [x] Update this task file checklist/status/passes tags only after all gates are green.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all touched files including `.ralph` artifacts using:
   - [x] `task finished bug-remove-writable-ha-leader-api-and-ha-loop-test-steering: ...`

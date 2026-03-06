@@ -1,5 +1,5 @@
 ---
-## Task: Verify build and static quality gates <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Verify build and static quality gates <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Validate the codebase can build and pass core static gates before deeper test execution.
@@ -40,7 +40,7 @@
 - Re-read `AGENTS.md` constraints for no skipped tests and no parallel top-level cargo gates.
 - Re-read `.ralph/task_switch.sh` side effects before completion actions.
 - Searched repository for `TO BE VERIFIED`/`NOW EXECUTE` examples to mirror established lifecycle.
-- Searched repository for status tags (`<status>`, `<passes>`, `<passing>`) to keep finalization format consistent.
+- Searched repository for status tags (`<status>`, `<passes>`) to keep finalization format consistent.
 - Searched for acceptance-marker usage (`congratulations`, `evaluation failed`) and confirmed these markers are task-policy checks, not guaranteed tool output.
 - Checked `.ralph/evidence` structure to use existing evidence conventions.
 - Checked `.ralph/tasks/bugs` existing bug patterns for grouping and naming consistency.
@@ -86,7 +86,7 @@
 - Keep task status non-done if any gate remains red after allowed recovery + bug creation.
 - Only if all required gates pass:
 - set header to `<status>done</status> <passes>true</passes>`
-- append/set `<passing>true</passing>`
+- append/set `<passes>true</passes>`
 - run `/bin/bash .ralph/task_switch.sh`
 - commit all changes (including `.ralph` artifacts and task file) with message:
 - `task finished 01-task-verify-build-and-static-gates: <summary including gate evidence and challenges>`

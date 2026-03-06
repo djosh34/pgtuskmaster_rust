@@ -1,5 +1,5 @@
 DO NOT PICK THIS TASK UNLESS ALL OTHER TASKS ARE DONE.
-## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes> <passing>true</passing> <priority>very_low</priority>
+## Task: Recurring meta-task for deep skeptical codebase quality verification <status>not_started</status> <passes>meta-task</passes> <priority>very_low</priority>
 NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
 
 <description>
@@ -15,7 +15,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - Validate e2e/integration behavior comes from real implementation, not accidental effects.
 - Audit all code smells and broader quality concerns with nothing out of scope.
 - Validate documentation correctness as part of the same skepticism pass:
-  - Read every task in `.ralph/tasks/story-operator-architecture-docs/` every time this meta-task is run, including tasks currently marked passing.
+  - Read every task in `.ralph/tasks/story-operator-architecture-docs/` every time this meta-task is run, including tasks currently marked pass.
   - For every non-trivial doc claim (behavioral guarantee, safety claim, endpoint behavior, config effect, failure-mode expectation), trace the supporting evidence to either code, tests, runtime artifacts, or explicit docs rationale.
   - Create/execute a claim verification pass using many parallel subagents with small, disjoint question scopes (small-scope, one question per worker).
   - Capture all verification artifacts in evidence (including claim inventory, ownership map, pass/uncertain status, and residual risk), and keep this tracking outside operator docs.
@@ -261,7 +261,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - [ ] Preflight model gate is enforced (`deep_review`, or set+quit immediately when mismatched).
 - [ ] Test reality and silent-pass resistance are verified, including real pg16/etcd binary usage and real implementation behavior in integration/e2e tests.
 - [ ] Code smells and broader quality issues are audited across the full codebase.
-- [ ] All tasks in `story-operator-architecture-docs` are reviewed this pass, including tasks already marked passing.
+- [ ] All tasks in `story-operator-architecture-docs` are reviewed this pass, including tasks already marked pass.
 - [ ] A full non-trivial claim inventory is produced with `path:line` references and a per-claim evidence method.
 - [ ] At least 15 parallelized subagents are used for doc claim verification, and each claim is verified independently with small scoped prompts.
 - [ ] Doc claim verification artifacts stay in task/evidence tracking; no claim checklists are added to docs content.
@@ -578,7 +578,7 @@ The plan below is intentionally “fail-closed”: if we cannot prove something,
 ### 1.5) Operator-doc claim verification (mandatory; parallelized; evidence-driven)
 Scope: this pass must read all operator-doc tasks (contract) AND verify non-trivial operator-doc **claims** against code/tests/runtime.
 
-- [ ] Read every task in `.ralph/tasks/story-operator-architecture-docs/*.md` (including tasks already marked passing).
+- [ ] Read every task in `.ralph/tasks/story-operator-architecture-docs/*.md` (including tasks already marked pass).
   - [ ] Archive the exact audited-file list into evidence: `ls -1 .ralph/tasks/story-operator-architecture-docs > "$EVID/claims/operator-doc-task-files.txt"`
   - [ ] Note: as of this research pass, the tasks include:
     - [ ] `01-task-restructure-operator-docs-for-flow-depth-and-rationale.md`
@@ -802,7 +802,7 @@ This pass integrates additional skepticism learned from subagent review:
 Scope: this pass must read all operator-doc tasks (contract) AND verify non-trivial operator-doc **claims** against code/tests/runtime.
 
 #### 2.1) In-scope source surface (no silent file loss)
-- [x] Read every task in `.ralph/tasks/story-operator-architecture-docs/*.md` AND `.ralph/tasks/story-operator-architecture-docs/**/*.md` (including tasks already marked passing).
+- [x] Read every task in `.ralph/tasks/story-operator-architecture-docs/*.md` AND `.ralph/tasks/story-operator-architecture-docs/**/*.md` (including tasks already marked pass).
   - [x] Archive the exact audited-file list into evidence:
     - [x] `git ls-files '.ralph/tasks/story-operator-architecture-docs/*.md' '.ralph/tasks/story-operator-architecture-docs/**/*.md' | sort -u > "$EVID/claims/operator-doc-task-files.txt"`
     - [x] hard fail if the list is empty
@@ -848,10 +848,10 @@ Scope: this pass must read all operator-doc tasks (contract) AND verify non-triv
   - [x] `freshness-check.txt`: verified evidence artifacts must be produced during this pass (>= `run-start-utc`) and tied to `freeze_commit`, unless explicitly adjudicated with rationale.
 
 #### 2.5) Operator-doc task parity checks (status vs acceptance)
-- [x] Build `task-parity.csv` for all operator-doc tasks: `status`, `passes`, `passing`, `checked_count`, `unchecked_count`, `waiver_ref`.
+- [x] Build `task-parity.csv` for all operator-doc tasks: `status`, `passes`, `checked_count`, `unchecked_count`, `waiver_ref`.
 - [x] Create `waiver-registry.csv` with required columns: `waiver_ref`, `task_path`, `reason`, `approved_by`, `approved_at_utc`, `expires_at_utc`.
 - [ ] Fail if a `waiver_ref` is missing from registry, points to another task, or is expired.
-- [ ] Fail (or create a blocking bug/task) if any task marked done/passing lacks acceptance parity AND lacks a valid waiver record with an evidence anchor tied to `freeze_commit`.
+- [ ] Fail (or create a blocking bug/task) if any task marked as done/passes true lacks acceptance parity AND lacks a valid waiver record with an evidence anchor tied to `freeze_commit`.
 
 ### 3) Repo-wide fail-open scans (panic paths + lint suppressions; fail-closed)
 - [x] Create `"$EVID/scans/rs_files.txt"`: `git ls-files '*.rs' | sort > "$EVID/scans/rs_files.txt"` and hard fail if empty.

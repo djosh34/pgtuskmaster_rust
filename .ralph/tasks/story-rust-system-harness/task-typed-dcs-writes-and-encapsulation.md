@@ -1,5 +1,5 @@
 ---
-## Task: Replace Stringly DCS Writes With Typed Writer API <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Replace Stringly DCS Writes With Typed Writer API <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Eliminate raw path/string DCS writes from HA by introducing a typed DCS writer API and restricting access to low-level write/delete operations.
@@ -83,7 +83,7 @@
 
 8. Apply checklist updates in task file during execution.
 - Tick file/module checklist items as each code/test change lands.
-- Keep status tags aligned at completion (`<status>done</status> <passes>true</passes> <passing>true</passing>`), but only after all required gates pass.
+- Keep status tags aligned at completion (`<status>done</status> <passes>true</passes>`), but only after all required gates pass.
 
 9. Verification and required gates (sequential, full evidence).
 - Run:
@@ -95,7 +95,7 @@
 - Capture and inspect command outcomes; do not skip any test category.
 
 10. Finalization once gates pass.
-- Set `<passing>true</passing>` in this task file.
+- Set `<passes>true</passes>` in this task file.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all changed files (including `.ralph` artifacts) with:
   - `task finished task-typed-dcs-writes-and-encapsulation: <summary with gates/evidence/challenges>`

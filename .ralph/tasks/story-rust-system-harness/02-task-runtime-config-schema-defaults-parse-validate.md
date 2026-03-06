@@ -1,5 +1,5 @@
 ---
-## Task: Implement runtime config schema defaults parser and validation <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Implement runtime config schema defaults parser and validation <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>01-task-core-types-time-errors-watch-channel</blocked_by>
 <superseded_by>story-pgbackrest-managed-backup-recovery/03-task-high-prio-remove-shell-archive-wrapper-and-current-wiring</superseded_by>
@@ -144,7 +144,7 @@
 - [x] Update this task header tags:
   - [x] `<status>done</status>`
   - [x] `<passes>true</passes>`
-  - [x] `<passing>true</passing>`
+  - [x] `<passes>true</passes>`
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes with required message format:
   - [x] `task finished 02-task-runtime-config-schema-defaults-parse-validate: <summary + test evidence + notable challenges>`

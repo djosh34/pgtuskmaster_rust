@@ -1,5 +1,5 @@
 ---
-## Bug: Worker contract tests only assert callability <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Worker contract tests only assert callability <status>done</status> <passes>true</passes>
 
 <description>
 [worker_contract_tests.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/worker_contract_tests.rs) primarily asserts that `step_once` functions are callable and return `Ok(())`, without validating resulting state changes or side effects. This means tests can pass even if core worker logic regresses or stops mutating state. Strengthen these tests with minimal behavioral assertions (state version bump, expected phase transitions, or expected publish effects), or split compile-time contract checks into non-test compile gates and add real behavioral tests.
@@ -61,7 +61,7 @@
   - [x] `make test`
   - [x] `make test`
   - [x] `make lint`
-- [x] Update this task file checkboxes and set `<passing>true</passing>` only after all required gates pass.
+- [x] Update this task file checkboxes and set `<passes>true</passes>` only after all required gates pass.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes including `.ralph` artifacts with message:
   - [x] `task finished worker-contract-tests-assert-only-callability: strengthen worker contract tests with behavioral assertions`

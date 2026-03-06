@@ -1,5 +1,5 @@
 ---
-## Task: Enforce zero panic/unwrap/expect across runtime and tests with proper Result handling <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Enforce zero panic/unwrap/expect across runtime and tests with proper Result handling <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>
 **Goal:** Remove all manual panic/unwrap/expect usage from runtime and test code, replace with proper Rust error handling, and make lint enforcement fail on any regression.
@@ -112,12 +112,12 @@
 - `make lint`
 - Use `set -o pipefail` if logging through `tee`, and archive logs under `.ralph/evidence/05c-zero-panic/gates/`.
 - For `make test` and `make lint`, also grep archived logs for acceptance phrases (`congratulations`/`evaluation failed`) and save grep outputs as explicit acceptance evidence.
-- Do not mark task passing unless all four commands exit cleanly.
+- Do not mark task passed unless all four commands exit cleanly.
 - If any gate fails with stale/corrupt artifact symptoms (`failed to build archive` / missing `*.rcgu.o`), run one `cargo clean` recovery and rerun the full gate sequence once; archive both failing and recovery logs.
 
 7. Task completion bookkeeping
 - Update this task file checkboxes with concrete evidence references.
-- Set `<status>done</status>`, `<passes>true</passes>`, and `<passing>true</passing>` only after all gates pass.
+- Set `<status>done</status>` and `<passes>true</passes>` only after all gates pass.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all relevant files (including `.ralph` updates) with message:
 - `task finished 05c-task-zero-panic-unwrap-expect-across-runtime-and-tests: <summary with gate evidence and implementation notes>`

@@ -1,5 +1,5 @@
 ---
-## Task: Implement pure HA decide engine with exhaustive transition tests <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Implement pure HA decide engine with exhaustive transition tests <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
 
@@ -35,7 +35,7 @@
 ## Detailed Implementation Plan
 
 1. Baseline and prerequisite validation
-- [x] Confirm blocker `03-task-worker-state-models-and-context-contracts` is done/passing (already marked done; keep as prerequisite evidence in commit).
+- [x] Confirm blocker `03-task-worker-state-models-and-context-contracts` is done/passes true (already marked as done; keep as prerequisite evidence in commit).
 - [x] Record baseline by running a targeted compile pass for HA paths (`cargo check -q`) before edits so regressions are attributable.
 - [x] Re-open `RUST_SYSTEM_HARNESS_PLAN.md` HA section and align naming/semantics before coding to avoid API churn.
 
@@ -92,8 +92,8 @@
 
 10. Task bookkeeping and completion protocol
 - [x] Mark acceptance criteria checkboxes in this task file as each criterion is proven.
-- [x] Update header tags to done/passing only after all required commands succeed 100%.
-- [x] Set `<passing>true</passing>` when done.
+- [x] Update header tags to done/passes true only after all required commands succeed 100%.
+- [x] Set `<passes>true</passes>` when done.
 - [x] Run `/bin/bash .ralph/task_switch.sh` after completion.
 - [x] Commit all files (including `.ralph` updates) with message: `task finished 07-task-ha-decide-pure-matrix-idempotency-tests: <summary with test evidence and challenges>`.
 - [x] Append learnings/surprises to `AGENTS.md`.

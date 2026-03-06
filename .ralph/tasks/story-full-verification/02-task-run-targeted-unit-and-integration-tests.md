@@ -1,5 +1,5 @@
 ---
-## Task: Run targeted unit and integration test suites <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Run targeted unit and integration test suites <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Execute and validate non-e2e automated tests after static/build gates to identify functional regressions early.
@@ -21,7 +21,7 @@
 
 <acceptance_criteria>
 - [x] Run `make test` and capture whether output indicates `congratulations` or `evaluation failed`. (Gate passed; marker grep logged `not found`.)
-- [x] Run `make test` and capture passing/failing feature files. (All BDD tests passed; failure extract logged `not found`.)
+- [x] Run `make test` and capture pass/fail feature files. (All BDD tests passed; failure extract logged `not found`.)
 - [x] For each distinct failing behavior, use `$add-bug` skill to create bug task(s) in `.ralph/tasks/bugs/` with exact repro command and expected vs actual behavior. (No failing behavior observed; no bug files required.)
 - [x] Re-run impacted test command(s) after fixes to confirm outcome. (No fixes were needed; required commands executed and passed in this run.)
 - [x] `make check` — passes cleanly
@@ -88,8 +88,8 @@
 5. Task finalization criteria
 - Tick acceptance checkboxes with evidence-backed outcomes.
 - Only when all required commands pass:
-- update header to done/passing values
-- set `<passing>true</passing>`
+- update header to done/passes true values
+- set `<passes>true</passes>`
 - run `/bin/bash .ralph/task_switch.sh`
 - commit all changed files (including `.ralph` evidence/task updates and any code fixes) with message:
 - `task finished 02-task-run-targeted-unit-and-integration-tests: <summary with evidence + challenges>`

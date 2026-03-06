@@ -1,5 +1,5 @@
 ---
-## Task: Enforce API-only control in e2e and ban direct DCS mutations <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Enforce API-only control in e2e and ban direct DCS mutations <status>done</status> <passes>true</passes>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>

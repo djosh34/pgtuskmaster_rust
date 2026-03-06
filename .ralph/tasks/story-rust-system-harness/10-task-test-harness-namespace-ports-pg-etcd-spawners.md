@@ -1,5 +1,5 @@
 ---
-## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Build parallel-safe real-system test harness for PG16 and etcd3 <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>02-task-runtime-config-schema-defaults-parse-validate,03-task-worker-state-models-and-context-contracts</blocked_by>
 
@@ -35,7 +35,7 @@
 ## Detailed Implementation Plan
 
 1. Baseline, prerequisites, and contract lock-in
-- [x] Confirm blockers `02` and `03` remain done/passing before introducing new harness modules.
+- [x] Confirm blockers `02` and `03` remain done/passes true before introducing new harness modules.
 - [x] Run a baseline compile (`cargo check --all-targets`) and capture current green state before changes.
 - [x] Confirm no `src/test_harness` module exists yet and wire it in `src/lib.rs` under `#[cfg(any(test, feature = "test-harness"))]` for test-only default visibility.
 
@@ -88,7 +88,7 @@
 - [x] Run `make test`.
 - [x] Run `make lint`.
 - [x] If any failure indicates namespace/port conflict, create `$add-bug` task(s) with reproduction command, logs, and failing namespace identifiers.
-- [x] After successful implementation phase, tick acceptance criteria and update task tags to done/passing per workflow.
+- [x] After successful implementation phase, tick acceptance criteria and update task tags to done/passes true per workflow.
 
 11. Skeptical verification amendments (added during TO BE VERIFIED)
 - [x] Change module wiring from unconditional exposure to `#[cfg(any(test, feature = "test-harness"))]` to prevent production surface creep while keeping opt-in integration test access.

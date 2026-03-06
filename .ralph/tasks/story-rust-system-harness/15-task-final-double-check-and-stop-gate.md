@@ -1,5 +1,5 @@
 ---
-## Task: Final double-check gate for real testing completeness <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Final double-check gate for real testing completeness <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>13-task-e2e-multi-node-real-ha-loops-scenario-matrix,14-task-security-auth-tls-real-cluster-tests</blocked_by>
 
@@ -34,13 +34,13 @@
 ## Detailed Implementation Plan (planning run on 2026-03-03)
 
 Research snapshot from parallel exploration sweep (10 probes):
-- Blocker tasks `13` and `14` are currently marked done with passing tags.
+- Blocker tasks `13` and `14` are currently marked as done with `<passes>` tags.
 - Mandatory gates exist in `Makefile`: `check`, `test`, `test-long`, `lint`.
 - Static grep found no `assert!(true)` tautology assertions, but this must still be validated by manual test intent review.
 - Current workspace is not clean (`.ralph/current_tasks.md` modified; `.ralph/current_task.txt` and `.ralph/progress/25.jsonl` untracked), so this task must avoid clobbering unrelated state.
 
 1. Preflight and baseline capture
-- [x] Verify blocker tasks (`13`, `14`) are still done/passing at execution start.
+- [x] Verify blocker tasks (`13`, `14`) are still done/passes true at execution start.
 - [x] Capture baseline workspace status (`git status --short`) into `.ralph/evidence/15-final-gate/`.
 - [x] Create deterministic evidence directory for this task: `.ralph/evidence/15-final-gate/`.
 
@@ -75,12 +75,12 @@ Research snapshot from parallel exploration sweep (10 probes):
 7. Failure protocol (mandatory)
 - [x] For every failed audit assertion or gate command, invoke the `$add-bug` skill and create one bug task per distinct issue (or one per tightly-coupled cluster). Result: no failed audit assertion or gate command in this run.
 - [x] Each bug must include exact repro command, failing assertion/output excerpt, and evidence file paths under `.ralph/evidence/15-final-gate/`. Result: not applicable (no failures).
-- [x] Do not mark this task passing if any unresolved bug remains. Result: no unresolved bug created in this run.
+- [x] Do not mark this task done if any unresolved bug remains. Result: no unresolved bug created in this run.
 
 8. Task completion updates (only after all checks are green)
 - [x] Tick all acceptance criteria checkboxes with direct evidence references.
 - [x] Update task header tags to `<status>done</status>` and `<passes>true</passes>`.
-- [x] Add `<passing>true</passing>` in this task file only after all required commands pass.
+- [x] Add `<passes>true</passes>` in this task file only after all required commands pass.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes (including `.ralph` artifacts) with:
 - [x] `task finished 15-task-final-double-check-and-stop-gate: <summary, gate evidence, and implementation challenges>`.

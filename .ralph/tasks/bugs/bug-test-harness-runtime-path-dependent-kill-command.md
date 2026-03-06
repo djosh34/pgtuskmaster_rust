@@ -1,5 +1,5 @@
 ---
-## Bug: Test harness runtime kill command is PATH-dependent and bypasses provenance guarantees <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Test harness runtime kill command is PATH-dependent and bypasses provenance guarantees <status>done</status> <passes>true</passes>
 
 <description>
 Real-binary harness paths are intended to be explicit and provenance-controlled, but runtime teardown logic still invokes `kill` by bare name via `Command::new("kill")`.
@@ -90,7 +90,7 @@ Please explore and research the codebase first, then implement a fail-closed fix
 
 ### 5) Task closure (only after all gates pass)
 - [x] Tick off acceptance criteria checkboxes.
-- [x] Update header tags to `<status>done</status> <passes>true</passes>` and add `<passing>true</passing>` in this task file.
+- [x] Update header tags to `<status>done</status> <passes>true</passes>` in this task file.
 - [x] Run `/bin/bash .ralph/task_switch.sh`
 - [x] Commit with message `task finished bug-test-harness-runtime-path-dependent-kill-command: ...` (include evidence: the four `make` commands passed + any challenges).
 - [x] `git push`

@@ -1,5 +1,5 @@
 ---
-## Task: Enforce post-startup hands-off test policy (no direct coordination) <status>completed</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Enforce post-startup hands-off test policy (no direct coordination) <status>completed</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>35-task-migrate-all-node-startup-tests-to-unified-entrypoint-config-only</blocked_by>
 
@@ -116,7 +116,7 @@ Post-start tests may not:
 
 4. Task completion bookkeeping (only after all gates pass).
 - Tick acceptance checkboxes in this task file.
-- Set `<passing>true</passing>`.
+- Set `<passes>true</passes>`.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all changes including `.ralph` files with required message format.
 - Push branch and append any new learnings to `AGENTS.md`.

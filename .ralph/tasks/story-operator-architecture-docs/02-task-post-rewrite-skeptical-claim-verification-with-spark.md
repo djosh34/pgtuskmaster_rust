@@ -261,4 +261,4 @@ The verification work MUST cite (or derive) evidence from these modules/tests. I
 - [x] `make test-long`
 - [x] Save *full* logs into evidence directory and ensure they represent the final (post-fix) state.
 
-DONE (all gates passing; evidence committed under `.ralph/evidence/story-operator-architecture-docs/02-task-post-rewrite-skeptical-claim-verification-with-spark/`)
+DONE (all gates pass; evidence committed under `.ralph/evidence/story-operator-architecture-docs/02-task-post-rewrite-skeptical-claim-verification-with-spark/`)

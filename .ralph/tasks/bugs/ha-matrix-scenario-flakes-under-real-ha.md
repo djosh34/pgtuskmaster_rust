@@ -1,5 +1,5 @@
 ---
-## Bug: HA Matrix Scenario Flakes Under Real HA <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: HA Matrix Scenario Flakes Under Real HA <status>done</status> <passes>true</passes>
 
 <description>
 The deleted `e2e_multi_node_real_ha_scenario_matrix` mega-scenario was non-deterministic under real binaries.
@@ -85,7 +85,7 @@ Reintroduce a combined matrix scenario only after the runtime behavior is unders
 ### Skeptical corrections applied in this verification pass
 
 - The draft plan was too willing to reason from the current tree alone. Before executing any fix path, inspect the deleted `e2e_multi_node_real_ha_scenario_matrix` from git history and compare its checkpoints against the current focused tests. Otherwise the investigation can drift into explaining a test we have not actually reread.
-- The draft plan treated `make check`, `make test`, `make test-long`, and `make lint` as conditional in places because the task metadata does. That is not acceptable for closeout on this turn: the user requirement is stricter, so all four gates must pass before the task can be marked done, even if the final outcome is “stale test design, no runtime code change”.
+- The draft plan treated `make check`, `make test`, `make test-long`, and `make lint` as conditional in places because the task metadata does. That is not acceptable for closeout on this turn: the user requirement is stricter, so all four gates must pass before the task can be marked as done, even if the final outcome is “stale test design, no runtime code change”.
 - If docs are touched, the generated `docs/book` output must be refreshed too, not just `docs/src`, because the repository tracks generated docs artifacts on disk.
 
 ### Working hypothesis after code review
@@ -130,7 +130,7 @@ Decision point:
 - [x] Save the evidence locations from `.ralph/evidence/`, especially the committed scenario summary directories currently written by:
   - [x] `.ralph/evidence/27-e2e-ha-stress`
   - [x] `.ralph/evidence/28-e2e-network-partition-chaos`
-- [x] Record the exact failing or passing runs in this task file so a later engineer can line up the conclusion with artifacts instead of prose alone.
+- [x] Record the exact failing or green runs in this task file so a later engineer can line up the conclusion with artifacts instead of prose alone.
 
 Decision point:
 
@@ -212,7 +212,7 @@ Planned matrix design if reinstatement is justified:
   - [x] a root-cause summary
   - [x] evidence paths / exact tests used
   - [x] `<status>done</status>` and `<passes>true</passes>` only after the required gates pass
-  - [x] `<passing>true</passing>` only after all required gates pass
+  - [x] `<passes>true</passes>` only after all required gates pass
 - [x] Run `/bin/bash .ralph/task_switch.sh`
 - [x] Commit all changes, including `.ralph` updates, with the required `task finished ...` message and gate evidence
 - [x] `git push`

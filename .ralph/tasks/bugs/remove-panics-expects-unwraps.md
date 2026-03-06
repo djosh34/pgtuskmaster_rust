@@ -1,5 +1,5 @@
 ---
-## Bug: Remove panics/expects/unwraps in codebase <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Remove panics/expects/unwraps in codebase <status>done</status> <passes>true</passes>
 
 <description>
 `rg -n "unwrap\(|expect\(|panic!" src tests` shows multiple occurrences (mostly in tests and some src modules like `src/process/worker.rs`, `src/pginfo/state.rs`, `src/pginfo/query.rs`, `src/dcs/worker.rs`, `src/dcs/store.rs`, `src/ha/worker.rs`, `tests/bdd_state_watch.rs`, `src/config/parser.rs`). Policy requires no unwraps/panics/expects anywhere; replace with proper error handling and remove any lint exemptions if present. Explore and confirm current behavior before changing.
@@ -95,7 +95,7 @@
 ### 6) Task closure steps (after implementation succeeds)
 - Update this task file:
   - mark checklist boxes completed
-  - set `<status>done</status>` and `<passes>true</passes>` (and `<passing>true</passing>` if required by task-runner contract)
+  - set `<status>done</status>` and `<passes>true</passes>`
   - record concise evidence (commands + outcome)
 - Append new learnings/surprises to `AGENTS.md` if any non-obvious issue surfaced.
 - Run `/bin/bash .ralph/task_switch.sh`.

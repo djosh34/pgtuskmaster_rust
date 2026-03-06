@@ -1,5 +1,5 @@
 ---
-## Task: Add unassisted failover e2e with before/after SQL consistency proof <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Add unassisted failover e2e with before/after SQL consistency proof <status>done</status> <passes>true</passes>
 
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
 <blocked_by>25-task-enforce-e2e-api-only-control-no-direct-dcs</blocked_by>

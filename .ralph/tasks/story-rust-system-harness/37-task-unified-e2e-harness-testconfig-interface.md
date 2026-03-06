@@ -1,5 +1,5 @@
 ---
-## Task: Unify HA E2E Harness Behind Stable `TestConfig` Interface <status>completed</status> <passes>true</passes> <passing>true</passing>
+## Task: Unify HA E2E Harness Behind Stable `TestConfig` Interface <status>completed</status> <passes>true</passes>
 
 <description>
 **Goal:** Design and implement one stable, shared HA e2e harness interface driven by a single `TestConfig` input that initializes the requested cluster topology + pre-test setup, returns a full test handle, and removes duplicated setup/wait/process glue from scenario files.
@@ -231,7 +231,7 @@
 - Record artifacts under `.ralph/evidence/task-37-unified-e2e-harness-testconfig-interface/`:
   - interface comparison + final API summary
   - duplication reduction metrics (LOC / function count)
-  - logs for `make check`, `make test`, `make lint` (100% passing required)
+  - logs for `make check`, `make test`, `make lint` (100% green required)
 
 **Execution note:** `start_cluster` must run under a `LocalSet` (startup spawns runtime tasks via `spawn_local`); keep a shared `run_with_local_set` helper in `ha_e2e::util` and ensure both suites use it consistently.
 </description>

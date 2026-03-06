@@ -1,5 +1,5 @@
 ---
-## Task: Define worker state models and run step_once contracts <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Define worker state models and run step_once contracts <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>02-task-runtime-config-schema-defaults-parse-validate</blocked_by>
 
@@ -126,14 +126,14 @@
 
 11. Task bookkeeping and completion protocol (execution phase only)
 - [x] Update this task file checkboxes as each acceptance criterion is proven.
-- [x] Set header tags to done/passing only after all required commands pass.
+- [x] Set header tags to done/passes true only after all required commands pass.
 - [x] Run `/bin/bash .ralph/task_switch.sh` only after full pass.
 - [x] Commit with required format: `task finished 03-task-worker-state-models-and-context-contracts: <summary + evidence + challenges>`.
 - [x] Include `.ralph` updates and append learnings/surprises to `AGENTS.md`.
 - [x] Append diary entry to progress log before exiting.
 
 12. Skeptical verification amendments (added during TO BE VERIFIED)
-- [x] Add a hard prerequisite gate before any implementation: verify task `02-task-runtime-config-schema-defaults-parse-validate` is complete/passing; if not, stop execution and switch task rather than introducing layered churn.
+- [x] Add a hard prerequisite gate before any implementation: verify task `02-task-runtime-config-schema-defaults-parse-validate` is complete with `<passes>true</passes>`; if not, stop execution and switch task rather than introducing layered churn.
 - [x] Use crate-local unit contract tests (under `src/`) for `pub(crate)` symbol visibility checks and integration tests (under `tests/`) only for public crate-root surfaces.
 - [x] During module wiring, avoid `pub mod ...` in `src/lib.rs`; prefer private modules plus selective `pub use`/`pub(crate) use` to minimize public API growth.
 </execution_plan>

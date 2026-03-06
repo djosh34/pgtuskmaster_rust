@@ -2,7 +2,6 @@
 ## Task: Implement API and Debug API workers with typed contracts <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>05-task-dcs-worker-trust-cache-watch-member-publish,08-task-ha-worker-select-loop-and-action-dispatch</blocked_by>
-<passing>true</passing>
 
 <description>
 **Goal:** Implement typed API endpoints and debug snapshot visibility without bypassing system ownership rules.
@@ -168,7 +167,7 @@ Rationale: keep dependencies light and preserve a meaningful `step_once()` by se
 
 ### 9) Task closeout (only after all gates pass)
 - [ ] Tick all acceptance criteria checkboxes.
-- [ ] Set `<passes>true</passes>` and `<passing>true</passing>`.
+- [ ] Set `<passes>true</passes>`.
 - [ ] Run `/bin/bash .ralph/task_switch.sh`.
 - [ ] Commit everything (including `.ralph`) with message:
   - [ ] `task finished 09-task-api-debug-workers-and-snapshot-contracts: <summary + evidence + challenges>`

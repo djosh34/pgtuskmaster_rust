@@ -1,5 +1,5 @@
 ---
-## Bug: Real Binary Tests Become Optional Via Early Return <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Real Binary Tests Become Optional Via Early Return <status>done</status> <passes>true</passes>
 
 <description>
 Several real-binary test paths silently return `Ok(())` when required binaries are not discovered (for example `None => return Ok(())`).
@@ -104,7 +104,7 @@ The solution should preserve clear error messages about missing prerequisites an
 
 ### 6. Completion protocol (after execution succeeds)
 - [x] Tick acceptance checkboxes.
-- [x] Update task header tags to done/passing values only after all required gates pass.
+- [x] Update task header tags to done/passes true values only after all required gates pass.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changed files, including `.ralph` updates, with message:
   - `task finished bug-real-binary-tests-are-optional-via-early-return: <summary/evidence/challenges>`

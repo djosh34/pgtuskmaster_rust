@@ -2,7 +2,6 @@
 ## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
-<passing>true</passing>
 
 <description>
 **Goal:** Implement DCS ownership rules: trust evaluation, typed key parsing, cache updates, and local member publishing.
@@ -134,7 +133,7 @@
 
 11. Completion bookkeeping (execution phase only, not during planning)
 - [x] Mark task header/status and acceptance checkboxes only after all required gates pass.
-- [x] Set `<passing>true</passing>` only after full required suite passes.
+- [x] Set `<passes>true</passes>` only after full required suite passes.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes including `.ralph` updates with required format:
 - [x] `task finished 05-task-dcs-worker-trust-cache-watch-member-publish: <summary + evidence + challenges>`

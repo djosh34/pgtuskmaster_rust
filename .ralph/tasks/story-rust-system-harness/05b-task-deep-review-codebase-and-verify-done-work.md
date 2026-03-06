@@ -1,13 +1,13 @@
 ---
-## Task: Deep review codebase quality and verify done tasks are truly complete <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Deep review codebase quality and verify done tasks are truly complete <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <description>
-**Goal:** Perform a deep end-to-end review of current repository quality, test reality, and completion truthfulness of all tasks already marked done.
+**Goal:** Perform a deep end-to-end review of current repository quality, test reality, and completion truthfulness of all tasks already marked as done.
 
 **Scope:**
 - Enforce preflight model-profile gate through `.ralph/model.txt` before any review work.
 - Deeply review runtime and test code for quality issues, untested behavior, and code smells chosen by reviewer judgment (no fixed smell checklist).
-- Verify every task currently marked done is actually complete in code and tests.
+- Verify every task currently marked as done is actually complete in code and tests.
 - Treat test sufficiency as primary: verify and expand unit, integration (real binaries), and BDD/e2e scenario coverage.
 - Verify test coverage includes real-binary usage for `etcd3` and PostgreSQL 16 paths.
 - Verify linting truly forbids `panic`, `unwrap`, and `expect` in runtime code and catches violations.
@@ -15,7 +15,7 @@
 
 **Context from research:**
 - Current active story has multiple done tasks plus in-progress/not-started tasks in `.ralph/tasks/story-rust-system-harness/`.
-- Existing lint policy task (`05a`) is marked done and must be independently verified as effective, not assumed.
+- Existing lint policy task (`05a`) is marked as done and must be independently verified as effective, not assumed.
 - User requires reviewer-selected deep inspection rather than a predefined smell rubric.
 
 **Expected outcome:**
@@ -35,7 +35,7 @@
 - [ ] If file was created or changed to `deep_review` in this run, stop immediately after writing and quit this task run.
 - [x] If file already contained exactly `deep_review`, continue with the deep review in the same run.
 - [x] Deep review is performed across the current codebase (code smells, untested code, general quality) using reviewer judgment rather than a fixed smell checklist.
-- [x] Every task marked done is validated against actual code/tests and any false-complete state is reported as finding(s).
+- [x] Every task marked as done is validated against actual code/tests and any false-complete state is reported as finding(s).
 - [x] If tests are missing and not already planned in existing tasks, create new tasks specifically to add those tests.
 - [x] Test creation expectations cover unit tests, integration tests against real binaries, and expanded BDD/e2e scenario matrices.
 - [x] Verification explicitly confirms whether tests against real `etcd3` and real PostgreSQL 16 binaries exist and pass; if missing/inadequate, create remediation tasks and mark as major finding(s).
@@ -92,7 +92,7 @@ Execution notes (2026-03-02):
 - [x] code claims exist in current tree,
 - [x] acceptance criteria are still true,
 - [x] linked tests still exist and pass or are covered by current gate runs.
-- [x] Verify each done task header/tag consistency (`<status>done</status>`, `<passes>true</passes>`, and `<passing>true</passing>` where required by that task workflow) and record discrepancies.
+- [x] Verify each done task header/tag consistency (`<status>done</status>` and `<passes>true</passes>` where required by that task workflow) and record discrepancies.
 - [x] Record mismatches as findings with concrete file/function evidence.
 - [x] Create remediation tasks for each false-complete or regressed done task.
 

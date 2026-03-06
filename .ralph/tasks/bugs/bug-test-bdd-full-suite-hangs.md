@@ -1,5 +1,5 @@
 ---
-## Bug: test full-suite command hangs in real HA e2e <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: test full-suite command hangs in real HA e2e <status>done</status> <passes>true</passes>
 
 <description>
 After updating `make test` to run `PGTUSKMASTER_REQUIRE_REAL_BINARIES=1 cargo test --all-targets -- --include-ignored`, the verification run did not complete within an extended runtime window (over 15 minutes observed on 2026-03-03).

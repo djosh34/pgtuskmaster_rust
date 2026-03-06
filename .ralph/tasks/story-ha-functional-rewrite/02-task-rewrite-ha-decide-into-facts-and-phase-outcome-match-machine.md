@@ -1,5 +1,5 @@
 ---
-## Task: Rewrite HA decide into a facts-and-PhaseOutcome match machine <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Rewrite HA decide into a facts-and-PhaseOutcome match machine <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Replace mutation-driven HA decision code with a pure, match-based state machine that gathers immutable facts once and returns a full `PhaseOutcome { next_phase, decision }` directly from each phase handler.
@@ -214,8 +214,8 @@
      - `make test`
      - `make test-long`
      - `make lint`
-   - The story text currently says long-test validation is deferred, but the surrounding task-runner instructions for completion require the full gate set. Do not set `<passing>true</passing>` or close the task until that policy conflict is resolved in favor of an actually green final tree.
-   - After all gates pass: tick the checklist, set `<passing>true</passing>`, run `/bin/bash .ralph/task_switch.sh`, commit all tracked changes including `.ralph`, and push.
+   - The story text currently says long-test validation is deferred, but the surrounding task-runner instructions for completion require the full gate set. Do not set `<passes>true</passes>` or close the task until that policy conflict is resolved in favor of an actually green final tree.
+   - After all gates pass: tick the checklist, set `<passes>true</passes>`, run `/bin/bash .ralph/task_switch.sh`, commit all tracked changes including `.ralph`, and push.
 
 ## Specific branch mappings that must survive the refactor
 

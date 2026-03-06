@@ -1,5 +1,5 @@
 ---
-## Task: Migrate full e2e suites to black-box API and CLI orchestration <status>completed</status> <passes>true</passes> <passing>true</passing>
+## Task: Migrate full e2e suites to black-box API and CLI orchestration <status>completed</status> <passes>true</passes>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
 <blocked_by>23-task-ha-admin-cli-over-api</blocked_by>

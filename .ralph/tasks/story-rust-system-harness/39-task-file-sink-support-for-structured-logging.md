@@ -1,5 +1,5 @@
 ---
-## Task: Add File Sink Support For Unified Structured Logging <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Add File Sink Support For Unified Structured Logging <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Extend the unified structured logging subsystem to support configurable JSONL file sinks (in addition to the current stderr JSONL sink).

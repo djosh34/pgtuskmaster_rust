@@ -1,5 +1,5 @@
 ---
-## Task: Implement typed postgres config and conninfo parser renderer <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Implement typed postgres config and conninfo parser renderer <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>02-task-runtime-config-schema-defaults-parse-validate</blocked_by>
 
@@ -149,8 +149,8 @@
 6. If any gate fails, create `$add-bug` task(s) with command, failing sample inputs, and observed errors.
 
 ### Completion updates (execution phase only)
-1. Tick acceptance criteria only when backed by passing evidence.
-2. Set `<status>done</status>` and `<passes>true</passes>` and `<passing>true</passing>` only after all required gates pass.
+1. Tick acceptance criteria only when backed by evidence from green gates.
+2. Set `<status>done</status>` and `<passes>true</passes>` only after all required gates pass.
 3. Run `/bin/bash .ralph/task_switch.sh` at task completion.
 4. Commit all changes including `.ralph` artifacts with required message format.
 </execution_plan>

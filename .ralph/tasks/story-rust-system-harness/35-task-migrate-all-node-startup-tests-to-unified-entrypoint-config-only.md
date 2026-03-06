@@ -1,6 +1,5 @@
 ---
 ## Task: Migrate all node-starting tests to unified entrypoint (config-only) <status>done</status> <passes>true</passes> <priority>high</priority>
-<passing>true</passing>
 
 <blocked_by>34-task-add-non-test-unified-node-entrypoint-autobootstrap-and-ha-loop</blocked_by>
 
@@ -72,7 +71,7 @@ Based on inventory:
 2. Ensure HA e2e supplies only config (and fixture-level environment details), not manual worker graph wiring.
 3. Preserve existing scenario assertions (switchover/failover/no-quorum/stress invariants).
 4. Add regression guards so new node-starting tests cannot reintroduce direct startup orchestration.
-5. Keep full real-binary validation intact and passing with required gates.
+5. Keep full real-binary validation intact and green with required gates.
 
 ### Deep Skeptical Verification Adjustments
 
@@ -172,7 +171,7 @@ Phase 4: Run required verification gates
 
 Phase 5: Task bookkeeping after green
 - Tick acceptance checkboxes.
-- Set `<passing>true</passing>`.
+- Set `<passes>true</passes>`.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all files including `.ralph` updates.
 - Push branch.

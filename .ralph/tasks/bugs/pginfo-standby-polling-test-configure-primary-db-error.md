@@ -1,5 +1,5 @@
 ---
-## Bug: Pginfo standby polling test fails during primary configure with db error <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Pginfo standby polling test fails during primary configure with db error <status>done</status> <passes>true</passes>
 
 <description>
 `make test` failed in `pginfo::worker::tests::step_once_maps_replica_when_polling_standby` with a runtime panic while preparing the primary postgres fixture.
@@ -80,7 +80,7 @@ Reality check from execution at 2026-03-02T23:11:59Z:
   - exact code changes,
   - evidence file paths and final gate results.
 - [x] Mark acceptance criteria checkboxes only after evidence is present.
-- [x] Set status/passing tags when all gates are green.
+- [x] Set status/passes tags when all gates are green.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes including `.ralph` artifacts with required message format.
 - [x] Append any new cross-task learning to `AGENTS.md`.

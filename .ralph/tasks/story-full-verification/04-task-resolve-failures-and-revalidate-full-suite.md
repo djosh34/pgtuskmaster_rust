@@ -1,5 +1,5 @@
 ---
-## Task: Resolve discovered failures and revalidate full suite <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Resolve discovered failures and revalidate full suite <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Drive failure resolution from created bug tasks and confirm full-suite green status after fixes.
@@ -36,7 +36,7 @@
 ### Deep skeptical verification completed (16 parallel tracks)
 - Track 1: Re-read task 04 acceptance criteria and required gate list.
 - Track 2: Enumerated all bug task files under `.ralph/tasks/bugs/`.
-- Track 3: Scanned bug tasks for `<status>`, `<passes>`, and `<passing>` completion tags.
+- Track 3: Scanned bug tasks for `<status>`, `<passes>` completion tags.
 - Track 4: Scanned bug tasks for residual lifecycle markers (`TO BE VERIFIED`, `NOW EXECUTE`) that might indicate incomplete closure.
 - Track 5: Re-read story-full-verification task 01 for completion/reporting conventions.
 - Track 6: Re-read story-full-verification task 02 for evidence naming and marker-grep conventions.
@@ -55,7 +55,7 @@
 - Added an explicit pre-gate, auditable inventory artifact (`bug-inventory.log`) plus a pending-status check (`bug-pending-status.log`) before any full-suite command. This closes a traceability gap in Draft 1, where the "all bugs closed" claim was not preserved as evidence.
 
 ### Current snapshot from research
-- All currently discovered bug tasks in `.ralph/tasks/bugs/` are tagged done with passing metadata.
+- All currently discovered bug tasks in `.ralph/tasks/bugs/` are tagged done with `<passes>true</passes>` metadata.
 - No bug file currently has `<status>not_started</status>` or `<status>in_progress</status>`.
 - Task 04 remains open because it still needs its own explicit closure run, evidence, and bookkeeping.
 
@@ -99,7 +99,7 @@
 5. Finalize task 04 when all required gates are green
 - Tick all acceptance checkboxes in this task file.
 - Set task header tags to:
-- `<status>done</status> <passes>true</passes> <passing>true</passing>`
+- `<status>done</status> <passes>true</passes>`
 - Add an `<execution_report>` block with command outcomes and evidence filenames.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all repo changes (including `.ralph` files/evidence) with:

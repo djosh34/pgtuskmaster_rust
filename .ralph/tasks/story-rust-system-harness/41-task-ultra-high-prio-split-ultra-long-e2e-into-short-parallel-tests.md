@@ -1,5 +1,5 @@
 ---
-## Task: Ultra-high-priority split ultra-long e2e tests into shorter parallel real-binary tests <status>completed</status> <passes>true</passes> <passing>true</passing> <priority>ultra-high</priority>
+## Task: Ultra-high-priority split ultra-long e2e tests into shorter parallel real-binary tests <status>completed</status> <passes>true</passes> <priority>ultra-high</priority>
 
 <description>
 **Goal:** Replace the current ultra-long HA e2e stress scenario(s) with multiple shorter real-binary e2e tests that preserve full coverage and must run in parallel.

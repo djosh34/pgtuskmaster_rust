@@ -1,5 +1,5 @@
 ---
-## Bug: Test harness binary checks panic instead of returning errors <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Test harness binary checks panic instead of returning errors <status>done</status> <passes>true</passes>
 
 <description>
 The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/test_harness/binaries.rs) uses `panic!` to report missing binaries. This conflicts with the project policy of no `panic`/`expect`/`unwrap` and makes tests fail via uncontrolled panics rather than structured errors. Refactor `require_binary` (and callers) to return a typed `HarnessError` instead of panicking, and update callers/tests to propagate or assert errors explicitly.
@@ -64,7 +64,7 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 - Update this task file:
   - set `<status>done</status>`
   - set `<passes>true</passes>`
-  - set `<passing>true</passing>`
+  - set `<passes>true</passes>`
   - tick acceptance checkboxes and add command evidence
 - Append any non-obvious learning/surprise to `AGENTS.md`.
 - Run `/bin/bash .ralph/task_switch.sh`.

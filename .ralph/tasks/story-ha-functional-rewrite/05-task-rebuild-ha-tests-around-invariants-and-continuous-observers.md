@@ -1,5 +1,5 @@
 ---
-## Task: Rebuild HA tests around invariants and continuous observers <status>completed</status> <passes>true</passes> <passing>true</passing>
+## Task: Rebuild HA tests around invariants and continuous observers <status>completed</status> <passes>true</passes>
 
 <description>
 **Goal:** Rework HA tests so they validate the new functional architecture directly, using immutable builders for pure decision tests and continuous invariant observers for integration/e2e scenarios.
@@ -124,7 +124,7 @@
      - `make test`
      - `make test-long`
      - `make lint`
-   - Do not mark the task complete or set passing/passes true until all four commands pass, even though the original story note says long tests are deferred; the current turn-level instructions require full verification before completion.
+   - Do not mark the task complete or set `<passes>true</passes>` until all four commands pass, even though the original story note says long tests are deferred; the current turn-level instructions require full verification before completion.
 </plan>
 
 NOW EXECUTE

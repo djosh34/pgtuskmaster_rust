@@ -1,5 +1,5 @@
 ---
-## Task: Author full architecture documentation with rich diagrams and zero code-level narration <status>completed</status> <passes>true</passes> <passing>true</passing>
+## Task: Author full architecture documentation with rich diagrams and zero code-level narration <status>completed</status> <passes>true</passes>
 
 <blocked_by>31-task-docs-framework-selection-install-and-artifact-hygiene</blocked_by>
 
@@ -209,7 +209,7 @@ Required gates (must be 100% green before marking `<passes>true</passes>`):
 ### Phase 7 — Finish task (only after everything is green)
 - [x] Update this task file:
   - [x] Tick all acceptance checkboxes
-  - [x] Set `<status>completed</status>`, `<passes>true</passes>`, and `<passing>true</passing>`
+  - [x] Set `<status>completed</status>` and `<passes>true</passes>`
   - [x] Add a short evidence pointer to `.ralph/evidence/task-32-architecture-docs/`
 - Evidence: `.ralph/evidence/task-32-architecture-docs/`
 - [x] Run `/bin/bash .ralph/task_switch.sh`

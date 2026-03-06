@@ -1,5 +1,5 @@
 ---
-## Task: Build HA loop integration tests with real watchers and deterministic stepping <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Build HA loop integration tests with real watchers and deterministic stepping <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>08-task-ha-worker-select-loop-and-action-dispatch,10-task-test-harness-namespace-ports-pg-etcd-spawners</blocked_by>
 
@@ -36,7 +36,7 @@
 ## Detailed Implementation Plan
 
 1. Scope lock and baseline
-- [x] Verify dependencies `08` and `10` are already marked done/passing in `.ralph/tasks/story-rust-system-harness/`.
+- [x] Verify dependencies `08` and `10` are already marked as done/passes true in `.ralph/tasks/story-rust-system-harness/`.
 - [x] Capture baseline before edits with `cargo check --all-targets` (fast attribution point if later failures appear).
 - [x] Preserve constraints: no `unwrap`/`expect`/`panic` in runtime code; in tests, do not mutate HA internals (`phase`, `pending`, `recent_action_ids`) except initial fixture seed.
 
@@ -108,7 +108,7 @@
 11. Task bookkeeping after green gates
 - [x] Tick acceptance criteria checkboxes with command evidence.
 - [x] Update task header tags to done/passes true only after all gates succeed.
-- [x] Set `<passing>true</passing>` at final completion only.
+- [x] Set `<passes>true</passes>` at final completion only.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes (including `.ralph` files) with:
 - [x] `task finished 12-task-ha-loop-integration-tests-real-watchers-and-step-once: <summary + gate evidence + implementation notes>`

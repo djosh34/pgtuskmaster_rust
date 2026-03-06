@@ -1,5 +1,5 @@
 ---
-## Task: Untangle HA worker into facts, plan, and apply layers <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Untangle HA worker into facts, plan, and apply layers <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Restructure HA runtime code so the worker clearly separates fact collection, pure decision selection, effect lowering, and effect application without forcing the design into object-heavy “executor” patterns.
@@ -180,7 +180,7 @@
    - `make test`
    - `make test-long`
    - `make lint`
-10. Only after all gates pass, tick acceptance boxes, set `<passing>true</passing>`, run `/bin/bash .ralph/task_switch.sh`, commit, and push.
+10. Only after all gates pass, tick acceptance boxes, set `<passes>true</passes>`, run `/bin/bash .ralph/task_switch.sh`, commit, and push.
 
 12. Verification conclusions to honor during execution
 - Default to three helper modules (`apply.rs`, `process_dispatch.rs`, `events.rs`); do not create `coordination.rs` unless the extracted DCS helpers demonstrably remain too large or awkward inside `apply.rs`.

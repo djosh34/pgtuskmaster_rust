@@ -1,5 +1,5 @@
 ---
-## Bug: Postgres ingest silently swallows failures and cleanup/path ownership can destroy active observability signals <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Postgres ingest silently swallows failures and cleanup/path ownership can destroy active observability signals <status>done</status> <passes>true</passes>
 
 <description>
 Postgres observability ingest has several correctness failures in the current logging pipeline:

@@ -1,5 +1,5 @@
 ---
-## Bug: HA e2e util executes PATH-resolved kill for process control <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: HA e2e util executes PATH-resolved kill for process control <status>done</status> <passes>true</passes>
 
 <description>
 `src/test_harness/ha_e2e/util.rs` uses `tokio::process::Command::new("kill")` both to send signals and to probe liveness (`kill -0`).

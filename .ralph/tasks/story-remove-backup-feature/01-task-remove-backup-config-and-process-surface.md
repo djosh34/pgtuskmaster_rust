@@ -35,7 +35,7 @@
 - [ ] Remove all pgBackRest specs from `src/process/jobs.rs`, including version/info/check/backup/restore/archive push/archive get.
 - [ ] Remove all pgBackRest active job kinds and job kind strings from `src/process/state.rs`.
 - [ ] Remove all pgBackRest command-building, timeout mapping, spool-path handling, and log identity cases from `src/process/worker.rs`.
-- [ ] Keep `BaseBackupSpec`, `ProcessJobKind::BaseBackup`, `ActiveJobKind::BaseBackup`, and the `pg_basebackup` command path intact and passing.
+- [ ] Keep `BaseBackupSpec`, `ProcessJobKind::BaseBackup`, `ActiveJobKind::BaseBackup`, and the `pg_basebackup` command path intact and green.
 - [ ] Update every `RuntimeConfig` literal and `BinaryPaths` literal under `src/`, `tests/`, and `examples/` to compile without the removed fields.
 - [ ] Update `src/lib.rs` to stop declaring the deleted backup module.
 - [ ] Confirm by search that `src/` no longer contains `BackupConfig`, `backup_timeout_ms`, `process.binaries.pgbackrest`, or `PgBackRest*` types.

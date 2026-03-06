@@ -124,7 +124,7 @@ Goal: remove stale claims that `recent_action_ids` blocks re-emission on future 
   - [ ] add a `<resolution_summary>` explaining that cross-tick suppression was already not present, and that we removed the misleading field to prevent reintroduction
   - [ ] cite the regression tests that prove retries are not suppressed (decide-level + new worker-level)
   - [ ] set `<status>done</status>` and `<passes>true</passes>` after the full gates pass
-  - [ ] set `<passing>true</passing>` only after `make check/test/test-long/lint` all pass
+  - [ ] set `<passes>true</passes>` only after `make check/test/test-long/lint` all pass
 
 #### 2) Fix path (only if the pre-flight disproves “already fixed”)
 
@@ -138,7 +138,7 @@ If there is still cross-tick suppression / unbounded action-id memory anywhere i
   - [ ] worker-level: `step_once` dispatches the retry across ticks
 - [ ] Update docs as in 1.3.
 
-#### 3) Required verification gates (must be green before marking passing)
+#### 3) Required verification gates (must be green before marking done)
 
 - [ ] `make check`
 - [ ] `make test`
@@ -149,7 +149,7 @@ If there is still cross-tick suppression / unbounded action-id memory anywhere i
 #### 4) Finish/land (only after all gates pass)
 
 - [ ] Update this task file:
-  - [ ] set `<passing>true</passing>`
+  - [ ] set `<passes>true</passes>`
   - [ ] tick the acceptance criteria checkboxes
 - [ ] Run task switcher: `/bin/bash .ralph/task_switch.sh`
 - [ ] `git status` sanity check, then stage all (`git add -A`)

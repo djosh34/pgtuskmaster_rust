@@ -24,24 +24,33 @@ ITERATION_NUMBER=$("$RALPH_DIR/email_get_iteration.sh" 2>/dev/null) || true
 # Function to get grouped task list
 get_grouped_task_list() {
     local result=""
+    local all_tasks=""
     if [[ -f "$RALPH_DIR/current_tasks.md" ]]; then
-        local all_tasks=$(grep '^##' "$RALPH_DIR/current_tasks.md" || true)
+        all_tasks+=$(grep '^##' "$RALPH_DIR/current_tasks.md" || true)
+    fi
+    if [[ -f "$RALPH_DIR/current_tasks_done.md" ]]; then
+        if [[ -n "$all_tasks" ]]; then
+            all_tasks+=$'\n'
+        fi
+        all_tasks+=$(grep '^##' "$RALPH_DIR/current_tasks_done.md" || true)
+    fi
+    if [[ -n "$all_tasks" ]]; then
         local tasks_false=""
         local tasks_true=""
         local tasks_meta=""
 
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            if [[ "$line" =~ \<(passes|passing)\>([^<]+)\</(passes|passing)\> ]]; then
-                local passes_val="${BASH_REMATCH[2]}"
+            if [[ "$line" =~ \<passes\>([^<]+)\</passes\> ]]; then
+                local passes_val="${BASH_REMATCH[1]}"
                 local task_name=$(echo "$line" | sed 's/^## Task: //; s/ <.*//')
-                # Extract all tags (except passes/passing) to display
+                # Extract all tags except passes to display
                 local tags=""
                 local remaining="$line"
                 while [[ "$remaining" =~ \<([a-z_]+)\>([^<]+)\</([a-z_]+)\> ]]; do
                     local tag_name="${BASH_REMATCH[1]}"
                     local tag_val="${BASH_REMATCH[2]}"
-                    if [[ "$tag_name" != "passes" && "$tag_name" != "passing" ]]; then
+                    if [[ "$tag_name" != "passes" ]]; then
                         tags+=" ${tag_name}=${tag_val}"
                     fi
                     remaining="${remaining#*</${BASH_REMATCH[3]}>}"
@@ -65,7 +74,7 @@ get_grouped_task_list() {
             result+="--- Failing ---"$'\n'"$tasks_false"$'\n'
         fi
         if [[ -n "$tasks_true" ]]; then
-            result+="--- Passing ---"$'\n'"$tasks_true"$'\n'
+            result+="--- Passes ---"$'\n'"$tasks_true"$'\n'
         fi
         if [[ -n "$tasks_meta" ]]; then
             result+="--- Meta Tasks ---"$'\n'"$tasks_meta"
@@ -94,21 +103,31 @@ fi
 # Get task list grouped by passes value
 TASK_LIST=$(get_grouped_task_list)
 
-# Count passing/failing tasks
+# Count pass/fail tasks
 COUNT_PASS=0
 COUNT_FAIL=0
 COUNT_META=0
-if [[ -f "$RALPH_DIR/current_tasks.md" ]]; then
+if [[ -f "$RALPH_DIR/current_tasks.md" || -f "$RALPH_DIR/current_tasks_done.md" ]]; then
+    count_input=""
+    if [[ -f "$RALPH_DIR/current_tasks.md" ]]; then
+        count_input+=$(grep '^##' "$RALPH_DIR/current_tasks.md" || true)
+    fi
+    if [[ -f "$RALPH_DIR/current_tasks_done.md" ]]; then
+        if [[ -n "$count_input" ]]; then
+            count_input+=$'\n'
+        fi
+        count_input+=$(grep '^##' "$RALPH_DIR/current_tasks_done.md" || true)
+    fi
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        if [[ "$line" =~ \<(passes|passing)\>([^<]+)\</(passes|passing)\> ]]; then
-            case "${BASH_REMATCH[2]}" in
+        if [[ "$line" =~ \<passes\>([^<]+)\</passes\> ]]; then
+            case "${BASH_REMATCH[1]}" in
                 false) ((COUNT_FAIL++)) || true ;;
                 true)  ((COUNT_PASS++)) || true ;;
                 meta-task) ((COUNT_META++)) || true ;;
             esac
         fi
-    done <<< "$(grep '^##' "$RALPH_DIR/current_tasks.md" || true)"
+    done <<< "$count_input"
 fi
 COUNT_TOTAL=$((COUNT_PASS + COUNT_FAIL))
 TASK_COUNTS="${COUNT_PASS}/${COUNT_TOTAL}"
@@ -122,7 +141,7 @@ TASK_NAME_VAL="${CURRENT_TASK_NAME:-(not set)}"
 PROGRESS_VAL="not found"
 [[ -n "$PROGRESS" ]] && PROGRESS_VAL="exists (see below)"
 
-GAUGES="task_passing:                $TASK_COUNTS
+GAUGES="task_passes:                 $TASK_COUNTS
 task_name:                      $TASK_NAME_VAL
 progress:                         $PROGRESS_VAL
 task_file:                         $TASK_PATH_VAL"

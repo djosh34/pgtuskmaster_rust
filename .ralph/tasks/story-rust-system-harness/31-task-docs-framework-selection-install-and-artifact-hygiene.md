@@ -1,5 +1,5 @@
 ---
-## Task: Install mdBook docs framework and enforce artifact git hygiene <status>completed</status> <passes>true</passes> <passing>true</passing>
+## Task: Install mdBook docs framework and enforce artifact git hygiene <status>completed</status> <passes>true</passes>
 
 <description>
 **Goal:** Use mdBook for this Rust project, install it, prove it renders a static HTML site correctly, and lock down strict git artifact hygiene before any docs commits.
@@ -173,7 +173,7 @@ Notes:
 ### Phase 6 — Finish task (only after all gates are green)
 - [x] Update this task file:
   - [x] Tick all acceptance checkboxes
-  - [x] Set `<status>completed</status>`, `<passes>true</passes>`, and `<passing>true</passing>`
+  - [x] Set `<status>completed</status>` and `<passes>true</passes>`
   - [x] Add a short “evidence” note pointing at `.ralph/evidence/task-31-mdbook/`
 - [x] Run `/bin/bash .ralph/task_switch.sh` (task handoff protocol)
 - [x] `git add -A` (including `.ralph` updates) and confirm no generated artifacts are staged

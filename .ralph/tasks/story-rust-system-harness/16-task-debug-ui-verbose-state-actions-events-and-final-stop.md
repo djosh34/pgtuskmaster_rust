@@ -1,5 +1,5 @@
 ---
-## Task: Setup verbose debug UI and final STOP gate <status>done</status> <passes>true</passes> <passing>true</passing> <priority>low</priority>
+## Task: Setup verbose debug UI and final STOP gate <status>done</status> <passes>true</passes> <priority>low</priority>
 
 <blocked_by>15-task-final-double-check-and-stop-gate</blocked_by>
 
@@ -126,7 +126,7 @@ Skeptical verification deltas applied in Draft 2 (16+ parallel probes):
 8. Browser-level UI smoke validation in environment without preinstalled browser
 - [x] Add a deterministic UI smoke check under `.ralph/evidence/16-debug-ui-final-stop/ui-smoke/` using one installed headless browser path:
 - [x] preferred: install Playwright Chromium locally and run a scripted capture/assertion (load `/debug/ui`, wait for data render, assert key panels visible),
-- [x] fallback: if installation is unavailable, create `$add-bug` immediately with install failure evidence and do not mark task passing.
+- [x] fallback: if installation is unavailable, create `$add-bug` immediately with install failure evidence and do not mark task passed.
 - [x] Archive screenshots/HTML dumps/console logs as evidence artifacts.
 
 9. Final skeptical quality audit before STOP
@@ -150,12 +150,12 @@ Skeptical verification deltas applied in Draft 2 (16+ parallel probes):
 - [x] failing output excerpt,
 - [x] impacted files/modules,
 - [x] evidence artifact paths.
-- [x] If any bug remains unresolved, keep this task non-passing and do not create `.ralph/STOP`.
+- [x] If any bug remains unresolved, keep this task failing and do not create `.ralph/STOP`.
 
 12. Completion and final STOP gate
 - [x] Only after all acceptance criteria and all required gates are green:
 - [x] tick all acceptance checkboxes in this file,
-- [x] set task header to `<status>done</status> <passes>true</passes> <passing>true</passing>`,
+- [x] set task header to `<status>done</status> <passes>true</passes>`,
 - [x] run `touch .ralph/STOP`,
 - [x] run `/bin/bash .ralph/task_switch.sh`,
 - [x] commit all changes including `.ralph` artifacts with:

@@ -1,8 +1,8 @@
 ---
-## Bug: Real-binary tests fail when port allocation is blocked <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Real-binary tests fail when port allocation is blocked <status>done</status> <passes>true</passes>
 
 <description>
-`make test` is not passing in the current environment because multiple tests panic when `allocate_ports(...)` returns `io error: Operation not permitted (os error 1)`.
+`make test` fails in the current environment because multiple tests panic when `allocate_ports(...)` returns `io error: Operation not permitted (os error 1)`.
 
 Detected on 2026-03-02 with:
 - `make test` (failed/terminated after reporting multiple failures and a long-running test)
@@ -89,7 +89,7 @@ Please explore and research the test harness and real-binary test code paths fir
 ### 5) Task bookkeeping and closeout
 - [x] Update this task file with final findings, exact root cause, and fix summary.
 - [x] Tick all acceptance checkboxes only after evidence is confirmed.
-- [x] Set status/passing tags to done/true when gates are green.
+- [x] Set status/passes tags to done/true when gates are green.
 - [x] Append new learnings to `AGENTS.md` if any novel pitfalls were found.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes (including `.ralph` artifacts) with:

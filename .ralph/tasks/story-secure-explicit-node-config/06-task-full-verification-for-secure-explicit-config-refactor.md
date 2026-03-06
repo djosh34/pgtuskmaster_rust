@@ -1,5 +1,5 @@
 ---
-## Task: Run full verification for secure explicit config refactor <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Run full verification for secure explicit config refactor <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Execute full validation gates after the config refactor and convert any failures into actionable bug tasks.
@@ -120,7 +120,7 @@ For each distinct failure signature (even if you also fix it in this task), crea
 ### 7) Completion + bookkeeping (only after all gates pass)
 - Update this task file:
   - tick all acceptance checkboxes
-  - set header tags to: `<status>done</status> <passes>true</passes> <passing>true</passing>`
+  - set header tags to: `<status>done</status> <passes>true</passes>`
   - append `<execution_report>` summarizing each gate + pointing to evidence files
 - Run `/bin/bash .ralph/task_switch.sh`
 - Commit all changes (including `.ralph/evidence/...`) with message:

@@ -11,7 +11,7 @@
     - [ ] Once your certain about the plan, replace end of plan with 'NOW EXECUTE'
     - [ ] When you read 'NOW EXECUTE', do not explore, just execute the plan as written, and tick off the boxes when you do them. 
 
-- [ ] you are really done if and only if ALL of these are passing 100%:
+- [ ] you are really done if and only if ALL of these pass 100%:
     - [ ] `make check`
     - [ ] `make test`
     - [ ] `make test-long`
@@ -20,7 +20,7 @@
 
 - [ ] only when you're done, and all checks pass:
     - [ ] set in [task name].md
-        - [ ] set `<passing>true</passing>`
+        - [ ] set `<passes>true</passes>`
     - [ ] CRUCIAL: run `/bin/bash .ralph/task_switch.sh` to indicate that you want to switch task. 
                 This can be when you're done or just when you want to switch (e.g. for going to subtask)
     - [ ] commit with: `task finished [task name]: [insert text]`

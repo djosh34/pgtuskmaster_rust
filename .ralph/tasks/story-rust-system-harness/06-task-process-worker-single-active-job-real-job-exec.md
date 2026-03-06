@@ -1,5 +1,5 @@
 ---
-## Task: Implement process worker single-active-job execution with real job tests <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Implement process worker single-active-job execution with real job tests <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
 
@@ -35,7 +35,7 @@
 ## Detailed Implementation Plan
 
 1. Baseline and contract guardrails
-- [x] Confirm blocker task `03-task-worker-state-models-and-context-contracts` remains done/passing before changing process contracts.
+- [x] Confirm blocker task `03-task-worker-state-models-and-context-contracts` remains done/passes true before changing process contracts.
 - [x] Capture a baseline with `cargo check --all-targets` so regressions are attributable to this task.
 - [x] Keep runtime code free of `unwrap`/`expect`/`panic` and propagate typed errors via `ProcessError`/`WorkerError`.
 - [x] Preserve the design invariant from plan: single active job, no queue history, only latest outcome.
@@ -117,9 +117,9 @@
 - [x] If any command fails, stop and create `$add-bug` task(s) with failing job kind, repro steps, and key logs before resuming.
 
 12. Acceptance and task bookkeeping
-- [x] Tick each acceptance checkbox only when directly evidenced by passing tests/commands.
-- [x] Update task header tags to done/passing only after all four required `make` targets pass.
-- [x] Set `<passing>true</passing>` only after final verification.
+- [x] Tick each acceptance checkbox only when directly evidenced by tests/commands that pass.
+- [x] Update task header tags to done/passes true only after all four required `make` targets pass.
+- [x] Set `<passes>true</passes>` only after final verification.
 
 13. Completion protocol
 - [x] Run `/bin/bash .ralph/task_switch.sh` after successful completion.

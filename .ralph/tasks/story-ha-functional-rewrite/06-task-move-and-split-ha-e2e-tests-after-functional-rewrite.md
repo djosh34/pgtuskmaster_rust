@@ -1,5 +1,5 @@
 ---
-## Task: Move and split HA e2e tests after the functional rewrite <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Move and split HA e2e tests after the functional rewrite <status>done</status> <passes>true</passes>
 
 <description>
 After the HA functional rewrite lands, move and restructure the HA end-to-end tests so they are no longer oversized mixed files living under `src/ha/`.
@@ -182,11 +182,11 @@ The agent should use parallel subagents after exploration for file moves/splitti
   - `make test`
   - `make test-long`
   - `make lint`
-- Do not tick the acceptance boxes, set `<passing>true</passing>`, run `.ralph/task_switch.sh`, commit, or push until all four gates pass cleanly.
+- Do not tick the acceptance boxes, set `<passes>true</passes>`, run `.ralph/task_switch.sh`, commit, or push until all four gates pass cleanly.
 
 12. Completion protocol to follow once execution actually succeeds
 - Tick every acceptance checkbox in this task file.
-- Set `<passing>true</passing>` only after `make check`, `make test`, `make test-long`, and `make lint` are all green.
+- Set `<passes>true</passes>` only after `make check`, `make test`, `make test-long`, and `make lint` are all green.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all tracked and generated changes, including `.ralph` updates, with:
   - `task finished 06-task-move-and-split-ha-e2e-tests-after-functional-rewrite: ...`

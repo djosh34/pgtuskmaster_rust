@@ -1,5 +1,5 @@
 ---
-## Task: Expand runtime config schema for explicit secure node startup <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Expand runtime config schema for explicit secure node startup <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Redesign the runtime config model so every required secure startup setting is explicitly represented (TLS, HTTP, PostgreSQL hosting, roles/auth, pg_hba/pg_ident, and DCS init config).
@@ -231,7 +231,7 @@ There are many direct `RuntimeConfig` / `PostgresConfig` / `ApiConfig` struct li
 
 Optional (only if churn is too high): introduce a single shared test fixture builder for `RuntimeConfig` under `src/test_harness/` and/or `#[cfg(test)]` in `src/config/` so tests/examples stop duplicating literals.
 
-### 7) Gate sequence (must be 100% green before marking passing)
+### 7) Gate sequence (must be 100% green before marking done)
 
 Run in this order:
 

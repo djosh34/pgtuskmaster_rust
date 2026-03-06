@@ -1,5 +1,5 @@
 ---
-## Task: Perform deep skeptical verification of all docs facts and writing quality <status>completed</status> <passes>true</passes> <passing>true</passing>
+## Task: Perform deep skeptical verification of all docs facts and writing quality <status>completed</status> <passes>true</passes>
 
 <blocked_by>32-task-author-complete-architecture-docs-with-diagrams-and-no-code</blocked_by>
 
@@ -230,7 +230,7 @@ If any failure occurs:
 ### Phase 8 — Finish task (only after all gates are green)
 - [x] Update this task file:
   - [x] Tick all acceptance checkboxes
-  - [x] Set `<status>completed</status>`, `<passes>true</passes>`, and `<passing>true</passing>`
+  - [x] Set `<status>completed</status>` and `<passes>true</passes>`
   - [x] Add evidence pointer to `.ralph/evidence/task-33-docs-factcheck/` and the verification report file
 - [x] Run `/bin/bash .ralph/task_switch.sh`
 - [x] `git add -A` (ensure the verification artifact is included)

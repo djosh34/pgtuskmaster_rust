@@ -1,5 +1,5 @@
 ---
-## Bug: Real-binary provenance enforcement gaps in installers and harness <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Real-binary provenance enforcement gaps in installers and harness <status>done</status> <passes>true</passes>
 
 <description>
 Real-binary tooling currently enforces existence/executability but not strong provenance at runtime.
@@ -187,7 +187,7 @@ Notes:
   - `sha256sum .tools/**/bin/*` spot-checks
   - `./tools/trace-real-binary-execve.sh` for execve evidence
 
-### Phase 7 — Gate validation (must be green before marking passing)
+### Phase 7 — Gate validation (must be green before marking done)
 
 - [x] Run `make check`
 - [x] Run `make test`

@@ -1,5 +1,5 @@
 ---
-## Bug: Remove Clippy Allowances For Unwrap/Panic <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Remove Clippy Allowances For Unwrap/Panic <status>done</status> <passes>true</passes>
 
 <description>
 src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which violates the repo rule against unwraps, panics, or expects anywhere. This hides violations in test harness code and makes it easy to slip new ones in. Investigate all test_harness code (and any other modules) for unwrap/expect/panic usage, replace with proper error handling, and remove the lint allow attributes.
@@ -75,7 +75,7 @@ src/test_harness/mod.rs explicitly allows clippy unwrap/expect/panic, which viol
 7. Task bookkeeping after successful execution.
 - Update this task file:
   - tick acceptance checkboxes.
-  - set `<status>done</status>`, `<passes>true</passes>`, and `<passing>true</passing>`.
+  - set `<status>done</status>` and `<passes>true</passes>`.
   - add concise evidence (command outcomes and any notable fixes).
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all changed files (including `.ralph/*`) with message format:

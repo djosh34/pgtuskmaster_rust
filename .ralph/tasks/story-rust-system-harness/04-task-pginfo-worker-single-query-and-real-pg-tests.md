@@ -1,5 +1,5 @@
 ---
-## Task: Implement pginfo worker single-query polling and real PG tests <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Implement pginfo worker single-query polling and real PG tests <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>
 
@@ -36,7 +36,7 @@
 ## Detailed Implementation Plan
 
 1. Prerequisites and baseline gates
-- [x] Confirm blocker task `03-task-worker-state-models-and-context-contracts` is marked done and passing before modifying pginfo behavior.
+- [x] Confirm blocker task `03-task-worker-state-models-and-context-contracts` is marked as done with `<passes>true</passes>` before modifying pginfo behavior.
 - [x] Capture baseline by running `cargo check --all-targets` and note any pre-existing failures separately from pginfo work.
 - [x] Confirm availability expectations for real PG tests (PG16 binaries at `/usr/lib/postgresql/16/bin/postgres` and `/usr/lib/postgresql/16/bin/initdb`) and keep tests self-skipping when binaries are not present.
 
@@ -106,7 +106,7 @@
 
 12. Completion bookkeeping (execution phase)
 - [x] Tick acceptance criteria and update header tags only after all required commands pass.
-- [x] Set `<passing>true</passing>` only after full gate success.
+- [x] Set `<passes>true</passes>` only after full gate success.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all files (including `.ralph` updates) with message format `task finished 04-task-pginfo-worker-single-query-and-real-pg-tests: <summary + evidence + challenges>`.
 - [x] Append any learnings/surprises to `AGENTS.md`.

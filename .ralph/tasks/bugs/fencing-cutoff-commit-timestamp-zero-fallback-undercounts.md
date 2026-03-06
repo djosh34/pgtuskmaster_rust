@@ -1,5 +1,5 @@
 ---
-## Bug: Fencing cutoff commit timestamp fallback undercounts post-cutoff commits <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Fencing cutoff commit timestamp fallback undercounts post-cutoff commits <status>done</status> <passes>true</passes>
 
 <description>
 In `src/ha/e2e_multi_node.rs`, successful SQL commits record `committed_at_unix_ms` using `ha_e2e::util::unix_now()`, but on error the code falls back to `0` (`Err(_) => 0`).
@@ -53,7 +53,7 @@ Please explore and research the codebase first, then implement a fail-closed fix
 ### 3) Task closeout (only after all gates are green)
 - [x] Update this task file:
   - [x] Mark acceptance criteria checkboxes.
-  - [x] Set `<status>done</status>`, `<passes>true</passes>`, and add `<passing>true</passing>`.
+  - [x] Set `<status>done</status>` and `<passes>true</passes>`.
   - [x] Summarize: why the bug no longer reproduces, the key safeguards (strict helper + timestamp failure counter), and the evidence log paths.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes (including `.ralph`) with message: `task finished fencing-cutoff-commit-timestamp-zero-fallback-undercounts: <summary + evidence>`.

@@ -1,5 +1,5 @@
 ---
-## Task: Implement e2e multi-node real HA-loop scenario matrix <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Implement e2e multi-node real HA-loop scenario matrix <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>09-task-api-debug-workers-and-snapshot-contracts,10-task-test-harness-namespace-ports-pg-etcd-spawners,12-task-ha-loop-integration-tests-real-watchers-and-step-once</blocked_by>
 
@@ -34,7 +34,7 @@
 ## Detailed Implementation Plan
 
 1. Preflight and baseline lock
-- [x] Verify blockers `09`, `10`, and `12` are still `done` + `passing true` before edits.
+- [x] Verify blockers `09`, `10`, and `12` are still `done` + `<passes>true</passes>` before edits.
 - [x] Capture baseline with `cargo check --all-targets` so later regressions can be attributed to task 13 changes.
 - [x] Keep hard constraints active: no `unwrap`/`expect`/`panic` in non-test runtime code; no optional/skipped real-binary tests.
 
@@ -109,7 +109,7 @@
 
 11. Task completion bookkeeping (post-green only)
 - [x] Tick acceptance criteria with evidence.
-- [x] Update task header tags to done/passes true and set `<passing>true</passing>` only after all required gates are green.
+- [x] Update task header tags to done/passes true and set `<passes>true</passes>` only after all required gates are green.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes (including `.ralph` updates) with:
 - [x] `task finished 13-task-e2e-multi-node-real-ha-loops-scenario-matrix: <summary + gate evidence + challenges>`
@@ -119,7 +119,7 @@
 <evidence>
 - Standalone matrix command: `cargo test ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix -- --nocapture`
 - Timeline artifacts: `.ralph/evidence/13-e2e-multi-node/ha-e2e-scenario-matrix-*.timeline.log`
-- Verification gates (all passing): `make check`, `make test`, `make lint`
+- Verification gates (all green): `make check`, `make test`, `make lint`
 </evidence>
 
 NOW EXECUTE

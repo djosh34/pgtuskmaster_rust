@@ -1,5 +1,5 @@
 ---
-## Task: Add HA stress e2e suites with concurrent SQL workloads during role changes <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Add HA stress e2e suites with concurrent SQL workloads during role changes <status>done</status> <passes>true</passes>
 
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>
 <blocked_by>25-task-enforce-e2e-api-only-control-no-direct-dcs</blocked_by>
@@ -163,7 +163,7 @@
 - `evaluation failed`
 
 5. Finalization phase.
-- Tick acceptance checklist, set status/passing tags only after all gates pass.
+- Tick acceptance checklist, set status/passes tags only after all gates pass.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all files with required message format including gate evidence and implementation summary.
 

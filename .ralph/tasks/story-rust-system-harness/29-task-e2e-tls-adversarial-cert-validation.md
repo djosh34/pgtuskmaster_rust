@@ -1,5 +1,5 @@
 ---
-## Task: Expand TLS adversarial e2e tests for certificate validation hardening <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Expand TLS adversarial e2e tests for certificate validation hardening <status>done</status> <passes>true</passes>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
 
@@ -112,7 +112,7 @@
 6. Completion checklist for execution run
 - [x] Implement fixture/test changes listed above with no `unwrap`/`expect`/`panic`.
 - [x] Validate adversarial matrix coverage includes wrong CA, wrong SAN, expired, and client-cert mismatch/missing.
-- [x] Complete all mandatory gates (`make check`, `make test`, `make lint`) with passing results and marker checks for test/lint logs.
+- [x] Complete all mandatory gates (`make check`, `make test`, `make lint`) with green results and marker checks for test/lint logs.
 - [x] Update task tags/checklists only after gate success, run task switch script, commit all files (including `.ralph`), push, and append durable learning to `AGENTS.md`.
 </execution_plan>
 

@@ -1,5 +1,5 @@
 ---
-## Bug: DCS watch refresh errors are tracked but ignored <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: DCS watch refresh errors are tracked but ignored <status>done</status> <passes>true</passes>
 
 <description>
 `refresh_from_etcd_watch` in [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs) records `had_errors` (for unknown keys or decode failures) but no caller uses it. In [src/dcs/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/worker.rs), `step_once` only checks for `Err`, so unknown/malformed watch events can be silently ignored while the worker still reports healthy state. Decide on the correct behavior (e.g., mark store unhealthy, emit faulted state, or log/telemetry), and wire `had_errors` into worker health so errors do not pass silently.
@@ -53,7 +53,7 @@
 5. Task bookkeeping after gates pass.
 - Update this task file:
   - tick acceptance checkboxes.
-  - set `<status>done</status>`, `<passes>true</passes>`, and `<passing>true</passing>`.
+  - set `<status>done</status>` and `<passes>true</passes>`.
   - add concise execution evidence including names/results of new unknown-key regression tests.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all changes (including `.ralph/*`) with:

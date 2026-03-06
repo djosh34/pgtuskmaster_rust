@@ -1,5 +1,5 @@
 ---
-## Bug: Harden make gates against hangs and silent passes <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Harden make gates against hangs and silent passes <status>done</status> <passes>true</passes>
 
 <description>
 `make test`, `make test-long`, `make lint`, and `make check` currently have uneven timeout behavior and incomplete pass assertions.
@@ -129,9 +129,9 @@ Please explore and research the codebase first, then implement a robust, fail-cl
   - Each gate phase produces a start/end record with duration and exit code.
 
 ### Phase 5 — Task wrap-up
-- [x] Tick off acceptance criteria checkboxes based on passing runs.
+- [x] Tick off acceptance criteria checkboxes based on green runs.
 - [x] Keep `<passes>false</passes>` unless all four gates are green.
-- [x] Only after all gates pass: set `<status>done</status> <passes>true</passes> <passing>true</passing>` and follow the repo’s task-switch + commit + push protocol.
+- [x] Only after all gates pass: set `<status>done</status> <passes>true</passes>` and follow the repo’s task-switch + commit + push protocol.
 </implementation_plan>
 
 NOW EXECUTE

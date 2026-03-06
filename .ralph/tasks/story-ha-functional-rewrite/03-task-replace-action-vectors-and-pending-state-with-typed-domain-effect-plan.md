@@ -1,5 +1,5 @@
 ---
-## Task: Replace action vectors and pending state with HaDecision plus lowered effect plan <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Replace action vectors and pending state with HaDecision plus lowered effect plan <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Replace `Vec<HaAction>` planning with a high-level `HaDecision` enum plus an inherent `HaDecision::lower(&self) -> HaEffectPlan` step, and remove `pending` entirely from HA state.
@@ -291,7 +291,7 @@ When this task is promoted to `NOW EXECUTE`, execute in this order without fresh
    - `make lint`
 8. Only after all four pass:
    - tick acceptance boxes truthfully
-   - set `<passing>true</passing>`
+   - set `<passes>true</passes>`
    - run `/bin/bash .ralph/task_switch.sh`
    - commit all tracked and untracked changes, including `.ralph` files
    - push with `git push`

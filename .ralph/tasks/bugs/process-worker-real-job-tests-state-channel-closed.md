@@ -1,5 +1,5 @@
 ---
-## Bug: Process worker real job tests fail with state channel closed <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Process worker real job tests fail with state channel closed <status>done</status> <passes>true</passes>
 
 <description>
 `make test` failed while running real process worker job tests. Multiple tests panic because process state publish fails with `state channel is closed`.

@@ -1,5 +1,5 @@
 ---
-## Task: Expose full HA admin API read and write surface <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Expose full HA admin API read and write surface <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Add a first-class HA admin API that exposes operational read endpoints and write actions needed to control cluster behavior without touching DCS directly.

@@ -1,5 +1,5 @@
 ---
-## Task: Enforce role-specific credential usage across runtime operations <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Enforce role-specific credential usage across runtime operations <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Ensure each runtime function uses only its designated role (`superuser`, `replicator`, `rewinder`) and corresponding auth mode from config.

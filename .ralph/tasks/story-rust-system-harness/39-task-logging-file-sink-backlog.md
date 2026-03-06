@@ -1,5 +1,5 @@
 ---
-## Task: Add Structured File Sink Support (Backlog) <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Add Structured File Sink Support (Backlog) <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Extend the unified logging subsystem with optional structured file sink support after the base structured-ingestion task is complete.
@@ -68,9 +68,9 @@ Notes for these tests:
 ### Task closure (only after all verification passes)
 - [ ] Update this task file:
   - [ ] Set `<status>done</status>` and `<passes>true</passes>`
-  - [ ] Add `<passing>true</passing>` (required by task runner conventions in this repo)
+  - [ ] Add `<passes>true</passes>` (required by task runner conventions in this repo)
   - [ ] Tick all acceptance criteria checkboxes
-  - [ ] Record brief evidence of the `make ...` commands passing (copy/paste the final summary lines)
+  - [ ] Record brief evidence of the `make ...` commands that pass (copy/paste the final summary lines)
 - [ ] Run `/bin/bash .ralph/task_switch.sh`
 - [ ] `git add -A`
 - [ ] `git commit -m "task finished 39-task-logging-file-sink-backlog: structured JSONL file sink support"`

@@ -1,5 +1,5 @@
 ---
-## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <description>
 **Goal:** Install and enforce strict Rust linting with explicit denial of `unwrap`, `expect`, and panic-prone patterns in runtime code.
@@ -97,9 +97,9 @@
 - [x] If any command fails, fix and rerun sequentially until all pass.
 
 9. Completion protocol
-- [x] Tick every acceptance checklist item with direct evidence from passing commands.
-- [x] Update task header tags to done/passing only after all required gates are green.
-- [x] Set `<passing>true</passing>` only at the very end.
+- [x] Tick every acceptance checklist item with direct evidence from commands that pass.
+- [x] Update task header tags to done/passes true only after all required gates are green.
+- [x] Set `<passes>true</passes>` only at the very end.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changes (including `.ralph` files) with:
   - [x] `task finished 05a-task-enforce-strict-rust-lints-no-unwrap-expect-panic: <summary + evidence + challenges>`

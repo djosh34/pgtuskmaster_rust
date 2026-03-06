@@ -1,5 +1,5 @@
 ---
-## Task: Migrate fixtures/examples/CLI config surfaces to the secure explicit schema <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Migrate fixtures/examples/CLI config surfaces to the secure explicit schema <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Align all config producers/consumers (tests, examples, CLI entrypoints) with the expanded schema and explicit secure requirements.
@@ -149,7 +149,7 @@ The goal is: every in-repo config producer/consumer either:
   - [x] `make test-long`
   - [x] `make lint`
 - [x] 7) Only once all are green:
-  - [x] set `<passing>true</passing>` in this task file
+  - [x] set `<passes>true</passes>` in this task file
   - [x] `/bin/bash .ralph/task_switch.sh`
   - [x] commit: `task finished 05-task-migrate-fixtures-examples-and-cli-config-surfaces-to-new-schema: <summary + evidence>`
   - [x] `git push`

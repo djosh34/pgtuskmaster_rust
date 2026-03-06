@@ -1,5 +1,5 @@
 ---
-## Task: Ultra-high-priority migrate repo gates to `make test` + `make test-long` only <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra-high</priority>
+## Task: Ultra-high-priority migrate repo gates to `make test` + `make test-long` only <status>done</status> <passes>true</passes> <priority>ultra-high</priority>
 
 <description>
 **Goal:** Complete and verify the global migration from legacy test targets to only two test groups: `make test` (regular) and `make test-long` (ultra-long only).
@@ -131,7 +131,7 @@ Baseline repo sweeps to repeat after edits (excluding progress/archive):
 
 ### 7) Closeout protocol
 - Tick acceptance criteria items as they are satisfied.
-- Set task header to `<status>done</status> <passes>true</passes> <passing>true</passing>`.
+- Set task header to `<status>done</status> <passes>true</passes>`.
 - Record concise evidence (commands run + outcomes, and summary of repo sweeps).
 
 </execution_plan>

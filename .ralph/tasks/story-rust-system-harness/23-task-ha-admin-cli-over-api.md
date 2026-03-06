@@ -1,5 +1,5 @@
 ---
-## Task: Build a simple Rust HA admin CLI over the exposed API <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Build a simple Rust HA admin CLI over the exposed API <status>done</status> <passes>true</passes>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>
 

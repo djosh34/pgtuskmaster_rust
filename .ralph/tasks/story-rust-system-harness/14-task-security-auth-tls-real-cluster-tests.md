@@ -1,5 +1,5 @@
 ---
-## Task: Implement security auth TLS validation tests in real cluster runs <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Implement security auth TLS validation tests in real cluster runs <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>10-task-test-harness-namespace-ports-pg-etcd-spawners,13-task-e2e-multi-node-real-ha-loops-scenario-matrix</blocked_by>
 
@@ -34,7 +34,7 @@
 ## Detailed Implementation Plan
 
 1. Baseline and guardrails
-- [x] Confirm current task dependencies (`10`, `13`) remain done/passing and capture current workspace state.
+- [x] Confirm current task dependencies (`10`, `13`) remain done/passes true and capture current workspace state.
 - [x] Keep strict constraints active through all edits: no unwrap/expect/panic, no skipped/optional real-binary tests, and no lint allows.
 - [x] Implement this task in three phases: authz/runtime changes, TLS transport changes, then real-network security tests.
 
@@ -85,7 +85,7 @@
 
 8. Completion bookkeeping
 - [x] Tick all acceptance checkboxes with evidence after gates are green.
-- [x] Update task header tags to done/passes true and set `<passing>true</passing>`.
+- [x] Update task header tags to done/passes true and set `<passes>true</passes>`.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changed files (including `.ralph` updates) with:
 - [x] `task finished 14-task-security-auth-tls-real-cluster-tests: <summary + gate evidence + implementation challenges>`
@@ -94,7 +94,7 @@
 
 <evidence>
 - Targeted security test run: `cargo test --lib api::worker::tests::security -- --nocapture`
-- Required gates (all passing, sequential): `CARGO_BUILD_JOBS=1 make check`, `CARGO_BUILD_JOBS=1 make test`, `CARGO_BUILD_JOBS=1 make test`, `CARGO_BUILD_JOBS=1 make lint`
+- Required gates (all green, sequential): `CARGO_BUILD_JOBS=1 make check`, `CARGO_BUILD_JOBS=1 make test`, `CARGO_BUILD_JOBS=1 make test`, `CARGO_BUILD_JOBS=1 make lint`
 - Security test coverage location: `src/api/worker.rs` (`security_*` tests) using namespace-backed cert artifacts via `NamespaceGuard` + `write_tls_material(...)`
 </evidence>
 

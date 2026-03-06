@@ -1,5 +1,5 @@
 ---
-## Task: Run full regression suite end-to-end <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Run full regression suite end-to-end <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Execute the entire validation suite in one pass to confirm holistic repository health.
@@ -43,7 +43,7 @@
 - Track 7: Re-read `.ralph/task_switch.sh` behavior to confirm it removes `.ralph/current_task.txt`.
 - Track 8: Scanned AGENTS learnings for stale artifact and serial-run guidance.
 - Track 9: Scanned `.ralph/evidence/` examples for accepted marker-grep artifact formats.
-- Track 10: Scanned story-full-verification files for status tag consistency (`<status>`, `<passes>`, `<passing>`).
+- Track 10: Scanned story-full-verification files for status tag consistency (`<status>`, `<passes>`).
 - Track 11: Scanned for lifecycle marker patterns (`TO BE VERIFIED`, `NOW EXECUTE`) to mirror established flow.
 - Track 12: Rechecked current git working tree shape so pre-existing `.ralph` changes are not lost.
 - Track 13: Revalidated that command exit status is the source of truth and grep markers are secondary policy evidence.
@@ -83,7 +83,7 @@
 
 4. Finalize task state and bookkeeping
 - If all required commands pass, tick acceptance checkboxes and set header to:
-- `<status>done</status> <passes>true</passes> <passing>true</passing>`
+- `<status>done</status> <passes>true</passes>`
 - Append `<execution_report>` with evidence file names and pass/fail summary.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all modified files (including `.ralph` files) with message:

@@ -1,5 +1,5 @@
 ---
-## Task: Remove restore control plane before HA functional rewrite <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Remove restore control plane before HA functional rewrite <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Delete the restore takeover control plane from HA, DCS, API, CLI, debug, and tests before rewriting HA around a functional state-machine design.
@@ -104,7 +104,7 @@
 
 9. Finish the task bookkeeping only after code, docs, and all gates are green.
    - Tick every completed checkbox in this task file.
-   - Set `<passing>true</passing>` only after the final gate run succeeds.
+   - Set `<passes>true</passes>` only after the final gate run succeeds.
    - Run `/bin/bash .ralph/task_switch.sh`.
    - Commit all tracked changes, including `.ralph` updates, with `task finished 01-task-remove-restore-control-plane-before-ha-functional-rewrite: ...` and include evidence of gate success plus any notable implementation constraints.
    - Push with `git push`.

@@ -1,8 +1,8 @@
 ---
-## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>
-**Goal:** Ensure “real-system” tests actually exercise real PostgreSQL 16 and etcd3 binaries in at least one deterministic gate (CI and/or developer opt-in), instead of silently passing via early-return skips.
+**Goal:** Ensure “real-system” tests actually exercise real PostgreSQL 16 and etcd3 binaries in at least one deterministic gate (CI and/or developer opt-in), instead of silently reporting a pass via early-return skips.
 
 **Scope:**
 - Add an explicit enforcement mode (env var and/or `make` target) that:
@@ -90,7 +90,7 @@
 
 ### 7) Task file + finish protocol (post-implementation)
 - Tick acceptance boxes with concrete evidence references.
-- Set `<passes>true</passes>` and `<passing>true</passing>` only after all required gates pass.
+- Set `<passes>true</passes>` only after all required gates pass.
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all touched files (including `.ralph` updates) using:
 - `task finished 10a-task-enforce-real-binary-tests-and-ci-prereqs: <summary + evidence + challenges>`.

@@ -1,5 +1,5 @@
 ---
-## Task: Implement HA worker select loop and action dispatch wiring <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Implement HA worker select loop and action dispatch wiring <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>04-task-pginfo-worker-single-query-and-real-pg-tests,05-task-dcs-worker-trust-cache-watch-member-publish,06-task-process-worker-single-active-job-real-job-exec,07-task-ha-decide-pure-matrix-idempotency-tests</blocked_by>
 
@@ -35,7 +35,7 @@
 ## Detailed Implementation Plan
 
 1. Baseline and constraints
-- [x] Confirm blockers `04`, `05`, `06`, and `07` remain in done/passing state before wiring HA runtime.
+- [x] Confirm blockers `04`, `05`, `06`, and `07` remain in done/passes true state before wiring HA runtime.
 - [x] Capture a baseline build with `cargo check --all-targets` prior to edits so regressions are attributable to this task.
 - [x] Keep runtime code free of `unwrap`/`expect`/`panic`; use typed error propagation through `WorkerError` + HA-specific dispatch errors.
 - [x] Preserve the architecture constraint from task description: no wake-bus/event-enum side channel, only typed watcher subscriptions + interval tick.
@@ -146,7 +146,7 @@
 13. Acceptance and bookkeeping
 - [x] Tick acceptance checkboxes only with direct evidence from tests and gate outputs.
 - [x] Update task header tags only after all required gates pass.
-- [x] Set `<passing>true</passing>` only at full completion.
+- [x] Set `<passes>true</passes>` only at full completion.
 - [x] Run `/bin/bash .ralph/task_switch.sh` once the task is truly complete.
 - [x] Commit all files (including `.ralph` artifacts) with message:
 - [x] `task finished 08-task-ha-worker-select-loop-and-action-dispatch: <summary + gate evidence + challenges>`

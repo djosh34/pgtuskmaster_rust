@@ -1,5 +1,5 @@
 ---
-## Bug: Process worker real job tests accept failure outcomes <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: Process worker real job tests accept failure outcomes <status>done</status> <passes>true</passes>
 
 <description>
 Real-binary process worker tests in [src/process/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/worker.rs) accept failure outcomes, so they can pass even when the binary invocation or behavior is broken. Examples:
@@ -62,7 +62,7 @@ These tests currently treat `JobOutcome::Failure` as acceptable, which means reg
 5. Task closure bookkeeping once all gates pass.
 - Update this task file:
   - check acceptance boxes.
-  - set `<status>done</status>`, `<passes>true</passes>`, and `<passing>true</passing>`.
+  - set `<status>done</status>` and `<passes>true</passes>`.
   - include concise execution evidence (what changed + gate pass evidence).
 - Run `/bin/bash .ralph/task_switch.sh`.
 - Commit all files (including `.ralph/*`) with required message format:

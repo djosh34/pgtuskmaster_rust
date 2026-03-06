@@ -1,5 +1,5 @@
 ---
-## Task: Implement real etcd3-backed DCS store adapter and integration tests <status>done</status> <passes>true</passes> <passing>true</passing> <priority>high</priority>
+## Task: Implement real etcd3-backed DCS store adapter and integration tests <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>
 **Goal:** Add a production-grade `DcsStore` implementation backed by a real etcd3 instance, and prove it via integration tests using the existing test harness spawner.

@@ -1,5 +1,5 @@
 ---
-## Bug: BDD HTTP tests false-pass via fragile status and read patterns <status>done</status> <passes>true</passes> <passing>true</passing>
+## Bug: BDD HTTP tests false-pass via fragile status and read patterns <status>done</status> <passes>true</passes>
 
 <description>
 BDD HTTP contract tests use weak status matching and response-read behavior that can hide protocol/handler regressions or induce hangs.

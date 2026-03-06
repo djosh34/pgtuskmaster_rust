@@ -1,5 +1,5 @@
 ---
-## Task: Build Unified Structured Logging Pipeline With Postgres/Binary Ingestion <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Build Unified Structured Logging Pipeline With Postgres/Binary Ingestion <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Implement one unified, config-driven logging system that emits structured JSONL to `stderr` by default, ingests/normalizes all postgres and helper-binary logs into the same stream, and guarantees no log loss on parse failures.
@@ -243,7 +243,7 @@ Use `.tools/postgres16/bin/*` via `require_pg16_bin_for_real_tests` (no optional
 ### Follow-up task (explicitly out of scope here)
 - [ ] Create a backlog task for **file sink support** (additional sink types) using the `add-task-as-agent` skill, referencing this task as prerequisite.
 
-### Validation gate (must be 100% green before marking passing)
+### Validation gate (must be 100% green before marking done)
 - [ ] `make check`
 - [ ] `make test`
 - [ ] `make test-long`

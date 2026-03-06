@@ -1,5 +1,5 @@
 ---
-## Task: Implement core ids time errors and typed watch channels <status>done</status> <passes>true</passes> <passing>true</passing> <priority>ultra_high</priority>
+## Task: Implement core ids time errors and typed watch channels <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <description>
 **Goal:** Build the foundational shared types and state-channel primitives used by every worker.
@@ -124,7 +124,7 @@
 - [x] Tick off checklist items in this task file as each item completes.
 - [x] Update `<status>` to reflect progression (`in_progress` then `done`).
 - [x] Set `<passes>true</passes>` only when all required commands pass.
-- [x] If workflow additionally requires `<passing>true</passing>`, add that tag without removing existing `<passes>` tag.
+- [x] If workflow additionally requires `<passes>true</passes>`, add that tag without removing existing `<passes>` tag.
 
 9. Completion and handoff
 - [x] Run `/bin/bash .ralph/task_switch.sh`.

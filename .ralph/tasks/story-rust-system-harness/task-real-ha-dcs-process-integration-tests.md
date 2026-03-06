@@ -1,5 +1,5 @@
 ---
-## Task: Add real HA+DCS+Process integration tests <status>done</status> <passes>true</passes> <passing>true</passing>
+## Task: Add real HA+DCS+Process integration tests <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Build integration tests that wire real PG16 binaries, a real etcd-backed DCS store, the process worker, pginfo worker, and HA worker so failures cannot pass silently.
@@ -55,7 +55,7 @@
 1. `.ralph/tasks/story-rust-system-harness/task-real-ha-dcs-process-integration-tests.md`
 - [x] Keep checklist/phase progress synchronized with actual execution.
 - [x] Tick acceptance criteria only after logs/evidence are written.
-- [x] Set `<status>done</status> <passes>true</passes> <passing>true</passing>` only after all required gates pass.
+- [x] Set `<status>done</status> <passes>true</passes>` only after all required gates pass.
 
 2. `src/ha/e2e_multi_node.rs` (primary implementation file)
 - [x] If gap exists, add/adjust one deterministic real integration scenario that explicitly validates: leader key write, postgres start effect, and HA phase transition observation. (No gap required code changes; enforced-real pipeline test already satisfied this.)
@@ -100,7 +100,7 @@
 
 5. Task completion bookkeeping
 - [x] Tick acceptance criteria checkboxes in task file.
-- [x] Set `<status>done</status> <passes>true</passes> <passing>true</passing>`.
+- [x] Set `<status>done</status> <passes>true</passes>`.
 - [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [x] Commit all changed files (including `.ralph/*`) with message:
 - [x] `task finished task-real-ha-dcs-process-integration-tests: <summary, gate evidence, implementation notes>`
