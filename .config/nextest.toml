@@ -1,0 +1,35 @@
+nextest-version = { recommended = "0.9.100" }
+
+[profile.default]
+fail-fast = false
+test-threads = 16
+default-filter = '''
+not (
+    test(=e2e_multi_node_stress_planned_switchover_concurrent_sql)
+    | test(=e2e_multi_node_stress_unassisted_failover_concurrent_sql)
+    | test(=e2e_multi_node_unassisted_failover_sql_consistency)
+    | test(=e2e_no_quorum_enters_failsafe_strict_all_nodes)
+    | test(=e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity)
+    | test(=e2e_partition_minority_isolation_no_split_brain_rejoin)
+    | test(=e2e_partition_primary_isolation_failover_no_split_brain)
+    | test(=e2e_partition_api_path_isolation_preserves_primary)
+    | test(=e2e_partition_mixed_faults_heal_converges)
+)
+'''
+slow-timeout = { period = "120s", terminate-after = 1, grace-period = "15s" }
+
+[profile.ultra-long]
+fail-fast = false
+test-threads = 16
+default-filter = '''
+test(=e2e_multi_node_stress_planned_switchover_concurrent_sql)
+| test(=e2e_multi_node_stress_unassisted_failover_concurrent_sql)
+| test(=e2e_multi_node_unassisted_failover_sql_consistency)
+| test(=e2e_no_quorum_enters_failsafe_strict_all_nodes)
+| test(=e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity)
+| test(=e2e_partition_minority_isolation_no_split_brain_rejoin)
+| test(=e2e_partition_primary_isolation_failover_no_split_brain)
+| test(=e2e_partition_api_path_isolation_preserves_primary)
+| test(=e2e_partition_mixed_faults_heal_converges)
+'''
+slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
