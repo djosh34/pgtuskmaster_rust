@@ -9,8 +9,6 @@ pub mod worker;
 pub(crate) enum ApiError {
     #[error("bad request: {0}")]
     BadRequest(String),
-    #[error("conflict: {0}")]
-    Conflict(String),
     #[error("dcs store error: {0}")]
     DcsStore(String),
     #[error("internal error: {0}")]
@@ -20,10 +18,6 @@ pub(crate) enum ApiError {
 impl ApiError {
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest(message.into())
-    }
-
-    pub(crate) fn conflict(message: impl Into<String>) -> Self {
-        Self::Conflict(message.into())
     }
 
     pub(crate) fn internal(message: impl Into<String>) -> Self {

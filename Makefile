@@ -24,7 +24,6 @@ endif
 
 ULTRA_LONG_TESTS := \
 		ha::e2e_multi_node::e2e_multi_node_real_ha_scenario_matrix \
-		ha::e2e_multi_node::e2e_multi_node_restore_takeover_external_repo_converges_cluster \
 		ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql \
 		ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql \
 		ha::e2e_multi_node::e2e_no_quorum_enters_failsafe_strict_all_nodes \
@@ -40,6 +39,7 @@ endif
 # default for deterministic `make` gates; override with `CARGO_INCREMENTAL=1`
 # if you explicitly want it.
 CARGO_INCREMENTAL ?= 0
+CARGO_GATE_TARGET_DIR := /tmp/pgtuskmaster_rust-target
 
 TEST_TIMEOUT_SECS := 120
 TEST_TIMEOUT_KILL_AFTER_SECS := 15
@@ -143,7 +143,7 @@ ensure-timeout:
 	@test -n "$(TIMEOUT_BIN)" || (echo "missing timeout binary (install coreutils). Need either 'timeout' (Linux) or 'gtimeout' (macOS)." >&2; exit 1)
 
 check:
-	"$(GATE_STEP)" --gate check --step check.cargo_check --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(CHECK_TIMEOUT_SECS)" --kill-after-secs "$(CHECK_TIMEOUT_KILL_AFTER_SECS)" -- env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo check --all-targets
+	"$(GATE_STEP)" --gate check --step check.cargo_check --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(CHECK_TIMEOUT_SECS)" --kill-after-secs "$(CHECK_TIMEOUT_KILL_AFTER_SECS)" -- env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo check --all-targets
 
 check: guard-makeflags ensure-timeout
 
@@ -154,13 +154,13 @@ test: guard-makeflags ensure-timeout
 	mkdir -p "$$(dirname "$${list_file}")"; \
 	echo "gate evidence: $(GATE_EVIDENCE_DIR)"; \
 	"$(GATE_STEP)" --gate test --step test.preflight_list --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
-		bash -c 'set -euo pipefail; env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets -- --list | tee "$$1" >/dev/null' -- "$${list_file}"; \
+		bash -c 'set -euo pipefail; env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets -- --list | tee "$$1" >/dev/null' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test --step test.preflight_validate_ultra_long --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
 		bash -c 'set -euo pipefail; list_file="$$1"; dupes="$$(printf "%s\n" $(ULTRA_LONG_TESTS) | sort | uniq -d)"; if [ -n "$${dupes}" ]; then echo "Ultra-long test list contains duplicates: $${dupes}" >&2; exit 1; fi; for t in $(ULTRA_LONG_TESTS); do if ! awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -Fx "$$t" >/dev/null; then echo "Ultra-long test not found (exact): $$t" >&2; exit 1; fi; match_count="$$(awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -F "$$t" | wc -l | tr -d " ")"; if [ "$${match_count}" != "1" ]; then echo "Ultra-long skip token is ambiguous (substring matches $${match_count} tests): $$t" >&2; exit 1; fi; done' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test --step test.preflight_validate_default_nonempty --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
 		bash -c 'set -euo pipefail; list_file="$$1"; all_file="$$(mktemp)"; ultra_file="$$(mktemp)"; trap '\''rm -f "$${all_file}" "$${ultra_file}"'\'' EXIT; awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | sort > "$${all_file}"; printf "%s\n" $(ULTRA_LONG_TESTS) | sort > "$${ultra_file}"; non_ultra_count="$$(grep -Fxv -f "$${ultra_file}" "$${all_file}" | wc -l | tr -d " ")"; if [ "$${non_ultra_count}" = "0" ]; then echo "default test suite would execute 0 tests after skipping ULTRA_LONG_TESTS; move at least one test back into make test" >&2; exit 1; fi' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test --step test.exec_default_suite --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_TIMEOUT_SECS)" --kill-after-secs "$(TEST_TIMEOUT_KILL_AFTER_SECS)" -- \
-		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets -- $(ULTRA_LONG_SKIP_ARGS)
+		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets -- $(ULTRA_LONG_SKIP_ARGS)
 
 test-long: guard-makeflags ensure-timeout
 	@echo "test-long runs only ultra-long tests (evidence-backed passed runtime >= 3 minutes)."
@@ -174,12 +174,12 @@ test-long: guard-makeflags ensure-timeout
 	mkdir -p "$$(dirname "$${list_file}")"; \
 	echo "gate evidence: $(GATE_EVIDENCE_DIR)"; \
 	"$(GATE_STEP)" --gate test-long --step test_long.preflight_list --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
-		bash -c 'set -euo pipefail; env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets -- --list | tee "$$1" >/dev/null' -- "$${list_file}"; \
+		bash -c 'set -euo pipefail; env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets -- --list | tee "$$1" >/dev/null' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test-long --step test_long.preflight_validate_ultra_long --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
 		bash -c 'set -euo pipefail; list_file="$$1"; dupes="$$(printf "%s\n" $(ULTRA_LONG_TESTS) | sort | uniq -d)"; if [ -n "$${dupes}" ]; then echo "Ultra-long test list contains duplicates: $${dupes}" >&2; exit 1; fi; for t in $(ULTRA_LONG_TESTS); do if ! awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -Fx "$$t" >/dev/null; then echo "Ultra-long test not found (exact): $$t" >&2; exit 1; fi; match_count="$$(awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -F "$$t" | wc -l | tr -d " ")"; if [ "$${match_count}" != "1" ]; then echo "Ultra-long test name is not unique (substring matches $${match_count} tests): $$t" >&2; exit 1; fi; done' -- "$${list_file}"; \
 	for t in $(ULTRA_LONG_TESTS); do \
 		"$(GATE_STEP)" --gate test-long --step "test_long.exec.$$t" --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_LONG_PER_TEST_TIMEOUT_SECS)" --kill-after-secs "$(TEST_LONG_PER_TEST_TIMEOUT_KILL_AFTER_SECS)" -- \
-			env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo test --all-targets "$$t" -- --exact; \
+			env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets "$$t" -- --exact; \
 	done
 
 docs-lint: guard-makeflags ensure-timeout ensure-node
@@ -195,16 +195,16 @@ lint.no_silent_errors: guard-makeflags ensure-timeout
 
 lint: guard-makeflags ensure-timeout docs-lint lint.no_silent_errors
 	"$(GATE_STEP)" --gate lint --step lint.clippy.all_targets --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(LINT_CLIPPY_TIMEOUT_SECS)" --kill-after-secs "$(LINT_CLIPPY_TIMEOUT_KILL_AFTER_SECS)" -- \
-		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --all-targets --all-features -- -D warnings
+		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo clippy --all-targets --all-features -- -D warnings
 	# Strict restriction-lint pass for runtime library builds.
 	"$(GATE_STEP)" --gate lint --step lint.clippy.lib_restrictions --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(LINT_CLIPPY_TIMEOUT_SECS)" --kill-after-secs "$(LINT_CLIPPY_TIMEOUT_KILL_AFTER_SECS)" -- \
-		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 	# Strict restriction-lint pass for test targets.
 	"$(GATE_STEP)" --gate lint --step lint.clippy.tests_restrictions --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(LINT_CLIPPY_TIMEOUT_SECS)" --kill-after-secs "$(LINT_CLIPPY_TIMEOUT_KILL_AFTER_SECS)" -- \
-		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --tests --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo clippy --tests --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 	# Skeptical all-target guard so restrictions are enforced uniformly.
 	"$(GATE_STEP)" --gate lint --step lint.clippy.all_targets_restrictions --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(LINT_CLIPPY_TIMEOUT_SECS)" --kill-after-secs "$(LINT_CLIPPY_TIMEOUT_KILL_AFTER_SECS)" -- \
-		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" cargo clippy --all-targets --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo clippy --all-targets --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 
 docs-build: ensure-mdbook-mermaid
 	PATH="$(CURDIR)/.tools/mdbook/bin:$$PATH" "$(MDBOOK)" build docs

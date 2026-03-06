@@ -2,10 +2,7 @@ use thiserror::Error;
 
 use super::{
     keys::{key_from_path, DcsKey, DcsKeyParseError},
-    state::{
-        DcsCache, InitLockRecord, LeaderRecord, MemberRecord, RestoreRequestRecord,
-        RestoreStatusRecord, SwitchoverRequest,
-    },
+    state::{DcsCache, InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest},
     worker::{apply_watch_update, DcsWatchUpdate},
 };
 use crate::state::MemberId;
@@ -131,8 +128,6 @@ pub(crate) fn refresh_from_etcd_watch(
             cache.members.clear();
             cache.leader = None;
             cache.switchover = None;
-            cache.restore_request = None;
-            cache.restore_status = None;
             cache.init_lock = None;
             applied = applied.saturating_add(1);
             continue;
@@ -198,18 +193,6 @@ fn decode_watch_value(
             }),
         DcsKey::Switchover => serde_json::from_str::<SwitchoverRequest>(raw)
             .map(super::worker::DcsValue::Switchover)
-            .map_err(|err| DcsStoreError::Decode {
-                key: path.to_string(),
-                message: err.to_string(),
-            }),
-        DcsKey::RestoreRequest => serde_json::from_str::<RestoreRequestRecord>(raw)
-            .map(super::worker::DcsValue::RestoreRequest)
-            .map_err(|err| DcsStoreError::Decode {
-                key: path.to_string(),
-                message: err.to_string(),
-            }),
-        DcsKey::RestoreStatus => serde_json::from_str::<RestoreStatusRecord>(raw)
-            .map(super::worker::DcsValue::RestoreStatus)
             .map_err(|err| DcsStoreError::Decode {
                 key: path.to_string(),
                 message: err.to_string(),
@@ -317,10 +300,7 @@ mod tests {
             TlsServerConfig,
         },
         dcs::{
-            state::{
-                DcsCache, MemberRecord, MemberRole, RestorePhase, RestoreRequestRecord,
-                RestoreStatusRecord,
-            },
+            state::{DcsCache, MemberRecord, MemberRole},
             worker::DcsValue,
         },
         pginfo::state::{Readiness, SqlStatus},
@@ -457,8 +437,6 @@ mod tests {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
-            restore_request: None,
-            restore_status: None,
             config: sample_runtime_config(),
             init_lock: None,
         }
@@ -517,61 +495,6 @@ mod tests {
         let refreshed = refresh_from_etcd_watch("scope-a", &mut cache, events);
         assert!(refreshed.is_ok());
         assert!(cache.members.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn refresh_applies_restore_request_and_status_put_and_delete(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut cache = sample_cache();
-
-        let request = RestoreRequestRecord {
-            restore_id: "restore-1".to_string(),
-            requested_by: MemberId("node-a".to_string()),
-            requested_at_ms: UnixMillis(10),
-            executor_member_id: MemberId("node-a".to_string()),
-            reason: Some("test".to_string()),
-            idempotency_token: None,
-        };
-        let status = RestoreStatusRecord {
-            restore_id: "restore-1".to_string(),
-            phase: RestorePhase::Requested,
-            heartbeat_at_ms: UnixMillis(11),
-            running_job_id: None,
-            last_error: None,
-            updated_at_ms: UnixMillis(11),
-        };
-
-        let request_json = serde_json::to_string(&request)?;
-        let status_json = serde_json::to_string(&status)?;
-
-        let refreshed = refresh_from_etcd_watch(
-            "scope-a",
-            &mut cache,
-            vec![
-                WatchEvent {
-                    op: WatchOp::Put,
-                    path: "/scope-a/restore/request".to_string(),
-                    value: Some(request_json),
-                    revision: 1,
-                },
-                WatchEvent {
-                    op: WatchOp::Put,
-                    path: "/scope-a/restore/status".to_string(),
-                    value: Some(status_json),
-                    revision: 2,
-                },
-                WatchEvent {
-                    op: WatchOp::Delete,
-                    path: "/scope-a/restore/status".to_string(),
-                    value: None,
-                    revision: 3,
-                },
-            ],
-        )?;
-        assert_eq!(refreshed, RefreshResult { applied: 3, had_errors: false });
-        assert_eq!(cache.restore_request.as_ref(), Some(&request));
-        assert!(cache.restore_status.is_none());
         Ok(())
     }
 

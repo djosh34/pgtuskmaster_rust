@@ -812,8 +812,7 @@ mod tests {
             etcd_store::EtcdDcsStore,
             state::{
                 DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord,
-                MemberRecord, MemberRole, RestorePhase, RestoreRequestRecord, RestoreStatusRecord,
-                SwitchoverRequest,
+                MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{refresh_from_etcd_watch, DcsStore, DcsStoreError, WatchEvent, WatchOp},
             worker::step_once,
@@ -917,29 +916,6 @@ mod tests {
             Ok(())
         }
 
-        async fn restart_preserve(&mut self) -> Result<(), HarnessError> {
-            self.handle.shutdown().await?;
-
-            if !self.handle.data_dir.exists() {
-                fs::create_dir_all(&self.handle.data_dir)?;
-            }
-
-            let client_port = self.handle.client_port;
-            let data_dir = self.handle.data_dir.clone();
-            let handle = spawn_etcd3(EtcdInstanceSpec {
-                etcd_bin: self.etcd_bin.clone(),
-                namespace_id: self.namespace_id.clone(),
-                member_name: self.handle.member_name().to_string(),
-                data_dir,
-                log_dir: self.log_dir.clone(),
-                client_port,
-                peer_port: self.peer_port,
-                startup_timeout: Duration::from_secs(10),
-            })
-            .await?;
-            self.handle = handle;
-            Ok(())
-        }
     }
 
     struct EstablishDelayGuard {
@@ -978,35 +954,6 @@ mod tests {
                 return Err(DcsStoreError::Io(format!(
                     "timed out waiting for event {:?} at {}",
                     op, path
-                )));
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn wait_for_events(
-        store: &mut dyn DcsStore,
-        expected: &[(WatchOp, &str)],
-        timeout: Duration,
-    ) -> Result<(), DcsStoreError> {
-        let deadline = Instant::now() + timeout;
-        let mut seen = vec![false; expected.len()];
-        loop {
-            for event in store.drain_watch_events()? {
-                for (index, (op, path)) in expected.iter().enumerate() {
-                    if event.op == *op && event.path == *path {
-                        if let Some(entry) = seen.get_mut(index) {
-                            *entry = true;
-                        }
-                    }
-                }
-            }
-            if seen.iter().all(|value| *value) {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(DcsStoreError::Io(format!(
-                    "timed out waiting for events: expected={expected:?} seen={seen:?}",
                 )));
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -1137,8 +1084,6 @@ mod tests {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
-            restore_request: None,
-            restore_status: None,
             config: sample_runtime_config(scope),
             init_lock: None,
         }
@@ -1303,22 +1248,6 @@ mod tests {
             cache.switchover = Some(SwitchoverRequest {
                 requested_by: MemberId("node-stale".to_string()),
             });
-            cache.restore_request = Some(RestoreRequestRecord {
-                restore_id: "restore-stale".to_string(),
-                requested_by: MemberId("node-stale".to_string()),
-                requested_at_ms: UnixMillis(1),
-                executor_member_id: MemberId("node-stale".to_string()),
-                reason: None,
-                idempotency_token: None,
-            });
-            cache.restore_status = Some(RestoreStatusRecord {
-                restore_id: "restore-stale".to_string(),
-                phase: RestorePhase::Requested,
-                heartbeat_at_ms: UnixMillis(1),
-                running_job_id: None,
-                last_error: None,
-                updated_at_ms: UnixMillis(1),
-            });
             cache.init_lock = Some(InitLockRecord {
                 holder: MemberId("node-stale".to_string()),
             });
@@ -1408,16 +1337,6 @@ mod tests {
                     "expected init lock record to be cleared by reconnect reset",
                 ));
             }
-            if cache.restore_request.is_some() {
-                return Err(boxed_error(
-                    "expected restore request to be cleared by reconnect reset",
-                ));
-            }
-            if cache.restore_status.is_some() {
-                return Err(boxed_error(
-                    "expected restore status to be cleared by reconnect reset",
-                ));
-            }
 
             Ok(())
         }
@@ -1483,163 +1402,6 @@ mod tests {
             Err(boxed_error(
                 "timed out waiting for reconnect Reset marker after etcd restart",
             ))
-        }
-        .await;
-
-        shutdown_with_result(fixture, result).await
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn etcd_store_reconnect_applies_non_empty_snapshot_authoritatively() -> TestResult {
-        let fixture = RealEtcdFixture::spawn(
-            "dcs-etcd-store-reconnect-non-empty",
-            "scope-reconnect-non-empty",
-        )
-        .await?;
-
-        let mut fixture = fixture;
-        let result: TestResult = async {
-            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
-            let mut cache = sample_cache(&fixture.scope);
-
-            let expected_leader = MemberId("node-fresh".to_string());
-            let leader_path = format!("/{}/leader", fixture.scope);
-            let leader_json = serde_json::to_string(&LeaderRecord {
-                member_id: expected_leader.clone(),
-            })
-            .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
-
-            let expected_restore_request = RestoreRequestRecord {
-                restore_id: "restore-1".to_string(),
-                requested_by: MemberId("node-admin".to_string()),
-                requested_at_ms: UnixMillis(10),
-                executor_member_id: MemberId("node-fresh".to_string()),
-                reason: Some("test".to_string()),
-                idempotency_token: None,
-            };
-            let expected_restore_status = RestoreStatusRecord {
-                restore_id: "restore-1".to_string(),
-                phase: RestorePhase::Requested,
-                heartbeat_at_ms: UnixMillis(11),
-                running_job_id: None,
-                last_error: None,
-                updated_at_ms: UnixMillis(11),
-            };
-            let restore_request_path = format!("/{}/restore/request", fixture.scope);
-            let restore_status_path = format!("/{}/restore/status", fixture.scope);
-            let restore_request_json =
-                serde_json::to_string(&expected_restore_request).map_err(|err| {
-                    boxed_error(format!("encode restore request json failed: {err}"))
-                })?;
-            let restore_status_json =
-                serde_json::to_string(&expected_restore_status).map_err(|err| {
-                    boxed_error(format!("encode restore status json failed: {err}"))
-                })?;
-
-            let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
-                .await
-                .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
-            client
-                .put(leader_path.as_str(), leader_json, None)
-                .await
-                .map_err(|err| boxed_error(format!("put leader key failed: {err}")))?;
-            client
-                .put(restore_request_path.as_str(), restore_request_json, None)
-                .await
-                .map_err(|err| boxed_error(format!("put restore request key failed: {err}")))?;
-            client
-                .put(restore_status_path.as_str(), restore_status_json, None)
-                .await
-                .map_err(|err| boxed_error(format!("put restore status key failed: {err}")))?;
-
-            wait_for_events(
-                &mut store,
-                &[
-                    (WatchOp::Put, leader_path.as_str()),
-                    (WatchOp::Put, restore_request_path.as_str()),
-                    (WatchOp::Put, restore_status_path.as_str()),
-                ],
-                Duration::from_secs(5),
-            )?;
-            let _ = store.drain_watch_events()?;
-
-            cache.leader = Some(LeaderRecord {
-                member_id: MemberId("node-stale".to_string()),
-            });
-            cache.restore_request = Some(RestoreRequestRecord {
-                restore_id: "restore-stale".to_string(),
-                requested_by: MemberId("node-stale".to_string()),
-                requested_at_ms: UnixMillis(1),
-                executor_member_id: MemberId("node-stale".to_string()),
-                reason: None,
-                idempotency_token: None,
-            });
-            cache.restore_status = Some(RestoreStatusRecord {
-                restore_id: "restore-stale".to_string(),
-                phase: RestorePhase::Failed,
-                heartbeat_at_ms: UnixMillis(1),
-                running_job_id: None,
-                last_error: Some("stale".to_string()),
-                updated_at_ms: UnixMillis(1),
-            });
-
-            fixture.restart_preserve().await?;
-
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let mut observed_reset = false;
-            while Instant::now() < deadline {
-                let events = store.drain_watch_events()?;
-                if events.is_empty() {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    continue;
-                }
-
-                if events.iter().any(|event| event.op == WatchOp::Reset) {
-                    if !events.iter().any(|event| {
-                        event.op == WatchOp::Put && event.path == leader_path
-                    }) {
-                        return Err(boxed_error(
-                            "expected reconnect snapshot to include leader PUT from etcd",
-                        ));
-                    }
-
-                    refresh_from_etcd_watch(&fixture.scope, &mut cache, events)?;
-                    observed_reset = true;
-                    break;
-                }
-
-                return Err(boxed_error(format!(
-                    "observed watch events before reconnect Reset marker: {events:?}"
-                )));
-            }
-
-            if !observed_reset {
-                return Err(boxed_error(
-                    "timed out waiting for reconnect snapshot reset marker",
-                ));
-            }
-
-            let observed_leader = cache.leader.as_ref().map(|leader| leader.member_id.clone());
-            if observed_leader != Some(expected_leader.clone()) {
-                return Err(boxed_error(format!(
-                    "expected leader to be rebuilt from reconnect snapshot, expected={expected_leader:?} observed={observed_leader:?}",
-                )));
-            }
-
-            if cache.restore_request.as_ref() != Some(&expected_restore_request) {
-                return Err(boxed_error(format!(
-                    "expected restore request to be rebuilt from reconnect snapshot, expected={expected_restore_request:?} observed={:?}",
-                    cache.restore_request
-                )));
-            }
-            if cache.restore_status.as_ref() != Some(&expected_restore_status) {
-                return Err(boxed_error(format!(
-                    "expected restore status to be rebuilt from reconnect snapshot, expected={expected_restore_status:?} observed={:?}",
-                    cache.restore_status
-                )));
-            }
-
-            Ok(())
         }
         .await;
 

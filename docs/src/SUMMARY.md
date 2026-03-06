@@ -16,7 +16,6 @@
   - [Observability and Day-2 Operations](./operator/observability.md)
   - [Troubleshooting by Symptom](./operator/troubleshooting.md)
   - [Recovery Bootstrap Runbook](./operator/recovery-bootstrap-runbook.md)
-  - [Cluster Restore Takeover Runbook](./operator/cluster-restore-takeover-runbook.md)
 
 - [System Lifecycle](./lifecycle/index.md)
   - [Bootstrap and Startup Planning](./lifecycle/bootstrap.md)

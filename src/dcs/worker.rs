@@ -6,8 +6,7 @@ use super::{
     keys::DcsKey,
     state::{
         build_local_member_record, evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
-        InitLockRecord, LeaderRecord, MemberRecord, RestoreRequestRecord, RestoreStatusRecord,
-        SwitchoverRequest,
+        InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest,
     },
     store::{refresh_from_etcd_watch, write_local_member},
 };
@@ -17,8 +16,6 @@ pub(crate) enum DcsValue {
     Member(MemberRecord),
     Leader(LeaderRecord),
     Switchover(SwitchoverRequest),
-    RestoreRequest(RestoreRequestRecord),
-    RestoreStatus(RestoreStatusRecord),
     Config(Box<crate::config::RuntimeConfig>),
     InitLock(InitLockRecord),
 }
@@ -48,12 +45,6 @@ pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
             (DcsKey::Switchover, DcsValue::Switchover(record)) => {
                 cache.switchover = Some(record);
             }
-            (DcsKey::RestoreRequest, DcsValue::RestoreRequest(record)) => {
-                cache.restore_request = Some(record);
-            }
-            (DcsKey::RestoreStatus, DcsValue::RestoreStatus(record)) => {
-                cache.restore_status = Some(record);
-            }
             (DcsKey::Config, DcsValue::Config(config)) => {
                 cache.config = *config;
             }
@@ -72,12 +63,6 @@ pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
             DcsKey::Switchover => {
                 cache.switchover = None;
             }
-            DcsKey::RestoreRequest => {
-                cache.restore_request = None;
-            }
-            DcsKey::RestoreStatus => {
-                cache.restore_status = None;
-            }
             DcsKey::Config => {}
             DcsKey::InitLock => {
                 cache.init_lock = None;
@@ -91,8 +76,9 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let pg_snapshot = ctx.pg_subscriber.latest();
 
     let mut store_healthy = ctx.store.healthy();
+    let must_publish_local_member = true;
 
-    if ctx.last_published_pg_version != Some(pg_snapshot.version) {
+    if must_publish_local_member {
         let local_member =
             build_local_member_record(&ctx.self_id, &pg_snapshot.value, now, pg_snapshot.version);
         match write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member) {
@@ -645,8 +631,6 @@ mod tests {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
-            restore_request: None,
-            restore_status: None,
             config: cfg,
             init_lock: None,
         }
@@ -852,7 +836,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn step_once_writes_member_only_when_pg_version_changes() {
+    async fn step_once_writes_member_on_every_tick() {
         let initial_pg = sample_pg();
         let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg.clone(), UnixMillis(1));
         let initial_dcs = DcsState {
@@ -884,12 +868,45 @@ mod tests {
 
         let second = step_once(&mut ctx).await;
         assert_eq!(second, Ok(()));
-        assert_eq!(store_probe.write_count(), 1);
+        assert_eq!(store_probe.write_count(), 2);
 
         let _ = pg_publisher.publish(initial_pg, UnixMillis(2));
         let third = step_once(&mut ctx).await;
         assert_eq!(third, Ok(()));
-        assert_eq!(store_probe.write_count(), 2);
+        assert_eq!(store_probe.write_count(), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_republishes_member_after_unhealthy_tick_even_without_pg_change() {
+        let initial_pg = sample_pg();
+        let (_pg_publisher, pg_subscriber) = new_state_channel(initial_pg.clone(), UnixMillis(1));
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let store = RecordingStore::new(true);
+        let store_probe = store.clone();
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: Duration::from_millis(5),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: Some(Version(1)),
+            last_emitted_store_healthy: Some(false),
+            last_emitted_trust: None,
+        };
+
+        let stepped = step_once(&mut ctx).await;
+        assert_eq!(stepped, Ok(()));
+        assert_eq!(store_probe.write_count(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

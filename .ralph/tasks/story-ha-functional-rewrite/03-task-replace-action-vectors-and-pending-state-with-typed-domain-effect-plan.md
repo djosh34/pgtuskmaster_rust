@@ -57,6 +57,10 @@
   - `StepDownReason` should distinguish at least `Switchover`, `ForeignLeaderDetected`, and `FailSafe`
   - `RecoveryStrategy` should distinguish at least `Rewind { leader }`, `BaseBackup { leader }`, and `Bootstrap`
 
+**Story test policy:**
+- Skip `make test-long` and any direct long HA cargo-test invocations in this task.
+- Known long-test failures are deferred until the final story task after the rewrite story lands.
+
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
 
@@ -83,4 +87,5 @@
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
+- [ ] Explicitly skip `make test-long` and direct long HA cargo-test invocations in this task; long-test validation is deferred to task `06-task-move-and-split-ha-e2e-tests-after-functional-rewrite.md`
 </acceptance_criteria>

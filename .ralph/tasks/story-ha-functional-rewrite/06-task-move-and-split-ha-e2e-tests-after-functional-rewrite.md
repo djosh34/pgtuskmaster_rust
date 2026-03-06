@@ -14,6 +14,8 @@ The agent must explore the rewritten HA tests and current repo structure first, 
 
 This task is about test structure and placement after the architectural rewrite, not about preserving the current mixed layout.
 
+This is the only task in this story that may run `make test-long` or direct long HA cargo-test invocations. Earlier tasks in the story must explicitly skip long-test execution and defer it here.
+
 The agent should use parallel subagents after exploration for file moves/splitting, fixture consolidation, and final test verification.
 </description>
 
@@ -26,5 +28,5 @@ The agent should use parallel subagents after exploration for file moves/splitti
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly
+- [ ] `make test-long` — passes cleanly; this final story task owns the deferred long-test validation for the whole story
 </acceptance_criteria>

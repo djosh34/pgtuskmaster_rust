@@ -436,8 +436,6 @@ fn probe_dcs_cache(cfg: &RuntimeConfig) -> Result<DcsCache, RuntimeError> {
         members: BTreeMap::new(),
         leader: None,
         switchover: None,
-        restore_request: None,
-        restore_status: None,
         config: cfg.clone(),
         init_lock: None,
     };
@@ -1077,8 +1075,6 @@ async fn run_workers(
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
-            restore_request: None,
-            restore_status: None,
             config: cfg.clone(),
             init_lock: None,
         },
@@ -1147,8 +1143,6 @@ async fn run_workers(
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
-            restore_request: None,
-            restore_status: None,
             config: cfg.clone(),
             init_lock: None,
         },
@@ -1512,8 +1506,6 @@ mod tests {
                     members: BTreeMap::new(),
                     leader: None,
                     switchover: None,
-                    restore_request: None,
-                    restore_status: None,
                     config: cfg.clone(),
                     init_lock: None,
                 })
@@ -1607,8 +1599,6 @@ mod tests {
                 member_id: leader_id.clone(),
             }),
             switchover: None,
-            restore_request: None,
-            restore_status: None,
             config: cfg.clone(),
             init_lock: None,
         };
@@ -1751,8 +1741,6 @@ mod tests {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
-            restore_request: None,
-            restore_status: None,
             config: cfg.clone(),
             init_lock: Some(crate::dcs::state::InitLockRecord {
                 holder: MemberId("node-other".to_string()),
@@ -1799,8 +1787,6 @@ mod tests {
             members,
             leader: None,
             switchover: None,
-            restore_request: None,
-            restore_status: None,
             config: cfg.clone(),
             init_lock: Some(crate::dcs::state::InitLockRecord {
                 holder: MemberId("node-init".to_string()),

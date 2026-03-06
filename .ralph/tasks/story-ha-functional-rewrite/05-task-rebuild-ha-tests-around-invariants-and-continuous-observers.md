@@ -21,6 +21,10 @@
 - HA integration/e2e tests gain a reusable observer that checks invariants throughout a scenario window and fails closed when observation is insufficient.
 - Scenario drivers, observers, and assertions become clearer and easier to maintain separately.
 
+**Story test policy:**
+- Skip `make test-long` and any direct long HA cargo-test invocations in this task.
+- Known long-test failures are deferred until the final story task after the rewrite story lands.
+
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
 
@@ -35,5 +39,5 @@
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Explicitly skip `make test-long` and direct long HA cargo-test invocations in this task; long-test validation is deferred to task `06-task-move-and-split-ha-e2e-tests-after-functional-rewrite.md`
 </acceptance_criteria>

@@ -24,6 +24,10 @@
 - API, CLI, debug, and tests no longer expose restore control-plane state.
 - The remaining HA surface is about leader election, fail-safe, replication posture, rewinding/basebackup/bootstrap, and fencing only.
 
+**Story test policy:**
+- Skip `make test-long` and any direct long HA cargo-test invocations in this task.
+- Known long-test failures are part of the reason for this story and are deferred until the final story task.
+
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
 
@@ -37,7 +41,7 @@
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Explicitly skip `make test-long` and direct long HA cargo-test invocations in this task; long-test validation is deferred to task `06-task-move-and-split-ha-e2e-tests-after-functional-rewrite.md`
 </acceptance_criteria>
 
 <plan>
@@ -76,7 +80,7 @@
    - In `src/ha/e2e_multi_node.rs`, delete `e2e_multi_node_restore_takeover_external_repo_converges_cluster`.
    - Remove helper code that is only used by that scenario, such as external restore-repo preparation helpers, restore-only timeline artifact naming, and restore polling helpers.
    - Keep unrelated HA scenarios and generic harness utilities that are still needed elsewhere.
-   - In `Makefile`, remove `ha::e2e_multi_node::e2e_multi_node_restore_takeover_external_repo_converges_cluster` from `ULTRA_LONG_TESTS` so `make test` / `make test-long` stay internally consistent.
+   - In `Makefile`, remove `ha::e2e_multi_node::e2e_multi_node_restore_takeover_external_repo_converges_cluster` from `ULTRA_LONG_TESTS` so the suite classification stays internally consistent once the long suite is re-enabled in the final story task.
    - Update any other test files, contract tests, or BDD API tests that still exercise `/restore`, `/ha/restore`, restore DCS keys, or restore debug payloads.
 
 6. Remove stale debug and documentation surfaces, then rebuild docs if needed.
@@ -94,8 +98,8 @@
 8. Run the required validation in the exact final sequence and do not mark done until all of it passes.
    - `make check`
    - `make test`
-   - `make test-long`
    - `make lint`
+   - Do not run `make test-long` or direct long HA cargo tests in this task; the long suite is intentionally deferred until task 06 finishes the rewrite story.
    - If docs source changed in a way that can break mdBook structure, run `make docs-build` as an extra safety check even though it is not one of the mandatory final gates.
    - If any gate failure reveals additional stale restore control-plane code, fix it and rerun the affected gates until the full required set is green.
 
@@ -112,7 +116,7 @@
 - `src/process/jobs.rs`, `src/process/state.rs`, and `src/runtime/node.rs` still mention restore/bootstrap behavior; do not remove those paths unless the compile graph proves they are now dead and they are not part of recovery-bootstrap behavior.
 - `tests/bdd_api_http.rs` appears to have several restore endpoint cases and will need coordinated removal alongside API route changes.
 - `src/debug_api/view.rs` currently exposes restore state and endpoint names, so API surface removal is incomplete until debug payloads are cleaned too.
-- `Makefile` currently classifies the restore takeover e2e as ultra-long, so forgetting that edit will break `make test` / `make test-long` preflight validation.
+- `Makefile` currently classifies the restore takeover e2e as ultra-long, so forgetting that edit will leave the long-suite inventory stale when task 06 finally runs `make test-long`.
 - The repo ignores generated docs output; doc source cleanup must avoid introducing tracked `docs/book` artifacts.
 
 NOW EXECUTE

@@ -7,8 +7,6 @@ pub(crate) enum DcsKey {
     Member(MemberId),
     Leader,
     Switchover,
-    RestoreRequest,
-    RestoreStatus,
     Config,
     InitLock,
 }
@@ -40,8 +38,6 @@ pub(crate) fn key_from_path(scope: &str, full_path: &str) -> Result<DcsKey, DcsK
     match parts.as_slice() {
         ["leader"] => Ok(DcsKey::Leader),
         ["switchover"] => Ok(DcsKey::Switchover),
-        ["restore", "request"] => Ok(DcsKey::RestoreRequest),
-        ["restore", "status"] => Ok(DcsKey::RestoreStatus),
         ["config"] => Ok(DcsKey::Config),
         ["init"] => Ok(DcsKey::InitLock),
         ["member", member_id] => {
@@ -74,14 +70,6 @@ mod tests {
         assert_eq!(
             key_from_path("scope-a", "/scope-a/switchover"),
             Ok(DcsKey::Switchover)
-        );
-        assert_eq!(
-            key_from_path("scope-a", "/scope-a/restore/request"),
-            Ok(DcsKey::RestoreRequest)
-        );
-        assert_eq!(
-            key_from_path("scope-a", "/scope-a/restore/status"),
-            Ok(DcsKey::RestoreStatus)
         );
         assert_eq!(
             key_from_path("scope-a", "/scope-a/config"),

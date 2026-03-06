@@ -94,3 +94,4 @@
 .ralph/tasks/story-pgbackrest-managed-backup-recovery/05-task-cluster-restore-endpoint-and-safe-takeover-orchestration.md
 .ralph/tasks/bugs/ha-action-deduping-suppresses-retry.md
 .ralph/tasks/bugs/ha-action-deduping-suppresses-retry.md
+.ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md

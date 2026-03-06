@@ -24,8 +24,6 @@ use super::{
 pub(crate) enum ActionDispatchError {
     #[error("process send failed for action `{action:?}`: {message}")]
     ProcessSend { action: ActionId, message: String },
-    #[error("process spec build failed for action `{action:?}`: {message}")]
-    ProcessSpec { action: ActionId, message: String },
     #[error("managed config materialization failed for action `{action:?}`: {message}")]
     ManagedConfig { action: ActionId, message: String },
     #[error("filesystem operation failed for action `{action:?}`: {message}")]
@@ -158,7 +156,6 @@ pub(crate) fn dispatch_actions(
     let mut errors = Vec::new();
     let leader_key = leader_path(&ctx.scope);
     let switchover_key = switchover_path(&ctx.scope);
-    let restore_status_key = restore_status_path(&ctx.scope);
     let runtime_config = ctx.config_subscriber.latest().value;
 
     for (index, action) in actions.iter().enumerate() {
@@ -335,46 +332,6 @@ pub(crate) fn dispatch_actions(
                     emit_ha_action_result_ok(ctx, ha_tick, index, action)?;
                 }
             }
-            HaAction::PrepareDataDirForRestore => {
-                let policy = runtime_config.backup.bootstrap.takeover_policy;
-                if let Err(err) =
-                    prepare_data_dir_for_restore(runtime_config.postgres.data_dir.as_path(), policy)
-                {
-                    emit_ha_action_result_failed(ctx, ha_tick, index, action, err.clone())?;
-                    errors.push(ActionDispatchError::Filesystem {
-                        action: action.id(),
-                        message: err,
-                    });
-                } else {
-                    emit_ha_action_result_ok(ctx, ha_tick, index, action)?;
-                }
-            }
-            HaAction::RunPgBackRestRestore => {
-                let job_id = process_job_id(&ctx.scope, &ctx.self_id, action, index, ha_tick);
-                let request = match crate::backup::worker::pgbackrest_restore_job(
-                    &runtime_config,
-                    job_id.clone(),
-                ) {
-                    Ok(request) => request,
-                    Err(err) => {
-                        emit_ha_action_result_failed(ctx, ha_tick, index, action, err.to_string())?;
-                        errors.push(ActionDispatchError::ProcessSpec {
-                            action: action.id(),
-                            message: err.to_string(),
-                        });
-                        continue;
-                    }
-                };
-                if let Err(err) = ctx.process_inbox.send(request) {
-                    emit_ha_action_result_failed(ctx, ha_tick, index, action, err.to_string())?;
-                    errors.push(ActionDispatchError::ProcessSend {
-                        action: action.id(),
-                        message: err.to_string(),
-                    });
-                } else {
-                    emit_ha_action_result_ok(ctx, ha_tick, index, action)?;
-                }
-            }
             HaAction::FenceNode => {
                 let request = ProcessJobRequest {
                     id: process_job_id(&ctx.scope, &ctx.self_id, action, index, ha_tick),
@@ -400,45 +357,6 @@ pub(crate) fn dispatch_actions(
                     errors.push(ActionDispatchError::Filesystem {
                         action: action.id(),
                         message: err,
-                    });
-                } else {
-                    emit_ha_action_result_ok(ctx, ha_tick, index, action)?;
-                }
-            }
-            HaAction::TakeoverRestoredDataDir => {
-                if let Err(err) = crate::postgres_managed::takeover_restored_data_dir(
-                    &runtime_config,
-                    runtime_config.backup.bootstrap.takeover_policy,
-                    true,
-                ) {
-                    emit_ha_action_result_failed(ctx, ha_tick, index, action, err.to_string())?;
-                    errors.push(ActionDispatchError::ManagedConfig {
-                        action: action.id(),
-                        message: err.to_string(),
-                    });
-                } else {
-                    emit_ha_action_result_ok(ctx, ha_tick, index, action)?;
-                }
-            }
-            HaAction::WriteRestoreStatus { status } => {
-                let encoded = match serde_json::to_string(status) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        emit_ha_action_result_failed(ctx, ha_tick, index, action, err.to_string())?;
-                        errors.push(ActionDispatchError::DcsWrite {
-                            action: action.id(),
-                            path: restore_status_key.clone(),
-                            message: format!("restore status encode failed: {err}"),
-                        });
-                        continue;
-                    }
-                };
-                if let Err(err) = ctx.dcs_store.write_path(restore_status_key.as_str(), encoded) {
-                    emit_ha_action_result_failed(ctx, ha_tick, index, action, err.to_string())?;
-                    errors.push(ActionDispatchError::DcsWrite {
-                        action: action.id(),
-                        path: restore_status_key.clone(),
-                        message: dcs_error_message(err),
                     });
                 } else {
                     emit_ha_action_result_ok(ctx, ha_tick, index, action)?;
@@ -476,10 +394,6 @@ fn switchover_path(scope: &str) -> String {
     format!("/{}/switchover", scope.trim_matches('/'))
 }
 
-fn restore_status_path(scope: &str) -> String {
-    format!("/{}/restore/status", scope.trim_matches('/'))
-}
-
 fn wipe_data_dir(data_dir: &Path) -> Result<(), String> {
     if data_dir.as_os_str().is_empty() {
         return Err("wipe_data_dir data_dir must not be empty".to_string());
@@ -490,94 +404,6 @@ fn wipe_data_dir(data_dir: &Path) -> Result<(), String> {
     }
     fs::create_dir_all(data_dir).map_err(|err| format!("wipe_data_dir create_dir_all failed: {err}"))?;
     Ok(())
-}
-
-fn prepare_data_dir_for_restore(
-    data_dir: &Path,
-    policy: crate::config::BackupTakeoverPolicy,
-) -> Result<(), String> {
-    if data_dir.as_os_str().is_empty() {
-        return Err("prepare_data_dir_for_restore data_dir must not be empty".to_string());
-    }
-
-    let meta = match fs::metadata(data_dir) {
-        Ok(meta) => Some(meta),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-        Err(err) => return Err(format!("prepare_data_dir_for_restore stat failed: {err}")),
-    };
-    if let Some(meta) = meta.as_ref() {
-        if !meta.is_dir() {
-            return Err(format!(
-                "prepare_data_dir_for_restore data_dir is not a directory: {}",
-                data_dir.display()
-            ));
-        }
-    }
-
-    // Idempotency guard: if the directory does not look like an initialized Postgres cluster, do not
-    // disturb it. This avoids repeated quarantine/delete loops when restore is retried across ticks.
-    let pg_version = data_dir.join("PG_VERSION");
-    let has_pg_version = match fs::metadata(&pg_version) {
-        Ok(meta) => meta.is_file(),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-        Err(err) => {
-            return Err(format!(
-                "prepare_data_dir_for_restore stat PG_VERSION {} failed: {err}",
-                pg_version.display()
-            ))
-        }
-    };
-    if !has_pg_version {
-        fs::create_dir_all(data_dir).map_err(|err| {
-            format!("prepare_data_dir_for_restore create_dir_all (noop) failed: {err}")
-        })?;
-        return Ok(());
-    }
-
-    match policy {
-        crate::config::BackupTakeoverPolicy::Delete => {
-            fs::remove_dir_all(data_dir)
-                .map_err(|err| format!("prepare_data_dir_for_restore remove_dir_all failed: {err}"))?;
-            fs::create_dir_all(data_dir).map_err(|err| {
-                format!("prepare_data_dir_for_restore create_dir_all after delete failed: {err}")
-            })?;
-        }
-        crate::config::BackupTakeoverPolicy::Quarantine => {
-            let parent = data_dir.parent().ok_or_else(|| {
-                format!(
-                    "prepare_data_dir_for_restore data_dir has no parent: {}",
-                    data_dir.display()
-                )
-            })?;
-            let file_name = data_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .filter(|name| !name.is_empty())
-                .unwrap_or("pgdata");
-            let pid = std::process::id();
-            let millis = unix_now_millis()?;
-            let target = parent.join(format!("{file_name}.pgtm.quarantine.{pid}.{millis}"));
-            fs::rename(data_dir, &target).map_err(|err| {
-                format!(
-                    "prepare_data_dir_for_restore quarantine rename {} to {} failed: {err}",
-                    data_dir.display(),
-                    target.display()
-                )
-            })?;
-            fs::create_dir_all(data_dir).map_err(|err| {
-                format!("prepare_data_dir_for_restore create_dir_all after quarantine failed: {err}")
-            })?;
-        }
-    }
-
-    Ok(())
-}
-
-fn unix_now_millis() -> Result<u128, String> {
-    let duration = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|err| format!("unix_now_millis failed: {err}"))?;
-    Ok(duration.as_millis())
 }
 
 fn ha_base_attrs(ctx: &HaWorkerCtx, ha_tick: u64) -> BTreeMap<String, serde_json::Value> {
@@ -797,12 +623,8 @@ fn action_id_label(id: &ActionId) -> String {
         ActionId::StartRewind => "start_rewind".to_string(),
         ActionId::StartBaseBackup => "start_basebackup".to_string(),
         ActionId::RunBootstrap => "run_bootstrap".to_string(),
-        ActionId::PrepareDataDirForRestore => "prepare_data_dir_for_restore".to_string(),
-        ActionId::RunPgBackRestRestore => "run_pgbackrest_restore".to_string(),
         ActionId::FenceNode => "fence_node".to_string(),
         ActionId::WipeDataDir => "wipe_data_dir".to_string(),
-        ActionId::TakeoverRestoredDataDir => "takeover_restored_data_dir".to_string(),
-        ActionId::WriteRestoreStatus => "write_restore_status".to_string(),
         ActionId::SignalFailSafe => "signal_failsafe".to_string(),
         ActionId::StartPostgres => "start_postgres".to_string(),
         ActionId::PromoteToPrimary => "promote_to_primary".to_string(),
@@ -828,8 +650,6 @@ fn format_dispatch_errors(errors: &[ActionDispatchError]) -> String {
 mod tests {
     use std::{
         collections::{BTreeMap, VecDeque},
-        fs,
-        path::PathBuf,
         sync::{Arc, Mutex},
         time::Duration,
     };
@@ -844,10 +664,7 @@ mod tests {
             TlsServerConfig,
         },
         dcs::{
-            state::{
-                DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, RestorePhase,
-                RestoreStatusRecord,
-            },
+            state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
             store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
         },
         ha::{
@@ -871,104 +688,6 @@ mod tests {
         },
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
-
-    fn make_temp_dir(label: &str) -> Result<PathBuf, WorkerError> {
-        let pid = std::process::id();
-        let millis = super::unix_now_millis()
-            .map_err(|err| WorkerError::Message(format!("test tempdir clock failed: {err}")))?;
-        let dir = std::env::temp_dir().join(format!("pgtm-test-{label}-{pid}-{millis}"));
-        fs::create_dir_all(&dir)
-            .map_err(|err| WorkerError::Message(format!("create temp dir {} failed: {err}", dir.display())))?;
-        Ok(dir)
-    }
-
-    #[test]
-    fn prepare_data_dir_for_restore_quarantines_initialized_pgdata() -> Result<(), WorkerError> {
-        let base = make_temp_dir("prepare-data-dir-quarantine")?;
-        let data_dir = base.join("data");
-        fs::create_dir_all(&data_dir).map_err(|err| {
-            WorkerError::Message(format!("create data dir {} failed: {err}", data_dir.display()))
-        })?;
-        fs::write(data_dir.join("PG_VERSION"), b"16\n").map_err(|err| {
-            WorkerError::Message(format!("write PG_VERSION failed: {err}"))
-        })?;
-        fs::write(data_dir.join("sentinel"), b"x").map_err(|err| {
-            WorkerError::Message(format!("write sentinel failed: {err}"))
-        })?;
-
-        super::prepare_data_dir_for_restore(
-            &data_dir,
-            crate::config::BackupTakeoverPolicy::Quarantine,
-        )
-        .map_err(WorkerError::Message)?;
-
-        if data_dir.join("PG_VERSION").exists() {
-            return Err(WorkerError::Message(
-                "expected PG_VERSION absent after quarantine prepare".to_string(),
-            ));
-        }
-
-        let mut quarantined: Option<PathBuf> = None;
-        let entries = fs::read_dir(&base).map_err(|err| {
-            WorkerError::Message(format!("read_dir {} failed: {err}", base.display()))
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|err| WorkerError::Message(format!("read_dir entry failed: {err}")))?;
-            let path = entry.path();
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if name.starts_with("data.pgtm.quarantine.") {
-                quarantined = Some(path);
-                break;
-            }
-        }
-        let Some(quarantined) = quarantined else {
-            return Err(WorkerError::Message(
-                "expected a quarantined data dir entry".to_string(),
-            ));
-        };
-        if !quarantined.join("PG_VERSION").exists() {
-            return Err(WorkerError::Message(
-                "expected quarantined data dir to contain PG_VERSION".to_string(),
-            ));
-        }
-
-        fs::remove_dir_all(&base).map_err(|err| {
-            WorkerError::Message(format!("cleanup temp dir {} failed: {err}", base.display()))
-        })?;
-        Ok(())
-    }
-
-    #[test]
-    fn prepare_data_dir_for_restore_delete_removes_initialized_pgdata() -> Result<(), WorkerError> {
-        let base = make_temp_dir("prepare-data-dir-delete")?;
-        let data_dir = base.join("data");
-        fs::create_dir_all(&data_dir).map_err(|err| {
-            WorkerError::Message(format!("create data dir {} failed: {err}", data_dir.display()))
-        })?;
-        fs::write(data_dir.join("PG_VERSION"), b"16\n").map_err(|err| {
-            WorkerError::Message(format!("write PG_VERSION failed: {err}"))
-        })?;
-        fs::write(data_dir.join("sentinel"), b"x").map_err(|err| {
-            WorkerError::Message(format!("write sentinel failed: {err}"))
-        })?;
-
-        super::prepare_data_dir_for_restore(
-            &data_dir,
-            crate::config::BackupTakeoverPolicy::Delete,
-        )
-        .map_err(WorkerError::Message)?;
-
-        if data_dir.join("PG_VERSION").exists() || data_dir.join("sentinel").exists() {
-            return Err(WorkerError::Message(
-                "expected data dir cleaned after delete prepare".to_string(),
-            ));
-        }
-
-        fs::remove_dir_all(&base).map_err(|err| {
-            WorkerError::Message(format!("cleanup temp dir {} failed: {err}", base.display()))
-        })?;
-        Ok(())
-    }
 
     #[derive(Clone, Default)]
     struct RecordingStore {
@@ -1225,8 +944,6 @@ mod tests {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
-                restore_request: None,
-                restore_status: None,
                 config,
                 init_lock: None,
             },
@@ -1503,8 +1220,6 @@ mod tests {
                     members: BTreeMap::new(),
                     leader: None,
                     switchover: None,
-                    restore_request: None,
-                    restore_status: None,
                     config: runtime_config.clone(),
                     init_lock: None,
                 },
@@ -1824,55 +1539,6 @@ mod tests {
         let errors = dispatch_actions(&mut ctx, ha_tick, &[HaAction::ClearSwitchover])?;
         assert!(errors.is_empty());
         assert!(store.has_delete_path("/scope-a/switchover"));
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn dispatch_actions_writes_restore_status_key() -> Result<(), WorkerError> {
-        let built = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(100),
-            DcsTrust::FullQuorum,
-        );
-        let mut ctx = built.ctx;
-        let store = built.store;
-
-        let ha_tick = ctx.state.tick;
-        let status = RestoreStatusRecord {
-            restore_id: "restore-1".to_string(),
-            phase: RestorePhase::Requested,
-            heartbeat_at_ms: UnixMillis(1),
-            running_job_id: None,
-            last_error: None,
-            updated_at_ms: UnixMillis(1),
-        };
-        let errors =
-            dispatch_actions(&mut ctx, ha_tick, &[HaAction::WriteRestoreStatus { status }])?;
-        assert!(errors.is_empty());
-        assert!(store.has_write_path("/scope-a/restore/status"));
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn dispatch_actions_pgbackrest_restore_reports_process_spec_error_when_unconfigured(
-    ) -> Result<(), WorkerError> {
-        let built = build_context(
-            RecordingStore::default(),
-            Duration::from_millis(100),
-            DcsTrust::FullQuorum,
-        );
-        let mut ctx = built.ctx;
-
-        let ha_tick = ctx.state.tick;
-        let errors = dispatch_actions(&mut ctx, ha_tick, &[HaAction::RunPgBackRestRestore])?;
-        assert_eq!(errors.len(), 1);
-        assert!(errors.iter().any(|err| matches!(
-            err,
-            ActionDispatchError::ProcessSpec {
-                action: ActionId::RunPgBackRestRestore,
-                ..
-            }
-        )));
         Ok(())
     }
 
