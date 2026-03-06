@@ -38,7 +38,8 @@ pub struct HaStateResponse {
     pub dcs_trust: String,
     pub ha_phase: String,
     pub ha_tick: u64,
-    pub pending_actions: usize,
+    pub ha_decision: String,
+    pub ha_decision_detail: Option<String>,
     pub snapshot_sequence: u64,
 }
 
@@ -224,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_uses_read_token_when_configured() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"FullQuorum","ha_phase":"Primary","ha_tick":1,"pending_actions":0,"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"FullQuorum","ha_phase":"Primary","ha_tick":1,"ha_decision":"become_primary","ha_decision_detail":"promote","snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(
@@ -245,7 +246,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_falls_back_to_admin_token_when_read_missing() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"FullQuorum","ha_phase":"Primary","ha_tick":1,"pending_actions":0,"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"FullQuorum","ha_phase":"Primary","ha_tick":1,"ha_decision":"become_primary","ha_decision_detail":"promote","snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(

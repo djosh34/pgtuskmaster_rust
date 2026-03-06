@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 05:26:20 AM CET 2026
+Generated: Fri Mar  6 06:17:00 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -535,7 +535,7 @@ The agent must explore the current config schema, HA/runtime flow, DCS/member-st
 
 **Path:** `.ralph/tasks/story-ha-functional-rewrite/02-task-rewrite-ha-decide-into-facts-and-phase-outcome-match-machine.md`
 
-## Task: Rewrite HA decide into a facts-and-PhaseOutcome match machine <status>not_started</status> <passes>false</passes>
+## Task: Rewrite HA decide into a facts-and-PhaseOutcome match machine <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Replace mutation-driven HA decision code with a pure, match-based state machine that gathers immutable facts once and returns a full `PhaseOutcome { next_phase, decision }` directly from each phase handler.

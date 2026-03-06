@@ -4,7 +4,7 @@ use crate::{
     config::RuntimeConfig,
     dcs::state::{DcsState, DcsTrust},
     debug_api::snapshot::{DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot},
-    ha::state::HaState,
+    ha::{lower::lower_decision, state::HaState},
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     process::state::{JobOutcome, ProcessState},
     state::{Versioned, WorkerStatus},
@@ -85,7 +85,9 @@ pub(crate) struct HaSection {
     pub(crate) worker: String,
     pub(crate) phase: String,
     pub(crate) tick: u64,
-    pub(crate) pending_actions: usize,
+    pub(crate) decision: String,
+    pub(crate) decision_detail: Option<String>,
+    pub(crate) planned_actions: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -297,13 +299,17 @@ fn to_process_section(process: &Versioned<ProcessState>) -> ProcessSection {
 }
 
 fn to_ha_section(ha: &Versioned<HaState>) -> HaSection {
+    let decision = &ha.value.decision;
+
     HaSection {
         version: ha.version.0,
         updated_at_ms: ha.updated_at.0,
         worker: worker_status_label(&ha.value.worker),
         phase: format!("{:?}", ha.value.phase),
         tick: ha.value.tick,
-        pending_actions: ha.value.pending.len(),
+        decision: decision.label().to_string(),
+        decision_detail: decision.detail(),
+        planned_actions: lower_decision(decision).len(),
     }
 }
 

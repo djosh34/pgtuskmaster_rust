@@ -1,301 +1,277 @@
-use std::collections::BTreeSet;
-
-use crate::{
-    dcs::state::DcsTrust,
-    pginfo::state::{PgInfoState, SqlStatus},
-    process::state::{JobOutcome, ProcessState},
-    state::{MemberId, TimelineId},
-};
+use crate::{dcs::state::DcsTrust, state::MemberId};
 
 use super::{
-    actions::{ActionId, HaAction},
-    state::{DecideInput, DecideOutput, HaPhase},
+    decision::{
+        DecisionFacts, HaDecision, LeaseReleaseReason, PhaseOutcome, ProcessActivity, RecoveryPlan,
+        RecoveryStrategy, StepDownPlan, StepDownReason,
+    },
+    state::{DecideInput, DecideOutput, HaPhase, HaState},
 };
 
 pub(crate) fn decide(input: DecideInput) -> DecideOutput {
-    let DecideInput { current, world } = input;
-    let self_member_id = world.config.value.cluster.member_id.as_str();
-    let trust = &world.dcs.value.trust;
-    let leader_member_id = world
-        .dcs
-        .value
-        .cache
-        .leader
-        .as_ref()
-        .map(|record| record.member_id.0.as_str());
-    let leader_is_available = is_available_primary_leader(&world, leader_member_id);
-    let active_leader_member_id = if leader_is_available {
-        leader_member_id
+    let facts = DecisionFacts::from_world(&input.world);
+    let current = input.current;
+    let outcome = decide_phase(current.phase.clone(), &facts);
+    let next = HaState {
+        worker: current.worker,
+        phase: outcome.next_phase.clone(),
+        tick: current.tick.saturating_add(1),
+        decision: outcome.decision.clone(),
+    };
+
+    DecideOutput { next, outcome }
+}
+
+pub(crate) fn decide_phase(current: HaPhase, facts: &DecisionFacts) -> PhaseOutcome {
+    if !matches!(facts.trust, DcsTrust::FullQuorum) {
+        let release_leader_lease = matches!(current, HaPhase::Primary);
+        return PhaseOutcome::new(
+            HaPhase::FailSafe,
+            HaDecision::EnterFailSafe {
+                release_leader_lease,
+            },
+        );
+    }
+
+    match current {
+        HaPhase::Init => PhaseOutcome::new(
+            HaPhase::WaitingPostgresReachable,
+            HaDecision::WaitForPostgres {
+                start_requested: false,
+            },
+        ),
+        HaPhase::WaitingPostgresReachable => {
+            if facts.postgres_reachable {
+                PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust)
+            } else {
+                PhaseOutcome::new(
+                    HaPhase::WaitingPostgresReachable,
+                    HaDecision::WaitForPostgres {
+                        start_requested: true,
+                    },
+                )
+            }
+        }
+        HaPhase::WaitingDcsTrusted => decide_waiting_dcs_trusted(facts),
+        HaPhase::Replica => decide_replica(facts),
+        HaPhase::CandidateLeader => decide_candidate_leader(facts),
+        HaPhase::Primary => decide_primary(facts),
+        HaPhase::Rewinding => decide_rewinding(facts),
+        HaPhase::Bootstrapping => decide_bootstrapping(facts),
+        HaPhase::Fencing => decide_fencing(facts),
+        HaPhase::FailSafe => {
+            PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust)
+        }
+    }
+}
+
+fn decide_waiting_dcs_trusted(facts: &DecisionFacts) -> PhaseOutcome {
+    if !facts.postgres_reachable {
+        return wait_for_postgres();
+    }
+
+    match facts.active_leader_member_id.as_ref() {
+        Some(leader_member_id) if leader_member_id == &facts.self_member_id => PhaseOutcome::new(
+            HaPhase::Primary,
+            HaDecision::BecomePrimary { promote: false },
+        ),
+        Some(leader_member_id) => PhaseOutcome::new(
+            HaPhase::Replica,
+            HaDecision::FollowLeader {
+                leader_member_id: leader_member_id.clone(),
+            },
+        ),
+        None => PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership),
+    }
+}
+
+fn decide_replica(facts: &DecisionFacts) -> PhaseOutcome {
+    if !facts.postgres_reachable {
+        return wait_for_postgres();
+    }
+
+    match facts.active_leader_member_id.as_ref() {
+        Some(leader_member_id) if leader_member_id == &facts.self_member_id => PhaseOutcome::new(
+            HaPhase::Primary,
+            HaDecision::BecomePrimary { promote: true },
+        ),
+        Some(leader_member_id) if facts.rewind_required => PhaseOutcome::new(
+            HaPhase::Rewinding,
+            HaDecision::RecoverReplica(RecoveryPlan {
+                strategy: RecoveryStrategy::Rewind,
+                leader_member_id: Some(leader_member_id.clone()),
+            }),
+        ),
+        Some(leader_member_id) => PhaseOutcome::new(
+            HaPhase::Replica,
+            HaDecision::FollowLeader {
+                leader_member_id: leader_member_id.clone(),
+            },
+        ),
+        None => PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership),
+    }
+}
+
+fn decide_candidate_leader(facts: &DecisionFacts) -> PhaseOutcome {
+    if !facts.postgres_reachable {
+        return wait_for_postgres();
+    }
+
+    if facts.i_am_leader {
+        return PhaseOutcome::new(
+            HaPhase::Primary,
+            HaDecision::BecomePrimary { promote: true },
+        );
+    }
+
+    if let Some(leader_member_id) = facts.active_leader_member_id.as_ref() {
+        if leader_member_id != &facts.self_member_id {
+            return PhaseOutcome::new(
+                HaPhase::Replica,
+                HaDecision::FollowLeader {
+                    leader_member_id: leader_member_id.clone(),
+                },
+            );
+        }
+    }
+
+    PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership)
+}
+
+fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
+    if facts.switchover_requested_by.is_some() && facts.i_am_leader {
+        return PhaseOutcome::new(
+            HaPhase::Replica,
+            HaDecision::StepDown(StepDownPlan {
+                reason: StepDownReason::Switchover,
+                release_leader_lease: true,
+                clear_switchover: true,
+                fence: false,
+            }),
+        );
+    }
+
+    if !facts.postgres_reachable {
+        return PhaseOutcome::new(
+            HaPhase::Rewinding,
+            HaDecision::RecoverReplica(RecoveryPlan {
+                strategy: RecoveryStrategy::Rewind,
+                leader_member_id: facts.active_leader_member_id.clone(),
+            }),
+        );
+    }
+
+    match other_leader_record(facts) {
+        Some(leader_member_id) => PhaseOutcome::new(
+            HaPhase::Fencing,
+            HaDecision::StepDown(StepDownPlan {
+                reason: StepDownReason::ConflictingLeader { leader_member_id },
+                release_leader_lease: true,
+                clear_switchover: false,
+                fence: true,
+            }),
+        ),
+        None => PhaseOutcome::new(HaPhase::Primary, HaDecision::NoChange),
+    }
+}
+
+fn decide_rewinding(facts: &DecisionFacts) -> PhaseOutcome {
+    match facts.process_activity {
+        ProcessActivity::Running => PhaseOutcome::new(HaPhase::Rewinding, HaDecision::NoChange),
+        ProcessActivity::IdleSuccess => match follow_target(facts) {
+            Some(leader_member_id) => PhaseOutcome::new(
+                HaPhase::Replica,
+                HaDecision::FollowLeader { leader_member_id },
+            ),
+            None => PhaseOutcome::new(HaPhase::Replica, HaDecision::NoChange),
+        },
+        ProcessActivity::IdleFailure => PhaseOutcome::new(
+            HaPhase::Bootstrapping,
+            HaDecision::RecoverReplica(recovery_after_rewind_failure(facts)),
+        ),
+        ProcessActivity::IdleNoOutcome => PhaseOutcome::new(
+            HaPhase::Rewinding,
+            HaDecision::RecoverReplica(RecoveryPlan {
+                strategy: RecoveryStrategy::Rewind,
+                leader_member_id: facts.active_leader_member_id.clone(),
+            }),
+        ),
+    }
+}
+
+fn decide_bootstrapping(facts: &DecisionFacts) -> PhaseOutcome {
+    match facts.process_activity {
+        ProcessActivity::Running => PhaseOutcome::new(HaPhase::Bootstrapping, HaDecision::NoChange),
+        ProcessActivity::IdleSuccess => PhaseOutcome::new(
+            HaPhase::Replica,
+            HaDecision::WaitForPostgres {
+                start_requested: true,
+            },
+        ),
+        ProcessActivity::IdleFailure => PhaseOutcome::new(HaPhase::Fencing, HaDecision::FenceNode),
+        ProcessActivity::IdleNoOutcome => PhaseOutcome::new(
+            HaPhase::Bootstrapping,
+            HaDecision::RecoverReplica(recovery_after_rewind_failure(facts)),
+        ),
+    }
+}
+
+fn decide_fencing(facts: &DecisionFacts) -> PhaseOutcome {
+    match facts.process_activity {
+        ProcessActivity::Running => PhaseOutcome::new(HaPhase::Fencing, HaDecision::NoChange),
+        ProcessActivity::IdleSuccess => PhaseOutcome::new(
+            HaPhase::WaitingDcsTrusted,
+            HaDecision::ReleaseLeaderLease {
+                reason: LeaseReleaseReason::FencingComplete,
+            },
+        ),
+        ProcessActivity::IdleFailure => PhaseOutcome::new(
+            HaPhase::FailSafe,
+            HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            },
+        ),
+        ProcessActivity::IdleNoOutcome => {
+            PhaseOutcome::new(HaPhase::Fencing, HaDecision::FenceNode)
+        }
+    }
+}
+
+fn wait_for_postgres() -> PhaseOutcome {
+    PhaseOutcome::new(
+        HaPhase::WaitingPostgresReachable,
+        HaDecision::WaitForPostgres {
+            start_requested: true,
+        },
+    )
+}
+
+fn recovery_after_rewind_failure(facts: &DecisionFacts) -> RecoveryPlan {
+    if facts.has_available_other_leader {
+        RecoveryPlan {
+            strategy: RecoveryStrategy::BaseBackup,
+            leader_member_id: facts.active_leader_member_id.clone(),
+        }
     } else {
-        None
-    };
-    let switchover_requested = world.dcs.value.cache.switchover.is_some();
-    let i_am_leader = leader_member_id == Some(self_member_id);
-    let has_other_leader_record = leader_member_id
-        .map(|leader| leader != self_member_id)
-        .unwrap_or(false);
-    let has_available_other_leader = active_leader_member_id
-        .map(|leader| leader != self_member_id)
-        .unwrap_or(false);
-    let pg_reachable = is_postgres_reachable(&world.pg.value);
-
-    let mut next = current.clone();
-    next.tick = current.tick.saturating_add(1);
-    let mut candidates = Vec::new();
-
-    if !matches!(trust, DcsTrust::FullQuorum) {
-        if !matches!(next.phase, HaPhase::FailSafe) {
-            if matches!(next.phase, HaPhase::Primary) {
-                candidates.push(HaAction::ReleaseLeaderLease);
-            }
-            next.phase = HaPhase::FailSafe;
-        }
-        candidates.push(HaAction::SignalFailSafe);
-    } else {
-        match next.phase {
-            HaPhase::Init => {
-                next.phase = HaPhase::WaitingPostgresReachable;
-            }
-            HaPhase::WaitingPostgresReachable => {
-                if pg_reachable {
-                    next.phase = HaPhase::WaitingDcsTrusted;
-                } else {
-                    candidates.push(HaAction::StartPostgres);
-                }
-            }
-            HaPhase::WaitingDcsTrusted => {
-                if !pg_reachable {
-                    next.phase = HaPhase::WaitingPostgresReachable;
-                    candidates.push(HaAction::StartPostgres);
-                } else if let Some(leader) = active_leader_member_id {
-                    if leader == self_member_id {
-                        next.phase = HaPhase::Primary;
-                    } else {
-                        next.phase = HaPhase::Replica;
-                        candidates.push(HaAction::FollowLeader {
-                            leader_member_id: leader.to_string(),
-                        });
-                    }
-                } else {
-                    next.phase = HaPhase::CandidateLeader;
-                    candidates.push(HaAction::AcquireLeaderLease);
-                }
-            }
-            HaPhase::Replica => {
-                if !pg_reachable {
-                    next.phase = HaPhase::WaitingPostgresReachable;
-                    candidates.push(HaAction::StartPostgres);
-                } else if let Some(leader) = active_leader_member_id {
-                    if leader == self_member_id {
-                        next.phase = HaPhase::Primary;
-                        candidates.push(HaAction::PromoteToPrimary);
-                    } else if should_rewind_from_leader(&world, leader) {
-                        next.phase = HaPhase::Rewinding;
-                        candidates.push(HaAction::StartRewind);
-                    } else {
-                        candidates.push(HaAction::FollowLeader {
-                            leader_member_id: leader.to_string(),
-                        });
-                    }
-                } else {
-                    next.phase = HaPhase::CandidateLeader;
-                    candidates.push(HaAction::AcquireLeaderLease);
-                }
-            }
-            HaPhase::CandidateLeader => {
-                if !pg_reachable {
-                    next.phase = HaPhase::WaitingPostgresReachable;
-                    candidates.push(HaAction::StartPostgres);
-                } else if i_am_leader {
-                    next.phase = HaPhase::Primary;
-                    candidates.push(HaAction::PromoteToPrimary);
-                } else if has_available_other_leader {
-                    next.phase = HaPhase::Replica;
-                    if let Some(leader) = active_leader_member_id {
-                        candidates.push(HaAction::FollowLeader {
-                            leader_member_id: leader.to_string(),
-                        });
-                    }
-                } else {
-                    candidates.push(HaAction::AcquireLeaderLease);
-                }
-            }
-            HaPhase::Primary => {
-                if switchover_requested && i_am_leader {
-                    next.phase = HaPhase::Replica;
-                    candidates.push(HaAction::DemoteToReplica);
-                    candidates.push(HaAction::ReleaseLeaderLease);
-                    candidates.push(HaAction::ClearSwitchover);
-                } else if !pg_reachable {
-                    next.phase = HaPhase::Rewinding;
-                    candidates.push(HaAction::StartRewind);
-                } else if has_other_leader_record {
-                    next.phase = HaPhase::Fencing;
-                    candidates.push(HaAction::DemoteToReplica);
-                    candidates.push(HaAction::ReleaseLeaderLease);
-                    candidates.push(HaAction::FenceNode);
-                }
-            }
-            HaPhase::Rewinding => match &world.process.value {
-                ProcessState::Running { .. } => {}
-                ProcessState::Idle {
-                    last_outcome: Some(JobOutcome::Success { .. }),
-                    ..
-                } => {
-                    next.phase = HaPhase::Replica;
-                    if let Some(leader) = active_leader_member_id {
-                        if leader != self_member_id {
-                            candidates.push(HaAction::FollowLeader {
-                                leader_member_id: leader.to_string(),
-                            });
-                        }
-                    }
-                }
-                ProcessState::Idle {
-                    last_outcome: Some(_),
-                    ..
-                } => {
-                    next.phase = HaPhase::Bootstrapping;
-                    candidates.push(HaAction::WipeDataDir);
-                    if has_available_other_leader {
-                        candidates.push(HaAction::StartBaseBackup);
-                    } else {
-                        candidates.push(HaAction::RunBootstrap);
-                    }
-                }
-                ProcessState::Idle {
-                    last_outcome: None, ..
-                } => {
-                    candidates.push(HaAction::StartRewind);
-                }
-            },
-            HaPhase::Bootstrapping => match &world.process.value {
-                ProcessState::Running { .. } => {}
-                ProcessState::Idle {
-                    last_outcome: Some(JobOutcome::Success { .. }),
-                    ..
-                } => {
-                    next.phase = HaPhase::Replica;
-                    candidates.push(HaAction::StartPostgres);
-                }
-                ProcessState::Idle {
-                    last_outcome: Some(_),
-                    ..
-                } => {
-                    next.phase = HaPhase::Fencing;
-                    candidates.push(HaAction::FenceNode);
-                }
-                ProcessState::Idle {
-                    last_outcome: None, ..
-                } => {
-                    candidates.push(HaAction::WipeDataDir);
-                    if has_available_other_leader {
-                        candidates.push(HaAction::StartBaseBackup);
-                    } else {
-                        candidates.push(HaAction::RunBootstrap);
-                    }
-                }
-            },
-            HaPhase::Fencing => match &world.process.value {
-                ProcessState::Running { .. } => {}
-                ProcessState::Idle {
-                    last_outcome: Some(JobOutcome::Success { .. }),
-                    ..
-                } => {
-                    next.phase = HaPhase::WaitingDcsTrusted;
-                    candidates.push(HaAction::ReleaseLeaderLease);
-                }
-                ProcessState::Idle {
-                    last_outcome: Some(_),
-                    ..
-                } => {
-                    next.phase = HaPhase::FailSafe;
-                    candidates.push(HaAction::SignalFailSafe);
-                }
-                ProcessState::Idle {
-                    last_outcome: None, ..
-                } => {
-                    candidates.push(HaAction::FenceNode);
-                }
-            },
-            HaPhase::FailSafe => {
-                next.phase = HaPhase::WaitingDcsTrusted;
-            }
+        RecoveryPlan {
+            strategy: RecoveryStrategy::Bootstrap,
+            leader_member_id: None,
         }
     }
-
-    let actions = dedupe_actions_per_tick(candidates);
-    next.pending = actions.clone();
-
-    DecideOutput { next, actions }
 }
 
-fn dedupe_actions_per_tick(candidates: Vec<HaAction>) -> Vec<HaAction> {
-    let mut seen_action_ids = BTreeSet::<ActionId>::new();
-    let mut actions = Vec::new();
-    for action in candidates {
-        let action_id = action.id();
-        if seen_action_ids.insert(action_id) {
-            actions.push(action);
-        }
-    }
-    actions
+fn follow_target(facts: &DecisionFacts) -> Option<MemberId> {
+    facts
+        .active_leader_member_id
+        .clone()
+        .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
 }
 
-fn is_postgres_reachable(state: &PgInfoState) -> bool {
-    let sql = match state {
-        PgInfoState::Unknown { common } => &common.sql,
-        PgInfoState::Primary { common, .. } => &common.sql,
-        PgInfoState::Replica { common, .. } => &common.sql,
-    };
-    matches!(sql, SqlStatus::Healthy)
-}
-
-fn should_rewind_from_leader(world: &super::state::WorldSnapshot, leader_member_id: &str) -> bool {
-    let Some(local_timeline) = pg_timeline(&world.pg.value) else {
-        return false;
-    };
-    let leader_record = world
-        .dcs
-        .value
-        .cache
-        .members
-        .get(&MemberId(leader_member_id.to_string()));
-    let Some(leader_timeline) = leader_record.and_then(|member| member.timeline) else {
-        return false;
-    };
-    local_timeline != leader_timeline
-}
-
-fn pg_timeline(state: &PgInfoState) -> Option<TimelineId> {
-    match state {
-        PgInfoState::Unknown { common } => common.timeline,
-        PgInfoState::Primary { common, .. } => common.timeline,
-        PgInfoState::Replica { common, .. } => common.timeline,
-    }
-}
-
-fn is_available_primary_leader(
-    world: &super::state::WorldSnapshot,
-    leader_member_id: Option<&str>,
-) -> bool {
-    let Some(leader_id) = leader_member_id else {
-        return false;
-    };
-
-    let leader_record = world
-        .dcs
-        .value
-        .cache
-        .members
-        .values()
-        .find(|member| member.member_id.0 == leader_id);
-    let Some(member) = leader_record else {
-        // Preserve current behavior when leader member metadata is not yet observed.
-        return true;
-    };
-
-    matches!(member.sql, SqlStatus::Healthy)
+fn other_leader_record(facts: &DecisionFacts) -> Option<MemberId> {
+    facts
+        .leader_member_id
+        .clone()
+        .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
 }
 
 #[cfg(test)]
@@ -315,7 +291,11 @@ mod tests {
             DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
         },
         ha::{
-            actions::HaAction,
+            decision::{
+                HaDecision, LeaseReleaseReason, RecoveryPlan, RecoveryStrategy, StepDownPlan,
+                StepDownReason,
+            },
+            lower::lower_decision,
             state::{DecideInput, HaPhase, HaState, WorldSnapshot},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus},
@@ -336,7 +316,7 @@ mod tests {
         leader: Option<&'static str>,
         process: ProcessState,
         expected_phase: HaPhase,
-        expected_actions: Vec<HaAction>,
+        expected_decision: HaDecision,
     }
 
     #[test]
@@ -350,7 +330,9 @@ mod tests {
                 leader: None,
                 process: process_idle(None),
                 expected_phase: HaPhase::WaitingPostgresReachable,
-                expected_actions: vec![],
+                expected_decision: HaDecision::WaitForPostgres {
+                    start_requested: false,
+                },
             },
             Case {
                 name: "waiting postgres emits start when unreachable",
@@ -360,7 +342,9 @@ mod tests {
                 leader: None,
                 process: process_idle(None),
                 expected_phase: HaPhase::WaitingPostgresReachable,
-                expected_actions: vec![HaAction::StartPostgres],
+                expected_decision: HaDecision::WaitForPostgres {
+                    start_requested: true,
+                },
             },
             Case {
                 name: "waiting postgres enters dcs trusted when healthy",
@@ -370,7 +354,7 @@ mod tests {
                 leader: None,
                 process: process_idle(None),
                 expected_phase: HaPhase::WaitingDcsTrusted,
-                expected_actions: vec![],
+                expected_decision: HaDecision::WaitForDcsTrust,
             },
             Case {
                 name: "waiting dcs to replica with known leader",
@@ -380,9 +364,9 @@ mod tests {
                 leader: Some("node-b"),
                 process: process_idle(None),
                 expected_phase: HaPhase::Replica,
-                expected_actions: vec![HaAction::FollowLeader {
-                    leader_member_id: "node-b".to_string(),
-                }],
+                expected_decision: HaDecision::FollowLeader {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
             },
             Case {
                 name: "waiting dcs becomes candidate when no leader",
@@ -392,7 +376,7 @@ mod tests {
                 leader: None,
                 process: process_idle(None),
                 expected_phase: HaPhase::CandidateLeader,
-                expected_actions: vec![HaAction::AcquireLeaderLease],
+                expected_decision: HaDecision::AttemptLeadership,
             },
             Case {
                 name: "candidate becomes primary when lease self",
@@ -402,7 +386,7 @@ mod tests {
                 leader: Some("node-a"),
                 process: process_idle(None),
                 expected_phase: HaPhase::Primary,
-                expected_actions: vec![HaAction::PromoteToPrimary],
+                expected_decision: HaDecision::BecomePrimary { promote: true },
             },
             Case {
                 name: "primary split brain fences",
@@ -412,11 +396,14 @@ mod tests {
                 leader: Some("node-b"),
                 process: process_idle(None),
                 expected_phase: HaPhase::Fencing,
-                expected_actions: vec![
-                    HaAction::DemoteToReplica,
-                    HaAction::ReleaseLeaderLease,
-                    HaAction::FenceNode,
-                ],
+                expected_decision: HaDecision::StepDown(StepDownPlan {
+                    reason: StepDownReason::ConflictingLeader {
+                        leader_member_id: MemberId("node-b".to_string()),
+                    },
+                    release_leader_lease: true,
+                    clear_switchover: false,
+                    fence: true,
+                }),
             },
             Case {
                 name: "no quorum enters fail safe",
@@ -426,7 +413,9 @@ mod tests {
                 leader: None,
                 process: process_idle(None),
                 expected_phase: HaPhase::FailSafe,
-                expected_actions: vec![HaAction::SignalFailSafe],
+                expected_decision: HaDecision::EnterFailSafe {
+                    release_leader_lease: false,
+                },
             },
             Case {
                 name: "rewinding success re-enters replica",
@@ -439,9 +428,9 @@ mod tests {
                     finished_at: UnixMillis(10),
                 })),
                 expected_phase: HaPhase::Replica,
-                expected_actions: vec![HaAction::FollowLeader {
-                    leader_member_id: "node-b".to_string(),
-                }],
+                expected_decision: HaDecision::FollowLeader {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
             },
             Case {
                 name: "rewinding failure goes bootstrap",
@@ -455,7 +444,10 @@ mod tests {
                     finished_at: UnixMillis(10),
                 })),
                 expected_phase: HaPhase::Bootstrapping,
-                expected_actions: vec![HaAction::WipeDataDir, HaAction::StartBaseBackup],
+                expected_decision: HaDecision::RecoverReplica(RecoveryPlan {
+                    strategy: RecoveryStrategy::BaseBackup,
+                    leader_member_id: Some(MemberId("node-b".to_string())),
+                }),
             },
             Case {
                 name: "bootstrap failure goes fencing",
@@ -468,7 +460,7 @@ mod tests {
                     finished_at: UnixMillis(11),
                 })),
                 expected_phase: HaPhase::Fencing,
-                expected_actions: vec![HaAction::FenceNode],
+                expected_decision: HaDecision::FenceNode,
             },
             Case {
                 name: "fencing success returns waiting dcs",
@@ -481,7 +473,9 @@ mod tests {
                     finished_at: UnixMillis(12),
                 })),
                 expected_phase: HaPhase::WaitingDcsTrusted,
-                expected_actions: vec![HaAction::ReleaseLeaderLease],
+                expected_decision: HaDecision::ReleaseLeaderLease {
+                    reason: LeaseReleaseReason::FencingComplete,
+                },
             },
             Case {
                 name: "fencing failure enters fail safe",
@@ -495,7 +489,9 @@ mod tests {
                     finished_at: UnixMillis(12),
                 })),
                 expected_phase: HaPhase::FailSafe,
-                expected_actions: vec![HaAction::SignalFailSafe],
+                expected_decision: HaDecision::EnterFailSafe {
+                    release_leader_lease: false,
+                },
             },
         ];
 
@@ -505,13 +501,13 @@ mod tests {
                     worker: WorkerStatus::Running,
                     phase: case.current_phase.clone(),
                     tick: 41,
-                    pending: vec![],
+                    decision: HaDecision::NoChange,
                 },
                 world: world(
                     case.trust,
                     case.pg.clone(),
                     case.leader,
-                    case.process.clone(),
+                    process_clone(&case.process),
                 ),
             };
 
@@ -521,9 +517,13 @@ mod tests {
                 "case: {}",
                 case.name
             );
-            assert_eq!(output.actions, case.expected_actions, "case: {}", case.name);
             assert_eq!(
-                output.next.pending, case.expected_actions,
+                output.outcome.decision, case.expected_decision,
+                "case: {}",
+                case.name
+            );
+            assert_eq!(
+                output.next.decision, case.expected_decision,
                 "case: {}",
                 case.name
             );
@@ -537,7 +537,7 @@ mod tests {
             worker: WorkerStatus::Running,
             phase: HaPhase::WaitingDcsTrusted,
             tick: 0,
-            pending: vec![],
+            decision: HaDecision::NoChange,
         };
         let world = world(
             DcsTrust::FullQuorum,
@@ -550,27 +550,18 @@ mod tests {
             current: current.clone(),
             world: world.clone(),
         });
-        assert_eq!(first.actions, vec![HaAction::AcquireLeaderLease]);
+        assert_eq!(
+            lower_decision(&first.outcome.decision),
+            vec![crate::ha::actions::HaAction::AcquireLeaderLease]
+        );
 
         let second = decide(DecideInput {
             current: first.next,
             world,
         });
-        assert_eq!(second.actions, vec![HaAction::AcquireLeaderLease]);
-    }
-
-    #[test]
-    fn tick_local_dedupe_drops_duplicate_action_ids_preserving_order() {
-        let candidates = vec![
-            HaAction::StartPostgres,
-            HaAction::StartPostgres,
-            HaAction::AcquireLeaderLease,
-            HaAction::AcquireLeaderLease,
-        ];
-        let deduped = super::dedupe_actions_per_tick(candidates);
         assert_eq!(
-            deduped,
-            vec![HaAction::StartPostgres, HaAction::AcquireLeaderLease]
+            lower_decision(&second.outcome.decision),
+            vec![crate::ha::actions::HaAction::AcquireLeaderLease]
         );
     }
 
@@ -580,7 +571,7 @@ mod tests {
             worker: WorkerStatus::Running,
             phase: HaPhase::FailSafe,
             tick: 100,
-            pending: vec![],
+            decision: HaDecision::NoChange,
         };
 
         let held = decide(DecideInput {
@@ -593,7 +584,12 @@ mod tests {
             ),
         });
         assert_eq!(held.next.phase, HaPhase::FailSafe);
-        assert_eq!(held.actions, vec![HaAction::SignalFailSafe]);
+        assert_eq!(
+            held.outcome.decision,
+            HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            }
+        );
 
         let recovered = decide(DecideInput {
             current: start,
@@ -605,6 +601,7 @@ mod tests {
             ),
         });
         assert_eq!(recovered.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(recovered.outcome.decision, HaDecision::WaitForDcsTrust);
     }
 
     #[test]
@@ -624,20 +621,94 @@ mod tests {
                 worker: WorkerStatus::Running,
                 phase: HaPhase::Primary,
                 tick: 10,
-                pending: vec![],
+                decision: HaDecision::NoChange,
             },
             world: snapshot,
         });
 
         assert_eq!(output.next.phase, HaPhase::Replica);
         assert_eq!(
-            output.actions,
+            lower_decision(&output.outcome.decision),
             vec![
-                HaAction::DemoteToReplica,
-                HaAction::ReleaseLeaderLease,
-                HaAction::ClearSwitchover,
+                crate::ha::actions::HaAction::DemoteToReplica,
+                crate::ha::actions::HaAction::ReleaseLeaderLease,
+                crate::ha::actions::HaAction::ClearSwitchover,
             ]
         );
+    }
+
+    #[test]
+    fn rewinding_while_running_emits_nothing() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Rewinding,
+                tick: 8,
+                decision: HaDecision::NoChange,
+            },
+            world: world(
+                DcsTrust::FullQuorum,
+                pg_replica(SqlStatus::Healthy),
+                Some("node-b"),
+                process_running(),
+            ),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Rewinding);
+        assert!(lower_decision(&output.outcome.decision).is_empty());
+    }
+
+    #[test]
+    fn replica_with_unhealthy_leader_becomes_candidate() {
+        let mut snapshot = world(
+            DcsTrust::FullQuorum,
+            pg_replica(SqlStatus::Healthy),
+            Some("node-b"),
+            process_idle(None),
+        );
+        snapshot.dcs.value.cache.members.insert(
+            MemberId("node-b".to_string()),
+            MemberRecord {
+                member_id: MemberId("node-b".to_string()),
+                role: MemberRole::Unknown,
+                sql: SqlStatus::Unreachable,
+                readiness: Readiness::NotReady,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Replica,
+                tick: 11,
+                decision: HaDecision::NoChange,
+            },
+            world: snapshot,
+        });
+
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+    }
+
+    fn process_clone(process: &ProcessState) -> ProcessState {
+        match process {
+            ProcessState::Running { worker, active } => ProcessState::Running {
+                worker: worker.clone(),
+                active: active.clone(),
+            },
+            ProcessState::Idle {
+                worker,
+                last_outcome,
+            } => ProcessState::Idle {
+                worker: worker.clone(),
+                last_outcome: last_outcome.clone(),
+            },
+        }
     }
 
     fn process_idle(last_outcome: Option<JobOutcome>) -> ProcessState {
@@ -847,63 +918,5 @@ mod tests {
             ),
             process: Versioned::new(Version(1), UnixMillis(1), process),
         }
-    }
-
-    #[test]
-    fn rewinding_while_running_emits_nothing() {
-        let output = decide(DecideInput {
-            current: HaState {
-                worker: WorkerStatus::Running,
-                phase: HaPhase::Rewinding,
-                tick: 8,
-                pending: vec![],
-            },
-            world: world(
-                DcsTrust::FullQuorum,
-                pg_replica(SqlStatus::Healthy),
-                Some("node-b"),
-                process_running(),
-            ),
-        });
-
-        assert_eq!(output.next.phase, HaPhase::Rewinding);
-        assert!(output.actions.is_empty());
-    }
-
-    #[test]
-    fn replica_with_unhealthy_leader_becomes_candidate() {
-        let mut snapshot = world(
-            DcsTrust::FullQuorum,
-            pg_replica(SqlStatus::Healthy),
-            Some("node-b"),
-            process_idle(None),
-        );
-        snapshot.dcs.value.cache.members.insert(
-            MemberId("node-b".to_string()),
-            MemberRecord {
-                member_id: MemberId("node-b".to_string()),
-                role: MemberRole::Unknown,
-                sql: SqlStatus::Unreachable,
-                readiness: Readiness::NotReady,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                updated_at: UnixMillis(1),
-                pg_version: Version(1),
-            },
-        );
-
-        let output = decide(DecideInput {
-            current: HaState {
-                worker: WorkerStatus::Running,
-                phase: HaPhase::Replica,
-                tick: 11,
-                pending: vec![],
-            },
-            world: snapshot,
-        });
-
-        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
-        assert_eq!(output.actions, vec![HaAction::AcquireLeaderLease]);
     }
 }

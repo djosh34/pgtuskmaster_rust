@@ -689,7 +689,9 @@ fn debug_ui_html() -> &'static str {
         ["worker", payload.ha.worker],
         ["phase", payload.ha.phase],
         ["tick", payload.ha.tick],
-        ["pending", payload.ha.pending_actions]
+        ["decision", payload.ha.decision],
+        ["decision_detail", payload.ha.decision_detail ?? "<none>"],
+        ["planned_actions", payload.ha.planned_actions]
       ]);
 
       renderRows("timeline-body", payload.timeline, (row) =>
@@ -1272,7 +1274,7 @@ mod tests {
             AppLifecycle, DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot,
         },
         ha::{
-            actions::HaAction,
+            decision::HaDecision,
             state::{HaPhase, HaState},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
@@ -1534,7 +1536,9 @@ mod tests {
             worker: crate::state::WorkerStatus::Running,
             phase: HaPhase::Replica,
             tick: 7,
-            pending: vec![HaAction::SignalFailSafe],
+            decision: HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            },
         }
     }
 
@@ -2108,7 +2112,8 @@ mod tests {
         assert_eq!(decoded["dcs_trust"], "FullQuorum");
         assert_eq!(decoded["ha_phase"], "Replica");
         assert_eq!(decoded["ha_tick"], 7);
-        assert_eq!(decoded["pending_actions"], 1);
+        assert_eq!(decoded["ha_decision"], "enter_fail_safe");
+        assert_eq!(decoded["ha_decision_detail"], "hold_local_state");
         assert_eq!(decoded["snapshot_sequence"], 2);
         Ok(())
     }

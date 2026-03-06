@@ -4,7 +4,7 @@ The Node API is a compact operational interface for state visibility and planned
 
 ## Main endpoints
 
-- `GET /ha/state`: current HA-relevant state projection
+- `GET /ha/state`: current HA-relevant state projection, including phase, tick, and decision label/detail
 - `POST /switchover`: create planned switchover intent
 - `DELETE /ha/switchover`: cancel or clear pending switchover intent
 

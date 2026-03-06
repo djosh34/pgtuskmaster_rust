@@ -1122,7 +1122,7 @@ async fn run_workers(
         worker: WorkerStatus::Starting,
         phase: HaPhase::Init,
         tick: 0,
-        pending: Vec::new(),
+        decision: crate::ha::decision::HaDecision::NoChange,
     };
     let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha, now);
 

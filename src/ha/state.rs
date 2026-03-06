@@ -15,7 +15,7 @@ use crate::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::actions::HaAction;
+use super::decision::{HaDecision, PhaseOutcome};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HaPhase {
@@ -36,7 +36,7 @@ pub(crate) struct HaState {
     pub(crate) worker: WorkerStatus,
     pub(crate) phase: HaPhase,
     pub(crate) tick: u64,
-    pub(crate) pending: Vec<HaAction>,
+    pub(crate) decision: HaDecision,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,7 +56,7 @@ pub(crate) struct DecideInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DecideOutput {
     pub(crate) next: HaState,
-    pub(crate) actions: Vec<HaAction>,
+    pub(crate) outcome: PhaseOutcome,
 }
 
 pub(crate) struct HaWorkerCtx {
@@ -157,7 +157,7 @@ impl HaWorkerCtx {
                 worker: WorkerStatus::Starting,
                 phase: HaPhase::Init,
                 tick: 0,
-                pending: Vec::new(),
+                decision: HaDecision::NoChange,
             },
             publisher,
             config_subscriber,

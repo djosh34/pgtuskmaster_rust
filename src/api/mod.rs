@@ -45,6 +45,7 @@ pub(crate) struct HaStateResponse {
     pub(crate) dcs_trust: String,
     pub(crate) ha_phase: String,
     pub(crate) ha_tick: u64,
-    pub(crate) pending_actions: usize,
+    pub(crate) ha_decision: String,
+    pub(crate) ha_decision_detail: Option<String>,
     pub(crate) snapshot_sequence: u64,
 }

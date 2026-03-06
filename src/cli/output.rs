@@ -26,7 +26,7 @@ fn render_json(command_output: &CommandOutput) -> Result<String, CliError> {
     }
 
     let payload = match command_output {
-        CommandOutput::HaState(value) => OutputRef::State(value),
+        CommandOutput::HaState(value) => OutputRef::State(value.as_ref()),
         CommandOutput::Accepted(value) => OutputRef::Accepted(value),
     };
 
@@ -38,8 +38,10 @@ fn render_text(command_output: &CommandOutput) -> String {
     match command_output {
         CommandOutput::Accepted(value) => format!("accepted={}", value.accepted),
         CommandOutput::HaState(value) => {
+            let value = value.as_ref();
             let leader = value.leader.as_deref().unwrap_or("<none>");
             let switchover = value.switchover_requested_by.as_deref().unwrap_or("<none>");
+            let decision_detail = value.ha_decision_detail.as_deref().unwrap_or("<none>");
             [
                 format!("cluster_name={}", value.cluster_name),
                 format!("scope={}", value.scope),
@@ -50,7 +52,8 @@ fn render_text(command_output: &CommandOutput) -> String {
                 format!("dcs_trust={}", value.dcs_trust),
                 format!("ha_phase={}", value.ha_phase),
                 format!("ha_tick={}", value.ha_tick),
-                format!("pending_actions={}", value.pending_actions),
+                format!("ha_decision={}", value.ha_decision),
+                format!("ha_decision_detail={decision_detail}"),
                 format!("snapshot_sequence={}", value.snapshot_sequence),
             ]
             .join("\n")
@@ -70,7 +73,7 @@ mod tests {
     #[test]
     fn text_output_renders_state_lines() {
         let output = render_output(
-            &CommandOutput::HaState(HaStateResponse {
+            &CommandOutput::HaState(Box::new(HaStateResponse {
                 cluster_name: "cluster-a".to_string(),
                 scope: "scope-a".to_string(),
                 self_member_id: "node-a".to_string(),
@@ -80,9 +83,10 @@ mod tests {
                 dcs_trust: "FullQuorum".to_string(),
                 ha_phase: "Primary".to_string(),
                 ha_tick: 9,
-                pending_actions: 1,
+                ha_decision: "become_primary".to_string(),
+                ha_decision_detail: Some("promote".to_string()),
                 snapshot_sequence: 77,
-            }),
+            })),
             OutputFormat::Text,
         );
         assert!(output.is_ok(), "text render should succeed");
@@ -91,6 +95,7 @@ mod tests {
         assert!(rendered.contains("cluster_name=cluster-a"));
         assert!(rendered.contains("leader=node-a"));
         assert!(rendered.contains("switchover_requested_by=<none>"));
+        assert!(rendered.contains("ha_decision=become_primary"));
     }
 
     #[test]

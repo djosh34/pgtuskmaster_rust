@@ -4,7 +4,7 @@
 
 Common workflows:
 
-- inspect current HA state
+- inspect current HA state and the selected HA decision
 - submit switchover intent
 - cancel pending switchover
 

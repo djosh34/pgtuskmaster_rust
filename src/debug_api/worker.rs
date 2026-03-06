@@ -7,7 +7,7 @@ use crate::{
         build_snapshot, AppLifecycle, DebugChangeEvent, DebugDomain, DebugSnapshotCtx,
         DebugTimelineEntry, SystemSnapshot,
     },
-    ha::state::HaState,
+    ha::{lower::lower_decision, state::HaState},
     pginfo::state::PgInfoState,
     process::state::ProcessState,
     state::{StatePublisher, StateSubscriber, UnixMillis, Version, WorkerError},
@@ -373,21 +373,32 @@ fn summarize_process(state: &ProcessState) -> String {
 }
 
 fn summarize_ha(state: &HaState) -> String {
+    let decision_detail = state
+        .decision
+        .detail()
+        .unwrap_or_else(|| "<none>".to_string());
     format!(
-        "ha worker={:?} phase={:?} tick={} pending={}",
+        "ha worker={:?} phase={:?} tick={} decision={} detail={} planned_actions={}",
         state.worker,
         state.phase,
         state.tick,
-        state.pending.len()
+        state.decision.label(),
+        decision_detail,
+        lower_decision(&state.decision).len()
     )
 }
 
 fn ha_signature(state: &HaState) -> String {
+    let decision_detail = state
+        .decision
+        .detail()
+        .unwrap_or_else(|| "<none>".to_string());
     format!(
-        "ha worker={:?} phase={:?} pending={}",
+        "ha worker={:?} phase={:?} decision={} detail={}",
         state.worker,
         state.phase,
-        state.pending.len()
+        state.decision.label(),
+        decision_detail
     )
 }
 
@@ -405,7 +416,7 @@ mod tests {
         },
         dcs::state::{DcsCache, DcsState, DcsTrust},
         debug_api::snapshot::{AppLifecycle, DebugDomain, SystemSnapshot},
-        ha::actions::HaAction,
+        ha::decision::HaDecision,
         ha::state::{HaPhase, HaState},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
@@ -579,7 +590,9 @@ mod tests {
             worker: WorkerStatus::Starting,
             phase: HaPhase::Init,
             tick: 0,
-            pending: vec![HaAction::SignalFailSafe],
+            decision: HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            },
         }
     }
 

@@ -137,7 +137,7 @@ Reads the latest snapshots, runs decision logic, and then dispatches side effect
 Failure behavior:
 
 - if dispatch fails (DCS write/delete fails, job send fails, clock fails, managed config cannot be materialized), the HA worker publishes its `WorkerStatus` as `Faulted(...)`.
-- the state machine continues to tick; callers should treat faulted HA state as an error signal, not as “no actions pending”.
+- the state machine continues to tick; callers should treat faulted HA state as an error signal, not as “no decision selected”.
 
 ### `process` worker (side effects against the local host)
 

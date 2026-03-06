@@ -98,3 +98,4 @@
 .ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md
 .ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md
 .ralph/tasks/bugs/ha-matrix-scenario-flakes-under-real-ha.md
+.ralph/tasks/story-ha-functional-rewrite/02-task-rewrite-ha-decide-into-facts-and-phase-outcome-match-machine.md

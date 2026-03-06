@@ -17,6 +17,8 @@ use crate::{
 use super::{
     actions::{ActionId, HaAction},
     decide::decide,
+    decision::HaDecision,
+    lower::lower_decision,
     state::{DecideInput, HaPhase, HaWorkerCtx, WorldSnapshot},
 };
 
@@ -79,21 +81,32 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
         current: ctx.state.clone(),
         world,
     });
+    let actions = lower_decision(&output.outcome.decision);
 
-    for (index, action) in output.actions.iter().enumerate() {
+    emit_ha_decision_selected(
+        ctx,
+        output.next.tick,
+        &output.outcome.decision,
+        actions.len(),
+    )?;
+
+    for (index, action) in actions.iter().enumerate() {
         emit_ha_action_intent(ctx, output.next.tick, index, action)?;
     }
 
-    let dispatch_errors = dispatch_actions(ctx, output.next.tick, &output.actions)?;
+    let dispatch_errors = dispatch_actions(ctx, output.next.tick, &actions)?;
     let now = (ctx.now)()?;
 
-    let mut next = output.next;
-    next.worker = if dispatch_errors.is_empty() {
+    let worker = if dispatch_errors.is_empty() {
         WorkerStatus::Running
     } else {
         WorkerStatus::Faulted(WorkerError::Message(format_dispatch_errors(
             &dispatch_errors,
         )))
+    };
+    let next = crate::ha::state::HaState {
+        worker,
+        ..output.next
     };
 
     ctx.publisher
@@ -465,6 +478,39 @@ fn emit_ha_action_intent(
     Ok(())
 }
 
+fn emit_ha_decision_selected(
+    ctx: &HaWorkerCtx,
+    ha_tick: u64,
+    decision: &HaDecision,
+    planned_action_count: usize,
+) -> Result<(), WorkerError> {
+    let mut attrs = ha_base_attrs(ctx, ha_tick);
+    attrs.insert(
+        "decision".to_string(),
+        serde_json::Value::String(decision.label().to_string()),
+    );
+    attrs.insert(
+        "planned_action_count".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(planned_action_count as u64)),
+    );
+    if let Some(detail) = decision.detail() {
+        attrs.insert(
+            "decision_detail".to_string(),
+            serde_json::Value::String(detail),
+        );
+    }
+    ctx.log
+        .emit_event(
+            SeverityText::Debug,
+            "ha decision selected",
+            "ha_worker::step_once",
+            EventMeta::new("ha.decision.selected", "ha", "ok"),
+            attrs,
+        )
+        .map_err(|err| WorkerError::Message(format!("ha decision log emit failed: {err}")))?;
+    Ok(())
+}
+
 fn emit_ha_action_dispatch(
     ctx: &HaWorkerCtx,
     ha_tick: u64,
@@ -678,6 +724,8 @@ mod tests {
         },
         ha::{
             actions::{ActionId, HaAction},
+            decision::HaDecision,
+            lower::lower_decision,
             state::{
                 HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
             },
@@ -972,7 +1020,7 @@ mod tests {
             worker: WorkerStatus::Starting,
             phase: HaPhase::Init,
             tick: 0,
-            pending: Vec::new(),
+            decision: HaDecision::NoChange,
         }
     }
 
@@ -1264,7 +1312,7 @@ mod tests {
                 worker: WorkerStatus::Running,
                 phase: initial_phase,
                 tick: 0,
-                pending: Vec::new(),
+                decision: HaDecision::NoChange,
             };
 
             Self {
@@ -1439,7 +1487,7 @@ mod tests {
             worker: WorkerStatus::Running,
             phase: HaPhase::WaitingPostgresReachable,
             tick: 0,
-            pending: Vec::new(),
+            decision: HaDecision::NoChange,
         };
 
         step_once(&mut ctx).await?;
@@ -1572,7 +1620,7 @@ mod tests {
         let replica = fixture.latest_ha();
         assert_eq!(replica.phase, HaPhase::Replica);
         assert_eq!(
-            replica.pending,
+            lower_decision(&replica.decision),
             vec![HaAction::FollowLeader {
                 leader_member_id: "node-b".to_string(),
             }]
@@ -1583,21 +1631,26 @@ mod tests {
         assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
         let candidate = fixture.latest_ha();
         assert_eq!(candidate.phase, HaPhase::CandidateLeader);
-        assert_eq!(candidate.pending, vec![HaAction::AcquireLeaderLease]);
+        assert_eq!(
+            lower_decision(&candidate.decision),
+            vec![HaAction::AcquireLeaderLease]
+        );
         assert!(fixture.store.has_write_path("/scope-a/leader"));
 
         assert_eq!(fixture.push_leader_event("node-a"), Ok(()));
         assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
         let primary = fixture.latest_ha();
         assert_eq!(primary.phase, HaPhase::Primary);
-        assert_eq!(primary.pending, vec![HaAction::PromoteToPrimary]);
+        assert_eq!(
+            lower_decision(&primary.decision),
+            vec![HaAction::PromoteToPrimary]
+        );
 
         assert_eq!(fixture.push_leader_event("node-z"), Ok(()));
         assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
         let failsafe = fixture.latest_ha();
         assert_eq!(failsafe.phase, HaPhase::FailSafe);
-        assert!(failsafe
-            .pending
+        assert!(lower_decision(&failsafe.decision)
             .iter()
             .any(|action| matches!(action, HaAction::SignalFailSafe)));
         assert!(fixture.store.has_delete_path("/scope-a/leader"));
@@ -1638,7 +1691,7 @@ mod tests {
         let fencing = fixture.latest_ha();
         assert_eq!(fencing.phase, HaPhase::Fencing);
         assert_eq!(
-            fencing.pending,
+            lower_decision(&fencing.decision),
             vec![
                 HaAction::DemoteToReplica,
                 HaAction::ReleaseLeaderLease,
@@ -1678,7 +1731,10 @@ mod tests {
         assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
         let waiting = fixture.latest_ha();
         assert_eq!(waiting.phase, HaPhase::WaitingPostgresReachable);
-        assert_eq!(waiting.pending, vec![HaAction::StartPostgres]);
+        assert_eq!(
+            lower_decision(&waiting.decision),
+            vec![HaAction::StartPostgres]
+        );
 
         assert_eq!(fixture.queue_process_success(), Ok(()));
         let process_version_before = fixture.process_subscriber.latest().version;
@@ -1754,7 +1810,7 @@ mod tests {
         let observed = run_subscriber.latest().value;
         assert_eq!(observed.phase, expected.phase);
         assert_eq!(observed.tick, expected.tick);
-        assert_eq!(observed.pending, expected.pending);
+        assert_eq!(observed.decision, expected.decision);
 
         handle.abort();
         let _ = handle.await;

@@ -16,7 +16,7 @@ use crate::{
         worker::{DebugApiContractStubInputs, DebugApiCtx},
     },
     ha::{
-        actions::HaAction,
+        decision::HaDecision,
         state::{HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, WorldSnapshot},
     },
     pginfo::state::{
@@ -226,7 +226,9 @@ fn sample_ha_state() -> HaState {
         worker: WorkerStatus::Starting,
         phase: HaPhase::Init,
         tick: 0,
-        pending: vec![HaAction::SignalFailSafe],
+        decision: HaDecision::EnterFailSafe {
+            release_leader_lease: false,
+        },
     }
 }
 

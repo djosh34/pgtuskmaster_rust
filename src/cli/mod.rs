@@ -8,7 +8,7 @@ use client::{AcceptedResponse, CliApiClient, HaStateResponse};
 use error::CliError;
 
 pub enum CommandOutput {
-    HaState(HaStateResponse),
+    HaState(Box<HaStateResponse>),
     Accepted(AcceptedResponse),
 }
 
@@ -24,7 +24,7 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
 
     let command_output = match command {
         Command::Ha(ha) => match ha.command {
-            HaCommand::State => CommandOutput::HaState(client.get_ha_state().await?),
+            HaCommand::State => CommandOutput::HaState(Box::new(client.get_ha_state().await?)),
             HaCommand::Switchover(switchover) => match switchover.command {
                 SwitchoverCommand::Clear => {
                     CommandOutput::Accepted(client.delete_switchover().await?)

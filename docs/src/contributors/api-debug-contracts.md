@@ -83,7 +83,7 @@ That design choice matters:
 - current leader and switchover request (if any)
 - DCS trust label
 - HA phase and tick
-- pending action count
+- HA decision label and optional decision detail
 - the snapshot sequence (useful for polling clients).
 
 This endpoint is the best “simple operational signal” to rely on. It should remain small and understandable even as internal debug views become more detailed.

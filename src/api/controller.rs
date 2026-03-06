@@ -49,6 +49,8 @@ pub(crate) fn delete_switchover(
 }
 
 pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateResponse {
+    let decision = &snapshot.value.ha.value.decision;
+
     HaStateResponse {
         cluster_name: snapshot.value.config.value.cluster.name.clone(),
         scope: snapshot.value.config.value.dcs.scope.clone(),
@@ -73,7 +75,8 @@ pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateRespo
         dcs_trust: format!("{:?}", snapshot.value.dcs.value.trust),
         ha_phase: format!("{:?}", snapshot.value.ha.value.phase),
         ha_tick: snapshot.value.ha.value.tick,
-        pending_actions: snapshot.value.ha.value.pending.len(),
+        ha_decision: decision.label().to_string(),
+        ha_decision_detail: decision.detail(),
         snapshot_sequence: snapshot.value.sequence,
     }
 }

@@ -5,7 +5,8 @@ The HA pipeline is the architectural core: it is where the system decides **what
 This chapter is intentionally concrete. It describes:
 
 - what inputs HA reads (and from where)
-- what the decision function produces (phase + actions)
+- what the decision function produces (phase + domain decision)
+- how the domain decision lowers into executable actions
 - how actions are dispatched (DCS writes/deletes vs process job requests)
 - how outcomes feed back into the next decision tick.
 
@@ -15,12 +16,13 @@ The canonical loop lives in `src/ha/worker.rs`:
 
 1. Collect a **world snapshot** from input state channels (config/pg/dcs/process).
 2. Run pure decision logic: `ha::decide::decide(DecideInput { current, world })`.
-3. Dispatch side effects for the chosen actions:
+3. Lower the chosen `HaDecision` into ordered `HaAction`s.
+4. Dispatch side effects for the lowered actions:
    - DCS writes/deletes (coordination)
    - process job requests (local side effects).
-4. Publish the updated `HaState` (phase + tick + pending actions + worker status).
+5. Publish the updated `HaState` (phase + tick + decision + worker status).
 
-The decision function itself is in `src/ha/decide.rs`. It is intentionally structured to be testable as a pure function: given “current state” and “world view”, it returns “next state” and an action list.
+The decision function itself is in `src/ha/decide.rs`. It is intentionally structured to be testable as a pure function: given “current state” and “world view”, it returns a `PhaseOutcome { next_phase, decision }`. Action lowering lives separately in `src/ha/lower.rs`.
 
 ## Inputs: what HA reads
 
@@ -39,21 +41,20 @@ That separation matters: when HA is wrong, you can usually locate the failure to
 - a dispatch bug (ha/worker)
 - a process execution bug (process).
 
-## Outputs: `HaState` and per-tick action dedupe
+## Outputs: `HaState`, `HaDecision`, and lowered actions
 
 The HA worker publishes a `HaState` which includes:
 
 - `phase`: the lifecycle phase (state machine node)
 - `tick`: an incrementing counter
-- `pending`: the actions selected for this tick
+- `decision`: the domain-level HA decision selected for this tick
 
-Before publishing, `decide(...)` performs **per-tick action dedupe**: if the same `ActionId` is produced multiple times in a single decision tick, only the first instance is kept in the output action list.
+Before dispatch, `lower::lower_decision(...)` converts that decision into the ordered `HaAction` list the worker executes. There is intentionally **no cross-tick suppression**. If the world snapshot does not change (for example Postgres remains unreachable), the same process-driving action can be re-issued on every tick until it succeeds.
 
-There is intentionally **no cross-tick suppression**. If the world snapshot does not change (for example Postgres remains unreachable), the same process-driving action is expected to be re-issued on every tick until it succeeds.
-
-If you change action semantics, update the dedupe behavior and tests together. The invariants are covered by:
+If you change decision or lowering semantics, update both layers and tests together. The invariants are covered by:
 
 - decision-level tests in `src/ha/decide.rs`
+- lowering tests in `src/ha/lower.rs`
 - worker-level dispatch tests in `src/ha/worker.rs`
 
 ## The core phases (what they mean)
