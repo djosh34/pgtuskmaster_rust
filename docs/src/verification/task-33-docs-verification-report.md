@@ -354,7 +354,7 @@ Each claim row uses:
 
 | claim_id | doc_loc | claim | status | evidence | notes |
 |---|---|---|---|---|---|
-| stress-001 | `docs/src/testing/ha-e2e-stress-mapping.md:13` | The no-quorum stress scenario is covered by two short real-binary tests in regular `make test`. | verified | `src/ha/e2e_multi_node.rs:2409-2502` (strict failsafe test), `src/ha/e2e_multi_node.rs:2504-2577` (fencing+workload test) |  |
+| stress-001 | `docs/src/testing/ha-e2e-stress-mapping.md:13` | The no-quorum stress scenario is covered by two focused real-binary tests in `make test-long`. | verified | `Makefile` `ULTRA_LONG_TESTS`, `src/ha/e2e_multi_node.rs` (`e2e_no_quorum_enters_failsafe_strict_all_nodes`, `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity`) | Coverage was moved out of the default suite because these scenarios are minutes-long. |
 | stress-002 | `docs/src/testing/ha-e2e-stress-mapping.md:32` | Both tests write artifacts and shut down the fixture even on failure. | verified | `src/ha/e2e_multi_node.rs:2392-2405` and `src/ha/e2e_multi_node.rs:2487-2500` (always write artifacts + shutdown + finalize) |  |
 | stress-003 | `docs/src/testing/ha-e2e-stress-mapping.md:36` | Timing notes match the current tests (bounded waits, sampling windows, cutoff grace). | fixed | `src/ha/e2e_multi_node.rs:2421-2429` (60s waits), `src/ha/e2e_multi_node.rs:2455-2457` (4s sample window), `src/ha/e2e_multi_node.rs:2542-2544` (2s sample window), `src/ha/e2e_multi_node.rs:2546-2576` (7s grace, 10 tolerance) | Docs were updated to match actual constants/values. |
 

@@ -2323,10 +2323,16 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
         fixture.record("unassisted failover bootstrap: wait for stable primary");
         let bootstrap_primary = fixture
-            .wait_for_stable_primary(
-                Duration::from_secs(60),
-                None,
-                5,
+            .wait_for_stable_primary_resilient(
+                StablePrimaryWaitPlan {
+                    context: "unassisted failover bootstrap stable-primary",
+                    timeout: Duration::from_secs(60),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 2,
+                    min_observed_nodes: 2,
+                },
                 &mut phase_history,
             )
             .await?;
@@ -2527,7 +2533,18 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
 
         fixture.record("stress switchover bootstrap: wait for stable primary");
         let bootstrap_primary = fixture
-            .wait_for_stable_primary(Duration::from_secs(90), None, 3, &mut phase_history)
+            .wait_for_stable_primary_resilient(
+                StablePrimaryWaitPlan {
+                    context: "stress switchover bootstrap stable-primary",
+                    timeout: Duration::from_secs(90),
+                    excluded_primary: None,
+                    required_consecutive: 3,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 2,
+                    min_observed_nodes: 2,
+                },
+                &mut phase_history,
+            )
             .await?;
         fixture
             .prepare_stress_table(&bootstrap_primary, table_name.as_str())
@@ -2689,7 +2706,18 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
 
         fixture.record("stress failover bootstrap: wait for stable primary");
         let bootstrap_primary = fixture
-            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
+            .wait_for_stable_primary_resilient(
+                StablePrimaryWaitPlan {
+                    context: "stress failover bootstrap stable-primary",
+                    timeout: Duration::from_secs(60),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 2,
+                    min_observed_nodes: 2,
+                },
+                &mut phase_history,
+            )
             .await?;
         fixture
             .prepare_stress_table(&bootstrap_primary, table_name.as_str())
@@ -2836,26 +2864,20 @@ async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), WorkerEr
         let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
         fixture.record("no-quorum: wait for stable primary");
-        let bootstrap_primary = match fixture
-            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
-            .await
-        {
-            Ok(primary) => primary,
-            Err(wait_err) => {
-                fixture.record(format!(
-                    "no-quorum: strict stable-primary wait failed during bootstrap: {wait_err}; retrying with majority-observed best-effort polling"
-                ));
-                fixture
-                    .wait_for_stable_primary_best_effort(
-                        Duration::from_secs(90),
-                        None,
-                        3,
-                        2,
-                        &mut phase_history,
-                    )
-                    .await?
-            }
-        };
+        let bootstrap_primary = fixture
+            .wait_for_stable_primary_resilient(
+                StablePrimaryWaitPlan {
+                    context: "no-quorum bootstrap stable-primary",
+                    timeout: Duration::from_secs(60),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 2,
+                    min_observed_nodes: 2,
+                },
+                &mut phase_history,
+            )
+            .await?;
         let failsafe_observed_at_ms = stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
             &mut fixture,
             2,
@@ -2958,7 +2980,18 @@ async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrit
 
         fixture.record("no-quorum fencing: wait for stable primary");
         let bootstrap_primary = fixture
-            .wait_for_stable_primary(Duration::from_secs(60), None, 5, &mut phase_history)
+            .wait_for_stable_primary_resilient(
+                StablePrimaryWaitPlan {
+                    context: "no-quorum fencing bootstrap stable-primary",
+                    timeout: Duration::from_secs(60),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 2,
+                    min_observed_nodes: 2,
+                },
+                &mut phase_history,
+            )
             .await?;
         fixture
             .prepare_stress_table(&bootstrap_primary, table_name.as_str())
