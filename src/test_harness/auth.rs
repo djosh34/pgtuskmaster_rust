@@ -1,13 +1,13 @@
 use super::HarnessError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ApiRoleTokens {
-    pub(crate) read_token: String,
-    pub(crate) admin_token: String,
+pub struct ApiRoleTokens {
+    pub read_token: String,
+    pub admin_token: String,
 }
 
 impl ApiRoleTokens {
-    pub(crate) fn new(
+    pub fn new(
         read_token: impl Into<String>,
         admin_token: impl Into<String>,
     ) -> Result<Self, HarnessError> {
@@ -29,11 +29,11 @@ impl ApiRoleTokens {
         })
     }
 
-    pub(crate) fn read_bearer_header(&self) -> String {
+    pub fn read_bearer_header(&self) -> String {
         format!("Bearer {}", self.read_token)
     }
 
-    pub(crate) fn admin_bearer_header(&self) -> String {
+    pub fn admin_bearer_header(&self) -> String {
         format!("Bearer {}", self.admin_token)
     }
 }

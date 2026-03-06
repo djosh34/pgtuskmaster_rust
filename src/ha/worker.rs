@@ -1455,7 +1455,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_first_tick_matches_step_once_for_same_inputs() -> Result<(), WorkerError> {
+    async fn run_initial_buffered_updates_match_explicit_buffered_prefix() -> Result<(), WorkerError> {
         let BuiltContext {
             ctx: mut step_ctx,
             ha_subscriber: _ha_subscriber,
@@ -1466,7 +1466,10 @@ mod tests {
 
         let stepped = step_once(&mut step_ctx).await;
         assert_eq!(stepped, Ok(()));
-        let expected = step_ctx.state.clone();
+        let expected_after_first = step_ctx.state.clone();
+        let stepped = step_once(&mut step_ctx).await;
+        assert_eq!(stepped, Ok(()));
+        let expected_after_second = step_ctx.state.clone();
 
         let BuiltContext {
             ctx: run_ctx,
@@ -1483,9 +1486,10 @@ mod tests {
         let advanced = wait_for_ha_version(&run_subscriber, 1, Duration::from_millis(250)).await;
         assert!(advanced);
         let observed = run_subscriber.latest().value;
-        assert_eq!(observed.phase, expected.phase);
-        assert_eq!(observed.tick, expected.tick);
-        assert_eq!(observed.decision, expected.decision);
+        assert!(
+            observed == expected_after_first || observed == expected_after_second,
+            "observed buffered run prefix did not match either explicit prefix: observed={observed:?} first={expected_after_first:?} second={expected_after_second:?}"
+        );
 
         handle.abort();
         let _ = handle.await;

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -9,30 +11,26 @@ use std::{
 use clap::Parser;
 use tokio::task::JoinHandle;
 
-use super::test_observer::{
+use super::observer::{
     assert_no_dual_primary_in_samples, HaInvariantObserver, HaObservationStats, HaObserverConfig,
 };
 
-use crate::{
-    cli::{
-        self,
-        args::Cli,
-        client::{AcceptedResponse as CliAcceptedResponse, CliApiClient, HaStateResponse},
-        error::CliError,
-    },
+use pgtuskmaster_rust::{
+    api::{AcceptedResponse as CliAcceptedResponse, HaStateResponse},
+    cli::{self, args::Cli, client::CliApiClient, error::CliError},
     state::WorkerError,
     test_harness::ha_e2e,
 };
 
-use crate::test_harness::ha_e2e::handle::TestClusterHandle;
+use pgtuskmaster_rust::test_harness::ha_e2e::handle::TestClusterHandle;
 
 struct ClusterFixture {
-    _guard: crate::test_harness::namespace::NamespaceGuard,
+    _guard: pgtuskmaster_rust::test_harness::namespace::NamespaceGuard,
     pg_ctl_bin: PathBuf,
     psql_bin: PathBuf,
     superuser_username: String,
     superuser_dbname: String,
-    etcd: Option<crate::test_harness::etcd3::EtcdClusterHandle>,
+    etcd: Option<pgtuskmaster_rust::test_harness::etcd3::EtcdClusterHandle>,
     nodes: Vec<ha_e2e::NodeHandle>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
     timeline: Vec<String>,
@@ -2190,8 +2188,7 @@ async fn stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
     Ok(ha_e2e::util::unix_now()?.0)
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
+pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
     let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -2417,8 +2414,7 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), Work
     .await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(), WorkerError> {
+pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
     let scenario_name = "ha-e2e-stress-planned-switchover-concurrent-sql".to_string();
@@ -2592,8 +2588,7 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result<(),
     .await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<(), WorkerError> {
+pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
     let scenario_name = "ha-e2e-stress-unassisted-failover-concurrent-sql".to_string();
@@ -2757,8 +2752,7 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Result<()
     .await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), WorkerError> {
+pub async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
     let token = unique_e2e_token()?;
@@ -2863,8 +2857,7 @@ async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), WorkerEr
     .await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity(
+pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity(
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
@@ -3083,5 +3076,85 @@ mod unit_tests {
         let count = ClusterFixture::count_commits_after_cutoff_strict(&workload, 1000)?;
         assert_eq!(count, 1);
         Ok(())
+    }
+
+    #[test]
+    fn family_symbols_remain_reachable_for_split_targets() {
+        let _ = E2E_COMMAND_TIMEOUT;
+        let _ = E2E_COMMAND_KILL_WAIT_TIMEOUT;
+        let _ = E2E_SQL_WORKLOAD_COMMAND_TIMEOUT;
+        let _ = E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT;
+        let _ = E2E_PG_STOP_TIMEOUT;
+        let _ = E2E_HTTP_STEP_TIMEOUT;
+        let _ = E2E_BOOTSTRAP_PRIMARY_TIMEOUT;
+        let _ = E2E_SCENARIO_TIMEOUT;
+        let _ = STRESS_ARTIFACT_DIR;
+        let _ = STRESS_SUMMARY_SCHEMA_VERSION;
+        let _: Option<StablePrimaryWaitPlan<'static>> = None;
+        let _: Option<SqlWorkloadSpec> = None;
+        let _: Option<SqlWorkloadTarget> = None;
+        let _: Option<SqlWorkloadCtx> = None;
+        let _: Option<SqlWorkloadHandle> = None;
+        let _: Option<SqlWorkloadSpecSummary> = None;
+        let _: Option<StressScenarioSummary> = None;
+        let _ = SqlErrorClass::Transient;
+        let _ = unique_e2e_token as fn() -> Result<String, WorkerError>;
+        let _ = e2e_http_timeout_ms as fn() -> Result<u64, WorkerError>;
+        let _ = classify_sql_error as fn(&str) -> SqlErrorClass;
+        let _ = sanitize_component as fn(&str) -> String;
+        let _ = sanitize_sql_identifier as fn(&str) -> String;
+        let _ = StressScenarioSummary::failed as fn(&str, String) -> StressScenarioSummary;
+        let _ = ClusterFixture::start;
+        let _: fn(&mut ClusterFixture, String) = ClusterFixture::record;
+        let _ = ClusterFixture::node_by_id;
+        let _ = ClusterFixture::node_index_by_id;
+        let _ = ClusterFixture::postgres_port_by_id;
+        let _ = ClusterFixture::run_sql_on_node;
+        let _ = ClusterFixture::run_sql_on_node_with_retry;
+        let _ = ClusterFixture::cluster_sql_roles_best_effort;
+        let _ = ClusterFixture::wait_for_rows_on_node;
+        let _ = ClusterFixture::sql_workload_ctx;
+        let _ = ClusterFixture::prepare_stress_table;
+        let _ = ClusterFixture::start_sql_workload;
+        let _ = ClusterFixture::stop_sql_workload_and_collect;
+        let _ = ClusterFixture::sample_ha_states_window;
+        let _ = ClusterFixture::assert_former_primary_demoted_or_unreachable_after_transition;
+        let _ = ClusterFixture::assert_table_key_integrity_on_node;
+        let _ = ClusterFixture::assert_table_key_integrity_strict;
+        let _ = ClusterFixture::assert_no_split_brain_write_evidence;
+        let _ = ClusterFixture::update_phase_history;
+        let _ = ClusterFixture::format_phase_history;
+        let _ = ClusterFixture::wait_for_stable_primary;
+        let _ = ClusterFixture::wait_for_stable_primary_best_effort;
+        let _ = ClusterFixture::assert_phase_history_contains_failover;
+        let _ = ClusterFixture::node_api_base_url_by_index;
+        let _ = ClusterFixture::cli_api_client_for_node_index;
+        let _ = ClusterFixture::request_switchover_via_cli;
+        let _ = ClusterFixture::request_switchover_until_stable_primary_changes;
+        let _ = ClusterFixture::fetch_node_ha_state_by_index;
+        let _ = ClusterFixture::poll_node_ha_states_best_effort;
+        let _ = ClusterFixture::poll_node_ha_states_best_effort_with_timeout;
+        let _ = ClusterFixture::cluster_ha_states;
+        let _ = ClusterFixture::ensure_runtime_tasks_healthy;
+        let _ = ClusterFixture::primary_members;
+        let _ = ClusterFixture::wait_for_primary_change;
+        let _ = ClusterFixture::wait_for_primary_change_best_effort;
+        let _ = ClusterFixture::wait_for_stable_primary_via_sql;
+        let _ = ClusterFixture::wait_for_stable_primary_resilient;
+        let _ = ClusterFixture::assert_no_dual_primary_window;
+        let _ = ClusterFixture::wait_for_all_nodes_failsafe;
+        let _ = ClusterFixture::stop_postgres_for_node;
+        let _ = ClusterFixture::stop_etcd_majority;
+        let _ = ClusterFixture::write_timeline_artifact;
+        let _ = ClusterFixture::write_stress_artifacts;
+        let _ = ClusterFixture::shutdown;
+        let _ = run_sql_workload_worker;
+        let _ = finalize_stress_scenario_result;
+        let _ = stop_etcd_majority_and_wait_failsafe_strict_all_nodes;
+        let _ = e2e_multi_node_unassisted_failover_sql_consistency;
+        let _ = e2e_multi_node_stress_planned_switchover_concurrent_sql;
+        let _ = e2e_multi_node_stress_unassisted_failover_concurrent_sql;
+        let _ = e2e_no_quorum_enters_failsafe_strict_all_nodes;
+        let _ = e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity;
     }
 }

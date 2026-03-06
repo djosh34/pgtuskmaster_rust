@@ -23,15 +23,15 @@ $(error ULTRA_LONG_TESTS must not be set externally; edit Makefile to change the
 endif
 
 ULTRA_LONG_TESTS := \
-		ha::e2e_multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql \
-		ha::e2e_multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql \
-		ha::e2e_multi_node::e2e_multi_node_unassisted_failover_sql_consistency \
-		ha::e2e_multi_node::e2e_no_quorum_enters_failsafe_strict_all_nodes \
-		ha::e2e_multi_node::e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity \
-		ha::e2e_partition_chaos::e2e_partition_minority_isolation_no_split_brain_rejoin \
-		ha::e2e_partition_chaos::e2e_partition_primary_isolation_failover_no_split_brain \
-		ha::e2e_partition_chaos::e2e_partition_api_path_isolation_preserves_primary \
-		ha::e2e_partition_chaos::e2e_partition_mixed_faults_heal_converges
+		e2e_multi_node_stress_planned_switchover_concurrent_sql \
+		e2e_multi_node_stress_unassisted_failover_concurrent_sql \
+		e2e_multi_node_unassisted_failover_sql_consistency \
+		e2e_no_quorum_enters_failsafe_strict_all_nodes \
+		e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity \
+		e2e_partition_minority_isolation_no_split_brain_rejoin \
+		e2e_partition_primary_isolation_failover_no_split_brain \
+		e2e_partition_api_path_isolation_preserves_primary \
+		e2e_partition_mixed_faults_heal_converges
 ULTRA_LONG_SKIP_ARGS := $(foreach t,$(ULTRA_LONG_TESTS),--skip $(t))
 
 ifneq ($(origin ULTRA_LONG_SKIP_ARGS),file)

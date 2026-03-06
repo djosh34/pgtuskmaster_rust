@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -7,15 +9,16 @@ use std::{
 
 use tokio::task::JoinHandle;
 
-use super::test_observer::{HaInvariantObserver, HaObserverConfig};
+use super::observer::{HaInvariantObserver, HaObserverConfig};
 
-use crate::{
-    cli::client::{CliApiClient, HaStateResponse},
+use pgtuskmaster_rust::{
+    api::HaStateResponse,
+    cli::client::CliApiClient,
     state::WorkerError,
     test_harness::{ha_e2e, net_proxy::ProxyMode},
 };
 
-use crate::test_harness::ha_e2e::handle::TestClusterHandle;
+use pgtuskmaster_rust::test_harness::ha_e2e::handle::TestClusterHandle;
 
 const E2E_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -37,17 +40,17 @@ struct StablePrimaryWaitPlan<'a> {
 }
 
 struct PartitionFixture {
-    _guard: crate::test_harness::namespace::NamespaceGuard,
+    _guard: pgtuskmaster_rust::test_harness::namespace::NamespaceGuard,
     pg_ctl_bin: PathBuf,
     psql_bin: PathBuf,
     superuser_username: String,
     superuser_dbname: String,
-    etcd: Option<crate::test_harness::etcd3::EtcdClusterHandle>,
+    etcd: Option<pgtuskmaster_rust::test_harness::etcd3::EtcdClusterHandle>,
     nodes: Vec<ha_e2e::NodeHandle>,
     tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
-    etcd_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
-    api_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
-    pg_proxies: BTreeMap<String, crate::test_harness::net_proxy::TcpProxyLink>,
+    etcd_proxies: BTreeMap<String, pgtuskmaster_rust::test_harness::net_proxy::TcpProxyLink>,
+    api_proxies: BTreeMap<String, pgtuskmaster_rust::test_harness::net_proxy::TcpProxyLink>,
+    pg_proxies: BTreeMap<String, pgtuskmaster_rust::test_harness::net_proxy::TcpProxyLink>,
     timeline: Vec<String>,
 }
 
@@ -976,8 +979,7 @@ async fn finalize_partition_scenario(
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<(), WorkerError> {
+pub async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = PartitionFixture::start(3).await?;
         let scenario_name = "ha-e2e-partition-minority-isolation";
@@ -1086,8 +1088,7 @@ async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<(), 
     .await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result<(), WorkerError> {
+pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = PartitionFixture::start(3).await?;
         let scenario_name = "ha-e2e-partition-primary-isolation";
@@ -1198,8 +1199,7 @@ async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result<(),
     .await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), WorkerError> {
+pub async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = PartitionFixture::start(3).await?;
         let scenario_name = "ha-e2e-partition-api-path-isolation";
@@ -1301,8 +1301,7 @@ async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), Work
     .await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerError> {
+pub async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = PartitionFixture::start(3).await?;
         let scenario_name = "ha-e2e-partition-mixed-faults-heal";
@@ -1420,4 +1419,55 @@ async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerError> 
         finalize_partition_scenario(&mut fixture, scenario_name, run_result).await
     })
     .await
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn family_symbols_remain_reachable_for_split_targets() {
+        let _ = E2E_COMMAND_TIMEOUT;
+        let _ = E2E_COMMAND_KILL_WAIT_TIMEOUT;
+        let _ = E2E_PG_STOP_TIMEOUT;
+        let _ = E2E_HTTP_STEP_TIMEOUT;
+        let _ = E2E_BOOTSTRAP_PRIMARY_TIMEOUT;
+        let _ = E2E_SCENARIO_TIMEOUT;
+        let _ = PARTITION_ARTIFACT_DIR;
+        let _: Option<StablePrimaryWaitPlan<'static>> = None;
+        let _: Option<PartitionFixture> = None;
+        let _ = PartitionFixture::start;
+        let _: fn(&mut PartitionFixture, String) = PartitionFixture::record;
+        let _ = PartitionFixture::node_ids;
+        let _ = PartitionFixture::node_by_id;
+        let _ = PartitionFixture::set_etcd_mode_for_node;
+        let _ = PartitionFixture::partition_node_from_etcd;
+        let _ = PartitionFixture::partition_primary_from_etcd;
+        let _ = PartitionFixture::isolate_api_path;
+        let _ = PartitionFixture::heal_all_network_faults;
+        let _ = PartitionFixture::fetch_node_ha_state;
+        let _ = PartitionFixture::cluster_ha_states_best_effort;
+        let _ = PartitionFixture::cluster_ha_states_strict;
+        let _ = PartitionFixture::wait_for_stable_primary;
+        let _ = PartitionFixture::wait_for_stable_primary_best_effort;
+        let _ = PartitionFixture::wait_for_stable_primary_via_sql;
+        let _ = PartitionFixture::wait_for_stable_primary_resilient;
+        let _ = PartitionFixture::primary_members;
+        let _ = PartitionFixture::assert_no_dual_primary_window;
+        let _ = PartitionFixture::wait_for_node_phase;
+        let _ = PartitionFixture::run_sql_on_node;
+        let _ = PartitionFixture::cluster_sql_roles_best_effort;
+        let _ = PartitionFixture::run_sql_on_node_with_retry;
+        let _ = PartitionFixture::wait_for_rows_on_node;
+        let _ = PartitionFixture::wait_for_table_digest_convergence;
+        let _ = PartitionFixture::write_timeline_artifact;
+        let _ = PartitionFixture::ensure_runtime_tasks_healthy;
+        let _ = PartitionFixture::shutdown;
+        let _ = sanitize_component as fn(&str) -> String;
+        let _ = finalize_partition_scenario;
+        let _ = e2e_partition_minority_isolation_no_split_brain_rejoin;
+        let _ = e2e_partition_primary_isolation_failover_no_split_brain;
+        let _ = e2e_partition_api_path_isolation_preserves_primary;
+        let _ = e2e_partition_mixed_faults_heal_converges;
+    }
 }

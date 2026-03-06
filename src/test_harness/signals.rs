@@ -1,7 +1,7 @@
 use std::io;
 
 #[cfg(unix)]
-pub(crate) fn send_signal(pid: u32, signal: i32) -> Result<(), io::Error> {
+pub fn send_signal(pid: u32, signal: i32) -> Result<(), io::Error> {
     let pid_i32 = i32::try_from(pid).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -24,7 +24,7 @@ pub(crate) fn send_signal(pid: u32, signal: i32) -> Result<(), io::Error> {
 }
 
 #[cfg(unix)]
-pub(crate) fn pid_exists(pid: u32) -> Result<bool, io::Error> {
+pub fn pid_exists(pid: u32) -> Result<bool, io::Error> {
     let pid_i32 = i32::try_from(pid).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -48,7 +48,7 @@ pub(crate) fn pid_exists(pid: u32) -> Result<bool, io::Error> {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn send_signal(_pid: u32, _signal: i32) -> Result<(), io::Error> {
+pub fn send_signal(_pid: u32, _signal: i32) -> Result<(), io::Error> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "signals are only supported on unix",
@@ -56,7 +56,7 @@ pub(crate) fn send_signal(_pid: u32, _signal: i32) -> Result<(), io::Error> {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn pid_exists(_pid: u32) -> Result<bool, io::Error> {
+pub fn pid_exists(_pid: u32) -> Result<bool, io::Error> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "signals are only supported on unix",

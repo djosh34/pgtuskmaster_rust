@@ -8,31 +8,31 @@ use super::HarnessError;
 static NAMESPACE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TestNamespace {
-    pub(crate) id: String,
-    pub(crate) root_dir: PathBuf,
+pub struct TestNamespace {
+    pub id: String,
+    pub root_dir: PathBuf,
 }
 
 impl TestNamespace {
-    pub(crate) fn child_dir(&self, relative: impl AsRef<Path>) -> PathBuf {
+    pub fn child_dir(&self, relative: impl AsRef<Path>) -> PathBuf {
         self.root_dir.join(relative)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct NamespaceGuard {
+pub struct NamespaceGuard {
     namespace: Option<TestNamespace>,
 }
 
 impl NamespaceGuard {
-    pub(crate) fn new(test_name: &str) -> Result<Self, HarnessError> {
+    pub fn new(test_name: &str) -> Result<Self, HarnessError> {
         let namespace = create_namespace(test_name)?;
         Ok(Self {
             namespace: Some(namespace),
         })
     }
 
-    pub(crate) fn namespace(&self) -> Result<&TestNamespace, HarnessError> {
+    pub fn namespace(&self) -> Result<&TestNamespace, HarnessError> {
         self.namespace.as_ref().ok_or_else(|| {
             HarnessError::InvalidInput("namespace guard no longer owns namespace".to_string())
         })
@@ -69,7 +69,7 @@ fn parse_env_bool(value: &str) -> bool {
     )
 }
 
-pub(crate) fn create_namespace(test_name: &str) -> Result<TestNamespace, HarnessError> {
+pub fn create_namespace(test_name: &str) -> Result<TestNamespace, HarnessError> {
     let sanitized_name = sanitize_name(test_name);
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -91,7 +91,7 @@ pub(crate) fn create_namespace(test_name: &str) -> Result<TestNamespace, Harness
     Ok(TestNamespace { id, root_dir })
 }
 
-pub(crate) fn cleanup_namespace(ns: TestNamespace) -> Result<(), HarnessError> {
+pub fn cleanup_namespace(ns: TestNamespace) -> Result<(), HarnessError> {
     match fs::remove_dir_all(&ns.root_dir) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),

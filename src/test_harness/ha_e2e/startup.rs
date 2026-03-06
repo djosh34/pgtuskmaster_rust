@@ -257,7 +257,7 @@ impl StartupGuard {
     }
 }
 
-pub(crate) async fn start_cluster(config: TestConfig) -> Result<TestClusterHandle, WorkerError> {
+pub async fn start_cluster(config: TestConfig) -> Result<TestClusterHandle, WorkerError> {
     let mut config = config;
     config.validate()?;
 

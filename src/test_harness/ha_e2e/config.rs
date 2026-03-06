@@ -4,63 +4,63 @@ use crate::config::{BackupRecoveryMode, BackupTakeoverPolicy};
 use crate::state::WorkerError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Mode {
+pub enum Mode {
     Plain,
     PartitionProxy,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PgBackRestHarnessOptions {
-    pub(crate) backup: Vec<String>,
-    pub(crate) info: Vec<String>,
-    pub(crate) check: Vec<String>,
-    pub(crate) restore: Vec<String>,
-    pub(crate) archive_push: Vec<String>,
-    pub(crate) archive_get: Vec<String>,
+pub struct PgBackRestHarnessOptions {
+    pub backup: Vec<String>,
+    pub info: Vec<String>,
+    pub check: Vec<String>,
+    pub restore: Vec<String>,
+    pub archive_push: Vec<String>,
+    pub archive_get: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PgBackRestHarnessConfig {
-    pub(crate) stanza: String,
-    pub(crate) repo: String,
+pub struct PgBackRestHarnessConfig {
+    pub stanza: String,
+    pub repo: String,
     /// Relative to the test namespace root directory.
-    pub(crate) repo1_path_rel: String,
-    pub(crate) options: PgBackRestHarnessOptions,
+    pub repo1_path_rel: String,
+    pub options: PgBackRestHarnessOptions,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct BackupHarnessConfig {
-    pub(crate) enabled: bool,
-    pub(crate) bootstrap_enabled: bool,
-    pub(crate) takeover_policy: BackupTakeoverPolicy,
-    pub(crate) recovery_mode: BackupRecoveryMode,
-    pub(crate) pgbackrest: Option<PgBackRestHarnessConfig>,
+pub struct BackupHarnessConfig {
+    pub enabled: bool,
+    pub bootstrap_enabled: bool,
+    pub takeover_policy: BackupTakeoverPolicy,
+    pub recovery_mode: BackupRecoveryMode,
+    pub pgbackrest: Option<PgBackRestHarnessConfig>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct TimeoutConfig {
-    pub(crate) command_timeout: Duration,
-    pub(crate) command_kill_wait_timeout: Duration,
-    pub(crate) http_step_timeout: Duration,
-    pub(crate) api_readiness_timeout: Duration,
-    pub(crate) bootstrap_primary_timeout: Duration,
-    pub(crate) scenario_timeout: Duration,
+pub struct TimeoutConfig {
+    pub command_timeout: Duration,
+    pub command_kill_wait_timeout: Duration,
+    pub http_step_timeout: Duration,
+    pub api_readiness_timeout: Duration,
+    pub bootstrap_primary_timeout: Duration,
+    pub scenario_timeout: Duration,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct TestConfig {
-    pub(crate) test_name: String,
-    pub(crate) cluster_name: String,
-    pub(crate) scope: String,
-    pub(crate) node_count: usize,
-    pub(crate) etcd_members: Vec<String>,
-    pub(crate) mode: Mode,
-    pub(crate) timeouts: TimeoutConfig,
-    pub(crate) backup: Option<BackupHarnessConfig>,
+pub struct TestConfig {
+    pub test_name: String,
+    pub cluster_name: String,
+    pub scope: String,
+    pub node_count: usize,
+    pub etcd_members: Vec<String>,
+    pub mode: Mode,
+    pub timeouts: TimeoutConfig,
+    pub backup: Option<BackupHarnessConfig>,
 }
 
 impl TestConfig {
-    pub(crate) fn validate(&self) -> Result<(), WorkerError> {
+    pub fn validate(&self) -> Result<(), WorkerError> {
         if self.test_name.trim().is_empty() {
             return Err(WorkerError::Message(
                 "TestConfig.test_name must not be empty".to_string(),

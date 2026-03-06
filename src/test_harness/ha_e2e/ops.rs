@@ -3,7 +3,7 @@ use crate::state::WorkerError;
 use super::handle::TestClusterHandle;
 
 impl TestClusterHandle {
-    pub(crate) async fn shutdown(&mut self) -> Result<(), WorkerError> {
+    pub async fn shutdown(&mut self) -> Result<(), WorkerError> {
         let mut failures = Vec::new();
 
         for task in &self.tasks {

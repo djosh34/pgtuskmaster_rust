@@ -74,13 +74,13 @@ struct AttestedBinary {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct VerifiedRealBinaries {
+pub struct VerifiedRealBinaries {
     by_label: BTreeMap<String, PathBuf>,
 }
 
 static VERIFIED: OnceLock<VerifiedRealBinaries> = OnceLock::new();
 
-pub(crate) fn require_verified_real_binary(label: &str) -> Result<PathBuf, HarnessError> {
+pub fn require_verified_real_binary(label: &str) -> Result<PathBuf, HarnessError> {
     let verified = verified_real_binaries()?;
     verified.by_label.get(label).cloned().ok_or_else(|| {
         HarnessError::InvalidInput(format!(
@@ -104,7 +104,7 @@ fn verified_real_binaries() -> Result<&'static VerifiedRealBinaries, HarnessErro
     })
 }
 
-pub(crate) fn verify_real_binaries_from_repo_root(
+pub fn verify_real_binaries_from_repo_root(
     repo_root: &Path,
 ) -> Result<VerifiedRealBinaries, HarnessError> {
     let policy_path = repo_root.join(POLICY_REL_PATH);

@@ -17,7 +17,7 @@ At a high level, the harness is responsible for:
 - starting node runtimes and driving lifecycle scenarios
 - injecting failures (network blocks/latency) and collecting artifacts for debugging.
 
-The harness lives under `src/test_harness/` and is consumed by real-binary e2e tests (for example HA scenarios in `src/ha/e2e_*.rs`).
+The harness lives under `src/test_harness/` and is consumed by real-binary e2e tests (for example the HA scenarios in `tests/ha_multi_node_*.rs`, `tests/ha_partition_*.rs`, and their shared support modules under `tests/ha/support/`).
 
 ## Common pitfalls addressed by harness design
 

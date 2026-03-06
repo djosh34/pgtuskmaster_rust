@@ -26,7 +26,7 @@ Contributor test guidance follows the same split:
 
 - `src/ha/decide.rs` should prove exact `DecisionFacts -> PhaseOutcome` mappings and lowered-plan invariants with immutable test builders.
 - `src/ha/worker.rs` should prove `step_once(...)` publishes the same decision-selected state and dispatches the matching side effects for a given snapshot.
-- `src/ha/e2e_*.rs` should keep scenario driving separate from continuous invariant observation; the observer window must cover the fault sequence, not only the final convergence point.
+- `tests/ha_multi_node_*.rs` and `tests/ha_partition_*.rs` should keep scenario driving separate from continuous invariant observation; the observer window in `tests/ha/support/observer.rs` must cover the fault sequence, not only the final convergence point.
 
 ## Inputs: what HA reads
 
@@ -68,7 +68,7 @@ If you change decision or lowering semantics, update both layers and tests toget
 - decision-level tests in `src/ha/decide.rs`
 - lowering tests in `src/ha/lower.rs`
 - apply-layer tests in `src/ha/apply.rs`, `src/ha/process_dispatch.rs`, and `src/ha/worker.rs`
-- continuous-observer HA scenario tests in `src/ha/e2e_multi_node.rs`, `src/ha/e2e_partition_chaos.rs`, and `src/ha/test_observer.rs`
+- continuous-observer HA scenario tests in `tests/ha_multi_node_*.rs`, `tests/ha_partition_*.rs`, and `tests/ha/support/observer.rs`
 
 ## The core phases (what they mean)
 

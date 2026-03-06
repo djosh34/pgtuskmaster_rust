@@ -5,7 +5,7 @@ use crate::config::BinaryPaths;
 use crate::test_harness::provenance;
 use crate::test_harness::HarnessError;
 
-pub(crate) fn validate_executable_file(path: &Path, label: &str) -> Result<(), HarnessError> {
+pub fn validate_executable_file(path: &Path, label: &str) -> Result<(), HarnessError> {
     let metadata = fs::metadata(path).map_err(|err| {
         HarnessError::InvalidInput(format!(
             "{label} binary missing or inaccessible: {} ({err})",
@@ -35,7 +35,7 @@ pub(crate) fn validate_executable_file(path: &Path, label: &str) -> Result<(), H
     Ok(())
 }
 
-pub(crate) fn require_binary(path: &Path) -> Result<PathBuf, HarnessError> {
+pub fn require_binary(path: &Path) -> Result<PathBuf, HarnessError> {
     if !path.exists() {
         return Err(HarnessError::InvalidInput(format!(
             "couldn't find binary {}, please either change path or install the binary for this to pass",
@@ -47,19 +47,19 @@ pub(crate) fn require_binary(path: &Path) -> Result<PathBuf, HarnessError> {
     Ok(path.to_path_buf())
 }
 
-pub(crate) fn require_etcd_bin_for_real_tests() -> Result<PathBuf, HarnessError> {
+pub fn require_etcd_bin_for_real_tests() -> Result<PathBuf, HarnessError> {
     provenance::require_verified_real_binary("etcd")
 }
 
-pub(crate) fn require_pg16_bin_for_real_tests(name: &str) -> Result<PathBuf, HarnessError> {
+pub fn require_pg16_bin_for_real_tests(name: &str) -> Result<PathBuf, HarnessError> {
     provenance::require_verified_real_binary(name)
 }
 
-pub(crate) fn require_pgbackrest_bin_for_real_tests() -> Result<PathBuf, HarnessError> {
+pub fn require_pgbackrest_bin_for_real_tests() -> Result<PathBuf, HarnessError> {
     provenance::require_verified_real_binary("pgbackrest")
 }
 
-pub(crate) fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryPaths, HarnessError> {
+pub fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryPaths, HarnessError> {
     Ok(BinaryPaths {
         postgres: require_pg16_bin_for_real_tests("postgres")?,
         pg_ctl: require_pg16_bin_for_real_tests("pg_ctl")?,

@@ -3,21 +3,20 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-pub(crate) mod auth;
-pub(crate) mod binaries;
-pub(crate) mod etcd3;
-#[cfg(test)]
-pub(crate) mod ha_e2e;
-pub(crate) mod namespace;
-pub(crate) mod net_proxy;
-pub(crate) mod pg16;
-pub(crate) mod ports;
-pub(crate) mod provenance;
-pub(crate) mod signals;
-pub(crate) mod tls;
+pub mod auth;
+pub mod binaries;
+pub mod etcd3;
+pub mod ha_e2e;
+pub mod namespace;
+pub mod net_proxy;
+pub mod pg16;
+pub mod ports;
+pub mod provenance;
+pub mod signals;
+pub mod tls;
 
 #[derive(Debug, Error)]
-pub(crate) enum HarnessError {
+pub enum HarnessError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("io error: {0}")]

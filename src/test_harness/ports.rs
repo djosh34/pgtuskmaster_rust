@@ -17,14 +17,14 @@ use libc::{flock, LOCK_EX, LOCK_UN};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
-pub(crate) struct PortReservation {
+pub struct PortReservation {
     listeners: Vec<TcpListener>,
     ports: Vec<u16>,
     leased_ports: Vec<u16>,
 }
 
 impl PortReservation {
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             listeners: Vec::new(),
             ports: Vec::new(),
@@ -32,11 +32,11 @@ impl PortReservation {
         }
     }
 
-    pub(crate) fn as_slice(&self) -> &[u16] {
+    pub fn as_slice(&self) -> &[u16] {
         &self.ports
     }
 
-    pub(crate) fn release_port(&mut self, port: u16) -> Result<(), HarnessError> {
+    pub fn release_port(&mut self, port: u16) -> Result<(), HarnessError> {
         let index = self
             .ports
             .iter()
@@ -52,7 +52,7 @@ impl PortReservation {
         Ok(())
     }
 
-    pub(crate) fn take_listener(&mut self, port: u16) -> Result<TcpListener, HarnessError> {
+    pub fn take_listener(&mut self, port: u16) -> Result<TcpListener, HarnessError> {
         let index = self
             .ports
             .iter()
@@ -66,8 +66,12 @@ impl PortReservation {
         Ok(self.listeners.remove(index))
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.listeners.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.listeners.is_empty()
     }
 }
 
@@ -82,33 +86,37 @@ impl Drop for PortReservation {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct HaTopologyPorts {
-    pub(crate) etcd_client_ports: Vec<u16>,
-    pub(crate) etcd_peer_ports: Vec<u16>,
-    pub(crate) node_ports: Vec<u16>,
+pub struct HaTopologyPorts {
+    pub etcd_client_ports: Vec<u16>,
+    pub etcd_peer_ports: Vec<u16>,
+    pub node_ports: Vec<u16>,
 }
 
 #[derive(Debug)]
-pub(crate) struct HaTopologyPortReservation {
+pub struct HaTopologyPortReservation {
     reservation: PortReservation,
     layout: HaTopologyPorts,
 }
 
 impl HaTopologyPortReservation {
-    pub(crate) fn layout(&self) -> &HaTopologyPorts {
+    pub fn layout(&self) -> &HaTopologyPorts {
         &self.layout
     }
 
-    pub(crate) fn release_port(&mut self, port: u16) -> Result<(), HarnessError> {
+    pub fn release_port(&mut self, port: u16) -> Result<(), HarnessError> {
         self.reservation.release_port(port)
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.reservation.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.reservation.is_empty()
     }
 }
 
-pub(crate) fn allocate_ports(count: usize) -> Result<PortReservation, HarnessError> {
+pub fn allocate_ports(count: usize) -> Result<PortReservation, HarnessError> {
     if count == 0 {
         return Err(HarnessError::InvalidInput(
             "allocate_ports count must be greater than zero".to_string(),
@@ -299,7 +307,7 @@ fn unlease_ports_best_effort(ports: &[u16]) -> Result<(), HarnessError> {
     Ok(())
 }
 
-pub(crate) fn allocate_ha_topology_ports(
+pub fn allocate_ha_topology_ports(
     node_count: usize,
     etcd_members: usize,
 ) -> Result<HaTopologyPortReservation, HarnessError> {

@@ -114,7 +114,8 @@ Owns:
 
 - real-binary test orchestration (namespaces, port leasing, etcd/postgres process control)
 - fault injection primitives (TCP proxy)
-- black-box and BDD-style tests that assert external behavior, not internal details.
+- black-box and BDD-style tests that assert external behavior, not internal details
+- focused HA integration entrypoints in `tests/ha_multi_node_*.rs` and `tests/ha_partition_*.rs`, with shared scenario support under `tests/ha/support/`.
 
 The harness is part of correctness: HA logic is not “proven” until it survives real process timing and coordination.
 
@@ -177,4 +178,4 @@ If you want to quickly validate the mental model in code, these are the best sta
 - `src/ha/decide.rs` and `src/ha/worker.rs`: pure decisions + dispatch boundary
 - `src/dcs/worker.rs` and `src/dcs/etcd_store.rs`: watch cache + reconnect semantics
 - `src/process/worker.rs`: subprocess boundary, timeouts, and error surfacing
-- `tests/bdd_api_http.rs` and `src/ha/e2e_multi_node.rs`: external-interface behavior and real-process e2e coverage
+- `tests/bdd_api_http.rs` and `tests/ha_multi_node_*.rs`: external-interface behavior and real-process e2e coverage

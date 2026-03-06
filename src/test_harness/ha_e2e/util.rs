@@ -14,19 +14,19 @@ use crate::cli::error::CliError;
 use crate::state::{UnixMillis, WorkerError};
 use crate::test_harness::ports::{allocate_ports, PortReservation};
 
-pub(crate) async fn run_with_local_set<F, T>(future: F) -> T
+pub async fn run_with_local_set<F, T>(future: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
     tokio::task::LocalSet::new().run_until(future).await
 }
 
-pub(crate) fn http_timeout_ms(timeout: Duration) -> Result<u64, WorkerError> {
+pub fn http_timeout_ms(timeout: Duration) -> Result<u64, WorkerError> {
     u64::try_from(timeout.as_millis())
         .map_err(|_| WorkerError::Message("http timeout does not fit into u64".to_string()))
 }
 
-pub(crate) async fn wait_for_node_api_ready_or_task_exit(
+pub async fn wait_for_node_api_ready_or_task_exit(
     node_addr: SocketAddr,
     node_id: &str,
     postgres_log_file: &Path,
@@ -77,7 +77,7 @@ pub(crate) async fn wait_for_node_api_ready_or_task_exit(
     }
 }
 
-pub(crate) fn read_log_tail(path: &Path, max_lines: usize) -> String {
+pub fn read_log_tail(path: &Path, max_lines: usize) -> String {
     let content = match fs::read_to_string(path) {
         Ok(value) => value,
         Err(err) => return format!("log-read-failed: {err}"),
@@ -93,7 +93,7 @@ pub(crate) fn read_log_tail(path: &Path, max_lines: usize) -> String {
     lines.join(" | ")
 }
 
-pub(crate) async fn fetch_ha_state_via_tcp(
+pub async fn fetch_ha_state_via_tcp(
     node_addr: SocketAddr,
     http_step_timeout: Duration,
 ) -> Result<HaStateResponse, WorkerError> {
@@ -194,7 +194,7 @@ fn parse_raw_http_response(raw: &[u8]) -> Result<(u16, &[u8]), WorkerError> {
     Ok((status_code, body))
 }
 
-pub(crate) async fn wait_for_bootstrap_primary(
+pub async fn wait_for_bootstrap_primary(
     node_addr: SocketAddr,
     expected_member_id: &str,
     http_step_timeout: Duration,
@@ -236,7 +236,7 @@ pub(crate) async fn wait_for_bootstrap_primary(
     }
 }
 
-pub(crate) fn unix_now() -> Result<UnixMillis, WorkerError> {
+pub fn unix_now() -> Result<UnixMillis, WorkerError> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| WorkerError::Message(format!("system time before epoch: {err}")))?;
@@ -245,7 +245,7 @@ pub(crate) fn unix_now() -> Result<UnixMillis, WorkerError> {
     Ok(UnixMillis(millis))
 }
 
-pub(crate) async fn pg_ctl_stop_immediate(
+pub async fn pg_ctl_stop_immediate(
     pg_ctl: &Path,
     data_dir: &Path,
     command_timeout: Duration,
@@ -370,7 +370,7 @@ async fn force_kill_postmaster_pid(pid: u32, label: &str) -> Result<(), WorkerEr
     }
 }
 
-pub(crate) async fn wait_for_child_exit_with_timeout(
+pub async fn wait_for_child_exit_with_timeout(
     label: &str,
     child: &mut Child,
     timeout: Duration,
@@ -398,7 +398,7 @@ pub(crate) async fn wait_for_child_exit_with_timeout(
     }
 }
 
-pub(crate) async fn run_psql_statement(
+pub async fn run_psql_statement(
     psql: &Path,
     port: u16,
     user: &str,
@@ -483,7 +483,7 @@ pub(crate) async fn run_psql_statement(
     )))
 }
 
-pub(crate) fn parse_psql_rows(output: &str) -> Vec<String> {
+pub fn parse_psql_rows(output: &str) -> Vec<String> {
     output
         .lines()
         .map(str::trim)
@@ -492,7 +492,7 @@ pub(crate) fn parse_psql_rows(output: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn parse_single_u64(output: &str) -> Result<u64, WorkerError> {
+pub fn parse_single_u64(output: &str) -> Result<u64, WorkerError> {
     let rows = parse_psql_rows(output);
     if rows.len() != 1 {
         return Err(WorkerError::Message(format!(
@@ -505,13 +505,13 @@ pub(crate) fn parse_single_u64(output: &str) -> Result<u64, WorkerError> {
     })
 }
 
-pub(crate) fn parse_loopback_socket(port: u16) -> Result<SocketAddr, WorkerError> {
+pub fn parse_loopback_socket(port: u16) -> Result<SocketAddr, WorkerError> {
     format!("127.0.0.1:{port}")
         .parse::<SocketAddr>()
         .map_err(|err| WorkerError::Message(format!("parse socket failed for port={port}: {err}")))
 }
 
-pub(crate) fn parse_http_endpoint(endpoint: &str) -> Result<SocketAddr, WorkerError> {
+pub fn parse_http_endpoint(endpoint: &str) -> Result<SocketAddr, WorkerError> {
     let host_port = endpoint.strip_prefix("http://").ok_or_else(|| {
         WorkerError::Message(format!(
             "unsupported endpoint format for proxy target: {endpoint}"
@@ -522,7 +522,7 @@ pub(crate) fn parse_http_endpoint(endpoint: &str) -> Result<SocketAddr, WorkerEr
     })
 }
 
-pub(crate) fn reserve_non_overlapping_ports(
+pub fn reserve_non_overlapping_ports(
     count: usize,
     forbidden: &BTreeSet<u16>,
 ) -> Result<PortReservation, WorkerError> {
@@ -546,7 +546,7 @@ pub(crate) fn reserve_non_overlapping_ports(
     )))
 }
 
-pub(crate) async fn get_ha_state_with_fallback(
+pub async fn get_ha_state_with_fallback(
     client: &CliApiClient,
     node_id: &str,
     fallback_tcp_addr: SocketAddr,

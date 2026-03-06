@@ -20,8 +20,8 @@ pub(crate) mod process;
 pub mod runtime;
 pub(crate) mod self_exe;
 pub mod state;
-#[cfg(test)]
-pub(crate) mod test_harness;
+#[doc(hidden)]
+pub mod test_harness;
 pub(crate) mod tls;
 pub mod wal;
 pub mod wal_passthrough;

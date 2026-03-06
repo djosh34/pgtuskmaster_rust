@@ -77,7 +77,7 @@ Best for:
 - process-level failure behavior (crashes, restarts, fencing, rewind behavior)
 - network fault injection (blocked links, latency).
 
-These tests use the harness (`src/test_harness/*`) and are considered required gates: missing binaries are an environment problem to fix, not a reason to skip tests.
+These tests use the harness (`src/test_harness/*`) together with HA scenario support under `tests/ha/support/*`, and they are considered required gates: missing binaries are an environment problem to fix, not a reason to skip tests.
 
 For HA specifically, end-to-end assertions should not rely only on a final converged state. Start a continuous observer window around the disruptive action, sample HA state throughout the scenario, and fail closed if there is insufficient evidence to prove invariants such as “never more than one primary”.
 
@@ -171,7 +171,7 @@ This is a deliberately small “map” of important tests and the subsystem boun
 - `tests/bdd_api_http.rs`: API contract and intent writes (for example switchover endpoints).
 - `tests/bdd_state_watch.rs`: state/watch semantics visible to clients.
 - `tests/cli_binary.rs`: binary-level smoke coverage (packaging, CLI invocation).
-- `src/ha/e2e_*.rs`: multi-node real-binary HA scenarios with continuous invariant observation across leader election, switchover, failover, and fencing sequences.
+- `tests/ha_multi_node_*.rs` and `tests/ha_partition_*.rs`: focused real-binary HA scenario entrypoints, backed by `tests/ha/support/{multi_node,partition,observer}.rs` for continuous invariant observation, fixtures, and artifact handling.
 
 ## Flake triage (symptoms → likely causes → next probe)
 

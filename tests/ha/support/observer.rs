@@ -1,22 +1,28 @@
-use crate::{api::HaPhaseResponse, cli::client::HaStateResponse, state::WorkerError};
+#![allow(dead_code)]
+
+use pgtuskmaster_rust::{
+    api::HaPhaseResponse,
+    api::HaStateResponse,
+    state::WorkerError,
+};
 
 #[derive(Clone, Default, serde::Serialize)]
-pub(crate) struct HaObservationStats {
-    pub(crate) sample_count: u64,
-    pub(crate) api_error_count: u64,
-    pub(crate) max_concurrent_primaries: usize,
-    pub(crate) leader_change_count: u64,
-    pub(crate) failsafe_sample_count: u64,
-    pub(crate) recent_samples: Vec<String>,
+pub struct HaObservationStats {
+    pub sample_count: u64,
+    pub api_error_count: u64,
+    pub max_concurrent_primaries: usize,
+    pub leader_change_count: u64,
+    pub failsafe_sample_count: u64,
+    pub recent_samples: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct HaObserverConfig {
-    pub(crate) min_successful_samples: u64,
-    pub(crate) ring_capacity: usize,
+pub struct HaObserverConfig {
+    pub min_successful_samples: u64,
+    pub ring_capacity: usize,
 }
 
-pub(crate) struct HaInvariantObserver {
+pub struct HaInvariantObserver {
     config: HaObserverConfig,
     stats: HaObservationStats,
     poll_attempts: u64,
@@ -26,7 +32,7 @@ pub(crate) struct HaInvariantObserver {
 }
 
 impl HaInvariantObserver {
-    pub(crate) fn new(config: HaObserverConfig) -> Self {
+    pub fn new(config: HaObserverConfig) -> Self {
         Self {
             config,
             stats: HaObservationStats::default(),
@@ -37,11 +43,11 @@ impl HaInvariantObserver {
         }
     }
 
-    pub(crate) fn record_poll_attempt(&mut self) {
+    pub fn record_poll_attempt(&mut self) {
         self.poll_attempts = self.poll_attempts.saturating_add(1);
     }
 
-    pub(crate) fn record_api_states(
+    pub fn record_api_states(
         &mut self,
         states: &[HaStateResponse],
         errors: &[String],
@@ -118,7 +124,7 @@ impl HaInvariantObserver {
         Ok(())
     }
 
-    pub(crate) fn record_sql_roles(
+    pub fn record_sql_roles(
         &mut self,
         roles: &[(String, String)],
         errors: &[String],
@@ -157,7 +163,7 @@ impl HaInvariantObserver {
         Ok(())
     }
 
-    pub(crate) fn record_observation_gap(&mut self, api_errors: &[String], sql_errors: &[String]) {
+    pub fn record_observation_gap(&mut self, api_errors: &[String], sql_errors: &[String]) {
         self.poll_errors = self.poll_errors.saturating_add(1);
         let message = format!(
             "api_errors={}; sql_errors={}",
@@ -168,22 +174,22 @@ impl HaInvariantObserver {
         self.push_recent(format!("observation_gap:{message}"));
     }
 
-    pub(crate) fn record_transport_error(&mut self, error: impl Into<String>) {
+    pub fn record_transport_error(&mut self, error: impl Into<String>) {
         self.poll_errors = self.poll_errors.saturating_add(1);
         let message = error.into();
         self.last_poll_error = Some(message.clone());
         self.push_recent(format!("transport_error:{message}"));
     }
 
-    pub(crate) fn stats(&self) -> &HaObservationStats {
+    pub fn stats(&self) -> &HaObservationStats {
         &self.stats
     }
 
-    pub(crate) fn into_stats(self) -> HaObservationStats {
+    pub fn into_stats(self) -> HaObservationStats {
         self.stats
     }
 
-    pub(crate) fn finalize_no_dual_primary_window(&self) -> Result<(), WorkerError> {
+    pub fn finalize_no_dual_primary_window(&self) -> Result<(), WorkerError> {
         if self.stats.sample_count < self.config.min_successful_samples {
             let detail = self.last_poll_error.as_deref().unwrap_or("none");
             return Err(WorkerError::Message(format!(
@@ -211,7 +217,7 @@ impl HaInvariantObserver {
     }
 }
 
-pub(crate) fn assert_no_dual_primary_in_samples(
+pub fn assert_no_dual_primary_in_samples(
     stats: &HaObservationStats,
     min_successful_samples: u64,
 ) -> Result<(), WorkerError> {
@@ -260,9 +266,8 @@ mod unit_tests {
         assert_no_dual_primary_in_samples, HaInvariantObserver, HaObservationStats,
         HaObserverConfig,
     };
-    use crate::{
-        api::{DcsTrustResponse, HaDecisionResponse, HaPhaseResponse},
-        cli::client::HaStateResponse,
+    use pgtuskmaster_rust::api::{
+        DcsTrustResponse, HaDecisionResponse, HaPhaseResponse, HaStateResponse,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -374,5 +379,16 @@ mod unit_tests {
             )));
         }
         Ok(())
+    }
+
+    #[test]
+    fn observer_transport_and_stats_helpers_are_reachable() {
+        let mut observer = HaInvariantObserver::new(HaObserverConfig {
+            min_successful_samples: 1,
+            ring_capacity: 4,
+        });
+        observer.record_transport_error("synthetic");
+        let stats = observer.into_stats();
+        assert_eq!(stats.recent_samples.len(), 1);
     }
 }

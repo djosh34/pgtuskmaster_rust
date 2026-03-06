@@ -21,7 +21,7 @@ use super::HarnessError;
 const PROXY_READ_BUFFER_SIZE: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProxyMode {
+pub enum ProxyMode {
     PassThrough,
     Blocked,
     Latency {
@@ -46,13 +46,13 @@ impl ProxyMode {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ProxyLinkSpec {
-    pub(crate) name: String,
-    pub(crate) listen_addr: SocketAddr,
-    pub(crate) target_addr: SocketAddr,
+pub struct ProxyLinkSpec {
+    pub name: String,
+    pub listen_addr: SocketAddr,
+    pub target_addr: SocketAddr,
 }
 
-pub(crate) struct TcpProxyLink {
+pub struct TcpProxyLink {
     listen_addr: SocketAddr,
     mode_tx: watch::Sender<ProxyMode>,
     shutdown_tx: watch::Sender<bool>,
@@ -61,7 +61,7 @@ pub(crate) struct TcpProxyLink {
 }
 
 impl TcpProxyLink {
-    pub(crate) async fn spawn(spec: ProxyLinkSpec) -> Result<Self, HarnessError> {
+    pub async fn spawn(spec: ProxyLinkSpec) -> Result<Self, HarnessError> {
         if spec.name.trim().is_empty() {
             return Err(HarnessError::InvalidInput(
                 "proxy link name must not be empty".to_string(),
@@ -124,7 +124,7 @@ impl TcpProxyLink {
         })
     }
 
-    pub(crate) async fn spawn_with_listener(
+    pub async fn spawn_with_listener(
         name: String,
         std_listener: std::net::TcpListener,
         target_addr: SocketAddr,
@@ -192,11 +192,11 @@ impl TcpProxyLink {
         })
     }
 
-    pub(crate) fn listen_addr(&self) -> SocketAddr {
+    pub fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
     }
 
-    pub(crate) async fn set_mode(&self, mode: ProxyMode) -> Result<(), HarnessError> {
+    pub async fn set_mode(&self, mode: ProxyMode) -> Result<(), HarnessError> {
         let should_abort = mode == ProxyMode::Blocked;
         self.mode_tx.send(mode).map_err(|err| {
             HarnessError::InvalidInput(format!("proxy mode channel closed: {err}"))
@@ -207,7 +207,7 @@ impl TcpProxyLink {
         Ok(())
     }
 
-    pub(crate) async fn shutdown(self) -> Result<(), HarnessError> {
+    pub async fn shutdown(self) -> Result<(), HarnessError> {
         self.shutdown_tx.send(true).map_err(|err| {
             HarnessError::InvalidInput(format!("proxy shutdown channel closed: {err}"))
         })?;

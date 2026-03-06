@@ -1,12 +1,12 @@
-pub(crate) mod config;
-pub(crate) mod handle;
-pub(crate) mod ops;
-pub(crate) mod startup;
-pub(crate) mod util;
+pub mod config;
+pub mod handle;
+pub mod ops;
+pub mod startup;
+pub mod util;
 
-pub(crate) use config::{Mode, TestConfig, TimeoutConfig};
-pub(crate) use handle::NodeHandle;
-pub(crate) use startup::start_cluster;
+pub use config::{Mode, TestConfig, TimeoutConfig};
+pub use handle::{NodeHandle, TestClusterHandle};
+pub use startup::start_cluster;
 
 #[cfg(test)]
 mod tests {

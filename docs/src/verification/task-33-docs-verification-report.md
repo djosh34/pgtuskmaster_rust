@@ -342,21 +342,21 @@ Each claim row uses:
 
 | claim_id | doc_loc | claim | status | evidence | notes |
 |---|---|---|---|---|---|
-| test-001 | `docs/src/testing/index.md:3` | Test strategy includes “real binary” integration paths with etcd/PostgreSQL. | verified | `src/ha/e2e_multi_node.rs` (`#[tokio::test]` real-binary cluster fixture), `tools/install-etcd.sh`, `tools/install-postgres16.sh` |  |
+| test-001 | `docs/src/testing/index.md:3` | Test strategy includes “real binary” integration paths with etcd/PostgreSQL. | verified | `tests/ha_multi_node_failover.rs` (`#[tokio::test]` real-binary HA entrypoint), `tests/ha/support/multi_node.rs` (cluster fixture + real-binary constants), `tools/install-etcd.sh`, `tools/install-postgres16.sh` |  |
 
 #### `docs/src/testing/harness.md`
 
 | claim_id | doc_loc | claim | status | evidence | notes |
 |---|---|---|---|---|---|
-| harness-001 | `docs/src/testing/harness.md:3` | The harness runs real node binaries and external dependencies under tests. | verified | `src/ha/e2e_multi_node.rs:22-46` (cluster fixture + real-binary constants), `src/test_harness/ha_e2e/startup.rs` (node startup helpers), `src/test_harness/etcd3.rs` (etcd cluster handle), `tests/cli_binary.rs` (binary smoke tests) |  |
+| harness-001 | `docs/src/testing/harness.md:3` | The harness runs real node binaries and external dependencies under tests. | verified | `tests/ha/support/multi_node.rs` (cluster fixture + real-binary constants), `src/test_harness/ha_e2e/startup.rs` (node startup helpers), `src/test_harness/etcd3.rs` (etcd cluster handle), `tests/cli_binary.rs` (binary smoke tests) |  |
 
 #### `docs/src/testing/ha-e2e-stress-mapping.md`
 
 | claim_id | doc_loc | claim | status | evidence | notes |
 |---|---|---|---|---|---|
-| stress-001 | `docs/src/testing/ha-e2e-stress-mapping.md:13` | The no-quorum stress scenario is covered by two focused real-binary tests in `make test-long`. | verified | `Makefile` `ULTRA_LONG_TESTS`, `src/ha/e2e_multi_node.rs` (`e2e_no_quorum_enters_failsafe_strict_all_nodes`, `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity`) | Coverage was moved out of the default suite because these scenarios are minutes-long. |
-| stress-002 | `docs/src/testing/ha-e2e-stress-mapping.md:32` | Both tests write artifacts and shut down the fixture even on failure. | verified | `src/ha/e2e_multi_node.rs:2392-2405` and `src/ha/e2e_multi_node.rs:2487-2500` (always write artifacts + shutdown + finalize) |  |
-| stress-003 | `docs/src/testing/ha-e2e-stress-mapping.md:36` | Timing notes match the current tests (bounded waits, sampling windows, cutoff grace). | fixed | `src/ha/e2e_multi_node.rs:2421-2429` (60s waits), `src/ha/e2e_multi_node.rs:2455-2457` (4s sample window), `src/ha/e2e_multi_node.rs:2542-2544` (2s sample window), `src/ha/e2e_multi_node.rs:2546-2576` (7s grace, 10 tolerance) | Docs were updated to match actual constants/values. |
+| stress-001 | `docs/src/testing/ha-e2e-stress-mapping.md:13` | The no-quorum stress scenario is covered by two focused real-binary tests in `make test-long`. | verified | `Makefile` `ULTRA_LONG_TESTS`, `tests/ha_multi_node_failsafe.rs` (`e2e_no_quorum_enters_failsafe_strict_all_nodes`, `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity`) | Coverage was moved out of the default suite because these scenarios are minutes-long. |
+| stress-002 | `docs/src/testing/ha-e2e-stress-mapping.md:32` | Both tests write artifacts and shut down the fixture even on failure. | verified | `tests/ha/support/multi_node.rs` (stress artifact writing + fixture shutdown finalization helpers) |  |
+| stress-003 | `docs/src/testing/ha-e2e-stress-mapping.md:36` | Timing notes match the current tests (bounded waits, sampling windows, cutoff grace). | fixed | `tests/ha/support/multi_node.rs` (stress wait plans, sample windows, cutoff grace constants) | Docs were updated to match actual constants/values. |
 
 #### `docs/src/testing/bdd.md`
 

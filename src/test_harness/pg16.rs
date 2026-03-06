@@ -18,23 +18,23 @@ const SIGTERM: i32 = libc::SIGTERM;
 const SIGTERM: i32 = 15;
 
 #[derive(Debug, Clone)]
-pub(crate) struct PgInstanceSpec {
-    pub(crate) postgres_bin: PathBuf,
-    pub(crate) initdb_bin: PathBuf,
-    pub(crate) data_dir: PathBuf,
-    pub(crate) socket_dir: PathBuf,
-    pub(crate) log_dir: PathBuf,
-    pub(crate) port: u16,
-    pub(crate) startup_timeout: Duration,
+pub struct PgInstanceSpec {
+    pub postgres_bin: PathBuf,
+    pub initdb_bin: PathBuf,
+    pub data_dir: PathBuf,
+    pub socket_dir: PathBuf,
+    pub log_dir: PathBuf,
+    pub port: u16,
+    pub startup_timeout: Duration,
 }
 
 #[derive(Debug)]
-pub(crate) struct PgHandle {
+pub struct PgHandle {
     child: Child,
 }
 
 impl PgHandle {
-    pub(crate) async fn shutdown(&mut self) -> Result<(), HarnessError> {
+    pub async fn shutdown(&mut self) -> Result<(), HarnessError> {
         if let Some(pid) = self.child.id() {
             signals::send_signal(pid, SIGTERM).map_err(HarnessError::Io)?;
         }
@@ -61,12 +61,12 @@ impl PgHandle {
 
 #[cfg(test)]
 impl PgHandle {
-    pub(crate) fn new_for_test(child: Child) -> Self {
+    pub fn new_for_test(child: Child) -> Self {
         Self { child }
     }
 }
 
-pub(crate) fn prepare_pgdata_dir(
+pub fn prepare_pgdata_dir(
     namespace: &TestNamespace,
     node_id: &str,
 ) -> Result<PathBuf, HarnessError> {
@@ -90,11 +90,11 @@ pub(crate) fn prepare_pgdata_dir(
     Ok(data_dir)
 }
 
-pub(crate) async fn spawn_pg16(spec: PgInstanceSpec) -> Result<PgHandle, HarnessError> {
+pub async fn spawn_pg16(spec: PgInstanceSpec) -> Result<PgHandle, HarnessError> {
     spawn_pg16_with_conf_lines(spec, &[]).await
 }
 
-pub(crate) async fn spawn_pg16_with_conf_lines(
+pub async fn spawn_pg16_with_conf_lines(
     spec: PgInstanceSpec,
     postgresql_conf_lines: &[String],
 ) -> Result<PgHandle, HarnessError> {

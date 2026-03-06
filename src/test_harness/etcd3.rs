@@ -19,48 +19,48 @@ const SIGTERM: i32 = libc::SIGTERM;
 const SIGTERM: i32 = 15;
 
 #[derive(Debug, Clone)]
-pub(crate) struct EtcdInstanceSpec {
-    pub(crate) etcd_bin: PathBuf,
-    pub(crate) namespace_id: String,
-    pub(crate) member_name: String,
-    pub(crate) data_dir: PathBuf,
-    pub(crate) log_dir: PathBuf,
-    pub(crate) client_port: u16,
-    pub(crate) peer_port: u16,
-    pub(crate) startup_timeout: Duration,
+pub struct EtcdInstanceSpec {
+    pub etcd_bin: PathBuf,
+    pub namespace_id: String,
+    pub member_name: String,
+    pub data_dir: PathBuf,
+    pub log_dir: PathBuf,
+    pub client_port: u16,
+    pub peer_port: u16,
+    pub startup_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct EtcdClusterMemberSpec {
-    pub(crate) member_name: String,
-    pub(crate) data_dir: PathBuf,
-    pub(crate) log_dir: PathBuf,
-    pub(crate) client_port: u16,
-    pub(crate) peer_port: u16,
+pub struct EtcdClusterMemberSpec {
+    pub member_name: String,
+    pub data_dir: PathBuf,
+    pub log_dir: PathBuf,
+    pub client_port: u16,
+    pub peer_port: u16,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct EtcdClusterSpec {
-    pub(crate) etcd_bin: PathBuf,
-    pub(crate) namespace_id: String,
-    pub(crate) startup_timeout: Duration,
-    pub(crate) members: Vec<EtcdClusterMemberSpec>,
+pub struct EtcdClusterSpec {
+    pub etcd_bin: PathBuf,
+    pub namespace_id: String,
+    pub startup_timeout: Duration,
+    pub members: Vec<EtcdClusterMemberSpec>,
 }
 
 #[derive(Debug)]
-pub(crate) struct EtcdHandle {
+pub struct EtcdHandle {
     child: Child,
     member_name: String,
-    pub(crate) client_port: u16,
-    pub(crate) data_dir: PathBuf,
+    pub client_port: u16,
+    pub data_dir: PathBuf,
 }
 
 impl EtcdHandle {
-    pub(crate) fn member_name(&self) -> &str {
+    pub fn member_name(&self) -> &str {
         &self.member_name
     }
 
-    pub(crate) async fn shutdown(&mut self) -> Result<(), HarnessError> {
+    pub async fn shutdown(&mut self) -> Result<(), HarnessError> {
         if let Some(pid) = self.child.id() {
             signals::send_signal(pid, SIGTERM).map_err(HarnessError::Io)?;
         }
@@ -87,7 +87,7 @@ impl EtcdHandle {
 
 #[cfg(test)]
 impl EtcdHandle {
-    pub(crate) fn new_for_test(child: Child) -> Self {
+    pub fn new_for_test(child: Child) -> Self {
         Self {
             child,
             member_name: "test-member".to_string(),
@@ -98,24 +98,24 @@ impl EtcdHandle {
 }
 
 #[derive(Debug)]
-pub(crate) struct EtcdClusterHandle {
+pub struct EtcdClusterHandle {
     members: Vec<EtcdHandle>,
     client_endpoints: Vec<String>,
 }
 
 impl EtcdClusterHandle {
-    pub(crate) fn client_endpoints(&self) -> &[String] {
+    pub fn client_endpoints(&self) -> &[String] {
         &self.client_endpoints
     }
 
-    pub(crate) fn member_names(&self) -> Vec<String> {
+    pub fn member_names(&self) -> Vec<String> {
         self.members
             .iter()
             .map(|member| member.member_name().to_string())
             .collect()
     }
 
-    pub(crate) async fn shutdown_member(
+    pub async fn shutdown_member(
         &mut self,
         member_name: &str,
     ) -> Result<bool, HarnessError> {
@@ -132,7 +132,7 @@ impl EtcdClusterHandle {
         }
     }
 
-    pub(crate) async fn shutdown_all(&mut self) -> Result<(), HarnessError> {
+    pub async fn shutdown_all(&mut self) -> Result<(), HarnessError> {
         let mut failures = Vec::new();
 
         while let Some(mut member) = self.members.pop() {
@@ -152,7 +152,7 @@ impl EtcdClusterHandle {
     }
 }
 
-pub(crate) fn prepare_etcd_member_data_dir(
+pub fn prepare_etcd_member_data_dir(
     namespace: &TestNamespace,
     member_name: &str,
 ) -> Result<PathBuf, HarnessError> {
@@ -176,11 +176,11 @@ pub(crate) fn prepare_etcd_member_data_dir(
     Ok(data_dir)
 }
 
-pub(crate) fn prepare_etcd_data_dir(namespace: &TestNamespace) -> Result<PathBuf, HarnessError> {
+pub fn prepare_etcd_data_dir(namespace: &TestNamespace) -> Result<PathBuf, HarnessError> {
     prepare_etcd_member_data_dir(namespace, "node-a")
 }
 
-pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, HarnessError> {
+pub async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, HarnessError> {
     let cluster = spawn_etcd3_cluster(EtcdClusterSpec {
         etcd_bin: spec.etcd_bin,
         namespace_id: spec.namespace_id,
@@ -204,7 +204,7 @@ pub(crate) async fn spawn_etcd3(spec: EtcdInstanceSpec) -> Result<EtcdHandle, Ha
     }
 }
 
-pub(crate) async fn spawn_etcd3_cluster(
+pub async fn spawn_etcd3_cluster(
     spec: EtcdClusterSpec,
 ) -> Result<EtcdClusterHandle, HarnessError> {
     validate_executable_file(spec.etcd_bin.as_path(), "etcd")?;

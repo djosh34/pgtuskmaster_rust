@@ -16,13 +16,13 @@ use rustls::{
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TlsMaterial {
-    pub(crate) ca_cert: Option<PathBuf>,
-    pub(crate) cert: Option<PathBuf>,
-    pub(crate) key: Option<PathBuf>,
+pub struct TlsMaterial {
+    pub ca_cert: Option<PathBuf>,
+    pub cert: Option<PathBuf>,
+    pub key: Option<PathBuf>,
 }
 
-pub(crate) fn write_tls_material(
+pub fn write_tls_material(
     namespace: &TestNamespace,
     profile: &str,
     ca_pem: Option<&[u8]>,
@@ -85,53 +85,53 @@ fn sanitize_profile(profile: &str) -> String {
 
 #[cfg(test)]
 #[derive(Debug)]
-pub(crate) struct GeneratedCert {
-    pub(crate) cert_der: Vec<u8>,
-    pub(crate) key_der: Vec<u8>,
-    pub(crate) cert_pem: String,
-    pub(crate) key_pem: String,
+pub struct GeneratedCert {
+    pub cert_der: Vec<u8>,
+    pub key_der: Vec<u8>,
+    pub cert_pem: String,
+    pub key_pem: String,
 }
 
 #[cfg(test)]
 impl GeneratedCert {
-    pub(crate) fn cert_der(&self) -> CertificateDer<'static> {
+    pub fn cert_der(&self) -> CertificateDer<'static> {
         CertificateDer::from(self.cert_der.clone())
     }
 
-    pub(crate) fn key_der(&self) -> PrivateKeyDer<'static> {
+    pub fn key_der(&self) -> PrivateKeyDer<'static> {
         PrivateKeyDer::from(PrivatePkcs8KeyDer::from(self.key_der.clone()))
     }
 }
 
 #[cfg(test)]
 #[derive(Debug)]
-pub(crate) struct GeneratedCa {
-    pub(crate) cert: GeneratedCert,
+pub struct GeneratedCa {
+    pub cert: GeneratedCert,
     issuer: Issuer<'static, KeyPair>,
 }
 
 #[cfg(test)]
 impl GeneratedCa {
-    pub(crate) fn issuer(&self) -> &Issuer<'static, KeyPair> {
+    pub fn issuer(&self) -> &Issuer<'static, KeyPair> {
         &self.issuer
     }
 }
 
 #[cfg(test)]
 #[derive(Debug)]
-pub(crate) struct AdversarialTlsFixture {
-    pub(crate) valid_server_ca: GeneratedCa,
-    pub(crate) wrong_server_ca: GeneratedCa,
-    pub(crate) valid_server: GeneratedCert,
-    pub(crate) expired_server: GeneratedCert,
-    pub(crate) trusted_client_ca: GeneratedCa,
-    pub(crate) trusted_client: GeneratedCert,
-    pub(crate) untrusted_client_ca: GeneratedCa,
-    pub(crate) untrusted_client: GeneratedCert,
+pub struct AdversarialTlsFixture {
+    pub valid_server_ca: GeneratedCa,
+    pub wrong_server_ca: GeneratedCa,
+    pub valid_server: GeneratedCert,
+    pub expired_server: GeneratedCert,
+    pub trusted_client_ca: GeneratedCa,
+    pub trusted_client: GeneratedCert,
+    pub untrusted_client_ca: GeneratedCa,
+    pub untrusted_client: GeneratedCert,
 }
 
 #[cfg(test)]
-pub(crate) fn build_adversarial_tls_fixture() -> Result<AdversarialTlsFixture, HarnessError> {
+pub fn build_adversarial_tls_fixture() -> Result<AdversarialTlsFixture, HarnessError> {
     let valid_server_ca = generate_ca("server-valid-ca")?;
     let wrong_server_ca = generate_ca("server-wrong-ca")?;
     let trusted_client_ca = generate_ca("trusted-client-ca")?;
@@ -179,7 +179,7 @@ pub(crate) fn build_adversarial_tls_fixture() -> Result<AdversarialTlsFixture, H
 }
 
 #[cfg(test)]
-pub(crate) fn generate_ca(common_name: &str) -> Result<GeneratedCa, HarnessError> {
+pub fn generate_ca(common_name: &str) -> Result<GeneratedCa, HarnessError> {
     let mut params = CertificateParams::new(Vec::new())
         .map_err(|err| HarnessError::InvalidInput(format!("create ca params failed: {err}")))?;
     let mut dn = DistinguishedName::new();
@@ -210,7 +210,7 @@ pub(crate) fn generate_ca(common_name: &str) -> Result<GeneratedCa, HarnessError
 }
 
 #[cfg(test)]
-pub(crate) fn generate_leaf_cert(
+pub fn generate_leaf_cert(
     common_name: &str,
     dns_name: &str,
     expired: bool,
@@ -256,7 +256,7 @@ pub(crate) fn generate_leaf_cert(
 }
 
 #[cfg(test)]
-pub(crate) fn build_server_config(
+pub fn build_server_config(
     server: &GeneratedCert,
     server_ca: &GeneratedCert,
 ) -> Result<Arc<ServerConfig>, HarnessError> {
@@ -276,7 +276,7 @@ pub(crate) fn build_server_config(
 }
 
 #[cfg(test)]
-pub(crate) fn build_server_config_with_client_auth(
+pub fn build_server_config_with_client_auth(
     server: &GeneratedCert,
     server_ca: &GeneratedCert,
     trusted_client_ca: &GeneratedCert,
@@ -317,7 +317,7 @@ pub(crate) fn build_server_config_with_client_auth(
 }
 
 #[cfg(test)]
-pub(crate) fn build_client_config(
+pub fn build_client_config(
     trusted_server_ca: &GeneratedCert,
     identity: Option<&GeneratedCert>,
     identity_ca: Option<&GeneratedCert>,
