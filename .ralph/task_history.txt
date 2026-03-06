@@ -103,3 +103,4 @@
 .ralph/tasks/story-ha-functional-rewrite/04-task-untangle-ha-worker-into-facts-plan-and-apply-layers.md
 .ralph/tasks/story-ha-functional-rewrite/05-task-rebuild-ha-tests-around-invariants-and-continuous-observers.md
 .ralph/tasks/story-ha-functional-rewrite/06-task-move-and-split-ha-e2e-tests-after-functional-rewrite.md
+.ralph/tasks/bugs/ha-action-deduping-suppresses-retry.md

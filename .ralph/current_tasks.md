@@ -1,32 +1,61 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 13:29:30 CET 2026
+Generated: Fri Mar  6 14:06:01 CET 2026
 
-**Path:** `.ralph/tasks/bugs/ha-action-deduping-suppresses-retry.md`
-
----
-## Bug: HA action dedupe suppresses legitimate retries <status>blocked</status> <passes>false</passes>
-
-<blocked_by>06-task-move-and-split-ha-e2e-tests-after-functional-rewrite</blocked_by>
+**Path:** `.ralph/tasks/bugs/rewind-and-basebackup-source-are-static-instead-of-derived-from-current-leader.md`
 
 ---
+## Bug: Rewind and basebackup source stay static instead of deriving from the current leader <status>not_started</status> <passes>false</passes>
 
-**Path:** `.ralph/tasks/bugs/ha-decide-mutation-heavy-control-flow-needs-pure-refactor.md`
-
----
-## Bug: HA decide mutation-heavy control flow needs pure refactor <status>blocked</status> <passes>false</passes>
-
-<blocked_by>06-task-move-and-split-ha-e2e-tests-after-functional-rewrite</blocked_by>
+<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
 
 ---
 
-**Path:** `.ralph/tasks/bugs/restore-terminal-phases-keep-ha-fencing.md`
+**Path:** `.ralph/tasks/story-authoritative-managed-postgres-config/01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer.md`
 
 ---
-## Bug: Restore terminal phases keep HA in repeated fencing <status>blocked</status> <passes>false</passes>
+## Task: Introduce a typed authoritative managed Postgres config model and serializer <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
-<blocked_by>05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
-<blocked_by>06-task-move-and-split-ha-e2e-tests-after-functional-rewrite</blocked_by>
+<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+
+---
+
+**Path:** `.ralph/tasks/story-authoritative-managed-postgres-config/02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint.md`
+
+---
+## Task: Make `pgtm.postgresql.conf` the only startup config entrypoint and remove generic `-c` GUC injection <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+<blocked_by>01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer</blocked_by>
+
+---
+
+**Path:** `.ralph/tasks/story-authoritative-managed-postgres-config/03-task-take-full-ownership-of-replica-recovery-signal-and-auto-conf-state.md`
+
+---
+## Task: Take full ownership of replica, recovery signal, and `postgresql.auto.conf` state <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+<blocked_by>01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer,02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint</blocked_by>
+
+---
+
+**Path:** `.ralph/tasks/story-authoritative-managed-postgres-config/04-task-migrate-harness-tests-and-docs-to-the-authoritative-managed-conf-model.md`
+
+---
+## Task: Migrate harnesses, tests, and docs to the authoritative managed-conf model <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>
+<blocked_by>01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer,02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint,03-task-take-full-ownership-of-replica-recovery-signal-and-auto-conf-state</blocked_by>
+
+---
+
+**Path:** `.ralph/tasks/story-authoritative-managed-postgres-config/05-task-centralize-composable-sample-runtime-config-builders-for-tests.md`
+
+---
+## Task: Centralize composable sample runtime-config builders for tests and helpers <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<blocked_by>01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer,02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint,03-task-take-full-ownership-of-replica-recovery-signal-and-auto-conf-state</blocked_by>
 
 ---
 
@@ -77,36 +106,6 @@ Make the docs source tree easier to navigate by aligning file names and ordering
 
 <description>
 **Goal:** Add a normal, useful root `README.md` that explains what this project is, how to get started quickly, where to go next for deeper docs, and what the license status is.
-
----
-
-**Path:** `.ralph/tasks/story-greenfield-secure-config/01-task-remove-config-versioning-and-restore-a-greenfield-config-contract.md`
-
----
-## Task: Remove config versioning and restore a greenfield config contract <status>not_started</status> <passes>false</passes>
-
-<description>
-Remove user-facing config versioning from the product and restore a simple greenfield config contract with no fake `v2` framing.
-
----
-
-**Path:** `.ralph/tasks/story-greenfield-secure-config/02-task-simplify-config-semantics-and-make-secure-mtls-the-documented-default.md`
-
----
-## Task: Simplify config semantics and make secure mTLS the documented default <status>not_started</status> <passes>false</passes>
-
-<description>
-Rework the config contract and documentation so the supported settings make operational sense and the recommended setup is secure by default.
-
----
-
-**Path:** `.ralph/tasks/story-greenfield-secure-config/03-task-derive-rewind-source-from-current-primary-instead-of-static-config.md`
-
----
-## Task: Derive rewind source from the current primary instead of static config <status>not_started</status> <passes>false</passes>
-
-<description>
-Remove static rewind source addressing from the product and derive rewind behavior from current cluster state.
 
 ---
 
