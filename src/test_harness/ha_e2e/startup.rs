@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use crate::config::{
     ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig, DcsConfig,
     DcsInitConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
-    PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig,
+    PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
     PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
     StderrSinkConfig, TlsServerConfig,
 };
@@ -262,10 +262,7 @@ pub(crate) async fn start_cluster(config: TestConfig) -> Result<TestClusterHandl
     config.validate()?;
 
     let namespace_guard = NamespaceGuard::new(config.test_name.as_str())?;
-    let namespace_id = namespace_guard
-        .namespace()?
-        .id
-        .clone();
+    let namespace_id = namespace_guard.namespace()?.id.clone();
     config.scope = format!("{}-{}", config.scope, namespace_id);
     config.cluster_name = format!("{}-{}", config.cluster_name, namespace_id);
 
@@ -309,7 +306,8 @@ async fn start_cluster_inner(
     let namespace = guard.guard.namespace()?.clone();
     let resolved_backup = resolve_backup_config(&namespace, config.backup.as_ref())?;
     let etcd_member_count = config.etcd_members.len();
-    let mut topology_reservation = allocate_ha_topology_ports(config.node_count, etcd_member_count)?;
+    let mut topology_reservation =
+        allocate_ha_topology_ports(config.node_count, etcd_member_count)?;
     let topology = topology_reservation.layout().clone();
     let node_ports = topology.node_ports.clone();
 
@@ -353,9 +351,9 @@ async fn start_cluster_inner(
         .iter()
         .chain(topology.etcd_peer_ports.iter())
     {
-        topology_reservation
-            .release_port(*port)
-            .map_err(|err| WorkerError::Message(format!("release etcd reserved port failed: {err}")))?;
+        topology_reservation.release_port(*port).map_err(|err| {
+            WorkerError::Message(format!("release etcd reserved port failed: {err}"))
+        })?;
     }
 
     let etcd = spawn_etcd3_cluster(cluster_spec).await?;
@@ -368,8 +366,7 @@ async fn start_cluster_inner(
     }
     guard.etcd = Some(etcd);
 
-    let mut api_reservation =
-        reserve_non_overlapping_ports(config.node_count, &forbidden_ports)?;
+    let mut api_reservation = reserve_non_overlapping_ports(config.node_count, &forbidden_ports)?;
     let api_ports = api_reservation.as_slice().to_vec();
     if api_ports.len() != config.node_count {
         return Err(WorkerError::Message(format!(
@@ -391,14 +388,10 @@ async fn start_cluster_inner(
     let (dcs_endpoints_by_node, proxy_ports) = match config.mode {
         Mode::Plain => (None, Vec::new()),
         Mode::PartitionProxy => {
-            let total_proxy_ports = config
-                .node_count
-                .checked_mul(3)
-                .ok_or_else(|| {
-                    WorkerError::Message("proxy port count overflow for partition mode".to_string())
-                })?;
-            proxy_reservation =
-                reserve_non_overlapping_ports(total_proxy_ports, &forbidden_ports)?;
+            let total_proxy_ports = config.node_count.checked_mul(3).ok_or_else(|| {
+                WorkerError::Message("proxy port count overflow for partition mode".to_string())
+            })?;
+            proxy_reservation = reserve_non_overlapping_ports(total_proxy_ports, &forbidden_ports)?;
             let proxy_ports = proxy_reservation.as_slice().to_vec();
             let dcs_endpoints_by_node = spawn_partition_etcd_proxies(
                 guard,
@@ -496,11 +489,13 @@ async fn start_cluster_inner(
 
         let dcs_endpoints = match (config.mode, &dcs_endpoints_by_node) {
             (Mode::Plain, _) => endpoints.clone(),
-            (Mode::PartitionProxy, Some(map)) => map.get(node_id.as_str()).cloned().ok_or_else(|| {
-                WorkerError::Message(format!(
-                    "missing proxy DCS endpoints for node runtime config: {node_id}"
-                ))
-            })?,
+            (Mode::PartitionProxy, Some(map)) => {
+                map.get(node_id.as_str()).cloned().ok_or_else(|| {
+                    WorkerError::Message(format!(
+                        "missing proxy DCS endpoints for node runtime config: {node_id}"
+                    ))
+                })?
+            }
             (Mode::PartitionProxy, None) => {
                 return Err(WorkerError::Message(
                     "partition mode missing DCS endpoints map".to_string(),
@@ -593,12 +588,11 @@ async fn start_cluster_inner(
             },
             "debug": { "enabled": false },
         });
-        let dcs_init_payload_json =
-            serde_json::to_string(&dcs_init_payload).map_err(|err| {
-                WorkerError::Message(format!(
-                    "encode dcs.init.payload_json failed for node {node_id}: {err}"
-                ))
-            })?;
+        let dcs_init_payload_json = serde_json::to_string(&dcs_init_payload).map_err(|err| {
+            WorkerError::Message(format!(
+                "encode dcs.init.payload_json failed for node {node_id}: {err}"
+            ))
+        })?;
 
         let runtime_cfg = RuntimeConfig {
             cluster: ClusterConfig {
@@ -739,11 +733,9 @@ async fn start_cluster_inner(
             }
         }
 
-        topology_reservation
-            .release_port(pg_port)
-            .map_err(|err| {
-                WorkerError::Message(format!("release postgres reserved port failed: {err}"))
-            })?;
+        topology_reservation.release_port(pg_port).map_err(|err| {
+            WorkerError::Message(format!("release postgres reserved port failed: {err}"))
+        })?;
         api_reservation.release_port(api_port).map_err(|err| {
             WorkerError::Message(format!("release api reserved port failed: {err}"))
         })?;
@@ -898,7 +890,9 @@ $$;
                 etcd_client::Client::connect(dcs_endpoints_for_check.clone(), None)
                     .await
                     .map_err(|err| {
-                        WorkerError::Message(format!("etcd connect for init/config check failed: {err}"))
+                        WorkerError::Message(format!(
+                            "etcd connect for init/config check failed: {err}"
+                        ))
                     })?;
             let init_response = etcd_client
                 .get(init_key.as_str(), None)
@@ -910,10 +904,13 @@ $$;
                 )));
             }
 
-            let config_response = etcd_client
-                .get(config_key.as_str(), None)
-                .await
-                .map_err(|err| WorkerError::Message(format!("etcd get config key failed: {err}")))?;
+            let config_response =
+                etcd_client
+                    .get(config_key.as_str(), None)
+                    .await
+                    .map_err(|err| {
+                        WorkerError::Message(format!("etcd get config key failed: {err}"))
+                    })?;
             let Some(kv) = config_response.kvs().first() else {
                 return Err(WorkerError::Message(format!(
                     "expected config key to exist at {config_key}"

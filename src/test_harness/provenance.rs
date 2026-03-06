@@ -82,15 +82,11 @@ static VERIFIED: OnceLock<VerifiedRealBinaries> = OnceLock::new();
 
 pub(crate) fn require_verified_real_binary(label: &str) -> Result<PathBuf, HarnessError> {
     let verified = verified_real_binaries()?;
-    verified
-        .by_label
-        .get(label)
-        .cloned()
-        .ok_or_else(|| {
-            HarnessError::InvalidInput(format!(
-                "real-binary policy does not define required label {label:?} (check {POLICY_REL_PATH})"
-            ))
-        })
+    verified.by_label.get(label).cloned().ok_or_else(|| {
+        HarnessError::InvalidInput(format!(
+            "real-binary policy does not define required label {label:?} (check {POLICY_REL_PATH})"
+        ))
+    })
 }
 
 fn verified_real_binaries() -> Result<&'static VerifiedRealBinaries, HarnessError> {
@@ -103,9 +99,9 @@ fn verified_real_binaries() -> Result<&'static VerifiedRealBinaries, HarnessErro
     if VERIFIED.set(verified).is_err() {
         // Another thread won the race; use the stored value.
     }
-    VERIFIED
-        .get()
-        .ok_or_else(|| HarnessError::InvalidInput("failed to cache verified real binaries".to_string()))
+    VERIFIED.get().ok_or_else(|| {
+        HarnessError::InvalidInput("failed to cache verified real binaries".to_string())
+    })
 }
 
 pub(crate) fn verify_real_binaries_from_repo_root(
@@ -136,9 +132,9 @@ pub(crate) fn verify_real_binaries_from_repo_root(
     verify_manifest_permissions(attestation_path.as_path())?;
 
     let tools_root = repo_root.join(".tools");
-    let tools_root_canon = tools_root
-        .canonicalize()
-        .map_err(|err| HarnessError::InvalidInput(format!("failed to canonicalize .tools directory: {err}")))?;
+    let tools_root_canon = tools_root.canonicalize().map_err(|err| {
+        HarnessError::InvalidInput(format!("failed to canonicalize .tools directory: {err}"))
+    })?;
 
     let mut attest_by_path: BTreeMap<String, AttestedBinary> = BTreeMap::new();
     for entry in attestation.entries {
@@ -169,7 +165,11 @@ pub(crate) fn verify_real_binaries_from_repo_root(
         verify_no_symlinks_in_ancestors(repo_root, abs_path.as_path(), allow_leaf_symlink)?;
         match required.kind {
             ArtifactKind::Executable => {
-                verify_regular_executable_file(abs_path.as_path(), required.label.as_str(), allow_leaf_symlink)?;
+                verify_regular_executable_file(
+                    abs_path.as_path(),
+                    required.label.as_str(),
+                    allow_leaf_symlink,
+                )?;
             }
             ArtifactKind::DataFile => {
                 verify_regular_file(abs_path.as_path(), required.label.as_str())?;
@@ -214,10 +214,7 @@ pub(crate) fn verify_real_binaries_from_repo_root(
             if canon_str.as_ref() != attested_resolved.as_str() {
                 return Err(HarnessError::InvalidInput(format!(
                     "real-binary resolved path mismatch for {} at {}: attested={} actual={}",
-                    required.label,
-                    required.path,
-                    attested_resolved,
-                    canon_str
+                    required.label, required.path, attested_resolved, canon_str
                 )));
             }
         }
@@ -571,10 +568,7 @@ fn verify_sha256_matches(attested: &AttestedBinary, path: &Path) -> Result<(), H
     if actual != attested.sha256 {
         return Err(HarnessError::InvalidInput(format!(
             "real-binary sha256 mismatch for {} at {}: expected={} actual={}",
-            attested.label,
-            attested.path,
-            attested.sha256,
-            actual
+            attested.label, attested.path, attested.sha256, actual
         )));
     }
     Ok(())
@@ -621,7 +615,11 @@ fn hex_encode_lower(bytes: &[u8]) -> String {
     out
 }
 
-fn verify_version(label: &str, binary_path: &Path, expected: &ExpectedVersion) -> Result<(), HarnessError> {
+fn verify_version(
+    label: &str,
+    binary_path: &Path,
+    expected: &ExpectedVersion,
+) -> Result<(), HarnessError> {
     let output = Command::new(binary_path)
         .arg("--version")
         .output()
@@ -689,7 +687,13 @@ mod tests {
     fn unique_tmp_dir(prefix: &str) -> Result<PathBuf, HarnessError> {
         let mut base = std::env::temp_dir();
         base.push(format!("{prefix}-{}", std::process::id()));
-        base.push(format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+        base.push(format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
         fs::create_dir_all(base.as_path())?;
         Ok(base)
     }
@@ -786,10 +790,9 @@ mod tests {
         write_attestation(&repo_root, attestation.as_str())?;
 
         let verified = verify_real_binaries_from_repo_root(repo_root.as_path())?;
-        let path = verified
-            .by_label
-            .get("postgres")
-            .ok_or_else(|| HarnessError::InvalidInput("missing expected verified label".to_string()))?;
+        let path = verified.by_label.get("postgres").ok_or_else(|| {
+            HarnessError::InvalidInput("missing expected verified label".to_string())
+        })?;
         assert!(path.ends_with(".tools/postgres16/bin/postgres"));
         Ok(())
     }
@@ -914,7 +917,10 @@ mod tests {
         let tools_root = repo_root.join(".tools");
         fs::create_dir_all(tools_root.as_path())?;
         let postgres_dir = tools_root.join("postgres16");
-        symlink(outside_root.join("postgres16").as_path(), postgres_dir.as_path())?;
+        symlink(
+            outside_root.join("postgres16").as_path(),
+            postgres_dir.as_path(),
+        )?;
 
         let policy = r#"
 {

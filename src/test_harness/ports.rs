@@ -225,11 +225,10 @@ impl LeaseFileGuard {
     }
 
     fn store_entries(&mut self, entries: &[PortLeaseEntry]) -> Result<(), HarnessError> {
-        let serialized = serde_json::to_string(entries)
-            .map_err(|err| HarnessError::InvalidInput(format!("serialize port lease file failed: {err}")))?;
-        self.file
-            .set_len(0)
-            .map_err(HarnessError::Io)?;
+        let serialized = serde_json::to_string(entries).map_err(|err| {
+            HarnessError::InvalidInput(format!("serialize port lease file failed: {err}"))
+        })?;
+        self.file.set_len(0).map_err(HarnessError::Io)?;
         std::io::Seek::seek(&mut self.file, std::io::SeekFrom::Start(0))
             .map_err(HarnessError::Io)?;
         std::io::Write::write_all(&mut self.file, serialized.as_bytes())
@@ -269,7 +268,10 @@ fn lease_port_best_effort(port: u16) -> bool {
         return false;
     }
 
-    entries.push(PortLeaseEntry { port, expires_at_ms });
+    entries.push(PortLeaseEntry {
+        port,
+        expires_at_ms,
+    });
     let _ = guard.store_entries(entries.as_slice());
     true
 }
@@ -332,7 +334,10 @@ pub(crate) fn allocate_ha_topology_ports(
         node_ports: ports[etcd_peer_end..].to_vec(),
     };
 
-    Ok(HaTopologyPortReservation { reservation, layout })
+    Ok(HaTopologyPortReservation {
+        reservation,
+        layout,
+    })
 }
 
 #[cfg(test)]

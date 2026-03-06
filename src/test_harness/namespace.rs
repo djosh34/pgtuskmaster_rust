@@ -37,7 +37,6 @@ impl NamespaceGuard {
             HarnessError::InvalidInput("namespace guard no longer owns namespace".to_string())
         })
     }
-
 }
 
 impl Drop for NamespaceGuard {

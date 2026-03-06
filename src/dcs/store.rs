@@ -290,6 +290,7 @@ impl DcsStore for TestDcsStore {
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         config::{
             schema::{ClusterConfig, DebugConfig, HaConfig, PostgresConfig},
@@ -306,7 +307,6 @@ mod tests {
         pginfo::state::{Readiness, SqlStatus},
         state::{MemberId, UnixMillis, Version},
     };
-    use crate::pginfo::conninfo::PgSslMode;
 
     use super::{
         refresh_from_etcd_watch, write_local_member, DcsHaWriter, DcsStore, DcsStoreError,
@@ -552,8 +552,8 @@ mod tests {
     }
 
     #[test]
-    fn refresh_reset_clears_cached_records_but_preserves_config() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn refresh_reset_clears_cached_records_but_preserves_config(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut cache = sample_cache();
         let preserved_config = cache.config.clone();
 
@@ -609,8 +609,8 @@ mod tests {
     }
 
     #[test]
-    fn refresh_put_then_reset_then_put_keeps_only_post_reset_state() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn refresh_put_then_reset_then_put_keeps_only_post_reset_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut cache = sample_cache();
 
         let stale_json = serde_json::to_string(&crate::dcs::state::LeaderRecord {

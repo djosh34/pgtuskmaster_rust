@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 01:28:54 AM CET 2026
+Generated: Fri Mar  6 04:37:28 AM CET 2026
 
 **Path:** `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -194,6 +194,19 @@ Do not pull this bug ahead of the rewrite. Reassess it only after `story-ha-func
 This bug is intentionally deferred until the HA functional rewrite story is fully complete. It overlaps directly with the planned refactor work, and it does not make sense to force the bug queue to preempt the story that is supposed to absorb most or all of this concern.
 
 Reassess this bug only after `story-ha-functional-rewrite` reaches its final task. At that point, answer a narrower question: how much mutation-heavy control flow is still present in the rewritten design, and what residual bug or cleanup work remains?
+
+---
+
+**Path:** `.ralph/tasks/bugs/ha-matrix-scenario-flakes-under-real-ha.md`
+
+## Bug: HA Matrix Scenario Flakes Under Real HA <status>not_started</status> <passes>false</passes>
+
+<description>
+The deleted `e2e_multi_node_real_ha_scenario_matrix` mega-scenario was non-deterministic under real binaries.
+During repeated reproductions it oscillated between:
+- planned switchover never settling away from the original primary, even after multiple successful `/switchover` submissions
+- all surviving nodes getting stuck in `WaitingPostgresReachable` with `leader=none`
+- API transport resets while PostgreSQL/process workers continuously retried startup
 
 ---
 
@@ -509,7 +522,7 @@ The agent must explore the current config schema, HA/runtime flow, DCS/member-st
 
 **Path:** `.ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md`
 
-## Task: Remove restore control plane before HA functional rewrite <status>not_started</status> <passes>false</passes>
+## Task: Remove restore control plane before HA functional rewrite <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Delete the restore takeover control plane from HA, DCS, API, CLI, debug, and tests before rewriting HA around a functional state-machine design.

@@ -24,9 +24,13 @@ pub(crate) fn build_rustls_server_config(
         return Ok(None);
     }
 
-    let identity = tls.identity.as_ref().ok_or_else(|| TlsConfigError::InvalidConfig {
-        message: "tls.identity must be configured when tls.mode is optional or required".to_string(),
-    })?;
+    let identity = tls
+        .identity
+        .as_ref()
+        .ok_or_else(|| TlsConfigError::InvalidConfig {
+            message: "tls.identity must be configured when tls.mode is optional or required"
+                .to_string(),
+        })?;
 
     let cert_pem = load_inline_or_path_bytes("tls.identity.cert_chain", &identity.cert_chain)?;
     let key_pem = load_inline_or_path_bytes("tls.identity.private_key", &identity.private_key)?;
@@ -76,26 +80,30 @@ fn build_client_verifier(
     }
 
     let provider = rustls::crypto::ring::default_provider();
-    let mut verifier_builder =
-        rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.into());
+    let mut verifier_builder = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots),
+        provider.into(),
+    );
     if !client_auth.require_client_cert {
         verifier_builder = verifier_builder.allow_unauthenticated();
     }
 
-    verifier_builder.build().map_err(|err| TlsConfigError::Rustls {
-        message: format!("build client cert verifier failed: {err}"),
-    })
+    verifier_builder
+        .build()
+        .map_err(|err| TlsConfigError::Rustls {
+            message: format!("build client cert verifier failed: {err}"),
+        })
 }
 
 fn parse_pem_cert_chain(
     pem: &[u8],
 ) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, TlsConfigError> {
     let mut reader = std::io::BufReader::new(Cursor::new(pem));
-    let certs = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>().map_err(
-        |err| TlsConfigError::PemParse {
+    let certs = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| TlsConfigError::PemParse {
             message: format!("parse certs failed: {err}"),
-        },
-    )?;
+        })?;
     if certs.is_empty() {
         return Err(TlsConfigError::PemParse {
             message: "no certificates found in PEM input".to_string(),
@@ -118,13 +126,16 @@ fn parse_pem_private_key(
     Ok(key)
 }
 
-fn load_inline_or_path_bytes(field: &str, source: &InlineOrPath) -> Result<Vec<u8>, TlsConfigError> {
+fn load_inline_or_path_bytes(
+    field: &str,
+    source: &InlineOrPath,
+) -> Result<Vec<u8>, TlsConfigError> {
     match source {
-        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => fs::read(path).map_err(
-            |err| TlsConfigError::Io {
+        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => {
+            fs::read(path).map_err(|err| TlsConfigError::Io {
                 message: format!("failed to read `{field}` from {}: {err}", path.display()),
-            },
-        ),
+            })
+        }
         InlineOrPath::Inline { content } => Ok(content.as_bytes().to_vec()),
     }
 }
@@ -134,7 +145,9 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::{
-        config::{ApiTlsMode, InlineOrPath, TlsClientAuthConfig, TlsServerConfig, TlsServerIdentityConfig},
+        config::{
+            ApiTlsMode, InlineOrPath, TlsClientAuthConfig, TlsServerConfig, TlsServerIdentityConfig,
+        },
         test_harness::tls::build_adversarial_tls_fixture,
     };
 

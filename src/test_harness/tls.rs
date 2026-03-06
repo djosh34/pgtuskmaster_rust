@@ -291,10 +291,10 @@ pub(crate) fn build_server_config_with_client_auth(
         Arc::new(roots),
         provider.into(),
     )
-        .build()
-        .map_err(|err| {
-            HarnessError::InvalidInput(format!("build client cert verifier failed: {err}"))
-        })?;
+    .build()
+    .map_err(|err| {
+        HarnessError::InvalidInput(format!("build client cert verifier failed: {err}"))
+    })?;
 
     let provider = rustls::crypto::ring::default_provider();
     let builder = ServerConfig::builder_with_provider(provider.into())

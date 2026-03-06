@@ -17,7 +17,9 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
     let now = now_unix_millis()?;
     let poll = poll_once(&ctx.postgres_dsn).await;
     let next_state = match poll {
-        Ok(polled) => to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled)),
+        Ok(polled) => {
+            to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))
+        }
         Err(ref err) => {
             let mut attrs = BTreeMap::new();
             attrs.insert(
@@ -80,18 +82,17 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
                 attrs,
             )
             .map_err(|emit_err| {
-                WorkerError::Message(format!(
-                    "pginfo sql transition log emit failed: {emit_err}"
-                ))
+                WorkerError::Message(format!("pginfo sql transition log emit failed: {emit_err}"))
             })?;
         ctx.last_emitted_sql_status = Some(next_sql.clone());
     }
 
-    ctx.publisher
-        .publish(next_state, now)
-        .map_err(|err| {
-            WorkerError::Message(format!("pginfo publish failed for {:?}: {err}", ctx.self_id))
-        })?;
+    ctx.publisher.publish(next_state, now).map_err(|err| {
+        WorkerError::Message(format!(
+            "pginfo publish failed for {:?}: {err}",
+            ctx.self_id
+        ))
+    })?;
     Ok(())
 }
 

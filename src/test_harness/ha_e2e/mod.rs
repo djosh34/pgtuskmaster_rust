@@ -4,7 +4,7 @@ pub(crate) mod ops;
 pub(crate) mod startup;
 pub(crate) mod util;
 
-pub(crate) use config::{BackupHarnessConfig, Mode, TestConfig, TimeoutConfig};
+pub(crate) use config::{Mode, TestConfig, TimeoutConfig};
 pub(crate) use handle::NodeHandle;
 pub(crate) use startup::start_cluster;
 

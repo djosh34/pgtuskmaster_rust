@@ -1,19 +1,19 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use pgtuskmaster_rust::pginfo::conninfo::PgSslMode;
 use pgtuskmaster_rust::{
     api::worker::ApiWorkerCtx,
     config::{
         ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig,
-        BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
-        LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig,
-        PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
+        BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath,
+        LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
+        PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
         ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
     },
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     state::{new_state_channel, UnixMillis, WorkerError},
 };
-use pgtuskmaster_rust::pginfo::conninfo::PgSslMode;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 #[derive(Clone, Default)]
@@ -250,9 +250,13 @@ struct TestHttpResponse {
 }
 
 fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    headers
-        .iter()
-        .find_map(|(k, v)| if k.eq_ignore_ascii_case(name) { Some(v.as_str()) } else { None })
+    headers.iter().find_map(|(k, v)| {
+        if k.eq_ignore_ascii_case(name) {
+            Some(v.as_str())
+        } else {
+            None
+        }
+    })
 }
 
 #[derive(Debug)]
@@ -276,9 +280,8 @@ fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpH
     let status_line_bytes = head.get(..status_line_end).ok_or_else(|| {
         WorkerError::Message("response status line offset out of bounds".to_string())
     })?;
-    let status_line = std::str::from_utf8(status_line_bytes).map_err(|err| {
-        WorkerError::Message(format!("response status line not utf8: {err}"))
-    })?;
+    let status_line = std::str::from_utf8(status_line_bytes)
+        .map_err(|err| WorkerError::Message(format!("response status line not utf8: {err}")))?;
 
     let mut status_parts = status_line.split_whitespace();
     let http_version = status_parts.next().ok_or_else(|| {
@@ -297,9 +300,9 @@ fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpH
             "response status code must be 3 digits, got: {status_str}"
         )));
     }
-    let status_code = status_str.parse::<u16>().map_err(|err| {
-        WorkerError::Message(format!("response status code parse failed: {err}"))
-    })?;
+    let status_code = status_str
+        .parse::<u16>()
+        .map_err(|err| WorkerError::Message(format!("response status code parse failed: {err}")))?;
     if !(100..=599).contains(&status_code) {
         return Err(WorkerError::Message(format!(
             "response status code out of range: {status_code}"
@@ -319,7 +322,9 @@ fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpH
             continue;
         }
         let (name, value) = line.split_once(':').ok_or_else(|| {
-            WorkerError::Message(format!("invalid response header line (missing ':'): {line}"))
+            WorkerError::Message(format!(
+                "invalid response header line (missing ':'): {line}"
+            ))
         })?;
         let name = name.trim();
         let value = value.trim();
@@ -342,9 +347,9 @@ fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpH
         WorkerError::Message("response missing Content-Length header".to_string())
     })?;
 
-    let body_start = header_end.checked_add(4).ok_or_else(|| {
-        WorkerError::Message("response body offset overflow".to_string())
-    })?;
+    let body_start = header_end
+        .checked_add(4)
+        .ok_or_else(|| WorkerError::Message("response body offset overflow".to_string()))?;
 
     Ok(ParsedHttpHead {
         status_code,
@@ -458,7 +463,9 @@ fn bdd_http_parser_rejects_four_digit_status_code() -> Result<(), WorkerError> {
     let header_end = raw
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| WorkerError::Message("synthetic response missing header terminator".to_string()))?;
+        .ok_or_else(|| {
+            WorkerError::Message("synthetic response missing header terminator".to_string())
+        })?;
 
     let parsed = parse_http_response_head(raw, header_end);
     if parsed.is_ok() {
@@ -504,9 +511,8 @@ async fn bdd_api_post_switchover_writes_dcs_key() -> Result<(), WorkerError> {
 
     let response = read_http_response_framed(&mut client, IO_TIMEOUT).await?;
     assert_eq!(response.status_code, 202);
-    let connection = header_value(&response.headers, "Connection").ok_or_else(|| {
-        WorkerError::Message("response missing Connection header".to_string())
-    })?;
+    let connection = header_value(&response.headers, "Connection")
+        .ok_or_else(|| WorkerError::Message("response missing Connection header".to_string()))?;
     if connection != "close" {
         return Err(WorkerError::Message(format!(
             "expected Connection: close, got: {connection}"
@@ -774,7 +780,8 @@ async fn bdd_api_debug_routes_expose_ui_and_verbose_contracts() -> Result<(), Wo
     let mut verbose_client = tokio::net::TcpStream::connect(addr)
         .await
         .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    let verbose_request = "GET /debug/verbose HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let verbose_request =
+        "GET /debug/verbose HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     verbose_client
         .write_all(verbose_request.as_bytes())
         .await

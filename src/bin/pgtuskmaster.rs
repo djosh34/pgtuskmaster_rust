@@ -90,9 +90,7 @@ fn run_wal(args: WalArgs) -> ExitCode {
     let pgdata = args.pgdata.as_path();
     let kind = match args.command {
         WalCommand::ArchivePush { wal_path } => {
-            pgtuskmaster_rust::wal_passthrough::WalPassthroughKind::ArchivePush {
-                wal_path,
-            }
+            pgtuskmaster_rust::wal_passthrough::WalPassthroughKind::ArchivePush { wal_path }
         }
         WalCommand::ArchiveGet {
             wal_segment,

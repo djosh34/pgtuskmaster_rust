@@ -158,11 +158,14 @@ fn node_help_exits_success() -> Result<(), String> {
 #[test]
 fn node_missing_config_version_prints_explicit_v2_migration_hint() -> Result<(), String> {
     let bin = node_bin_path()?;
-    let path = write_temp_config("missing-config-version", r#"
+    let path = write_temp_config(
+        "missing-config-version",
+        r#"
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
-"#)?;
+"#,
+    )?;
 
     let output = Command::new(&bin)
         .args(["--config", path.to_string_lossy().as_ref()])

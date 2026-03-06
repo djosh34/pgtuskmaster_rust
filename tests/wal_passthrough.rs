@@ -57,12 +57,9 @@ fn write_archive_helper_config(
 }
 
 fn read_lines(path: &Path) -> Result<Vec<String>, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("read {} failed: {err}", path.display()))?;
-    Ok(raw
-        .lines()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>())
+    let raw =
+        fs::read_to_string(path).map_err(|err| format!("read {} failed: {err}", path.display()))?;
+    Ok(raw.lines().map(|line| line.to_string()).collect::<Vec<_>>())
 }
 
 #[test]
@@ -105,14 +102,23 @@ exit "$PGTUSKMASTER_STUB_EXIT_CODE"
     write_archive_helper_config(
         pgdata.as_path(),
         stub.as_path(),
-        vec!["--opt=hello world".to_string(), "--quote=it's fine".to_string()],
+        vec![
+            "--opt=hello world".to_string(),
+            "--quote=it's fine".to_string(),
+        ],
         Vec::new(),
         "127.0.0.1:1",
     )?;
 
     let wal_path = "/tmp/wal path/000000010000000000000001";
     let status = Command::new(exe)
-        .args(["wal", "--pgdata", pgdata_arg.as_str(), "archive-push", wal_path])
+        .args([
+            "wal",
+            "--pgdata",
+            pgdata_arg.as_str(),
+            "archive-push",
+            wal_path,
+        ])
         .env("PGTUSKMASTER_STUB_ARGV_PATH", argv_arg.as_str())
         .env("PGTUSKMASTER_STUB_EXIT_CODE", "0")
         .stdout(std::process::Stdio::null())
@@ -139,7 +145,9 @@ exit "$PGTUSKMASTER_STUB_EXIT_CODE"
         wal_path.to_string(),
     ];
     if argv != expected {
-        return Err(format!("argv mismatch:\nexpected: {expected:?}\nactual:   {argv:?}"));
+        return Err(format!(
+            "argv mismatch:\nexpected: {expected:?}\nactual:   {argv:?}"
+        ));
     }
 
     let _ = fs::remove_dir_all(&root);
@@ -214,7 +222,9 @@ exit "$PGTUSKMASTER_STUB_EXIT_CODE"
         destination.to_string(),
     ];
     if argv != expected {
-        return Err(format!("argv mismatch:\nexpected: {expected:?}\nactual:   {argv:?}"));
+        return Err(format!(
+            "argv mismatch:\nexpected: {expected:?}\nactual:   {argv:?}"
+        ));
     }
 
     let _ = fs::remove_dir_all(&root);

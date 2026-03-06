@@ -1,9 +1,8 @@
 use super::schema::{
     BackupBootstrapConfig, BackupBootstrapConfigV2Input, BackupConfig, BackupOptions,
-    BackupOptionsV2Input, BinaryPaths, BinaryPathsV2Input,
-    DebugConfig, FileSinkConfig, FileSinkMode, LogCleanupConfig, LogLevel, LoggingConfig,
-    LoggingSinksConfig, PgBackRestConfig, PgBackRestConfigV2Input, PostgresLoggingConfig,
-    ProcessConfig, StderrSinkConfig,
+    BackupOptionsV2Input, BinaryPaths, BinaryPathsV2Input, DebugConfig, FileSinkConfig,
+    FileSinkMode, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgBackRestConfig,
+    PgBackRestConfigV2Input, PostgresLoggingConfig, ProcessConfig, StderrSinkConfig,
 };
 use super::ConfigError;
 
@@ -93,9 +92,7 @@ pub(crate) fn normalize_process_config(
         fencing_timeout_ms: input
             .fencing_timeout_ms
             .unwrap_or(DEFAULT_FENCING_TIMEOUT_MS),
-        backup_timeout_ms: input
-            .backup_timeout_ms
-            .unwrap_or(DEFAULT_BACKUP_TIMEOUT_MS),
+        backup_timeout_ms: input.backup_timeout_ms.unwrap_or(DEFAULT_BACKUP_TIMEOUT_MS),
         binaries,
     })
 }

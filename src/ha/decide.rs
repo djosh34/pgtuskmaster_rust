@@ -311,7 +311,9 @@ mod tests {
             PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
             TlsServerConfig,
         },
-        dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest},
+        dcs::state::{
+            DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
+        },
         ha::{
             actions::HaAction,
             state::{DecideInput, HaPhase, HaState, WorldSnapshot},

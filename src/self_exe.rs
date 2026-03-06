@@ -1,9 +1,4 @@
-use std::{
-    fs,
-    path::Path,
-    path::PathBuf,
-    sync::{OnceLock},
-};
+use std::{fs, path::Path, path::PathBuf, sync::OnceLock};
 
 static SELF_EXE: OnceLock<PathBuf> = OnceLock::new();
 
@@ -16,8 +11,8 @@ pub(crate) enum SelfExeError {
 }
 
 pub(crate) fn init_from_current_exe() -> Result<(), SelfExeError> {
-    let current = std::env::current_exe()
-        .map_err(|err| SelfExeError::CurrentExe(err.to_string()))?;
+    let current =
+        std::env::current_exe().map_err(|err| SelfExeError::CurrentExe(err.to_string()))?;
     let resolved = resolve_self_exe_override(current.as_path()).unwrap_or(current);
     set(resolved)
 }
@@ -86,6 +81,11 @@ pub(crate) fn set(path: PathBuf) -> Result<(), SelfExeError> {
 }
 
 pub(crate) fn get() -> Result<PathBuf, SelfExeError> {
+    if let Some(path) = SELF_EXE.get() {
+        return Ok(path.clone());
+    }
+
+    init_from_current_exe()?;
     match SELF_EXE.get() {
         Some(path) => Ok(path.clone()),
         None => Err(SelfExeError::CurrentExe(

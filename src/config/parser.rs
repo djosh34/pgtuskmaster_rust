@@ -8,9 +8,9 @@ use super::defaults::{
 };
 use super::schema::{
     ApiConfig, ApiSecurityConfig, BackupProvider, ConfigVersion, InlineOrPath, PgBackRestConfig,
-    PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig, PostgresRoleConfig,
-    PostgresRolesConfig, RuntimeConfig, RuntimeConfigV2Input, RoleAuthConfig, RoleAuthConfigV2Input,
-    SecretSource, TlsServerConfig, TlsServerIdentityConfig,
+    PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresRoleConfig,
+    PostgresRolesConfig, RoleAuthConfig, RoleAuthConfigV2Input, RuntimeConfig,
+    RuntimeConfigV2Input, SecretSource, TlsServerConfig, TlsServerIdentityConfig,
 };
 
 const MIN_TIMEOUT_MS: u64 = 1;
@@ -326,7 +326,9 @@ fn normalize_pg_ident_v2(
     Ok(PgIdentConfig { source })
 }
 
-fn normalize_api_config_v2(input: super::schema::ApiConfigV2Input) -> Result<ApiConfig, ConfigError> {
+fn normalize_api_config_v2(
+    input: super::schema::ApiConfigV2Input,
+) -> Result<ApiConfig, ConfigError> {
     let listen_addr = input.listen_addr.unwrap_or_else(default_api_listen_addr);
 
     let security = input.security.ok_or_else(|| ConfigError::Validation {
@@ -531,7 +533,11 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         &cfg.postgres.tls,
     )?;
 
-    validate_inline_or_path_non_empty("postgres.pg_hba.source", &cfg.postgres.pg_hba.source, false)?;
+    validate_inline_or_path_non_empty(
+        "postgres.pg_hba.source",
+        &cfg.postgres.pg_hba.source,
+        false,
+    )?;
     validate_inline_or_path_non_empty(
         "postgres.pg_ident.source",
         &cfg.postgres.pg_ident.source,
@@ -595,10 +601,14 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
                 validate_non_empty_path("process.binaries.pgbackrest", pgbackrest_bin)?;
                 validate_absolute_path("process.binaries.pgbackrest", pgbackrest_bin)?;
 
-                let pg_cfg = cfg.backup.pgbackrest.as_ref().ok_or_else(|| ConfigError::Validation {
-                    field: "backup.pgbackrest",
-                    message: "required when backup.provider is pgbackrest".to_string(),
-                })?;
+                let pg_cfg =
+                    cfg.backup
+                        .pgbackrest
+                        .as_ref()
+                        .ok_or_else(|| ConfigError::Validation {
+                            field: "backup.pgbackrest",
+                            message: "required when backup.provider is pgbackrest".to_string(),
+                        })?;
                 validate_pgbackrest_required_fields(pg_cfg)?;
             }
         }
@@ -724,7 +734,8 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
             if tokens.read_token.is_none() && tokens.admin_token.is_none() {
                 return Err(ConfigError::Validation {
                     field: "api.security.auth.role_tokens",
-                    message: "at least one of read_token or admin_token must be configured".to_string(),
+                    message: "at least one of read_token or admin_token must be configured"
+                        .to_string(),
                 });
             }
         }
@@ -748,10 +759,13 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
 }
 
 fn validate_pgbackrest_required_fields(cfg: &PgBackRestConfig) -> Result<(), ConfigError> {
-    let stanza = cfg.stanza.as_deref().ok_or_else(|| ConfigError::Validation {
-        field: "backup.pgbackrest.stanza",
-        message: "required when backup is enabled".to_string(),
-    })?;
+    let stanza = cfg
+        .stanza
+        .as_deref()
+        .ok_or_else(|| ConfigError::Validation {
+            field: "backup.pgbackrest.stanza",
+            message: "required when backup is enabled".to_string(),
+        })?;
     validate_non_empty("backup.pgbackrest.stanza", stanza)?;
 
     let repo = cfg.repo.as_deref().ok_or_else(|| ConfigError::Validation {
@@ -779,7 +793,10 @@ fn validate_pgbackrest_options(cfg: &PgBackRestConfig) -> Result<(), ConfigError
     Ok(())
 }
 
-fn validate_backup_option_tokens(field: &'static str, tokens: &[String]) -> Result<(), ConfigError> {
+fn validate_backup_option_tokens(
+    field: &'static str,
+    tokens: &[String],
+) -> Result<(), ConfigError> {
     for token in tokens {
         if token.trim().is_empty() {
             return Err(ConfigError::Validation {
@@ -839,7 +856,10 @@ fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(),
 
     let tailed_files: [(&'static str, &PathBuf); 2] = [
         ("postgres.log_file", &postgres_log_file),
-        ("logging.postgres.pg_ctl_log_file", &effective_pg_ctl_log_file),
+        (
+            "logging.postgres.pg_ctl_log_file",
+            &effective_pg_ctl_log_file,
+        ),
     ];
 
     for (field, path) in tailed_files {
@@ -856,7 +876,8 @@ fn validate_logging_path_ownership_invariants(cfg: &RuntimeConfig) -> Result<(),
         if sink_path.starts_with(&log_dir) {
             return Err(ConfigError::Validation {
                 field: "logging.sinks.file.path",
-                message: "must not be inside logging.postgres.log_dir (would self-ingest)".to_string(),
+                message: "must not be inside logging.postgres.log_dir (would self-ingest)"
+                    .to_string(),
             });
         }
     }
@@ -942,10 +963,14 @@ fn validate_tls_server_config(
         return Ok(());
     }
 
-    let identity = cfg.identity.as_ref().ok_or_else(|| ConfigError::Validation {
-        field: identity_field,
-        message: "tls identity must be configured when tls.mode is optional or required".to_string(),
-    })?;
+    let identity = cfg
+        .identity
+        .as_ref()
+        .ok_or_else(|| ConfigError::Validation {
+            field: identity_field,
+            message: "tls identity must be configured when tls.mode is optional or required"
+                .to_string(),
+        })?;
 
     validate_inline_or_path_non_empty(cert_chain_field, &identity.cert_chain, false)?;
     validate_inline_or_path_non_empty(private_key_field, &identity.private_key, false)?;
@@ -979,17 +1004,19 @@ fn validate_dcs_init_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
 
     validate_non_empty("dcs.init.payload_json", init.payload_json.as_str())?;
 
-    let _: serde_json::Value =
-        serde_json::from_str(init.payload_json.as_str()).map_err(|err| ConfigError::Validation {
+    let _: serde_json::Value = serde_json::from_str(init.payload_json.as_str()).map_err(|err| {
+        ConfigError::Validation {
             field: "dcs.init.payload_json",
             message: format!("must be valid JSON: {err}"),
-        })?;
+        }
+    })?;
 
-    let _: RuntimeConfig =
-        serde_json::from_str(init.payload_json.as_str()).map_err(|err| ConfigError::Validation {
+    let _: RuntimeConfig = serde_json::from_str(init.payload_json.as_str()).map_err(|err| {
+        ConfigError::Validation {
             field: "dcs.init.payload_json",
             message: format!("must decode as a RuntimeConfig JSON document: {err}"),
-        })?;
+        }
+    })?;
 
     Ok(())
 }
@@ -1033,24 +1060,24 @@ fn validate_inline_or_path_non_empty(
 }
 
 #[cfg(test)]
-    mod tests {
-        use std::path::PathBuf;
+mod tests {
+    use std::path::PathBuf;
 
-        use super::*;
-        use crate::config::schema::{
-            ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
-            BackupConfig, ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
-            InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
-            PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig,
-            PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
-            StderrSinkConfig, TlsServerConfig,
-        };
-        use crate::pginfo::conninfo::PgSslMode;
+    use super::*;
+    use crate::config::schema::{
+        ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig,
+        BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
+        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
+        PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
+        PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
+        StderrSinkConfig, TlsServerConfig,
+    };
+    use crate::pginfo::conninfo::PgSslMode;
 
-        fn base_runtime_config() -> RuntimeConfig {
-            RuntimeConfig {
-                cluster: ClusterConfig {
-                    name: "cluster-a".to_string(),
+    fn base_runtime_config() -> RuntimeConfig {
+        RuntimeConfig {
+            cluster: ClusterConfig {
+                name: "cluster-a".to_string(),
                 member_id: "member-a".to_string(),
             },
             postgres: PostgresConfig {
@@ -1058,55 +1085,55 @@ fn validate_inline_or_path_non_empty(
                 connect_timeout_s: 5,
                 listen_host: "127.0.0.1".to_string(),
                 listen_port: 5432,
-                    socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
-                    log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
-                    rewind_source_host: "127.0.0.1".to_string(),
-                    rewind_source_port: 5432,
-                    local_conn_identity: PostgresConnIdentityConfig {
-                        user: "postgres".to_string(),
-                        dbname: "postgres".to_string(),
-                        ssl_mode: PgSslMode::Prefer,
+                socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
+                log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
+                rewind_source_host: "127.0.0.1".to_string(),
+                rewind_source_port: 5432,
+                local_conn_identity: PostgresConnIdentityConfig {
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: "rewinder".to_string(),
+                    dbname: "postgres".to_string(),
+                    ssl_mode: PgSslMode::Prefer,
+                },
+                tls: TlsServerConfig {
+                    mode: ApiTlsMode::Disabled,
+                    identity: None,
+                    client_auth: None,
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        username: "postgres".to_string(),
+                        auth: RoleAuthConfig::Tls,
                     },
-                    rewind_conn_identity: PostgresConnIdentityConfig {
-                        user: "rewinder".to_string(),
-                        dbname: "postgres".to_string(),
-                        ssl_mode: PgSslMode::Prefer,
+                    replicator: PostgresRoleConfig {
+                        username: "replicator".to_string(),
+                        auth: RoleAuthConfig::Tls,
                     },
-                    tls: TlsServerConfig {
-                        mode: ApiTlsMode::Disabled,
-                        identity: None,
-                        client_auth: None,
-                    },
-                    roles: PostgresRolesConfig {
-                        superuser: PostgresRoleConfig {
-                            username: "postgres".to_string(),
-                            auth: RoleAuthConfig::Tls,
-                        },
-                        replicator: PostgresRoleConfig {
-                            username: "replicator".to_string(),
-                            auth: RoleAuthConfig::Tls,
-                        },
-                        rewinder: PostgresRoleConfig {
-                            username: "rewinder".to_string(),
-                            auth: RoleAuthConfig::Tls,
-                        },
-                    },
-                    pg_hba: PgHbaConfig {
-                        source: InlineOrPath::Inline {
-                            content: "local all all trust\n".to_string(),
-                        },
-                    },
-                    pg_ident: PgIdentConfig {
-                        source: InlineOrPath::Inline {
-                            content: "# empty\n".to_string(),
-                        },
+                    rewinder: PostgresRoleConfig {
+                        username: "rewinder".to_string(),
+                        auth: RoleAuthConfig::Tls,
                     },
                 },
-                dcs: DcsConfig {
-                    endpoints: vec!["http://127.0.0.1:2379".to_string()],
-                    scope: "scope-a".to_string(),
-                    init: None,
+                pg_hba: PgHbaConfig {
+                    source: InlineOrPath::Inline {
+                        content: "local all all trust\n".to_string(),
+                    },
                 },
+                pg_ident: PgIdentConfig {
+                    source: InlineOrPath::Inline {
+                        content: "# empty\n".to_string(),
+                    },
+                },
+            },
+            dcs: DcsConfig {
+                endpoints: vec!["http://127.0.0.1:2379".to_string()],
+                scope: "scope-a".to_string(),
+                init: None,
+            },
             ha: HaConfig {
                 loop_interval_ms: 1_000,
                 lease_ttl_ms: 10_000,
@@ -1150,21 +1177,21 @@ fn validate_inline_or_path_non_empty(
                         mode: FileSinkMode::Append,
                     },
                 },
-                },
-                api: ApiConfig {
-                    listen_addr: "127.0.0.1:8080".to_string(),
-                    security: ApiSecurityConfig {
-                        tls: TlsServerConfig {
-                            mode: ApiTlsMode::Disabled,
-                            identity: None,
-                            client_auth: None,
-                        },
-                        auth: ApiAuthConfig::Disabled,
+            },
+            api: ApiConfig {
+                listen_addr: "127.0.0.1:8080".to_string(),
+                security: ApiSecurityConfig {
+                    tls: TlsServerConfig {
+                        mode: ApiTlsMode::Disabled,
+                        identity: None,
+                        client_auth: None,
                     },
+                    auth: ApiAuthConfig::Disabled,
                 },
-                debug: DebugConfig { enabled: false },
-            }
+            },
+            debug: DebugConfig { enabled: false },
         }
+    }
 
     #[test]
     fn validate_runtime_config_accepts_valid_config() {
@@ -1280,37 +1307,37 @@ fn validate_inline_or_path_non_empty(
     }
 
     #[test]
-        fn validate_runtime_config_rejects_blank_api_tokens() {
-            let mut cfg = base_runtime_config();
-            cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                read_token: Some(" ".to_string()),
-                admin_token: None,
-            });
+    fn validate_runtime_config_rejects_blank_api_tokens() {
+        let mut cfg = base_runtime_config();
+        cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+            read_token: Some(" ".to_string()),
+            admin_token: None,
+        });
 
-            let err = validate_runtime_config(&cfg);
-            assert!(matches!(
-                err,
-                Err(ConfigError::Validation {
-                    field: "api.security.auth.role_tokens.read_token",
-                    ..
-                })
-            ));
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "api.security.auth.role_tokens.read_token",
+                ..
+            })
+        ));
 
-            let mut cfg = base_runtime_config();
-            cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                read_token: None,
-                admin_token: Some("\t".to_string()),
-            });
+        let mut cfg = base_runtime_config();
+        cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+            read_token: None,
+            admin_token: Some("\t".to_string()),
+        });
 
-            let err = validate_runtime_config(&cfg);
-            assert!(matches!(
-                err,
-                Err(ConfigError::Validation {
-                    field: "api.security.auth.role_tokens.admin_token",
-                    ..
-                })
-            ));
-        }
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "api.security.auth.role_tokens.admin_token",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn validate_runtime_config_rejects_file_sink_enabled_without_path() {
@@ -1373,8 +1400,7 @@ fn validate_inline_or_path_non_empty(
     fn validate_runtime_config_rejects_file_sink_equal_to_tailed_log_via_parent_segments() {
         let mut cfg = base_runtime_config();
         cfg.logging.sinks.file.enabled = true;
-        cfg.logging.sinks.file.path =
-            Some(PathBuf::from("/tmp/pgtuskmaster/tmp/../postgres.log"));
+        cfg.logging.sinks.file.path = Some(PathBuf::from("/tmp/pgtuskmaster/tmp/../postgres.log"));
 
         let err = validate_runtime_config(&cfg);
         assert!(matches!(
@@ -1391,8 +1417,7 @@ fn validate_inline_or_path_non_empty(
         let mut cfg = base_runtime_config();
         cfg.logging.postgres.log_dir = Some(PathBuf::from("/tmp/pgtuskmaster/log_dir"));
         cfg.logging.sinks.file.enabled = true;
-        cfg.logging.sinks.file.path =
-            Some(PathBuf::from("/tmp/pgtuskmaster/log_dir/./out.jsonl"));
+        cfg.logging.sinks.file.path = Some(PathBuf::from("/tmp/pgtuskmaster/log_dir/./out.jsonl"));
 
         let err = validate_runtime_config(&cfg);
         assert!(matches!(
@@ -1434,7 +1459,8 @@ member_id = "member-a"
     }
 
     #[test]
-    fn load_runtime_config_config_version_v1_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    fn load_runtime_config_config_version_v1_is_rejected() -> Result<(), Box<dyn std::error::Error>>
+    {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
@@ -1460,7 +1486,8 @@ config_version = "v1"
     }
 
     #[test]
-    fn load_runtime_config_rejects_unknown_fields_in_v2() -> Result<(), Box<dyn std::error::Error>> {
+    fn load_runtime_config_rejects_unknown_fields_in_v2() -> Result<(), Box<dyn std::error::Error>>
+    {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
@@ -1524,7 +1551,8 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_happy_path_with_safe_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    fn load_runtime_config_v2_happy_path_with_safe_defaults(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
@@ -1646,7 +1674,8 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("runtime-config-v2-missing-binaries-{unique}.toml"));
+        let path =
+            std::env::temp_dir().join(format!("runtime-config-v2-missing-binaries-{unique}.toml"));
 
         // Intentionally omit `process.binaries`.
         let toml = r#"
@@ -1772,7 +1801,8 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("runtime-config-v2-missing-roles-{unique}.toml"));
+        let path =
+            std::env::temp_dir().join(format!("runtime-config-v2-missing-roles-{unique}.toml"));
 
         // Intentionally omit `postgres.roles`.
         let toml = r#"

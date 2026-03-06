@@ -134,15 +134,10 @@ pub(crate) async fn spawn_pg16_with_conf_lines(
 
     wait_for_port("postgres", spec.port, spec.startup_timeout, &mut child).await?;
 
-    Ok(PgHandle {
-        child,
-    })
+    Ok(PgHandle { child })
 }
 
-fn append_postgresql_conf_lines(
-    data_dir: &Path,
-    lines: &[String],
-) -> Result<(), HarnessError> {
+fn append_postgresql_conf_lines(data_dir: &Path, lines: &[String]) -> Result<(), HarnessError> {
     if lines.is_empty() {
         return Ok(());
     }

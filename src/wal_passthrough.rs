@@ -15,7 +15,9 @@ pub enum WalPassthroughError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WalPassthroughKind {
-    ArchivePush { wal_path: String },
+    ArchivePush {
+        wal_path: String,
+    },
     ArchiveGet {
         wal_segment: String,
         destination_path: String,
@@ -40,7 +42,9 @@ struct CaptureConfig {
 fn now_millis() -> Result<u64, WalPassthroughError> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|err| WalPassthroughError::Message(format!("system clock before unix epoch: {err}")))?;
+        .map_err(|err| {
+            WalPassthroughError::Message(format!("system clock before unix epoch: {err}"))
+        })?;
     u64::try_from(elapsed.as_millis())
         .map_err(|err| WalPassthroughError::Message(format!("millis conversion failed: {err}")))
 }
@@ -55,7 +59,11 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn invocation_id(kind: &str, wal_a: &str, wal_b: Option<&str>) -> Result<String, WalPassthroughError> {
+fn invocation_id(
+    kind: &str,
+    wal_a: &str,
+    wal_b: Option<&str>,
+) -> Result<String, WalPassthroughError> {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
     let millis = now_millis()?;
@@ -160,22 +168,21 @@ fn best_effort_post_json<T: Serialize>(
     Ok(())
 }
 
-pub fn run(pgdata: &Path, kind: WalPassthroughKind) -> Result<WalPassthroughExit, WalPassthroughError> {
+pub fn run(
+    pgdata: &Path,
+    kind: WalPassthroughKind,
+) -> Result<WalPassthroughExit, WalPassthroughError> {
     if pgdata.as_os_str().is_empty() {
-        return Err(WalPassthroughError::Message("pgdata must not be empty".to_string()));
+        return Err(WalPassthroughError::Message(
+            "pgdata must not be empty".to_string(),
+        ));
     }
 
     let (event_kind, wal_path, wal_segment, destination_path, rendered) = match kind {
         WalPassthroughKind::ArchivePush { wal_path } => {
             let rendered = crate::wal::render_archive_push(pgdata, wal_path.as_str())
                 .map_err(|err| WalPassthroughError::Message(err.to_string()))?;
-            (
-                "archive-push",
-                Some(wal_path),
-                None,
-                None,
-                rendered,
-            )
+            ("archive-push", Some(wal_path), None, None, rendered)
         }
         WalPassthroughKind::ArchiveGet {
             wal_segment,
@@ -186,7 +193,7 @@ pub fn run(pgdata: &Path, kind: WalPassthroughKind) -> Result<WalPassthroughExit
                 wal_segment.as_str(),
                 destination_path.as_str(),
             )
-                .map_err(|err| WalPassthroughError::Message(err.to_string()))?;
+            .map_err(|err| WalPassthroughError::Message(err.to_string()))?;
             (
                 "archive-get",
                 None,
@@ -236,8 +243,20 @@ pub fn run(pgdata: &Path, kind: WalPassthroughKind) -> Result<WalPassthroughExit
         .take()
         .ok_or_else(|| WalPassthroughError::Message("child stderr pipe missing".to_string()))?;
 
-    let stdout_handle = capture_stream(stdout, std::io::stdout(), CaptureConfig { max_bytes: 64 * 1024 });
-    let stderr_handle = capture_stream(stderr, std::io::stderr(), CaptureConfig { max_bytes: 64 * 1024 });
+    let stdout_handle = capture_stream(
+        stdout,
+        std::io::stdout(),
+        CaptureConfig {
+            max_bytes: 64 * 1024,
+        },
+    );
+    let stderr_handle = capture_stream(
+        stderr,
+        std::io::stderr(),
+        CaptureConfig {
+            max_bytes: 64 * 1024,
+        },
+    );
 
     let status = child
         .wait()

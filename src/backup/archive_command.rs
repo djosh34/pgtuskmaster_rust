@@ -54,7 +54,8 @@ pub(crate) fn materialize_archive_command_config(
 ) -> Result<PathBuf, ArchiveCommandError> {
     if !cfg.backup.enabled {
         return Err(ArchiveCommandError::InvalidConfig {
-            message: "backup.enabled must be true to materialize archive command config".to_string(),
+            message: "backup.enabled must be true to materialize archive command config"
+                .to_string(),
         });
     }
     if cfg.postgres.data_dir.as_os_str().is_empty() {
@@ -66,28 +67,26 @@ pub(crate) fn materialize_archive_command_config(
         BackupProvider::Pgbackrest => {}
     }
 
-    let pgbackrest_bin = cfg
-        .process
-        .binaries
-        .pgbackrest
-        .clone()
-        .ok_or_else(|| ArchiveCommandError::InvalidConfig {
+    let pgbackrest_bin = cfg.process.binaries.pgbackrest.clone().ok_or_else(|| {
+        ArchiveCommandError::InvalidConfig {
             message: "process.binaries.pgbackrest must be configured when backup.enabled is true"
                 .to_string(),
-        })?;
+        }
+    })?;
     if pgbackrest_bin.as_os_str().is_empty() {
         return Err(ArchiveCommandError::InvalidConfig {
             message: "process.binaries.pgbackrest must not be empty".to_string(),
         });
     }
 
-    let pg_cfg = cfg
-        .backup
-        .pgbackrest
-        .as_ref()
-        .ok_or_else(|| ArchiveCommandError::InvalidConfig {
-            message: "backup.pgbackrest must be configured when backup.enabled is true".to_string(),
-        })?;
+    let pg_cfg =
+        cfg.backup
+            .pgbackrest
+            .as_ref()
+            .ok_or_else(|| ArchiveCommandError::InvalidConfig {
+                message: "backup.pgbackrest must be configured when backup.enabled is true"
+                    .to_string(),
+            })?;
 
     let stanza = pg_cfg
         .stanza
@@ -121,7 +120,10 @@ pub(crate) fn materialize_archive_command_config(
     let cfg_path = archive_command_config_path(&cfg.postgres.data_dir);
     validate_absolute_path("postgres.data_dir", cfg.postgres.data_dir.as_path())?;
     let config = ArchiveCommandConfig {
-        pgbackrest_bin: validate_absolute_path("process.binaries.pgbackrest", pgbackrest_bin.as_path())?,
+        pgbackrest_bin: validate_absolute_path(
+            "process.binaries.pgbackrest",
+            pgbackrest_bin.as_path(),
+        )?,
         stanza,
         repo,
         pg1_path: validate_absolute_path("postgres.data_dir", cfg.postgres.data_dir.as_path())?,
@@ -212,7 +214,10 @@ pub(crate) fn load_archive_command_config(
 fn load_config(pgdata: &Path) -> Result<ArchiveCommandConfig, ArchiveCommandError> {
     let path = archive_command_config_path(pgdata);
     let raw = fs::read(&path).map_err(|err| ArchiveCommandError::Io {
-        message: format!("failed to read archive command config {}: {err}", path.display()),
+        message: format!(
+            "failed to read archive command config {}: {err}",
+            path.display()
+        ),
     })?;
     serde_json::from_slice(&raw).map_err(|err| ArchiveCommandError::Decode {
         message: format!(
@@ -222,7 +227,10 @@ fn load_config(pgdata: &Path) -> Result<ArchiveCommandConfig, ArchiveCommandErro
     })
 }
 
-fn validate_absolute_path(field: &'static str, path: &Path) -> Result<PathBuf, ArchiveCommandError> {
+fn validate_absolute_path(
+    field: &'static str,
+    path: &Path,
+) -> Result<PathBuf, ArchiveCommandError> {
     if path.as_os_str().is_empty() {
         return Err(ArchiveCommandError::InvalidConfig {
             message: format!("{field} must not be empty"),
@@ -230,7 +238,10 @@ fn validate_absolute_path(field: &'static str, path: &Path) -> Result<PathBuf, A
     }
     if !path.is_absolute() {
         return Err(ArchiveCommandError::InvalidConfig {
-            message: format!("{field} must be an absolute path (got `{}`)", path.display()),
+            message: format!(
+                "{field} must be an absolute path (got `{}`)",
+                path.display()
+            ),
         });
     }
     Ok(path.to_path_buf())
@@ -241,16 +252,18 @@ fn derive_api_local_addr(listen_addr: &str) -> Result<String, ArchiveCommandErro
     let port = match parsed {
         Ok(addr) => addr.port(),
         Err(_) => {
-            let (_host, port) = listen_addr
-                .rsplit_once(':')
-                .ok_or_else(|| ArchiveCommandError::InvalidConfig {
-                    message: format!("api.listen_addr must be host:port (got `{listen_addr}`)"),
-                })?;
-            port.parse::<u16>().map_err(|err| ArchiveCommandError::InvalidConfig {
-                message: format!(
-                    "api.listen_addr port must be a valid u16 (got `{listen_addr}`): {err}"
-                ),
-            })?
+            let (_host, port) =
+                listen_addr
+                    .rsplit_once(':')
+                    .ok_or_else(|| ArchiveCommandError::InvalidConfig {
+                        message: format!("api.listen_addr must be host:port (got `{listen_addr}`)"),
+                    })?;
+            port.parse::<u16>()
+                .map_err(|err| ArchiveCommandError::InvalidConfig {
+                    message: format!(
+                        "api.listen_addr port must be a valid u16 (got `{listen_addr}`): {err}"
+                    ),
+                })?
         }
     };
     if port == 0 {
@@ -285,7 +298,11 @@ fn now_millis() -> Result<u64, ArchiveCommandError> {
     })
 }
 
-fn write_atomic(path: &Path, contents: &[u8], mode: Option<u32>) -> Result<(), ArchiveCommandError> {
+fn write_atomic(
+    path: &Path,
+    contents: &[u8],
+    mode: Option<u32>,
+) -> Result<(), ArchiveCommandError> {
     let parent = path.parent().ok_or_else(|| ArchiveCommandError::Io {
         message: format!("path has no parent: {}", path.display()),
     })?;
@@ -336,11 +353,19 @@ fn write_atomic(path: &Path, contents: &[u8], mode: Option<u32>) -> Result<(), A
                 ),
             })?;
             fs::rename(&tmp, path).map_err(|err| ArchiveCommandError::Io {
-                message: format!("failed to rename {} to {}: {err}", tmp.display(), path.display()),
+                message: format!(
+                    "failed to rename {} to {}: {err}",
+                    tmp.display(),
+                    path.display()
+                ),
             })
         } else {
             Err(ArchiveCommandError::Io {
-                message: format!("failed to rename {} to {}: {err}", tmp.display(), path.display()),
+                message: format!(
+                    "failed to rename {} to {}: {err}",
+                    tmp.display(),
+                    path.display()
+                ),
             })
         }
     })?;
@@ -356,10 +381,10 @@ mod tests {
     use crate::config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BackupOptions,
         BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
-        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgBackRestConfig,
-        PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig,
-        PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig,
-        RuntimeConfig, StderrSinkConfig, TlsServerConfig,
+        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig,
+        PgBackRestConfig, PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
+        PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
+        RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
     };
     use crate::pginfo::conninfo::PgSslMode;
 

@@ -116,7 +116,11 @@ impl EtcdDcsStore {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let worker_panicked = worker_handle.join().is_err();
-                let suffix = if worker_panicked { " (worker panicked)" } else { "" };
+                let suffix = if worker_panicked {
+                    " (worker panicked)"
+                } else {
+                    ""
+                };
                 Err(DcsStoreError::Io(format!(
                     "etcd worker exited before signaling startup{suffix}"
                 )))
@@ -141,7 +145,9 @@ impl EtcdDcsStore {
             })?;
 
         response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
-            DcsStoreError::Io(format!("timed out waiting for put-if-absent response: {err}"))
+            DcsStoreError::Io(format!(
+                "timed out waiting for put-if-absent response: {err}"
+            ))
         })?
     }
 }
@@ -222,7 +228,8 @@ fn run_worker_loop(
                             }
                         }
                         WorkerCommand::Read { path, response_tx } => {
-                            let result = execute_read(&endpoints, &mut client, &healthy, &path).await;
+                            let result =
+                                execute_read(&endpoints, &mut client, &healthy, &path).await;
                             let invalidate_result = if result.is_err() {
                                 invalidate_watch_session(
                                     &healthy,
@@ -799,6 +806,7 @@ mod tests {
 
     use etcd_client::Client;
 
+    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         config::{
             schema::{ClusterConfig, DebugConfig, HaConfig, PostgresConfig},
@@ -827,7 +835,6 @@ mod tests {
             HarnessError,
         },
     };
-    use crate::pginfo::conninfo::PgSslMode;
 
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
     type TestResult = Result<(), BoxError>;
@@ -915,7 +922,6 @@ mod tests {
             self.handle = handle;
             Ok(())
         }
-
     }
 
     struct EstablishDelayGuard {

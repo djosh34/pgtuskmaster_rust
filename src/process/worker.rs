@@ -18,9 +18,8 @@ use crate::{
 
 use super::{
     jobs::{
-        ActiveJob, ActiveJobKind, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar,
-        ProcessError, ProcessExit, ProcessHandle, ProcessLogIdentity, ProcessOutputLine,
-        ProcessOutputStream,
+        ActiveJob, ActiveJobKind, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError,
+        ProcessExit, ProcessHandle, ProcessLogIdentity, ProcessOutputLine, ProcessOutputStream,
     },
     state::{
         ActiveRuntime, JobOutcome, ProcessJobKind, ProcessJobRejection, ProcessJobRequest,
@@ -64,7 +63,12 @@ impl ProcessHandle for TokioProcessHandle {
         &'a mut self,
         max_bytes: usize,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<super::jobs::ProcessOutputLine>, ProcessError>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Vec<super::jobs::ProcessOutputLine>, ProcessError>,
+                > + Send
+                + 'a,
+        >,
     > {
         Box::pin(async move {
             if max_bytes == 0 {
@@ -200,9 +204,11 @@ async fn drain_one_stream(
             break;
         }
         let chunk_len = buf.len().min(*remaining);
-        let read_result =
-            tokio::time::timeout(std::time::Duration::from_millis(1), handle.read(&mut buf[..chunk_len]))
-                .await;
+        let read_result = tokio::time::timeout(
+            std::time::Duration::from_millis(1),
+            handle.read(&mut buf[..chunk_len]),
+        )
+        .await;
         let read_outcome = match read_result {
             Ok(Ok(n)) => Ok(n),
             Ok(Err(err)) => Err(err),
@@ -234,7 +240,10 @@ async fn drain_one_stream(
                     if let Some(b'\r') = line.last() {
                         line.pop();
                     }
-                    out.push(super::jobs::ProcessOutputLine { stream, bytes: line });
+                    out.push(super::jobs::ProcessOutputLine {
+                        stream,
+                        bytes: line,
+                    });
                 }
             }
             Err(err) => {
@@ -267,7 +276,9 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
             EventMeta::new("process.worker.run_started", "process", "ok"),
             attrs,
         )
-        .map_err(|err| WorkerError::Message(format!("process worker start log emit failed: {err}")))?;
+        .map_err(|err| {
+            WorkerError::Message(format!("process worker start log emit failed: {err}"))
+        })?;
     loop {
         step_once(&mut ctx).await?;
         tokio::time::sleep(ctx.poll_interval).await;
@@ -465,7 +476,12 @@ pub(crate) async fn start_job(
         let mut attrs = BTreeMap::new();
         attrs.insert(
             "job_id".to_string(),
-            serde_json::Value::String(ctx.last_rejection.as_ref().map(|r| r.id.0.clone()).unwrap_or_else(|| "unknown".to_string())),
+            serde_json::Value::String(
+                ctx.last_rejection
+                    .as_ref()
+                    .map(|r| r.id.0.clone())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            ),
         );
         attrs.insert(
             "job_kind".to_string(),
@@ -713,15 +729,30 @@ pub(crate) async fn start_job(
     let mut attrs = BTreeMap::new();
     attrs.insert(
         "job_id".to_string(),
-        serde_json::Value::String(ctx.active_runtime.as_ref().map(|rt| rt.request.id.0.clone()).unwrap_or_else(|| "unknown".to_string())),
+        serde_json::Value::String(
+            ctx.active_runtime
+                .as_ref()
+                .map(|rt| rt.request.id.0.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+        ),
     );
     attrs.insert(
         "job_kind".to_string(),
-        serde_json::Value::String(ctx.active_runtime.as_ref().map(|rt| rt.request.kind.label().to_string()).unwrap_or_else(|| "unknown".to_string())),
+        serde_json::Value::String(
+            ctx.active_runtime
+                .as_ref()
+                .map(|rt| rt.request.kind.label().to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+        ),
     );
     attrs.insert(
         "binary".to_string(),
-        serde_json::Value::String(ctx.active_runtime.as_ref().map(|rt| rt.log_identity.binary.clone()).unwrap_or_else(|| "unknown".to_string())),
+        serde_json::Value::String(
+            ctx.active_runtime
+                .as_ref()
+                .map(|rt| rt.log_identity.binary.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+        ),
     );
     ctx.log
         .emit_event(
@@ -731,7 +762,9 @@ pub(crate) async fn start_job(
             EventMeta::new("process.job.started", "process", "ok"),
             attrs,
         )
-        .map_err(|err| WorkerError::Message(format!("process job started log emit failed: {err}")))?;
+        .map_err(|err| {
+            WorkerError::Message(format!("process job started log emit failed: {err}"))
+        })?;
     publish_state(ctx, now)
 }
 
@@ -745,14 +778,19 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
     match runtime.handle.drain_output(256 * 1024).await {
         Ok(lines) => {
             for line in lines {
-                if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
+                if let Err(err) =
+                    emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                {
                     emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
                 }
             }
         }
         Err(err) => {
             let mut attrs = process_log_identity_attrs(&runtime.log_identity);
-            attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(err.to_string()),
+            );
             ctx.log
                 .emit_event(
                     SeverityText::Warn,
@@ -762,7 +800,9 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     attrs,
                 )
                 .map_err(|emit_err| {
-                    WorkerError::Message(format!("process output drain log emit failed: {emit_err}"))
+                    WorkerError::Message(format!(
+                        "process output drain log emit failed: {emit_err}"
+                    ))
                 })?;
         }
     }
@@ -787,14 +827,19 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
         match runtime.handle.drain_output(256 * 1024).await {
             Ok(lines) => {
                 for line in lines {
-                    if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
+                    if let Err(err) =
+                        emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                    {
                         emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
                     }
                 }
             }
             Err(err) => {
                 let mut attrs = process_log_identity_attrs(&runtime.log_identity);
-                attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+                attrs.insert(
+                    "error".to_string(),
+                    serde_json::Value::String(err.to_string()),
+                );
                 ctx.log
                     .emit_event(
                         SeverityText::Warn,
@@ -835,20 +880,34 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             match runtime.handle.drain_output(256 * 1024).await {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
-                            emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                        if let Err(err) =
+                            emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                        {
+                            emit_process_output_emit_failed(
+                                ctx,
+                                &runtime.log_identity,
+                                &line,
+                                &err,
+                            )?;
                         }
                     }
                 }
                 Err(err) => {
                     let mut attrs = process_log_identity_attrs(&runtime.log_identity);
-                    attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+                    attrs.insert(
+                        "error".to_string(),
+                        serde_json::Value::String(err.to_string()),
+                    );
                     ctx.log
                         .emit_event(
                             SeverityText::Warn,
                             "process output drain failed",
                             "process_worker::tick_active_job",
-                            EventMeta::new("process.worker.output_drain_failed", "process", "failed"),
+                            EventMeta::new(
+                                "process.worker.output_drain_failed",
+                                "process",
+                                "failed",
+                            ),
                             attrs,
                         )
                         .map_err(|emit_err| {
@@ -885,20 +944,34 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             match runtime.handle.drain_output(256 * 1024).await {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
-                            emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                        if let Err(err) =
+                            emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                        {
+                            emit_process_output_emit_failed(
+                                ctx,
+                                &runtime.log_identity,
+                                &line,
+                                &err,
+                            )?;
                         }
                     }
                 }
                 Err(err) => {
                     let mut attrs = process_log_identity_attrs(&runtime.log_identity);
-                    attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+                    attrs.insert(
+                        "error".to_string(),
+                        serde_json::Value::String(err.to_string()),
+                    );
                     ctx.log
                         .emit_event(
                             SeverityText::Warn,
                             "process output drain failed",
                             "process_worker::tick_active_job",
-                            EventMeta::new("process.worker.output_drain_failed", "process", "failed"),
+                            EventMeta::new(
+                                "process.worker.output_drain_failed",
+                                "process",
+                                "failed",
+                            ),
                             attrs,
                         )
                         .map_err(|emit_err| {
@@ -941,20 +1014,34 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             match runtime.handle.drain_output(256 * 1024).await {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone()) {
-                            emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                        if let Err(err) =
+                            emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                        {
+                            emit_process_output_emit_failed(
+                                ctx,
+                                &runtime.log_identity,
+                                &line,
+                                &err,
+                            )?;
                         }
                     }
                 }
                 Err(err) => {
                     let mut attrs = process_log_identity_attrs(&runtime.log_identity);
-                    attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+                    attrs.insert(
+                        "error".to_string(),
+                        serde_json::Value::String(err.to_string()),
+                    );
                     ctx.log
                         .emit_event(
                             SeverityText::Warn,
                             "process output drain failed",
                             "process_worker::tick_active_job",
-                            EventMeta::new("process.worker.output_drain_failed", "process", "failed"),
+                            EventMeta::new(
+                                "process.worker.output_drain_failed",
+                                "process",
+                                "failed",
+                            ),
                             attrs,
                         )
                         .map_err(|emit_err| {
@@ -995,7 +1082,9 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
     }
 }
 
-fn process_log_identity_attrs(identity: &ProcessLogIdentity) -> BTreeMap<String, serde_json::Value> {
+fn process_log_identity_attrs(
+    identity: &ProcessLogIdentity,
+) -> BTreeMap<String, serde_json::Value> {
     let mut attrs = BTreeMap::new();
     attrs.insert(
         "job_id".to_string(),
@@ -1110,10 +1199,9 @@ fn emit_subprocess_line(
         }),
     );
     if let Some(hex) = raw_bytes_hex {
-        record.attributes.insert(
-            "raw_bytes_hex".to_string(),
-            serde_json::Value::String(hex),
-        );
+        record
+            .attributes
+            .insert("raw_bytes_hex".to_string(), serde_json::Value::String(hex));
     }
 
     log.emit_record(&record)
@@ -1174,9 +1262,15 @@ pub(crate) fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) ->
         }
         ProcessJobKind::PgBackRestVersion(_) => config.backup_timeout_ms,
         ProcessJobKind::PgBackRestInfo(spec) => spec.timeout_ms.unwrap_or(config.backup_timeout_ms),
-        ProcessJobKind::PgBackRestCheck(spec) => spec.timeout_ms.unwrap_or(config.backup_timeout_ms),
-        ProcessJobKind::PgBackRestBackup(spec) => spec.timeout_ms.unwrap_or(config.backup_timeout_ms),
-        ProcessJobKind::PgBackRestRestore(spec) => spec.timeout_ms.unwrap_or(config.backup_timeout_ms),
+        ProcessJobKind::PgBackRestCheck(spec) => {
+            spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
+        }
+        ProcessJobKind::PgBackRestBackup(spec) => {
+            spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
+        }
+        ProcessJobKind::PgBackRestRestore(spec) => {
+            spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
+        }
         ProcessJobKind::PgBackRestArchivePush(spec) => {
             spec.timeout_ms.unwrap_or(config.backup_timeout_ms)
         }
@@ -1430,7 +1524,9 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::PgBackRestVersion(_spec) => {
             let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec("process.binaries.pgbackrest must be configured".to_string())
+                ProcessError::InvalidSpec(
+                    "process.binaries.pgbackrest must be configured".to_string(),
+                )
             })?;
             validate_non_empty_path("process.binaries.pgbackrest", &program)?;
             Ok(ProcessCommandSpec {
@@ -1447,16 +1543,18 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::PgBackRestInfo(spec) => {
             let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec("process.binaries.pgbackrest must be configured".to_string())
+                ProcessError::InvalidSpec(
+                    "process.binaries.pgbackrest must be configured".to_string(),
+                )
             })?;
             validate_non_empty_path("process.binaries.pgbackrest", &program)?;
-            let template = crate::backup::pgbackrest::render(
-                crate::backup::BackupOperation::Info(crate::backup::InfoInput {
+            let template = crate::backup::pgbackrest::render(crate::backup::BackupOperation::Info(
+                crate::backup::InfoInput {
                     stanza: spec.stanza.clone(),
                     repo: spec.repo.clone(),
                     options: spec.options.clone(),
-                }),
-            )
+                },
+            ))
             .map_err(|err| ProcessError::InvalidSpec(format!("pgbackrest info: {err}")))?;
             Ok(ProcessCommandSpec {
                 program: program.clone(),
@@ -1472,7 +1570,9 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::PgBackRestCheck(spec) => {
             let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec("process.binaries.pgbackrest must be configured".to_string())
+                ProcessError::InvalidSpec(
+                    "process.binaries.pgbackrest must be configured".to_string(),
+                )
             })?;
             validate_non_empty_path("process.binaries.pgbackrest", &program)?;
             let template = crate::backup::pgbackrest::render(
@@ -1497,7 +1597,9 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::PgBackRestBackup(spec) => {
             let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec("process.binaries.pgbackrest must be configured".to_string())
+                ProcessError::InvalidSpec(
+                    "process.binaries.pgbackrest must be configured".to_string(),
+                )
             })?;
             validate_non_empty_path("process.binaries.pgbackrest", &program)?;
             let template = crate::backup::pgbackrest::render(
@@ -1522,7 +1624,9 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::PgBackRestRestore(spec) => {
             let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec("process.binaries.pgbackrest must be configured".to_string())
+                ProcessError::InvalidSpec(
+                    "process.binaries.pgbackrest must be configured".to_string(),
+                )
             })?;
             validate_non_empty_path("process.binaries.pgbackrest", &program)?;
             let template = crate::backup::pgbackrest::render(
@@ -1548,7 +1652,9 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::PgBackRestArchivePush(spec) => {
             let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec("process.binaries.pgbackrest must be configured".to_string())
+                ProcessError::InvalidSpec(
+                    "process.binaries.pgbackrest must be configured".to_string(),
+                )
             })?;
             validate_non_empty_path("process.binaries.pgbackrest", &program)?;
             let template = crate::backup::pgbackrest::render(
@@ -1575,7 +1681,9 @@ pub(crate) fn build_command(
         }
         ProcessJobKind::PgBackRestArchiveGet(spec) => {
             let program = config.binaries.pgbackrest.clone().ok_or_else(|| {
-                ProcessError::InvalidSpec("process.binaries.pgbackrest must be configured".to_string())
+                ProcessError::InvalidSpec(
+                    "process.binaries.pgbackrest must be configured".to_string(),
+                )
             })?;
             validate_non_empty_path("process.binaries.pgbackrest", &program)?;
             let template = crate::backup::pgbackrest::render(
@@ -1649,11 +1757,7 @@ fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), P
     Ok(())
 }
 
-fn validate_postgres_setting(
-    field: &str,
-    key: &str,
-    value: &str,
-) -> Result<(), ProcessError> {
+fn validate_postgres_setting(field: &str, key: &str, value: &str) -> Result<(), ProcessError> {
     if key.trim().is_empty() {
         return Err(ProcessError::InvalidSpec(format!(
             "{field} postgres setting key must not be empty"
@@ -1735,16 +1839,16 @@ mod tests {
         process::{
             jobs::{
                 ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec,
-                NoopCommandRunner, PgRewindSpec, ProcessCommandRunner, ProcessError, ProcessExit,
-                ProcessEnvValue, ProcessHandle, PromoteSpec, ReplicatorSourceConn,
+                NoopCommandRunner, PgRewindSpec, ProcessCommandRunner, ProcessEnvValue,
+                ProcessError, ProcessExit, ProcessHandle, PromoteSpec, ReplicatorSourceConn,
                 RewinderSourceConn, ShutdownMode, StartPostgresSpec,
             },
             state::{
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
             },
             worker::{
-                build_command, can_accept_job, start_job, step_once,
-                tick_active_job, TokioCommandRunner,
+                build_command, can_accept_job, start_job, step_once, tick_active_job,
+                TokioCommandRunner,
             },
         },
         state::{new_state_channel, JobId, UnixMillis, WorkerError, WorkerStatus},
@@ -1949,7 +2053,10 @@ mod tests {
             return Err(format!("expected 1 env var, got {}", spec.env.len()));
         }
         if spec.env[0].key.as_str() != "PGPASSWORD" {
-            return Err(format!("expected env key PGPASSWORD, got {}", spec.env[0].key));
+            return Err(format!(
+                "expected env key PGPASSWORD, got {}",
+                spec.env[0].key
+            ));
         }
         match &spec.env[0].value {
             ProcessEnvValue::Secret(secret) => match &secret.0 {
@@ -1988,11 +2095,7 @@ mod tests {
                 spec.program.display()
             ));
         }
-        if spec.args
-            != vec![
-                "-D", "/tmp/node/data", "-A", "trust", "-U", "su_admin",
-            ]
-        {
+        if spec.args != vec!["-D", "/tmp/node/data", "-A", "trust", "-U", "su_admin"] {
             return Err(format!("unexpected bootstrap args: {:?}", spec.args));
         }
         if !spec.env.is_empty() {
@@ -2075,7 +2178,10 @@ mod tests {
             return Err(format!("expected 1 env var, got {}", spec.env.len()));
         }
         if spec.env[0].key.as_str() != "PGPASSWORD" {
-            return Err(format!("expected env key PGPASSWORD, got {}", spec.env[0].key));
+            return Err(format!(
+                "expected env key PGPASSWORD, got {}",
+                spec.env[0].key
+            ));
         }
         if spec.args.iter().any(|arg| arg.contains("rewindpass")) {
             return Err("password must not appear in args".to_string());
@@ -2113,7 +2219,7 @@ mod tests {
         );
         let spec = command.map_err(|err| err.to_string())?;
         assert_eq!(spec.program, pg_bin);
-            assert_eq!(spec.args, vec!["--version"]);
+        assert_eq!(spec.args, vec!["--version"]);
         Ok(())
     }
 
@@ -2190,19 +2296,24 @@ mod tests {
         let archive_push = build_command(
             &config,
             &job_id,
-            &ProcessJobKind::PgBackRestArchivePush(crate::process::jobs::PgBackRestArchivePushSpec {
-                stanza: "stanza-a".to_string(),
-                repo: "1".to_string(),
-                pg1_path: "/tmp/node/data".into(),
-                wal_path: "/tmp/000000010000000000000001".to_string(),
-                options: Vec::new(),
-                timeout_ms: None,
-            }),
+            &ProcessJobKind::PgBackRestArchivePush(
+                crate::process::jobs::PgBackRestArchivePushSpec {
+                    stanza: "stanza-a".to_string(),
+                    repo: "1".to_string(),
+                    pg1_path: "/tmp/node/data".into(),
+                    wal_path: "/tmp/000000010000000000000001".to_string(),
+                    options: Vec::new(),
+                    timeout_ms: None,
+                },
+            ),
             false,
         )
         .map_err(|err| err.to_string())?;
         assert_eq!(
-            archive_push.args.get(archive_push.args.len().saturating_sub(2)).map(String::as_str),
+            archive_push
+                .args
+                .get(archive_push.args.len().saturating_sub(2))
+                .map(String::as_str),
             Some("archive-push")
         );
 
@@ -2222,7 +2333,10 @@ mod tests {
         )
         .map_err(|err| err.to_string())?;
         assert_eq!(
-            archive_get.args.get(archive_get.args.len().saturating_sub(3)).map(String::as_str),
+            archive_get
+                .args
+                .get(archive_get.args.len().saturating_sub(3))
+                .map(String::as_str),
             Some("archive-get")
         );
 
@@ -2456,7 +2570,9 @@ mod tests {
         assert!(tx
             .send(ProcessJobRequest {
                 id: JobId("job-b".to_string()),
-                kind: ProcessJobKind::PgBackRestVersion(crate::process::jobs::PgBackRestVersionSpec {}),
+                kind: ProcessJobKind::PgBackRestVersion(
+                    crate::process::jobs::PgBackRestVersionSpec {}
+                ),
             })
             .is_ok());
         assert_eq!(step_once(&mut ctx).await, Ok(()));

@@ -5,7 +5,7 @@ use crate::{
     config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
         DcsConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig,
-        PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig,
+        PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
         PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
         StderrSinkConfig, TlsServerConfig,
     },

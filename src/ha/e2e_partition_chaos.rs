@@ -23,6 +23,17 @@ const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(60);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(360);
 const PARTITION_ARTIFACT_DIR: &str = ".ralph/evidence/28-e2e-network-partition-chaos";
 
+#[derive(Clone, Copy)]
+struct StablePrimaryWaitPlan<'a> {
+    context: &'a str,
+    timeout: Duration,
+    excluded_primary: Option<&'a str>,
+    required_consecutive: usize,
+    fallback_timeout: Duration,
+    fallback_required_consecutive: usize,
+    min_observed_nodes: usize,
+}
+
 fn finalize_no_dual_primary_window(
     successful_samples: u64,
     poll_attempts: u64,
@@ -83,15 +94,17 @@ struct PartitionFixture {
 }
 
 impl PartitionFixture {
-    async fn start(
-        node_count: usize,
-    ) -> Result<Self, WorkerError> {
+    async fn start(node_count: usize) -> Result<Self, WorkerError> {
         let config = ha_e2e::TestConfig {
             test_name: "ha-e2e-partition".to_string(),
             cluster_name: "cluster-e2e-partition".to_string(),
             scope: "scope-ha-e2e-partition".to_string(),
             node_count,
-            etcd_members: vec!["etcd-a".to_string(), "etcd-b".to_string(), "etcd-c".to_string()],
+            etcd_members: vec![
+                "etcd-a".to_string(),
+                "etcd-b".to_string(),
+                "etcd-c".to_string(),
+            ],
             mode: ha_e2e::Mode::PartitionProxy,
             timeouts: ha_e2e::TimeoutConfig {
                 command_timeout: E2E_COMMAND_TIMEOUT,
@@ -141,8 +154,7 @@ impl PartitionFixture {
             Ok(value) => value.0.to_string(),
             Err(err) => format!("time_error:{err}"),
         };
-        self.timeline
-            .push(format!("[{stamp}] {}", message.into()));
+        self.timeline.push(format!("[{stamp}] {}", message.into()));
     }
 
     fn node_ids(&self) -> Vec<String> {
@@ -322,7 +334,10 @@ impl PartitionFixture {
                 .iter()
                 .map(|state| {
                     let leader = state.leader.as_deref().unwrap_or("none");
-                    format!("{}:{}:leader={leader}", state.self_member_id, state.ha_phase)
+                    format!(
+                        "{}:{}:leader={leader}",
+                        state.self_member_id, state.ha_phase
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -364,6 +379,239 @@ impl PartitionFixture {
         }
     }
 
+    async fn wait_for_stable_primary_best_effort(
+        &mut self,
+        timeout: Duration,
+        excluded_primary: Option<&str>,
+        required_consecutive: usize,
+        min_observed_nodes: usize,
+    ) -> Result<String, WorkerError> {
+        if required_consecutive == 0 {
+            return Err(WorkerError::Message(
+                "required_consecutive must be greater than zero".to_string(),
+            ));
+        }
+        if min_observed_nodes == 0 {
+            return Err(WorkerError::Message(
+                "min_observed_nodes must be greater than zero".to_string(),
+            ));
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut stable_count = 0usize;
+        let mut last_candidate: Option<String> = None;
+        let mut last_observation = "none".to_string();
+
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for stable primary via best-effort polling; excluded={excluded_primary:?}; last_observation={last_observation}"
+                )));
+            }
+
+            let (states, errors) = self.cluster_ha_states_best_effort().await?;
+            let state_summary = states
+                .iter()
+                .map(|state| {
+                    let leader = state.leader.as_deref().unwrap_or("none");
+                    format!(
+                        "{}:{}:leader={leader}",
+                        state.self_member_id, state.ha_phase
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let error_summary = if errors.is_empty() {
+                "none".to_string()
+            } else {
+                errors.join("; ")
+            };
+            last_observation = format!(
+                "observed_nodes={} states=[{state_summary}] errors=[{error_summary}]",
+                states.len()
+            );
+
+            if states.len() < min_observed_nodes {
+                stable_count = 0;
+                last_candidate = None;
+            } else {
+                let primaries = Self::primary_members(states.as_slice());
+                if primaries.len() == 1 {
+                    let candidate = primaries[0].clone();
+                    let excluded = excluded_primary
+                        .map(|excluded_id| excluded_id == candidate)
+                        .unwrap_or(false);
+                    if !excluded {
+                        if last_candidate.as_deref() == Some(candidate.as_str()) {
+                            stable_count = stable_count.saturating_add(1);
+                        } else {
+                            stable_count = 1;
+                            last_candidate = Some(candidate.clone());
+                        }
+                        if stable_count >= required_consecutive {
+                            return Ok(candidate);
+                        }
+                    } else {
+                        stable_count = 0;
+                        last_candidate = None;
+                    }
+                } else {
+                    stable_count = 0;
+                    last_candidate = None;
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn wait_for_stable_primary_via_sql(
+        &mut self,
+        timeout: Duration,
+        excluded_primary: Option<&str>,
+        required_consecutive: usize,
+        min_observed_nodes: usize,
+    ) -> Result<String, WorkerError> {
+        if required_consecutive == 0 {
+            return Err(WorkerError::Message(
+                "required_consecutive must be greater than zero".to_string(),
+            ));
+        }
+        if min_observed_nodes == 0 {
+            return Err(WorkerError::Message(
+                "min_observed_nodes must be greater than zero".to_string(),
+            ));
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut stable_count = 0usize;
+        let mut last_candidate: Option<String> = None;
+        let mut last_observation = "none".to_string();
+
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for stable primary via SQL; excluded={excluded_primary:?}; last_observation={last_observation}"
+                )));
+            }
+
+            let mut observed_nodes = 0usize;
+            let mut primary_nodes = Vec::new();
+            let mut fragments = Vec::new();
+            for node_id in self.node_ids() {
+                match self
+                    .run_sql_on_node(
+                        node_id.as_str(),
+                        "SELECT CASE WHEN pg_is_in_recovery() THEN 'replica' ELSE 'primary' END",
+                    )
+                    .await
+                {
+                    Ok(output) => {
+                        let rows = ha_e2e::util::parse_psql_rows(output.as_str());
+                        observed_nodes = observed_nodes.saturating_add(1);
+                        let role = rows
+                            .first()
+                            .map(|value| value.as_str())
+                            .unwrap_or("unknown");
+                        fragments.push(format!("{node_id}:{role}"));
+                        if role == "primary" {
+                            primary_nodes.push(node_id);
+                        }
+                    }
+                    Err(err) => {
+                        fragments.push(format!("{node_id}:error={err}"));
+                    }
+                }
+            }
+
+            last_observation = format!(
+                "observed_nodes={observed_nodes} roles=[{}]",
+                fragments.join(", ")
+            );
+
+            if observed_nodes < min_observed_nodes {
+                stable_count = 0;
+                last_candidate = None;
+            } else if primary_nodes.len() == 1 {
+                let candidate = primary_nodes[0].clone();
+                let excluded = excluded_primary
+                    .map(|excluded_id| excluded_id == candidate)
+                    .unwrap_or(false);
+                if !excluded {
+                    if last_candidate.as_deref() == Some(candidate.as_str()) {
+                        stable_count = stable_count.saturating_add(1);
+                    } else {
+                        stable_count = 1;
+                        last_candidate = Some(candidate.clone());
+                    }
+                    if stable_count >= required_consecutive {
+                        return Ok(candidate);
+                    }
+                } else {
+                    stable_count = 0;
+                    last_candidate = None;
+                }
+            } else {
+                stable_count = 0;
+                last_candidate = None;
+            }
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn wait_for_stable_primary_resilient(
+        &mut self,
+        plan: StablePrimaryWaitPlan<'_>,
+    ) -> Result<String, WorkerError> {
+        let strict_timeout = std::cmp::min(plan.timeout, Duration::from_secs(25));
+        let api_fallback_timeout = std::cmp::min(plan.fallback_timeout, Duration::from_secs(20));
+        let sql_fallback_timeout = std::cmp::min(plan.fallback_timeout, Duration::from_secs(30));
+        let strict_required_consecutive = plan.required_consecutive.min(3);
+        let relaxed_required_consecutive = plan.fallback_required_consecutive.min(2);
+
+        match self
+            .wait_for_stable_primary(
+                strict_timeout,
+                plan.excluded_primary,
+                strict_required_consecutive,
+            )
+            .await
+        {
+            Ok(primary) => Ok(primary),
+            Err(wait_err) => {
+                self.record(format!(
+                    "{}: strict stable-primary wait failed: {wait_err}; retrying with best-effort polling",
+                    plan.context
+                ));
+                match self
+                    .wait_for_stable_primary_best_effort(
+                        api_fallback_timeout,
+                        plan.excluded_primary,
+                        relaxed_required_consecutive,
+                        plan.min_observed_nodes,
+                    )
+                    .await
+                {
+                    Ok(primary) => Ok(primary),
+                    Err(best_effort_err) => {
+                        self.record(format!(
+                            "{}: best-effort API stable-primary wait failed: {best_effort_err}; retrying with SQL role polling",
+                            plan.context
+                        ));
+                        self.wait_for_stable_primary_via_sql(
+                            sql_fallback_timeout,
+                            plan.excluded_primary,
+                            relaxed_required_consecutive,
+                            plan.min_observed_nodes,
+                        )
+                        .await
+                    }
+                }
+            }
+        }
+    }
+
     fn primary_members(states: &[HaStateResponse]) -> Vec<String> {
         states
             .iter()
@@ -382,8 +630,40 @@ impl PartitionFixture {
             let (states, errors) = self.cluster_ha_states_best_effort().await?;
             poll_attempts = poll_attempts.saturating_add(1);
             if states.is_empty() {
-                poll_errors = poll_errors.saturating_add(1);
-                last_poll_error = Some(errors.join(" | "));
+                let (sql_roles, sql_errors) = self.cluster_sql_roles_best_effort().await?;
+                if sql_roles.is_empty() {
+                    poll_errors = poll_errors.saturating_add(1);
+                    let api_error_summary = if errors.is_empty() {
+                        "none".to_string()
+                    } else {
+                        errors.join(" | ")
+                    };
+                    let sql_error_summary = if sql_errors.is_empty() {
+                        "none".to_string()
+                    } else {
+                        sql_errors.join(" | ")
+                    };
+                    last_poll_error = Some(format!(
+                        "api_errors={api_error_summary}; sql_errors={sql_error_summary}"
+                    ));
+                } else {
+                    successful_samples = successful_samples.saturating_add(1);
+                    let sql_primary_count = sql_roles
+                        .iter()
+                        .filter(|(_, role)| role == "primary")
+                        .count();
+                    if sql_primary_count > 1 {
+                        return Err(WorkerError::Message(format!(
+                            "split-brain detected via SQL roles: observations={} errors={}",
+                            sql_roles
+                                .iter()
+                                .map(|(node_id, role)| format!("{node_id}:{role}"))
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            sql_errors.join(" | ")
+                        )));
+                    }
+                }
             } else {
                 successful_samples = successful_samples.saturating_add(1);
             }
@@ -452,6 +732,35 @@ impl PartitionFixture {
             E2E_COMMAND_KILL_WAIT_TIMEOUT,
         )
         .await
+    }
+
+    async fn cluster_sql_roles_best_effort(
+        &self,
+    ) -> Result<(Vec<(String, String)>, Vec<String>), WorkerError> {
+        let mut roles = Vec::new();
+        let mut errors = Vec::new();
+        for node_id in self.node_ids() {
+            match self
+                .run_sql_on_node(
+                    node_id.as_str(),
+                    "SELECT CASE WHEN pg_is_in_recovery() THEN 'replica' ELSE 'primary' END",
+                )
+                .await
+            {
+                Ok(output) => {
+                    let rows = ha_e2e::util::parse_psql_rows(output.as_str());
+                    let role = rows
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    roles.push((node_id, role));
+                }
+                Err(err) => {
+                    errors.push(format!("node={node_id} error={err}"));
+                }
+            }
+        }
+        Ok((roles, errors))
     }
 
     async fn run_sql_on_node_with_retry(
@@ -763,7 +1072,15 @@ async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<(), 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
             fixture.record("minority isolation: wait for initial stable primary");
             let bootstrap_primary = fixture
-                .wait_for_stable_primary(Duration::from_secs(90), None, 5)
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "minority isolation: initial stable primary",
+                    timeout: Duration::from_secs(90),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
                 .await?;
             fixture.record(format!("minority isolation: initial primary={bootstrap_primary}"));
 
@@ -799,7 +1116,15 @@ async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<(), 
             fixture.heal_all_network_faults().await?;
 
             let healed_primary = fixture
-                .wait_for_stable_primary(Duration::from_secs(90), None, 5)
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "minority isolation: healed stable primary",
+                    timeout: Duration::from_secs(90),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
                 .await?;
             fixture.record(format!("minority isolation: healed primary={healed_primary}"));
             fixture
@@ -857,7 +1182,15 @@ async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result<(),
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
             fixture.record("primary isolation: wait for initial stable primary");
             let bootstrap_primary = fixture
-                .wait_for_stable_primary(Duration::from_secs(90), None, 5)
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "primary isolation: initial stable primary",
+                    timeout: Duration::from_secs(90),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
                 .await?;
             fixture.record(format!("primary isolation: initial primary={bootstrap_primary}"));
 
@@ -895,7 +1228,15 @@ async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result<(),
 
             fixture.heal_all_network_faults().await?;
             let healed_primary = fixture
-                .wait_for_stable_primary(Duration::from_secs(120), None, 5)
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "primary isolation: healed stable primary",
+                    timeout: Duration::from_secs(120),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(120),
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
                 .await?;
             fixture.record(format!("primary isolation: healed primary={healed_primary}"));
             fixture
@@ -953,7 +1294,15 @@ async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), Work
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
             fixture.record("api-path isolation: wait for initial stable primary");
             let bootstrap_primary = fixture
-                .wait_for_stable_primary(Duration::from_secs(90), None, 5)
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "api-path isolation: initial stable primary",
+                    timeout: Duration::from_secs(90),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
                 .await?;
             fixture.record(format!("api-path isolation: initial primary={bootstrap_primary}"));
 
@@ -979,7 +1328,15 @@ async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), Work
 
             fixture.heal_all_network_faults().await?;
             let healed_primary = fixture
-                .wait_for_stable_primary(Duration::from_secs(90), None, 5)
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "api-path isolation: healed stable primary",
+                    timeout: Duration::from_secs(90),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
                 .await?;
             if healed_primary != bootstrap_primary {
                 return Err(WorkerError::Message(format!(
@@ -1040,7 +1397,15 @@ async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerError> 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
             fixture.record("mixed faults: wait for initial stable primary");
             let bootstrap_primary = fixture
-                .wait_for_stable_primary(Duration::from_secs(90), None, 5)
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "mixed faults: initial stable primary",
+                    timeout: Duration::from_secs(90),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
                 .await?;
             fixture.record(format!("mixed faults: initial primary={bootstrap_primary}"));
 
@@ -1086,7 +1451,15 @@ async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerError> 
 
             fixture.heal_all_network_faults().await?;
             let healed_primary = fixture
-                .wait_for_stable_primary(Duration::from_secs(120), None, 5)
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "mixed faults: healed stable primary",
+                    timeout: Duration::from_secs(120),
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: Duration::from_secs(120),
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
                 .await?;
             fixture.record(format!("mixed faults: healed primary={healed_primary}"));
 

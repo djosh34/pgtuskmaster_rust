@@ -1,1 +1,0 @@
-.ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md

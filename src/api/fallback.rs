@@ -33,6 +33,7 @@ pub(crate) fn post_fallback_heartbeat(
 
 #[cfg(test)]
 mod tests {
+    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         api::fallback::{get_fallback_cluster, post_fallback_heartbeat, FallbackHeartbeatInput},
         config::{
@@ -42,7 +43,6 @@ mod tests {
             PostgresRolesConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
         },
     };
-    use crate::pginfo::conninfo::PgSslMode;
 
     fn sample_runtime_config() -> RuntimeConfig {
         RuntimeConfig {

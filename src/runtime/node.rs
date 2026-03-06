@@ -23,7 +23,9 @@ use crate::{
     ha::state::{
         HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
     },
-    logging::{EventMeta, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText},
+    logging::{
+        EventMeta, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText,
+    },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::{
         jobs::{
@@ -137,11 +139,20 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         EventMeta::new("runtime.startup.entered", "runtime", "ok"),
         start_attrs,
     )
-    .map_err(|err| RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}")))?;
+    .map_err(|err| {
+        RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
+    })?;
 
     let process_defaults = process_defaults_from_config(&cfg);
     let startup_mode = plan_startup(&cfg, &process_defaults, &log, startup_run_id.as_str())?;
-    execute_startup(&cfg, &process_defaults, &startup_mode, &log, startup_run_id.as_str()).await?;
+    execute_startup(
+        &cfg,
+        &process_defaults,
+        &startup_mode,
+        &log,
+        startup_run_id.as_str(),
+    )
+    .await?;
 
     run_workers(cfg, process_defaults, log).await
 }
@@ -291,7 +302,10 @@ fn plan_startup_with_probe(
                 "startup_run_id".to_string(),
                 serde_json::Value::String(startup_run_id.to_string()),
             );
-            attrs.insert("dcs_probe_status".to_string(), serde_json::Value::String("ok".to_string()));
+            attrs.insert(
+                "dcs_probe_status".to_string(),
+                serde_json::Value::String("ok".to_string()),
+            );
             log.emit_event(
                 SeverityText::Info,
                 "startup dcs cache probe ok",
@@ -596,7 +610,9 @@ async fn execute_startup(
         EventMeta::new("runtime.startup.actions_planned", "runtime", "ok"),
         planned_attrs,
     )
-    .map_err(|err| RuntimeError::StartupExecution(format!("startup actions log emit failed: {err}")))?;
+    .map_err(|err| {
+        RuntimeError::StartupExecution(format!("startup actions log emit failed: {err}"))
+    })?;
 
     for (action_index, action) in actions.into_iter().enumerate() {
         let action_kind = match &action {
@@ -637,7 +653,9 @@ async fn execute_startup(
             EventMeta::new("runtime.startup.action", "runtime", "started"),
             step_attrs.clone(),
         )
-        .map_err(|err| RuntimeError::StartupExecution(format!("startup action log emit failed: {err}")))?;
+        .map_err(|err| {
+            RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
+        })?;
 
         match &action {
             StartupAction::RunJob(job)
@@ -837,9 +855,12 @@ async fn run_start_job(
     process_defaults: &ProcessDispatchDefaults,
     log: &crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
-    let managed = crate::postgres_managed::materialize_managed_postgres_config(cfg).map_err(|err| {
-        RuntimeError::StartupExecution(format!("materialize managed postgres config failed: {err}"))
-    })?;
+    let managed =
+        crate::postgres_managed::materialize_managed_postgres_config(cfg).map_err(|err| {
+            RuntimeError::StartupExecution(format!(
+                "materialize managed postgres config failed: {err}"
+            ))
+        })?;
     run_startup_job(
         cfg,
         ProcessJobKind::StartPostgres(StartPostgresSpec {
@@ -871,7 +892,9 @@ async fn run_startup_job(
         &job,
         cfg.logging.capture_subprocess_output,
     )
-    .map_err(|err| RuntimeError::StartupExecution(format!("startup command build failed: {err}")))?;
+    .map_err(|err| {
+        RuntimeError::StartupExecution(format!("startup command build failed: {err}"))
+    })?;
     let log_identity = command.log_identity.clone();
     let command_display = format!("{} {}", command.program.display(), command.args.join(" "));
 
@@ -922,7 +945,11 @@ async fn run_startup_job(
                     SeverityText::Warn,
                     "startup subprocess line emit failed",
                     "runtime::run_startup_job",
-                    EventMeta::new("runtime.startup.subprocess_log_emit_failed", "runtime", "failed"),
+                    EventMeta::new(
+                        "runtime.startup.subprocess_log_emit_failed",
+                        "runtime",
+                        "failed",
+                    ),
                     attrs,
                 )
                 .map_err(|emit_err| {
@@ -971,7 +998,9 @@ async fn run_startup_job(
             })?;
             for line in lines {
                 emit_startup_subprocess_line(log, &log_identity, line).map_err(|err| {
-                    RuntimeError::StartupExecution(format!("startup subprocess line emit failed: {err}"))
+                    RuntimeError::StartupExecution(format!(
+                        "startup subprocess line emit failed: {err}"
+                    ))
                 })?;
             }
             return Err(RuntimeError::StartupExecution(format!(
@@ -989,12 +1018,14 @@ fn emit_startup_subprocess_line(
     line: crate::process::jobs::ProcessOutputLine,
 ) -> Result<(), crate::logging::LogError> {
     let (transport, severity) = match line.stream {
-        crate::process::jobs::ProcessOutputStream::Stdout => {
-            (crate::logging::LogTransport::ChildStdout, SeverityText::Info)
-        }
-        crate::process::jobs::ProcessOutputStream::Stderr => {
-            (crate::logging::LogTransport::ChildStderr, SeverityText::Warn)
-        }
+        crate::process::jobs::ProcessOutputStream::Stdout => (
+            crate::logging::LogTransport::ChildStdout,
+            SeverityText::Info,
+        ),
+        crate::process::jobs::ProcessOutputStream::Stderr => (
+            crate::logging::LogTransport::ChildStderr,
+            SeverityText::Warn,
+        ),
     };
 
     let (message, raw_bytes_hex) = match String::from_utf8(line.bytes) {
@@ -1039,10 +1070,9 @@ fn emit_startup_subprocess_line(
         }),
     );
     if let Some(hex) = raw_bytes_hex {
-        record.attributes.insert(
-            "raw_bytes_hex".to_string(),
-            serde_json::Value::String(hex),
-        );
+        record
+            .attributes
+            .insert("raw_bytes_hex".to_string(), serde_json::Value::String(hex));
     }
 
     log.emit_record(&record)
@@ -1205,12 +1235,7 @@ async fn run_workers(
             listen_addr: cfg.api.listen_addr.clone(),
             message: err.to_string(),
         })?;
-    let mut api_ctx = ApiWorkerCtx::new(
-        listener,
-        cfg_subscriber,
-        Box::new(api_store),
-        log.clone(),
-    );
+    let mut api_ctx = ApiWorkerCtx::new(listener, cfg_subscriber, Box::new(api_store), log.clone());
     api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
     let server_tls = crate::tls::build_rustls_server_config(&cfg.api.security.tls)
         .map_err(|err| RuntimeError::Worker(format!("api tls config build failed: {err}")))?;
@@ -1295,25 +1320,26 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         config::{
             ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
             ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
-            LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig,
-            PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
-            ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
+            LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
+            PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
+            PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
+            TlsServerConfig,
         },
         dcs::state::{DcsCache, LeaderRecord, MemberRecord, MemberRole},
         logging::{LogHandle, LogSink, SeverityText, TestSink},
         pginfo::state::{Readiness, SqlStatus},
         state::{MemberId, UnixMillis, Version},
     };
-    use crate::pginfo::conninfo::PgSslMode;
 
+    use super::{build_startup_actions, StartupAction};
     use super::{
         default_leader_source, inspect_data_dir, select_startup_mode, DataDirState, StartupMode,
     };
-    use super::{build_startup_actions, StartupAction};
     use super::{plan_startup_with_probe, process_defaults_from_config};
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -1496,12 +1522,8 @@ mod tests {
         let process_defaults = process_defaults_from_config(&cfg);
         let (log, sink) = test_log_handle();
 
-        let _startup_mode = plan_startup_with_probe(
-            &cfg,
-            &process_defaults,
-            &log,
-            "run-1",
-            |_cfg| {
+        let _startup_mode =
+            plan_startup_with_probe(&cfg, &process_defaults, &log, "run-1", |_cfg| {
                 Ok(DcsCache {
                     members: BTreeMap::new(),
                     leader: None,
@@ -1509,8 +1531,7 @@ mod tests {
                     config: cfg.clone(),
                     init_lock: None,
                 })
-            },
-        )?;
+            })?;
 
         let inspected = sink.collect_matching(|record| {
             matches!(
@@ -1685,14 +1706,20 @@ mod tests {
                 actions.len()
             ))));
         }
-        if !matches!(actions.first(), Some(StartupAction::ClaimInitLockAndSeedConfig)) {
+        if !matches!(
+            actions.first(),
+            Some(StartupAction::ClaimInitLockAndSeedConfig)
+        ) {
             return Err(Box::new(std::io::Error::other(
                 "expected claim init lock action first",
             )));
         }
         let second_is_restore = match actions.get(1) {
             Some(StartupAction::RunJob(job)) => {
-                matches!(job.as_ref(), crate::process::state::ProcessJobKind::PgBackRestRestore(_))
+                matches!(
+                    job.as_ref(),
+                    crate::process::state::ProcessJobKind::PgBackRestRestore(_)
+                )
             }
             _ => false,
         };
@@ -1756,7 +1783,10 @@ mod tests {
             cfg.backup.bootstrap.enabled,
         );
 
-        assert!(matches!(result, Err(super::RuntimeError::StartupPlanning(_))));
+        assert!(matches!(
+            result,
+            Err(super::RuntimeError::StartupPlanning(_))
+        ));
         Ok(())
     }
 

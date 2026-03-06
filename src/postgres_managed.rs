@@ -45,7 +45,8 @@ pub(crate) fn materialize_managed_postgres_config(
     let managed_hba = absolutize_path(&cfg.postgres.data_dir.join("pgtm.pg_hba.conf"))?;
     let managed_ident = absolutize_path(&cfg.postgres.data_dir.join("pgtm.pg_ident.conf"))?;
 
-    let hba_contents = load_inline_or_path_string("postgres.pg_hba.source", &cfg.postgres.pg_hba.source)?;
+    let hba_contents =
+        load_inline_or_path_string("postgres.pg_hba.source", &cfg.postgres.pg_hba.source)?;
     let ident_contents =
         load_inline_or_path_string("postgres.pg_ident.source", &cfg.postgres.pg_ident.source)?;
 
@@ -57,17 +58,15 @@ pub(crate) fn materialize_managed_postgres_config(
     let mut tls_client_ca_path = None;
 
     let mut extra_settings = BTreeMap::new();
-    extra_settings.insert(
-        "hba_file".to_string(),
-        managed_hba.display().to_string(),
-    );
+    extra_settings.insert("hba_file".to_string(), managed_hba.display().to_string());
     extra_settings.insert(
         "ident_file".to_string(),
         managed_ident.display().to_string(),
     );
 
     if cfg.backup.bootstrap.enabled {
-        let managed_conf = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
+        let managed_conf =
+            absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
         ensure_managed_postgresql_conf(&managed_conf)?;
         extra_settings.insert(
             "config_file".to_string(),
@@ -108,7 +107,8 @@ pub(crate) fn materialize_managed_postgres_config(
         extra_settings.insert("archive_command".to_string(), archive_command.clone());
         extra_settings.insert("restore_command".to_string(), restore_command.clone());
 
-        let managed_conf = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
+        let managed_conf =
+            absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
         write_managed_postgresql_conf(
             managed_conf.as_path(),
             archive_command.as_str(),
@@ -131,10 +131,14 @@ pub(crate) fn materialize_managed_postgres_config(
                 }
             })?;
 
-            let cert_pem =
-                load_inline_or_path_bytes("postgres.tls.identity.cert_chain", &identity.cert_chain)?;
-            let key_pem =
-                load_inline_or_path_bytes("postgres.tls.identity.private_key", &identity.private_key)?;
+            let cert_pem = load_inline_or_path_bytes(
+                "postgres.tls.identity.cert_chain",
+                &identity.cert_chain,
+            )?;
+            let key_pem = load_inline_or_path_bytes(
+                "postgres.tls.identity.private_key",
+                &identity.private_key,
+            )?;
 
             let managed_cert = absolutize_path(&cfg.postgres.data_dir.join("pgtm.server.crt"))?;
             let managed_key = absolutize_path(&cfg.postgres.data_dir.join("pgtm.server.key"))?;
@@ -154,14 +158,13 @@ pub(crate) fn materialize_managed_postgres_config(
             tls_key_path = Some(managed_key);
 
             if let Some(client_auth) = cfg.postgres.tls.client_auth.as_ref() {
-                let ca_pem =
-                    load_inline_or_path_bytes("postgres.tls.client_auth.client_ca", &client_auth.client_ca)?;
+                let ca_pem = load_inline_or_path_bytes(
+                    "postgres.tls.client_auth.client_ca",
+                    &client_auth.client_ca,
+                )?;
                 let managed_ca = absolutize_path(&cfg.postgres.data_dir.join("pgtm.ca.crt"))?;
                 write_atomic(&managed_ca, ca_pem.as_slice(), Some(0o644))?;
-                extra_settings.insert(
-                    "ssl_ca_file".to_string(),
-                    managed_ca.display().to_string(),
-                );
+                extra_settings.insert("ssl_ca_file".to_string(), managed_ca.display().to_string());
                 tls_client_ca_path = Some(managed_ca);
             }
         }
@@ -191,7 +194,10 @@ pub(crate) fn takeover_restored_data_dir(
 
     // Ensure the directory exists; pgBackRest restore should create it, but we want clear errors if not.
     fs::create_dir_all(data_dir).map_err(|err| ManagedPostgresError::Io {
-        message: format!("failed to create postgres.data_dir {}: {err}", data_dir.display()),
+        message: format!(
+            "failed to create postgres.data_dir {}: {err}",
+            data_dir.display()
+        ),
     })?;
 
     let quarantine_dir = if matches!(policy, BackupTakeoverPolicy::Quarantine) {
@@ -224,14 +230,20 @@ pub(crate) fn takeover_restored_data_dir(
 
     // Remove/quarantine any stale managed artifacts.
     let entries = fs::read_dir(data_dir).map_err(|err| ManagedPostgresError::Io {
-        message: format!("failed to read postgres.data_dir {}: {err}", data_dir.display()),
+        message: format!(
+            "failed to read postgres.data_dir {}: {err}",
+            data_dir.display()
+        ),
     })?;
     for entry in entries {
         let entry = entry.map_err(|err| ManagedPostgresError::Io {
             message: format!("failed to read_dir entry: {err}"),
         })?;
         let path = entry.path();
-        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
         if file_name.starts_with("pgtm.") {
             quarantine_or_delete_path(&path, quarantine_dir.as_ref(), policy)?;
         }
@@ -453,9 +465,10 @@ fn quarantine_or_delete_path(
             })?;
         }
         BackupTakeoverPolicy::Quarantine => {
-            let quarantine_dir = quarantine_dir.ok_or_else(|| ManagedPostgresError::InvalidConfig {
-                message: "quarantine policy requires a quarantine dir".to_string(),
-            })?;
+            let quarantine_dir =
+                quarantine_dir.ok_or_else(|| ManagedPostgresError::InvalidConfig {
+                    message: "quarantine policy requires a quarantine dir".to_string(),
+                })?;
             let file_name = match path.file_name().and_then(|s| s.to_str()) {
                 Some(name) if !name.is_empty() => name,
                 _ => "managed",
@@ -512,7 +525,11 @@ fn absolutize_path(path: &Path) -> Result<PathBuf, ManagedPostgresError> {
     Ok(cwd.join(path))
 }
 
-fn write_atomic(path: &Path, contents: &[u8], mode: Option<u32>) -> Result<(), ManagedPostgresError> {
+fn write_atomic(
+    path: &Path,
+    contents: &[u8],
+    mode: Option<u32>,
+) -> Result<(), ManagedPostgresError> {
     let parent = path.parent().ok_or_else(|| ManagedPostgresError::Io {
         message: format!("path has no parent: {}", path.display()),
     })?;
@@ -563,11 +580,19 @@ fn write_atomic(path: &Path, contents: &[u8], mode: Option<u32>) -> Result<(), M
                 ),
             })?;
             fs::rename(&tmp, path).map_err(|err| ManagedPostgresError::Io {
-                message: format!("failed to rename {} to {}: {err}", tmp.display(), path.display()),
+                message: format!(
+                    "failed to rename {} to {}: {err}",
+                    tmp.display(),
+                    path.display()
+                ),
             })
         } else {
             Err(ManagedPostgresError::Io {
-                message: format!("failed to rename {} to {}: {err}", tmp.display(), path.display()),
+                message: format!(
+                    "failed to rename {} to {}: {err}",
+                    tmp.display(),
+                    path.display()
+                ),
             })
         }
     })?;
@@ -595,10 +620,10 @@ mod tests {
         config::{
             ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
             ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
-            LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig,
-            PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
-            ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsClientAuthConfig,
-            TlsServerConfig, TlsServerIdentityConfig,
+            LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
+            PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
+            PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
+            TlsClientAuthConfig, TlsServerConfig, TlsServerIdentityConfig,
         },
         pginfo::conninfo::PgSslMode,
         process::{
@@ -609,10 +634,8 @@ mod tests {
         state::{new_state_channel, JobId, UnixMillis, WorkerStatus},
         test_harness::tls::build_adversarial_tls_fixture,
         test_harness::{
-            binaries::require_pg16_process_binaries_for_real_tests,
-            namespace::NamespaceGuard,
-            pg16::prepare_pgdata_dir,
-            ports::allocate_ports,
+            binaries::require_pg16_process_binaries_for_real_tests, namespace::NamespaceGuard,
+            pg16::prepare_pgdata_dir, ports::allocate_ports,
         },
     };
 
@@ -753,9 +776,8 @@ mod tests {
 
     #[test]
     fn managed_postgres_config_renders_wal_helper_commands_with_placeholders() -> TestResult {
-        crate::self_exe::init_from_current_exe().map_err(|err| {
-            std::io::Error::other(format!("{err}"))
-        })?;
+        crate::self_exe::init_from_current_exe()
+            .map_err(|err| std::io::Error::other(format!("{err}")))?;
 
         let root = temp_dir("managed-wal-helper-render");
         let _ = fs::remove_dir_all(&root);
@@ -781,15 +803,11 @@ mod tests {
         let archive = out
             .extra_settings
             .get("archive_command")
-            .ok_or_else(|| {
-                std::io::Error::other("archive_command missing")
-            })?;
+            .ok_or_else(|| std::io::Error::other("archive_command missing"))?;
         let restore = out
             .extra_settings
             .get("restore_command")
-            .ok_or_else(|| {
-                std::io::Error::other("restore_command missing")
-            })?;
+            .ok_or_else(|| std::io::Error::other("restore_command missing"))?;
 
         assert!(archive.contains("\"wal\""));
         assert!(archive.contains("\"archive-push\""));
@@ -821,7 +839,9 @@ mod tests {
                     crate::process::state::JobOutcome::Success { id, .. } if id == job_id => {
                         return Ok(())
                     }
-                    crate::process::state::JobOutcome::Failure { id, error, .. } if id == job_id => {
+                    crate::process::state::JobOutcome::Failure { id, error, .. }
+                        if id == job_id =>
+                    {
                         return Err(crate::state::WorkerError::Message(format!(
                             "process job {} failed: {error}",
                             id.0
@@ -931,29 +951,30 @@ mod tests {
             }),
         })
         .map_err(|_| crate::state::WorkerError::Message("send bootstrap job failed".to_string()))?;
-        wait_for_job_success(&mut process_ctx, &bootstrap_id, Duration::from_secs(30))
-            .await?;
+        wait_for_job_success(&mut process_ctx, &bootstrap_id, Duration::from_secs(30)).await?;
 
         // Simulate backup-era config artifacts.
         fs::write(data_dir.join("postgresql.conf"), b"max_connections=1\n").map_err(|err| {
             crate::state::WorkerError::Message(format!("write postgresql.conf failed: {err}"))
         })?;
-        fs::write(data_dir.join("postgresql.auto.conf"), b"max_connections=1\n").map_err(|err| {
+        fs::write(
+            data_dir.join("postgresql.auto.conf"),
+            b"max_connections=1\n",
+        )
+        .map_err(|err| {
             crate::state::WorkerError::Message(format!("write postgresql.auto.conf failed: {err}"))
         })?;
 
         takeover_restored_data_dir(&cfg, crate::config::BackupTakeoverPolicy::Delete, false)
-            .map_err(|err| {
-                crate::state::WorkerError::Message(format!("takeover failed: {err}"))
-            })?;
+            .map_err(|err| crate::state::WorkerError::Message(format!("takeover failed: {err}")))?;
 
         let managed = materialize_managed_postgres_config(&cfg).map_err(|err| {
             crate::state::WorkerError::Message(format!("materialize managed config failed: {err}"))
         })?;
 
-        reservation
-            .release_port(port)
-            .map_err(|err| crate::state::WorkerError::Message(format!("release port failed: {err}")))?;
+        reservation.release_port(port).map_err(|err| {
+            crate::state::WorkerError::Message(format!("release port failed: {err}"))
+        })?;
         let start_id = JobId("start".to_string());
         tx.send(ProcessJobRequest {
             id: start_id.clone(),
@@ -969,8 +990,7 @@ mod tests {
             }),
         })
         .map_err(|_| crate::state::WorkerError::Message("send start job failed".to_string()))?;
-        wait_for_job_success(&mut process_ctx, &start_id, Duration::from_secs(60))
-            .await?;
+        wait_for_job_success(&mut process_ctx, &start_id, Duration::from_secs(60)).await?;
 
         let port_s = port.to_string();
         let output = tokio::process::Command::new(&binaries.psql)
@@ -1016,8 +1036,7 @@ mod tests {
             }),
         })
         .map_err(|_| crate::state::WorkerError::Message("send stop job failed".to_string()))?;
-        wait_for_job_success(&mut process_ctx, &stop_id, Duration::from_secs(30))
-            .await?;
+        wait_for_job_success(&mut process_ctx, &stop_id, Duration::from_secs(30)).await?;
 
         drop(reservation);
         Ok(())
@@ -1167,9 +1186,7 @@ mod tests {
 
         let hba_on_disk = fs::read_to_string(&managed.hba_path)?;
         if !hba_on_disk.contains("host all all 127.0.0.1/32 trust") {
-            return Err(Box::new(std::io::Error::other(
-                "unexpected hba contents",
-            )));
+            return Err(Box::new(std::io::Error::other("unexpected hba contents")));
         }
 
         if managed.extra_settings.get("ssl").map(|s| s.as_str()) != Some("off") {
@@ -1320,7 +1337,10 @@ mod tests {
         );
 
         let result = materialize_managed_postgres_config(&cfg);
-        if !matches!(result, Err(super::ManagedPostgresError::InvalidConfig { .. })) {
+        if !matches!(
+            result,
+            Err(super::ManagedPostgresError::InvalidConfig { .. })
+        ) {
             return Err(Box::new(std::io::Error::other(
                 "expected tls required without identity to be rejected",
             )));

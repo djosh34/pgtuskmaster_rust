@@ -95,3 +95,5 @@
 .ralph/tasks/bugs/ha-action-deduping-suppresses-retry.md
 .ralph/tasks/bugs/ha-action-deduping-suppresses-retry.md
 .ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md
+.ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md
+.ralph/tasks/story-ha-functional-rewrite/01-task-remove-restore-control-plane-before-ha-functional-rewrite.md

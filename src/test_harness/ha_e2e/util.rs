@@ -97,25 +97,23 @@ pub(crate) async fn fetch_ha_state_via_tcp(
     node_addr: SocketAddr,
     http_step_timeout: Duration,
 ) -> Result<HaStateResponse, WorkerError> {
-    let mut stream = match tokio::time::timeout(
-        http_step_timeout,
-        tokio::net::TcpStream::connect(node_addr),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(err)) => {
-            return Err(WorkerError::Message(format!(
-                "fallback connect to {node_addr} failed: {err}"
-            )));
-        }
-        Err(_) => {
-            return Err(WorkerError::Message(format!(
-                "fallback connect to {node_addr} timed out after {}s",
-                http_step_timeout.as_secs()
-            )));
-        }
-    };
+    let mut stream =
+        match tokio::time::timeout(http_step_timeout, tokio::net::TcpStream::connect(node_addr))
+            .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(err)) => {
+                return Err(WorkerError::Message(format!(
+                    "fallback connect to {node_addr} failed: {err}"
+                )));
+            }
+            Err(_) => {
+                return Err(WorkerError::Message(format!(
+                    "fallback connect to {node_addr} timed out after {}s",
+                    http_step_timeout.as_secs()
+                )));
+            }
+        };
 
     let request =
         format!("GET /ha/state HTTP/1.1\r\nHost: {node_addr}\r\nConnection: close\r\n\r\n");
@@ -316,9 +314,7 @@ fn read_postmaster_pid(pid_file: &Path) -> Result<u32, WorkerError> {
         ));
     }
     trimmed.parse::<u32>().map_err(|err| {
-        WorkerError::Message(format!(
-            "parse postmaster pid '{trimmed}' failed: {err}"
-        ))
+        WorkerError::Message(format!("parse postmaster pid '{trimmed}' failed: {err}"))
     })
 }
 
@@ -351,9 +347,8 @@ async fn kill_best_effort(pid: u32, signal: &str, label: &str) -> Result<(), Wor
 }
 
 async fn pid_is_alive(pid: u32, label: &str) -> Result<bool, WorkerError> {
-    crate::test_harness::signals::pid_exists(pid).map_err(|err| {
-        WorkerError::Message(format!("{label} kill -0 failed for pid={pid}: {err}"))
-    })
+    crate::test_harness::signals::pid_exists(pid)
+        .map_err(|err| WorkerError::Message(format!("{label} kill -0 failed for pid={pid}: {err}")))
 }
 
 async fn force_kill_postmaster_pid(pid: u32, label: &str) -> Result<(), WorkerError> {
@@ -557,8 +552,7 @@ pub(crate) async fn get_ha_state_with_fallback(
     fallback_tcp_addr: SocketAddr,
     http_step_timeout: Duration,
 ) -> Result<HaStateResponse, WorkerError> {
-    let primary_result =
-        tokio::time::timeout(http_step_timeout, client.get_ha_state()).await;
+    let primary_result = tokio::time::timeout(http_step_timeout, client.get_ha_state()).await;
 
     match primary_result {
         Ok(Ok(state)) => Ok(state),
@@ -615,9 +609,8 @@ mod tests {
     fn make_executable(path: &Path) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         let perms = fs::Permissions::from_mode(0o755);
-        fs::set_permissions(path, perms).map_err(|err| {
-            format!("set_permissions failed for {}: {err}", path.display())
-        })
+        fs::set_permissions(path, perms)
+            .map_err(|err| format!("set_permissions failed for {}: {err}", path.display()))
     }
 
     #[cfg(unix)]
@@ -635,15 +628,11 @@ mod tests {
 
         let marker = ns.child_dir("kill-marker");
         if marker.exists() {
-            fs::remove_file(&marker)
-                .map_err(|err| format!("remove stale marker failed: {err}"))?;
+            fs::remove_file(&marker).map_err(|err| format!("remove stale marker failed: {err}"))?;
         }
 
         let kill_script = fake_bin_dir.join("kill");
-        let script_body = format!(
-            "#!/bin/sh\nset -eu\ntouch '{}'\nexit 0\n",
-            marker.display()
-        );
+        let script_body = format!("#!/bin/sh\nset -eu\ntouch '{}'\nexit 0\n", marker.display());
         fs::write(&kill_script, script_body)
             .map_err(|err| format!("write fake kill failed: {err}"))?;
         make_executable(&kill_script)?;
@@ -655,8 +644,8 @@ mod tests {
             format!("{}:{}", fake_bin_dir.display(), original_path)
         };
 
-        let test_bin = std::env::current_exe()
-            .map_err(|err| format!("current_exe failed: {err}"))?;
+        let test_bin =
+            std::env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?;
 
         let status = std::process::Command::new(test_bin)
             .env("PATH", new_path)
@@ -735,9 +724,10 @@ mod tests {
             .await
             .map_err(|err| format!("read pid line failed: {err}"))?;
 
-        let pid: u32 = pid_line.trim().parse().map_err(|err| {
-            format!("parse wrapper pid '{}' failed: {err}", pid_line.trim())
-        })?;
+        let pid: u32 = pid_line
+            .trim()
+            .parse()
+            .map_err(|err| format!("parse wrapper pid '{}' failed: {err}", pid_line.trim()))?;
 
         let label = "kill-path-inner";
         let alive_before = super::pid_is_alive(pid, label)

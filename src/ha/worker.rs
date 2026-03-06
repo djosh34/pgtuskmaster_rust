@@ -202,18 +202,17 @@ pub(crate) fn dispatch_actions(
             HaAction::StartPostgres => {
                 let managed = match crate::postgres_managed::materialize_managed_postgres_config(
                     &runtime_config,
-                )
-                    {
-                        Ok(value) => value,
-                        Err(err) => {
-                            emit_ha_action_result_failed(ctx, ha_tick, index, action, err.to_string())?;
-                            errors.push(ActionDispatchError::ManagedConfig {
-                                action: action.id(),
-                                message: err.to_string(),
-                            });
-                            continue;
-                        }
-                    };
+                ) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        emit_ha_action_result_failed(ctx, ha_tick, index, action, err.to_string())?;
+                        errors.push(ActionDispatchError::ManagedConfig {
+                            action: action.id(),
+                            message: err.to_string(),
+                        });
+                        continue;
+                    }
+                };
                 let request = ProcessJobRequest {
                     id: process_job_id(&ctx.scope, &ctx.self_id, action, index, ha_tick),
                     kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
@@ -318,7 +317,12 @@ pub(crate) fn dispatch_actions(
                     id: process_job_id(&ctx.scope, &ctx.self_id, action, index, ha_tick),
                     kind: ProcessJobKind::Bootstrap(BootstrapSpec {
                         data_dir: runtime_config.postgres.data_dir.clone(),
-                        superuser_username: runtime_config.postgres.roles.superuser.username.clone(),
+                        superuser_username: runtime_config
+                            .postgres
+                            .roles
+                            .superuser
+                            .username
+                            .clone(),
                         timeout_ms: None,
                     }),
                 };
@@ -402,7 +406,8 @@ fn wipe_data_dir(data_dir: &Path) -> Result<(), String> {
         fs::remove_dir_all(data_dir)
             .map_err(|err| format!("wipe_data_dir remove_dir_all failed: {err}"))?;
     }
-    fs::create_dir_all(data_dir).map_err(|err| format!("wipe_data_dir create_dir_all failed: {err}"))?;
+    fs::create_dir_all(data_dir)
+        .map_err(|err| format!("wipe_data_dir create_dir_all failed: {err}"))?;
     Ok(())
 }
 
@@ -578,7 +583,11 @@ fn ha_role_label(phase: &HaPhase) -> &'static str {
     }
 }
 
-fn emit_ha_lease_transition(ctx: &HaWorkerCtx, ha_tick: u64, acquired: bool) -> Result<(), WorkerError> {
+fn emit_ha_lease_transition(
+    ctx: &HaWorkerCtx,
+    ha_tick: u64,
+    acquired: bool,
+) -> Result<(), WorkerError> {
     let attrs = ha_base_attrs(ctx, ha_tick);
     let (name, message) = if acquired {
         ("ha.lease.acquired", "ha leader lease acquired")
@@ -1411,7 +1420,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn step_once_dispatches_start_postgres_every_tick_while_unreachable() -> Result<(), WorkerError> {
+    async fn step_once_dispatches_start_postgres_every_tick_while_unreachable(
+    ) -> Result<(), WorkerError> {
         let built = build_context(
             RecordingStore::default(),
             Duration::from_millis(100),
@@ -1420,7 +1430,8 @@ mod tests {
         let mut ctx = built.ctx;
         let mut process_rx = built.process_rx;
 
-        built.pg_publisher
+        built
+            .pg_publisher
             .publish(sample_pg_state(SqlStatus::Unreachable), UnixMillis(50))
             .map_err(|err| WorkerError::Message(format!("pg publish failed: {err}")))?;
 
@@ -1433,13 +1444,17 @@ mod tests {
 
         step_once(&mut ctx).await?;
         let first = process_rx.try_recv().map_err(|err| {
-            WorkerError::Message(format!("expected process job request after first tick: {err}"))
+            WorkerError::Message(format!(
+                "expected process job request after first tick: {err}"
+            ))
         })?;
         assert!(matches!(first.kind, ProcessJobKind::StartPostgres(_)));
 
         step_once(&mut ctx).await?;
         let second = process_rx.try_recv().map_err(|err| {
-            WorkerError::Message(format!("expected process job request after second tick: {err}"))
+            WorkerError::Message(format!(
+                "expected process job request after second tick: {err}"
+            ))
         })?;
         assert!(matches!(second.kind, ProcessJobKind::StartPostgres(_)));
 

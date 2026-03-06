@@ -1,18 +1,18 @@
 use std::time::Duration;
 
+use pgtuskmaster_rust::pginfo::conninfo::PgSslMode;
 use pgtuskmaster_rust::{
     api::worker::{step_once, ApiWorkerCtx},
     config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
         ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel,
-        LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig,
+        LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
         PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
         RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
     },
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     state::{new_state_channel, UnixMillis, WorkerError},
 };
-use pgtuskmaster_rust::pginfo::conninfo::PgSslMode;
 
 struct SmokeStore;
 

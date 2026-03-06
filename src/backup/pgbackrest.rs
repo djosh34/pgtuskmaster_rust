@@ -145,7 +145,9 @@ fn validate_option_tokens(tokens: &[String]) -> Result<(), String> {
         let trimmed = token.trim_start();
         let key = option_key(trimmed);
         if matches!(key, "--stanza" | "--repo" | "--pg1-path") {
-            return Err("options must not override managed fields (stanza/repo/pg1-path)".to_string());
+            return Err(
+                "options must not override managed fields (stanza/repo/pg1-path)".to_string(),
+            );
         }
     }
     Ok(())

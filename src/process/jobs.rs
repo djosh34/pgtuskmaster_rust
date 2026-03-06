@@ -280,14 +280,14 @@ impl ProcessError {
 fn resolve_secret_source_string(key: &str, secret: &SecretSource) -> Result<String, ProcessError> {
     let value = match &secret.0 {
         InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => {
-            std::fs::read_to_string(path).map_err(|err| ProcessError::EnvSecretResolutionFailed {
-                key: key.to_string(),
-                message: format!("failed to read {}: {err}", path.display()),
+            std::fs::read_to_string(path).map_err(|err| {
+                ProcessError::EnvSecretResolutionFailed {
+                    key: key.to_string(),
+                    message: format!("failed to read {}: {err}", path.display()),
+                }
             })?
         }
         InlineOrPath::Inline { content } => content.clone(),
     };
-    Ok(value
-        .trim_end_matches(['\n', '\r'])
-        .to_string())
+    Ok(value.trim_end_matches(['\n', '\r']).to_string())
 }

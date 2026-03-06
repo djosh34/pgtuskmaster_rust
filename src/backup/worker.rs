@@ -19,7 +19,10 @@ pub(crate) fn pgbackrest_version_job(id: JobId) -> ProcessJobRequest {
     }
 }
 
-pub(crate) fn pgbackrest_info_job(cfg: &RuntimeConfig, id: JobId) -> Result<ProcessJobRequest, ProcessError> {
+pub(crate) fn pgbackrest_info_job(
+    cfg: &RuntimeConfig,
+    id: JobId,
+) -> Result<ProcessJobRequest, ProcessError> {
     let (stanza, repo, options) = pgbackrest_required_inputs(cfg, "info")?;
     Ok(ProcessJobRequest {
         id,
@@ -32,7 +35,10 @@ pub(crate) fn pgbackrest_info_job(cfg: &RuntimeConfig, id: JobId) -> Result<Proc
     })
 }
 
-pub(crate) fn pgbackrest_check_job(cfg: &RuntimeConfig, id: JobId) -> Result<ProcessJobRequest, ProcessError> {
+pub(crate) fn pgbackrest_check_job(
+    cfg: &RuntimeConfig,
+    id: JobId,
+) -> Result<ProcessJobRequest, ProcessError> {
     let (stanza, repo, options) = pgbackrest_required_inputs(cfg, "check")?;
     Ok(ProcessJobRequest {
         id,
@@ -45,7 +51,10 @@ pub(crate) fn pgbackrest_check_job(cfg: &RuntimeConfig, id: JobId) -> Result<Pro
     })
 }
 
-pub(crate) fn pgbackrest_backup_job(cfg: &RuntimeConfig, id: JobId) -> Result<ProcessJobRequest, ProcessError> {
+pub(crate) fn pgbackrest_backup_job(
+    cfg: &RuntimeConfig,
+    id: JobId,
+) -> Result<ProcessJobRequest, ProcessError> {
     let (stanza, repo, options) = pgbackrest_required_inputs(cfg, "backup")?;
     Ok(ProcessJobRequest {
         id,
@@ -58,7 +67,10 @@ pub(crate) fn pgbackrest_backup_job(cfg: &RuntimeConfig, id: JobId) -> Result<Pr
     })
 }
 
-pub(crate) fn pgbackrest_restore_job(cfg: &RuntimeConfig, id: JobId) -> Result<ProcessJobRequest, ProcessError> {
+pub(crate) fn pgbackrest_restore_job(
+    cfg: &RuntimeConfig,
+    id: JobId,
+) -> Result<ProcessJobRequest, ProcessError> {
     let (stanza, repo, options) = pgbackrest_required_inputs(cfg, "restore")?;
     // pgBackRest restore can be materially slower than other operations (especially when `--delta`
     // is enabled or when restoring into an existing directory tree). Keep a conservative floor so
@@ -180,7 +192,10 @@ fn ensure_pgbackrest_spool_path_option(
     cfg: &RuntimeConfig,
     options: Vec<String>,
 ) -> Result<Vec<String>, ProcessError> {
-    if options.iter().any(|token| option_key(token.trim_start()) == "--spool-path") {
+    if options
+        .iter()
+        .any(|token| option_key(token.trim_start()) == "--spool-path")
+    {
         return Ok(options);
     }
 
@@ -209,12 +224,7 @@ pub(crate) fn validate_pgbackrest_enabled_config(cfg: &RuntimeConfig) -> Result<
     let job_id = JobId("pgbackrest-config-validate".to_string());
 
     let version = pgbackrest_version_job(job_id.clone());
-    let _ = crate::process::worker::build_command(
-        &cfg.process,
-        &version.id,
-        &version.kind,
-        true,
-    )?;
+    let _ = crate::process::worker::build_command(&cfg.process, &version.id, &version.kind, true)?;
 
     let info = pgbackrest_info_job(cfg, job_id.clone())?;
     let _ = crate::process::worker::build_command(&cfg.process, &info.id, &info.kind, true)?;

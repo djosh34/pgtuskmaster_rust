@@ -13,11 +13,13 @@ pub enum WalHelperError {
     Message(String),
 }
 
-pub fn render_archive_push(pgdata: &Path, wal_path: &str) -> Result<RenderedCommand, WalHelperError> {
+pub fn render_archive_push(
+    pgdata: &Path,
+    wal_path: &str,
+) -> Result<RenderedCommand, WalHelperError> {
     let rendered =
-        crate::backup::archive_command::render_archive_push_from_pgdata(pgdata, wal_path).map_err(
-            |err| WalHelperError::Message(err.to_string()),
-        )?;
+        crate::backup::archive_command::render_archive_push_from_pgdata(pgdata, wal_path)
+            .map_err(|err| WalHelperError::Message(err.to_string()))?;
     Ok(RenderedCommand {
         program: rendered.program,
         args: rendered.args,
@@ -40,4 +42,3 @@ pub fn render_archive_get(
         args: rendered.args,
     })
 }
-

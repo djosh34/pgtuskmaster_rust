@@ -48,15 +48,13 @@ impl WalEventIngestInput {
             return Err(ApiError::bad_request("command_program must be non-empty"));
         }
         if self.duration_ms == 0 {
-            return Err(ApiError::bad_request("duration_ms must be greater than zero"));
+            return Err(ApiError::bad_request(
+                "duration_ms must be greater than zero",
+            ));
         }
 
         let wal_path = self.wal_path.as_ref().map(|v| v.trim()).unwrap_or("");
-        let wal_segment = self
-            .wal_segment
-            .as_ref()
-            .map(|v| v.trim())
-            .unwrap_or("");
+        let wal_segment = self.wal_segment.as_ref().map(|v| v.trim()).unwrap_or("");
         let destination_path = self
             .destination_path
             .as_ref()
@@ -156,7 +154,13 @@ pub(crate) fn ingest_wal_event(
     );
     attrs.insert(
         "command.args".to_string(),
-        serde_json::Value::Array(input.command_args.into_iter().map(serde_json::Value::String).collect()),
+        serde_json::Value::Array(
+            input
+                .command_args
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
     );
     attrs.insert(
         "api.peer_addr".to_string(),
@@ -174,4 +178,3 @@ pub(crate) fn ingest_wal_event(
 
     Ok(AcceptedResponse { accepted: true })
 }
-

@@ -146,7 +146,9 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             ctx.log
                 .emit_event(
                     match &err {
-                        crate::dcs::store::DcsStoreError::Io(_) => crate::logging::SeverityText::Warn,
+                        crate::dcs::store::DcsStoreError::Io(_) => {
+                            crate::logging::SeverityText::Warn
+                        }
                         _ => crate::logging::SeverityText::Error,
                     },
                     "dcs watch drain failed",
@@ -214,9 +216,13 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             ctx.log
                 .emit_event(
                     match &err {
-                        crate::dcs::store::DcsStoreError::Io(_) => crate::logging::SeverityText::Warn,
+                        crate::dcs::store::DcsStoreError::Io(_) => {
+                            crate::logging::SeverityText::Warn
+                        }
                         crate::dcs::store::DcsStoreError::InvalidKey(_)
-                        | crate::dcs::store::DcsStoreError::MissingValue(_) => crate::logging::SeverityText::Warn,
+                        | crate::dcs::store::DcsStoreError::MissingValue(_) => {
+                            crate::logging::SeverityText::Warn
+                        }
                         _ => crate::logging::SeverityText::Error,
                     },
                     "dcs watch refresh failed",
@@ -338,6 +344,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         config::{
             schema::{ClusterConfig, DebugConfig, HaConfig, PostgresConfig},
@@ -360,7 +367,6 @@ mod tests {
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
-    use crate::pginfo::conninfo::PgSslMode;
 
     use super::step_once;
 
@@ -469,7 +475,11 @@ mod tests {
             Err(DcsStoreError::Io("boom".to_string()))
         }
 
-        fn put_path_if_absent(&mut self, _path: &str, _value: String) -> Result<bool, DcsStoreError> {
+        fn put_path_if_absent(
+            &mut self,
+            _path: &str,
+            _value: String,
+        ) -> Result<bool, DcsStoreError> {
             Err(DcsStoreError::Io("boom".to_string()))
         }
 
@@ -827,7 +837,10 @@ mod tests {
                 "expected dcs.local_member.write_failed event".to_string(),
             ));
         }
-        if !failures.iter().any(|record| record.severity_text == SeverityText::Warn) {
+        if !failures
+            .iter()
+            .any(|record| record.severity_text == SeverityText::Warn)
+        {
             return Err(WorkerError::Message(
                 "expected dcs.local_member.write_failed severity warn".to_string(),
             ));

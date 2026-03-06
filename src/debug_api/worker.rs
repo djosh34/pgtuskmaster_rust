@@ -395,11 +395,13 @@ fn ha_signature(state: &HaState) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         config::{
             schema::ClusterConfig, ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode,
-            InlineOrPath, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresRoleConfig,
-            PostgresRolesConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
+            InlineOrPath, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig,
+            PostgresRoleConfig, PostgresRolesConfig, RoleAuthConfig, RuntimeConfig,
+            StderrSinkConfig, TlsServerConfig,
         },
         dcs::state::{DcsCache, DcsState, DcsTrust},
         debug_api::snapshot::{AppLifecycle, DebugDomain, SystemSnapshot},
@@ -409,7 +411,6 @@ mod tests {
         process::state::ProcessState,
         state::{new_state_channel, UnixMillis, WorkerError, WorkerStatus},
     };
-    use crate::pginfo::conninfo::PgSslMode;
 
     use super::{DebugApiContractStubInputs, DebugApiCtx};
 
@@ -752,8 +753,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn step_once_does_not_record_ha_tick_only_changes() -> Result<(), crate::state::WorkerError>
-    {
+    async fn step_once_does_not_record_ha_tick_only_changes(
+    ) -> Result<(), crate::state::WorkerError> {
         let cfg = sample_runtime_config();
         let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone(), UnixMillis(1));
         let (_pg_publisher, pg_subscriber) = new_state_channel(sample_pg_state(), UnixMillis(1));

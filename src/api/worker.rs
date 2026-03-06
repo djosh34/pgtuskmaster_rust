@@ -7,9 +7,7 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 use crate::{
     api::{
-        controller::{
-            delete_switchover, get_ha_state, post_switchover, SwitchoverRequestInput,
-        },
+        controller::{delete_switchover, get_ha_state, post_switchover, SwitchoverRequestInput},
         events::{ingest_wal_event, WalEventIngestInput},
         fallback::{get_fallback_cluster, post_fallback_heartbeat, FallbackHeartbeatInput},
         ApiError,
@@ -48,7 +46,12 @@ impl ApiWorkerCtx {
         config_subscriber: StateSubscriber<RuntimeConfig>,
         dcs_store: Box<dyn DcsStore>,
     ) -> Self {
-        Self::new(listener, config_subscriber, dcs_store, LogHandle::disabled())
+        Self::new(
+            listener,
+            config_subscriber,
+            dcs_store,
+            LogHandle::disabled(),
+        )
     }
 
     pub(crate) fn new(
@@ -142,7 +145,10 @@ pub async fn run(mut ctx: ApiWorkerCtx) -> Result<(), WorkerError> {
         if let Err(err) = step_once(&mut ctx).await {
             let fatal = is_fatal_api_step_error(&err);
             let mut attrs = api_base_attrs(&ctx);
-            attrs.insert("error".to_string(), serde_json::Value::String(err.to_string()));
+            attrs.insert(
+                "error".to_string(),
+                serde_json::Value::String(err.to_string()),
+            );
             attrs.insert("fatal".to_string(), serde_json::Value::Bool(fatal));
             ctx.log
                 .emit_event(
@@ -1248,13 +1254,15 @@ mod tests {
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
 
+    use crate::logging::{LogHandle, LogSink, SeverityText, TestSink};
+    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         api::worker::{step_once, ApiWorkerCtx},
         config::{
-            ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
-            ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
-            LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig,
-            PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig,
+            ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode,
+            BinaryPaths, ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath,
+            LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
+            PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
             PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
             TlsServerConfig,
         },
@@ -1279,8 +1287,6 @@ mod tests {
             },
         },
     };
-    use crate::pginfo::conninfo::PgSslMode;
-    use crate::logging::{LogHandle, LogSink, SeverityText, TestSink};
 
     #[derive(Clone, Default)]
     struct RecordingStore {
@@ -1628,7 +1634,10 @@ mod tests {
         body_start: usize,
     }
 
-    fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpHead, WorkerError> {
+    fn parse_http_response_head(
+        raw: &[u8],
+        header_end: usize,
+    ) -> Result<ParsedHttpHead, WorkerError> {
         let head = raw.get(..header_end).ok_or_else(|| {
             WorkerError::Message("response header end offset out of bounds".to_string())
         })?;
@@ -1641,9 +1650,8 @@ mod tests {
         let status_line_bytes = head.get(..status_line_end).ok_or_else(|| {
             WorkerError::Message("response status line offset out of bounds".to_string())
         })?;
-        let status_line = std::str::from_utf8(status_line_bytes).map_err(|err| {
-            WorkerError::Message(format!("response status line not utf8: {err}"))
-        })?;
+        let status_line = std::str::from_utf8(status_line_bytes)
+            .map_err(|err| WorkerError::Message(format!("response status line not utf8: {err}")))?;
 
         let mut status_parts = status_line.split_whitespace();
         let http_version = status_parts.next().ok_or_else(|| {
@@ -1671,9 +1679,9 @@ mod tests {
             )));
         }
 
-        let header_text = head
-            .get(status_line_end + 2..)
-            .ok_or_else(|| WorkerError::Message("response header offset out of bounds".to_string()))?;
+        let header_text = head.get(status_line_end + 2..).ok_or_else(|| {
+            WorkerError::Message("response header offset out of bounds".to_string())
+        })?;
         let header_text = std::str::from_utf8(header_text)
             .map_err(|err| WorkerError::Message(format!("response headers not utf8: {err}")))?;
 
@@ -1683,7 +1691,9 @@ mod tests {
                 continue;
             }
             let (name, value) = line.split_once(':').ok_or_else(|| {
-                WorkerError::Message(format!("invalid response header line (missing ':'): {line}"))
+                WorkerError::Message(format!(
+                    "invalid response header line (missing ':'): {line}"
+                ))
             })?;
             if name.trim().eq_ignore_ascii_case("Content-Length") {
                 if content_length.is_some() {
@@ -1702,9 +1712,9 @@ mod tests {
             WorkerError::Message("response missing Content-Length header".to_string())
         })?;
 
-        let body_start = header_end.checked_add(4).ok_or_else(|| {
-            WorkerError::Message("response body offset overflow".to_string())
-        })?;
+        let body_start = header_end
+            .checked_add(4)
+            .ok_or_else(|| WorkerError::Message("response body offset overflow".to_string()))?;
 
         Ok(ParsedHttpHead {
             status_code,
@@ -2000,7 +2010,8 @@ mod tests {
     async fn auth_decision_logs_do_not_leak_bearer_token() -> Result<(), WorkerError> {
         let _guard = NamespaceGuard::new("api-auth-redaction")?;
 
-        let (mut ctx, _store, sink) = build_ctx_with_config_and_log(sample_runtime_config(None)).await?;
+        let (mut ctx, _store, sink) =
+            build_ctx_with_config_and_log(sample_runtime_config(None)).await?;
         let roles = ApiRoleTokens::new("read-token", "admin-token")?;
         ctx.configure_role_tokens(
             Some(roles.read_token.clone()),
@@ -2017,9 +2028,9 @@ mod tests {
         .await?;
         assert_eq!(response.status_code, 401);
 
-        let records = sink.snapshot().map_err(|err| {
-            WorkerError::Message(format!("log snapshot failed: {err}"))
-        })?;
+        let records = sink
+            .snapshot()
+            .map_err(|err| WorkerError::Message(format!("log snapshot failed: {err}")))?;
 
         let auth_decision_present = records.iter().any(|record| {
             matches!(
@@ -2034,9 +2045,8 @@ mod tests {
         }
 
         for record in records {
-            let encoded = serde_json::to_string(&record).map_err(|err| {
-                WorkerError::Message(format!("encode log record failed: {err}"))
-            })?;
+            let encoded = serde_json::to_string(&record)
+                .map_err(|err| WorkerError::Message(format!("encode log record failed: {err}")))?;
             if encoded.contains(secret) {
                 return Err(WorkerError::Message(
                     "bearer token leaked into structured logs".to_string(),
@@ -2271,6 +2281,16 @@ mod tests {
             decoded["changes"].as_array().map(|value| value.len()),
             Some(0)
         );
+        let endpoints = decoded["api"]["endpoints"].as_array().ok_or_else(|| {
+            WorkerError::Message("debug verbose payload missing api.endpoints".to_string())
+        })?;
+        let contains_restore_route = endpoints.iter().any(|value| {
+            value
+                .as_str()
+                .map(|route| route.contains("restore"))
+                .unwrap_or(false)
+        });
+        assert!(!contains_restore_route);
         Ok(())
     }
 
@@ -2516,7 +2536,9 @@ mod tests {
         };
 
         let server_cfg = crate::tls::build_rustls_server_config(&tls_cfg).map_err(|err| {
-            WorkerError::Message(format!("build production rustls server config failed: {err}"))
+            WorkerError::Message(format!(
+                "build production rustls server config failed: {err}"
+            ))
         })?;
 
         let (mut ctx, _store) = build_ctx(None).await?;
@@ -2582,7 +2604,9 @@ mod tests {
         };
 
         let server_cfg = crate::tls::build_rustls_server_config(&tls_cfg).map_err(|err| {
-            WorkerError::Message(format!("build production rustls server config failed: {err}"))
+            WorkerError::Message(format!(
+                "build production rustls server config failed: {err}"
+            ))
         })?;
 
         let (mut ctx, _store) = build_ctx(None).await?;
@@ -2604,7 +2628,8 @@ mod tests {
         .await?;
         assert_eq!(response.status_code, 200);
 
-        let missing_client_cert_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        let missing_client_cert_cfg =
+            build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         expect_tls_request_rejected(&mut ctx, missing_client_cert_cfg, "localhost").await?;
 
         let untrusted_client_cfg = build_client_config(
@@ -2826,9 +2851,12 @@ mod tests {
         };
         let body =
             serde_json::to_vec(&input).map_err(|err| WorkerError::Message(err.to_string()))?;
-        let response =
-            send_plain_request(&mut ctx, format_post("/events/wal", None, &body), Some(body))
-                .await?;
+        let response = send_plain_request(
+            &mut ctx,
+            format_post("/events/wal", None, &body),
+            Some(body),
+        )
+        .await?;
         assert_eq!(response.status_code, 202);
 
         let records = sink
@@ -2899,22 +2927,21 @@ mod tests {
             serde_json::to_vec(&input).map_err(|err| WorkerError::Message(err.to_string()))
         };
 
-        let client_task = |id: usize| async move {
-            let body = build_body(id)?;
-            let head = format_post("/events/wal", None, &body);
-            let mut client = TcpStream::connect(addr)
-                .await
-                .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-            client
-                .write_all(head.as_bytes())
-                .await
-                .map_err(|err| WorkerError::Message(format!("client write head failed: {err}")))?;
-            client
-                .write_all(&body)
-                .await
-                .map_err(|err| WorkerError::Message(format!("client write body failed: {err}")))?;
-            read_http_response_framed(&mut client, IO_TIMEOUT).await
-        };
+        let client_task =
+            |id: usize| async move {
+                let body = build_body(id)?;
+                let head = format_post("/events/wal", None, &body);
+                let mut client = TcpStream::connect(addr)
+                    .await
+                    .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
+                client.write_all(head.as_bytes()).await.map_err(|err| {
+                    WorkerError::Message(format!("client write head failed: {err}"))
+                })?;
+                client.write_all(&body).await.map_err(|err| {
+                    WorkerError::Message(format!("client write body failed: {err}"))
+                })?;
+                read_http_response_framed(&mut client, IO_TIMEOUT).await
+            };
 
         let client1 = tokio::spawn(client_task(1));
         let client2 = tokio::spawn(client_task(2));

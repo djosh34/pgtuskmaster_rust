@@ -157,16 +157,17 @@ pub(crate) fn build_local_member_record(
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
         config::{
             schema::ClusterConfig, ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode,
-            InlineOrPath, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresRoleConfig,
-            PostgresRolesConfig, RoleAuthConfig, RuntimeConfig, TlsServerConfig,
+            InlineOrPath, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig,
+            PostgresRoleConfig, PostgresRolesConfig, RoleAuthConfig, RuntimeConfig,
+            TlsServerConfig,
         },
         pginfo::state::{PgConfig, PgInfoCommon, ReplicationSlotInfo},
         state::{Version, WorkerStatus},
     };
-    use crate::pginfo::conninfo::PgSslMode;
 
     use super::{
         build_local_member_record, evaluate_trust, DcsCache, DcsTrust, LeaderRecord, MemberRecord,

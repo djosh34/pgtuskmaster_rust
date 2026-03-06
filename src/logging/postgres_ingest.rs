@@ -179,7 +179,11 @@ fn emit_ingest_step_failure(
         SeverityText::Error,
         "postgres ingest step_once failed",
         "postgres_ingest::run",
-        EventMeta::new("postgres_ingest.step_once_failed", "postgres_ingest", "failed"),
+        EventMeta::new(
+            "postgres_ingest.step_once_failed",
+            "postgres_ingest",
+            "failed",
+        ),
         attrs,
     )
     .map_err(|err| WorkerError::Message(format!("postgres ingest error log emit failed: {err}")))?;
@@ -252,7 +256,13 @@ async fn step_once(
         }
     }
 
-    fn push_issue(issues: &mut Vec<IterationIssue>, stage: &'static str, kind: &'static str, path: &Path, error: WorkerError) {
+    fn push_issue(
+        issues: &mut Vec<IterationIssue>,
+        stage: &'static str,
+        kind: &'static str,
+        path: &Path,
+        error: WorkerError,
+    ) {
         issues.push(IterationIssue {
             stage,
             kind,
@@ -486,9 +496,7 @@ async fn cleanup_log_dir(
 ) -> Result<CleanupReport, WorkerError> {
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(CleanupReport::empty())
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(CleanupReport::empty()),
         Err(err) => {
             return Err(WorkerError::Message(format!(
                 "cleanup read_dir failed for {}: {err}",
@@ -497,8 +505,11 @@ async fn cleanup_log_dir(
         }
     };
 
-    let protected_basenames: [&str; 3] =
-        ["postgres.json", "postgres.stderr.log", "postgres.stdout.log"];
+    let protected_basenames: [&str; 3] = [
+        "postgres.json",
+        "postgres.stderr.log",
+        "postgres.stdout.log",
+    ];
 
     let mut issues: Vec<String> = Vec::new();
     let mut candidates = Vec::new();
@@ -700,7 +711,9 @@ fn emit_postgres_line(
     let mut final_record = record;
     final_record.source.parser = parser_override;
     log.emit_record(&final_record).map_err(|err| {
-        WorkerError::Message(format!("log sink error while ingesting postgres log: {err}"))
+        WorkerError::Message(format!(
+            "log sink error while ingesting postgres log: {err}"
+        ))
     })?;
     Ok(())
 }
@@ -763,10 +776,9 @@ fn normalize_postgres_line(
     record
         .attributes
         .insert("parse_failed".to_string(), Value::Bool(true));
-    record.attributes.insert(
-        "raw_line".to_string(),
-        Value::String(line.to_string()),
-    );
+    record
+        .attributes
+        .insert("raw_line".to_string(), Value::String(line.to_string()));
 
     (record, LogParser::Raw)
 }
@@ -819,7 +831,10 @@ fn normalize_postgres_plain(line: &str) -> Option<ParsedLine> {
     }
     let severity = map_pg_severity(level);
     let mut attributes = BTreeMap::new();
-    attributes.insert("postgres.level_raw".to_string(), Value::String(level.to_string()));
+    attributes.insert(
+        "postgres.level_raw".to_string(),
+        Value::String(level.to_string()),
+    );
 
     Some(ParsedLine {
         severity,
@@ -854,18 +869,20 @@ mod tests {
     use crate::config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BackupConfig, BinaryPaths,
         ClusterConfig, DcsConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel,
-        LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig, PostgresConfig,
+        LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
         PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
         RoleAuthConfig, RuntimeConfig, StderrSinkConfig, TlsServerConfig,
     };
-    use crate::logging::{LogHandle, LogParser, LogProducer, LogSource, LogTransport, SeverityText, TestSink};
-    use crate::state::WorkerError;
+    use crate::logging::{
+        LogHandle, LogParser, LogProducer, LogSource, LogTransport, SeverityText, TestSink,
+    };
     use crate::pginfo::conninfo::PgSslMode;
+    use crate::state::WorkerError;
 
     use super::{
         cleanup_log_dir, decode_line, emit_ingest_step_failure, emit_postgres_line,
-        ingest_error_key_best_effort, IngestErrorKey, IngestErrorRateLimiter, map_pg_severity,
-        normalize_postgres_line,
+        ingest_error_key_best_effort, map_pg_severity, normalize_postgres_line, IngestErrorKey,
+        IngestErrorRateLimiter,
     };
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -1060,7 +1077,9 @@ mod tests {
         assert_eq!(records[0].source.origin, "postgres_ingest::run");
         assert_eq!(
             records[0].attributes.get("event.name"),
-            Some(&Value::String("postgres_ingest.step_once_failed".to_string()))
+            Some(&Value::String(
+                "postgres_ingest.step_once_failed".to_string()
+            ))
         );
         assert_eq!(
             records[0].attributes.get("attempts"),
@@ -1126,7 +1145,10 @@ mod tests {
         let (record, parser) = normalize_postgres_line(&log, raw, source);
         assert_eq!(parser, LogParser::Raw);
         assert_eq!(record.message, raw);
-        assert_eq!(record.attributes.get("parse_failed"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            record.attributes.get("parse_failed"),
+            Some(&serde_json::Value::Bool(true))
+        );
         assert_eq!(
             record.attributes.get("raw_line"),
             Some(&serde_json::Value::String(raw.to_string()))
@@ -1153,7 +1175,10 @@ mod tests {
         let (record, parser) = normalize_postgres_line(&log, raw.as_str(), source);
         assert_eq!(parser, LogParser::Raw);
         assert_eq!(record.message, raw);
-        assert_eq!(record.attributes.get("parse_failed"), Some(&Value::Bool(true)));
+        assert_eq!(
+            record.attributes.get("parse_failed"),
+            Some(&Value::Bool(true))
+        );
         assert_eq!(
             record.attributes.get("raw_line"),
             Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
@@ -1175,7 +1200,10 @@ mod tests {
         )?;
         let records = sink.take();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].attributes.get("parse_failed"), Some(&Value::Bool(true)));
+        assert_eq!(
+            records[0].attributes.get("parse_failed"),
+            Some(&Value::Bool(true))
+        );
         assert_eq!(
             records[0].attributes.get("raw_line"),
             Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
@@ -1202,7 +1230,8 @@ mod tests {
         std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
 
         let protected = dir.join("active.log");
-        std::fs::write(&protected, b"active\n").map_err(|err| WorkerError::Message(err.to_string()))?;
+        std::fs::write(&protected, b"active\n")
+            .map_err(|err| WorkerError::Message(err.to_string()))?;
 
         for i in 0..5 {
             let path = dir.join(format!("rotated-{i}.log"));
@@ -1292,7 +1321,8 @@ mod tests {
             .map_err(|err| WorkerError::Message(err.to_string()))?
             .permissions();
         perms.set_mode(0o555);
-        std::fs::set_permissions(&dir, perms).map_err(|err| WorkerError::Message(err.to_string()))?;
+        std::fs::set_permissions(&dir, perms)
+            .map_err(|err| WorkerError::Message(err.to_string()))?;
 
         let report = cleanup_log_dir(
             dir.as_path(),
@@ -1313,7 +1343,8 @@ mod tests {
             .map_err(|err| WorkerError::Message(err.to_string()))?
             .permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&dir, perms).map_err(|err| WorkerError::Message(err.to_string()))?;
+        std::fs::set_permissions(&dir, perms)
+            .map_err(|err| WorkerError::Message(err.to_string()))?;
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
@@ -1327,12 +1358,14 @@ mod tests {
         use tokio::sync::mpsc;
         use tokio::time::Instant;
 
-        use crate::logging::LogRecord;
         use crate::config::RoleAuthConfig;
+        use crate::logging::LogRecord;
         use crate::process::jobs::{
             BaseBackupSpec, BootstrapSpec, DemoteSpec, ShutdownMode, StartPostgresSpec,
         };
-        use crate::process::state::{ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx};
+        use crate::process::state::{
+            ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
+        };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
         use crate::state::{new_state_channel, JobId, UnixMillis, WorkerError, WorkerStatus};
         use crate::test_harness::binaries::{
@@ -1388,7 +1421,10 @@ mod tests {
                                 if debug_tail.is_empty() {
                                     "".to_string()
                                 } else {
-                                    format!("\n--- debug tail {} ---\n{debug_tail}", path_display(debug_log_path))
+                                    format!(
+                                        "\n--- debug tail {} ---\n{debug_tail}",
+                                        path_display(debug_log_path)
+                                    )
                                 }
                             )));
                         }
@@ -1455,9 +1491,10 @@ mod tests {
                     .arg("-c")
                     .arg(query);
 
-                let output = cmd.output().await.map_err(|err| {
-                    WorkerError::Message(format!("psql spawn failed: {err}"))
-                })?;
+                let output = cmd
+                    .output()
+                    .await
+                    .map_err(|err| WorkerError::Message(format!("psql spawn failed: {err}")))?;
 
                 if output.status.success() {
                     return Ok(());
@@ -1520,9 +1557,9 @@ mod tests {
                 port,
                 startup_timeout: Duration::from_secs(10),
             };
-            reservation
-                .release_port(port)
-                .map_err(|err| WorkerError::Message(format!("release reserved port failed: {err}")))?;
+            reservation.release_port(port).map_err(|err| {
+                WorkerError::Message(format!("release reserved port failed: {err}"))
+            })?;
             let mut pg = spawn_pg16_with_conf_lines(spec, &conf_lines).await?;
 
             let mut cfg = sample_runtime_config();
@@ -1582,9 +1619,8 @@ mod tests {
             let socket_dir = ns.child_dir("sock");
             let log_file = ns.child_dir("runtime/pg_ctl.log");
             let log_dir = ns.child_dir("logs/pg16-node-a");
-            std::fs::create_dir_all(&socket_dir).map_err(|err| {
-                WorkerError::Message(format!("create socket_dir failed: {err}"))
-            })?;
+            std::fs::create_dir_all(&socket_dir)
+                .map_err(|err| WorkerError::Message(format!("create socket_dir failed: {err}")))?;
             if let Some(parent) = log_file.parent() {
                 std::fs::create_dir_all(parent).map_err(|err| {
                     WorkerError::Message(format!("create log file parent failed: {err}"))
@@ -1682,9 +1718,9 @@ mod tests {
                 })?;
             }
 
-            reservation
-                .release_port(port)
-                .map_err(|err| WorkerError::Message(format!("release reserved port failed: {err}")))?;
+            reservation.release_port(port).map_err(|err| {
+                WorkerError::Message(format!("release reserved port failed: {err}"))
+            })?;
             let start_id = JobId("start".to_string());
             tx.send(ProcessJobRequest {
                 id: start_id.clone(),
@@ -1713,7 +1749,9 @@ mod tests {
                 } = &process_ctx.state
                 {
                     match outcome {
-                        crate::process::state::JobOutcome::Success { id, .. } if id == &start_id => {
+                        crate::process::state::JobOutcome::Success { id, .. }
+                            if id == &start_id =>
+                        {
                             break;
                         }
                         crate::process::state::JobOutcome::Failure { id, error, .. }
@@ -1721,7 +1759,8 @@ mod tests {
                         {
                             let pg_ctl_tail = tail_file_best_effort(&log_file, 120);
                             let postgres_json_tail = tail_file_best_effort(&jsonlog_path, 120);
-                            let postmaster_pid = tail_file_best_effort(&data_dir.join("postmaster.pid"), 60);
+                            let postmaster_pid =
+                                tail_file_best_effort(&data_dir.join("postmaster.pid"), 60);
 
                             let mut pg_tool_lines = Vec::new();
                             for record in &collected_for_debug {
@@ -1738,14 +1777,14 @@ mod tests {
                                     .get("job_id")
                                     .and_then(|v| v.as_str())
                                     .map_or("<none>", |value| value);
-                                if job_kind != "start_postgres" && job_id_attr != start_id.0.as_str() {
+                                if job_kind != "start_postgres"
+                                    && job_id_attr != start_id.0.as_str()
+                                {
                                     continue;
                                 }
                                 pg_tool_lines.push(format!(
                                     "{:?} {}: {}",
-                                    record.source.transport,
-                                    record.source.origin,
-                                    record.message
+                                    record.source.transport, record.source.origin, record.message
                                 ));
                             }
                             if pg_tool_lines.len() > 60 {
@@ -1753,7 +1792,8 @@ mod tests {
                                 pg_tool_lines.drain(0..start);
                             }
                             let pg_tool_debug = if pg_tool_lines.is_empty() {
-                                "(no captured pg_tool stdout/stderr lines for start_postgres)".to_string()
+                                "(no captured pg_tool stdout/stderr lines for start_postgres)"
+                                    .to_string()
                             } else {
                                 pg_tool_lines.join("\n")
                             };
@@ -1950,9 +1990,7 @@ mod tests {
                 let saw_stderr = collected.iter().any(|r| {
                     r.source.producer == crate::logging::LogProducer::PgTool
                         && r.source.transport == crate::logging::LogTransport::ChildStderr
-                        && r.attributes
-                            .get("job_kind")
-                            .and_then(|v| v.as_str())
+                        && r.attributes.get("job_kind").and_then(|v| v.as_str())
                             == Some("basebackup")
                 });
                 if saw_stderr {

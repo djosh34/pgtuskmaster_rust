@@ -3,8 +3,8 @@ use std::fs::{File, OpenOptions};
 use std::io::LineWriter;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -208,9 +208,9 @@ impl JsonlFileSink {
             }
         }
 
-        let file = options
-            .open(&path)
-            .map_err(|err| LogError::SinkIo(format!("open log file {} failed: {err}", path.display())))?;
+        let file = options.open(&path).map_err(|err| {
+            LogError::SinkIo(format!("open log file {} failed: {err}", path.display()))
+        })?;
 
         Ok(Self {
             path,
@@ -230,7 +230,10 @@ impl LogSink for JsonlFileSink {
             .write_all(line.as_bytes())
             .and_then(|()| writer.write_all(b"\n"))
             .map_err(|err| {
-                LogError::SinkIo(format!("write to log file {} failed: {err}", self.path.display()))
+                LogError::SinkIo(format!(
+                    "write to log file {} failed: {err}",
+                    self.path.display()
+                ))
             })?;
         Ok(())
     }
@@ -362,7 +365,11 @@ impl std::fmt::Debug for LogHandle {
 }
 
 impl LogHandle {
-    pub(crate) fn new(hostname: String, sink: Arc<dyn LogSink>, min_app_severity: SeverityText) -> Self {
+    pub(crate) fn new(
+        hostname: String,
+        sink: Arc<dyn LogSink>,
+        min_app_severity: SeverityText,
+    ) -> Self {
         Self {
             hostname,
             sink,
@@ -465,7 +472,9 @@ pub(crate) struct LoggingSystem {
     pub(crate) handle: LogHandle,
 }
 
-pub(crate) fn bootstrap(cfg: &crate::config::RuntimeConfig) -> Result<LoggingSystem, LogBootstrapError> {
+pub(crate) fn bootstrap(
+    cfg: &crate::config::RuntimeConfig,
+) -> Result<LoggingSystem, LogBootstrapError> {
     let hostname = detect_hostname();
     let mut sinks: Vec<(String, Arc<dyn LogSink>)> = Vec::new();
 
@@ -477,17 +486,12 @@ pub(crate) fn bootstrap(cfg: &crate::config::RuntimeConfig) -> Result<LoggingSys
     }
 
     if cfg.logging.sinks.file.enabled {
-        let path = cfg
-            .logging
-            .sinks
-            .file
-            .path
-            .clone()
-            .ok_or_else(|| {
-                LogBootstrapError::Misconfigured(
-                    "logging.sinks.file.enabled=true but logging.sinks.file.path is not set".to_string(),
-                )
-            })?;
+        let path = cfg.logging.sinks.file.path.clone().ok_or_else(|| {
+            LogBootstrapError::Misconfigured(
+                "logging.sinks.file.enabled=true but logging.sinks.file.path is not set"
+                    .to_string(),
+            )
+        })?;
 
         let label = format!("file:{}", path.display());
         let sink = JsonlFileSink::new(path, cfg.logging.sinks.file.mode)
@@ -561,7 +565,7 @@ mod tests {
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
         DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig, InlineOrPath,
         LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig, PgIdentConfig,
-        PostgresConnIdentityConfig, PostgresConfig, PostgresLoggingConfig, PostgresRoleConfig,
+        PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
         PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
         TlsServerConfig,
     };
@@ -721,7 +725,8 @@ mod tests {
     }
 
     #[test]
-    fn jsonl_file_sink_creates_parent_dirs_and_writes_jsonl_line() -> Result<(), Box<dyn std::error::Error>> {
+    fn jsonl_file_sink_creates_parent_dirs_and_writes_jsonl_line(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("file-sink-create");
         let _ = std::fs::remove_dir_all(&root);
 
@@ -740,7 +745,8 @@ mod tests {
     }
 
     #[test]
-    fn jsonl_file_sink_append_mode_preserves_existing_content() -> Result<(), Box<dyn std::error::Error>> {
+    fn jsonl_file_sink_append_mode_preserves_existing_content(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("file-sink-append");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root)?;
@@ -764,7 +770,8 @@ mod tests {
     }
 
     #[test]
-    fn jsonl_file_sink_truncate_mode_replaces_existing_content() -> Result<(), Box<dyn std::error::Error>> {
+    fn jsonl_file_sink_truncate_mode_replaces_existing_content(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("file-sink-truncate");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root)?;
@@ -838,10 +845,7 @@ mod tests {
         let fail_a: Arc<dyn LogSink> = Arc::new(FailSink);
         let fail_b: Arc<dyn LogSink> = Arc::new(FailSink);
 
-        let sink = FanoutSink::new(vec![
-            ("a".to_string(), fail_a),
-            ("b".to_string(), fail_b),
-        ]);
+        let sink = FanoutSink::new(vec![("a".to_string(), fail_a), ("b".to_string(), fail_b)]);
 
         let err = sink.emit(&sample_record("x"));
         assert!(matches!(err, Err(LogError::SinkIo(_))));
@@ -895,7 +899,8 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_with_stderr_and_file_still_writes_file() -> Result<(), Box<dyn std::error::Error>> {
+    fn bootstrap_with_stderr_and_file_still_writes_file() -> Result<(), Box<dyn std::error::Error>>
+    {
         let root = unique_temp_root("bootstrap-stderr-and-file");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root)?;

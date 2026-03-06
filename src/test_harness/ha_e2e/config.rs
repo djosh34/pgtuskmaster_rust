@@ -148,8 +148,7 @@ impl TestConfig {
                 }
                 if pgbackrest.repo1_path_rel.trim().is_empty() {
                     return Err(WorkerError::Message(
-                        "TestConfig.backup.pgbackrest.repo1_path_rel must not be empty"
-                            .to_string(),
+                        "TestConfig.backup.pgbackrest.repo1_path_rel must not be empty".to_string(),
                     ));
                 }
             }

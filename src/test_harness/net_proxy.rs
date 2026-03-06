@@ -91,7 +91,9 @@ impl TcpProxyLink {
                     })?;
 
                 runtime.block_on(async move {
-                    let listener = TcpListener::bind(listen_addr).await.map_err(HarnessError::Io)?;
+                    let listener = TcpListener::bind(listen_addr)
+                        .await
+                        .map_err(HarnessError::Io)?;
                     let bound_addr = listener.local_addr().map_err(HarnessError::Io)?;
                     let _ = startup_tx.send(Ok(bound_addr));
                     run_listener(

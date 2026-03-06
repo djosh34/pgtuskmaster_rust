@@ -37,7 +37,10 @@ impl FileTailer {
         self.path.as_path()
     }
 
-    pub(crate) async fn read_new_lines(&mut self, max_bytes: usize) -> Result<Vec<Vec<u8>>, WorkerError> {
+    pub(crate) async fn read_new_lines(
+        &mut self,
+        max_bytes: usize,
+    ) -> Result<Vec<Vec<u8>>, WorkerError> {
         if max_bytes == 0 {
             return Ok(Vec::new());
         }
@@ -104,12 +107,14 @@ impl FileTailer {
             },
         };
 
-        let mut file = tokio::fs::File::open(&self.path)
-            .await
-            .map_err(|err| WorkerError::Message(format!("open failed for {}: {err}", self.path.display())))?;
+        let mut file = tokio::fs::File::open(&self.path).await.map_err(|err| {
+            WorkerError::Message(format!("open failed for {}: {err}", self.path.display()))
+        })?;
         file.seek(std::io::SeekFrom::Start(offset))
             .await
-            .map_err(|err| WorkerError::Message(format!("seek failed for {}: {err}", self.path.display())))?;
+            .map_err(|err| {
+                WorkerError::Message(format!("seek failed for {}: {err}", self.path.display()))
+            })?;
 
         let mut out = Vec::new();
         let mut read_total = 0usize;
@@ -118,10 +123,9 @@ impl FileTailer {
         while read_total < max_bytes {
             let budget = max_bytes.saturating_sub(read_total);
             let chunk_len = buf.len().min(budget);
-            let n = file
-                .read(&mut buf[..chunk_len])
-                .await
-                .map_err(|err| WorkerError::Message(format!("read failed for {}: {err}", self.path.display())))?;
+            let n = file.read(&mut buf[..chunk_len]).await.map_err(|err| {
+                WorkerError::Message(format!("read failed for {}: {err}", self.path.display()))
+            })?;
             if n == 0 {
                 break;
             }
@@ -190,8 +194,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn file_tailer_reads_appends_and_handles_rotation() -> Result<(), crate::state::WorkerError>
-    {
+    async fn file_tailer_reads_appends_and_handles_rotation(
+    ) -> Result<(), crate::state::WorkerError> {
         let dir = tmp_dir("rotation");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|err| {
@@ -199,24 +203,24 @@ mod tests {
         })?;
 
         let path = dir.join("postgres.log");
-        tokio::fs::write(&path, b"a\n").await.map_err(|err| {
-            crate::state::WorkerError::Message(format!("write failed: {err}"))
-        })?;
+        tokio::fs::write(&path, b"a\n")
+            .await
+            .map_err(|err| crate::state::WorkerError::Message(format!("write failed: {err}")))?;
 
         let mut tailer = FileTailer::new(path.clone(), StartPosition::Beginning);
         let first = tailer.read_new_lines(1024).await?;
         assert_eq!(first, vec![b"a".to_vec()]);
 
-        tokio::fs::write(&path, b"a\nb\n").await.map_err(|err| {
-            crate::state::WorkerError::Message(format!("append failed: {err}"))
-        })?;
+        tokio::fs::write(&path, b"a\nb\n")
+            .await
+            .map_err(|err| crate::state::WorkerError::Message(format!("append failed: {err}")))?;
         let second = tailer.read_new_lines(1024).await?;
         assert_eq!(second, vec![b"b".to_vec()]);
 
         let rotated = dir.join("postgres.log.1");
-        tokio::fs::rename(&path, &rotated).await.map_err(|err| {
-            crate::state::WorkerError::Message(format!("rename failed: {err}"))
-        })?;
+        tokio::fs::rename(&path, &rotated)
+            .await
+            .map_err(|err| crate::state::WorkerError::Message(format!("rename failed: {err}")))?;
         tokio::fs::write(&path, b"c\n").await.map_err(|err| {
             crate::state::WorkerError::Message(format!("new file write failed: {err}"))
         })?;

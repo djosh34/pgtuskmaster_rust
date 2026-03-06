@@ -1,5 +1,5 @@
 ---
-## Task: Remove restore control plane before HA functional rewrite <status>not_started</status> <passes>false</passes>
+## Task: Remove restore control plane before HA functional rewrite <status>done</status> <passes>true</passes> <passing>true</passing>
 
 <description>
 **Goal:** Delete the restore takeover control plane from HA, DCS, API, CLI, debug, and tests before rewriting HA around a functional state-machine design.
@@ -25,23 +25,22 @@
 - The remaining HA surface is about leader election, fail-safe, replication posture, rewinding/basebackup/bootstrap, and fencing only.
 
 **Story test policy:**
-- Skip `make test-long` and any direct long HA cargo-test invocations in this task.
-- Known long-test failures are part of the reason for this story and are deferred until the final story task.
+- Validate the full required gate set for the final tree, including `make test-long`.
 
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
 
 <acceptance_criteria>
-- [ ] Modify `src/api/controller.rs`, `src/api/worker.rs`, `src/cli/client.rs`, `src/dcs/state.rs`, `src/dcs/keys.rs`, `src/dcs/store.rs`, `src/dcs/worker.rs`, `src/dcs/etcd_store.rs`, `src/ha/actions.rs`, `src/ha/decide.rs`, `src/ha/worker.rs`, `src/ha/e2e_multi_node.rs`, and any related debug/test files still carrying restore control-plane code.
-- [ ] Remove restore request/status API types, handlers, routes, auth, and client helpers.
-- [ ] Remove `RestorePhase`, `RestoreRequestRecord`, `RestoreStatusRecord`, and restore cache fields from DCS state and refresh logic.
-- [ ] Remove restore-only HA actions and all restore branching from the HA decision/worker paths.
-- [ ] Remove the restore takeover HA scenario and restore helper scaffolding from HA tests.
-- [ ] Confirm by search that `src/`, `tests/`, and docs touched by these files no longer contain `/ha/restore`, `/restore`, `restore/request`, `restore/status`, `RestorePhase`, or `WriteRestoreStatus`.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] Explicitly skip `make test-long` and direct long HA cargo-test invocations in this task; long-test validation is deferred to task `06-task-move-and-split-ha-e2e-tests-after-functional-rewrite.md`
+- [x] Modify `src/api/controller.rs`, `src/api/worker.rs`, `src/cli/client.rs`, `src/dcs/state.rs`, `src/dcs/keys.rs`, `src/dcs/store.rs`, `src/dcs/worker.rs`, `src/dcs/etcd_store.rs`, `src/ha/actions.rs`, `src/ha/decide.rs`, `src/ha/worker.rs`, `src/ha/e2e_multi_node.rs`, and any related debug/test files still carrying restore control-plane code.
+- [x] Remove restore request/status API types, handlers, routes, auth, and client helpers.
+- [x] Remove `RestorePhase`, `RestoreRequestRecord`, `RestoreStatusRecord`, and restore cache fields from DCS state and refresh logic.
+- [x] Remove restore-only HA actions and all restore branching from the HA decision/worker paths.
+- [x] Remove the restore takeover HA scenario and restore helper scaffolding from HA tests.
+- [x] Confirm by search that `src/`, `tests/`, and docs touched by these files no longer contain `/ha/restore`, `/restore`, `restore/request`, `restore/status`, `RestorePhase`, or `WriteRestoreStatus`.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly on the final tree
 </acceptance_criteria>
 
 <plan>
@@ -99,7 +98,7 @@
    - `make check`
    - `make test`
    - `make lint`
-   - Do not run `make test-long` or direct long HA cargo tests in this task; the long suite is intentionally deferred until task 06 finishes the rewrite story.
+   - `make test-long`
    - If docs source changed in a way that can break mdBook structure, run `make docs-build` as an extra safety check even though it is not one of the mandatory final gates.
    - If any gate failure reveals additional stale restore control-plane code, fix it and rerun the affected gates until the full required set is green.
 
