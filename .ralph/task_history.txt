@@ -110,3 +110,4 @@
 .ralph/tasks/story-remove-backup-feature/04-task-remove-backup-harness-installers-and-gate-selection.md
 .ralph/tasks/story-remove-backup-feature/05-task-remove-backup-docs-and-obsolete-task-artifacts.md
 .ralph/tasks/bugs/rewind-and-basebackup-source-are-static-instead-of-derived-from-current-leader.md
+.ralph/tasks/bugs/ha-api-polls-hang-during-no-quorum.md

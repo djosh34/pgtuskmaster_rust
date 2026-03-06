@@ -25,3 +25,5 @@ Safety states may reduce immediate availability. This is intentional when the al
 ## When this matters in operations
 
 Operators should treat fail-safe as a meaningful status, not as noise. It indicates that coordination assumptions are currently insufficient for normal promotion behavior and is visible via `/ha/state` (`ha_phase`).
+
+After fail-safe is selected, the HA worker publishes that phase before slower DCS cleanup completes. In practice this means operators should be able to observe `FailSafe` via `/ha/state` even if leader-lease release or other coordination writes are currently blocked or timing out.

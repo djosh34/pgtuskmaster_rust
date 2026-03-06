@@ -1774,9 +1774,8 @@ impl ClusterFixture {
 
     async fn wait_for_all_nodes_failsafe(&mut self, timeout: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
-        let mut observed_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
-        let mut observed_non_primary_nodes: BTreeSet<String> = BTreeSet::new();
-        let mut fallback_no_primary_since: Option<tokio::time::Instant> = None;
+        let mut observed_api_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
+        let mut observed_api_non_primary_nodes: BTreeSet<String> = BTreeSet::new();
         let mut last_observation: Option<String> = None;
         let mut last_recorded_at = tokio::time::Instant::now();
         let node_count = self.nodes.len();
@@ -1792,12 +1791,11 @@ impl ClusterFixture {
                     .as_deref()
                     .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for no-quorum fail-safe condition via API/SQL evidence (no primary + at least one FailSafe + all nodes observed non-primary); last_observation={detail}"
+                    "timed out waiting for no-quorum fail-safe API observability (all nodes must answer /ha/state, at least one node must report FailSafe, and no node may report Primary); last_observation={detail}"
                 )));
             }
             self.ensure_runtime_tasks_healthy().await?;
             let mut poll_details = Vec::new();
-            let mut has_primary = false;
             let polled = match self
                 .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
                 .await
@@ -1816,21 +1814,24 @@ impl ClusterFixture {
             let (sql_roles, sql_errors) = self
                 .cluster_sql_roles_best_effort_with_timeout(Duration::from_secs(3))
                 .await?;
-            let sql_roles_by_node = sql_roles.into_iter().collect::<BTreeMap<_, _>>();
-            let mut sql_unreachable_nodes: BTreeSet<String> = BTreeSet::new();
             let mut api_success_count = 0usize;
+            let mut current_api_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
+            let mut current_api_non_primary_nodes: BTreeSet<String> = BTreeSet::new();
+            let mut current_api_primary_nodes: BTreeSet<String> = BTreeSet::new();
 
             for (node_id, state_result) in polled {
                 match state_result {
                     Ok(state) => {
                         api_success_count = api_success_count.saturating_add(1);
                         if state.ha_phase == "Primary" {
-                            has_primary = true;
+                            current_api_primary_nodes.insert(node_id.clone());
                         } else {
-                            observed_non_primary_nodes.insert(node_id.clone());
+                            current_api_non_primary_nodes.insert(node_id.clone());
+                            observed_api_non_primary_nodes.insert(node_id.clone());
                         }
                         if state.ha_phase == "FailSafe" {
-                            observed_failsafe_nodes.insert(node_id.clone());
+                            current_api_failsafe_nodes.insert(node_id.clone());
+                            observed_api_failsafe_nodes.insert(node_id.clone());
                         }
                         poll_details.push(format!(
                             "{node_id}:phase={} leader={:?}",
@@ -1838,65 +1839,39 @@ impl ClusterFixture {
                         ));
                     }
                     Err(err) => {
-                        if let Some(role) = sql_roles_by_node.get(node_id.as_str()) {
-                            if role != "primary" {
-                                observed_non_primary_nodes.insert(node_id.clone());
-                            }
-                            poll_details.push(format!("{node_id}:error={err}:sql_role={role}"));
-                        } else {
-                            poll_details.push(format!("{node_id}:error={err}"));
-                        }
+                        poll_details.push(format!("{node_id}:error={err}"));
                     }
                 }
             }
-            for (node_id, role) in &sql_roles_by_node {
-                if role == "primary" {
-                    has_primary = true;
-                } else {
-                    observed_non_primary_nodes.insert(node_id.clone());
-                }
-            }
-            for node in &self.nodes {
-                if !sql_roles_by_node.contains_key(node.id.as_str()) {
-                    sql_unreachable_nodes.insert(node.id.clone());
-                }
-            }
 
-            if !has_primary
-                && !observed_failsafe_nodes.is_empty()
-                && observed_non_primary_nodes.len() == node_count
+            if api_success_count == node_count
+                && current_api_primary_nodes.is_empty()
+                && !current_api_failsafe_nodes.is_empty()
+                && current_api_non_primary_nodes.len() == node_count
             {
                 return Ok(());
             }
 
-            let fallback_nodes = observed_non_primary_nodes
-                .union(&sql_unreachable_nodes)
-                .cloned()
-                .collect::<BTreeSet<_>>();
-
-            let api_coverage_incomplete = api_success_count < node_count;
-
-            if !has_primary && fallback_nodes.len() == node_count && api_coverage_incomplete {
-                let since =
-                    fallback_no_primary_since.get_or_insert_with(tokio::time::Instant::now);
-                if since.elapsed() >= Duration::from_secs(5) {
-                    self.record(
-                        "no-quorum wait fallback: HA API coverage stayed incomplete while all nodes were either non-primary by API/SQL evidence or SQL-unreachable"
-                            .to_string(),
-                    );
-                    return Ok(());
-                }
-            } else {
-                fallback_no_primary_since = None;
-            }
-
             last_observation = Some(format!(
-                "observed_failsafe_nodes={:?}; observed_non_primary_nodes={:?}; sql_unreachable_nodes={:?}; poll={}",
-                observed_failsafe_nodes,
-                observed_non_primary_nodes,
-                sql_unreachable_nodes,
+                "api_success_count={api_success_count}/{node_count}; current_api_failsafe_nodes={:?}; current_api_non_primary_nodes={:?}; current_api_primary_nodes={:?}; observed_api_failsafe_nodes={:?}; observed_api_non_primary_nodes={:?}; poll={}",
+                current_api_failsafe_nodes,
+                current_api_non_primary_nodes,
+                current_api_primary_nodes,
+                observed_api_failsafe_nodes,
+                observed_api_non_primary_nodes,
                 poll_details.join(" | ")
             ));
+            if !sql_roles.is_empty() {
+                last_observation = Some(format!(
+                    "{}; sql_roles={}",
+                    last_observation.as_deref().unwrap_or("none"),
+                    sql_roles
+                        .iter()
+                        .map(|(node_id, role)| format!("{node_id}:{role}"))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                ));
+            }
             if !sql_errors.is_empty() {
                 last_observation = Some(format!(
                     "{}; sql_errors={}",

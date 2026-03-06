@@ -32,6 +32,8 @@ When a node appears "stuck," you need to determine whether it is unhealthy, wait
 - Validate PostgreSQL reachability and readiness on the local node.
 - If behavior is conservative, confirm whether trust degradation is the trigger.
 
+During no-quorum events, `/ha/state` should continue answering even while DCS writes or lease cleanup are timing out. Treat an API blackout during fail-safe convergence as a bug, not expected behavior.
+
 ## Useful command surfaces
 
 ```console
@@ -71,6 +73,8 @@ Recommended operator workflow:
    - DCS: `dcs.local_member.write_failed`, `dcs.watch.*_failed`
    - PgInfo: `pginfo.poll_failed`, `pginfo.sql_transition`
    - API: `api.step_once_failed`, `api.tls_handshake_failed`
+
+Runtime note: the real node runs workers on a multi-thread Tokio runtime so a blocked DCS caller does not starve API/debug observability on the same process.
 
 ## Postgres log ingest health
 

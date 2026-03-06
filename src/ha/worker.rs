@@ -56,33 +56,23 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
 
     emit_ha_decision_selected(ctx, output.next.tick, &output.outcome.decision, &plan)?;
     emit_ha_effect_plan_selected(ctx, output.next.tick, &plan)?;
-    let dispatch_errors = if skip_redundant_process_dispatch {
-        Vec::new()
-    } else {
-        apply_effect_plan(ctx, output.next.tick, &plan)?
+    let published_next = crate::ha::state::HaState {
+        worker: WorkerStatus::Running,
+        ..output.next.clone()
     };
     let now = (ctx.now)()?;
 
-    let worker = if dispatch_errors.is_empty() {
-        WorkerStatus::Running
-    } else {
-        WorkerStatus::Faulted(WorkerError::Message(format_dispatch_errors(
-            &dispatch_errors,
-        )))
-    };
-    let next = crate::ha::state::HaState {
-        worker,
-        ..output.next
-    };
-
     ctx.publisher
-        .publish(next.clone(), now)
+        .publish(published_next.clone(), now)
         .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
 
-    if prev_phase != next.phase {
-        let mut attrs = ha_base_attrs(ctx, next.tick);
+    if prev_phase != published_next.phase {
+        let mut attrs = ha_base_attrs(ctx, published_next.tick);
         attrs.insert("phase_prev".to_string(), serialize_attr_value(&prev_phase)?);
-        attrs.insert("phase_next".to_string(), serialize_attr_value(&next.phase)?);
+        attrs.insert(
+            "phase_next".to_string(),
+            serialize_attr_value(&published_next.phase)?,
+        );
         ctx.log
             .emit_event(
                 SeverityText::Info,
@@ -95,9 +85,9 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
     }
 
     let prev_role = ha_role_label(&prev_phase);
-    let next_role = ha_role_label(&next.phase);
+    let next_role = ha_role_label(&published_next.phase);
     if prev_role != next_role {
-        let mut attrs = ha_base_attrs(ctx, next.tick);
+        let mut attrs = ha_base_attrs(ctx, published_next.tick);
         attrs.insert(
             "role_prev".to_string(),
             serde_json::Value::String(prev_role.to_string()),
@@ -117,7 +107,27 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
             .map_err(|err| WorkerError::Message(format!("ha role log emit failed: {err}")))?;
     }
 
-    ctx.state = next;
+    ctx.state = published_next.clone();
+
+    let dispatch_errors = if skip_redundant_process_dispatch {
+        Vec::new()
+    } else {
+        apply_effect_plan(ctx, published_next.tick, &plan)?
+    };
+    if !dispatch_errors.is_empty() {
+        let faulted = crate::ha::state::HaState {
+            worker: WorkerStatus::Faulted(WorkerError::Message(format_dispatch_errors(
+                &dispatch_errors,
+            ))),
+            ..published_next
+        };
+        let faulted_now = (ctx.now)()?;
+        ctx.publisher
+            .publish(faulted.clone(), faulted_now)
+            .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
+        ctx.state = faulted;
+    }
+
     Ok(())
 }
 
@@ -148,6 +158,7 @@ mod tests {
         collections::{BTreeMap, VecDeque},
         path::PathBuf,
         sync::{
+            mpsc::{self, RecvTimeoutError},
             atomic::{AtomicU64, Ordering},
             Arc, Mutex,
         },
@@ -203,6 +214,8 @@ mod tests {
         writes: Arc<Mutex<Vec<(String, String)>>>,
         deletes: Arc<Mutex<Vec<String>>>,
         events: Arc<Mutex<VecDeque<WatchEvent>>>,
+        delete_block_started: Option<Arc<Mutex<Option<mpsc::Sender<()>>>>>,
+        delete_block_release: Option<Arc<Mutex<mpsc::Receiver<()>>>>,
     }
 
     impl RecordingStore {
@@ -291,6 +304,33 @@ mod tests {
             if self.fail_delete {
                 return Err(DcsStoreError::Io("forced delete failure".to_string()));
             }
+            if let Some(started) = &self.delete_block_started {
+                let mut guard = started
+                    .lock()
+                    .map_err(|_| DcsStoreError::Io("delete start lock poisoned".to_string()))?;
+                if let Some(tx) = guard.take() {
+                    tx.send(())
+                        .map_err(|_| DcsStoreError::Io("delete start signal failed".to_string()))?;
+                }
+            }
+            if let Some(release) = &self.delete_block_release {
+                let guard = release
+                    .lock()
+                    .map_err(|_| DcsStoreError::Io("delete release lock poisoned".to_string()))?;
+                match guard.recv_timeout(Duration::from_secs(5)) {
+                    Ok(()) => {}
+                    Err(RecvTimeoutError::Timeout) => {
+                        return Err(DcsStoreError::Io(
+                            "delete release unblock timed out".to_string(),
+                        ));
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        return Err(DcsStoreError::Io(
+                            "delete release unblock disconnected".to_string(),
+                        ));
+                    }
+                }
+            }
             let mut guard = self
                 .deletes
                 .lock()
@@ -309,6 +349,15 @@ mod tests {
     }
 
     static TEST_DATA_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn test_now_unix_millis() -> UnixMillis {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).map_or(u64::MAX, |value| value)
+            });
+        UnixMillis(millis)
+    }
 
     fn unique_test_data_dir(label: &str) -> PathBuf {
         let millis = SystemTime::now()
@@ -982,7 +1031,7 @@ mod tests {
             timeline: None,
             write_lsn: None,
             replay_lsn: None,
-            updated_at: UnixMillis(1),
+            updated_at: test_now_unix_millis(),
             pg_version: Version(1),
         }
     }
@@ -1106,6 +1155,71 @@ mod tests {
         })?;
         assert!(matches!(request.kind, ProcessJobKind::Fencing(_)));
         assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn step_once_publishes_failsafe_before_blocking_release_leader(
+    ) -> Result<(), WorkerError> {
+        let (delete_started_tx, delete_started_rx) = mpsc::channel();
+        let (delete_release_tx, delete_release_rx) = mpsc::channel();
+        let store = RecordingStore {
+            delete_block_started: Some(Arc::new(Mutex::new(Some(delete_started_tx)))),
+            delete_block_release: Some(Arc::new(Mutex::new(delete_release_rx))),
+            ..RecordingStore::default()
+        };
+        let BuiltContext {
+            mut ctx,
+            ha_subscriber,
+            store: store_handle,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_store(store)
+            .with_phase(HaPhase::FailSafe)
+            .with_dcs_trust(DcsTrust::FullQuorum)
+            .with_pg_state(sample_primary_pg_state(SqlStatus::Healthy))
+            .build()?;
+
+        let handle = tokio::spawn(async move {
+            let result = step_once(&mut ctx).await;
+            (ctx, result)
+        });
+
+        let started_result = tokio::task::spawn_blocking(move || {
+            delete_started_rx.recv_timeout(Duration::from_secs(1))
+        })
+        .await
+        .map_err(|err| WorkerError::Message(format!("blocking wait join failed: {err}")))?;
+        match started_result {
+            Ok(()) => {}
+            Err(err) => {
+                return Err(WorkerError::Message(format!(
+                    "blocking delete did not start: {err}"
+                )));
+            }
+        }
+
+        let published = ha_subscriber.latest();
+        assert_eq!(published.version, Version(1));
+        assert_eq!(published.value.phase, HaPhase::FailSafe);
+        assert_eq!(
+            published.value.decision,
+            HaDecision::EnterFailSafe {
+                release_leader_lease: true,
+            }
+        );
+        assert_eq!(published.value.worker, WorkerStatus::Running);
+
+        delete_release_tx
+            .send(())
+            .map_err(|_| WorkerError::Message("delete release signal failed".to_string()))?;
+
+        let (ctx, stepped) = handle
+            .await
+            .map_err(|err| WorkerError::Message(format!("ha step join failed: {err}")))?;
+        stepped?;
+        assert_eq!(ctx.state.phase, HaPhase::FailSafe);
+        assert!(store_handle.has_delete_path("/scope-a/leader"));
         Ok(())
     }
 

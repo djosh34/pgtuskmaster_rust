@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar  6 10:09:47 PM CET 2026
-
-# Task `.ralph/tasks/bugs/ha-api-polls-hang-during-no-quorum.md`
-
-```
-## Bug: HA API polls hang during no-quorum fail-safe observation <status>not_started</status> <passes>false</passes>
-
-<description>
-During `make test-long`, `e2e_no_quorum_enters_failsafe_strict_all_nodes` can hang indefinitely after etcd quorum loss.
-Live debugging showed that all nodes had already become non-primary by SQL evidence, but every `GET /ha/state` call to the node APIs hung instead of returning a `FailSafe` phase snapshot.
-```
-
-==============
+Generated: Fri Mar  6 22:54:31 CET 2026
 
 # Task `.ralph/tasks/story-authoritative-managed-postgres-config/01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer.md`
 

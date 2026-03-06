@@ -25,7 +25,8 @@ fn run_node(cli: Cli) -> ExitCode {
         }
     };
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
         .enable_all()
         .build()
         .map_err(|err| err.to_string());

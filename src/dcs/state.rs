@@ -93,22 +93,50 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) last_emitted_trust: Option<DcsTrust>,
 }
 
-pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &MemberId) -> DcsTrust {
+pub(crate) fn evaluate_trust(
+    etcd_healthy: bool,
+    cache: &DcsCache,
+    self_id: &MemberId,
+    now: UnixMillis,
+) -> DcsTrust {
     if !etcd_healthy {
         return DcsTrust::NotTrusted;
     }
 
-    if !cache.members.contains_key(self_id) {
+    let Some(self_member) = cache.members.get(self_id) else {
+        return DcsTrust::FailSafe;
+    };
+    if !member_record_is_fresh(self_member, cache, now) {
         return DcsTrust::FailSafe;
     }
 
     if let Some(leader) = &cache.leader {
-        if !cache.members.contains_key(&leader.member_id) {
+        let Some(leader_member) = cache.members.get(&leader.member_id) else {
+            return DcsTrust::FailSafe;
+        };
+        if !member_record_is_fresh(leader_member, cache, now) {
             return DcsTrust::FailSafe;
         }
     }
 
+    if cache.members.len() > 1 && fresh_member_count(cache, now) < 2 {
+        return DcsTrust::FailSafe;
+    }
+
     DcsTrust::FullQuorum
+}
+
+fn member_record_is_fresh(record: &MemberRecord, cache: &DcsCache, now: UnixMillis) -> bool {
+    let max_age_ms = cache.config.ha.lease_ttl_ms;
+    now.0.saturating_sub(record.updated_at.0) <= max_age_ms
+}
+
+fn fresh_member_count(cache: &DcsCache, now: UnixMillis) -> usize {
+    cache
+        .members
+        .values()
+        .filter(|record| member_record_is_fresh(record, cache, now))
+        .count()
 }
 
 pub(crate) fn build_local_member_record(
@@ -321,10 +349,13 @@ mod tests {
         let mut cache = sample_cache();
 
         assert_eq!(
-            evaluate_trust(false, &cache, &self_id),
+            evaluate_trust(false, &cache, &self_id, UnixMillis(1)),
             DcsTrust::NotTrusted
         );
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FailSafe);
+        assert_eq!(
+            evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
+            DcsTrust::FailSafe
+        );
 
         cache.members.insert(
             self_id.clone(),
@@ -342,12 +373,22 @@ mod tests {
                 pg_version: Version(1),
             },
         );
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
+        assert_eq!(
+            evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
+            DcsTrust::FullQuorum
+        );
+        assert_eq!(
+            evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
+            DcsTrust::FailSafe
+        );
 
         cache.leader = Some(LeaderRecord {
             member_id: MemberId("node-b".to_string()),
         });
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FailSafe);
+        assert_eq!(
+            evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
+            DcsTrust::FailSafe
+        );
     }
 
     fn common(sql: SqlStatus, readiness: Readiness) -> PgInfoCommon {

@@ -246,7 +246,7 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     }
 
     let trust = if local_member_publish_succeeded {
-        evaluate_trust(store_healthy, &ctx.cache, &ctx.self_id)
+        evaluate_trust(store_healthy, &ctx.cache, &ctx.self_id, now)
     } else {
         DcsTrust::NotTrusted
     };

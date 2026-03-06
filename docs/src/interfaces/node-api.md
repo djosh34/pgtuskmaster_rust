@@ -8,6 +8,8 @@ The Node API is a compact operational interface for state visibility and planned
 - `POST /switchover`: create planned switchover intent
 - `DELETE /ha/switchover`: cancel or clear pending switchover intent
 
+`GET /ha/state` is expected to stay responsive during degraded coordination windows, including no-quorum fail-safe transitions. Slow or failing DCS cleanup must not suppress the visible fail-safe phase.
+
 Initial primary bootstrap and replica cloning remain internal runtime behavior.
 
 ## Fallback endpoints
@@ -38,3 +40,4 @@ A narrow API surface means fewer ad-hoc knobs. The benefit is clearer lifecycle 
 ## When this matters in operations
 
 For planned role changes, use API intent workflows instead of direct out-of-band coordination writes.
+For degraded coordination, rely on `/ha/state` as the primary operational confirmation that the node has entered fail-safe.

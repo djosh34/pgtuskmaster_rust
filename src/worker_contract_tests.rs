@@ -1,7 +1,15 @@
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::sync::{
+    mpsc::{self, RecvTimeoutError},
+    Arc, Mutex,
+};
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 use crate::{
+    api::{HaPhaseResponse, HaStateResponse},
     config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, DcsConfig, HaConfig,
         InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig,
@@ -12,7 +20,7 @@ use crate::{
     dcs::state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx},
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     debug_api::{
-        snapshot::{AppLifecycle, SystemSnapshot},
+        snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx, SystemSnapshot},
         worker::{DebugApiContractStubInputs, DebugApiCtx},
     },
     ha::{
@@ -54,6 +62,74 @@ impl DcsStore for ContractStore {
 
     fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
         Ok(())
+    }
+
+    fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
+        Ok(Vec::new())
+    }
+}
+
+struct BlockingDeleteStore {
+    delete_started: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+    delete_release: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+impl BlockingDeleteStore {
+    fn new() -> (Self, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        (
+            Self {
+                delete_started: Arc::new(Mutex::new(Some(started_tx))),
+                delete_release: Arc::new(Mutex::new(release_rx)),
+            },
+            started_rx,
+            release_tx,
+        )
+    }
+}
+
+impl DcsStore for BlockingDeleteStore {
+    fn healthy(&self) -> bool {
+        true
+    }
+
+    fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
+        Ok(None)
+    }
+
+    fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
+        Ok(())
+    }
+
+    fn put_path_if_absent(&mut self, _path: &str, _value: String) -> Result<bool, DcsStoreError> {
+        Ok(true)
+    }
+
+    fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
+        let mut started_guard = self
+            .delete_started
+            .lock()
+            .map_err(|_| DcsStoreError::Io("delete started lock poisoned".to_string()))?;
+        if let Some(tx) = started_guard.take() {
+            tx.send(())
+                .map_err(|_| DcsStoreError::Io("delete started signal failed".to_string()))?;
+        }
+        drop(started_guard);
+
+        let release_guard = self
+            .delete_release
+            .lock()
+            .map_err(|_| DcsStoreError::Io("delete release lock poisoned".to_string()))?;
+        match release_guard.recv_timeout(Duration::from_secs(5)) {
+            Ok(()) => Ok(()),
+            Err(RecvTimeoutError::Timeout) => Err(DcsStoreError::Io(
+                "delete release unblock timed out".to_string(),
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(DcsStoreError::Io(
+                "delete release unblock disconnected".to_string(),
+            )),
+        }
     }
 
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
@@ -194,6 +270,27 @@ fn sample_pg_state() -> PgInfoState {
     }
 }
 
+fn sample_primary_pg_state() -> PgInfoState {
+    PgInfoState::Primary {
+        common: PgInfoCommon {
+            worker: WorkerStatus::Running,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            pg_config: PgConfig {
+                port: None,
+                hot_standby: None,
+                primary_conninfo: None,
+                primary_slot_name: None,
+                extra: BTreeMap::new(),
+            },
+            last_refresh_at: Some(UnixMillis(1)),
+        },
+        wal_lsn: crate::state::WalLsn(1),
+        slots: Vec::new(),
+    }
+}
+
 fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
     DcsState {
         worker: WorkerStatus::Starting,
@@ -206,6 +303,13 @@ fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
             init_lock: None,
         },
         last_refresh_at: None,
+    }
+}
+
+fn sample_dcs_state_with_trust(cfg: RuntimeConfig, trust: DcsTrust) -> DcsState {
+    DcsState {
+        trust,
+        ..sample_dcs_state(cfg)
     }
 }
 
@@ -225,6 +329,33 @@ fn sample_ha_state() -> HaState {
             release_leader_lease: false,
         },
     }
+}
+
+async fn get_ha_state_via_tcp(addr: SocketAddr) -> Result<HaStateResponse, WorkerError> {
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|err| WorkerError::Message(format!("api connect failed: {err}")))?;
+    stream
+        .write_all(b"GET /ha/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .map_err(|err| WorkerError::Message(format!("api request write failed: {err}")))?;
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .await
+        .map_err(|err| WorkerError::Message(format!("api response read failed: {err}")))?;
+    let text = String::from_utf8(raw)
+        .map_err(|err| WorkerError::Message(format!("api response utf8 failed: {err}")))?;
+    let (head, body) = text.split_once("\r\n\r\n").ok_or_else(|| {
+        WorkerError::Message("api response missing header separator".to_string())
+    })?;
+    if !head.starts_with("HTTP/1.1 200") {
+        return Err(WorkerError::Message(format!(
+            "api returned unexpected response: {head}"
+        )));
+    }
+    serde_json::from_str(body)
+        .map_err(|err| WorkerError::Message(format!("api response decode failed: {err}")))
 }
 
 #[test]
@@ -419,6 +550,151 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
     assert_eq!(debug_latest.value.app, AppLifecycle::Starting);
     assert_eq!(debug_latest.value.config.version, Version(0));
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks(
+) -> Result<(), WorkerError> {
+    let runtime_cfg = sample_runtime_config();
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(runtime_cfg.clone(), UnixMillis(1));
+    let (_pg_publisher, pg_subscriber) = new_state_channel(sample_primary_pg_state(), UnixMillis(1));
+    let (_dcs_publisher, dcs_subscriber) = new_state_channel(
+        sample_dcs_state_with_trust(runtime_cfg.clone(), DcsTrust::FullQuorum),
+        UnixMillis(1),
+    );
+    let (_process_publisher, process_subscriber) =
+        new_state_channel(sample_process_state(), UnixMillis(1));
+    let (ha_publisher, ha_subscriber) = new_state_channel(sample_ha_state(), UnixMillis(1));
+
+    let initial_snapshot = build_snapshot(
+        &DebugSnapshotCtx {
+            app: AppLifecycle::Running,
+            config: cfg_subscriber.latest(),
+            pg: pg_subscriber.latest(),
+            dcs: dcs_subscriber.latest(),
+            process: process_subscriber.latest(),
+            ha: ha_subscriber.latest(),
+        },
+        UnixMillis(1),
+        0,
+        &[],
+        &[],
+    );
+    let (debug_publisher, debug_subscriber) = new_state_channel(initial_snapshot, UnixMillis(1));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|err| WorkerError::Message(format!("api bind failed: {err}")))?;
+    let mut api_ctx = crate::api::worker::ApiWorkerCtx::contract_stub(
+        listener,
+        cfg_subscriber.clone(),
+        Box::new(ContractStore),
+    );
+    api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
+    let api_addr = api_ctx.local_addr()?;
+
+    let mut debug_ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {
+        publisher: debug_publisher,
+        config_subscriber: cfg_subscriber.clone(),
+        pg_subscriber: pg_subscriber.clone(),
+        dcs_subscriber: dcs_subscriber.clone(),
+        process_subscriber: process_subscriber.clone(),
+        ha_subscriber: ha_subscriber.clone(),
+    });
+    debug_ctx.app = AppLifecycle::Running;
+    debug_ctx.poll_interval = Duration::from_millis(5);
+
+    let (process_tx, _process_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (store, delete_started_rx, delete_release_tx) = BlockingDeleteStore::new();
+    let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
+        publisher: ha_publisher,
+        config_subscriber: cfg_subscriber,
+        pg_subscriber,
+        dcs_subscriber,
+        process_subscriber,
+        process_inbox: process_tx,
+        dcs_store: Box::new(store),
+        scope: "scope-a".to_string(),
+        self_id: MemberId("node-a".to_string()),
+    });
+    ha_ctx.state = HaState {
+        worker: WorkerStatus::Running,
+        phase: HaPhase::FailSafe,
+        tick: 0,
+        decision: HaDecision::NoChange,
+    };
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let api_handle =
+                tokio::task::spawn_local(async move { crate::api::worker::run(api_ctx).await });
+            let debug_handle = tokio::task::spawn_local(async move {
+                crate::debug_api::worker::run(debug_ctx).await
+            });
+            let ha_handle = tokio::task::spawn_local(async move {
+                let result = crate::ha::worker::step_once(&mut ha_ctx).await;
+                (ha_ctx, result)
+            });
+
+            let started_result = tokio::task::spawn_blocking(move || {
+                delete_started_rx.recv_timeout(Duration::from_secs(1))
+            })
+            .await
+            .map_err(|err| WorkerError::Message(format!("blocking wait join failed: {err}")))?;
+            match started_result {
+                Ok(()) => {}
+                Err(err) => {
+                    api_handle.abort();
+                    debug_handle.abort();
+                    ha_handle.abort();
+                    return Err(WorkerError::Message(format!(
+                        "blocking release-leader path did not start: {err}"
+                    )));
+                }
+            }
+
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            let observed = loop {
+                match get_ha_state_via_tcp(api_addr).await {
+                    Ok(state)
+                        if state.ha_phase == HaPhaseResponse::FailSafe && state.ha_tick == 1 =>
+                    {
+                        break state;
+                    }
+                    Ok(_state) => {}
+                    Err(_err) => {}
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    api_handle.abort();
+                    debug_handle.abort();
+                    ha_handle.abort();
+                    return Err(WorkerError::Message(
+                        "timed out waiting for responsive /ha/state".to_string(),
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+
+            delete_release_tx
+                .send(())
+                .map_err(|_| WorkerError::Message("delete release signal failed".to_string()))?;
+            let (ha_ctx, ha_result) = ha_handle
+                .await
+                .map_err(|err| WorkerError::Message(format!("ha step join failed: {err}")))?;
+            ha_result?;
+
+            api_handle.abort();
+            debug_handle.abort();
+            let _ = api_handle.await;
+            let _ = debug_handle.await;
+
+            assert_eq!(observed.ha_phase, HaPhaseResponse::FailSafe);
+            assert!(observed.snapshot_sequence > 0);
+            assert_eq!(ha_ctx.state.phase, HaPhase::FailSafe);
+            Ok(())
+        })
+        .await
 }
 
 #[test]
