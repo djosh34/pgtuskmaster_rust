@@ -6,7 +6,7 @@ model_supports_reasoning_summaries = true
 
 [features]
 multi_agent = true
-runtime_metrics = true
+#runtime_metrics = true
 
 [profiles.spark]
 model = "gpt-5.3-codex-spark"
