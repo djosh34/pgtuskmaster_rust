@@ -18,11 +18,11 @@ ifneq ($(filter -e --environment-overrides e,$(MAKEFLAGS))$(filter %e%,$(SINGLE_
 $(error Refusing to run Makefile gates with environment overrides enabled (MAKEFLAGS contains -e/--environment-overrides))
 endif
 
-ifneq ($(origin ULTRA_LONG_TESTS),undefined)
-$(error ULTRA_LONG_TESTS must not be set externally; edit Makefile to change the canonical ultra-long test list)
+ifneq ($(origin LONG_TESTS),undefined)
+$(error LONG_TESTS must not be set externally; edit Makefile to change the canonical ultra-long test list)
 endif
 
-ULTRA_LONG_TESTS := \
+LONG_TESTS := \
 		e2e_multi_node_stress_planned_switchover_concurrent_sql \
 		e2e_multi_node_stress_unassisted_failover_concurrent_sql \
 		e2e_multi_node_unassisted_failover_sql_consistency \
@@ -32,7 +32,7 @@ ULTRA_LONG_TESTS := \
 		e2e_partition_primary_isolation_failover_no_split_brain \
 		e2e_partition_api_path_isolation_preserves_primary \
 		e2e_partition_mixed_faults_heal_converges
-ULTRA_LONG_SKIP_ARGS := $(foreach t,$(ULTRA_LONG_TESTS),--skip $(t))
+ULTRA_LONG_SKIP_ARGS := $(foreach t,$(LONG_TESTS),--skip $(t))
 
 ifneq ($(origin ULTRA_LONG_SKIP_ARGS),file)
 $(error ULTRA_LONG_SKIP_ARGS must not be set externally; edit Makefile to change the canonical skip list)
@@ -160,17 +160,17 @@ test: guard-makeflags ensure-timeout
 	"$(GATE_STEP)" --gate test --step test.preflight_list --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
 		bash -c 'set -euo pipefail; env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets -- --list | tee "$$1" >/dev/null' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test --step test.preflight_validate_ultra_long --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
-		bash -c 'set -euo pipefail; list_file="$$1"; dupes="$$(printf "%s\n" $(ULTRA_LONG_TESTS) | sort | uniq -d)"; if [ -n "$${dupes}" ]; then echo "Ultra-long test list contains duplicates: $${dupes}" >&2; exit 1; fi; for t in $(ULTRA_LONG_TESTS); do if ! awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -Fx "$$t" >/dev/null; then echo "Ultra-long test not found (exact): $$t" >&2; exit 1; fi; match_count="$$(awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -F "$$t" | wc -l | tr -d " ")"; if [ "$${match_count}" != "1" ]; then echo "Ultra-long skip token is ambiguous (substring matches $${match_count} tests): $$t" >&2; exit 1; fi; done' -- "$${list_file}"; \
+		bash -c 'set -euo pipefail; list_file="$$1"; dupes="$$(printf "%s\n" $(LONG_TESTS) | sort | uniq -d)"; if [ -n "$${dupes}" ]; then echo "Ultra-long test list contains duplicates: $${dupes}" >&2; exit 1; fi; for t in $(LONG_TESTS); do if ! awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -Fx "$$t" >/dev/null; then echo "Ultra-long test not found (exact): $$t" >&2; exit 1; fi; match_count="$$(awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -F "$$t" | wc -l | tr -d " ")"; if [ "$${match_count}" != "1" ]; then echo "Ultra-long skip token is ambiguous (substring matches $${match_count} tests): $$t" >&2; exit 1; fi; done' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test --step test.preflight_validate_default_nonempty --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
-		bash -c 'set -euo pipefail; list_file="$$1"; all_file="$$(mktemp)"; ultra_file="$$(mktemp)"; trap '\''rm -f "$${all_file}" "$${ultra_file}"'\'' EXIT; awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | sort > "$${all_file}"; printf "%s\n" $(ULTRA_LONG_TESTS) | sort > "$${ultra_file}"; non_ultra_count="$$(grep -Fxv -f "$${ultra_file}" "$${all_file}" | wc -l | tr -d " ")"; if [ "$${non_ultra_count}" = "0" ]; then echo "default test suite would execute 0 tests after skipping ULTRA_LONG_TESTS; move at least one test back into make test" >&2; exit 1; fi' -- "$${list_file}"; \
+		bash -c 'set -euo pipefail; list_file="$$1"; all_file="$$(mktemp)"; ultra_file="$$(mktemp)"; trap '\''rm -f "$${all_file}" "$${ultra_file}"'\'' EXIT; awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | sort > "$${all_file}"; printf "%s\n" $(LONG_TESTS) | sort > "$${ultra_file}"; non_ultra_count="$$(grep -Fxv -f "$${ultra_file}" "$${all_file}" | wc -l | tr -d " ")"; if [ "$${non_ultra_count}" = "0" ]; then echo "default test suite would execute 0 tests after skipping LONG_TESTS; move at least one test back into make test" >&2; exit 1; fi' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test --step test.exec_default_suite --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_TIMEOUT_SECS)" --kill-after-secs "$(TEST_TIMEOUT_KILL_AFTER_SECS)" -- \
 		env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets -- $(ULTRA_LONG_SKIP_ARGS)
 
 test-long: guard-makeflags ensure-timeout
-	@echo "test-long runs only ultra-long tests (evidence-backed passed runtime >= 3 minutes)."
+	@echo "test-long runs only long tests (evidence-backed passed runtime >= 3 minutes)."
 	@echo "If one becomes short enough for regular development cycles, move it back into make test."
 	@set -euo pipefail; \
-	if [ -z "$(strip $(ULTRA_LONG_TESTS))" ]; then \
+	if [ -z "$(strip $(LONG_TESTS))" ]; then \
 		echo "No ultra-long tests configured."; \
 		exit 1; \
 	fi; \
@@ -180,8 +180,8 @@ test-long: guard-makeflags ensure-timeout
 	"$(GATE_STEP)" --gate test-long --step test_long.preflight_list --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
 		bash -c 'set -euo pipefail; env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets -- --list | tee "$$1" >/dev/null' -- "$${list_file}"; \
 	"$(GATE_STEP)" --gate test-long --step test_long.preflight_validate_ultra_long --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_PREFLIGHT_TIMEOUT_SECS)" --kill-after-secs "$(TEST_PREFLIGHT_TIMEOUT_KILL_AFTER_SECS)" -- \
-		bash -c 'set -euo pipefail; list_file="$$1"; dupes="$$(printf "%s\n" $(ULTRA_LONG_TESTS) | sort | uniq -d)"; if [ -n "$${dupes}" ]; then echo "Ultra-long test list contains duplicates: $${dupes}" >&2; exit 1; fi; for t in $(ULTRA_LONG_TESTS); do if ! awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -Fx "$$t" >/dev/null; then echo "Ultra-long test not found (exact): $$t" >&2; exit 1; fi; match_count="$$(awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -F "$$t" | wc -l | tr -d " ")"; if [ "$${match_count}" != "1" ]; then echo "Ultra-long test name is not unique (substring matches $${match_count} tests): $$t" >&2; exit 1; fi; done' -- "$${list_file}"; \
-	for t in $(ULTRA_LONG_TESTS); do \
+		bash -c 'set -euo pipefail; list_file="$$1"; dupes="$$(printf "%s\n" $(LONG_TESTS) | sort | uniq -d)"; if [ -n "$${dupes}" ]; then echo "Ultra-long test list contains duplicates: $${dupes}" >&2; exit 1; fi; for t in $(LONG_TESTS); do if ! awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -Fx "$$t" >/dev/null; then echo "Ultra-long test not found (exact): $$t" >&2; exit 1; fi; match_count="$$(awk -F": " '\''$$2=="test"{print $$1}'\'' "$${list_file}" | grep -F "$$t" | wc -l | tr -d " ")"; if [ "$${match_count}" != "1" ]; then echo "Ultra-long test name is not unique (substring matches $${match_count} tests): $$t" >&2; exit 1; fi; done' -- "$${list_file}"; \
+	for t in $(LONG_TESTS); do \
 		"$(GATE_STEP)" --gate test-long --step "test_long.exec.$$t" --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(TEST_LONG_PER_TEST_TIMEOUT_SECS)" --kill-after-secs "$(TEST_LONG_PER_TEST_TIMEOUT_KILL_AFTER_SECS)" -- \
 			env CARGO_INCREMENTAL="$(CARGO_INCREMENTAL)" CARGO_TARGET_DIR="$(CARGO_GATE_TARGET_DIR)" cargo test --all-targets "$$t" -- --exact; \
 	done
