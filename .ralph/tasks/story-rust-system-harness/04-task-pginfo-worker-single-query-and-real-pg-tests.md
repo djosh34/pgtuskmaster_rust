@@ -1,4 +1,3 @@
----
 ## Task: Implement pginfo worker single-query polling and real PG tests <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>

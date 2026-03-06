@@ -1,4 +1,3 @@
----
 ## Task: Migrate HA, DCS, PgInfo, and Postgres ingest logging to owned typed events <status>not_started</status> <passes>false</passes>
 
 <description>

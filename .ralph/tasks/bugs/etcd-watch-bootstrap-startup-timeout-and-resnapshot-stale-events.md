@@ -1,4 +1,3 @@
----
 ## Bug: Etcd watch bootstrap can hang startup and resnapshot can replay stale events <status>done</status> <passes>true</passes>
 
 <description>

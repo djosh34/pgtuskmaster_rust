@@ -1,4 +1,3 @@
----
 ## Bug: Contributor docs claims drift from implementation and contract <status>done</status> <passes>true</passes>
 
 <description>

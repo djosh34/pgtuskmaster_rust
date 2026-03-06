@@ -1,4 +1,3 @@
----
 ## Task: Expand runtime config schema for explicit secure node startup <status>done</status> <passes>true</passes>
 
 <description>

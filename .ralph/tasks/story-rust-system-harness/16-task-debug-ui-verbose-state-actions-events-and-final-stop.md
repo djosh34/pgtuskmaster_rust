@@ -1,4 +1,3 @@
----
 ## Task: Setup verbose debug UI and final STOP gate <status>done</status> <passes>true</passes> <priority>low</priority>
 
 <blocked_by>15-task-final-double-check-and-stop-gate</blocked_by>

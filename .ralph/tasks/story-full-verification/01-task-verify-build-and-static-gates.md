@@ -1,4 +1,3 @@
----
 ## Task: Verify build and static quality gates <status>done</status> <passes>true</passes>
 
 <description>

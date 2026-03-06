@@ -1,4 +1,3 @@
----
 ## Task: Migrate parser/defaults/validation to explicit enum-driven config semantics <status>done</status> <passes>true</passes>
 
 <description>

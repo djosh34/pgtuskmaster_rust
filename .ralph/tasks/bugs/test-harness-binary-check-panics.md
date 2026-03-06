@@ -1,4 +1,3 @@
----
 ## Bug: Test harness binary checks panic instead of returning errors <status>done</status> <passes>true</passes>
 
 <description>

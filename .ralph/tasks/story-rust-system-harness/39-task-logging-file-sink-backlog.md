@@ -1,4 +1,3 @@
----
 ## Task: Add Structured File Sink Support (Backlog) <status>done</status> <passes>true</passes>
 
 <description>

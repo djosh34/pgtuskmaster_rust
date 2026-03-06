@@ -20,7 +20,6 @@ This skill creates **focused, parallelizable tasks** from completed research. Us
 ## Task file format
 
 ```markdown
----
 ## Task: [Clear Goal Description] <status>not_started</status> <passes>false</passes>
 
 <description>

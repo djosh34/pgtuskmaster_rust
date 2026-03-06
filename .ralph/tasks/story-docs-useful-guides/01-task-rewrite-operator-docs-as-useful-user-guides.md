@@ -1,4 +1,3 @@
----
 ## Task: Rewrite operator docs as useful user guides and remove horror pages <status>not_started</status> <passes>false</passes>
 
 <description>

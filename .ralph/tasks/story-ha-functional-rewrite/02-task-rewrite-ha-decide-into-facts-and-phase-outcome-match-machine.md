@@ -1,4 +1,3 @@
----
 ## Task: Rewrite HA decide into a facts-and-PhaseOutcome match machine <status>done</status> <passes>true</passes>
 
 <description>

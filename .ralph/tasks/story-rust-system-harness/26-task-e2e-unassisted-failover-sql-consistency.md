@@ -1,4 +1,3 @@
----
 ## Task: Add unassisted failover e2e with before/after SQL consistency proof <status>done</status> <passes>true</passes>
 
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>

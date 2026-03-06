@@ -1,4 +1,3 @@
----
 ## Task: Run full verification for secure explicit config refactor <status>done</status> <passes>true</passes>
 
 <description>

@@ -1,4 +1,3 @@
----
 ## Task: Implement DCS worker trust evaluation cache updates and member publishing <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>

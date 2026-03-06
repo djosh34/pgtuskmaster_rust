@@ -1,4 +1,3 @@
----
 ## Task: Implement runtime config schema defaults parser and validation <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>01-task-core-types-time-errors-watch-channel</blocked_by>

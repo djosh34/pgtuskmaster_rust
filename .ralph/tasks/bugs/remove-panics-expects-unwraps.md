@@ -1,4 +1,3 @@
----
 ## Bug: Remove panics/expects/unwraps in codebase <status>done</status> <passes>true</passes>
 
 <description>

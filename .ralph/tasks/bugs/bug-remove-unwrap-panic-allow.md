@@ -1,4 +1,3 @@
----
 ## Bug: Remove Clippy Allowances For Unwrap/Panic <status>done</status> <passes>true</passes>
 
 <description>

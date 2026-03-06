@@ -1,4 +1,3 @@
----
 ## Bug: Worker contract tests only assert callability <status>done</status> <passes>true</passes>
 
 <description>

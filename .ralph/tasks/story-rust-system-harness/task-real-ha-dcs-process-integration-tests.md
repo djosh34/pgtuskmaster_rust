@@ -1,4 +1,3 @@
----
 ## Task: Add real HA+DCS+Process integration tests <status>done</status> <passes>true</passes>
 
 <description>

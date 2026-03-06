@@ -1,4 +1,3 @@
----
 ## Bug: BDD HTTP tests false-pass via fragile status and read patterns <status>done</status> <passes>true</passes>
 
 <description>

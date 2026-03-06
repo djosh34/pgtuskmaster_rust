@@ -1,4 +1,3 @@
----
 ## Bug: HA Matrix Scenario Flakes Under Real HA <status>done</status> <passes>true</passes>
 
 <description>

@@ -1,4 +1,3 @@
----
 ## Bug: HA e2e util executes PATH-resolved kill for process control <status>done</status> <passes>true</passes>
 
 <description>

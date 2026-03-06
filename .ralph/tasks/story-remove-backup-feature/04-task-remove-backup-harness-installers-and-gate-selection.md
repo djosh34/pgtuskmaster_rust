@@ -1,4 +1,3 @@
----
 ## Task: Remove backup-specific harness, installer, and gate-selection surfaces while preserving real tests for replica cloning <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>

@@ -12,7 +12,6 @@ description: Create a bug task file in .ralph/tasks/bugs/. Triggers on "add bug"
 ## Bug file format
 
 ```markdown
----
 ## Bug: Bug Title <status>not_started</status> <passes>false</passes> <priority>optional: medium|high|ultra high</priority>
 
 <description>

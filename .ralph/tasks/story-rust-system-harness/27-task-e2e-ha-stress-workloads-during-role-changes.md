@@ -1,4 +1,3 @@
----
 ## Task: Add HA stress e2e suites with concurrent SQL workloads during role changes <status>done</status> <passes>true</passes>
 
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>

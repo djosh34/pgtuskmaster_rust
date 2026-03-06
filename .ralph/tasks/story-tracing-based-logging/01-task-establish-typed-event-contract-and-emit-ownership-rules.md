@@ -1,4 +1,3 @@
----
 ## Task: Establish typed event contract and emit ownership rules <status>not_started</status> <passes>false</passes>
 
 <description>

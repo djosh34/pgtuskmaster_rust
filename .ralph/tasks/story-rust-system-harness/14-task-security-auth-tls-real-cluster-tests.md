@@ -1,4 +1,3 @@
----
 ## Task: Implement security auth TLS validation tests in real cluster runs <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>10-task-test-harness-namespace-ports-pg-etcd-spawners,13-task-e2e-multi-node-real-ha-loops-scenario-matrix</blocked_by>

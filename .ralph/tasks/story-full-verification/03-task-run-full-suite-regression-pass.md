@@ -1,4 +1,3 @@
----
 ## Task: Run full regression suite end-to-end <status>done</status> <passes>true</passes>
 
 <description>

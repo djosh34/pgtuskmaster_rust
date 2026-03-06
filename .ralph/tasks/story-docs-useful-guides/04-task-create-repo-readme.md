@@ -1,4 +1,3 @@
----
 ## Task: Create repository README as the front-door quick-start and project overview <status>not_started</status> <passes>false</passes>
 
 <description>

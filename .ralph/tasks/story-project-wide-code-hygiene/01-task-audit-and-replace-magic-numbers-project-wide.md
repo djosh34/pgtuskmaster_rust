@@ -1,4 +1,3 @@
----
 ## Task: Audit and replace magic numbers project-wide <status>not_started</status> <passes>false</passes> <priority>low</priority>
 
 <description>

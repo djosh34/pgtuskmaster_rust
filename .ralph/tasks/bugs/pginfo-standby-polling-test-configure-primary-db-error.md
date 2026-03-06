@@ -1,4 +1,3 @@
----
 ## Bug: Pginfo standby polling test fails during primary configure with db error <status>done</status> <passes>true</passes>
 
 <description>

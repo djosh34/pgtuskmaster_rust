@@ -1,4 +1,3 @@
----
 ## Bug: test full-suite command hangs in real HA e2e <status>done</status> <passes>true</passes>
 
 <description>

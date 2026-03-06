@@ -1,4 +1,3 @@
----
 ## Task: Final double-check gate for real testing completeness <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>13-task-e2e-multi-node-real-ha-loops-scenario-matrix,14-task-security-auth-tls-real-cluster-tests</blocked_by>

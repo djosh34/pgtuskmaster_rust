@@ -1,4 +1,3 @@
----
 ## Task: Post-Rewrite Skeptical Claim Verification with 15+ Parallel Spark Subagents <status>done</status> <passes>true</passes>
 
 <description>

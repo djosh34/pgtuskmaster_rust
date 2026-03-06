@@ -1,4 +1,3 @@
----
 ## Task: Enforce strict Rust lint policy and forbid unwrap expect panic in runtime code <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <description>

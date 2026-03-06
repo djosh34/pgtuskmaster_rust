@@ -1,4 +1,3 @@
----
 ## Task: Enforce role-specific credential usage across runtime operations <status>done</status> <passes>true</passes>
 
 <description>

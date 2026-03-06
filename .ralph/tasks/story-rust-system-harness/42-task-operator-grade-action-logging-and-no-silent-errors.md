@@ -1,4 +1,3 @@
----
 ## Task: Enforce Operator-Grade Action Logging And No Silent Error Swallowing <status>done</status> <passes>true</passes>
 
 <description>

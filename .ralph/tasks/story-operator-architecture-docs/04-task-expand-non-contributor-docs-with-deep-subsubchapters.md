@@ -1,4 +1,3 @@
----
 ## Task: Expand Non-Contributor Docs with Deep Subsubchapters While Keeping Strong Overviews <status>not_started</status> <passes>false</passes>
 
 <description>

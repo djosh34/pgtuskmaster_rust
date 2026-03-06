@@ -1,4 +1,3 @@
----
 ## Task: Deep review codebase quality and verify done tasks are truly complete <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <description>

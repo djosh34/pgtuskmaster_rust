@@ -1,4 +1,3 @@
----
 ## Task: Build HA loop integration tests with real watchers and deterministic stepping <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>08-task-ha-worker-select-loop-and-action-dispatch,10-task-test-harness-namespace-ports-pg-etcd-spawners</blocked_by>

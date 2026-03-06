@@ -1,4 +1,3 @@
----
 ## Task: Build Unified Structured Logging Pipeline With Postgres/Binary Ingestion <status>done</status> <passes>true</passes>
 
 <description>

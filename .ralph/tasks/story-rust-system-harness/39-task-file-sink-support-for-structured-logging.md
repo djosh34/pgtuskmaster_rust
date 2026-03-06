@@ -1,4 +1,3 @@
----
 ## Task: Add File Sink Support For Unified Structured Logging <status>done</status> <passes>true</passes>
 
 <description>

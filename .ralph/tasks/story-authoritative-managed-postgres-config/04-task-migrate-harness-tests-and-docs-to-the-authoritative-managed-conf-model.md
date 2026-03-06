@@ -1,4 +1,3 @@
----
 ## Task: Migrate harnesses, tests, and docs to the authoritative managed-conf model <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <blocked_by>01-task-remove-backup-config-and-process-surface,02-task-remove-runtime-restore-bootstrap-and-archive-helper-wiring,04-task-remove-backup-harness-installers-and-gate-selection,05-task-remove-backup-docs-and-obsolete-task-artifacts</blocked_by>

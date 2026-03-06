@@ -1,4 +1,3 @@
----
 ## Bug: Remove writable HA leader API control path and enforce HA-loop-only leadership transitions <status>completed</status> <passes>true</passes>
 
 <description>

@@ -1,4 +1,3 @@
----
 ## Task: Author full architecture documentation with rich diagrams and zero code-level narration <status>completed</status> <passes>true</passes>
 
 <blocked_by>31-task-docs-framework-selection-install-and-artifact-hygiene</blocked_by>

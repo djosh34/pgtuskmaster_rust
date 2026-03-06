@@ -33,26 +33,30 @@ for task_file in "$TASKS_DIR"/*/*.md; do
                 first_done=false
             else
                 done_content+="
----
+==============
 "
             fi
             done_content+="
-**Path:** \`$task_file\`
+# Task \`$task_file\`
 
+\`\`\`
 $(render_preview "$task_file")
+\`\`\`
 "
         else
             if [[ "$first_current" == true ]]; then
                 first_current=false
             else
                 current_content+="
----
+==============
 "
             fi
             current_content+="
-**Path:** \`$task_file\`
+# Task \`$task_file\`
 
+\`\`\`
 $(render_preview "$task_file")
+\`\`\`
 "
         fi
     fi

@@ -1,4 +1,3 @@
----
 ## Task: Untangle HA worker into facts, plan, and apply layers <status>done</status> <passes>true</passes>
 
 <description>

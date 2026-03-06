@@ -1,4 +1,3 @@
----
 ## Task: Implement HA worker select loop and action dispatch wiring <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>04-task-pginfo-worker-single-query-and-real-pg-tests,05-task-dcs-worker-trust-cache-watch-member-publish,06-task-process-worker-single-active-job-real-job-exec,07-task-ha-decide-pure-matrix-idempotency-tests</blocked_by>

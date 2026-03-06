@@ -1,4 +1,3 @@
----
 ## Bug: Fencing cutoff commit timestamp fallback undercounts post-cutoff commits <status>done</status> <passes>true</passes>
 
 <description>

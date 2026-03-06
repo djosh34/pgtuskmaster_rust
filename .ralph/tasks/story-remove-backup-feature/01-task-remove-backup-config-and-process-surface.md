@@ -1,4 +1,3 @@
----
 ## Task: Remove backup config and pgBackRest process vocabulary while keeping basebackup replica cloning <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>

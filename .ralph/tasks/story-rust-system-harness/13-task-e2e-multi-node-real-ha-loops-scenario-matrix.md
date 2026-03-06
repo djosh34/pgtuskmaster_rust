@@ -1,4 +1,3 @@
----
 ## Task: Implement e2e multi-node real HA-loop scenario matrix <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>09-task-api-debug-workers-and-snapshot-contracts,10-task-test-harness-namespace-ports-pg-etcd-spawners,12-task-ha-loop-integration-tests-real-watchers-and-step-once</blocked_by>

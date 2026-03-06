@@ -1,4 +1,3 @@
----
 ## Task: Restructure Operator Docs for Better Flow, Depth, and Decision Rationale <status>done</status> <passes>true</passes>
 
 <description>

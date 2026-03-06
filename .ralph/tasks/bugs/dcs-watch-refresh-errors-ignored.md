@@ -1,4 +1,3 @@
----
 ## Bug: DCS watch refresh errors are tracked but ignored <status>done</status> <passes>true</passes>
 
 <description>

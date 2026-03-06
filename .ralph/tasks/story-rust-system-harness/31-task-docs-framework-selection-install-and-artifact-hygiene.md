@@ -1,4 +1,3 @@
----
 ## Task: Install mdBook docs framework and enforce artifact git hygiene <status>completed</status> <passes>true</passes>
 
 <description>

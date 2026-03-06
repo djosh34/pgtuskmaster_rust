@@ -1,4 +1,3 @@
----
 ## Task: Replace Stringly DCS Writes With Typed Writer API <status>done</status> <passes>true</passes>
 
 <description>

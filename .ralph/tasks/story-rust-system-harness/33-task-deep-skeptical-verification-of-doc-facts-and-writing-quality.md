@@ -1,4 +1,3 @@
----
 ## Task: Perform deep skeptical verification of all docs facts and writing quality <status>completed</status> <passes>true</passes>
 
 <blocked_by>32-task-author-complete-architecture-docs-with-diagrams-and-no-code</blocked_by>

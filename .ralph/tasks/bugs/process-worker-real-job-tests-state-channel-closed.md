@@ -1,4 +1,3 @@
----
 ## Bug: Process worker real job tests fail with state channel closed <status>done</status> <passes>true</passes>
 
 <description>

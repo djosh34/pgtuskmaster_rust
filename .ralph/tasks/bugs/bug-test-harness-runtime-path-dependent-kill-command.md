@@ -1,4 +1,3 @@
----
 ## Bug: Test harness runtime kill command is PATH-dependent and bypasses provenance guarantees <status>done</status> <passes>true</passes>
 
 <description>

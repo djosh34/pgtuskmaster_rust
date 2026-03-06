@@ -1,4 +1,3 @@
----
 ## Task: Rework logging backends, exporters, tests, and docs after typed event migration <status>not_started</status> <passes>false</passes>
 
 <description>

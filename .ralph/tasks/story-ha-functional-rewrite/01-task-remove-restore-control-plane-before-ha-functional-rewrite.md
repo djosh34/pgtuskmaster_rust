@@ -1,4 +1,3 @@
----
 ## Task: Remove restore control plane before HA functional rewrite <status>done</status> <passes>true</passes>
 
 <description>

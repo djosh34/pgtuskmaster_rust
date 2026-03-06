@@ -1,4 +1,3 @@
----
 ## Task: Remove runtime restore bootstrap and the archive_command helper/proxy wiring <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>

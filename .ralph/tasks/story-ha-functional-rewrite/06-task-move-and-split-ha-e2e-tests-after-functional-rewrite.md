@@ -1,4 +1,3 @@
----
 ## Task: Move and split HA e2e tests after the functional rewrite <status>done</status> <passes>true</passes>
 
 <description>

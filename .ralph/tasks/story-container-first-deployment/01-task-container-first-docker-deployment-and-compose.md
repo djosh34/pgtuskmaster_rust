@@ -1,4 +1,3 @@
----
 ## Task: Container-first deployment baseline with Docker images, Compose stacks, and secrets <status>not_started</status> <passes>false</passes>
 
 <description>

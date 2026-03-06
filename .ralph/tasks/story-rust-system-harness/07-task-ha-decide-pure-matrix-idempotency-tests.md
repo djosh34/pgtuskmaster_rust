@@ -1,4 +1,3 @@
----
 ## Task: Implement pure HA decide engine with exhaustive transition tests <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>03-task-worker-state-models-and-context-contracts</blocked_by>

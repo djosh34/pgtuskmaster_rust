@@ -1,4 +1,3 @@
----
 ## Task: Add non-test unified node entrypoint from start through autonomous HA loop <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>

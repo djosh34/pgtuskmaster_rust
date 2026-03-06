@@ -1,4 +1,3 @@
----
 ## Task: Replace action vectors and pending state with HaDecision plus lowered effect plan <status>done</status> <passes>true</passes>
 
 <description>

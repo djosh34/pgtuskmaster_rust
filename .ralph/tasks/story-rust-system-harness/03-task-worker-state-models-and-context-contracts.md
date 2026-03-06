@@ -1,4 +1,3 @@
----
 ## Task: Define worker state models and run step_once contracts <status>done</status> <passes>true</passes> <priority>ultra_high</priority>
 
 <blocked_by>02-task-runtime-config-schema-defaults-parse-validate</blocked_by>

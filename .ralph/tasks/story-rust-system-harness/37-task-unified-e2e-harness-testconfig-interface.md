@@ -1,4 +1,3 @@
----
 ## Task: Unify HA E2E Harness Behind Stable `TestConfig` Interface <status>completed</status> <passes>true</passes>
 
 <description>

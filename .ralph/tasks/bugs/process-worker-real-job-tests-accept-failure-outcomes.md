@@ -1,4 +1,3 @@
----
 ## Bug: Process worker real job tests accept failure outcomes <status>done</status> <passes>true</passes>
 
 <description>

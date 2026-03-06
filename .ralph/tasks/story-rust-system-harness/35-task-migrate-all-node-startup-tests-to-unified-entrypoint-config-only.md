@@ -1,4 +1,3 @@
----
 ## Task: Migrate all node-starting tests to unified entrypoint (config-only) <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>34-task-add-non-test-unified-node-entrypoint-autobootstrap-and-ha-loop</blocked_by>

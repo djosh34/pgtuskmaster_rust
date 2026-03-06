@@ -1,4 +1,3 @@
----
 ## Task: Enforce zero panic/unwrap/expect across runtime and tests with proper Result handling <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>

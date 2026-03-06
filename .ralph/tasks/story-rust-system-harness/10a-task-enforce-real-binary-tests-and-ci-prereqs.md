@@ -1,4 +1,3 @@
----
 ## Task: Enforce real-binary test execution (PG16 + etcd3) via explicit gate + CI prerequisites <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>

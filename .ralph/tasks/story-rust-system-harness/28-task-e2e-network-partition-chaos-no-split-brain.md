@@ -1,4 +1,3 @@
----
 ## Task: Add network partition e2e chaos tests with proxy fault injection <status>completed</status> <passes>true</passes>
 
 <blocked_by>24-task-real-e2e-harness-3nodes-3etcd</blocked_by>

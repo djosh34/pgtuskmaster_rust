@@ -1,4 +1,3 @@
----
 ## Task: Remove backup feature docs and delete obsolete pgBackRest task artifacts <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>

@@ -1,4 +1,3 @@
----
 ## Task: Expand Contributor Docs into a Full Implementation Deep Dive <status>done</status> <passes>true</passes>
 
 <description>

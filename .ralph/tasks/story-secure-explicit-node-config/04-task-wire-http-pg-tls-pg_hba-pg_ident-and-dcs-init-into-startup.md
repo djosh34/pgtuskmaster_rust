@@ -1,4 +1,3 @@
----
 ## Task: Wire HTTP/PG TLS, pg_hba/pg_ident, and DCS init config into startup orchestration <status>done</status> <passes>true</passes>
 
 <description>

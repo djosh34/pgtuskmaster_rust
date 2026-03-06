@@ -1,4 +1,3 @@
----
 ## Task: Migrate fixtures/examples/CLI config surfaces to the secure explicit schema <status>done</status> <passes>true</passes>
 
 <description>

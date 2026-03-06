@@ -1,4 +1,3 @@
----
 ## Task: Implement real etcd3-backed DCS store adapter and integration tests <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>

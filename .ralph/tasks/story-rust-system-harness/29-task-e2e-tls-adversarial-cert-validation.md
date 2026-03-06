@@ -1,4 +1,3 @@
----
 ## Task: Expand TLS adversarial e2e tests for certificate validation hardening <status>done</status> <passes>true</passes>
 
 <blocked_by>22-task-ha-admin-api-read-write-surface</blocked_by>

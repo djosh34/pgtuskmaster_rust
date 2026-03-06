@@ -1,4 +1,3 @@
----
 ## Task: Centralize composable sample runtime-config builders for tests and helpers <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <blocked_by>01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer,02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint,03-task-take-full-ownership-of-replica-recovery-signal-and-auto-conf-state</blocked_by>

@@ -1,4 +1,3 @@
----
 ## Task: Implement typed postgres config and conninfo parser renderer <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>02-task-runtime-config-schema-defaults-parse-validate</blocked_by>

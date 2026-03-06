@@ -1,4 +1,3 @@
----
 ## Bug: Harden make gates against hangs and silent passes <status>done</status> <passes>true</passes>
 
 <description>

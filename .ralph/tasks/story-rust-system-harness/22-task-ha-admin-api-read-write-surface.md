@@ -1,4 +1,3 @@
----
 ## Task: Expose full HA admin API read and write surface <status>done</status> <passes>true</passes>
 
 <description>

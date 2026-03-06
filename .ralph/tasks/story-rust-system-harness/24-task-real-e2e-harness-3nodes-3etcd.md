@@ -1,4 +1,3 @@
----
 ## Task: Upgrade real e2e harness to 3 pgtuskmaster nodes and 3 etcd members <status>done</status> <passes>true</passes>
 
 <description>

@@ -1,4 +1,3 @@
----
 ## Task: Enforce post-startup hands-off test policy (no direct coordination) <status>completed</status> <passes>true</passes> <priority>high</priority>
 
 <blocked_by>35-task-migrate-all-node-startup-tests-to-unified-entrypoint-config-only</blocked_by>

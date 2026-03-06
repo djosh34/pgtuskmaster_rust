@@ -1,4 +1,3 @@
----
 ## Task: Rebuild HA tests around invariants and continuous observers <status>completed</status> <passes>true</passes>
 
 <description>

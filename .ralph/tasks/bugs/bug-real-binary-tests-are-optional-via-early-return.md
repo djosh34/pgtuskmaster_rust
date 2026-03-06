@@ -1,4 +1,3 @@
----
 ## Bug: Real Binary Tests Become Optional Via Early Return <status>done</status> <passes>true</passes>
 
 <description>

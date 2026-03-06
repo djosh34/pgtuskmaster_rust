@@ -1,4 +1,3 @@
----
 ## Task: Rebuild contributor docs as a codebase navigation and design-contract guide <status>not_started</status> <passes>false</passes>
 
 <description>

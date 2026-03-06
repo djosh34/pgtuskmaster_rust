@@ -1,4 +1,3 @@
----
 ## Bug: HA e2e false-pass via best-effort polling and timestamp fallback <status>done</status> <passes>true</passes>
 
 <description>
