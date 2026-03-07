@@ -47,6 +47,7 @@ The higher-order goal is to produce useful work-oriented guides while preserving
 **Expected outcome:**
 - The docs now include work-oriented guides created through the agreed authoring loop.
 - The distinction between how-to and tutorial remains visible.
+- Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
 
 </description>
 
@@ -58,8 +59,10 @@ The higher-order goal is to produce useful work-oriented guides while preserving
 - [ ] `docs/src/SUMMARY.md` contains only real existing pages
 - [ ] The task is free to radically change navigation if stronger task-oriented grouping emerges
 - [ ] `make docs-build` — passes cleanly
+- [ ] `make docs-lint` — passes cleanly
 - [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
+- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>

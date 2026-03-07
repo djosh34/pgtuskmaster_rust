@@ -45,6 +45,7 @@ The higher-order goal is to make visible structure emerge from authored pages ra
 **Expected outcome:**
 - The visible mdBook structure now reflects real authored content instead of speculative planning.
 - If explicit Diataxis categories appear in navigation, they do so because the authored pages justify them.
+- Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
 
 </description>
 
@@ -55,8 +56,10 @@ The higher-order goal is to make visible structure emerge from authored pages ra
 - [ ] Competing drafts, when used, live under `docs/drafts/`
 - [ ] The resulting navigation improves clarity without muddling tutorial, how-to, reference, and explanation
 - [ ] `make docs-build` — passes cleanly
+- [ ] `make docs-lint` — passes cleanly
 - [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
+- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>

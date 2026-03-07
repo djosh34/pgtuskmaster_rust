@@ -57,6 +57,7 @@ The higher-order goal is to give contributors a very detailed, in-depth explanat
 - The docs now contain a separate contributor/codemap/codeguide chapter justified by real contributor needs.
 - The new pages give a detailed, in-depth explanation of how the codebase works.
 - The chapter keeps Diataxis forms separate page by page while still serving contributors as a distinct audience.
+- Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
 
 </description>
 
@@ -71,8 +72,10 @@ The higher-order goal is to give contributors a very detailed, in-depth explanat
 - [ ] `docs/src/SUMMARY.md` contains only real existing pages
 - [ ] The task is free to radically change contributor-facing navigation if a stronger hierarchy emerges
 - [ ] `make docs-build` — passes cleanly
+- [ ] `make docs-lint` — passes cleanly
 - [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
+- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>

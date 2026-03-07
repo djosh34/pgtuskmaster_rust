@@ -66,6 +66,7 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
 - `docs/drafts/` exists for competing drafts.
 - The story now has an explicit Diataxis-first authoring loop built around `draft -> check/edit -> revise`.
 - No documentation structure has been imposed in `docs/src/`.
+- Verification for docs tasks is explicit: always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected case during docs creation is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the docs work intentionally changed behavior under `src/` or `tests/`.
 
 </description>
 
@@ -76,10 +77,12 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
 - [x] The task clearly establishes the mandatory reread list, the 5-pages-per-run cap, and the `draft -> check/edit -> revise` method for later tasks
 - [x] The task clearly establishes that later tasks may radically change docs structure as content emerges
 - [x] `make docs-build` — passes cleanly
+- [ ] `make docs-lint` — passes cleanly
 - [x] `make check` — passes cleanly
-- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
+- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [x] `make lint` — passes cleanly
-- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 <implementation_plan>
@@ -101,9 +104,13 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
    - inspect the task file to confirm the reread list, 5-page cap, and `draft -> check/edit -> revise` loop remain explicit
 5. Run the required verification commands in task order and fix any fallout:
    - `make docs-build`
+   - `make docs-lint`
    - `make check`
-   - `make test`
-   - `make test-long`
+   - inspect `git diff --name-only -- src tests` and `git diff --cached --name-only -- src tests`; during docs creation the expected result is no changes
+   - use common sense: do not turn docs-only work into a retest run
+   - if there are no intentional changes under `src/` or `tests/`, MUST NOT run `make test` or `make test-long`
+   - only if there are intentional changes under `src/` or `tests/`, and behavior may have changed, run `make test`
+   - only if those intentional `src/` or `tests/` changes impact ultra-long tests, run `make test-long`
    - `make lint`
    - if any command fails, repair the underlying issue rather than weakening tests or checks
 6. Update task completion markers only after all verification passes:
@@ -123,4 +130,5 @@ NOW EXECUTE
 <verification>
 - `docs/drafts/.gitkeep` was added as the only tracked artifact under `docs/drafts/`; `docs/src/` gained no workflow page or empty Diataxis bucket.
 - Passed on 2026-03-07: `make docs-build`, `make check`, `make test`, `make test-long`, and `make lint`.
+- This task predates the tightened docs-only verification rule update; later docs-only runs must also run `make docs-lint`, and must skip `make test` plus `make test-long` unless `git` shows intentional changes under `src/` or `tests/`.
 </verification>
