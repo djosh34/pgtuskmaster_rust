@@ -3,12 +3,12 @@
 - [Start Here](./introduction.md)
   - [What Problem This Solves](./start-here/problem.md)
   - [How The System Solves It](./start-here/solution.md)
-  - [How To Read This Book](./start-here/docs-map.md)
+  - [Reading Paths And Book Map](./start-here/docs-map.md)
 
 - [Quick Start](./quick-start/index.md)
-  - [Prerequisites](./quick-start/prerequisites.md)
-  - [First Run](./quick-start/first-run.md)
-  - [Initial Validation](./quick-start/initial-validation.md)
+  - [Environment Prerequisites](./quick-start/prerequisites.md)
+  - [Single-Node First Run](./quick-start/first-run.md)
+  - [Validation And Signal Interpretation](./quick-start/initial-validation.md)
 
 - [Operator Guide](./operator/index.md)
   - [Container Deployment](./operator/container-deployment.md)
@@ -36,7 +36,7 @@
 - [Interfaces](./interfaces/index.md)
   - [Node API](./interfaces/node-api.md)
   - [CLI Workflows](./interfaces/cli.md)
-  - [Glossary](./concepts/glossary.md)
+  - [Glossary And Key Terms](./concepts/glossary.md)
 
 - [Contributors](./contributors/index.md)
   - [Codebase Map](./contributors/codebase-map.md)

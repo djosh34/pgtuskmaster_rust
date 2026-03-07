@@ -124,3 +124,4 @@
 .ralph/tasks/story-tracing-based-logging/04-task-rework-backends-exporters-tests-and-docs-after-typed-event-migration.md
 .ralph/tasks/story-docs-useful-guides/01-task-rewrite-operator-docs-as-useful-user-guides.md
 .ralph/tasks/story-container-first-deployment/01-task-container-first-docker-deployment-and-compose.md
+.ralph/tasks/story-operator-architecture-docs/04-task-expand-non-contributor-docs-with-deep-subsubchapters.md

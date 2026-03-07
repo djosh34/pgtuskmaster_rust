@@ -1,15 +1,15 @@
 # Deployment and Topology
 
-The default deployment story is now container-first:
+The default deployment story is container-first:
 
 - build the production node image from `docker/Dockerfile.prod`
 - use the checked-in Compose stacks under `docker/compose/`
 - mount runtime TOML and managed PostgreSQL config sources through Compose `configs`
 - mount credentials through Compose `secrets`
 
-If you are learning the system or validating a change, start with [Container Deployment](./container-deployment.md). Manual host-native deployment is still possible, but it is the advanced path now.
+That container-first stance is not marketing convenience. It gives the project one canonical deployment shape that the docs, tests, smoke flows, and quick-start path can all refer to without ambiguity.
 
-## Starter topologies
+## What the checked-in topologies actually prove
 
 ### Single-node lab
 
@@ -20,7 +20,14 @@ If you are learning the system or validating a change, start with [Container Dep
 - one published API/debug port
 - one published PostgreSQL port
 
-This is the shortest supported path to a coherent `/ha/state`.
+This topology proves the basics:
+
+- the production image builds
+- the runtime config parses
+- startup planning can initialize and expose a coherent state
+- the host can reach the API and PostgreSQL listeners the docs describe
+
+It does not prove multi-node lease behavior, switchover sequencing, or failover timing under stress.
 
 ### Three-node lab cluster
 
@@ -31,36 +38,68 @@ This is the shortest supported path to a coherent `/ha/state`.
 - one published API/debug port per node
 - one published PostgreSQL port per node
 
-The cluster stack is the default day-1 topology for proving inter-node reachability, replica bootstrap, and DCS coordination behavior inside containers.
+This topology proves more:
 
-## Network exposure rule
+- inter-node reachability for replication-oriented flows
+- DCS coordination across multiple members
+- richer observability and smoke coverage across several nodes
 
-The checked-in Compose files intentionally keep exposure narrow:
+It still does not prove everything about a hardened production deployment. The lab topology is intentionally useful, not complete.
 
-- etcd stays internal to the Compose bridge network
-- the API and debug routes share the same published port on each node
+## Environment assumptions you should keep explicit
+
+The checked-in deployment assumes:
+
+- Docker is the process supervisor for the first-run path
+- etcd is internal to the Compose bridge network
+- API and debug routes share one listener per node
 - PostgreSQL gets one published client port per node
-- there is no separate published debug port
+- runtime configuration and PostgreSQL auth files are mounted, not generated ad hoc inside the container
+- secrets arrive as files, not as plaintext environment variables
 
-That matches the runtime contract: `debug.enabled = true` adds `/debug/*` routes on the API listener instead of creating a second socket.
+Those assumptions keep the lab honest. If you later translate the deployment into Kubernetes, Nomad, systemd, or another host-native path, you still need to preserve the same semantic contract or update the docs and tests accordingly.
 
-## Secrets and config ownership
+## Network exposure decisions
 
-The container deployment surface is split deliberately:
+The Compose files intentionally keep exposure narrow:
 
-- `docker/configs/**`: tracked runtime TOMLs and managed `pg_hba` / `pg_ident` sources
-- `docker/secrets/*.example`: tracked placeholders only
-- `.env.docker`: local path mapping for the real secret files that Compose mounts
+- etcd is not published to the host
+- the API and debug routes share one published port on each node
+- PostgreSQL gets one published client port per node
+- there is no second published debug socket
 
-Do not push real password files into the repo. The runtime already supports file-backed secrets; use that instead of environment-variable secrets for the PostgreSQL roles.
+That matches the runtime behavior. When `debug.enabled = true`, debug routes are extra HTTP paths on the API listener, not a distinct network service. This matters during review and hardening. If you see a deployment diagram with a separate debug port, it is describing a topology the current runtime does not implement.
 
-## Manual deployment is secondary
+## Manual deployment is a translation exercise, not a new contract
 
-If you are not using containers, you still need to satisfy the same runtime contract:
+Manual or host-native deployment is still possible, but it is secondary. If you do not use containers, you still must provide:
 
-- real PostgreSQL 16 binaries at absolute paths
+- PostgreSQL 16 binaries at the absolute paths the runtime expects
 - a reachable etcd deployment
-- readable secret files
-- deliberate API exposure and auth/TLS choices
+- readable secret files for PostgreSQL roles and any API TLS material
+- deliberate API bind, TLS, and token settings
+- stable storage and log paths that match the config
 
-Use the host-native path only when you are intentionally translating the checked-in container contract into another deployment system.
+The safest way to do that translation is to treat the checked-in container assets as the contract and ask how your target platform satisfies each part of it. If you skip that comparison, it is easy to produce a deployment that "starts" but no longer matches the semantics the docs and tests assume.
+
+## Operational caveats about the starter stacks
+
+The starter stacks are intentionally permissive in ways that should not be copied blindly:
+
+- API TLS is disabled
+- API token auth is disabled
+- debug routes are enabled
+- PostgreSQL host and replication access inside the private bridge use trust-based `pg_hba`
+
+These choices exist so the first-run path is inspectable and reproducible. They are not a claim that production should look the same. The correct way to read the lab topology is "this proves the runtime wiring," not "this is the finished security posture."
+
+## How to decide when the lab is no longer enough
+
+Move beyond the checked-in lab when you need to answer questions like:
+
+- what cert distribution path will back API TLS
+- where role tokens or rendered runtime TOML will be stored securely
+- how PostgreSQL client access and replication policy should be segmented
+- which hostnames or service names the runtime should advertise across real networks
+
+At that point the lab has done its job. It gave you a truthful baseline. Your next job is to preserve the same behavior contract while replacing its intentionally local-only assumptions.

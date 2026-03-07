@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 05:50:12 AM CET 2026
+Generated: Sat Mar  7 06:16:01 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -528,6 +528,17 @@ After the HA functional rewrite lands, move and restructure the HA end-to-end te
 
 <description>
 **Goal:** Rewrite the Contributors section into an in-depth engineering deep dive that explains how the code actually works, how modules connect, and how behavior flows through runtime paths, while keeping prose natural, readable, and technically precise.
+```
+
+==============
+
+# Task `.ralph/tasks/story-operator-architecture-docs/04-task-expand-non-contributor-docs-with-deep-subsubchapters.md`
+
+```
+## Task: Expand Non-Contributor Docs with Deep Subsubchapters While Keeping Strong Overviews <status>completed</status> <passes>true</passes>
+
+<description>
+**Goal:** Vastly deepen the non-contributor documentation by adding long-form, detail-rich subsubchapters and flowing explanations, while preserving the existing high-level overview quality at chapter entry points.
 ```
 
 ==============

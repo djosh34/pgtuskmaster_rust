@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 05:50:12 AM CET 2026
+Generated: Sat Mar  7 06:16:01 AM CET 2026
 
 # Task `.ralph/tasks/story-docs-useful-guides/02-task-rebuild-contributor-docs-as-codebase-navigation-and-contract-guide.md`
 
@@ -31,17 +31,6 @@ Make the docs source tree easier to navigate by aligning file names and ordering
 
 <description>
 **Goal:** Add a normal, useful root `README.md` that explains what this project is, how to get started quickly, where to go next for deeper docs, and what the license status is.
-```
-
-==============
-
-# Task `.ralph/tasks/story-operator-architecture-docs/04-task-expand-non-contributor-docs-with-deep-subsubchapters.md`
-
-```
-## Task: Expand Non-Contributor Docs with Deep Subsubchapters While Keeping Strong Overviews <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Vastly deepen the non-contributor documentation by adding long-form, detail-rich subsubchapters and flowing explanations, while preserving the existing high-level overview quality at chapter entry points.
 ```
 
 ==============
