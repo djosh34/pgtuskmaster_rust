@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 06:44:07 AM CET 2026
-
-# Task `.ralph/tasks/story-docs-useful-guides/03-task-align-doc-file-order-and-names-with-rendered-site-structure.md`
-
-```
-## Task: Align doc file order and names with the rendered site structure <status>not_started</status> <passes>false</passes>
-
-<description>
-Make the docs source tree easier to navigate by aligning file names and ordering conventions with the rendered website structure.
-```
-
-==============
+Generated: Sat Mar  7 06:58:40 AM CET 2026
 
 # Task `.ralph/tasks/story-docs-useful-guides/04-task-create-repo-readme.md`
 

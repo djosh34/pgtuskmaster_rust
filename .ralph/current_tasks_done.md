@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 06:44:07 AM CET 2026
+Generated: Sat Mar  7 06:58:40 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -396,6 +396,17 @@ Rewrite the non-contributor documentation so it reads like a strong operator/pro
 
 <description>
 Rewrite the contributor documentation so it becomes a genuinely useful guide for understanding the codebase, subsystem boundaries, implementation approach, and design contracts.
+```
+
+==============
+
+# Task `.ralph/tasks/story-docs-useful-guides/03-task-align-doc-file-order-and-names-with-rendered-site-structure.md`
+
+```
+## Task: Align doc file order and names with the rendered site structure <status>completed</status> <passes>true</passes>
+
+<description>
+Make the docs source tree easier to navigate by aligning file names and ordering conventions with the rendered website structure.
 ```
 
 ==============

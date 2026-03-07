@@ -1,6 +1,6 @@
 # Summary
 
-- [Start Here](./introduction.md)
+- [Start Here](./start-here/index.md)
   - [What Problem This Solves](./start-here/problem.md)
   - [How The System Solves It](./start-here/solution.md)
   - [Reading Paths And Book Map](./start-here/docs-map.md)
@@ -36,7 +36,7 @@
 - [Interfaces](./interfaces/index.md)
   - [Node API](./interfaces/node-api.md)
   - [CLI Workflows](./interfaces/cli.md)
-  - [Glossary And Key Terms](./concepts/glossary.md)
+  - [Glossary And Key Terms](./interfaces/glossary.md)
 
 - [Contributors](./contributors/index.md)
   - [Codebase Map](./contributors/codebase-map.md)
