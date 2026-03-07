@@ -6,18 +6,21 @@ Required on the host:
 
 - Docker Engine with the `docker compose` v2 plugin
 - enough disk space for one or three PostgreSQL data volumes, depending on which stack you plan to start
-- free local ports for the API and PostgreSQL mappings listed in `.env.docker`
+- free local ports for the API and PostgreSQL mappings you plan to publish (for `make docker-up` this comes from `.env.docker`; the smoke targets pick free ports automatically)
 - a writable checkout so the helper targets can build images and write temporary smoke artifacts
 
 Before the first Compose launch:
 
 1. Create `.env.docker` from the tracked `.env.docker.example` file at the repository root.
-2. Replace the example secret paths with paths to local secret files.
-3. Write a non-empty value into each referenced file:
+2. Ensure the three secret env vars point at readable, non-empty files.
+   - For a local lab you may point at the tracked `docker/secrets/*.example` placeholders.
+   - For anything hardened, use real secret files outside the repository checkout.
+   - The Compose files live under `docker/compose/`, so relative secret paths in the env file are interpreted from that directory. The tracked `.env.docker.example` uses `../secrets/...` so the default lab wiring resolves correctly without needing absolute paths.
+3. Write a non-empty value into each referenced file (even in the lab):
    - `PGTM_SECRET_SUPERUSER_FILE`
    - `PGTM_SECRET_REPLICATOR_FILE`
    - `PGTM_SECRET_REWINDER_FILE`
-4. Keep those files out of git. The repository only tracks `docker/secrets/*.example` placeholders.
+4. Keep real secret files out of git. The repository only tracks placeholder `docker/secrets/*.example` files.
 
 For the checked-in local lab, those files primarily satisfy the runtime's file-backed secret contract while PostgreSQL network auth stays trust-based inside the private Compose bridge. For a hardened deployment, replace the placeholder values with strong real passwords and lock down `pg_hba`.
 
@@ -47,7 +50,11 @@ The safest early check is `docker info` followed by `docker compose version`. If
 
 ### Free local ports
 
-The Compose files publish the API and PostgreSQL ports declared in `.env.docker`. A port collision does not mean the cluster logic is wrong; it means your host cannot expose the path the validation steps are about to use. That matters because the quick-start proof is specifically an external-observer proof. The smoke scripts wait for `http://127.0.0.1:<port>/ha/state`, `http://127.0.0.1:<port>/debug/verbose`, and the published PostgreSQL TCP port, so port reuse on the host can make an otherwise healthy internal stack look broken from the outside.
+The Compose files publish the API and PostgreSQL ports declared in `.env.docker` when you use `make docker-up` (or an equivalent `docker compose ... up`). A port collision does not mean the cluster logic is wrong; it means your host cannot expose the path the validation steps are about to use.
+
+That matters because the quick start proof is specifically an external-observer proof: once the stack is up, you validate via `http://127.0.0.1:<port>/ha/state`, `http://127.0.0.1:<port>/debug/verbose`, and the published PostgreSQL TCP port.
+
+The smoke targets are intentionally different. `make docker-smoke-single` and `make docker-smoke-cluster` generate a temporary env file and pick random free ports so they can validate a fresh isolated Compose project without depending on your `.env.docker` port choices. That makes smoke runs robust against `.env.docker` collisions, but it also means a passing smoke run does not prove that the specific ports in `.env.docker` are available on your host.
 
 If you already run local PostgreSQL, reverse proxies, or other services on nearby ports, edit `.env.docker` before first launch. A quick start that only works after ad-hoc port surgery in the middle of the flow is harder to interpret and easier to misread.
 
@@ -67,7 +74,9 @@ Treat workspace writability and disk space as correctness prerequisites, not con
 
 ### "The example secret paths mean I can skip creating real files"
 
-You cannot. The example files only demonstrate the shape of the configuration. The actual Compose path still expects real files and mounts them as secrets. Keep them out of git, keep them readable by Docker, and make sure `.env.docker` references the paths you really want.
+You cannot skip having secret files. The Compose path expects three readable, non-empty files and mounts them as Docker secrets.
+
+For the local lab you may point `.env.docker` at the tracked `docker/secrets/*.example` placeholders, but treat them as insecure and replace them with strong real secrets for anything beyond an isolated demo environment.
 
 ### "If `docker compose config` renders, the stack is basically ready"
 

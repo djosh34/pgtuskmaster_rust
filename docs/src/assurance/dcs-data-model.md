@@ -21,7 +21,7 @@ Each key family answers a different question:
 - **switchover record** answers "has an operator asked the cluster to evaluate a planned handoff"
 - **config/init records** answer startup questions about cluster identity and whether initialization has already happened
 
-The key point is that stale values in those families mean different things. A stale member record often points to DCS worker publication problems or missing PostgreSQL inputs. A stale leader record points to HA lease maintenance or cleanup behavior. A stale switchover record may mean the API write succeeded but the lifecycle never reached the point where it should clear the request, or that the clear path itself failed.
+The key point is that stale values in those families mean different things. A stale member record can indicate DCS worker publication problems or missing PostgreSQL inputs. A stale leader record can indicate HA lease maintenance or cleanup behavior. A stale switchover record may mean the API write succeeded but the lifecycle never reached the point where it should clear the request, or that the clear path itself failed.
 
 ## Update semantics and diagnostic meaning
 

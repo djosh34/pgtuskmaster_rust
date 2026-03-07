@@ -34,12 +34,12 @@ Safety behavior used to reduce concurrent-writer risk when conflicting leadershi
 
 ## Bootstrap
 
-Initial data and role setup path at startup. Depending on what the node observes, bootstrap may mean creating a fresh local PostgreSQL instance, joining an existing leader through a base backup path, or resuming from coherent local state. The Lifecycle chapter explains the decision branches in detail.
+Initial local initialization path at startup. Bootstrap refers to creating a fresh local PostgreSQL instance under the managed startup surface. Joining an existing leader uses separate recovery strategies such as rewind or base backup, described in the Lifecycle chapters.
 
 ## Rewind
 
-Divergence-recovery path using `pg_rewind`. Rewind is relevant when a node has usable local state but that state no longer matches the current leader's history closely enough for safe rejoin as-is. It is usually less destructive than a full re-bootstrap, but it still depends on the right evidence and prerequisites being present.
+Divergence-recovery path using `pg_rewind`. Rewind is relevant when a node has usable local state but that state no longer matches the current leader's history closely enough for safe rejoin as-is. It is usually less destructive than a full base backup rebuild, but it still depends on the right evidence and prerequisites being present.
 
-## Bootstrap recovery
+## Base backup
 
-Local reinitialization path used when rewind is unsafe, impossible, or already failed. In the implementation and docs this refers to the node rebuilding local PostgreSQL state rather than trying to preserve divergent data files. Base backup cloning is related but distinct: it is the path for joining an existing leader with a fresh copy rather than reusing local history.
+Clone-and-rejoin recovery path used when rewind is unsafe, impossible, or already failed. Base backup refers to rebuilding local PostgreSQL state from the current leader using `pg_basebackup` rather than trying to preserve divergent local history.

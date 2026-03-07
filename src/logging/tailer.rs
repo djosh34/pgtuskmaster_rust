@@ -178,18 +178,16 @@ impl DirTailers {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{FileTailer, StartPosition};
 
     fn tmp_dir(label: &str) -> PathBuf {
-        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis(),
-            Err(_) => 0,
-        };
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "pgtuskmaster-tailer-{label}-{millis}-{}",
-            std::process::id()
+            "pgtuskmaster-tailer-{label}-{}-{unique}",
+            std::process::id(),
         ))
     }
 
@@ -197,7 +195,15 @@ mod tests {
     async fn file_tailer_reads_appends_and_handles_rotation(
     ) -> Result<(), crate::state::WorkerError> {
         let dir = tmp_dir("rotation");
-        let _ = std::fs::remove_dir_all(&dir);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(crate::state::WorkerError::Message(format!(
+                    "remove_dir_all failed: {err}"
+                )));
+            }
+        }
         std::fs::create_dir_all(&dir).map_err(|err| {
             crate::state::WorkerError::Message(format!("create_dir_all failed: {err}"))
         })?;
@@ -228,7 +234,15 @@ mod tests {
         let third = tailer.read_new_lines(1024).await?;
         assert_eq!(third, vec![b"c".to_vec()]);
 
-        let _ = std::fs::remove_dir_all(&dir);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(crate::state::WorkerError::Message(format!(
+                    "remove_dir_all cleanup failed: {err}"
+                )));
+            }
+        }
         Ok(())
     }
 }

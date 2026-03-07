@@ -86,7 +86,12 @@ impl Drop for PortReservation {
         if self.leased_ports.is_empty() {
             return;
         }
-        let _ = unlease_ports_best_effort(self.leased_ports.as_slice());
+        if let Err(err) = unlease_ports(self.leased_ports.as_slice()) {
+            eprintln!(
+                "failed to unlease ports from {}: {err}",
+                lease_registry_path().display()
+            );
+        }
     }
 }
 
@@ -152,7 +157,7 @@ pub fn allocate_ports(count: usize) -> Result<PortReservation, HarnessError> {
 
             #[cfg(unix)]
             {
-                if !lease_port_best_effort(port) {
+                if !lease_port(port)? {
                     // Port is currently leased by another test/process; retry.
                     drop(listener);
                     continue;
@@ -226,15 +231,20 @@ impl LeaseFileGuard {
         Ok(Self { file })
     }
 
-    fn load_entries(&mut self) -> Vec<PortLeaseEntry> {
+    fn load_entries(&mut self) -> Result<Vec<PortLeaseEntry>, HarnessError> {
+        std::io::Seek::seek(&mut self.file, std::io::SeekFrom::Start(0))
+            .map_err(HarnessError::Io)?;
+
         let mut buf = String::new();
-        if std::io::Read::read_to_string(&mut self.file, &mut buf).is_err() {
-            return Vec::new();
-        }
+        std::io::Read::read_to_string(&mut self.file, &mut buf).map_err(HarnessError::Io)?;
+
         if buf.trim().is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        serde_json::from_str::<Vec<PortLeaseEntry>>(&buf).unwrap_or_default()
+
+        serde_json::from_str::<Vec<PortLeaseEntry>>(&buf).map_err(|err| {
+            HarnessError::InvalidInput(format!("parse port lease file failed: {err}"))
+        })
     }
 
     fn store_entries(&mut self, entries: &[PortLeaseEntry]) -> Result<(), HarnessError> {
@@ -255,58 +265,56 @@ impl LeaseFileGuard {
 #[cfg(unix)]
 impl Drop for LeaseFileGuard {
     fn drop(&mut self) {
-        let _ = self.file.sync_data();
-        let _ = unsafe { flock(self.file.as_raw_fd(), LOCK_UN) };
+        if let Err(err) = self.file.sync_data() {
+            eprintln!("failed to sync port lease file on drop: {err}");
+        }
+        let rc = unsafe { flock(self.file.as_raw_fd(), LOCK_UN) };
+        if rc != 0 {
+            eprintln!(
+                "failed to unlock port lease file on drop: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
 }
 
 #[cfg(unix)]
-fn lease_port_best_effort(port: u16) -> bool {
-    let mut guard = match LeaseFileGuard::lock() {
-        Ok(guard) => guard,
-        Err(_) => return true,
-    };
-
-    let now_ms = match unix_now_ms() {
-        Ok(value) => value,
-        Err(_) => return true,
-    };
+fn lease_port(port: u16) -> Result<bool, HarnessError> {
+    let mut guard = LeaseFileGuard::lock()?;
+    let now_ms = unix_now_ms()?;
     let ttl_ms = lease_ttl().as_millis() as u64;
     let expires_at_ms = now_ms.saturating_add(ttl_ms);
 
-    let mut entries = guard.load_entries();
+    let mut entries = guard.load_entries()?;
     entries.retain(|entry| entry.expires_at_ms > now_ms);
     if entries.iter().any(|entry| entry.port == port) {
-        let _ = guard.store_entries(entries.as_slice());
-        return false;
+        guard.store_entries(entries.as_slice())?;
+        return Ok(false);
     }
 
     entries.push(PortLeaseEntry {
         port,
         expires_at_ms,
     });
-    let _ = guard.store_entries(entries.as_slice());
-    true
+    guard.store_entries(entries.as_slice())?;
+    Ok(true)
 }
 
 #[cfg(unix)]
-fn unlease_ports_best_effort(ports: &[u16]) -> Result<(), HarnessError> {
+fn unlease_ports(ports: &[u16]) -> Result<(), HarnessError> {
     if ports.is_empty() {
         return Ok(());
     }
 
     let mut guard = LeaseFileGuard::lock()?;
-    let now_ms = unix_now_ms().ok();
+    let now_ms = unix_now_ms()?;
 
-    let mut entries = guard.load_entries();
+    let mut entries = guard.load_entries()?;
     entries.retain(|entry| {
         if ports.contains(&entry.port) {
             return false;
         }
-        match now_ms {
-            Some(now_ms) => entry.expires_at_ms > now_ms,
-            None => true,
-        }
+        entry.expires_at_ms > now_ms
     });
     guard.store_entries(entries.as_slice())?;
     Ok(())

@@ -160,6 +160,6 @@ Use the API in this order:
 
 1. read `/ha/state` first to anchor the current phase, trust level, and pending intent
 2. use `/debug/verbose` only when you need the richer timeline and debug routes are intentionally enabled
-3. submit or clear switchover intent only after the current state says the cluster is coherent enough for a planned transition
+3. submit or clear switchover intent after you have verified (via `/ha/state`) that the cluster state is coherent enough for a planned transition
 
 That order keeps the API aligned with its design. It is primarily an observation surface plus a narrow intent surface. The lifecycle and troubleshooting chapters explain whether the result you see is healthy, conservative, blocked, or genuinely broken.

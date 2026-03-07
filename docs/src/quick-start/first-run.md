@@ -12,12 +12,13 @@ docker compose --env-file .env.docker -f docker/compose/docker-compose.cluster.y
 This fails closed if:
 
 - `.env.docker` is missing or incomplete
-- a required secret file path does not exist
 - the Compose config, config mounts, or secret mounts are malformed
 
 If you are changing the repo-owned Docker assets themselves, `make docker-compose-config` still exists as the contributor-facing gate that validates the checked-in example env file.
 
 What this step proves is narrower than "the cluster works". It proves that your local environment can resolve every file reference, environment variable, secret path, and config mount that the supported lab topology depends on. That matters because a later runtime failure is much easier to interpret once you know the shape of the deployment is valid.
+
+One practical caveat: `docker compose ... config` validates syntax and variable substitution, but it does not necessarily validate that every referenced secret file exists and is readable on your host. A wrong secret path can still surface later during `up` when Docker tries to mount the file. Treat the render step as a fail-fast check, not as a guarantee that every bind mount will succeed.
 
 If this render step fails, read the error literally. It is usually pointing at one of four concrete problems: the environment file is missing, a secret path is wrong, a tracked config path was renamed, or your host Docker installation is not reading the file tree you think it is reading. None of those are HA bugs, and trying to diagnose them as HA behavior only adds confusion.
 

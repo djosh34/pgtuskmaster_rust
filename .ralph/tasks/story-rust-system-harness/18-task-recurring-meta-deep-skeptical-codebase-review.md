@@ -37,6 +37,45 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 **NEVER set this task's passes to anything other than meta-task.**
 
 ## Exploration
+### 2026-03-07 (fresh run, pass-8 in progress)
+- Reviewer: codex
+- Evidence directory: `.ralph/evidence/meta-18-pass8-20260307T065112Z`
+- Preflight model check result: `.ralph/model.txt` was `deep_review` at substantive run start (precondition satisfied).
+- Initial setup commands run (evidence bootstrap only):
+  - `mkdir -p "$EVID"/{meta,scans,claims,subagents,provenance,gates,notes,operator-workflow,gate-hardening,auth-matrix}`
+  - `git rev-parse HEAD`, `git status --porcelain=v1`, `date -u`, `rustc --version`, `cargo --version`, `uname -a`, filtered `env` snapshot
+- Audited paths:
+  - Docs source + operator tasks: `.ralph/tasks/story-operator-architecture-docs/*.md`, `docs/src/**/*.md` (see `$EVID/claims/*` inventories + claim ledger).
+  - Docs tooling added for reachability + claim ledger: `tools/docs-scope-map.py`, `tools/docs-claim-ledger.py`.
+  - Harness fail-closed discipline: `src/test_harness/ports.rs` (port lease file now fails closed).
+  - Docker quick-start + smoke validation: `.env.docker.example`, `tools/docker/compose-config-check.sh`, `tools/docker/smoke-cluster.sh`, `docs/src/quick-start/*.md`.
+  - HA e2e test consolidation: `tests/ha_multi_node_failover.rs`, `tests/ha_partition_isolation.rs`, `tests/ha/support/*`.
+- Findings summary:
+  - Fixed several operator-doc claims that were stronger than the implementation (notably around recovery strategy wording and HA port allocation).
+  - Removed lint suppressions in HA support modules and consolidated HA tests to avoid dead-code noise.
+  - Hardened test harness port lease behavior to avoid silent pass / silent collision risk.
+  - Strengthened cluster smoke validation to assert primary/replica roles via SQL.
+  - Found and fixed a quick-start break: `.env.docker.example` secret file paths were resolved relative to `docker/compose/` and pointed at non-existent locations; updated example + hardened compose config check.
+  - Created one follow-up bug for PostgreSQL auth matrix validation/e2e gaps: `.ralph/tasks/bugs/postgres-auth-role-matrix-validation-and-e2e.md`.
+
+### 2026-03-07 (fresh run, pass-8 complete)
+- Reviewer: codex
+- Evidence directory: `.ralph/evidence/meta-18-pass8-20260307T065112Z`
+- Operator workflow transcript (docs-only, external interfaces) archived under:
+  - `.ralph/evidence/meta-18-pass8-20260307T065112Z/operator-workflow/`
+- Config-centralization map archived under:
+  - `.ralph/evidence/meta-18-pass8-20260307T065112Z/notes/config-centralization-map.md`
+- PostgreSQL auth/role matrix archived under:
+  - `.ralph/evidence/meta-18-pass8-20260307T065112Z/auth-matrix/auth-matrix.csv`
+- Bugs created:
+  - `.ralph/tasks/bugs/postgres-auth-role-matrix-validation-and-e2e.md`
+- Gate outcomes (post-fix rerun):
+  - `cargo test --all-targets --no-run`: pass (`.ralph/evidence/meta-18-pass8-20260307T065112Z/gates/cargo-test-all-targets-no-run.after.log`)
+  - `make check`: pass (`.ralph/evidence/meta-18-pass8-20260307T065112Z/gates/make-check.after.log`)
+  - `make test`: pass (`.ralph/evidence/meta-18-pass8-20260307T065112Z/gates/make-test.after.log`)
+  - `make lint`: pass (`.ralph/evidence/meta-18-pass8-20260307T065112Z/gates/make-lint.after.log`)
+  - `make test-long`: pass (`.ralph/evidence/meta-18-pass8-20260307T065112Z/gates/make-test-long.after.log`)
+
 ### 2026-03-04 (fresh run, pass-7 full review complete)
 - Reviewer: codex
 - Evidence directory: `.ralph/evidence/meta-18-pass7-20260304T205520Z`
@@ -977,6 +1016,175 @@ Scope: this pass must read all operator-doc tasks (contract) AND verify non-triv
 
 ### 10) Closeout (only after all gates + tasks/bugs are created)
 - [x] Append a new “Exploration” entry for pass-7 including audited paths, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
+- [x] Set `.ralph/model.txt` back to exactly `normal_high`.
+
+PASS-7 COMPLETE (historical marker; do not execute pass-7 plan again)
+
+## 2026-03-07 (fresh run, pass-8) — Plan (full fresh meta-task run; fix pass-7 plan inconsistency; fail-closed)
+
+This pass is a **fresh** run. Prior passes are not trusted. This pass also fixes an inconsistency in pass-7: several checklist items remained unticked even though gates + closeout were marked complete. In pass-8 we must either:
+- complete the previously unticked “mandatory” items (preferred), OR
+- explicitly mark them as intentionally out-of-scope for this pass with a written rationale, and ensure closeout is not ticked until all “mandatory” items in this pass are resolved.
+
+### 0) Preconditions (model gate; must be true before any review)
+- [x] Before creating pass-8 evidence, delete prior `.ralph/evidence/meta-18-*` directories to eliminate carry-over bias.
+  - [ ] If historical retention is needed, archive previous `meta-18-*` artifacts outside `.ralph/evidence` before deletion.
+- [x] Verify this task header still contains `<passes>meta-task</passes>` and remains unticked (recurring forever).
+- [x] Verify `.ralph/model.txt` is exactly `deep_review`.
+  - [ ] If not `deep_review`: set it to `deep_review`, write a preflight-only entry under “Exploration”, and **quit immediately** (per task contract).
+
+### 1) Evidence + logging discipline (fail-closed; reproducible)
+- [x] Create a new evidence dir (UTC timestamp): `.ralph/evidence/meta-18-pass8-<YYYYmmddTHHMMSSZ>`.
+- [x] In the shell, set `EVID` to that path and use it consistently.
+- [x] In that same shell session, enable strict pipeline failure + restrictive file perms:
+  - [x] `set -o pipefail`
+  - [x] `umask 077`
+- [x] Create standard subdirs (so artifacts are predictable):
+  - [x] `mkdir -p "$EVID"/{meta,scans,claims,subagents,provenance,gates,notes,operator-workflow,gate-hardening,auth-matrix}`
+- [x] Freeze the workspace identity and environment into evidence:
+  - [x] `git rev-parse HEAD > "$EVID/meta/head.txt"`
+  - [x] `git status --porcelain=v1 > "$EVID/meta/status.txt"`
+  - [x] `date -u +%Y-%m-%dT%H:%M:%SZ > "$EVID/meta/run-start-utc.txt"`
+  - [x] `rustc --version > "$EVID/meta/rustc.txt"` and `cargo --version > "$EVID/meta/cargo.txt"`
+  - [x] `uname -a > "$EVID/meta/uname.txt"`
+  - [x] filtered env snapshot (treat “no matches” as ok, do not hide real errors):
+    - [x] `env | rg -n '^(CARGO|RUST|PG|ETCD|PATH|HOME|USER|SHELL)=' > "$EVID/meta/env.txt" || [ $? -eq 1 ]`
+- [x] Append a new `### 2026-03-07 (fresh run, pass-8 ...)` entry under `## Exploration` with:
+  - [x] reviewer id
+  - [x] evidence directory path
+  - [x] preflight model check result
+  - [x] explicit “what I audited” list (paths) and “what I ran” list (commands)
+
+### 2) Operator-doc claim verification (mandatory; parallelized; evidence-driven; hardened)
+Scope: this pass must read all operator-doc tasks (contract) AND verify non-trivial operator-doc **claims** against code/tests/runtime.
+
+#### 2.1) In-scope source surface (no silent file loss)
+- [x] Read every task in `.ralph/tasks/story-operator-architecture-docs/*.md` AND `.ralph/tasks/story-operator-architecture-docs/**/*.md` (including tasks already marked pass).
+  - [x] Archive the exact audited-file list into evidence:
+    - [x] `git ls-files '.ralph/tasks/story-operator-architecture-docs/*.md' '.ralph/tasks/story-operator-architecture-docs/**/*.md' | sort -u > "$EVID/claims/operator-doc-task-files.txt"`
+    - [x] hard fail if the list is empty
+- [x] Build docs source list with top-level + nested markdown:
+  - [x] `git ls-files 'docs/src/*.md' 'docs/src/**/*.md' | sort -u > "$EVID/claims/docs-src-files.txt"`
+  - [x] hard check required roots exist in that list:
+    - [x] `docs/src/SUMMARY.md`
+    - [x] `docs/src/introduction.md`
+- [x] Extract SUMMARY-reachable docs into `"$EVID/claims/summary-reachable-files.txt"` (include paths as they appear under `docs/src/`).
+- [x] Generate `scope-map.csv` classifying every `docs/src/*.md` as one of: `reachable`, `unreachable`, `orphaned`, `not-in-summary` (created `tools/docs-scope-map.py` and archived `scope-map.csv` in evidence).
+
+#### 2.2) Claim ledger + verification fanout (fail closed on “unknown”)
+- [x] Build a claim ledger `"$EVID/claims/claim-ledger.tsv"` with columns:
+  - [x] `claim_id`, `doc_path`, `section_anchor_or_heading`, `claim_text`, `claim_type(behavior/safety/config/api)`, `expected_evidence(code/test/runtime/doc_rationale)`, `verification_status(pass/fail/uncertain)`, `evidence_pointer`
+- [x] For each non-trivial claim, require at least one evidence pointer:
+  - [x] code: `path:line` reference
+  - [x] test: test name + path
+  - [x] runtime: artifact path under `$EVID/`
+  - [x] doc rationale: explicit rationale section in docs (only acceptable if it is clearly marked as rationale, not as “fact”)
+- [x] Use parallel subagents with **small, disjoint scopes**:
+  - [x] one worker per claim cluster (API, DCS/etcd, HA/failover, config/auth, process supervision, logging/observability)
+  - [x] archive their outputs into `$EVID/subagents/`
+- [x] Any `uncertain` claim must be resolved (preferred) or turned into:
+  - [x] a doc correction (if claim is too strong), OR
+  - [x] a code/test change + evidence, OR
+  - [x] a bug/task with explicit reproduction steps and why it is risky
+
+### 3) Repo-wide “trust nothing” scans (no best-effort; treat lint suppressions as bugs)
+- [x] Scan for forbidden patterns and archive outputs:
+  - [x] `rg -n \"\\bunwrap\\(|\\bexpect\\(|panic!\\(|todo!\\(|unimplemented!\\(\" -S src tests tools docs .ralph | sort -u > \"$EVID/scans/forbidden-primitives.txt\" || [ $? -eq 1 ]`
+  - [x] `rg -n \"#!\\[allow\\(|\\[allow\\(\" -S src tests | sort -u > \"$EVID/scans/lint-suppressions.txt\" || [ $? -eq 1 ]`
+  - [x] `rg -n \"\\bResult<|\\banyhow::Result\" -S src tests | head -n 200 > \"$EVID/scans/result-surface-sample.txt\" || [ $? -eq 1 ]`
+- [x] For any suppressions or forbidden primitives found:
+  - [x] create an `add-bug` and remove it (greenfield; no baseline)
+- [x] “mut skepticism” scan (AGENTS rule):
+  - [x] `rg -n \"\\bmut\\b\" -S src | sort -u > \"$EVID/scans/mut-usage.txt\" || [ $? -eq 1 ]`
+  - [x] For any block with heavy `mut` + complex control flow: create an `add-bug` proposing a pure/functional refactor (even if not fixed in this pass). (no additional refactor-only bug filed in pass-8)
+- [x] Error-swallow scan (do not hide real errors; “no matches” is allowed):
+  - [x] `rg -n \"let _ =|\\.ok\\(\\)|\\.ok_or\\(|\\.unwrap_or\\(|\\.unwrap_or_else\\(\" -S src tests | sort -u > \"$EVID/scans/error-swallow-suspects.txt\" || [ $? -eq 1 ]`
+  - [x] Manually inspect each suspect; if it truly ignores an error path, create an `add-bug` (and fix inline if small).
+
+### 4) Gate realism + anti-silent-pass audit (Makefile; fail-closed)
+- [x] Re-audit Makefile targets for bypass / silent-pass:
+  - [x] `make check`, `make test`, `make lint`, `make test-long` must fail closed
+  - [x] no env var should allow skipping or weakening assertions unless it is explicitly documented and restricted to local dev
+  - [x] ensure 0-test runs are impossible for `test-long` without explicit opt-in (and that opt-in is guarded + logged)
+- [ ] If gaps are found: fix Makefile and/or harness, capture rationale in `$EVID/gate-hardening/`.
+
+### 5) Real-binary provenance (pg16 + etcd) — install, don’t skip (includes missing pass-7 items)
+- [x] Confirm required binaries are present:
+  - [x] `.tools/postgres16/bin/postgres` / `.tools/postgres16/bin/pg_ctl` / `.tools/postgres16/bin/initdb` / `.tools/postgres16/bin/pg_basebackup` / `.tools/postgres16/bin/pg_rewind` / `.tools/postgres16/bin/psql`
+  - [x] `.tools/etcd/bin/etcd`
+- [ ] If missing, install them (capture logs into `$EVID/provenance/`):
+  - [ ] `tools/install-postgres16.sh > "$EVID/provenance/install-postgres16.log" 2>&1`
+  - [ ] `tools/install-etcd.sh > "$EVID/provenance/install-etcd.log" 2>&1`
+- [x] Capture a provenance manifest (wrapper + canonical target + sha256 + version + permissions) into `$EVID/provenance/manifest.tsv`.
+- [x] Prove runtime binary provenance under `strace -ff -e trace=execve,execveat` for one fixed, short representative real-e2e test (exact name; bounded timeout):
+  - [x] `timeout 300s strace -ff -e trace=execve,execveat -o "$EVID/provenance/execve" cargo test --test ha_multi_node_failover e2e_multi_node_unassisted_failover_sql_consistency -- --exact --nocapture`
+- [x] Add PATH-leak detection (static + dynamic) and archive results.
+
+#### 5.1) Negative-control etcd proof (must be safe and auditable; complete the previously unticked checklist)
+- [x] Implement a **non-destructive** negative-control that proves tests fail when etcd is not real/working:
+  - [ ] prefer shadow-copy of etcd under `$EVID/provenance/shadow-bin/`
+  - [ ] the current harness selects etcd via `.tools/real-binaries-attestation.json` + pinned sha; therefore the safe negative-control is an in-place swap of `.tools/etcd/bin/etcd` with a clearly-marked stub, executed under an exclusive `flock`, then restored.
+  - [ ] if an in-place swap is used, it must be:
+    - [x] isolated with `flock`
+    - [x] protected with `trap` restore
+    - [x] verified by pre/post sha256 parity
+    - [x] logged loudly with a unique marker under `$EVID/`
+    - [x] followed by a mandatory positive-control re-run after restore to prove environment is clean
+  - [x] Use a fresh `cargo test` invocation for negative control (so the `OnceLock` cache in `provenance` cannot mask the swap).
+- [x] Archive:
+  - [x] negative-control logs
+  - [x] restore logs
+  - [x] post-restore positive-control logs
+
+### 6) Deep skeptical logic review (production + e2e)
+- [x] Production fail-open risks first:
+  - [x] `src/runtime/node.rs`
+  - [x] `src/ha/worker.rs`, `src/api/worker.rs`
+  - [x] `src/process/*`
+  - [x] `src/config/*`
+- [x] DCS etcd watch + reconnect invariants (`src/dcs/*`):
+  - [x] reconnect/resnapshot is an authoritative reset (no stale queued PUT resurrection)
+  - [x] disconnect/compaction/cancel handling forces reconnect + reset marker
+  - [x] Add a **real-etcd regression** if a gap is found
+- [x] HA e2e signal integrity:
+  - [x] `src/ha/e2e_multi_node.rs` and `src/ha/e2e_partition_chaos.rs` fail closed when observability is insufficient
+- [x] Harness cleanup / ports / startup (`src/test_harness/*`) fail closed.
+
+### 7) Usability + config-centralization + auth-variant coverage (mandatory; complete the previously unticked checklist)
+- [x] Execute a docs-only minimal operator workflow end-to-end via external interfaces only (API/CLI; no direct DCS pokes) and archive transcript/artifacts.
+- [x] Build/update a config-centralization map (auth/logging/safety/restart/control-plane) and archive it under `$EVID/`.
+
+#### 7.1) PostgreSQL auth/role matrix (must be verified, not asserted)
+- [x] Inventory supported auth modes from config schema + runtime:
+  - [x] peer/password-style auth modes documented and accepted in config/runtime
+  - [x] secure (TLS) and non-secure startup combinations
+  - [x] non-`postgres` usernames for repl/basebackup/rewind workflows where applicable
+- [x] Create an `auth-matrix.csv` under `$EVID/auth-matrix/` enumerating combinations and their expected outcomes.
+- [x] For each production-relevant combination:
+  - [x] ensure there is external-interface e2e coverage (API-driven or CLI-driven), OR
+  - [x] create an `add-bug` (and ideally add a real-binary e2e regression test).
+
+### 8) Findings -> tracked work (no “drive-by” forgetfulness)
+- [x] For each finding:
+  - [x] if small: create bug with `add-bug` and fix inline
+  - [x] if large: create task with `add-task-as-agent` and stop after scoping + minimal safe guardrails (unless fully completed here)
+  - [x] attach: evidence paths, exact reproduction steps, and why this is unsafe
+- [x] For every discovered test gap: document the production-relevant failure mode + operator impact before changing tests.
+- [x] Do not loosen assertions as the first response; prefer behavior fixes.
+
+### 9) Mandatory gates (all must pass 100%)
+- [x] Warm build (avoid `make test` timeout-on-compile): `cargo test --all-targets --no-run` (archive output).
+- [x] Run and archive outputs into `$EVID/gates/`:
+  - [x] `make check`
+  - [x] `make test`
+  - [x] `make lint`
+  - [x] `make test-long`
+- [ ] If any gate fails:
+  - [ ] create one bug per failing area (use `add-bug`)
+  - [ ] if `make test-long` fails: also create a follow-up task to add a shorter real-binary regression reproducer
+
+### 10) Closeout (only after all items in pass-8 are resolved and gates pass)
+- [x] Append a new “Exploration” entry for pass-8 including audited paths, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
 - [x] Set `.ralph/model.txt` back to exactly `normal_high`.
 
 NOW EXECUTE

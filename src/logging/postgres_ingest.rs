@@ -831,10 +831,11 @@ pub(crate) fn build_ctx(cfg: RuntimeConfig, log: LogHandle) -> PostgresIngestWor
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+	mod tests {
+	    use std::path::PathBuf;
+	    use std::sync::Arc;
+	    use std::sync::atomic::{AtomicUsize, Ordering};
+	    use std::time::{Duration, SystemTime};
 
     use serde_json::Value;
 
@@ -855,11 +856,19 @@ mod tests {
         IngestErrorRateLimiter,
     };
 
-    const REAL_INGEST_RETRY_SLEEP: Duration = Duration::from_millis(20);
-    const REAL_PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
-    const REAL_PSQL_RETRY_SLEEP: Duration = Duration::from_millis(50);
+	    const REAL_INGEST_RETRY_SLEEP: Duration = Duration::from_millis(20);
+	    const REAL_PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
+	    const REAL_PSQL_RETRY_SLEEP: Duration = Duration::from_millis(50);
 
-    fn sample_runtime_config() -> RuntimeConfig {
+	    fn remove_dir_all_if_exists(path: &std::path::Path) -> Result<(), WorkerError> {
+	        match std::fs::remove_dir_all(path) {
+	            Ok(()) => Ok(()),
+	            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+	            Err(err) => Err(WorkerError::Message(err.to_string())),
+	        }
+	    }
+
+	    fn sample_runtime_config() -> RuntimeConfig {
         let baseline_logging =
             crate::test_harness::runtime_config::sample_postgres_logging_config();
         crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
@@ -1085,23 +1094,21 @@ mod tests {
         Ok(())
     }
 
-    fn temp_dir(label: &str) -> PathBuf {
-        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_millis(),
-            Err(_) => 0,
-        };
-        std::env::temp_dir().join(format!(
-            "pgtuskmaster-logging-cleanup-{label}-{millis}-{}",
-            std::process::id()
-        ))
-    }
+	    fn temp_dir(label: &str) -> PathBuf {
+	        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+	        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+	        std::env::temp_dir().join(format!(
+	            "pgtuskmaster-logging-cleanup-{label}-{}-{unique}",
+	            std::process::id()
+	        ))
+	    }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cleanup_log_dir_enforces_max_files_and_protects_active_file() -> Result<(), WorkerError>
-    {
-        let dir = temp_dir("max-files");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
+	    async fn cleanup_log_dir_enforces_max_files_and_protects_active_file() -> Result<(), WorkerError>
+	    {
+	        let dir = temp_dir("max-files");
+	        remove_dir_all_if_exists(&dir)?;
+	        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
 
         let protected = dir.join("active.log");
         std::fs::write(&protected, b"active\n")
@@ -1126,24 +1133,27 @@ mod tests {
         .await?;
         assert_eq!(report.issue_count, 0);
 
-        assert!(protected.exists());
-        let remaining = std::fs::read_dir(&dir)
-            .map_err(|err| WorkerError::Message(err.to_string()))?
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.path().extension().and_then(|s| s.to_str()) == Some("log"))
-            .count();
-        // protected + max_files
-        assert!(remaining <= 3);
+	        assert!(protected.exists());
+	        let mut remaining = 0usize;
+	        for entry in std::fs::read_dir(&dir).map_err(|err| WorkerError::Message(err.to_string()))?
+	        {
+	            let entry = entry.map_err(|err| WorkerError::Message(err.to_string()))?;
+	            if entry.path().extension().and_then(|s| s.to_str()) == Some("log") {
+	                remaining = remaining.saturating_add(1);
+	            }
+	        }
+	        // protected + max_files
+	        assert!(remaining <= 3);
 
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
-    }
+	        remove_dir_all_if_exists(&dir)?;
+	        Ok(())
+	    }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cleanup_log_dir_never_deletes_known_active_signals() -> Result<(), WorkerError> {
-        let dir = temp_dir("protected-basenames");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
+	    async fn cleanup_log_dir_never_deletes_known_active_signals() -> Result<(), WorkerError> {
+	        let dir = temp_dir("protected-basenames");
+	        remove_dir_all_if_exists(&dir)?;
+	        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
 
         let json = dir.join("postgres.json");
         let stderr = dir.join("postgres.stderr.log");
@@ -1175,18 +1185,18 @@ mod tests {
         assert!(stderr.exists());
         assert!(stdout.exists());
 
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
-    }
+	        remove_dir_all_if_exists(&dir)?;
+	        Ok(())
+	    }
 
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
-    async fn cleanup_log_dir_surfaces_remove_failures() -> Result<(), WorkerError> {
+	    async fn cleanup_log_dir_surfaces_remove_failures() -> Result<(), WorkerError> {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = temp_dir("remove-failure");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
+	        let dir = temp_dir("remove-failure");
+	        remove_dir_all_if_exists(&dir)?;
+	        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
 
         let old = dir.join("old.log");
         std::fs::write(&old, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
@@ -1220,9 +1230,9 @@ mod tests {
         std::fs::set_permissions(&dir, perms)
             .map_err(|err| WorkerError::Message(err.to_string()))?;
 
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
-    }
+	        remove_dir_all_if_exists(&dir)?;
+	        Ok(())
+	    }
 
     mod real_binary {
         use std::path::PathBuf;

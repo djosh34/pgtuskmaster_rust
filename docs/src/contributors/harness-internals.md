@@ -21,7 +21,7 @@ In the current implementation, `start_cluster(...)` does all of the following be
 - creates a unique `NamespaceGuard`
 - salts the DCS scope and cluster name with the namespace id to avoid cross-test collisions
 - verifies required real binaries through `require_pg16_process_binaries_for_real_tests()` and `require_etcd_bin_for_real_tests()`
-- allocates a full HA topology port reservation with `allocate_ha_topology_ports(...)`
+- allocates HA topology ports (etcd client + peer, plus per-node PostgreSQL listen ports) via `allocate_ha_topology_ports(...)`, and reserves additional API/proxy ports separately with explicit non-overlap rules
 - starts the etcd cluster
 - prepares per-node runtime config and data directories
 - spawns the node runtimes and any proxy links needed for the scenario mode
@@ -73,7 +73,7 @@ If your new scenario needs artifacts, put them under the namespace instead of wr
 
 `src/test_harness/ports.rs` does more than "pick a free port." It returns a `PortReservation` that keeps listeners open so other concurrent tests cannot steal the chosen ports, and on Unix it also records leases in `/tmp/pgtuskmaster_rust_port_leases.json`.
 
-For HA scenarios, `allocate_ha_topology_ports(...)` reserves the full topology in one shot. That is the safe default because the topology needs etcd client ports, etcd peer ports, node API ports, observe ports, and SQL/Postgres ports that must not overlap.
+For HA scenarios, `allocate_ha_topology_ports(...)` reserves etcd client + peer ports plus per-node PostgreSQL listen ports in one shot. Additional ports (API listen/observe ports and, in partition mode, proxy ports) are reserved separately while maintaining a forbidden-set so no two endpoints overlap.
 
 Safe change rule:
 

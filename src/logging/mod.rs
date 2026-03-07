@@ -697,11 +697,26 @@ mod tests {
 
     fn unique_temp_root(label: &str) -> PathBuf {
         let pid = std::process::id();
-        let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_nanos(),
-            Err(_) => 0,
-        };
-        std::env::temp_dir().join(format!("pgtuskmaster-{label}-{pid}-{nanos}"))
+        static COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("pgtuskmaster-{label}-{pid}-{unique}"))
+    }
+
+    fn remove_dir_all_if_exists(path: &std::path::Path) -> Result<(), std::io::Error> {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn remove_file_if_exists(path: &std::path::Path) -> Result<(), std::io::Error> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
     }
 
     fn sample_record(message: &str) -> LogRecord {
@@ -888,7 +903,7 @@ mod tests {
     fn jsonl_file_sink_creates_parent_dirs_and_writes_jsonl_line(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("file-sink-create");
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
 
         let path = root.join("a").join("b").join("log.jsonl");
         let sink = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Append)?;
@@ -900,7 +915,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
         assert_eq!(v["message"], "hello");
 
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         Ok(())
     }
 
@@ -908,7 +923,7 @@ mod tests {
     fn jsonl_file_sink_append_mode_preserves_existing_content(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("file-sink-append");
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         std::fs::create_dir_all(&root)?;
 
         let path = root.join("log.jsonl");
@@ -925,7 +940,7 @@ mod tests {
         let post: serde_json::Value = serde_json::from_str(lines[1].as_str())?;
         assert_eq!(post["message"], "post");
 
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         Ok(())
     }
 
@@ -933,7 +948,7 @@ mod tests {
     fn jsonl_file_sink_truncate_mode_replaces_existing_content(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("file-sink-truncate");
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         std::fs::create_dir_all(&root)?;
 
         let path = root.join("log.jsonl");
@@ -948,18 +963,18 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
         assert_eq!(v["message"], "fresh");
 
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         Ok(())
     }
 
     #[test]
-    fn jsonl_file_sink_errors_when_parent_is_file() {
+    fn jsonl_file_sink_errors_when_parent_is_file() -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("file-sink-parent-file");
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = std::fs::create_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
+        std::fs::create_dir_all(&root)?;
 
         let not_a_dir = root.join("not_a_dir");
-        let _ = std::fs::remove_file(&not_a_dir);
+        remove_file_if_exists(&not_a_dir)?;
         let write_res = std::fs::write(&not_a_dir, b"im a file");
         assert!(write_res.is_ok());
 
@@ -971,7 +986,8 @@ mod tests {
             assert!(msg.contains(path.display().to_string().as_str()));
         }
 
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
+        Ok(())
     }
 
     #[derive(Clone)]
@@ -1075,7 +1091,7 @@ mod tests {
     #[test]
     fn bootstrap_file_enabled_with_path_writes_jsonl() -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("bootstrap-file-enabled");
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         std::fs::create_dir_all(&root)?;
 
         let path = root.join("app.jsonl");
@@ -1104,7 +1120,7 @@ mod tests {
         assert_eq!(v["message"], "hello");
         assert_eq!(v["severity_text"], "info");
 
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         Ok(())
     }
 
@@ -1112,7 +1128,7 @@ mod tests {
     fn bootstrap_with_stderr_and_file_still_writes_file() -> Result<(), Box<dyn std::error::Error>>
     {
         let root = unique_temp_root("bootstrap-stderr-and-file");
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         std::fs::create_dir_all(&root)?;
 
         let path = root.join("app.jsonl");
@@ -1140,7 +1156,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
         assert_eq!(v["message"], "fanout");
 
-        let _ = std::fs::remove_dir_all(&root);
+        remove_dir_all_if_exists(&root)?;
         Ok(())
     }
 
@@ -1152,7 +1168,8 @@ mod tests {
 
         let system = bootstrap(&cfg)?;
         let record = sample_record("dropped");
-        let _ = system.handle.emit_record(&record);
+        let res = system.handle.emit_record(&record);
+        assert!(res.is_ok(), "expected null sink to accept record: {res:?}");
         Ok(())
     }
 }

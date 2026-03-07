@@ -1342,7 +1342,7 @@ member_id = "member-a"
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1369,7 +1369,7 @@ config_version = "v1"
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1432,7 +1432,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         let err = load_runtime_config(&path);
         assert!(matches!(err, Err(ConfigError::Parse { .. })));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1488,7 +1488,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         assert_eq!(cfg.api.listen_addr, "127.0.0.1:8080");
         assert!(!cfg.debug.enabled);
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1546,7 +1546,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1608,7 +1608,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1669,7 +1669,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1728,7 +1728,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1789,7 +1789,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1850,7 +1850,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1911,7 +1911,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -1972,7 +1972,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -2033,7 +2033,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -2094,7 +2094,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 
@@ -2155,7 +2155,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             })
         ));
 
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)?;
         Ok(())
     }
 }

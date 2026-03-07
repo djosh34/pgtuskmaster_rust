@@ -28,7 +28,7 @@ Operationally, this can feel harsher than a human operator would choose in the m
 
 ## Invariant 5: recovery must be explicit before rejoin
 
-After failover, divergence, or certain startup failures, a node is not supposed to drift back into normal service simply because PostgreSQL can start. Rewind, base backup, or bootstrap-style recovery must be explicit when the history situation demands it. Rejoin eligibility is therefore downstream of recovery evidence, not a default state.
+After failover, divergence, or certain startup failures, a node is not supposed to drift back into normal service simply because PostgreSQL can start. Rewind or base backup recovery must be explicit when the history situation demands it. Rejoin eligibility is therefore downstream of recovery evidence, not a default state.
 
 This keeps a former leader or stale replica from reappearing as if it were already trustworthy. It also means a recovered node must still pass through the normal lifecycle checks again before operators should treat it as healthy.
 

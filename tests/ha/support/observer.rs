@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use pgtuskmaster_rust::{api::HaPhaseResponse, api::HaStateResponse, state::WorkerError};
 
 #[derive(Clone, Default, serde::Serialize)]
