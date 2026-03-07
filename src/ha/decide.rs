@@ -321,16 +321,11 @@ fn decide_fencing(facts: &DecisionFacts) -> PhaseOutcome {
 fn decide_fail_safe(facts: &DecisionFacts) -> PhaseOutcome {
     match facts.fencing_activity() {
         ProcessActivity::Running => PhaseOutcome::new(HaPhase::FailSafe, HaDecision::NoChange),
-        _ if facts.i_am_leader || facts.postgres_primary => PhaseOutcome::new(
+        _ if facts.postgres_primary => decide_primary(facts),
+        _ if facts.i_am_leader => PhaseOutcome::new(
             HaPhase::FailSafe,
-            if facts.postgres_primary {
-                HaDecision::EnterFailSafe {
-                    release_leader_lease: true,
-                }
-            } else {
-                HaDecision::ReleaseLeaderLease {
-                    reason: LeaseReleaseReason::FencingComplete,
-                }
+            HaDecision::ReleaseLeaderLease {
+                reason: LeaseReleaseReason::FencingComplete,
             },
         ),
         _ => PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust),
@@ -1797,7 +1792,7 @@ mod tests {
     }
 
     #[test]
-    fn failsafe_retries_fencing_while_local_postgres_is_still_primary() {
+    fn failsafe_primary_with_full_quorum_returns_to_primary_decision_path() {
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -1806,22 +1801,15 @@ mod tests {
                 decision: HaDecision::NoChange,
             },
             world: WorldBuilder::new()
-                .with_trust(DcsTrust::FailSafe)
+                .with_trust(DcsTrust::FullQuorum)
                 .with_pg(pg_primary(SqlStatus::Healthy))
                 .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::FailSafe);
-        assert_eq!(
-            output.outcome.decision,
-            HaDecision::EnterFailSafe {
-                release_leader_lease: false,
-            }
-        );
-        assert_eq!(
-            lower_decision(&output.outcome.decision).safety,
-            SafetyEffect::FenceNode
-        );
+        assert_eq!(output.next.phase, HaPhase::Primary);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+        assert_eq!(lower_decision(&output.outcome.decision).lease, LeaseEffect::AcquireLeader);
+        assert_eq!(lower_decision(&output.outcome.decision).safety, SafetyEffect::None);
     }
 
     #[test]

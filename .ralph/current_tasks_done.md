@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 02:13:37 AM CET 2026
+Generated: Sat Mar  7 02:39:12 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -190,6 +190,17 @@ During repeated reproductions it oscillated between:
 
 <description>
 `src/test_harness/ha_e2e/util.rs` uses `tokio::process::Command::new("kill")` both to send signals and to probe liveness (`kill -0`).
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/no-quorum-integrity-check-does-not-verify-committed-keys.md`
+
+```
+## Bug: No-quorum integrity check does not verify committed keys <status>done</status> <passes>true</passes>
+
+<description>
+`tests/ha/support/multi_node.rs` records `committed_writes`, `committed_keys`, and commit timestamps during `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity`, but the final verification only calls `assert_table_key_integrity_strict(...)`, which succeeds when any reachable node reports `COUNT(*) >= min_rows` and no duplicate `(worker_id, seq)` rows.
 ```
 
 ==============

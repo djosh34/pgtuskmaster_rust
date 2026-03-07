@@ -61,19 +61,19 @@ impl DcsStore for ContractStore {
     }
 }
 
-struct BlockingDeleteStore {
-    delete_started: Arc<Mutex<Option<mpsc::Sender<()>>>>,
-    delete_release: Arc<Mutex<mpsc::Receiver<()>>>,
+struct BlockingAcquireStore {
+    acquire_started: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+    acquire_release: Arc<Mutex<mpsc::Receiver<()>>>,
 }
 
-impl BlockingDeleteStore {
+impl BlockingAcquireStore {
     fn new() -> (Self, mpsc::Receiver<()>, mpsc::Sender<()>) {
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         (
             Self {
-                delete_started: Arc::new(Mutex::new(Some(started_tx))),
-                delete_release: Arc::new(Mutex::new(release_rx)),
+                acquire_started: Arc::new(Mutex::new(Some(started_tx))),
+                acquire_release: Arc::new(Mutex::new(release_rx)),
             },
             started_rx,
             release_tx,
@@ -81,7 +81,7 @@ impl BlockingDeleteStore {
     }
 }
 
-impl DcsStore for BlockingDeleteStore {
+impl DcsStore for BlockingAcquireStore {
     fn healthy(&self) -> bool {
         true
     }
@@ -95,33 +95,33 @@ impl DcsStore for BlockingDeleteStore {
     }
 
     fn put_path_if_absent(&mut self, _path: &str, _value: String) -> Result<bool, DcsStoreError> {
-        Ok(true)
-    }
-
-    fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
         let mut started_guard = self
-            .delete_started
+            .acquire_started
             .lock()
-            .map_err(|_| DcsStoreError::Io("delete started lock poisoned".to_string()))?;
+            .map_err(|_| DcsStoreError::Io("acquire started lock poisoned".to_string()))?;
         if let Some(tx) = started_guard.take() {
             tx.send(())
-                .map_err(|_| DcsStoreError::Io("delete started signal failed".to_string()))?;
+                .map_err(|_| DcsStoreError::Io("acquire started signal failed".to_string()))?;
         }
         drop(started_guard);
 
         let release_guard = self
-            .delete_release
+            .acquire_release
             .lock()
-            .map_err(|_| DcsStoreError::Io("delete release lock poisoned".to_string()))?;
+            .map_err(|_| DcsStoreError::Io("acquire release lock poisoned".to_string()))?;
         match release_guard.recv_timeout(Duration::from_secs(5)) {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(true),
             Err(RecvTimeoutError::Timeout) => Err(DcsStoreError::Io(
-                "delete release unblock timed out".to_string(),
+                "acquire release unblock timed out".to_string(),
             )),
             Err(RecvTimeoutError::Disconnected) => Err(DcsStoreError::Io(
-                "delete release unblock disconnected".to_string(),
+                "acquire release unblock disconnected".to_string(),
             )),
         }
+    }
+
+    fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
+        Ok(())
     }
 
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
@@ -435,7 +435,8 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks() -> Result<(), WorkerError> {
+async fn ha_state_api_stays_responsive_while_ha_attempt_leadership_blocks(
+) -> Result<(), WorkerError> {
     let runtime_cfg = sample_runtime_config();
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(runtime_cfg.clone(), UnixMillis(1));
     let (_pg_publisher, pg_subscriber) =
@@ -487,7 +488,7 @@ async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks() -> Resul
     debug_ctx.poll_interval = Duration::from_millis(5);
 
     let (process_tx, _process_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (store, delete_started_rx, delete_release_tx) = BlockingDeleteStore::new();
+    let (store, acquire_started_rx, acquire_release_tx) = BlockingAcquireStore::new();
     let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
         publisher: ha_publisher,
         config_subscriber: cfg_subscriber,
@@ -521,7 +522,7 @@ async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks() -> Resul
             });
 
             let started_result = tokio::task::spawn_blocking(move || {
-                delete_started_rx.recv_timeout(Duration::from_secs(1))
+                acquire_started_rx.recv_timeout(Duration::from_secs(1))
             })
             .await
             .map_err(|err| WorkerError::Message(format!("blocking wait join failed: {err}")))?;
@@ -532,7 +533,7 @@ async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks() -> Resul
                     debug_handle.abort();
                     ha_handle.abort();
                     return Err(WorkerError::Message(format!(
-                        "blocking release-leader path did not start: {err}"
+                        "blocking acquire-leader path did not start: {err}"
                     )));
                 }
             }
@@ -541,7 +542,7 @@ async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks() -> Resul
             let observed = loop {
                 match get_ha_state_via_tcp(api_addr).await {
                     Ok(state)
-                        if state.ha_phase == HaPhaseResponse::FailSafe && state.ha_tick == 1 =>
+                        if state.ha_phase == HaPhaseResponse::Primary && state.ha_tick == 1 =>
                     {
                         break state;
                     }
@@ -559,9 +560,9 @@ async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks() -> Resul
                 tokio::time::sleep(Duration::from_millis(10)).await;
             };
 
-            delete_release_tx
+            acquire_release_tx
                 .send(())
-                .map_err(|_| WorkerError::Message("delete release signal failed".to_string()))?;
+                .map_err(|_| WorkerError::Message("acquire release signal failed".to_string()))?;
             let (ha_ctx, ha_result) = ha_handle
                 .await
                 .map_err(|err| WorkerError::Message(format!("ha step join failed: {err}")))?;
@@ -572,9 +573,9 @@ async fn ha_state_api_stays_responsive_while_ha_release_leader_blocks() -> Resul
             let _ = api_handle.await;
             let _ = debug_handle.await;
 
-            assert_eq!(observed.ha_phase, HaPhaseResponse::FailSafe);
+            assert_eq!(observed.ha_phase, HaPhaseResponse::Primary);
             assert!(observed.snapshot_sequence > 0);
-            assert_eq!(ha_ctx.state.phase, HaPhase::FailSafe);
+            assert_eq!(ha_ctx.state.phase, HaPhase::Primary);
             Ok(())
         })
         .await

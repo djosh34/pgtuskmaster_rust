@@ -1047,68 +1047,33 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn step_once_publishes_failsafe_before_blocking_release_leader() -> Result<(), WorkerError>
-    {
-        let (delete_started_tx, delete_started_rx) = mpsc::channel();
-        let (delete_release_tx, delete_release_rx) = mpsc::channel();
-        let store = RecordingStore {
-            delete_block_started: Some(Arc::new(Mutex::new(Some(delete_started_tx)))),
-            delete_block_release: Some(Arc::new(Mutex::new(delete_release_rx))),
-            ..RecordingStore::default()
-        };
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_failsafe_primary_with_restored_quorum_attempts_leadership(
+    ) -> Result<(), WorkerError> {
         let BuiltContext {
             mut ctx,
             ha_subscriber,
+            mut process_rx,
             store: store_handle,
             ..
         } = HaWorkerTestBuilder::new()
-            .with_store(store)
             .with_phase(HaPhase::FailSafe)
             .with_dcs_trust(DcsTrust::FullQuorum)
             .with_pg_state(sample_primary_pg_state(SqlStatus::Healthy))
             .build()?;
 
-        let handle = tokio::spawn(async move {
-            let result = step_once(&mut ctx).await;
-            (ctx, result)
-        });
-
-        let started_result = tokio::task::spawn_blocking(move || {
-            delete_started_rx.recv_timeout(Duration::from_secs(1))
-        })
-        .await
-        .map_err(|err| WorkerError::Message(format!("blocking wait join failed: {err}")))?;
-        match started_result {
-            Ok(()) => {}
-            Err(err) => {
-                return Err(WorkerError::Message(format!(
-                    "blocking delete did not start: {err}"
-                )));
-            }
-        }
+        step_once(&mut ctx).await?;
 
         let published = ha_subscriber.latest();
         assert_eq!(published.version, Version(1));
-        assert_eq!(published.value.phase, HaPhase::FailSafe);
-        assert_eq!(
-            published.value.decision,
-            HaDecision::EnterFailSafe {
-                release_leader_lease: true,
-            }
-        );
+        assert_eq!(published.value.phase, HaPhase::Primary);
+        assert_eq!(published.value.decision, HaDecision::AttemptLeadership);
         assert_eq!(published.value.worker, WorkerStatus::Running);
-
-        delete_release_tx
-            .send(())
-            .map_err(|_| WorkerError::Message("delete release signal failed".to_string()))?;
-
-        let (ctx, stepped) = handle
-            .await
-            .map_err(|err| WorkerError::Message(format!("ha step join failed: {err}")))?;
-        stepped?;
-        assert_eq!(ctx.state.phase, HaPhase::FailSafe);
-        assert!(store_handle.has_delete_path("/scope-a/leader"));
+        assert_eq!(ctx.state.phase, HaPhase::Primary);
+        assert_eq!(ctx.state.decision, HaDecision::AttemptLeadership);
+        assert_eq!(store_handle.first_write_path().as_deref(), Some("/scope-a/leader"));
+        assert!(!store_handle.has_delete_path("/scope-a/leader"));
+        assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));
         Ok(())
     }
 
