@@ -30,6 +30,18 @@ use super::util::{
     wait_for_bootstrap_primary, wait_for_node_api_ready_or_task_exit,
 };
 
+const ETCD_CLUSTER_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+const HARNESS_POSTGRES_CONNECT_TIMEOUT_S: u32 = 2;
+const HARNESS_HA_LOOP_INTERVAL_MS: u64 = 100;
+const HARNESS_HA_LEASE_TTL_MS: u64 = 2_000;
+const HARNESS_PG_REWIND_TIMEOUT_MS: u64 = 5_000;
+const HARNESS_BOOTSTRAP_TIMEOUT_MS: u64 = 30_000;
+const HARNESS_FENCING_TIMEOUT_MS: u64 = 5_000;
+const HARNESS_LOGGING_POLL_INTERVAL_MS: u64 = 200;
+const HARNESS_LOGGING_CLEANUP_MAX_FILES: u64 = 50;
+const HARNESS_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
+const HARNESS_LOGGING_PROTECT_RECENT_SECONDS: u64 = 300;
+
 struct StartupGuard {
     guard: NamespaceGuard,
     binaries: BinaryPaths,
@@ -214,7 +226,7 @@ async fn start_cluster_inner(
     let cluster_spec = EtcdClusterSpec {
         etcd_bin,
         namespace_id: namespace.id.clone(),
-        startup_timeout: Duration::from_secs(15),
+        startup_timeout: ETCD_CLUSTER_STARTUP_TIMEOUT,
         members,
     };
 
@@ -388,7 +400,7 @@ async fn start_cluster_inner(
             },
             "postgres": {
                 "data_dir": data_dir.display().to_string(),
-                "connect_timeout_s": 2,
+                "connect_timeout_s": HARNESS_POSTGRES_CONNECT_TIMEOUT_S,
                 "listen_host": "127.0.0.1",
                 "listen_port": pg_port,
                 "socket_dir": socket_dir.display().to_string(),
@@ -410,11 +422,14 @@ async fn start_cluster_inner(
                 "scope": config.scope.clone(),
                 "init": null,
             },
-            "ha": { "loop_interval_ms": 100, "lease_ttl_ms": 2000 },
+            "ha": {
+                "loop_interval_ms": HARNESS_HA_LOOP_INTERVAL_MS,
+                "lease_ttl_ms": HARNESS_HA_LEASE_TTL_MS,
+            },
             "process": {
-                "pg_rewind_timeout_ms": 5000,
-                "bootstrap_timeout_ms": 30000,
-                "fencing_timeout_ms": 5000,
+                "pg_rewind_timeout_ms": HARNESS_PG_REWIND_TIMEOUT_MS,
+                "bootstrap_timeout_ms": HARNESS_BOOTSTRAP_TIMEOUT_MS,
+                "fencing_timeout_ms": HARNESS_FENCING_TIMEOUT_MS,
                 "binaries": {
                     "postgres": binaries.postgres.display().to_string(),
                     "pg_ctl": binaries.pg_ctl.display().to_string(),
@@ -431,8 +446,13 @@ async fn start_cluster_inner(
                     "enabled": false,
                     "pg_ctl_log_file": null,
                     "log_dir": null,
-                    "poll_interval_ms": 200,
-                    "cleanup": { "enabled": true, "max_files": 50, "max_age_seconds": 604800, "protect_recent_seconds": 300 },
+                    "poll_interval_ms": HARNESS_LOGGING_POLL_INTERVAL_MS,
+                    "cleanup": {
+                        "enabled": true,
+                        "max_files": HARNESS_LOGGING_CLEANUP_MAX_FILES,
+                        "max_age_seconds": HARNESS_LOGGING_CLEANUP_MAX_AGE_SECONDS,
+                        "protect_recent_seconds": HARNESS_LOGGING_PROTECT_RECENT_SECONDS
+                    },
                 },
                 "sinks": {
                     "stderr": { "enabled": true },
@@ -459,7 +479,7 @@ async fn start_cluster_inner(
             .with_member_id(node_id.clone())
             .transform_postgres(|postgres| PostgresConfig {
                 data_dir: data_dir.clone(),
-                connect_timeout_s: 2,
+                connect_timeout_s: HARNESS_POSTGRES_CONNECT_TIMEOUT_S,
                 listen_port: pg_port,
                 socket_dir,
                 log_file: log_file.clone(),
@@ -484,13 +504,13 @@ async fn start_cluster_inner(
                 }),
             })
             .with_ha(HaConfig {
-                loop_interval_ms: 100,
-                lease_ttl_ms: 2_000,
+                loop_interval_ms: HARNESS_HA_LOOP_INTERVAL_MS,
+                lease_ttl_ms: HARNESS_HA_LEASE_TTL_MS,
             })
             .with_process(ProcessConfig {
-                pg_rewind_timeout_ms: 5_000,
-                bootstrap_timeout_ms: 30_000,
-                fencing_timeout_ms: 5_000,
+                pg_rewind_timeout_ms: HARNESS_PG_REWIND_TIMEOUT_MS,
+                bootstrap_timeout_ms: HARNESS_BOOTSTRAP_TIMEOUT_MS,
+                fencing_timeout_ms: HARNESS_FENCING_TIMEOUT_MS,
                 binaries: binaries.clone(),
             })
             .with_logging(LoggingConfig {
@@ -500,12 +520,12 @@ async fn start_cluster_inner(
                     enabled: false,
                     pg_ctl_log_file: None,
                     log_dir: None,
-                    poll_interval_ms: 200,
+                    poll_interval_ms: HARNESS_LOGGING_POLL_INTERVAL_MS,
                     cleanup: LogCleanupConfig {
                         enabled: true,
-                        max_files: 50,
-                        max_age_seconds: 7 * 24 * 60 * 60,
-                        protect_recent_seconds: 300,
+                        max_files: HARNESS_LOGGING_CLEANUP_MAX_FILES,
+                        max_age_seconds: HARNESS_LOGGING_CLEANUP_MAX_AGE_SECONDS,
+                        protect_recent_seconds: HARNESS_LOGGING_PROTECT_RECENT_SECONDS,
                     },
                 },
                 sinks: crate::config::LoggingSinksConfig {

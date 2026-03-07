@@ -26,6 +26,24 @@ const E2E_PG_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(20);
 const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(60);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(360);
+const E2E_API_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
+const E2E_STABLE_PRIMARY_API_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const E2E_SQL_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+const E2E_NO_DUAL_PRIMARY_SAMPLE_INTERVAL: Duration = Duration::from_millis(75);
+const E2E_STABLE_PRIMARY_STRICT_TIMEOUT_CAP: Duration = Duration::from_secs(25);
+const E2E_STABLE_PRIMARY_API_FALLBACK_TIMEOUT_CAP: Duration = Duration::from_secs(20);
+const E2E_STABLE_PRIMARY_SQL_FALLBACK_TIMEOUT_CAP: Duration = Duration::from_secs(30);
+const E2E_STABLE_PRIMARY_STRICT_CONSECUTIVE_CAP: usize = 3;
+const E2E_STABLE_PRIMARY_RELAXED_CONSECUTIVE_CAP: usize = 2;
+const E2E_PARTITION_PRIMARY_TIMEOUT: Duration = Duration::from_secs(90);
+const E2E_PARTITION_RECOVERY_TIMEOUT: Duration = Duration::from_secs(120);
+const E2E_PARTITION_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const E2E_PARTITION_POST_HEAL_WRITE_TIMEOUT: Duration = Duration::from_secs(45);
+const E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(90);
+const E2E_PARTITION_HEAL_SETTLE_WAIT: Duration = Duration::from_secs(4);
+const E2E_PARTITION_SHORT_NO_DUAL_PRIMARY_WINDOW: Duration = Duration::from_secs(5);
+const E2E_PARTITION_MEDIUM_NO_DUAL_PRIMARY_WINDOW: Duration = Duration::from_secs(8);
+const E2E_PARTITION_LONG_NO_DUAL_PRIMARY_WINDOW: Duration = Duration::from_secs(10);
 const PARTITION_ARTIFACT_DIR: &str = ".ralph/evidence/28-e2e-network-partition-chaos";
 
 #[derive(Clone, Copy)]
@@ -71,7 +89,7 @@ impl PartitionFixture {
                 command_timeout: E2E_COMMAND_TIMEOUT,
                 command_kill_wait_timeout: E2E_COMMAND_KILL_WAIT_TIMEOUT,
                 http_step_timeout: E2E_HTTP_STEP_TIMEOUT,
-                api_readiness_timeout: Duration::from_secs(120),
+                api_readiness_timeout: E2E_API_READINESS_TIMEOUT,
                 bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
                 scenario_timeout: E2E_SCENARIO_TIMEOUT,
             },
@@ -284,7 +302,7 @@ impl PartitionFixture {
                             "timed out waiting for stable primary; excluded={excluded_primary:?}; last_observation={detail}"
                         )));
                     }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
                     continue;
                 }
             };
@@ -335,7 +353,7 @@ impl PartitionFixture {
                     "timed out waiting for stable primary; excluded={excluded_primary:?}; last_observation={detail}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
         }
     }
 
@@ -421,7 +439,7 @@ impl PartitionFixture {
                 }
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
         }
     }
 
@@ -516,7 +534,7 @@ impl PartitionFixture {
                 last_candidate = None;
             }
 
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
         }
     }
 
@@ -524,11 +542,21 @@ impl PartitionFixture {
         &mut self,
         plan: StablePrimaryWaitPlan<'_>,
     ) -> Result<String, WorkerError> {
-        let strict_timeout = std::cmp::min(plan.timeout, Duration::from_secs(25));
-        let api_fallback_timeout = std::cmp::min(plan.fallback_timeout, Duration::from_secs(20));
-        let sql_fallback_timeout = std::cmp::min(plan.fallback_timeout, Duration::from_secs(30));
-        let strict_required_consecutive = plan.required_consecutive.min(3);
-        let relaxed_required_consecutive = plan.fallback_required_consecutive.min(2);
+        let strict_timeout = std::cmp::min(plan.timeout, E2E_STABLE_PRIMARY_STRICT_TIMEOUT_CAP);
+        let api_fallback_timeout = std::cmp::min(
+            plan.fallback_timeout,
+            E2E_STABLE_PRIMARY_API_FALLBACK_TIMEOUT_CAP,
+        );
+        let sql_fallback_timeout = std::cmp::min(
+            plan.fallback_timeout,
+            E2E_STABLE_PRIMARY_SQL_FALLBACK_TIMEOUT_CAP,
+        );
+        let strict_required_consecutive = plan
+            .required_consecutive
+            .min(E2E_STABLE_PRIMARY_STRICT_CONSECUTIVE_CAP);
+        let relaxed_required_consecutive = plan
+            .fallback_required_consecutive
+            .min(E2E_STABLE_PRIMARY_RELAXED_CONSECUTIVE_CAP);
 
         match self
             .wait_for_stable_primary(
@@ -603,7 +631,7 @@ impl PartitionFixture {
             if tokio::time::Instant::now() >= deadline {
                 return observer.finalize_no_dual_primary_window();
             }
-            tokio::time::sleep(Duration::from_millis(75)).await;
+            tokio::time::sleep(E2E_NO_DUAL_PRIMARY_SAMPLE_INTERVAL).await;
         }
     }
 
@@ -629,7 +657,7 @@ impl PartitionFixture {
                     "timed out waiting for node {node_id} phase {expected_phase}; last_observation={observation}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
         }
     }
 
@@ -694,7 +722,7 @@ impl PartitionFixture {
                             "timed out running SQL on {node_id}; last_error={err}"
                         )));
                     }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
                 }
             }
         }
@@ -726,7 +754,7 @@ impl PartitionFixture {
                     "timed out waiting for expected rows on {node_id}; expected={expected_rows:?}; last_observation={observation}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
         }
     }
 
@@ -799,7 +827,7 @@ impl PartitionFixture {
                     "timed out waiting for table digest convergence on {table_name}; last_observation={last_observation}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
         }
     }
 
@@ -988,10 +1016,10 @@ pub async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<
             let bootstrap_primary = fixture
                 .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
                     context: "minority isolation: initial stable primary",
-                    timeout: Duration::from_secs(90),
+                    timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 5,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     fallback_required_consecutive: 3,
                     min_observed_nodes: 2,
                 })
@@ -1008,14 +1036,14 @@ pub async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<
                 .run_sql_on_node_with_retry(
                     &bootstrap_primary,
                     "CREATE TABLE IF NOT EXISTS ha_partition_minority (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
-                    Duration::from_secs(30),
+                    E2E_PARTITION_WRITE_TIMEOUT,
                 )
                 .await?;
             fixture
                 .run_sql_on_node_with_retry(
                     &bootstrap_primary,
                     "INSERT INTO ha_partition_minority (id, payload) VALUES (1, 'before') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
-                    Duration::from_secs(30),
+                    E2E_PARTITION_WRITE_TIMEOUT,
                 )
                 .await?;
 
@@ -1023,19 +1051,19 @@ pub async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<
                 .partition_node_from_etcd(isolated_replica.as_str())
                 .await?;
             fixture
-                .assert_no_dual_primary_window(Duration::from_secs(8))
+                .assert_no_dual_primary_window(E2E_PARTITION_MEDIUM_NO_DUAL_PRIMARY_WINDOW)
                 .await?;
 
-            tokio::time::sleep(Duration::from_secs(4)).await;
+            tokio::time::sleep(E2E_PARTITION_HEAL_SETTLE_WAIT).await;
             fixture.heal_all_network_faults().await?;
 
             let healed_primary = fixture
                 .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
                     context: "minority isolation: healed stable primary",
-                    timeout: Duration::from_secs(90),
+                    timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 5,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     fallback_required_consecutive: 3,
                     min_observed_nodes: 2,
                 })
@@ -1045,7 +1073,7 @@ pub async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<
                 .run_sql_on_node_with_retry(
                     &healed_primary,
                     "INSERT INTO ha_partition_minority (id, payload) VALUES (2, 'after') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
-                    Duration::from_secs(45),
+                    E2E_PARTITION_POST_HEAL_WRITE_TIMEOUT,
                 )
                 .await?;
 
@@ -1056,7 +1084,7 @@ pub async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<
                         node_id.as_str(),
                         "SELECT id::text || ':' || payload FROM ha_partition_minority ORDER BY id",
                         expected_rows.as_slice(),
-                        Duration::from_secs(90),
+                        E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
                     )
                     .await?;
             }
@@ -1065,11 +1093,11 @@ pub async fn e2e_partition_minority_isolation_no_split_brain_rejoin() -> Result<
                     "ha_partition_minority",
                     fixture.node_ids().as_slice(),
                     2,
-                    Duration::from_secs(90),
+                    E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
                 )
                 .await?;
             fixture
-                .assert_no_dual_primary_window(Duration::from_secs(5))
+                .assert_no_dual_primary_window(E2E_PARTITION_SHORT_NO_DUAL_PRIMARY_WINDOW)
                 .await?;
             Ok(())
         })
@@ -1097,10 +1125,10 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
             let bootstrap_primary = fixture
                 .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
                     context: "primary isolation: initial stable primary",
-                    timeout: Duration::from_secs(90),
+                    timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 5,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     fallback_required_consecutive: 3,
                     min_observed_nodes: 2,
                 })
@@ -1111,14 +1139,14 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                 .run_sql_on_node_with_retry(
                     &bootstrap_primary,
                     "CREATE TABLE IF NOT EXISTS ha_partition_primary (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
-                    Duration::from_secs(30),
+                    E2E_PARTITION_WRITE_TIMEOUT,
                 )
                 .await?;
             fixture
                 .run_sql_on_node_with_retry(
                     &bootstrap_primary,
                     "INSERT INTO ha_partition_primary (id, payload) VALUES (1, 'before') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
-                    Duration::from_secs(30),
+                    E2E_PARTITION_WRITE_TIMEOUT,
                 )
                 .await?;
 
@@ -1129,24 +1157,24 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                 .wait_for_node_phase(
                     bootstrap_primary.as_str(),
                     "FailSafe",
-                    Duration::from_secs(120),
+                    E2E_PARTITION_RECOVERY_TIMEOUT,
                 )
                 .await?;
             fixture.record(format!(
                 "primary isolation: isolated primary entered FailSafe node={bootstrap_primary}"
             ));
             fixture
-                .assert_no_dual_primary_window(Duration::from_secs(10))
+                .assert_no_dual_primary_window(E2E_PARTITION_LONG_NO_DUAL_PRIMARY_WINDOW)
                 .await?;
 
             fixture.heal_all_network_faults().await?;
             let healed_primary = fixture
                 .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
                     context: "primary isolation: healed stable primary",
-                    timeout: Duration::from_secs(120),
+                    timeout: E2E_PARTITION_RECOVERY_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 5,
-                    fallback_timeout: Duration::from_secs(120),
+                    fallback_timeout: E2E_PARTITION_RECOVERY_TIMEOUT,
                     fallback_required_consecutive: 3,
                     min_observed_nodes: 2,
                 })
@@ -1156,7 +1184,7 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                 .run_sql_on_node_with_retry(
                     &healed_primary,
                     "INSERT INTO ha_partition_primary (id, payload) VALUES (2, 'after') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
-                    Duration::from_secs(45),
+                    E2E_PARTITION_POST_HEAL_WRITE_TIMEOUT,
                 )
                 .await?;
 
@@ -1167,7 +1195,7 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                         node_id.as_str(),
                         "SELECT id::text || ':' || payload FROM ha_partition_primary ORDER BY id",
                         expected_rows.as_slice(),
-                        Duration::from_secs(90),
+                        E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
                     )
                     .await?;
             }
@@ -1176,11 +1204,11 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                     "ha_partition_primary",
                     fixture.node_ids().as_slice(),
                     2,
-                    Duration::from_secs(90),
+                    E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
                 )
                 .await?;
             fixture
-                .assert_no_dual_primary_window(Duration::from_secs(5))
+                .assert_no_dual_primary_window(E2E_PARTITION_SHORT_NO_DUAL_PRIMARY_WINDOW)
                 .await?;
             Ok(())
         })
@@ -1208,10 +1236,10 @@ pub async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), 
             let bootstrap_primary = fixture
                 .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
                     context: "api-path isolation: initial stable primary",
-                    timeout: Duration::from_secs(90),
+                    timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 5,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     fallback_required_consecutive: 3,
                     min_observed_nodes: 2,
                 })
@@ -1234,18 +1262,18 @@ pub async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), 
             }
 
             fixture
-                .assert_no_dual_primary_window(Duration::from_secs(8))
+                .assert_no_dual_primary_window(E2E_PARTITION_MEDIUM_NO_DUAL_PRIMARY_WINDOW)
                 .await?;
-            tokio::time::sleep(Duration::from_secs(4)).await;
+            tokio::time::sleep(E2E_PARTITION_HEAL_SETTLE_WAIT).await;
 
             fixture.heal_all_network_faults().await?;
             let healed_primary = fixture
                 .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
                     context: "api-path isolation: healed stable primary",
-                    timeout: Duration::from_secs(90),
+                    timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 5,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
                     fallback_required_consecutive: 3,
                     min_observed_nodes: 2,
                 })
@@ -1260,14 +1288,14 @@ pub async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), 
                 .run_sql_on_node_with_retry(
                     &healed_primary,
                     "CREATE TABLE IF NOT EXISTS ha_partition_api_only (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
-                    Duration::from_secs(30),
+                    E2E_PARTITION_WRITE_TIMEOUT,
                 )
                 .await?;
             fixture
                 .run_sql_on_node_with_retry(
                     &healed_primary,
                     "INSERT INTO ha_partition_api_only (id, payload) VALUES (1, 'api-only') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
-                    Duration::from_secs(45),
+                    E2E_PARTITION_POST_HEAL_WRITE_TIMEOUT,
                 )
                 .await?;
             let expected_rows = vec!["1:api-only".to_string()];
@@ -1277,12 +1305,12 @@ pub async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), 
                         node_id.as_str(),
                         "SELECT id::text || ':' || payload FROM ha_partition_api_only ORDER BY id",
                         expected_rows.as_slice(),
-                        Duration::from_secs(90),
+                        E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
                     )
                     .await?;
             }
             fixture
-                .assert_no_dual_primary_window(Duration::from_secs(5))
+                .assert_no_dual_primary_window(E2E_PARTITION_SHORT_NO_DUAL_PRIMARY_WINDOW)
                 .await?;
             Ok(())
         })

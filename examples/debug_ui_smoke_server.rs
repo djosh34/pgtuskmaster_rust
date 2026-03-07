@@ -7,6 +7,9 @@ use pgtuskmaster_rust::{
     state::{new_state_channel, UnixMillis, WorkerError},
 };
 
+const DEBUG_UI_SMOKE_API_LISTEN_ADDR: &str = "127.0.0.1:18080";
+const DEBUG_UI_SMOKE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
 struct SmokeStore;
 
 impl DcsStore for SmokeStore {
@@ -37,7 +40,7 @@ impl DcsStore for SmokeStore {
 
 fn sample_runtime_config() -> RuntimeConfig {
     pgtuskmaster_rust::test_harness::runtime_config::RuntimeConfigBuilder::new()
-        .with_api_listen_addr("127.0.0.1:18080")
+        .with_api_listen_addr(DEBUG_UI_SMOKE_API_LISTEN_ADDR)
         .build()
 }
 
@@ -45,13 +48,13 @@ fn sample_runtime_config() -> RuntimeConfig {
 async fn main() -> Result<(), WorkerError> {
     let cfg = sample_runtime_config();
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:18080")
+    let listener = tokio::net::TcpListener::bind(DEBUG_UI_SMOKE_API_LISTEN_ADDR)
         .await
         .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
     let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(SmokeStore));
 
     loop {
         step_once(&mut ctx).await?;
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(DEBUG_UI_SMOKE_POLL_INTERVAL).await;
     }
 }

@@ -18,6 +18,11 @@ const SIGTERM: i32 = libc::SIGTERM;
 #[cfg(not(unix))]
 const SIGTERM: i32 = 15;
 
+const ETCD_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const ETCD_READINESS_MIN_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(1);
+const ETCD_READINESS_MAX_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(2);
+const ETCD_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 #[derive(Debug, Clone)]
 pub struct EtcdInstanceSpec {
     pub etcd_bin: PathBuf,
@@ -65,19 +70,18 @@ impl EtcdHandle {
             signals::send_signal(pid, SIGTERM).map_err(HarnessError::Io)?;
         }
 
-        let wait_timeout = Duration::from_secs(5);
-        let wait_result = timeout(wait_timeout, self.child.wait()).await;
+        let wait_result = timeout(ETCD_SHUTDOWN_WAIT_TIMEOUT, self.child.wait()).await;
         match wait_result {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(err)) => Err(HarnessError::Io(err)),
             Err(_) => {
                 self.child.start_kill().map_err(HarnessError::Io)?;
-                match timeout(wait_timeout, self.child.wait()).await {
+                match timeout(ETCD_SHUTDOWN_WAIT_TIMEOUT, self.child.wait()).await {
                     Ok(Ok(_)) => Ok(()),
                     Ok(Err(err)) => Err(HarnessError::Io(err)),
                     Err(_) => Err(HarnessError::ShutdownTimeout {
                         component: "etcd",
-                        timeout: wait_timeout,
+                        timeout: ETCD_SHUTDOWN_WAIT_TIMEOUT,
                     }),
                 }
             }
@@ -488,8 +492,8 @@ async fn wait_for_cluster_readiness(
 
         let remaining = startup_timeout
             .checked_sub(started.elapsed())
-            .unwrap_or(Duration::from_millis(1));
-        let attempt_timeout = remaining.min(Duration::from_secs(2));
+            .unwrap_or(ETCD_READINESS_MIN_ATTEMPT_TIMEOUT);
+        let attempt_timeout = remaining.min(ETCD_READINESS_MAX_ATTEMPT_TIMEOUT);
 
         let connect_result = timeout(
             attempt_timeout,
@@ -511,7 +515,7 @@ async fn wait_for_cluster_readiness(
             }
         }
 
-        sleep(Duration::from_millis(50)).await;
+        sleep(ETCD_READINESS_POLL_INTERVAL).await;
     }
 }
 
@@ -540,7 +544,7 @@ async fn wait_for_port(
             });
         }
 
-        sleep(Duration::from_millis(50)).await;
+        sleep(ETCD_READINESS_POLL_INTERVAL).await;
     }
 }
 

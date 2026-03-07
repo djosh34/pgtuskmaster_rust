@@ -18,6 +18,16 @@ use crate::{
     state::{StateSubscriber, WorkerError},
 };
 
+const API_LOOP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const API_ACCEPT_TIMEOUT: Duration = Duration::from_millis(1);
+const API_REQUEST_READ_TIMEOUT: Duration = Duration::from_millis(100);
+const API_TLS_CLIENT_HELLO_PEEK_TIMEOUT: Duration = Duration::from_millis(10);
+const API_REQUEST_ID_MAX_LEN: usize = 128;
+const HTTP_REQUEST_MAX_BYTES: usize = 1024 * 1024;
+const HTTP_REQUEST_HEADER_LIMIT_BYTES: usize = 16 * 1024;
+const HTTP_REQUEST_SCRATCH_BUFFER_BYTES: usize = 4096;
+const HTTP_REQUEST_HEADER_CAPACITY: usize = 64;
+
 #[derive(Clone, Debug, Default)]
 struct ApiRoleTokens {
     read_token: Option<String>,
@@ -101,7 +111,7 @@ impl ApiWorkerCtx {
         let member_id = config_subscriber.latest().value.cluster.member_id.clone();
         Self {
             listener,
-            poll_interval: Duration::from_millis(10),
+            poll_interval: API_LOOP_POLL_INTERVAL,
             scope,
             member_id,
             config_subscriber,
@@ -210,14 +220,14 @@ pub async fn run(mut ctx: ApiWorkerCtx) -> Result<(), WorkerError> {
 }
 
 pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
-    let (stream, peer) =
-        match tokio::time::timeout(Duration::from_millis(1), ctx.listener.accept()).await {
-            Ok(Ok((stream, peer))) => (stream, peer),
-            Ok(Err(err)) => {
-                return Err(WorkerError::Message(format!("api accept failed: {err}")));
-            }
-            Err(_elapsed) => return Ok(()),
-        };
+    let (stream, peer) = match tokio::time::timeout(API_ACCEPT_TIMEOUT, ctx.listener.accept()).await
+    {
+        Ok(Ok((stream, peer))) => (stream, peer),
+        Ok(Err(err)) => {
+            return Err(WorkerError::Message(format!("api accept failed: {err}")));
+        }
+        Err(_elapsed) => return Ok(()),
+    };
 
     let cfg = ctx.config_subscriber.latest().value;
     let mut accept_event = api_event(
@@ -243,7 +253,7 @@ pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
     };
 
     let request =
-        match tokio::time::timeout(Duration::from_millis(100), stream.read_http_request()).await {
+        match tokio::time::timeout(API_REQUEST_READ_TIMEOUT, stream.read_http_request()).await {
             Ok(Ok(req)) => req,
             Ok(Err(message)) => {
                 let mut event = api_event(
@@ -321,8 +331,8 @@ fn extract_request_id(request: &HttpRequest) -> Option<String> {
         .map(|(_name, value)| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(|value| {
-            if value.len() > 128 {
-                value[..128].to_string()
+            if value.len() > API_REQUEST_ID_MAX_LEN {
+                value[..API_REQUEST_ID_MAX_LEN].to_string()
             } else {
                 value
             }
@@ -979,7 +989,7 @@ fn has_peer_client_cert(stream: &TlsStream<TcpStream>) -> bool {
 
 async fn looks_like_tls_client_hello(stream: &TcpStream) -> Result<bool, WorkerError> {
     let mut first = [0_u8; 1];
-    match tokio::time::timeout(Duration::from_millis(10), stream.peek(&mut first)).await {
+    match tokio::time::timeout(API_TLS_CLIENT_HELLO_PEEK_TIMEOUT, stream.peek(&mut first)).await {
         Err(_) => Ok(false),
         Ok(Ok(0)) => Ok(false),
         Ok(Ok(_)) => Ok(first[0] == 0x16),
@@ -1066,16 +1076,13 @@ async fn read_http_request<S>(stream: &mut S) -> Result<HttpRequest, String>
 where
     S: AsyncRead + Unpin,
 {
-    const MAX_BYTES: usize = 1024 * 1024;
-    const HEADER_LIMIT: usize = 16 * 1024;
-
     let mut buffer = Vec::<u8>::new();
-    let mut temp = [0u8; 4096];
+    let mut temp = [0u8; HTTP_REQUEST_SCRATCH_BUFFER_BYTES];
     let mut header_end: Option<usize> = None;
     let mut content_length: Option<usize> = None;
 
     loop {
-        if buffer.len() > MAX_BYTES {
+        if buffer.len() > HTTP_REQUEST_MAX_BYTES {
             return Err("request too large".to_string());
         }
 
@@ -1091,7 +1098,7 @@ where
         if header_end.is_none() {
             if let Some(pos) = find_header_end(&buffer) {
                 header_end = Some(pos);
-            } else if buffer.len() > HEADER_LIMIT {
+            } else if buffer.len() > HTTP_REQUEST_HEADER_LIMIT_BYTES {
                 return Err("headers too large".to_string());
             }
         }
@@ -1111,7 +1118,7 @@ where
     let mut headers = [httparse::Header {
         name: "",
         value: &[],
-    }; 64];
+    }; HTTP_REQUEST_HEADER_CAPACITY];
     let mut req = httparse::Request::new(&mut headers);
     let status = req.parse(&buffer).map_err(|err| err.to_string())?;
     let header_bytes = match status {
@@ -1216,7 +1223,10 @@ mod tests {
     use crate::logging::{decode_app_event, LogHandle, LogSink, SeverityText, TestSink};
 
     use crate::{
-        api::worker::{step_once, ApiWorkerCtx},
+        api::worker::{
+            step_once, ApiWorkerCtx, HTTP_REQUEST_HEADER_LIMIT_BYTES,
+            HTTP_REQUEST_SCRATCH_BUFFER_BYTES,
+        },
         config::{ApiAuthConfig, ApiRoleTokensConfig, ApiTlsMode, InlineOrPath, RuntimeConfig},
         dcs::state::{DcsCache, DcsState, DcsTrust},
         dcs::store::{DcsStore, DcsStoreError, WatchEvent},
@@ -1458,9 +1468,8 @@ mod tests {
         build_ctx_with_config(sample_runtime_config(auth_token)).await
     }
 
-    const HEADER_LIMIT: usize = 16 * 1024;
     const MAX_BODY_BYTES: usize = 256 * 1024;
-    const MAX_RESPONSE_BYTES: usize = HEADER_LIMIT + MAX_BODY_BYTES;
+    const MAX_RESPONSE_BYTES: usize = HTTP_REQUEST_HEADER_LIMIT_BYTES + MAX_BODY_BYTES;
     const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
     #[derive(Debug)]
@@ -1571,7 +1580,7 @@ mod tests {
     ) -> Result<TestHttpResponse, WorkerError> {
         let response = tokio::time::timeout(timeout, async {
             let mut raw: Vec<u8> = Vec::new();
-            let mut scratch = [0u8; 4096];
+            let mut scratch = [0u8; HTTP_REQUEST_SCRATCH_BUFFER_BYTES];
 
             let mut parsed_head: Option<ParsedHttpHead> = None;
             let mut expected_total_len: Option<usize> = None;
@@ -1602,9 +1611,9 @@ mod tests {
                         )));
                     }
                 } else {
-                    if raw.len() > HEADER_LIMIT {
+                    if raw.len() > HTTP_REQUEST_HEADER_LIMIT_BYTES {
                         return Err(WorkerError::Message(format!(
-                            "response headers exceeded limit of {HEADER_LIMIT} bytes"
+                            "response headers exceeded limit of {HTTP_REQUEST_HEADER_LIMIT_BYTES} bytes"
                         )));
                     }
 

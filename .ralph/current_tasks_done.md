@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 07:11:59 AM CET 2026
+Generated: Sat Mar  7 07:39:56 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -572,6 +572,17 @@ After the HA functional rewrite lands, move and restructure the HA end-to-end te
 
 <description>
 **Goal:** Vastly deepen the non-contributor documentation by adding long-form, detail-rich subsubchapters and flowing explanations, while preserving the existing high-level overview quality at chapter entry points.
+```
+
+==============
+
+# Task `.ralph/tasks/story-project-wide-code-hygiene/01-task-audit-and-replace-magic-numbers-project-wide.md`
+
+```
+## Task: Audit and replace magic numbers project-wide <status>done</status> <passes>true</passes> <priority>low</priority>
+
+<description>
+Audit the project for unexplained magic numbers and replace them with explicit typed constants, configuration, or otherwise well-justified named values.
 ```
 
 ==============

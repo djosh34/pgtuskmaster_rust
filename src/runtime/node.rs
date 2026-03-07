@@ -41,6 +41,10 @@ use crate::{
     state::{new_state_channel, MemberId, UnixMillis, WorkerStatus},
 };
 
+const STARTUP_OUTPUT_DRAIN_MAX_BYTES: usize = 256 * 1024;
+const STARTUP_JOB_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 #[derive(Clone, Debug)]
 enum StartupAction {
     ClaimInitLockAndSeedConfig,
@@ -197,7 +201,6 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
     run_workers(cfg, process_defaults, log).await
 }
 
-// ?!?!?! WHY LIKE THIS?
 fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults {
     ProcessDispatchDefaults {
         postgres_host: cfg.postgres.listen_host.clone(),
@@ -872,9 +875,14 @@ async fn run_startup_job(
     let deadline = started.0.saturating_add(timeout_ms);
 
     loop {
-        let lines = handle.drain_output(256 * 1024).await.map_err(|err| {
-            RuntimeError::StartupExecution(format!("startup process output drain failed: {err}"))
-        })?;
+        let lines = handle
+            .drain_output(STARTUP_OUTPUT_DRAIN_MAX_BYTES)
+            .await
+            .map_err(|err| {
+                RuntimeError::StartupExecution(format!(
+                    "startup process output drain failed: {err}"
+                ))
+            })?;
         for line in lines {
             if let Err(err) = emit_startup_subprocess_line(log, &log_identity, line.clone()) {
                 let mut event = runtime_event(
@@ -910,11 +918,14 @@ async fn run_startup_job(
         })? {
             Some(ProcessExit::Success) => return Ok(()),
             Some(ProcessExit::Failure { code }) => {
-                let lines = handle.drain_output(256 * 1024).await.map_err(|err| {
-                    RuntimeError::StartupExecution(format!(
-                        "startup process output drain failed: {err}"
-                    ))
-                })?;
+                let lines = handle
+                    .drain_output(STARTUP_OUTPUT_DRAIN_MAX_BYTES)
+                    .await
+                    .map_err(|err| {
+                        RuntimeError::StartupExecution(format!(
+                            "startup process output drain failed: {err}"
+                        ))
+                    })?;
                 for line in lines {
                     emit_startup_subprocess_line(log, &log_identity, line).map_err(|err| {
                         RuntimeError::StartupExecution(format!(
@@ -936,11 +947,14 @@ async fn run_startup_job(
                     "startup command `{command_display}` timeout cancellation failed: {err}"
                 ))
             })?;
-            let lines = handle.drain_output(256 * 1024).await.map_err(|err| {
-                RuntimeError::StartupExecution(format!(
-                    "startup process output drain failed: {err}"
-                ))
-            })?;
+            let lines = handle
+                .drain_output(STARTUP_OUTPUT_DRAIN_MAX_BYTES)
+                .await
+                .map_err(|err| {
+                    RuntimeError::StartupExecution(format!(
+                        "startup process output drain failed: {err}"
+                    ))
+                })?;
             for line in lines {
                 emit_startup_subprocess_line(log, &log_identity, line).map_err(|err| {
                     RuntimeError::StartupExecution(format!(
@@ -953,7 +967,7 @@ async fn run_startup_job(
             )));
         }
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(STARTUP_JOB_POLL_INTERVAL).await;
     }
 }
 
@@ -1078,7 +1092,7 @@ async fn run_workers(
 
     let (process_inbox_tx, process_inbox_rx) = mpsc::unbounded_channel();
     let process_ctx = ProcessWorkerCtx {
-        poll_interval: Duration::from_millis(10),
+        poll_interval: PROCESS_WORKER_POLL_INTERVAL,
         config: cfg.process.clone(),
         log: log.clone(),
         capture_subprocess_output: cfg.logging.capture_subprocess_output,

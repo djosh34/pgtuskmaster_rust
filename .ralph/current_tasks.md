@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 07:11:59 AM CET 2026
-
-# Task `.ralph/tasks/story-project-wide-code-hygiene/01-task-audit-and-replace-magic-numbers-project-wide.md`
-
-```
-## Task: Audit and replace magic numbers project-wide <status>not_started</status> <passes>false</passes> <priority>low</priority>
-
-<description>
-Audit the project for unexplained magic numbers and replace them with explicit typed constants, configuration, or otherwise well-justified named values.
-```
-
-==============
+Generated: Sat Mar  7 07:39:56 AM CET 2026
 
 # Task `.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md`
 

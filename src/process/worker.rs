@@ -27,6 +27,11 @@ use super::{
     },
 };
 
+const PROCESS_OUTPUT_READ_CHUNK_BYTES: usize = 8192;
+const PROCESS_OUTPUT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1);
+const PROCESS_OUTPUT_DRAIN_MAX_BYTES: usize = 256 * 1024;
+const PG_CTL_DEFAULT_WAIT_SECONDS: u64 = 30;
+
 #[derive(Default)]
 pub(crate) struct TokioCommandRunner;
 
@@ -261,14 +266,14 @@ async fn drain_one_stream(
         return;
     };
 
-    let mut buf = vec![0u8; 8192];
+    let mut buf = vec![0u8; PROCESS_OUTPUT_READ_CHUNK_BYTES];
     loop {
         if *remaining == 0 {
             break;
         }
         let chunk_len = buf.len().min(*remaining);
         let read_result = tokio::time::timeout(
-            std::time::Duration::from_millis(1),
+            PROCESS_OUTPUT_READ_TIMEOUT,
             handle.read(&mut buf[..chunk_len]),
         )
         .await;
@@ -778,7 +783,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
     };
 
     let now = current_time(ctx)?;
-    match runtime.handle.drain_output(256 * 1024).await {
+    match runtime
+        .handle
+        .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
+        .await
+    {
         Ok(lines) => {
             for line in lines {
                 if let Err(err) =
@@ -825,7 +834,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 WorkerError::Message(format!("process timeout log emit failed: {err}"))
             })?;
         let cancel_result = runtime.handle.cancel().await;
-        match runtime.handle.drain_output(256 * 1024).await {
+        match runtime
+            .handle
+            .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
+            .await
+        {
             Ok(lines) => {
                 for line in lines {
                     if let Err(err) =
@@ -880,7 +893,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             Ok(())
         }
         Ok(Some(ProcessExit::Success)) => {
-            match runtime.handle.drain_output(256 * 1024).await {
+            match runtime
+                .handle
+                .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
+                .await
+            {
                 Ok(lines) => {
                     for line in lines {
                         if let Err(err) =
@@ -939,7 +956,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             transition_to_idle(ctx, outcome, now)
         }
         Ok(Some(exit)) => {
-            match runtime.handle.drain_output(256 * 1024).await {
+            match runtime
+                .handle
+                .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
+                .await
+            {
                 Ok(lines) => {
                     for line in lines {
                         if let Err(err) =
@@ -1002,7 +1023,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             transition_to_idle(ctx, outcome, now)
         }
         Err(error) => {
-            match runtime.handle.drain_output(256 * 1024).await {
+            match runtime
+                .handle
+                .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
+                .await
+            {
                 Ok(lines) => {
                     for line in lines {
                         if let Err(err) =
@@ -1351,7 +1376,7 @@ pub(crate) fn build_command(
             validate_non_empty_path("start_postgres.data_dir", &spec.data_dir)?;
             validate_non_empty_path("start_postgres.config_file", &spec.config_file)?;
             validate_non_empty_path("start_postgres.log_file", &spec.log_file)?;
-            let wait_seconds = spec.wait_seconds.unwrap_or(30);
+            let wait_seconds = spec.wait_seconds.unwrap_or(PG_CTL_DEFAULT_WAIT_SECONDS);
             let option_tokens = vec![
                 "-c".to_string(),
                 format!("config_file={}", spec.config_file.display()),
@@ -1525,6 +1550,9 @@ mod tests {
             ports::allocate_ports,
         },
     };
+
+    const TEST_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+    const REAL_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
     fn test_log_handle() -> (LogHandle, std::sync::Arc<TestSink>) {
         let sink = std::sync::Arc::new(TestSink::default());
@@ -1879,7 +1907,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         (
             ProcessWorkerCtx {
-                poll_interval: Duration::from_millis(10),
+                poll_interval: TEST_WORKER_POLL_INTERVAL,
                 config: sample_config(),
                 log: crate::logging::LogHandle::null(),
                 capture_subprocess_output: false,
@@ -1915,7 +1943,7 @@ mod tests {
         let (log, sink) = test_log_handle();
         (
             ProcessWorkerCtx {
-                poll_interval: Duration::from_millis(10),
+                poll_interval: TEST_WORKER_POLL_INTERVAL,
                 config: sample_config(),
                 log,
                 capture_subprocess_output: false,
@@ -2278,7 +2306,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         (
             ProcessWorkerCtx {
-                poll_interval: Duration::from_millis(50),
+                poll_interval: REAL_PROCESS_POLL_INTERVAL,
                 config,
                 log: crate::logging::LogHandle::null(),
                 capture_subprocess_output: false,
@@ -2313,7 +2341,7 @@ mod tests {
                     return Ok(outcome.clone());
                 }
             }
-            sleep(Duration::from_millis(50)).await;
+            sleep(REAL_PROCESS_POLL_INTERVAL).await;
         }
 
         Err(WorkerError::Message(format!(
@@ -2511,7 +2539,7 @@ mod tests {
                         return Ok(outcome.clone());
                     }
                 }
-                sleep(Duration::from_millis(50)).await;
+                sleep(REAL_PROCESS_POLL_INTERVAL).await;
             }
 
             Err(WorkerError::Message(format!(
@@ -2791,7 +2819,7 @@ mod tests {
         drop(subscriber);
         let (_tx, rx) = mpsc::unbounded_channel();
         let mut ctx = ProcessWorkerCtx {
-            poll_interval: Duration::from_millis(10),
+            poll_interval: TEST_WORKER_POLL_INTERVAL,
             config: sample_config(),
             log: crate::logging::LogHandle::null(),
             capture_subprocess_output: false,

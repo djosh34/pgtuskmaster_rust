@@ -322,6 +322,8 @@ mod tests {
 
     use super::step_once;
 
+    const TEST_DCS_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
     #[derive(Clone, Default)]
     struct RecordingStore {
         healthy: bool,
@@ -608,7 +610,7 @@ mod tests {
         let mut ctx = DcsWorkerCtx {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
-            poll_interval: Duration::from_millis(5),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             pg_subscriber,
@@ -658,7 +660,7 @@ mod tests {
         let mut ctx = DcsWorkerCtx {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
-            poll_interval: Duration::from_millis(5),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             pg_subscriber,
@@ -722,7 +724,7 @@ mod tests {
         let mut ctx = DcsWorkerCtx {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
-            poll_interval: Duration::from_millis(5),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             pg_subscriber,
@@ -766,7 +768,7 @@ mod tests {
         let mut ctx = DcsWorkerCtx {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
-            poll_interval: Duration::from_millis(5),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
             local_postgres_host: "127.0.0.9".to_string(),
             local_postgres_port: 6543,
             pg_subscriber,
@@ -808,7 +810,7 @@ mod tests {
         let mut ctx = DcsWorkerCtx {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
-            poll_interval: Duration::from_millis(5),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             pg_subscriber,
@@ -849,7 +851,7 @@ mod tests {
         let mut ctx = DcsWorkerCtx {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
-            poll_interval: Duration::from_millis(5),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             pg_subscriber,
@@ -894,7 +896,7 @@ mod tests {
         let mut ctx = DcsWorkerCtx {
             self_id: MemberId("node-a".to_string()),
             scope: "scope-a".to_string(),
-            poll_interval: Duration::from_millis(5),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             pg_subscriber,

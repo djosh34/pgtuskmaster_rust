@@ -32,6 +32,12 @@ use crate::{
     },
 };
 
+const CONTRACT_STORE_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTRACT_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const DEBUG_API_TEST_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const CONTRACT_BLOCKING_START_TIMEOUT: Duration = Duration::from_secs(1);
+const CONTRACT_API_RESPONSIVE_DEADLINE: Duration = Duration::from_millis(500);
+
 #[derive(Default)]
 struct ContractStore;
 
@@ -109,7 +115,7 @@ impl DcsStore for BlockingAcquireStore {
             .acquire_release
             .lock()
             .map_err(|_| DcsStoreError::Io("acquire release lock poisoned".to_string()))?;
-        match release_guard.recv_timeout(Duration::from_secs(5)) {
+        match release_guard.recv_timeout(CONTRACT_STORE_RELEASE_TIMEOUT) {
             Ok(()) => Ok(true),
             Err(RecvTimeoutError::Timeout) => Err(DcsStoreError::Io(
                 "acquire release unblock timed out".to_string(),
@@ -283,7 +289,7 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
     let mut pg_ctx = PgInfoWorkerCtx {
         self_id: self_member_id.clone(),
         postgres_dsn: "host=127.0.0.1 port=1 user=postgres dbname=postgres".to_string(),
-        poll_interval: Duration::from_millis(10),
+        poll_interval: CONTRACT_WORKER_POLL_INTERVAL,
         publisher,
         log: crate::logging::LogHandle::null(),
         last_emitted_sql_status: None,
@@ -303,7 +309,7 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
     let mut dcs_ctx = DcsWorkerCtx {
         self_id: self_member_id.clone(),
         scope: "scope-a".to_string(),
-        poll_interval: Duration::from_millis(10),
+        poll_interval: CONTRACT_WORKER_POLL_INTERVAL,
         local_postgres_host: sample_runtime_config().postgres.listen_host.clone(),
         local_postgres_port: sample_runtime_config().postgres.listen_port,
         pg_subscriber: dcs_pg_subscriber,
@@ -485,7 +491,7 @@ async fn ha_state_api_stays_responsive_while_ha_attempt_leadership_blocks(
         ha_subscriber: ha_subscriber.clone(),
     });
     debug_ctx.app = AppLifecycle::Running;
-    debug_ctx.poll_interval = Duration::from_millis(5);
+    debug_ctx.poll_interval = DEBUG_API_TEST_POLL_INTERVAL;
 
     let (process_tx, _process_rx) = tokio::sync::mpsc::unbounded_channel();
     let (store, acquire_started_rx, acquire_release_tx) = BlockingAcquireStore::new();
@@ -522,7 +528,7 @@ async fn ha_state_api_stays_responsive_while_ha_attempt_leadership_blocks(
             });
 
             let started_result = tokio::task::spawn_blocking(move || {
-                acquire_started_rx.recv_timeout(Duration::from_secs(1))
+                acquire_started_rx.recv_timeout(CONTRACT_BLOCKING_START_TIMEOUT)
             })
             .await
             .map_err(|err| WorkerError::Message(format!("blocking wait join failed: {err}")))?;
@@ -538,7 +544,7 @@ async fn ha_state_api_stays_responsive_while_ha_attempt_leadership_blocks(
                 }
             }
 
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            let deadline = tokio::time::Instant::now() + CONTRACT_API_RESPONSIVE_DEADLINE;
             let observed = loop {
                 match get_ha_state_via_tcp(api_addr).await {
                     Ok(state)
@@ -557,7 +563,7 @@ async fn ha_state_api_stays_responsive_while_ha_attempt_leadership_blocks(
                         "timed out waiting for responsive /ha/state".to_string(),
                     ));
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep(CONTRACT_WORKER_POLL_INTERVAL).await;
             };
 
             acquire_release_tx

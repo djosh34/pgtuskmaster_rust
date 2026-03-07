@@ -169,6 +169,9 @@ mod tests {
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
 
+    const TEST_DCS_AND_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
+    const TEST_HA_VERSION_WAIT_TIMEOUT: Duration = Duration::from_millis(250);
+
     #[derive(Clone, Default)]
     struct RecordingStore {
         fail_write: bool,
@@ -723,7 +726,7 @@ mod tests {
             let dcs_ctx = crate::dcs::state::DcsWorkerCtx {
                 self_id: MemberId("node-a".to_string()),
                 scope: "scope-a".to_string(),
-                poll_interval: Duration::from_millis(5),
+                poll_interval: TEST_DCS_AND_PROCESS_POLL_INTERVAL,
                 local_postgres_host: runtime_config.postgres.listen_host.clone(),
                 local_postgres_port: runtime_config.postgres.listen_port,
                 pg_subscriber: pg_subscriber.clone(),
@@ -747,7 +750,7 @@ mod tests {
                 process_publisher,
                 process_rx,
             );
-            process_ctx.poll_interval = Duration::from_millis(5);
+            process_ctx.poll_interval = TEST_DCS_AND_PROCESS_POLL_INTERVAL;
             process_ctx.command_runner = Box::new(runner.clone());
             process_ctx.now = monotonic_clock(100);
 
@@ -762,7 +765,7 @@ mod tests {
                 scope: "scope-a".to_string(),
                 self_id: MemberId("node-a".to_string()),
             });
-            ha_ctx.poll_interval = Duration::from_millis(5);
+            ha_ctx.poll_interval = TEST_DCS_AND_PROCESS_POLL_INTERVAL;
             ha_ctx.process_defaults = sample_process_defaults();
             ha_ctx.now = monotonic_clock(1_000);
             ha_ctx.state = HaState {
@@ -904,7 +907,7 @@ mod tests {
             if tokio::time::Instant::now() >= deadline {
                 return false;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(TEST_DCS_AND_PROCESS_POLL_INTERVAL).await;
         }
     }
 
@@ -1464,13 +1467,15 @@ mod tests {
 
         let handle = tokio::spawn(async move { run(ctx).await });
 
-        let first_advanced = wait_for_ha_version(&subscriber, 1, Duration::from_millis(250)).await;
+        let first_advanced =
+            wait_for_ha_version(&subscriber, 1, TEST_HA_VERSION_WAIT_TIMEOUT).await;
         assert!(first_advanced);
 
         let publish_result =
             pg_publisher.publish(sample_pg_state(SqlStatus::Unreachable), UnixMillis(50));
         assert!(publish_result.is_ok());
-        let second_advanced = wait_for_ha_version(&subscriber, 2, Duration::from_millis(250)).await;
+        let second_advanced =
+            wait_for_ha_version(&subscriber, 2, TEST_HA_VERSION_WAIT_TIMEOUT).await;
         assert!(second_advanced);
 
         handle.abort();
@@ -1508,7 +1513,7 @@ mod tests {
             .build()?;
         let handle = tokio::spawn(async move { run(run_ctx).await });
 
-        let advanced = wait_for_ha_version(&run_subscriber, 1, Duration::from_millis(250)).await;
+        let advanced = wait_for_ha_version(&run_subscriber, 1, TEST_HA_VERSION_WAIT_TIMEOUT).await;
         assert!(advanced);
         let observed = run_subscriber.latest().value;
         assert!(

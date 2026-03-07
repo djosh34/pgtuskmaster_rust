@@ -16,6 +16,11 @@ use libc::{flock, LOCK_EX, LOCK_UN};
 #[cfg(unix)]
 use serde::{Deserialize, Serialize};
 
+const PORT_ALLOCATION_MAX_ATTEMPTS: usize = 200;
+const PORT_LEASE_TTL: Duration = Duration::from_secs(15 * 60);
+#[cfg(test)]
+const PORT_ALLOCATION_SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
 #[derive(Debug)]
 pub struct PortReservation {
     listeners: Vec<TcpListener>,
@@ -132,7 +137,7 @@ pub fn allocate_ports(count: usize) -> Result<PortReservation, HarnessError> {
         let mut attempts = 0usize;
         loop {
             attempts = attempts.saturating_add(1);
-            if attempts > 200 {
+            if attempts > PORT_ALLOCATION_MAX_ATTEMPTS {
                 return Err(HarnessError::InvalidInput(
                     "failed to allocate a non-leased ephemeral port after retries".to_string(),
                 ));
@@ -193,7 +198,7 @@ fn unix_now_ms() -> Result<u64, HarnessError> {
 #[cfg(unix)]
 fn lease_ttl() -> Duration {
     // Keep leases long enough that parallel `cargo test` workers don't race each other.
-    Duration::from_secs(15 * 60)
+    PORT_LEASE_TTL
 }
 
 #[cfg(unix)]
@@ -354,9 +359,11 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
-    use std::time::Duration;
 
-    use super::{allocate_ha_topology_ports, allocate_ports, HarnessError};
+    use super::{
+        allocate_ha_topology_ports, allocate_ports, HarnessError,
+        PORT_ALLOCATION_SETTLE_POLL_INTERVAL,
+    };
 
     #[test]
     fn allocate_ports_rejects_zero() {
@@ -445,7 +452,7 @@ mod tests {
             if len == workers * per_worker {
                 break;
             }
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(PORT_ALLOCATION_SETTLE_POLL_INTERVAL);
         }
 
         {

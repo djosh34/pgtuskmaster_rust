@@ -44,6 +44,35 @@ const E2E_PG_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(20);
 const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(45);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
+const E2E_API_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
+const E2E_STABLE_PRIMARY_API_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const E2E_STABLE_PRIMARY_SQL_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const E2E_NO_DUAL_PRIMARY_SAMPLE_INTERVAL: Duration = Duration::from_millis(75);
+const E2E_NO_QUORUM_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
+const E2E_NO_QUORUM_LOG_INTERVAL: Duration = Duration::from_secs(5);
+const E2E_NO_QUORUM_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const E2E_SQL_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+const E2E_STABLE_PRIMARY_STRICT_TIMEOUT_CAP: Duration = Duration::from_secs(45);
+const E2E_STABLE_PRIMARY_API_FALLBACK_TIMEOUT_CAP: Duration = Duration::from_secs(45);
+const E2E_STABLE_PRIMARY_SQL_FALLBACK_TIMEOUT_CAP: Duration = Duration::from_secs(90);
+const E2E_STABLE_PRIMARY_STRICT_CONSECUTIVE_CAP: usize = 3;
+const E2E_STABLE_PRIMARY_RELAXED_CONSECUTIVE_CAP: usize = 2;
+const E2E_STRESS_WORKLOAD_RUN_INTERVAL_MS: u64 = 250;
+const E2E_STRESS_SAMPLE_INTERVAL: Duration = Duration::from_millis(150);
+const E2E_STRESS_WORKLOAD_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+const E2E_NO_QUORUM_WORKLOAD_STOP_TIMEOUT: Duration = Duration::from_millis(200);
+const E2E_SWITCHOVER_RETRY_BACKOFF: Duration = Duration::from_millis(500);
+const E2E_PRIMARY_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(60);
+const E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT: Duration = Duration::from_secs(90);
+const E2E_SQL_REPLICATION_ASSERT_TIMEOUT: Duration = Duration::from_secs(20);
+const E2E_SHORT_NO_DUAL_PRIMARY_WINDOW: Duration = Duration::from_secs(3);
+const E2E_LONG_NO_DUAL_PRIMARY_WINDOW: Duration = Duration::from_secs(10);
+const E2E_STRESS_WORKLOAD_SETTLE_WAIT: Duration = Duration::from_secs(3);
+const E2E_STRESS_SHORT_OBSERVATION_WINDOW: Duration = Duration::from_secs(8);
+const E2E_STRESS_LONG_OBSERVATION_WINDOW: Duration = Duration::from_secs(10);
+const E2E_POST_TRANSITION_SQL_TIMEOUT: Duration = Duration::from_secs(30);
+const E2E_TABLE_INTEGRITY_TIMEOUT: Duration = Duration::from_secs(90);
+const E2E_LOADED_FAILOVER_TIMEOUT: Duration = Duration::from_secs(180);
 const STRESS_ARTIFACT_DIR: &str = ".ralph/evidence/27-e2e-ha-stress";
 const STRESS_SUMMARY_SCHEMA_VERSION: u32 = 1;
 
@@ -370,7 +399,7 @@ impl ClusterFixture {
                 command_timeout: E2E_COMMAND_TIMEOUT,
                 command_kill_wait_timeout: E2E_COMMAND_KILL_WAIT_TIMEOUT,
                 http_step_timeout: E2E_HTTP_STEP_TIMEOUT,
-                api_readiness_timeout: Duration::from_secs(120),
+                api_readiness_timeout: E2E_API_READINESS_TIMEOUT,
                 bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
                 scenario_timeout: E2E_SCENARIO_TIMEOUT,
             },
@@ -466,7 +495,7 @@ impl ClusterFixture {
                             "timed out running SQL on {node_id}; last_error={err}"
                         )));
                     }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
                 }
             }
         }
@@ -541,7 +570,7 @@ impl ClusterFixture {
                     "timed out waiting for expected rows on {node_id}; expected={expected_rows:?}; last_observation={observation}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
         }
     }
 
@@ -839,7 +868,7 @@ impl ClusterFixture {
                             "timed out verifying table integrity on {node_id}; last_observation={detail}"
                         )));
                     }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
                     continue;
                 }
             };
@@ -862,7 +891,7 @@ impl ClusterFixture {
                             "timed out verifying table integrity on {node_id}; last_observation={detail}"
                         )));
                     }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
                     continue;
                 }
             };
@@ -882,7 +911,7 @@ impl ClusterFixture {
                     "timed out verifying table integrity on {node_id}; last_observation={detail}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
         }
     }
 
@@ -1091,7 +1120,7 @@ impl ClusterFixture {
                     "timed out waiting for stable primary via API; last_error={last_error}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
         }
     }
 
@@ -1204,7 +1233,7 @@ impl ClusterFixture {
                     "timed out waiting for stable primary via best-effort API polling; last_error={last_error}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
         }
     }
 
@@ -1427,7 +1456,7 @@ impl ClusterFixture {
                 }
             }
             if attempt < max_attempts {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                tokio::time::sleep(E2E_SWITCHOVER_RETRY_BACKOFF).await;
             }
         }
 
@@ -1590,7 +1619,7 @@ impl ClusterFixture {
                     "timed out waiting for primary change from {previous} via API; last_error={detail}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
         }
     }
 
@@ -1674,7 +1703,7 @@ impl ClusterFixture {
                     "timed out waiting for primary change from {previous} via best-effort API polling; last_error={last_error}"
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
         }
     }
 
@@ -1761,7 +1790,7 @@ impl ClusterFixture {
                 last_candidate = None;
             }
 
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(E2E_STABLE_PRIMARY_SQL_POLL_INTERVAL).await;
         }
     }
 
@@ -1786,11 +1815,21 @@ impl ClusterFixture {
             ));
         }
 
-        let strict_timeout = std::cmp::min(plan.timeout, Duration::from_secs(45));
-        let api_fallback_timeout = std::cmp::min(plan.fallback_timeout, Duration::from_secs(45));
-        let sql_fallback_timeout = std::cmp::min(plan.fallback_timeout, Duration::from_secs(90));
-        let strict_required_consecutive = plan.required_consecutive.min(3);
-        let relaxed_required_consecutive = plan.fallback_required_consecutive.min(2);
+        let strict_timeout = std::cmp::min(plan.timeout, E2E_STABLE_PRIMARY_STRICT_TIMEOUT_CAP);
+        let api_fallback_timeout = std::cmp::min(
+            plan.fallback_timeout,
+            E2E_STABLE_PRIMARY_API_FALLBACK_TIMEOUT_CAP,
+        );
+        let sql_fallback_timeout = std::cmp::min(
+            plan.fallback_timeout,
+            E2E_STABLE_PRIMARY_SQL_FALLBACK_TIMEOUT_CAP,
+        );
+        let strict_required_consecutive = plan
+            .required_consecutive
+            .min(E2E_STABLE_PRIMARY_STRICT_CONSECUTIVE_CAP);
+        let relaxed_required_consecutive = plan
+            .fallback_required_consecutive
+            .min(E2E_STABLE_PRIMARY_RELAXED_CONSECUTIVE_CAP);
 
         match self
             .wait_for_stable_primary(
@@ -1874,7 +1913,7 @@ impl ClusterFixture {
             if tokio::time::Instant::now() >= deadline {
                 return observer.finalize_no_dual_primary_window();
             }
-            tokio::time::sleep(Duration::from_millis(75)).await;
+            tokio::time::sleep(E2E_NO_DUAL_PRIMARY_SAMPLE_INTERVAL).await;
         }
     }
 
@@ -1903,22 +1942,22 @@ impl ClusterFixture {
             self.ensure_runtime_tasks_healthy().await?;
             let mut poll_details = Vec::new();
             let polled = match self
-                .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
+                .poll_node_ha_states_best_effort_with_timeout(E2E_NO_QUORUM_OBSERVATION_TIMEOUT)
                 .await
             {
                 Ok(values) => values,
                 Err(err) => {
                     last_observation = Some(format!("poll:error={err}"));
-                    if last_recorded_at.elapsed() >= Duration::from_secs(5) {
+                    if last_recorded_at.elapsed() >= E2E_NO_QUORUM_LOG_INTERVAL {
                         self.record(format!("no-quorum wait poll: poll:error={err}"));
                         last_recorded_at = tokio::time::Instant::now();
                     }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(E2E_NO_QUORUM_RETRY_INTERVAL).await;
                     continue;
                 }
             };
             let (sql_roles, sql_errors) = self
-                .cluster_sql_roles_best_effort_with_timeout(Duration::from_secs(3))
+                .cluster_sql_roles_best_effort_with_timeout(E2E_NO_QUORUM_OBSERVATION_TIMEOUT)
                 .await?;
             let mut api_success_count = 0usize;
             let mut current_api_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
@@ -1985,13 +2024,13 @@ impl ClusterFixture {
                     sql_errors.join(" | ")
                 ));
             }
-            if last_recorded_at.elapsed() >= Duration::from_secs(5) {
+            if last_recorded_at.elapsed() >= E2E_NO_QUORUM_LOG_INTERVAL {
                 if let Some(observation) = last_observation.as_deref() {
                     self.record(format!("no-quorum wait poll: {observation}"));
                 }
                 last_recorded_at = tokio::time::Instant::now();
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(E2E_NO_QUORUM_RETRY_INTERVAL).await;
         }
     }
 
@@ -2300,18 +2339,18 @@ fn finalize_stress_scenario_result(
         (None, Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
             "stress artifact write failed: {artifact_err}; shutdown failed: {shutdown_err}"
         ))),
-        (Some(run_err), Ok((timeline, summary)), Err(shutdown_err)) => Err(WorkerError::Message(
-            format!(
+        (Some(run_err), Ok((timeline, summary)), Err(shutdown_err)) => {
+            Err(WorkerError::Message(format!(
                 "{run_err}; shutdown failed: {shutdown_err}; timeline: {}; summary: {}",
                 timeline.display(),
                 summary.display()
-            ),
-        )),
-        (Some(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(
-            format!(
+            )))
+        }
+        (Some(run_err), Err(artifact_err), Err(shutdown_err)) => {
+            Err(WorkerError::Message(format!(
                 "{run_err}; stress artifact write failed: {artifact_err}; shutdown failed: {shutdown_err}"
-            ),
-        )),
+            )))
+        }
         (None, Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
             "stress artifact write failed: {artifact_err}"
         ))),
@@ -2346,10 +2385,10 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
             .wait_for_stable_primary_resilient(
                 StablePrimaryWaitPlan {
                     context: "unassisted failover bootstrap stable-primary",
-                    timeout: Duration::from_secs(60),
+                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 5,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
@@ -2360,7 +2399,7 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
             "unassisted failover bootstrap success: primary={bootstrap_primary}"
         ));
         fixture
-            .assert_no_dual_primary_window(Duration::from_secs(3))
+            .assert_no_dual_primary_window(E2E_SHORT_NO_DUAL_PRIMARY_WINDOW)
             .await?;
 
         fixture.record("unassisted failover SQL pre-check: create table and insert pre-failure row");
@@ -2368,21 +2407,21 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
             .run_sql_on_node_with_retry(
                 &bootstrap_primary,
                 "CREATE TABLE IF NOT EXISTS ha_unassisted_failover_proof (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
-                Duration::from_secs(20),
+                E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
             )
             .await?;
         fixture
             .run_sql_on_node_with_retry(
                 &bootstrap_primary,
                 "INSERT INTO ha_unassisted_failover_proof (id, payload) VALUES (1, 'before') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
-                Duration::from_secs(20),
+                E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
             )
             .await?;
         let pre_rows_raw = fixture
             .run_sql_on_node_with_retry(
                 &bootstrap_primary,
                 "SELECT id::text || ':' || payload FROM ha_unassisted_failover_proof ORDER BY id",
-                Duration::from_secs(20),
+                E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
             )
             .await?;
         let pre_rows = ha_e2e::util::parse_psql_rows(pre_rows_raw.as_str());
@@ -2405,7 +2444,7 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
                     &replica_id,
                     "SELECT id::text || ':' || payload FROM ha_unassisted_failover_proof ORDER BY id",
                     expected_pre_rows.as_slice(),
-                    Duration::from_secs(20),
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
                 )
                 .await?;
             fixture.record(format!(
@@ -2424,7 +2463,7 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
         );
         let failover_primary = match fixture
             .wait_for_stable_primary_best_effort(
-                Duration::from_secs(120),
+                E2E_API_READINESS_TIMEOUT,
                 Some(&bootstrap_primary),
                 3,
                 1,
@@ -2438,19 +2477,22 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
                     "unassisted failover stable-primary wait failed after forced stop: {wait_err}; retrying with relaxed primary-change detection"
                 ));
                 fixture
-                    .wait_for_primary_change(&bootstrap_primary, Duration::from_secs(90))
+                    .wait_for_primary_change(
+                        &bootstrap_primary,
+                        E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                    )
                     .await?
             }
         };
         fixture
-            .assert_no_dual_primary_window(Duration::from_secs(10))
+            .assert_no_dual_primary_window(E2E_LONG_NO_DUAL_PRIMARY_WINDOW)
             .await?;
         fixture.record(
             "unassisted failover recovery: confirm SQL-visible primary after API recovery",
         );
         let sql_confirmed_primary = fixture
             .wait_for_stable_primary_via_sql(
-                Duration::from_secs(60),
+                E2E_PRIMARY_CONVERGENCE_TIMEOUT,
                 Some(&bootstrap_primary),
                 2,
                 1,
@@ -2462,7 +2504,7 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
             ));
         }
         if let Ok(polled) = fixture
-            .poll_node_ha_states_best_effort_with_timeout(Duration::from_secs(3))
+            .poll_node_ha_states_best_effort_with_timeout(E2E_SHORT_NO_DUAL_PRIMARY_WINDOW)
             .await
         {
             let states = polled
@@ -2573,7 +2615,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
             scenario_name: scenario_name.clone(),
             table_name: "ha_stress_switchover".to_string(),
             worker_count: 4,
-            run_interval_ms: 250,
+            run_interval_ms: E2E_STRESS_WORKLOAD_RUN_INTERVAL_MS,
         };
         let table_name = sanitize_sql_identifier(workload_spec.table_name.as_str());
 
@@ -2582,10 +2624,10 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
             .wait_for_stable_primary_resilient(
                 StablePrimaryWaitPlan {
                     context: "stress switchover bootstrap stable-primary",
-                    timeout: Duration::from_secs(90),
+                    timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 3,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
@@ -2596,17 +2638,21 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
             .prepare_stress_table(&bootstrap_primary, table_name.as_str())
             .await?;
         let workload_handle = fixture.start_sql_workload(workload_spec.clone()).await?;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(E2E_STRESS_WORKLOAD_SETTLE_WAIT).await;
 
         fixture.record("stress switchover: trigger API switchover while workload is active");
         fixture
             .request_switchover_via_cli("e2e-stress-switchover")
             .await?;
         let ha_stats = fixture
-            .sample_ha_states_window(Duration::from_secs(8), Duration::from_millis(150), 80)
+            .sample_ha_states_window(
+                E2E_STRESS_SHORT_OBSERVATION_WINDOW,
+                E2E_STRESS_SAMPLE_INTERVAL,
+                80,
+            )
             .await?;
         let workload = fixture
-            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
+            .stop_sql_workload_and_collect(workload_handle, E2E_STRESS_WORKLOAD_STOP_TIMEOUT)
             .await?;
         if workload.committed_writes == 0 {
             return Err(WorkerError::Message(
@@ -2652,7 +2698,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
             .assert_former_primary_demoted_or_unreachable_after_transition(&bootstrap_primary)
             .await?;
         fixture
-            .assert_no_dual_primary_window(Duration::from_secs(10))
+            .assert_no_dual_primary_window(E2E_LONG_NO_DUAL_PRIMARY_WINDOW)
             .await?;
         fixture
             .prepare_stress_table(&switchover_primary, table_name.as_str())
@@ -2664,7 +2710,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
                     "INSERT INTO {table_name} (worker_id, seq, payload) VALUES (9999, 1, 'post-switchover-proof') ON CONFLICT (worker_id, seq) DO UPDATE SET payload = EXCLUDED.payload"
                 )
                 .as_str(),
-                Duration::from_secs(30),
+                E2E_POST_TRANSITION_SQL_TIMEOUT,
             )
             .await?;
 
@@ -2673,7 +2719,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
                 &switchover_primary,
                 table_name.as_str(),
                 1,
-                Duration::from_secs(90),
+                E2E_TABLE_INTEGRITY_TIMEOUT,
             )
             .await?;
 
@@ -2747,7 +2793,7 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
             scenario_name: scenario_name.clone(),
             table_name: "ha_stress_failover".to_string(),
             worker_count: 4,
-            run_interval_ms: 250,
+            run_interval_ms: E2E_STRESS_WORKLOAD_RUN_INTERVAL_MS,
         };
         let table_name = sanitize_sql_identifier(workload_spec.table_name.as_str());
 
@@ -2756,10 +2802,10 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
             .wait_for_stable_primary_resilient(
                 StablePrimaryWaitPlan {
                     context: "stress failover bootstrap stable-primary",
-                    timeout: Duration::from_secs(60),
+                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
                     excluded_primary: None,
                     required_consecutive: 5,
-                    fallback_timeout: Duration::from_secs(90),
+                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
@@ -2770,17 +2816,21 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
             .prepare_stress_table(&bootstrap_primary, table_name.as_str())
             .await?;
         let workload_handle = fixture.start_sql_workload(workload_spec.clone()).await?;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(E2E_STRESS_WORKLOAD_SETTLE_WAIT).await;
 
         fixture.record(format!(
             "stress failover: stop postgres on bootstrap primary {bootstrap_primary}"
         ));
         fixture.stop_postgres_for_node(&bootstrap_primary).await?;
         let ha_stats = fixture
-            .sample_ha_states_window(Duration::from_secs(10), Duration::from_millis(150), 100)
+            .sample_ha_states_window(
+                E2E_STRESS_LONG_OBSERVATION_WINDOW,
+                E2E_STRESS_SAMPLE_INTERVAL,
+                100,
+            )
             .await?;
         let workload = fixture
-            .stop_sql_workload_and_collect(workload_handle, Duration::from_secs(2))
+            .stop_sql_workload_and_collect(workload_handle, E2E_STRESS_WORKLOAD_STOP_TIMEOUT)
             .await?;
         if workload.committed_writes == 0 {
             return Err(WorkerError::Message(
@@ -2790,7 +2840,7 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
         ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
         let failover_primary = match fixture
             .wait_for_stable_primary(
-                Duration::from_secs(180),
+                E2E_LOADED_FAILOVER_TIMEOUT,
                 Some(&bootstrap_primary),
                 3,
                 &mut phase_history,
@@ -2803,7 +2853,10 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
                     "stress failover stable-primary wait failed under load: {wait_err}; retrying with relaxed single-sample promotion detection"
                 ));
                 fixture
-                    .wait_for_primary_change(&bootstrap_primary, Duration::from_secs(90))
+                    .wait_for_primary_change(
+                        &bootstrap_primary,
+                        E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                    )
                     .await?
             }
         };
@@ -2828,7 +2881,7 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
                     "INSERT INTO {table_name} (worker_id, seq, payload) VALUES (9999, 2, 'post-failover-proof') ON CONFLICT (worker_id, seq) DO UPDATE SET payload = EXCLUDED.payload"
                 )
                 .as_str(),
-                Duration::from_secs(30),
+                E2E_POST_TRANSITION_SQL_TIMEOUT,
             )
             .await?;
 
@@ -2837,7 +2890,7 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
                 &failover_primary,
                 table_name.as_str(),
                 1,
-                Duration::from_secs(90),
+                E2E_TABLE_INTEGRITY_TIMEOUT,
             )
             .await?;
         fixture.record(format!(
@@ -2956,7 +3009,7 @@ pub async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), Work
             )));
         }
         let ha_stats = fixture
-            .sample_ha_states_window(Duration::from_secs(4), Duration::from_millis(150), 60)
+            .sample_ha_states_window(Duration::from_secs(4), E2E_STRESS_SAMPLE_INTERVAL, 60)
             .await?;
         assert_no_dual_primary_in_samples(&ha_stats, 1)?;
 
@@ -3020,7 +3073,7 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             scenario_name: scenario_name.to_string(),
             table_name: format!("ha_no_quorum_fencing_{token}"),
             worker_count: 4,
-            run_interval_ms: 250,
+            run_interval_ms: E2E_STRESS_WORKLOAD_RUN_INTERVAL_MS,
         };
         let table_name = sanitize_sql_identifier(workload_spec.table_name.as_str());
 
@@ -3055,13 +3108,13 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             )
             .await?;
         let ha_stats = fixture
-            .sample_ha_states_window(Duration::from_secs(2), Duration::from_millis(150), 80)
+            .sample_ha_states_window(Duration::from_secs(2), E2E_STRESS_SAMPLE_INTERVAL, 80)
             .await?;
 
         let fencing_grace_ms = 7_000u64;
         tokio::time::sleep(Duration::from_secs(8)).await;
         let workload = fixture
-            .stop_sql_workload_and_collect(workload_handle, Duration::from_millis(200))
+            .stop_sql_workload_and_collect(workload_handle, E2E_NO_QUORUM_WORKLOAD_STOP_TIMEOUT)
             .await?;
         if workload.committed_writes == 0 {
             return Err(WorkerError::Message(

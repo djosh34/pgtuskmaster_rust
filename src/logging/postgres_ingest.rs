@@ -19,6 +19,7 @@ pub(crate) struct PostgresIngestWorkerCtx {
 }
 
 const POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS: u64 = 30_000;
+const POSTGRES_INGEST_MAX_BYTES_PER_FILE: usize = 256 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct IngestErrorKey {
@@ -241,7 +242,7 @@ async fn step_once(
     ctx: &PostgresIngestWorkerCtx,
     state: &mut PostgresIngestWorkerState,
 ) -> Result<(), WorkerError> {
-    let max_bytes_per_file = 256 * 1024;
+    let max_bytes_per_file = POSTGRES_INGEST_MAX_BYTES_PER_FILE;
     let mut pg_ctl_lines_emitted: u64 = 0;
     let mut log_dir_lines_emitted: u64 = 0;
     let mut log_dir_files_tailed: u64 = 0;
@@ -854,6 +855,10 @@ mod tests {
         IngestErrorRateLimiter,
     };
 
+    const REAL_INGEST_RETRY_SLEEP: Duration = Duration::from_millis(20);
+    const REAL_PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
+    const REAL_PSQL_RETRY_SLEEP: Duration = Duration::from_millis(50);
+
     fn sample_runtime_config() -> RuntimeConfig {
         let baseline_logging =
             crate::test_harness::runtime_config::sample_postgres_logging_config();
@@ -1249,7 +1254,10 @@ mod tests {
         use super::super::{
             step_once as ingest_step_once, PostgresIngestWorkerCtx, PostgresIngestWorkerState,
         };
-        use super::{sample_runtime_config, test_log_handle};
+        use super::{
+            sample_runtime_config, test_log_handle, REAL_INGEST_RETRY_SLEEP,
+            REAL_PROCESS_WORKER_POLL_INTERVAL, REAL_PSQL_RETRY_SLEEP,
+        };
 
         async fn wait_for_process_idle_success(
             ctx: &mut ProcessWorkerCtx,
@@ -1381,7 +1389,7 @@ mod tests {
                     )));
                 }
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(REAL_PSQL_RETRY_SLEEP).await;
             }
 
             Err(WorkerError::Message(format!(
@@ -1477,7 +1485,7 @@ mod tests {
                     pg.shutdown().await?;
                     return Ok(());
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(REAL_INGEST_RETRY_SLEEP).await;
             }
 
             pg.shutdown().await?;
@@ -1547,7 +1555,7 @@ mod tests {
             );
             let (tx, rx) = mpsc::unbounded_channel();
             let mut process_ctx = ProcessWorkerCtx {
-                poll_interval: Duration::from_millis(5),
+                poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
                 config: cfg.process.clone(),
                 log: log_handle.clone(),
                 capture_subprocess_output: true,
@@ -1736,7 +1744,7 @@ mod tests {
                 if saw_pg_ctl_log && saw_pg_tool && saw_jsonlog {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(REAL_INGEST_RETRY_SLEEP).await;
             }
 
             let stop_id = JobId("stop".to_string());
@@ -1815,7 +1823,7 @@ mod tests {
             let (publisher, _subscriber) = new_state_channel(initial.clone(), UnixMillis(0));
             let (tx, rx) = mpsc::unbounded_channel();
             let mut ctx = ProcessWorkerCtx {
-                poll_interval: Duration::from_millis(5),
+                poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
                 config: cfg.process,
                 log: log_handle,
                 capture_subprocess_output: true,
@@ -1866,7 +1874,7 @@ mod tests {
                 if saw_stderr {
                     return Ok(());
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(REAL_INGEST_RETRY_SLEEP).await;
             }
 
             Err(WorkerError::Message(

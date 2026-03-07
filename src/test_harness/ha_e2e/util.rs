@@ -14,6 +14,11 @@ use crate::cli::error::CliError;
 use crate::state::{UnixMillis, WorkerError};
 use crate::test_harness::ports::{allocate_ports, PortReservation};
 
+const LOG_TAIL_LINE_LIMIT: usize = 40;
+const API_READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const FORCE_KILL_GRACE_PERIOD: Duration = Duration::from_millis(200);
+const NON_OVERLAPPING_PORT_ALLOCATION_ATTEMPTS: usize = 30;
+
 pub async fn run_with_local_set<F, T>(future: F) -> T
 where
     F: std::future::Future<Output = T>,
@@ -55,7 +60,7 @@ pub async fn wait_for_node_api_ready_or_task_exit(
                 ))),
                 Err(err) => Err(WorkerError::Message(format!(
                     "runtime task failed for {node_id} before API became ready: {err}; postgres_log_tail={}",
-                    read_log_tail(postgres_log_file, 40)
+                    read_log_tail(postgres_log_file, LOG_TAIL_LINE_LIMIT)
                 ))),
             };
         }
@@ -70,10 +75,10 @@ pub async fn wait_for_node_api_ready_or_task_exit(
             let _ = task.await;
             return Err(WorkerError::Message(format!(
                 "timed out waiting for api readiness for {node_id} at {node_addr}; last_observation={observation}; postgres_log_tail={}",
-                read_log_tail(postgres_log_file, 40)
+                read_log_tail(postgres_log_file, LOG_TAIL_LINE_LIMIT)
             )));
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(API_READY_POLL_INTERVAL).await;
     }
 }
 
@@ -232,7 +237,7 @@ pub async fn wait_for_bootstrap_primary(
                 "timed out waiting for bootstrap primary {expected_member_id} at {node_addr}; last_observation={observation}"
             )));
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(API_READY_POLL_INTERVAL).await;
     }
 }
 
@@ -353,14 +358,14 @@ async fn pid_is_alive(pid: u32, label: &str) -> Result<bool, WorkerError> {
 
 async fn force_kill_postmaster_pid(pid: u32, label: &str) -> Result<(), WorkerError> {
     let _ = kill_best_effort(pid, "TERM", label).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(FORCE_KILL_GRACE_PERIOD).await;
 
     if !pid_is_alive(pid, label).await? {
         return Ok(());
     }
 
     let _ = kill_best_effort(pid, "KILL", label).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(FORCE_KILL_GRACE_PERIOD).await;
     if pid_is_alive(pid, label).await? {
         Err(WorkerError::Message(format!(
             "{label} postgres pid {pid} still alive after kill"
@@ -530,7 +535,7 @@ pub fn reserve_non_overlapping_ports(
         return Ok(PortReservation::empty());
     }
 
-    for _attempt in 0..30 {
+    for _attempt in 0..NON_OVERLAPPING_PORT_ALLOCATION_ATTEMPTS {
         let candidate = allocate_ports(count)?;
         let overlaps = candidate
             .as_slice()
