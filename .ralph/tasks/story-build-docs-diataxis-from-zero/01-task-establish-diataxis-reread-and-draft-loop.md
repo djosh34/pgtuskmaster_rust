@@ -1,4 +1,4 @@
-## Task: Establish Diataxis Reread And Draft Loop <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Establish Diataxis Reread And Draft Loop <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>
 **Goal:** Establish only the Diataxis working method, the four documentation forms, and the exact authoring loop for later tasks: `draft -> check/edit -> revise`. Do not create documentation structure in this task. Do not create empty buckets in `docs/src/`.
@@ -70,16 +70,16 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
 </description>
 
 <acceptance_criteria>
-- [ ] `docs/drafts/` exists and is reserved for competing non-final draft generations
-- [ ] No workflow page is created under `docs/src/`
-- [ ] No empty tutorial/how-to/reference/explanation bucket is created under `docs/src/`
-- [ ] The task clearly establishes the mandatory reread list, the 5-pages-per-run cap, and the `draft -> check/edit -> revise` method for later tasks
-- [ ] The task clearly establishes that later tasks may radically change docs structure as content emerges
-- [ ] `make docs-build` — passes cleanly
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] `docs/drafts/` exists and is reserved for competing non-final draft generations
+- [x] No workflow page is created under `docs/src/`
+- [x] No empty tutorial/how-to/reference/explanation bucket is created under `docs/src/`
+- [x] The task clearly establishes the mandatory reread list, the 5-pages-per-run cap, and the `draft -> check/edit -> revise` method for later tasks
+- [x] The task clearly establishes that later tasks may radically change docs structure as content emerges
+- [x] `make docs-build` — passes cleanly
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 <implementation_plan>
@@ -119,3 +119,8 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
 
 NOW EXECUTE
 </implementation_plan>
+
+<verification>
+- `docs/drafts/.gitkeep` was added as the only tracked artifact under `docs/drafts/`; `docs/src/` gained no workflow page or empty Diataxis bucket.
+- Passed on 2026-03-07: `make docs-build`, `make check`, `make test`, `make test-long`, and `make lint`.
+</verification>
