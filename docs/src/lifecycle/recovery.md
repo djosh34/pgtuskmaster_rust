@@ -12,9 +12,17 @@ For managed starts after rewind, base backup, or rejoin work, `pgtuskmaster` reb
 
 - recovery and follow settings live in `PGDATA/pgtm.postgresql.conf`
 - managed signal files are normalized to the single expected state before PostgreSQL starts
+- password-authenticated standby and recovery starts use a managed libpq passfile at `PGDATA/pgtm.standby.passfile`
 - any active `PGDATA/postgresql.auto.conf` is quarantined out of the live startup path
 
 The runtime does not treat leftover PostgreSQL side-effect files as authoritative recovery instructions. Recovery posture must be reconstructible from DCS and runtime state plus previously managed artifacts; otherwise startup fails instead of guessing.
+
+Authentication for recovery is intentionally split by runtime path:
+
+- `pg_rewind` keeps using the rewinder role through its subprocess environment
+- steady-state WAL streaming after PostgreSQL starts uses the replicator role from managed `primary_conninfo` plus the managed standby passfile
+
+That separation matters operationally. A base backup or rewind succeeding does not prove the long-lived walreceiver path is configured correctly unless the managed standby passfile and matching `pg_hba.conf` rules are also in place.
 
 ## Recovery paths
 

@@ -7,12 +7,13 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    config::{ApiTlsMode, InlineOrPath, RuntimeConfig},
-    pginfo::conninfo::parse_pg_conninfo,
+    config::{ApiTlsMode, InlineOrPath, RoleAuthConfig, RuntimeConfig, SecretSource},
     postgres_managed_conf::{
+        managed_standby_passfile_path, parse_managed_primary_conninfo,
         render_managed_postgres_conf, ManagedPostgresConf, ManagedPostgresConfError,
         ManagedPostgresStartIntent, ManagedPostgresTlsConfig, ManagedRecoverySignal,
-        MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME, MANAGED_STANDBY_SIGNAL_NAME,
+        ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
+        MANAGED_STANDBY_SIGNAL_NAME,
     },
 };
 
@@ -26,6 +27,7 @@ pub(crate) struct ManagedPostgresConfig {
     pub(crate) postgresql_conf_path: PathBuf,
     pub(crate) hba_path: PathBuf,
     pub(crate) ident_path: PathBuf,
+    pub(crate) standby_passfile_path: Option<PathBuf>,
     pub(crate) tls_cert_path: Option<PathBuf>,
     pub(crate) tls_key_path: Option<PathBuf>,
     pub(crate) tls_client_ca_path: Option<PathBuf>,
@@ -60,6 +62,8 @@ pub(crate) fn materialize_managed_postgres_config(
     let managed_ident = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_PG_IDENT_CONF_NAME))?;
     let managed_postgresql_conf =
         absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
+    let managed_standby_passfile =
+        absolutize_path(&managed_standby_passfile_path(&cfg.postgres.data_dir))?;
     let standby_signal = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_STANDBY_SIGNAL_NAME))?;
     let recovery_signal =
         absolutize_path(&cfg.postgres.data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME))?;
@@ -80,6 +84,13 @@ pub(crate) fn materialize_managed_postgres_config(
     write_atomic(&managed_ident, ident_contents.as_bytes(), Some(0o644))?;
 
     let tls_files = materialize_tls_files(cfg)?;
+    let normalized_start_intent =
+        normalize_standby_auth_paths(start_intent, managed_standby_passfile.as_path());
+    let standby_passfile_path = materialize_managed_standby_passfile(
+        cfg,
+        &normalized_start_intent,
+        managed_standby_passfile.as_path(),
+    )?;
     let managed_conf = ManagedPostgresConf {
         listen_addresses: cfg.postgres.listen_host.clone(),
         port: cfg.postgres.listen_port,
@@ -87,7 +98,7 @@ pub(crate) fn materialize_managed_postgres_config(
         hba_file: managed_hba.clone(),
         ident_file: managed_ident.clone(),
         tls: tls_files.managed_tls_config.clone(),
-        start_intent: start_intent.clone(),
+        start_intent: normalized_start_intent.clone(),
         extra_gucs: cfg.postgres.extra_gucs.clone(),
     };
     let rendered_conf =
@@ -100,7 +111,7 @@ pub(crate) fn materialize_managed_postgres_config(
 
     quarantine_postgresql_auto_conf(&postgresql_auto_conf, &quarantined_postgresql_auto_conf)?;
     materialize_recovery_signal_files(
-        start_intent.recovery_signal(),
+        normalized_start_intent.recovery_signal(),
         &standby_signal,
         &recovery_signal,
     )?;
@@ -109,6 +120,7 @@ pub(crate) fn materialize_managed_postgres_config(
         postgresql_conf_path: managed_postgresql_conf,
         hba_path: managed_hba,
         ident_path: managed_ident,
+        standby_passfile_path,
         tls_cert_path: tls_files.cert_path,
         tls_key_path: tls_files.key_path,
         tls_client_ca_path: tls_files.client_ca_path,
@@ -143,23 +155,25 @@ pub(crate) fn read_existing_replica_start_intent(
                 managed_conf_path.display()
             ),
         })?;
-    let primary_conninfo = parse_pg_conninfo(primary_conninfo_raw.as_str()).map_err(|err| {
-        ManagedPostgresError::InvalidManagedState {
+    let parsed = parse_managed_primary_conninfo(primary_conninfo_raw.as_str(), data_dir).map_err(
+        |err| ManagedPostgresError::InvalidManagedState {
             message: format!(
                 "existing managed primary_conninfo at {} is invalid: {err}",
                 managed_conf_path.display()
             ),
-        }
-    })?;
+        },
+    )?;
     let primary_slot_name = parse_managed_string_setting(rendered.as_str(), "primary_slot_name")?;
 
     match recovery_signal {
         ManagedRecoverySignal::Standby => Ok(Some(ManagedPostgresStartIntent::replica(
-            primary_conninfo,
+            parsed.conninfo,
+            parsed.standby_auth,
             primary_slot_name,
         ))),
         ManagedRecoverySignal::Recovery => Ok(Some(ManagedPostgresStartIntent::recovery(
-            primary_conninfo,
+            parsed.conninfo,
+            parsed.standby_auth,
             primary_slot_name,
         ))),
         ManagedRecoverySignal::None => Ok(None),
@@ -234,6 +248,150 @@ fn materialize_tls_files(
             })
         }
     }
+}
+
+fn normalize_standby_auth_paths(
+    start_intent: &ManagedPostgresStartIntent,
+    managed_passfile_path: &Path,
+) -> ManagedPostgresStartIntent {
+    match start_intent {
+        ManagedPostgresStartIntent::Primary => ManagedPostgresStartIntent::primary(),
+        ManagedPostgresStartIntent::Replica {
+            primary_conninfo,
+            standby_auth,
+            primary_slot_name,
+        } => ManagedPostgresStartIntent::replica(
+            primary_conninfo.clone(),
+            normalize_standby_auth(standby_auth, managed_passfile_path),
+            primary_slot_name.clone(),
+        ),
+        ManagedPostgresStartIntent::Recovery {
+            primary_conninfo,
+            standby_auth,
+            primary_slot_name,
+        } => ManagedPostgresStartIntent::recovery(
+            primary_conninfo.clone(),
+            normalize_standby_auth(standby_auth, managed_passfile_path),
+            primary_slot_name.clone(),
+        ),
+    }
+}
+
+fn normalize_standby_auth(
+    standby_auth: &ManagedStandbyAuth,
+    managed_passfile_path: &Path,
+) -> ManagedStandbyAuth {
+    match standby_auth {
+        ManagedStandbyAuth::NoPassword => ManagedStandbyAuth::NoPassword,
+        ManagedStandbyAuth::PasswordPassfile { .. } => ManagedStandbyAuth::PasswordPassfile {
+            path: managed_passfile_path.to_path_buf(),
+        },
+    }
+}
+
+fn materialize_managed_standby_passfile(
+    cfg: &RuntimeConfig,
+    start_intent: &ManagedPostgresStartIntent,
+    managed_passfile_path: &Path,
+) -> Result<Option<PathBuf>, ManagedPostgresError> {
+    let standby_details = match start_intent {
+        ManagedPostgresStartIntent::Primary => None,
+        ManagedPostgresStartIntent::Replica {
+            primary_conninfo,
+            standby_auth,
+            ..
+        }
+        | ManagedPostgresStartIntent::Recovery {
+            primary_conninfo,
+            standby_auth,
+            ..
+        } => Some((primary_conninfo, standby_auth)),
+    };
+
+    let Some((primary_conninfo, standby_auth)) = standby_details else {
+        remove_file_if_exists(managed_passfile_path)?;
+        return Ok(None);
+    };
+
+    match standby_auth {
+        ManagedStandbyAuth::NoPassword => {
+            remove_file_if_exists(managed_passfile_path)?;
+            Ok(None)
+        }
+        ManagedStandbyAuth::PasswordPassfile { path } => {
+            let password = resolve_role_password(
+                "postgres.roles.replicator.auth",
+                &cfg.postgres.roles.replicator.auth,
+            )?;
+            let rendered = render_libpq_passfile_entry(primary_conninfo, password.as_str())?;
+            write_atomic(path, rendered.as_bytes(), Some(0o600))?;
+            Ok(Some(path.clone()))
+        }
+    }
+}
+
+fn resolve_role_password(key: &str, auth: &RoleAuthConfig) -> Result<String, ManagedPostgresError> {
+    match auth {
+        RoleAuthConfig::Password { password } => resolve_secret_source_string(key, password),
+        RoleAuthConfig::Tls => Err(ManagedPostgresError::InvalidConfig {
+            message: format!(
+                "{key} must use password auth when managed standby passfile materialization is requested"
+            ),
+        }),
+    }
+}
+
+fn resolve_secret_source_string(
+    key: &str,
+    secret: &SecretSource,
+) -> Result<String, ManagedPostgresError> {
+    let value = match &secret.0 {
+        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => {
+            fs::read_to_string(path).map_err(|err| ManagedPostgresError::Io {
+                message: format!("failed to read `{key}` from {}: {err}", path.display()),
+            })?
+        }
+        InlineOrPath::Inline { content } => content.clone(),
+    };
+
+    Ok(value.trim_end_matches(['\n', '\r']).to_string())
+}
+
+fn render_libpq_passfile_entry(
+    conninfo: &crate::pginfo::state::PgConnInfo,
+    password: &str,
+) -> Result<String, ManagedPostgresError> {
+    if [conninfo.host.as_str(), conninfo.dbname.as_str(), conninfo.user.as_str(), password]
+        .iter()
+        .any(|value| value.chars().any(|ch| ch == '\n' || ch == '\r'))
+    {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "managed standby passfile fields must not contain newlines".to_string(),
+        });
+    }
+
+    Ok(format!(
+        "{}:{}:{}:{}:{}\n",
+        escape_libpq_passfile_field(conninfo.host.as_str()),
+        conninfo.port,
+        escape_libpq_passfile_field(conninfo.dbname.as_str()),
+        escape_libpq_passfile_field(conninfo.user.as_str()),
+        escape_libpq_passfile_field(password),
+    ))
+}
+
+fn escape_libpq_passfile_field(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            ':' | '\\' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn map_managed_conf_error(err: ManagedPostgresConfError) -> ManagedPostgresError {
@@ -533,7 +691,10 @@ fn now_millis() -> Result<u128, ManagedPostgresError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io, path::PathBuf, time::Duration};
+    use std::{fs, io, path::{Path, PathBuf}, time::Duration};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use tokio::process::Command;
     use tokio::time::Instant;
@@ -545,7 +706,8 @@ mod tests {
         },
         pginfo::{conninfo::PgSslMode, state::PgConnInfo},
         postgres_managed_conf::{
-            ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
+            managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedStandbyAuth,
+            MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
         test_harness::{
             binaries::require_pg16_bin_for_real_tests,
@@ -646,6 +808,7 @@ mod tests {
                 ssl_mode: PgSslMode::Prefer,
                 options: None,
             },
+            sample_password_standby_auth(&data_dir),
             None,
         );
 
@@ -713,6 +876,7 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                     options: None,
                 },
+                sample_password_standby_auth(&data_dir),
                 None,
             ),
         )
@@ -729,6 +893,88 @@ mod tests {
                 "expected standby.signal to be removed at {}",
                 managed.standby_signal_path.display()
             ));
+        }
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_managed_postgres_config_writes_managed_standby_passfile() -> Result<(), String> {
+        let data_dir = unique_test_data_dir("standby-passfile");
+        let cfg = sample_runtime_config(data_dir.clone());
+
+        let managed = materialize_managed_postgres_config(
+            &cfg,
+            &ManagedPostgresStartIntent::replica(
+                sample_replica_conninfo(),
+                sample_password_standby_auth(&data_dir),
+                None,
+            ),
+        )
+        .map_err(|err| format!("materialize replica config failed: {err}"))?;
+
+        let passfile_path = managed
+            .standby_passfile_path
+            .ok_or_else(|| "missing standby passfile path".to_string())?;
+        let contents = fs::read_to_string(&passfile_path).map_err(|err| {
+            format!("read standby passfile {} failed: {err}", passfile_path.display())
+        })?;
+        if contents != "leader.internal:5432:postgres:replicator:secret-password\n" {
+            return Err(format!(
+                "unexpected standby passfile contents at {}: {contents:?}",
+                passfile_path.display()
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(&passfile_path)
+                .map_err(|err| format!("stat standby passfile failed: {err}"))?
+                .permissions()
+                .mode()
+                & 0o777;
+            if mode != 0o600 {
+                return Err(format!(
+                    "expected standby passfile mode 0600, got {:o} at {}",
+                    mode,
+                    passfile_path.display()
+                ));
+            }
+        }
+
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_managed_postgres_config_removes_stale_standby_passfile_on_primary_start(
+    ) -> Result<(), String> {
+        let data_dir = unique_test_data_dir("stale-standby-passfile");
+        let cfg = sample_runtime_config(data_dir.clone());
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
+        let stale_path = managed_standby_passfile_path(&data_dir);
+        fs::write(&stale_path, "stale-password\n").map_err(|err| {
+            format!(
+                "write stale standby passfile {} failed: {err}",
+                stale_path.display()
+            )
+        })?;
+
+        let managed =
+            materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
+                .map_err(|err| format!("materialize primary config failed: {err}"))?;
+        if stale_path.exists() {
+            return Err(format!(
+                "expected stale standby passfile to be removed at {}",
+                stale_path.display()
+            ));
+        }
+        if managed.standby_passfile_path.is_some() {
+            return Err("primary start should not report a standby passfile path".to_string());
         }
 
         fs::remove_dir_all(&data_dir)
@@ -881,7 +1127,7 @@ mod tests {
         let mut primary = spawn_pg16(PgInstanceSpec {
             postgres_bin: postgres_bin.clone(),
             initdb_bin: initdb_bin.clone(),
-            data_dir: primary_data,
+            data_dir: primary_data.clone(),
             socket_dir: primary_socket,
             log_dir: primary_logs,
             port: primary_port,
@@ -895,6 +1141,27 @@ mod tests {
         );
         let run_result = async {
             wait_for_postgres_ready(&primary_dsn, Duration::from_secs(20)).await?;
+            let (primary_client, primary_connection) =
+                tokio_postgres::connect(&primary_dsn, NoTls).await?;
+            let primary_connection_task = tokio::spawn(primary_connection);
+            primary_client
+                .batch_execute(
+                    concat!(
+                        "CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD 'secret-password';",
+                        "CREATE TABLE IF NOT EXISTS public.passfile_replay_test (",
+                        "id integer PRIMARY KEY, note text NOT NULL",
+                        ");",
+                    ),
+                )
+                .await?;
+            append_to_file(
+                primary_data.join("pg_hba.conf").as_path(),
+                concat!(
+                    "\n",
+                    "host replication replicator 127.0.0.1/32 scram-sha-256\n",
+                ),
+            )?;
+            let _ = primary_client.query_one("SELECT pg_reload_conf()", &[]).await?;
 
             let replica_data = namespace.child_dir("pg16/replica/data");
             let replica_parent = replica_data
@@ -903,6 +1170,7 @@ mod tests {
             fs::create_dir_all(replica_parent)?;
 
             let basebackup_output = Command::new(&basebackup_bin)
+                .env("PGPASSWORD", "secret-password")
                 .arg("-h")
                 .arg("127.0.0.1")
                 .arg("-p")
@@ -910,7 +1178,7 @@ mod tests {
                 .arg("-D")
                 .arg(&replica_data)
                 .arg("-U")
-                .arg("postgres")
+                .arg("replicator")
                 .arg("-Fp")
                 .arg("-Xs")
                 .output()
@@ -953,13 +1221,14 @@ mod tests {
                     PgConnInfo {
                         host: "127.0.0.1".to_string(),
                         port: primary_port,
-                        user: "postgres".to_string(),
+                        user: "replicator".to_string(),
                         dbname: "postgres".to_string(),
                         application_name: None,
                         connect_timeout_s: Some(5),
                         ssl_mode: PgSslMode::Prefer,
                         options: None,
                     },
+                    sample_password_standby_auth(&replica_data),
                     None,
                 ),
             )
@@ -1030,6 +1299,23 @@ mod tests {
                         primary_port, primary_conninfo_text
                     )));
                 }
+                if !primary_conninfo_text.contains("passfile=") {
+                    return Err(real_test_error(format!(
+                        "expected primary_conninfo to include managed passfile, got {}",
+                        primary_conninfo_text
+                    )));
+                }
+                let standby_passfile = managed
+                    .standby_passfile_path
+                    .clone()
+                    .ok_or_else(|| real_test_error("expected managed standby passfile path"))?;
+                if !primary_conninfo_text.contains(standby_passfile.display().to_string().as_str()) {
+                    return Err(real_test_error(format!(
+                        "expected primary_conninfo to reference standby passfile {}, got {}",
+                        standby_passfile.display(),
+                        primary_conninfo_text
+                    )));
+                }
 
                 let in_recovery = client.query_one("SELECT pg_is_in_recovery()", &[]).await?;
                 let in_recovery_flag: bool = in_recovery.get(0);
@@ -1039,8 +1325,37 @@ mod tests {
                     ));
                 }
 
+                let passfile_contents = fs::read_to_string(&standby_passfile).map_err(|err| {
+                    real_test_error(format!(
+                        "read managed standby passfile {} failed: {err}",
+                        standby_passfile.display()
+                    ))
+                })?;
+                if !passfile_contents.contains("replicator:secret-password") {
+                    return Err(real_test_error(format!(
+                        "expected standby passfile to contain replicator credentials, got {:?}",
+                        passfile_contents
+                    )));
+                }
+
+                primary_client
+                    .execute(
+                        "INSERT INTO public.passfile_replay_test (id, note) VALUES ($1, $2)",
+                        &[&1_i32, &"after-startup"],
+                    )
+                    .await?;
+                wait_for_replica_row(
+                    &client,
+                    "SELECT note FROM public.passfile_replay_test WHERE id = 1",
+                    "after-startup",
+                    Duration::from_secs(20),
+                )
+                .await?;
+
                 drop(client);
                 connection_task.await??;
+                drop(primary_client);
+                primary_connection_task.await??;
                 Ok(())
             }
             .await;
@@ -1070,6 +1385,7 @@ mod tests {
         let cfg = sample_runtime_config(data_dir.clone());
         let expected = ManagedPostgresStartIntent::replica(
             sample_replica_conninfo(),
+            sample_password_standby_auth(&data_dir),
             Some("slot_a".to_string()),
         );
 
@@ -1173,6 +1489,19 @@ mod tests {
         }
     }
 
+    fn sample_password_standby_auth(data_dir: &Path) -> ManagedStandbyAuth {
+        ManagedStandbyAuth::PasswordPassfile {
+            path: managed_standby_passfile_path(data_dir),
+        }
+    }
+
+    fn append_to_file(path: &Path, contents: &str) -> Result<(), io::Error> {
+        let mut file = fs::OpenOptions::new().append(true).open(path)?;
+        use std::io::Write;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()
+    }
+
     async fn wait_for_postgres_ready(
         dsn: &str,
         timeout: Duration,
@@ -1194,6 +1523,42 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             }
+        }
+    }
+
+    async fn wait_for_replica_row(
+        client: &tokio_postgres::Client,
+        query: &str,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            let last_outcome = match client.query_opt(query, &[]).await {
+                Ok(Some(row)) => {
+                    let actual: String = row.get(0);
+                    if actual == expected {
+                        return Ok(());
+                    }
+                    format!("unexpected row value {actual:?}")
+                }
+                Ok(None) => {
+                    "row not replayed yet".to_string()
+                }
+                Err(err) => {
+                    err.to_string()
+                }
+            };
+
+            if Instant::now() >= deadline {
+                return Err(real_test_error(format!(
+                    "timed out waiting for replica replay; last outcome: {}",
+                    last_outcome
+                )));
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 

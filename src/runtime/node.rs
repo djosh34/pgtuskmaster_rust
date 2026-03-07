@@ -29,7 +29,7 @@ use crate::{
         SubprocessStream,
     },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-    postgres_managed_conf::ManagedPostgresStartIntent,
+    postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, ProcessCommandRunner, ProcessExit, ReplicatorSourceConn,
@@ -451,7 +451,7 @@ fn select_startup_mode(
                     .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
                     Ok(StartupMode::CloneReplica {
                         leader_member_id: leader_member.member_id.clone(),
-                        start_intent: replica_start_intent_from_source(&source),
+                        start_intent: replica_start_intent_from_source(&source, data_dir),
                         source,
                     })
                 }
@@ -508,7 +508,7 @@ fn select_resume_start_intent(
         let source =
             basebackup_source_from_member(&self_member_id, &leader_member, process_defaults)
                 .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
-        return Ok(replica_start_intent_from_source(&source));
+        return Ok(replica_start_intent_from_source(&source, data_dir));
     }
 
     if local_primary_member(cache, &self_member_id).is_some() {
@@ -568,8 +568,15 @@ fn local_primary_member<'a>(
         .filter(|member| member.role == MemberRole::Primary && member.sql == SqlStatus::Healthy)
 }
 
-fn replica_start_intent_from_source(source: &ReplicatorSourceConn) -> ManagedPostgresStartIntent {
-    ManagedPostgresStartIntent::replica(source.conninfo.clone(), None)
+fn replica_start_intent_from_source(
+    source: &ReplicatorSourceConn,
+    data_dir: &Path,
+) -> ManagedPostgresStartIntent {
+    ManagedPostgresStartIntent::replica(
+        source.conninfo.clone(),
+        managed_standby_auth_from_role_auth(&source.auth, data_dir),
+        None,
+    )
 }
 
 fn claim_dcs_init_lock_and_seed_config(cfg: &RuntimeConfig) -> Result<(), String> {
@@ -1242,7 +1249,9 @@ mod tests {
         inspect_data_dir, plan_startup_with_probe, process_defaults_from_config,
         select_resume_start_intent, select_startup_mode, DataDirState, StartupMode,
     };
-    use crate::postgres_managed_conf::ManagedPostgresStartIntent;
+    use crate::postgres_managed_conf::{
+        managed_standby_auth_from_role_auth, ManagedPostgresStartIntent,
+    };
 
     fn sample_runtime_config() -> RuntimeConfig {
         crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
@@ -1505,6 +1514,10 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                     options: None,
                 },
+                managed_standby_auth_from_role_auth(
+                    &runtime_config.postgres.roles.replicator.auth,
+                    &data_dir,
+                ),
                 Some("slot_local".to_string()),
             ),
         )?;
@@ -1552,7 +1565,14 @@ mod tests {
         )?;
         assert_eq!(
             intent,
-            ManagedPostgresStartIntent::replica(expected_source.conninfo, None)
+            ManagedPostgresStartIntent::replica(
+                expected_source.conninfo,
+                managed_standby_auth_from_role_auth(
+                    &expected_source.auth,
+                    &data_dir,
+                ),
+                None,
+            )
         );
 
         remove_if_exists(&data_dir)?;
@@ -1588,6 +1608,10 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                     options: None,
                 },
+                managed_standby_auth_from_role_auth(
+                    &runtime_config.postgres.roles.replicator.auth,
+                    &data_dir,
+                ),
                 Some("slot_local".to_string()),
             ),
         )?;

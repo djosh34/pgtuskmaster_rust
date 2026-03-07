@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 09:27:21 CET 2026
+Generated: Sat Mar  7 09:52:26 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -223,6 +223,17 @@ During repeated reproductions it oscillated between:
 
 <description>
 Pass-8 of the recurring deep-skeptical meta-task (`.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md`) built an explicit auth/role matrix under `.ralph/evidence/meta-18-pass8-20260307T065112Z/auth-matrix/auth-matrix.csv`.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/postgres-primary-conninfo-password-auth-missing.md`
+
+```
+## Bug: PostgreSQL replica primary_conninfo password auth is missing <status>completed</status> <passes>true</passes>
+
+<description>
+Real-binary HA work for `.ralph/tasks/bugs/postgres-auth-role-matrix-validation-and-e2e.md` exposed that password auth is only wired for libpq subprocesses like `pg_basebackup`/`pg_rewind`, not for steady-state standby streaming after bootstrap.
 ```
 
 ==============

@@ -5,7 +5,11 @@ use std::{
 
 use thiserror::Error;
 
-use crate::pginfo::state::{render_pg_conninfo, PgConnInfo};
+use crate::config::RoleAuthConfig;
+use crate::pginfo::{
+    conninfo::parse_pg_conninfo,
+    state::{render_pg_conninfo, PgConnInfo},
+};
 
 pub(crate) const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
 pub(crate) const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
@@ -14,6 +18,7 @@ pub(crate) const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
 # Production TLS material must be supplied by the operator; pgtuskmaster only copies managed runtime files.\n";
 pub(crate) const MANAGED_STANDBY_SIGNAL_NAME: &str = "standby.signal";
 pub(crate) const MANAGED_RECOVERY_SIGNAL_NAME: &str = "recovery.signal";
+pub(crate) const MANAGED_STANDBY_PASSFILE_NAME: &str = "pgtm.standby.passfile";
 
 const RESERVED_EXTRA_GUC_KEYS: &[&str] = &[
     "archive_cleanup_command",
@@ -53,14 +58,28 @@ pub(crate) enum ManagedRecoverySignal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ManagedStandbyAuth {
+    NoPassword,
+    PasswordPassfile { path: PathBuf },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedPrimaryConninfo {
+    pub(crate) conninfo: PgConnInfo,
+    pub(crate) standby_auth: ManagedStandbyAuth,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ManagedPostgresStartIntent {
     Primary,
     Replica {
         primary_conninfo: PgConnInfo,
+        standby_auth: ManagedStandbyAuth,
         primary_slot_name: Option<String>,
     },
     Recovery {
         primary_conninfo: PgConnInfo,
+        standby_auth: ManagedStandbyAuth,
         primary_slot_name: Option<String>,
     },
 }
@@ -70,19 +89,26 @@ impl ManagedPostgresStartIntent {
         Self::Primary
     }
 
-    pub(crate) fn replica(primary_conninfo: PgConnInfo, primary_slot_name: Option<String>) -> Self {
+    pub(crate) fn replica(
+        primary_conninfo: PgConnInfo,
+        standby_auth: ManagedStandbyAuth,
+        primary_slot_name: Option<String>,
+    ) -> Self {
         Self::Replica {
             primary_conninfo,
+            standby_auth,
             primary_slot_name,
         }
     }
 
     pub(crate) fn recovery(
         primary_conninfo: PgConnInfo,
+        standby_auth: ManagedStandbyAuth,
         primary_slot_name: Option<String>,
     ) -> Self {
         Self::Recovery {
             primary_conninfo,
+            standby_auth,
             primary_slot_name,
         }
     }
@@ -128,6 +154,18 @@ pub(crate) enum ManagedPostgresConfError {
     InvalidPrimarySlotName { slot: String, message: String },
 }
 
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub(crate) enum ManagedPrimaryConninfoError {
+    #[error("managed primary_conninfo syntax error: {0}")]
+    Syntax(String),
+    #[error("managed primary_conninfo duplicate key `{0}`")]
+    DuplicateKey(String),
+    #[error("managed primary_conninfo invalid upstream conninfo: {0}")]
+    InvalidUpstream(String),
+    #[error("managed primary_conninfo invalid passfile `{path}`: {message}")]
+    InvalidPassfilePath { path: PathBuf, message: String },
+}
+
 pub(crate) fn render_managed_postgres_conf(
     conf: &ManagedPostgresConf,
 ) -> Result<String, ManagedPostgresConfError> {
@@ -171,17 +209,19 @@ pub(crate) fn render_managed_postgres_conf(
         }
         ManagedPostgresStartIntent::Replica {
             primary_conninfo,
+            standby_auth,
             primary_slot_name,
         }
         | ManagedPostgresStartIntent::Recovery {
             primary_conninfo,
+            standby_auth,
             primary_slot_name,
         } => {
             push_bool_setting(&mut rendered, "hot_standby", true);
             push_string_setting(
                 &mut rendered,
                 "primary_conninfo",
-                render_pg_conninfo(primary_conninfo).as_str(),
+                render_managed_primary_conninfo(primary_conninfo, standby_auth).as_str(),
             );
             if let Some(slot) = primary_slot_name.as_ref() {
                 validate_primary_slot_name(slot.as_str())?;
@@ -205,6 +245,67 @@ pub(crate) fn validate_extra_guc_entry(
     validate_extra_guc_name(key)?;
     validate_extra_guc_value(key, value)?;
     Ok(())
+}
+
+pub(crate) fn managed_standby_passfile_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(MANAGED_STANDBY_PASSFILE_NAME)
+}
+
+pub(crate) fn managed_standby_auth_from_role_auth(
+    auth: &RoleAuthConfig,
+    data_dir: &Path,
+) -> ManagedStandbyAuth {
+    match auth {
+        RoleAuthConfig::Tls => ManagedStandbyAuth::NoPassword,
+        RoleAuthConfig::Password { .. } => ManagedStandbyAuth::PasswordPassfile {
+            path: managed_standby_passfile_path(data_dir),
+        },
+    }
+}
+
+pub(crate) fn render_managed_primary_conninfo(
+    conninfo: &PgConnInfo,
+    standby_auth: &ManagedStandbyAuth,
+) -> String {
+    let mut rendered = render_pg_conninfo(conninfo);
+    if let ManagedStandbyAuth::PasswordPassfile { path } = standby_auth {
+        rendered.push(' ');
+        rendered.push_str("passfile=");
+        rendered.push_str(render_conninfo_value(path.display().to_string().as_str()).as_str());
+    }
+    rendered
+}
+
+pub(crate) fn parse_managed_primary_conninfo(
+    input: &str,
+    data_dir: &Path,
+) -> Result<ManagedPrimaryConninfo, ManagedPrimaryConninfoError> {
+    let entries = parse_conninfo_entries(input)?;
+    let mut passfile = None;
+    let mut upstream_tokens = Vec::with_capacity(entries.len());
+
+    for (key, value) in entries {
+        if key == "passfile" {
+            if passfile.is_some() {
+                return Err(ManagedPrimaryConninfoError::DuplicateKey(key));
+            }
+            passfile = Some(validate_managed_passfile_path(data_dir, PathBuf::from(value))?);
+        } else {
+            upstream_tokens.push(format!("{key}={}", render_conninfo_value(value.as_str())));
+        }
+    }
+
+    let upstream = parse_pg_conninfo(upstream_tokens.join(" ").as_str())
+        .map_err(|err| ManagedPrimaryConninfoError::InvalidUpstream(err.to_string()))?;
+    let standby_auth = match passfile {
+        Some(path) => ManagedStandbyAuth::PasswordPassfile { path },
+        None => ManagedStandbyAuth::NoPassword,
+    };
+
+    Ok(ManagedPrimaryConninfo {
+        conninfo: upstream,
+        standby_auth,
+    })
 }
 
 pub(crate) fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresConfError> {
@@ -323,6 +424,214 @@ fn escape_postgres_conf_string(value: &str) -> String {
     escaped
 }
 
+fn render_conninfo_value(value: &str) -> String {
+    if value.is_empty()
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch == '\'' || ch == '\\')
+    {
+        let escaped = value
+            .chars()
+            .map(|ch| match ch {
+                '\'' => "\\'".to_string(),
+                '\\' => "\\\\".to_string(),
+                other => other.to_string(),
+            })
+            .collect::<String>();
+        format!("'{escaped}'")
+    } else {
+        value.to_string()
+    }
+}
+
+fn validate_managed_passfile_path(
+    data_dir: &Path,
+    passfile_path: PathBuf,
+) -> Result<PathBuf, ManagedPrimaryConninfoError> {
+    if !passfile_path.is_absolute() {
+        return Err(ManagedPrimaryConninfoError::InvalidPassfilePath {
+            path: passfile_path,
+            message: "passfile path must be absolute".to_string(),
+        });
+    }
+
+    let absolute_data_dir = absolutize_path(data_dir)?;
+    let expected_path = absolutize_path(&managed_standby_passfile_path(&absolute_data_dir))?;
+    if !passfile_path.starts_with(&absolute_data_dir) {
+        return Err(ManagedPrimaryConninfoError::InvalidPassfilePath {
+            path: passfile_path,
+            message: format!(
+                "passfile path must stay under managed data dir {}",
+                absolute_data_dir.display()
+            ),
+        });
+    }
+
+    if passfile_path != expected_path {
+        return Err(ManagedPrimaryConninfoError::InvalidPassfilePath {
+            path: passfile_path,
+            message: format!(
+                "passfile path must match expected managed path {}",
+                expected_path.display()
+            ),
+        });
+    }
+
+    Ok(passfile_path)
+}
+
+fn absolutize_path(path: &Path) -> Result<PathBuf, ManagedPrimaryConninfoError> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+
+    let cwd = std::env::current_dir().map_err(|err| {
+        ManagedPrimaryConninfoError::Syntax(format!("failed to read current_dir: {err}"))
+    })?;
+    Ok(cwd.join(path))
+}
+
+fn parse_conninfo_entries(input: &str) -> Result<Vec<(String, String)>, ManagedPrimaryConninfoError> {
+    let mut cursor = ManagedConninfoCursor::new(input);
+    let mut entries = Vec::new();
+
+    while cursor.skip_whitespace() {
+        let key = cursor.parse_key()?;
+        cursor.expect_equals()?;
+        let value = cursor.parse_value()?;
+        cursor.require_token_boundary()?;
+        entries.push((key, value));
+    }
+
+    Ok(entries)
+}
+
+struct ManagedConninfoCursor<'a> {
+    src: &'a str,
+    index: usize,
+}
+
+impl<'a> ManagedConninfoCursor<'a> {
+    fn new(src: &'a str) -> Self {
+        Self { src, index: 0 }
+    }
+
+    fn skip_whitespace(&mut self) -> bool {
+        while let Some(ch) = self.peek_char() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            let _ = self.next_char();
+        }
+        self.index < self.src.len()
+    }
+
+    fn parse_key(&mut self) -> Result<String, ManagedPrimaryConninfoError> {
+        let mut key = String::new();
+        while let Some(ch) = self.peek_char() {
+            if ch == '=' {
+                break;
+            }
+            if ch.is_whitespace() {
+                return Err(ManagedPrimaryConninfoError::Syntax(
+                    "whitespace before '=' in conninfo key/value pair".to_string(),
+                ));
+            }
+            key.push(ch);
+            let _ = self.next_char();
+        }
+
+        if key.is_empty() {
+            return Err(ManagedPrimaryConninfoError::Syntax(
+                "empty conninfo key is not allowed".to_string(),
+            ));
+        }
+
+        Ok(key)
+    }
+
+    fn expect_equals(&mut self) -> Result<(), ManagedPrimaryConninfoError> {
+        match self.next_char() {
+            Some('=') => Ok(()),
+            _ => Err(ManagedPrimaryConninfoError::Syntax(
+                "expected '=' after conninfo key".to_string(),
+            )),
+        }
+    }
+
+    fn parse_value(&mut self) -> Result<String, ManagedPrimaryConninfoError> {
+        match self.peek_char() {
+            Some('\'') => self.parse_quoted_value(),
+            Some(_) => self.parse_unquoted_value(),
+            None => Err(ManagedPrimaryConninfoError::Syntax(
+                "missing conninfo value after '='".to_string(),
+            )),
+        }
+    }
+
+    fn parse_unquoted_value(&mut self) -> Result<String, ManagedPrimaryConninfoError> {
+        let mut value = String::new();
+        while let Some(ch) = self.peek_char() {
+            if ch.is_whitespace() {
+                break;
+            }
+            value.push(ch);
+            let _ = self.next_char();
+        }
+        if value.is_empty() {
+            return Err(ManagedPrimaryConninfoError::Syntax(
+                "conninfo value must not be empty".to_string(),
+            ));
+        }
+        Ok(value)
+    }
+
+    fn parse_quoted_value(&mut self) -> Result<String, ManagedPrimaryConninfoError> {
+        let _ = self.next_char();
+        let mut value = String::new();
+        loop {
+            match self.next_char() {
+                Some('\'') => break,
+                Some('\\') => {
+                    let Some(next) = self.next_char() else {
+                        return Err(ManagedPrimaryConninfoError::Syntax(
+                            "unterminated escape sequence in quoted conninfo value".to_string(),
+                        ));
+                    };
+                    value.push(next);
+                }
+                Some(ch) => value.push(ch),
+                None => {
+                    return Err(ManagedPrimaryConninfoError::Syntax(
+                        "unterminated quoted conninfo value".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(value)
+    }
+
+    fn require_token_boundary(&mut self) -> Result<(), ManagedPrimaryConninfoError> {
+        match self.peek_char() {
+            Some(ch) if ch.is_whitespace() => Ok(()),
+            None => Ok(()),
+            Some(_) => Err(ManagedPrimaryConninfoError::Syntax(
+                "conninfo pairs must be separated by whitespace".to_string(),
+            )),
+        }
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.src[self.index..].chars().next()
+    }
+
+    fn next_char(&mut self) -> Option<char> {
+        let ch = self.peek_char()?;
+        self.index += ch.len_utf8();
+        Some(ch)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
@@ -330,9 +639,11 @@ mod tests {
     use crate::pginfo::state::{PgConnInfo, PgSslMode};
 
     use super::{
+        managed_standby_passfile_path, parse_managed_primary_conninfo,
         render_managed_postgres_conf, validate_extra_guc_entry, ManagedPostgresConf,
         ManagedPostgresConfError, ManagedPostgresStartIntent, ManagedPostgresTlsConfig,
-        ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER,
+        ManagedPrimaryConninfo, ManagedPrimaryConninfoError, ManagedRecoverySignal,
+        ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_HEADER,
     };
 
     fn sample_conf() -> ManagedPostgresConf {
@@ -357,6 +668,9 @@ mod tests {
                     connect_timeout_s: Some(5),
                     ssl_mode: PgSslMode::Require,
                     options: Some("-c wal_receiver_status_interval=5s".to_string()),
+                },
+                ManagedStandbyAuth::PasswordPassfile {
+                    path: managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path()),
                 },
                 Some("slot_a".to_string()),
             ),
@@ -434,7 +748,7 @@ mod tests {
             ));
         }
         if !rendered.contains(
-            "primary_conninfo = 'host=leader.internal port=5432 user=replicator dbname=postgres application_name=node-b connect_timeout=5 sslmode=require options=''-c wal_receiver_status_interval=5s'''",
+            "primary_conninfo = 'host=leader.internal port=5432 user=replicator dbname=postgres application_name=node-b connect_timeout=5 sslmode=require options=''-c wal_receiver_status_interval=5s'' passfile=/var/lib/postgresql/data/pgtm.standby.passfile'",
         ) {
             return Err(format!(
                 "missing quoted primary_conninfo in rendered conf: {rendered}"
@@ -506,6 +820,7 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                     options: None,
                 },
+                ManagedStandbyAuth::NoPassword,
                 None,
             )
             .recovery_signal(),
@@ -560,6 +875,64 @@ mod tests {
             Err(ManagedPostgresConfError::ReservedExtraGuc {
                 key: "recovery_target_timeline".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn parse_managed_primary_conninfo_round_trips_passfile_auth() -> Result<(), String> {
+        let data_dir = PathBuf::from("/var/lib/postgresql/data");
+        let rendered = "host=leader.internal port=5432 user=replicator dbname=postgres application_name=node-b connect_timeout=5 sslmode=require options='-c wal_receiver_status_interval=5s' passfile=/var/lib/postgresql/data/pgtm.standby.passfile";
+        let parsed = parse_managed_primary_conninfo(rendered, &data_dir)
+            .map_err(|err| format!("parse failed: {err}"))?;
+        assert_eq!(
+            parsed,
+            ManagedPrimaryConninfo {
+                conninfo: PgConnInfo {
+                    host: "leader.internal".to_string(),
+                    port: 5432,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: Some("node-b".to_string()),
+                    connect_timeout_s: Some(5),
+                    ssl_mode: PgSslMode::Require,
+                    options: Some("-c wal_receiver_status_interval=5s".to_string()),
+                },
+                standby_auth: ManagedStandbyAuth::PasswordPassfile {
+                    path: data_dir.join("pgtm.standby.passfile"),
+                },
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_managed_primary_conninfo_rejects_passfile_outside_pgdata() {
+        let err = parse_managed_primary_conninfo(
+            "host=leader.internal port=5432 user=replicator dbname=postgres passfile=/tmp/bad.pass",
+            PathBuf::from("/var/lib/postgresql/data").as_path(),
+        );
+        assert_eq!(
+            err,
+            Err(ManagedPrimaryConninfoError::InvalidPassfilePath {
+                path: PathBuf::from("/tmp/bad.pass"),
+                message:
+                    "passfile path must stay under managed data dir /var/lib/postgresql/data"
+                        .to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_managed_primary_conninfo_rejects_malformed_quotes() {
+        let err = parse_managed_primary_conninfo(
+            "host=leader.internal port=5432 user='replicator dbname=postgres",
+            PathBuf::from("/var/lib/postgresql/data").as_path(),
+        );
+        assert_eq!(
+            err,
+            Err(ManagedPrimaryConninfoError::Syntax(
+                "unterminated quoted conninfo value".to_string()
+            ))
         );
     }
 }

@@ -6,7 +6,7 @@ use crate::{
     config::RuntimeConfig,
     dcs::state::MemberRecord,
     ha::decision::HaDecision,
-    postgres_managed_conf::ManagedPostgresStartIntent,
+    postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec, PromoteSpec,
@@ -57,7 +57,11 @@ pub(crate) fn dispatch_process_action(
             })
         }
         HaAction::StartPostgres => {
-            let start_intent = start_intent_from_dcs(ctx, start_postgres_leader_member_id(ctx))?;
+            let start_intent = start_intent_from_dcs(
+                ctx,
+                start_postgres_leader_member_id(ctx),
+                runtime_config.postgres.data_dir.as_path(),
+            )?;
             let managed = crate::postgres_managed::materialize_managed_postgres_config(
                 runtime_config,
                 &start_intent,
@@ -241,6 +245,7 @@ fn start_postgres_leader_member_id(ctx: &HaWorkerCtx) -> Option<&MemberId> {
 fn start_intent_from_dcs(
     ctx: &HaWorkerCtx,
     replica_leader_member_id: Option<&MemberId>,
+    data_dir: &Path,
 ) -> Result<ManagedPostgresStartIntent, ProcessDispatchError> {
     if let Some(leader_member_id) = replica_leader_member_id {
         let leader = resolve_source_member(ctx, ActionId::StartPostgres, leader_member_id)?;
@@ -251,6 +256,7 @@ fn start_intent_from_dcs(
             })?;
         return Ok(ManagedPostgresStartIntent::replica(
             source.conninfo.clone(),
+            managed_standby_auth_from_role_auth(&source.auth, data_dir),
             None,
         ));
     }
@@ -353,6 +359,7 @@ mod tests {
             state::{HaState, HaWorkerContractStubInputs, HaWorkerCtx},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        postgres_managed_conf::managed_standby_auth_from_role_auth,
         process::state::{ProcessJobKind, ProcessState},
         state::{new_state_channel, MemberId, UnixMillis, WorkerError, WorkerStatus},
     };
@@ -611,6 +618,11 @@ mod tests {
                 "expected replica managed config to include primary_conninfo, got:\n{rendered}"
             )));
         }
+        if !rendered.contains("passfile=") {
+            return Err(WorkerError::Message(format!(
+                "expected replica managed config to include managed passfile, got:\n{rendered}"
+            )));
+        }
         let standby_signal = runtime_config.postgres.data_dir.join("standby.signal");
         if !standby_signal.exists() {
             return Err(WorkerError::Message(format!(
@@ -701,6 +713,10 @@ mod tests {
             &runtime_config,
             &crate::postgres_managed_conf::ManagedPostgresStartIntent::replica(
                 existing_conninfo.clone(),
+                managed_standby_auth_from_role_auth(
+                    &runtime_config.postgres.roles.replicator.auth,
+                    runtime_config.postgres.data_dir.as_path(),
+                ),
                 Some("slot_a".to_string()),
             ),
         )

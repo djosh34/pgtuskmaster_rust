@@ -131,3 +131,4 @@
 .ralph/tasks/story-project-wide-code-hygiene/01-task-audit-and-replace-magic-numbers-project-wide.md
 .ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md
 .ralph/tasks/bugs/postgres-auth-role-matrix-validation-and-e2e.md
+.ralph/tasks/bugs/postgres-primary-conninfo-password-auth-missing.md
