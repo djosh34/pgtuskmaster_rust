@@ -1808,8 +1808,14 @@ mod tests {
 
         assert_eq!(output.next.phase, HaPhase::Primary);
         assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
-        assert_eq!(lower_decision(&output.outcome.decision).lease, LeaseEffect::AcquireLeader);
-        assert_eq!(lower_decision(&output.outcome.decision).safety, SafetyEffect::None);
+        assert_eq!(
+            lower_decision(&output.outcome.decision).lease,
+            LeaseEffect::AcquireLeader
+        );
+        assert_eq!(
+            lower_decision(&output.outcome.decision).safety,
+            SafetyEffect::None
+        );
     }
 
     #[test]

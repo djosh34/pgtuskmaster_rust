@@ -11,8 +11,8 @@
 - `src/logging/postgres_ingest.rs`
 - related tests in those same files
 - any shared typed event modules introduced by Task 01 that these domains must consume
-- convert all current app-event emission in these files away from hand-built attr maps
-- keep parsed postgres lines and raw fallback lines in a typed raw-log path rather than forcing them through the app-event type
+- convert all current app-event emission in these files away from hand-built attr maps and onto the Task 01 typed event contract
+- keep parsed postgres lines and raw fallback lines on the Task 01 typed raw-log-record builder path rather than forcing them through the app-event type
 - apply the story-wide ownership rule explicitly in these domains:
 - outer orchestration functions keep only orchestration-boundary events.
 - functions that perform side effects own execution result events.

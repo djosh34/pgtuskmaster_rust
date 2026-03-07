@@ -25,7 +25,8 @@ use crate::{
         HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
     },
     logging::{
-        EventMeta, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText,
+        EventMeta, LogParser, LogProducer, LogSource, LogTransport, SeverityText,
+        SubprocessLineRecord, SubprocessStream,
     },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     postgres_managed_conf::ManagedPostgresStartIntent,
@@ -1018,75 +1019,23 @@ fn emit_startup_subprocess_line(
     identity: &crate::process::jobs::ProcessLogIdentity,
     line: crate::process::jobs::ProcessOutputLine,
 ) -> Result<(), crate::logging::LogError> {
-    let (transport, severity) = match line.stream {
-        crate::process::jobs::ProcessOutputStream::Stdout => (
-            crate::logging::LogTransport::ChildStdout,
-            SeverityText::Info,
-        ),
-        crate::process::jobs::ProcessOutputStream::Stderr => (
-            crate::logging::LogTransport::ChildStderr,
-            SeverityText::Warn,
-        ),
+    let stream = match line.stream {
+        crate::process::jobs::ProcessOutputStream::Stdout => SubprocessStream::Stdout,
+        crate::process::jobs::ProcessOutputStream::Stderr => SubprocessStream::Stderr,
     };
 
-    let (message, raw_bytes_hex) = match String::from_utf8(line.bytes) {
-        Ok(message) => (message, None),
-        Err(err) => {
-            let bytes = err.into_bytes();
-            let hex = emit_hex_encode(bytes.as_slice());
-            (format!("non_utf8_bytes_hex={hex}"), Some(hex))
-        }
-    };
-
-    let mut record = LogRecord::new(
-        crate::logging::system_now_unix_millis(),
-        log.hostname().to_string(),
-        severity,
-        message,
-        crate::logging::LogSource {
-            producer: crate::logging::LogProducer::PgTool,
-            transport,
-            parser: crate::logging::LogParser::Raw,
-            origin: "startup".to_string(),
-        },
-    );
-
-    record.attributes.insert(
-        "job_id".to_string(),
-        serde_json::Value::String(identity.job_id.0.clone()),
-    );
-    record.attributes.insert(
-        "job_kind".to_string(),
-        serde_json::Value::String(identity.job_kind.clone()),
-    );
-    record.attributes.insert(
-        "binary".to_string(),
-        serde_json::Value::String(identity.binary.clone()),
-    );
-    record.attributes.insert(
-        "stream".to_string(),
-        serde_json::Value::String(match line.stream {
-            crate::process::jobs::ProcessOutputStream::Stdout => "stdout".to_string(),
-            crate::process::jobs::ProcessOutputStream::Stderr => "stderr".to_string(),
-        }),
-    );
-    if let Some(hex) = raw_bytes_hex {
-        record
-            .attributes
-            .insert("raw_bytes_hex".to_string(), serde_json::Value::String(hex));
-    }
-
-    log.emit_record(&record)
-}
-
-fn emit_hex_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        out.push(TABLE[(b >> 4) as usize] as char);
-        out.push(TABLE[(b & 0x0f) as usize] as char);
-    }
-    out
+    log.emit_raw_record(
+        SubprocessLineRecord::new(
+            crate::logging::LogProducer::PgTool,
+            "startup",
+            identity.job_id.0.clone(),
+            identity.job_kind.clone(),
+            identity.binary.clone(),
+            stream,
+            line.bytes,
+        )
+        .into_raw_record()?,
+    )
 }
 
 async fn run_workers(

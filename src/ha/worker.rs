@@ -1071,7 +1071,10 @@ mod tests {
         assert_eq!(published.value.worker, WorkerStatus::Running);
         assert_eq!(ctx.state.phase, HaPhase::Primary);
         assert_eq!(ctx.state.decision, HaDecision::AttemptLeadership);
-        assert_eq!(store_handle.first_write_path().as_deref(), Some("/scope-a/leader"));
+        assert_eq!(
+            store_handle.first_write_path().as_deref(),
+            Some("/scope-a/leader")
+        );
         assert!(!store_handle.has_delete_path("/scope-a/leader"));
         assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));
         Ok(())

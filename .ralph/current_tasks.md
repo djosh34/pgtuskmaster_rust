@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 02:39:42 AM CET 2026
+Generated: Sat Mar  7 03:09:45 CET 2026
 
 # Task `.ralph/tasks/story-container-first-deployment/01-task-container-first-docker-deployment-and-compose.md`
 
@@ -87,17 +87,6 @@ DO NOT PICK THIS TASK UNLESS ALL OTHER TASKS ARE DONE.
 NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-tracing-based-logging/01-task-establish-typed-event-contract-and-emit-ownership-rules.md`
-
-```
-## Task: Establish typed event contract and emit ownership rules <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Replace the current partially typed logging contract with a fully typed application event contract that owns event identity, severity, result, and structured fields without requiring call sites to assemble `BTreeMap<String, serde_json::Value>`. The higher order goal is to separate event semantics from backend choice so later decisions about `tracing`, OTEL export, file sinks, or keeping the current sink stack are downstream implementation choices rather than the source of application event truth.
 ```
 
 ==============

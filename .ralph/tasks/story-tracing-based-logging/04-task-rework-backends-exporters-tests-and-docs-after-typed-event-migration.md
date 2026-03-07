@@ -10,7 +10,7 @@
 - tests and docs that describe logging behavior
 - story/task docs in `.ralph/tasks/story-tracing-based-logging/`
 - evaluate whether the current custom sink bootstrap remains justified once typed events exist
-- adopt `tracing` as the backend or adapter layer under the typed event contract rather than as a replacement for event modeling at call sites
+- treat Tasks 01-03 typed events and typed raw-record builders as fixed semantic inputs, then adopt `tracing` as the backend or adapter layer under that contract rather than as a replacement for event modeling at call sites
 - wire file sinks and OTEL export through that post-migration `tracing` backend layer
 - keep domain call sites on typed events only; no domain module should bypass the typed event layer by constructing `tracing` fields directly for normal application events
 

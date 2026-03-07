@@ -7,7 +7,6 @@
 - `src/runtime/node.rs`
 - `src/process/worker.rs`
 - `src/api/worker.rs`
-- `src/api/events.rs`
 - related tests in those same files
 - any shared typed event modules introduced by Task 01 that these domains must consume
 - convert all current app-event emission in these files away from hand-built attr maps
@@ -26,7 +25,6 @@
 - `src/runtime/node.rs` currently emits from `run_node_from_config`, `plan_startup_with_probe`, `execute_startup`, `emit_startup_phase`, `run_startup_job`, and `emit_startup_subprocess_line`.
 - `src/process/worker.rs` currently emits from `run`, `step_once`, `start_job`, `tick_active_job`, `emit_process_output_emit_failed`, and `emit_subprocess_line`.
 - `src/api/worker.rs` currently emits from `run`, `step_once`, `emit_api_auth_decision`, and `accept_connection`.
-- `src/api/events.rs` currently emits from `ingest_wal_event`.
 - The exact pattern the migration must evaluate is the current outer orchestration style of “emit intent in outer function, call lower function, emit result in outer function” versus moving execution-result events into `do_x` / `do_y` ownership boundaries.
 
 **Expected outcome:**
@@ -49,8 +47,7 @@
 - [ ] `src/api/worker.rs`: migrate `run` fatal or non-fatal step failure events to typed api events with explicit ownership.
 - [ ] `src/api/worker.rs`: migrate `step_once` connection accepted, request parse failure, response sent, and related request lifecycle events to typed api events without local map assembly.
 - [ ] `src/api/worker.rs`: migrate `emit_api_auth_decision` and `accept_connection` so auth and TLS outcomes are typed api events and the final placement is explicit about outer request orchestration versus TLS/auth operation ownership.
-- [ ] `src/api/events.rs`: migrate `ingest_wal_event` to a typed backup or api event path rather than local JSON-value map construction.
-- [ ] `src/runtime/node.rs`, `src/process/worker.rs`, `src/api/worker.rs`, and `src/api/events.rs` tests: replace direct `record.attributes.get("event.name")` style assertions with typed event assertions or typed decoding helpers.
+- [ ] `src/runtime/node.rs`, `src/process/worker.rs`, and `src/api/worker.rs` tests: replace direct `record.attributes.get("event.name")` style assertions with typed event assertions or typed decoding helpers.
 - [ ] Domain code in these files does not emit normal application events via direct `tracing` macros or direct `BTreeMap<String, Value>` assembly; it emits typed events through the shared contract.
 - [ ] If new emit sites are introduced while refactoring these files, the task updates the story inventory instead of leaving them implicit.
 - [ ] `make check` — passes cleanly

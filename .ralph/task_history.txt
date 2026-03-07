@@ -118,3 +118,4 @@
 .ralph/tasks/story-authoritative-managed-postgres-config/04-task-migrate-harness-tests-and-docs-to-the-authoritative-managed-conf-model.md
 .ralph/tasks/bugs/failsafe-integrity-ultra-long-flake.md
 .ralph/tasks/bugs/no-quorum-integrity-check-does-not-verify-committed-keys.md
+.ralph/tasks/story-tracing-based-logging/01-task-establish-typed-event-contract-and-emit-ownership-rules.md

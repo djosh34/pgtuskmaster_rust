@@ -8,10 +8,7 @@ use tokio::{
 
 use crate::{
     config::{ProcessConfig, RoleAuthConfig},
-    logging::{
-        EventMeta, LogHandle, LogParser, LogProducer, LogRecord, LogSource, LogTransport,
-        SeverityText,
-    },
+    logging::{EventMeta, LogHandle, SeverityText, SubprocessLineRecord, SubprocessStream},
     pginfo::state::render_pg_conninfo,
     state::{JobId, UnixMillis, WorkerError, WorkerStatus},
 };
@@ -1183,69 +1180,23 @@ fn emit_subprocess_line(
     identity: &ProcessLogIdentity,
     line: ProcessOutputLine,
 ) -> Result<(), crate::logging::LogError> {
-    let (transport, severity) = match line.stream {
-        ProcessOutputStream::Stdout => (LogTransport::ChildStdout, SeverityText::Info),
-        ProcessOutputStream::Stderr => (LogTransport::ChildStderr, SeverityText::Warn),
+    let stream = match line.stream {
+        ProcessOutputStream::Stdout => SubprocessStream::Stdout,
+        ProcessOutputStream::Stderr => SubprocessStream::Stderr,
     };
 
-    let (message, raw_bytes_hex) = match String::from_utf8(line.bytes) {
-        Ok(message) => (message, None),
-        Err(err) => {
-            let bytes = err.into_bytes();
-            let hex = hex_encode(bytes.as_slice());
-            (format!("non_utf8_bytes_hex={hex}"), Some(hex))
-        }
-    };
-
-    let mut record = LogRecord::new(
-        crate::logging::system_now_unix_millis(),
-        log.hostname().to_string(),
-        severity,
-        message,
-        LogSource {
-            producer: LogProducer::PgTool,
-            transport,
-            parser: LogParser::Raw,
-            origin: "process_worker".to_string(),
-        },
-    );
-
-    record.attributes.insert(
-        "job_id".to_string(),
-        serde_json::Value::String(identity.job_id.0.clone()),
-    );
-    record.attributes.insert(
-        "job_kind".to_string(),
-        serde_json::Value::String(identity.job_kind.clone()),
-    );
-    record.attributes.insert(
-        "binary".to_string(),
-        serde_json::Value::String(identity.binary.clone()),
-    );
-    record.attributes.insert(
-        "stream".to_string(),
-        serde_json::Value::String(match line.stream {
-            ProcessOutputStream::Stdout => "stdout".to_string(),
-            ProcessOutputStream::Stderr => "stderr".to_string(),
-        }),
-    );
-    if let Some(hex) = raw_bytes_hex {
-        record
-            .attributes
-            .insert("raw_bytes_hex".to_string(), serde_json::Value::String(hex));
-    }
-
-    log.emit_record(&record)
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        out.push(TABLE[(b >> 4) as usize] as char);
-        out.push(TABLE[(b & 0x0f) as usize] as char);
-    }
-    out
+    log.emit_raw_record(
+        SubprocessLineRecord::new(
+            crate::logging::LogProducer::PgTool,
+            "process_worker",
+            identity.job_id.0.clone(),
+            identity.job_kind.clone(),
+            identity.binary.clone(),
+            stream,
+            line.bytes,
+        )
+        .into_raw_record()?,
+    )
 }
 
 fn transition_to_idle(

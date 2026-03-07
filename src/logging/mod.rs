@@ -11,8 +11,18 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
+mod event;
+mod raw_record;
+
 pub(crate) mod postgres_ingest;
 pub(crate) mod tailer;
+
+#[cfg(test)]
+pub(crate) use event::decode_app_event;
+pub(crate) use event::{AppEvent, AppEventHeader, StructuredFields};
+pub(crate) use raw_record::{
+    PostgresLineRecordBuilder, RawRecordBuilder, SubprocessLineRecord, SubprocessStream,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -394,10 +404,6 @@ impl LogHandle {
         }
     }
 
-    pub(crate) fn hostname(&self) -> &str {
-        self.hostname.as_str()
-    }
-
     pub(crate) fn emit(
         &self,
         severity_text: SeverityText,
@@ -423,30 +429,37 @@ impl LogHandle {
         message: impl Into<String>,
         origin: impl Into<String>,
         meta: EventMeta,
-        mut attributes: BTreeMap<String, Value>,
+        attributes: BTreeMap<String, Value>,
     ) -> Result<(), LogError> {
-        if severity_text.number() < self.min_app_severity_number {
+        let event = AppEvent::new(
+            severity_text,
+            message,
+            AppEventHeader::new(meta.name, meta.domain, meta.result),
+        );
+        let mut event = event;
+        event.fields_mut().append_json_map(attributes);
+        self.emit_app_event(origin, event)
+    }
+
+    pub(crate) fn emit_app_event(
+        &self,
+        origin: impl Into<String>,
+        event: AppEvent,
+    ) -> Result<(), LogError> {
+        if event.severity().number() < self.min_app_severity_number {
             return Ok(());
         }
-        attributes.insert("event.name".to_string(), Value::String(meta.name));
-        attributes.insert("event.domain".to_string(), Value::String(meta.domain));
-        attributes.insert("event.result".to_string(), Value::String(meta.result));
-
-        let source = LogSource {
-            producer: LogProducer::App,
-            transport: LogTransport::Internal,
-            parser: LogParser::App,
-            origin: origin.into(),
-        };
-        let mut record = LogRecord::new(
+        let record = event.into_record(
             system_now_unix_millis(),
             self.hostname.clone(),
-            severity_text,
-            message.into(),
-            source,
+            origin.into(),
         );
-        record.attributes = attributes;
         self.sink.emit(&record)
+    }
+
+    pub(crate) fn emit_raw_record(&self, record: RawRecordBuilder) -> Result<(), LogError> {
+        let final_record = record.into_record(system_now_unix_millis(), self.hostname.clone());
+        self.emit_record(&final_record)
     }
 
     pub(crate) fn emit_record(&self, record: &LogRecord) -> Result<(), LogError> {
@@ -617,6 +630,142 @@ mod tests {
             })
             .with_debug(DebugConfig { enabled: false })
             .build()
+    }
+
+    fn test_log_handle(min_app_severity: SeverityText) -> (LogHandle, TestSink) {
+        let sink = TestSink::default();
+        let sink_dyn: Arc<dyn LogSink> = Arc::new(sink.clone());
+        (
+            LogHandle::new("host-a".to_string(), sink_dyn, min_app_severity),
+            sink,
+        )
+    }
+
+    #[test]
+    fn emit_app_event_encodes_typed_headers_and_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let (log, sink) = test_log_handle(SeverityText::Trace);
+        let mut event = AppEvent::new(
+            SeverityText::Info,
+            "runtime starting",
+            AppEventHeader::new("runtime.startup.entered", "runtime", "ok"),
+        );
+        event.fields_mut().insert("scope", "scope-a");
+        event.fields_mut().insert("member_count", 3_u64);
+        event
+            .fields_mut()
+            .insert_optional("optional_field", Option::<String>::None);
+
+        log.emit_app_event("runtime::run_node_from_config", event)?;
+
+        let records = sink.take();
+        assert_eq!(records.len(), 1);
+        let decoded = decode_app_event(&records[0])?;
+        assert_eq!(
+            decoded.header,
+            AppEventHeader::new("runtime.startup.entered", "runtime", "ok")
+        );
+        assert_eq!(decoded.origin, "runtime::run_node_from_config");
+        assert_eq!(decoded.message, "runtime starting");
+        assert_eq!(
+            decoded.fields.get("scope"),
+            Some(&Value::String("scope-a".to_string()))
+        );
+        assert_eq!(
+            decoded.fields.get("member_count"),
+            Some(&Value::Number(3_u64.into()))
+        );
+        assert!(!decoded.fields.contains_key("optional_field"));
+        Ok(())
+    }
+
+    #[test]
+    fn structured_fields_encode_scalars_and_serialized_values(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+        #[serde(rename_all = "snake_case")]
+        enum DemoState {
+            NeedsRetry,
+        }
+
+        let mut fields = StructuredFields::new();
+        fields.insert("bool_field", true);
+        fields.insert("signed_field", -5_i64);
+        fields.insert("unsigned_field", 7_u64);
+        fields.insert("string_field", "value");
+        fields.insert_optional("absent_field", Option::<u64>::None);
+        fields.insert_serialized("state", &DemoState::NeedsRetry)?;
+
+        let attributes = fields.into_attributes();
+        assert_eq!(attributes.get("bool_field"), Some(&Value::Bool(true)));
+        assert_eq!(
+            attributes.get("signed_field"),
+            Some(&Value::Number((-5_i64).into()))
+        );
+        assert_eq!(
+            attributes.get("unsigned_field"),
+            Some(&Value::Number(7_u64.into()))
+        );
+        assert_eq!(
+            attributes.get("string_field"),
+            Some(&Value::String("value".to_string()))
+        );
+        assert_eq!(
+            attributes.get("state"),
+            Some(&Value::String("needs_retry".to_string()))
+        );
+        assert!(!attributes.contains_key("absent_field"));
+        Ok(())
+    }
+
+    #[test]
+    fn emit_app_event_respects_min_severity() -> Result<(), Box<dyn std::error::Error>> {
+        let (log, sink) = test_log_handle(SeverityText::Warn);
+        log.emit_app_event(
+            "runtime::run_node_from_config",
+            AppEvent::new(
+                SeverityText::Info,
+                "filtered",
+                AppEventHeader::new("runtime.filtered", "runtime", "ok"),
+            ),
+        )?;
+        assert!(sink.take().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn subprocess_line_record_builder_encodes_stream_metadata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let record = SubprocessLineRecord::new(
+            LogProducer::PgTool,
+            "process_worker",
+            "job-1",
+            "start_postgres",
+            "postgres",
+            SubprocessStream::Stderr,
+            vec![0xff_u8, 0x00, b'a', 0x80],
+        )
+        .into_raw_record()?
+        .into_record(5, "host-a".to_string());
+
+        assert_eq!(record.source.producer, LogProducer::PgTool);
+        assert_eq!(record.source.transport, LogTransport::ChildStderr);
+        assert_eq!(record.source.parser, LogParser::Raw);
+        assert_eq!(record.source.origin, "process_worker");
+        assert_eq!(record.severity_text, SeverityText::Warn);
+        assert_eq!(record.message, "non_utf8_bytes_hex=ff006180");
+        assert_eq!(
+            record.attributes.get("job_id"),
+            Some(&Value::String("job-1".to_string()))
+        );
+        assert_eq!(
+            record.attributes.get("stream"),
+            Some(&Value::String("stderr".to_string()))
+        );
+        assert_eq!(
+            record.attributes.get("raw_bytes_hex"),
+            Some(&Value::String("ff006180".to_string()))
+        );
+        Ok(())
     }
 
     #[test]

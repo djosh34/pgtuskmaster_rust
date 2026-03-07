@@ -6,7 +6,8 @@ use serde_json::Value;
 
 use crate::config::{LogCleanupConfig, RuntimeConfig};
 use crate::logging::{
-    EventMeta, LogHandle, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText,
+    EventMeta, LogHandle, LogParser, LogProducer, LogTransport, PostgresLineRecordBuilder,
+    RawRecordBuilder, SeverityText, StructuredFields,
 };
 use crate::state::WorkerError;
 
@@ -700,17 +701,11 @@ fn emit_postgres_line(
     line: Vec<u8>,
 ) -> Result<(), WorkerError> {
     let decoded = decode_line(&line);
-    let source = LogSource {
-        producer,
-        transport,
-        parser: LogParser::Raw,
-        origin: format!("{origin}:{}", path.display()),
-    };
-
-    let (record, parser_override) = normalize_postgres_line(log, decoded.as_str(), source);
-    let mut final_record = record;
-    final_record.source.parser = parser_override;
-    log.emit_record(&final_record).map_err(|err| {
+    let record = normalize_postgres_line(
+        decoded.as_str(),
+        PostgresLineRecordBuilder::new(producer, transport, format!("{origin}:{}", path.display())),
+    );
+    log.emit_raw_record(record).map_err(|err| {
         WorkerError::Message(format!(
             "log sink error while ingesting postgres log: {err}"
         ))
@@ -738,49 +733,31 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn normalize_postgres_line(
-    log: &LogHandle,
-    line: &str,
-    mut source: LogSource,
-) -> (LogRecord, LogParser) {
-    let mut record = LogRecord::new(
-        crate::logging::system_now_unix_millis(),
-        log.hostname().to_string(),
-        SeverityText::Info,
-        line.to_string(),
-        source.clone(),
-    );
-
+fn normalize_postgres_line(line: &str, builder: PostgresLineRecordBuilder) -> RawRecordBuilder {
     if let Ok(value) = serde_json::from_str::<Value>(line) {
         if let Some(parsed) = normalize_postgres_json(value) {
-            source.parser = LogParser::PostgresJson;
-            record.source = source;
-            record.severity_text = parsed.severity;
-            record.severity_number = parsed.severity.number();
-            record.message = parsed.message;
-            record.attributes = parsed.attributes;
-            return (record, LogParser::PostgresJson);
+            return builder.build(
+                LogParser::PostgresJson,
+                parsed.severity,
+                parsed.message,
+                StructuredFields::from_json_map(parsed.attributes),
+            );
         }
     }
 
     if let Some(parsed) = normalize_postgres_plain(line) {
-        source.parser = LogParser::PostgresPlain;
-        record.source = source;
-        record.severity_text = parsed.severity;
-        record.severity_number = parsed.severity.number();
-        record.message = parsed.message;
-        record.attributes = parsed.attributes;
-        return (record, LogParser::PostgresPlain);
+        return builder.build(
+            LogParser::PostgresPlain,
+            parsed.severity,
+            parsed.message,
+            StructuredFields::from_json_map(parsed.attributes),
+        );
     }
 
-    record
-        .attributes
-        .insert("parse_failed".to_string(), Value::Bool(true));
-    record
-        .attributes
-        .insert("raw_line".to_string(), Value::String(line.to_string()));
-
-    (record, LogParser::Raw)
+    let mut fields = StructuredFields::new();
+    fields.insert("parse_failed", true);
+    fields.insert("raw_line", line.to_string());
+    builder.build(LogParser::Raw, SeverityText::Info, line.to_string(), fields)
 }
 
 struct ParsedLine {
@@ -871,7 +848,8 @@ mod tests {
         PostgresLoggingConfig, RuntimeConfig,
     };
     use crate::logging::{
-        LogHandle, LogParser, LogProducer, LogSource, LogTransport, SeverityText, TestSink,
+        LogHandle, LogParser, LogProducer, LogTransport, PostgresLineRecordBuilder, SeverityText,
+        TestSink,
     };
 
     use crate::state::WorkerError;
@@ -1004,16 +982,13 @@ mod tests {
 
     #[test]
     fn normalize_postgres_line_parses_jsonlog() {
-        let (log, _sink) = test_log_handle();
-        let source = LogSource {
-            producer: LogProducer::Postgres,
-            transport: LogTransport::FileTail,
-            parser: LogParser::Raw,
-            origin: "test".to_string(),
-        };
         let raw = r#"{"error_severity":"LOG","message":"hello from json"}"#;
-        let (record, parser) = normalize_postgres_line(&log, raw, source);
-        assert_eq!(parser, LogParser::PostgresJson);
+        let record = normalize_postgres_line(
+            raw,
+            PostgresLineRecordBuilder::new(LogProducer::Postgres, LogTransport::FileTail, "test"),
+        )
+        .into_record(1, "host-a".to_string());
+        assert_eq!(record.source.parser, LogParser::PostgresJson);
         assert_eq!(record.message, "hello from json");
         assert_eq!(record.severity_text, SeverityText::Info);
         assert_eq!(record.severity_number, SeverityText::Info.number());
@@ -1022,32 +997,26 @@ mod tests {
 
     #[test]
     fn normalize_postgres_line_parses_plain() {
-        let (log, _sink) = test_log_handle();
-        let source = LogSource {
-            producer: LogProducer::Postgres,
-            transport: LogTransport::FileTail,
-            parser: LogParser::Raw,
-            origin: "test".to_string(),
-        };
         let raw = "2026-03-04 01:02:03 UTC [123] ERROR:  something bad";
-        let (record, parser) = normalize_postgres_line(&log, raw, source);
-        assert_eq!(parser, LogParser::PostgresPlain);
+        let record = normalize_postgres_line(
+            raw,
+            PostgresLineRecordBuilder::new(LogProducer::Postgres, LogTransport::FileTail, "test"),
+        )
+        .into_record(1, "host-a".to_string());
+        assert_eq!(record.source.parser, LogParser::PostgresPlain);
         assert_eq!(record.severity_text, SeverityText::Error);
         assert_eq!(record.message, "something bad");
     }
 
     #[test]
     fn normalize_postgres_line_preserves_raw_on_failure() {
-        let (log, _sink) = test_log_handle();
-        let source = LogSource {
-            producer: LogProducer::Postgres,
-            transport: LogTransport::FileTail,
-            parser: LogParser::Raw,
-            origin: "test".to_string(),
-        };
         let raw = "not a postgres log line";
-        let (record, parser) = normalize_postgres_line(&log, raw, source);
-        assert_eq!(parser, LogParser::Raw);
+        let record = normalize_postgres_line(
+            raw,
+            PostgresLineRecordBuilder::new(LogProducer::Postgres, LogTransport::FileTail, "test"),
+        )
+        .into_record(1, "host-a".to_string());
+        assert_eq!(record.source.parser, LogParser::Raw);
         assert_eq!(record.message, raw);
         assert_eq!(
             record.attributes.get("parse_failed"),
@@ -1067,17 +1036,14 @@ mod tests {
 
     #[test]
     fn normalize_postgres_line_preserves_raw_on_non_utf8_failure() {
-        let (log, _sink) = test_log_handle();
-        let source = LogSource {
-            producer: LogProducer::Postgres,
-            transport: LogTransport::FileTail,
-            parser: LogParser::Raw,
-            origin: "test".to_string(),
-        };
         let bytes = [0xff_u8, 0x00, b'a', 0x80];
         let raw = decode_line(bytes.as_slice());
-        let (record, parser) = normalize_postgres_line(&log, raw.as_str(), source);
-        assert_eq!(parser, LogParser::Raw);
+        let record = normalize_postgres_line(
+            raw.as_str(),
+            PostgresLineRecordBuilder::new(LogProducer::Postgres, LogTransport::FileTail, "test"),
+        )
+        .into_record(1, "host-a".to_string());
+        assert_eq!(record.source.parser, LogParser::Raw);
         assert_eq!(record.message, raw);
         assert_eq!(
             record.attributes.get("parse_failed"),
