@@ -1,12 +1,12 @@
 # Operator Guide
 
-This section is the main operational reference for running the system. It starts from configuration, then moves to deployment, observability, and symptom-led troubleshooting.
+This section is the main operating manual for `pgtuskmaster`. Read it when you need to decide how to configure a node, how to expose the API, what to check during normal operation, and how to debug a cluster that is not behaving the way you expected.
 
-The guide is written for practical use under pressure. Each chapter explains what to set, why it exists, and what operational behavior you should expect.
+Recommended reading order:
 
-Read order for most teams:
+1. [Configuration Guide](./configuration.md)
+2. [Deployment and Topology](./deployment.md)
+3. [Observability and Day-2 Operations](./observability.md)
+4. [Troubleshooting by Symptom](./troubleshooting.md)
 
-1. Configuration Guide
-2. Deployment and Topology
-3. Observability and Day-2 Operations
-4. Troubleshooting by Symptom
+Keep the [System Lifecycle](../lifecycle/index.md) section nearby. It explains why the runtime moves between phases such as bootstrap, replica, primary, rewinding, fencing, and fail-safe.

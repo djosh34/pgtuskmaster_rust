@@ -1,11 +1,11 @@
 # Quick Start
 
-This section is a focused path to first success. The objective is not full production hardening. The objective is to stand up a working node, verify the main control surfaces, and build confidence before deeper operator configuration.
+This path gets one node running with a real config, a reachable etcd cluster, and enough verification to prove the control loop is alive. It is not the full production guide. It is the shortest route to a first successful run that still reflects how the product actually works.
 
-This guide is organized into three steps:
+You will do three things:
 
-1. Confirm prerequisites.
-2. Start a first node with a minimal but explicit configuration.
-3. Validate that control and observation paths are working.
+1. Confirm the required binaries, directories, and secrets exist.
+2. Start one node with an explicit `config_version = "v2"` config.
+3. Verify the node API, logs, and DCS state before you move on.
 
-After this section, continue to **Operator Guide** for production-oriented configuration choices and operational tradeoffs.
+After this section, go straight to the [Operator Guide](../operator/index.md) before you expose the API to other hosts or add more nodes.

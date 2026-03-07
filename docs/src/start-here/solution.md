@@ -11,20 +11,20 @@ flowchart TD
 
 At a high level, each node does three things repeatedly:
 
-- It observes local PostgreSQL state and shared DCS state.
-- It evaluates trust and role conditions.
-- It executes bounded actions, then reevaluates.
+- observe local PostgreSQL state and shared DCS state
+- evaluate trust, phase, and role conditions
+- execute bounded actions, then reevaluate from fresh state
 
-This design keeps decisions current. Instead of assuming one static cluster view, every loop rechecks the evidence before progressing.
+## Why the loop matters
 
-## Why this matters
+Role changes are not single events. They are transitions with preconditions. The loop model keeps those preconditions explicit and continuously revalidated instead of letting one stale view drive a long chain of actions.
 
-Role changes are not single events. They are state transitions with preconditions. The loop model makes those preconditions explicit and continuously validated.
+## How to reason about behavior during an incident
 
-## Tradeoffs
+When something looks wrong, ask three questions in order:
 
-A loop-based controller can look cautious, because it revalidates instead of rushing actions. The loop continuously re-runs decision from fresh state snapshots and uses explicit guards (trust, PostgreSQL reachability, leader availability, switchover intent), so transitions are controlled and repeatable. Safety behavior is bounded by transition logic and validated by fail-safe/fencing/switchover/idempotency tests.
+1. What is the node observing locally and in DCS?
+2. What decision did the HA loop publish?
+3. Which action is running, blocked, or being refused?
 
-## When this matters in operations
-
-During incidents, operators can reason about current behavior by asking three questions: what is the node observing, what decision did it make, and what action is blocked or running. In practice, correlate `/ha/state` with debug payloads (`/debug/verbose` or `/debug/snapshot` when enabled), plus DCS record views and relevant logs.
+In practice, correlate `/ha/state` with debug payloads such as `/debug/verbose` when enabled, plus DCS record views and relevant logs.

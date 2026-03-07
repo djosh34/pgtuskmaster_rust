@@ -3,7 +3,7 @@
 Fail-safe and fencing are the lifecycle's safety brakes.
 
 - Fail-safe: coordination trust is degraded enough that normal HA actions should be constrained.
-- Fencing: when trust is full and the node observes conflicting leadership evidence (a non-self leader record while it believes it is primary), it takes demotion-oriented behavior to reduce split-brain risk.
+- Fencing: when trust is full and the node observes conflicting leadership evidence while it believes it is primary, it takes demotion-oriented behavior to reduce split-brain risk.
 
 ```mermaid
 flowchart TD
@@ -14,16 +14,17 @@ flowchart TD
   Conflict -->|no| Normal[Continue normal role logic]
 ```
 
-## Why this exists
+## Reading fail-safe correctly
 
-Distributed failures can produce contradictory signals. Safety mechanisms provide deterministic behavior in that ambiguity.
+Operators should treat fail-safe as a meaningful phase, not as noise. It means coordination assumptions are currently too weak for normal promotion behavior. You should see that via `/ha/state` as `ha_phase = "FailSafe"` even if the underlying cluster is still partially reachable.
 
-## Tradeoffs
+After fail-safe is selected, the HA worker publishes that phase before slower DCS cleanup completes. In practice that means the API should keep showing `FailSafe` even when lease release or other coordination writes are blocked or timing out.
 
-Safety states may reduce immediate availability. This is intentional when the alternative is unsafe concurrent primaries.
+## Reading fencing correctly
 
-## When this matters in operations
+Fencing is different from fail-safe. It is the demotion-oriented response to conflicting leadership evidence while the node still believes it is primary and trust is otherwise strong enough to take action.
 
-Operators should treat fail-safe as a meaningful status, not as noise. It indicates that coordination assumptions are currently insufficient for normal promotion behavior and is visible via `/ha/state` (`ha_phase`).
+That distinction matters during incidents:
 
-After fail-safe is selected, the HA worker publishes that phase before slower DCS cleanup completes. In practice this means operators should be able to observe `FailSafe` via `/ha/state` even if leader-lease release or other coordination writes are currently blocked or timing out.
+- fail-safe means "do not trust coordination enough to promote"
+- fencing means "trust is strong enough to react to a conflicting leader and step down safely"

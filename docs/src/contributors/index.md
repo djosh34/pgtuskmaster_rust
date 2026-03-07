@@ -7,13 +7,13 @@ Compared with operator sections, contributor chapters go deeper into:
 - explicit call paths (who calls whom, when, and why)
 - state ownership and update semantics
 - failure-path behavior and safety boundaries
-- how to extend the system without breaking invariants.
+- how to extend the system without breaking invariants
 
 ## How to use this section
 
 If you are reading to get oriented, follow the recommended order below.
 
-If you are here with a specific goal, use the “Which chapter answers which question?” map to jump directly to the right page.
+If you are here with a specific goal, use the question map to jump directly to the right page.
 
 ## Recommended read order
 
@@ -27,7 +27,6 @@ This order matches the navigation order in `SUMMARY.md` and is designed to build
 6. Harness Internals
 7. Verification Workflow
 8. Docs Authoring
-9. Verification (reports)
 
 ## Which chapter answers which question?
 
@@ -39,17 +38,17 @@ This order matches the navigation order in `SUMMARY.md` and is designed to build
 - “Why is e2e flaky / where are the artifacts?” → [Harness Internals](./harness-internals.md)
 - “How do we keep docs aligned with reality?” → [Verification Workflow](./verification.md)
 - “What is the writing standard for contributor docs?” → [Docs Authoring](./docs-style.md)
-- “What have we verified so far, and where did evidence land?” → [Verification](../verification/index.md)
+- “Where should verification evidence live?” → [Verification Workflow](./verification.md) plus the active task or PR artifacts
 
 ## A small contributor mental model
 
 If you keep one model in mind while changing code, make it this:
 
-- `pginfo` observes local Postgres and publishes a typed snapshot.
-- `dcs` maintains a watch cache + trust view and publishes it.
-- `ha` reads pginfo/dcs/process snapshots, decides the next phase, and dispatches side effects.
-- `process` executes local side effects and reports outcomes.
-- `debug_api` composes a snapshot that the API and debug clients can consume.
-- `api` routes requests, writes operator intents into DCS, and serves reads from the composed snapshot.
+- `pginfo` observes local Postgres and publishes a typed snapshot
+- `dcs` maintains a watch cache plus trust view and publishes it
+- `ha` reads pginfo, dcs, and process snapshots, decides the next phase, and dispatches side effects
+- `process` executes local side effects and reports outcomes
+- `debug_api` composes a snapshot that the API and debug clients can consume
+- `api` routes requests, writes operator intents into DCS, and serves reads from the composed snapshot
 
 Once you can trace those edges, you can debug most issues in minutes instead of hours.

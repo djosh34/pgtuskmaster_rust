@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 04:17:10 AM CET 2026
+Generated: Sat Mar  7 04:40:54 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -363,6 +363,17 @@ The test harness binary lookup in [src/test_harness/binaries.rs](/home/joshazimu
 <blocked_by>01-task-introduce-a-typed-managed-postgres-conf-model-and-serializer,02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint,03-task-take-full-ownership-of-replica-recovery-signal-and-auto-conf-state</blocked_by>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-docs-useful-guides/01-task-rewrite-operator-docs-as-useful-user-guides.md`
+
+```
+## Task: Rewrite operator docs as useful user guides and remove horror pages <status>done</status> <passes>true</passes>
+
+<description>
+Rewrite the non-contributor documentation so it reads like a strong operator/product guide instead of a thin or awkwardly templated book.
 ```
 
 ==============

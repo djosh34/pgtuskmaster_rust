@@ -17,14 +17,12 @@ flowchart LR
   Decide --> Writes[DCS writes]
 ```
 
-## Why this exists
+## How to read a blocked decision
 
-The HA worker uses a single decision function to map explicit inputs (PostgreSQL view, DCS cache/trust, current phase) into a next phase and action set. Operator control inputs (like switchover requests) enter the same pipeline via DCS rather than bypassing it.
+During incident triage, ask which input class is blocking progress:
 
-## Tradeoffs
+- local readiness
+- trust level
+- phase safety guard
 
-The model is intentionally conservative under low-confidence coordination. This can delay actions that appear feasible from one signal alone.
-
-## When this matters in operations
-
-During incident triage, ask which input class is blocking progress: local readiness, trust level, or phase safety guard.
+Operator control inputs such as switchover requests still enter the same decision path through DCS. They do not bypass the model.

@@ -33,22 +33,50 @@ flowchart TB
   C <-->|coordination| ETCD
 ```
 
-## Why this exists
+This layout keeps responsibilities clean:
 
-This topology keeps data-plane and control-plane responsibilities clear. PostgreSQL stays local to each node. DCS is shared coordination memory, not a substitute for local database health.
+- PostgreSQL stays local to the host that stores its data directory.
+- `pgtuskmaster` makes decisions from local PostgreSQL state plus shared coordination state.
+- etcd is coordination memory, not the source of truth for database health.
 
-## Tradeoffs
+## What must be consistent across nodes
 
-A distributed control plane introduces dependence on etcd availability for full coordination trust. The benefit is explicit cluster-wide intent and leader visibility.
+Some settings should match across every member in the same cluster:
 
-## When this matters in operations
+- `[cluster].name`
+- `[dcs].scope`
+- the etcd deployment they are talking to
+- the basic HA timing model, unless you have a specific reason to diverge
 
-During network partitions or etcd instability, nodes may enter conservative states even if local PostgreSQL looks healthy. That behavior is expected and should be interpreted through trust state, not process count alone.
+If those drift, the cluster can look split even when PostgreSQL is healthy.
 
-## Deployment checks that prevent common failures
+## What should remain node-specific
 
-- Keep PostgreSQL data directories with strict required permissions.
-- Keep socket paths short and deterministic.
-- Validate etcd reachability from each node (endpoints are config-driven; some topologies use per-node proxies rather than a single shared endpoint list).
-- Use consistent scope naming across all nodes in the same cluster.
-- Confirm API security posture before exposing operator endpoints.
+These values normally differ per node:
+
+- `[cluster].member_id`
+- PostgreSQL `data_dir`, `listen_host`, and local filesystem paths
+- API `listen_addr` and certificates
+- any host-specific secret paths
+
+Treat copy-pasted configs with only one or two edits as a risk. The easiest way to create an impossible cluster is to duplicate a `member_id` or leave one node pointing at the wrong scope.
+
+## API exposure choices
+
+The recommended progression is:
+
+1. First run: keep `api.listen_addr = "127.0.0.1:8080"` and use the CLI locally.
+2. Real deployment: move the API to a deliberate network address, require TLS, and enable role tokens.
+
+Do not expose an unauthenticated, plaintext API on `0.0.0.0` unless the host is isolated specifically for a short-lived lab.
+
+## Checks before you call the deployment healthy
+
+- PostgreSQL data directories have the required ownership and permissions.
+- Socket paths are short and deterministic.
+- Every node can reach its configured etcd endpoints.
+- Every node advertises the same cluster scope.
+- API security matches the actual exposure level of the listener.
+- Required binaries exist at the configured absolute paths.
+
+During network partitions or etcd instability, nodes can enter conservative states even if local PostgreSQL still looks healthy. Read that through `dcs_trust` and lifecycle phase, not through process count alone.

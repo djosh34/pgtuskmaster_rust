@@ -1,33 +1,36 @@
 # First Run
 
-This flow is a practical first launch. It validates the startup planner path, API availability, and basic DCS coordination behavior.
+Use a small, explicit config for the first launch. Keep the scope narrow: one node, one etcd cluster, one PostgreSQL data directory, and no speculative deployment extras.
 
-## 1. Prepare configuration
+1. Prepare the runtime config.
 
-Use the recommended baseline in [Operator Guide / Configuration Guide](../operator/configuration.md). For first run, keep the scope small and explicit.
+Use the production or local-only examples in [Configuration Guide](../operator/configuration.md). For the first run, keep every path absolute and keep `cluster.member_id` and `dcs.scope` consistent with the etcd namespace you intend to use.
 
-## 2. Start dependencies
+2. Start etcd and confirm the node can reach it.
 
-Bring up etcd and verify reachability from the node host.
+The node will not guess around a broken DCS path. If etcd is unreachable, fix that first.
 
-## 3. Start the node
-
-Start `pgtuskmaster` with your config file.
+3. Start the node.
 
 ```console
 pgtuskmaster --config /path/to/runtime.toml
 ```
 
-## 4. Verify API status
+4. Query the node state.
 
-Query HA state from the node API or CLI.
+If you are using the local-only API example, the CLI works against the default runtime API address without extra flags:
 
 ```console
 pgtuskmasterctl ha state
 ```
 
-You should see a coherent phase and trust posture, not an empty or unreachable response.
+If you exposed the API on another host or enabled HTTPS and tokens, point the CLI at that endpoint instead:
 
-## Why this matters
+```console
+pgtuskmasterctl \
+  --base-url https://node-a.example.com:8080 \
+  --read-token "$PGTUSKMASTER_READ_TOKEN" \
+  ha state
+```
 
-A first run is successful when the control loop is alive, not only when a process exists. API state confirms that workers are observing and publishing state instead of failing silently.
+The first successful run is not just “the process stayed up.” It is “the node published a coherent `/ha/state`, the logs explain the chosen startup path, and the DCS scope reflects the same member identity you configured.”

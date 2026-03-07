@@ -1,25 +1,27 @@
 # Initial Validation
 
-After first startup, validate observable behavior before you treat the setup as operationally ready.
+Treat the first launch as incomplete until you can explain what the node is doing from outside the process.
 
-## Validation checklist
+Run through this checklist:
 
-- API reachability: `GET /ha/state` responds consistently.
-- Trust visibility: reported trust level aligns with current etcd health.
-- PostgreSQL role visibility: current phase and role are understandable.
-- DCS coherence: scope keys exist and reflect expected membership/leader intent.
-- Logs clarity: startup and steady-state transitions appear with useful context.
+- `pgtuskmasterctl ha state` returns a coherent response instead of timing out or failing auth unexpectedly.
+- `dcs_trust`, `ha_phase`, and `ha_decision` make sense for the environment you just started.
+- The local PostgreSQL instance is reachable on the configured socket or listen address.
+- The etcd scope contains the expected member and, once a leader exists, leader information under `/<scope>/...`.
+- The logs show the startup path the node chose, not just a running PID.
 
-## What "good" looks like
+What good looks like:
 
-Good initial validation means that state transitions are explainable. If trust degrades, the node reports conservative behavior. If trust is healthy, normal role progression is visible.
+- a brand new single-node cluster normally settles into a primary-oriented state
+- a node joining an existing healthy cluster reports follower-oriented behavior
+- fail-safe and trust-related phases are visible through `/ha/state` instead of being hidden behind an API blackout
 
-## Common first-run issues
+Common first-run mistakes:
 
-- Missing binaries in `process.binaries`
-- Unreadable secret files
-- Incorrect `pg_hba` for replication paths
-- etcd endpoint mismatch or scope mismatch
-- Directory permissions that prevent PostgreSQL startup
+- wrong absolute paths in `process.binaries`
+- unreadable password, token, or certificate files
+- `pg_hba` rules that do not match the replication or rewind path you configured
+- using the wrong etcd scope or endpoints
+- PostgreSQL directory permissions that prevent `initdb`, `pg_ctl`, or normal server start
 
-After this checklist, continue with **Operator Guide** for production profile selection and full field-level configuration reasoning.
+Once those checks are clean, move on to the [Operator Guide](../operator/index.md).

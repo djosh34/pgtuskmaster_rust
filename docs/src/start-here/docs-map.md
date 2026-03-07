@@ -1,24 +1,20 @@
 # How To Read This Book
 
-This book is intentionally layered. Read the smallest layer that solves your immediate need, then move deeper only when you need more certainty.
+Use the shortest path that answers the question you have right now.
 
-## Reading paths
-
-- Fast setup path: **Quick Start -> Operator Guide**
-- Incident reasoning path: **Operator Guide -> System Lifecycle**
-- Design assurance path: **System Lifecycle -> Architecture Assurance**
-- Implementation path: **Contributors**
-
-## Section intent
-
-| Section | Primary question it answers |
+| If you need to know... | Read this next |
 |---|---|
-| Start Here | What is this system and why does it exist? |
-| Quick Start | How do I get a first working cluster quickly? |
-| Operator Guide | How do I configure, run, observe, and troubleshoot it? |
-| System Lifecycle | What happens during each HA phase and transition? |
-| Architecture Assurance | Why should I trust the design under failure? |
-| Interfaces | What are the concrete API/CLI contracts? |
-| Contributors | How is code organized and how do I change it safely? |
+| how to get a node running | **Quick Start** |
+| how to configure and operate a real deployment | **Operator Guide** |
+| why the node is in a given HA phase | **System Lifecycle** |
+| the exact API or CLI contract | **Interfaces** |
+| how the implementation is wired together | **Contributors** |
 
-Use this map as a forward guide. You should not need to jump backward repeatedly to understand the next section.
+Most operators can read the book in this order:
+
+1. **Quick Start**
+2. **Operator Guide**
+3. **System Lifecycle** when behavior is unclear
+4. **Interfaces** for exact commands and payloads
+
+Most contributors should start at **Contributors** and then dip back into operator-facing chapters to keep docs and implementation aligned.

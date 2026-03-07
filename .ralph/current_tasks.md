@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 04:17:10 AM CET 2026
+Generated: Sat Mar  7 04:40:54 AM CET 2026
 
 # Task `.ralph/tasks/story-container-first-deployment/01-task-container-first-docker-deployment-and-compose.md`
 
@@ -9,17 +9,6 @@ Generated: Sat Mar  7 04:17:10 AM CET 2026
 
 <description>
 **Goal:** Make container deployment the default operational path by adding production/development images and turnkey Docker Compose stacks that run etcd3 + pgtuskmaster with config maps and Docker secrets.
-```
-
-==============
-
-# Task `.ralph/tasks/story-docs-useful-guides/01-task-rewrite-operator-docs-as-useful-user-guides.md`
-
-```
-## Task: Rewrite operator docs as useful user guides and remove horror pages <status>not_started</status> <passes>false</passes>
-
-<description>
-Rewrite the non-contributor documentation so it reads like a strong operator/product guide instead of a thin or awkwardly templated book.
 ```
 
 ==============

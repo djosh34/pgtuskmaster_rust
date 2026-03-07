@@ -1,21 +1,21 @@
 # Prerequisites
 
-Before first run, confirm that all runtime dependencies and binaries are present and reachable from the configured paths.
+Before the first launch, confirm the node has everything it needs locally. Most failed first runs come from missing binaries, unreadable secrets, wrong directory ownership, or an API bind address that does not match how you intend to operate the node.
 
-## Required components
+Required on the node host:
 
-- PostgreSQL 16 binaries (`postgres`, `pg_ctl`, `pg_rewind`, `initdb`, `pg_basebackup`, `psql`)
-- etcd endpoint(s) reachable by the node
-- writable local directories for PostgreSQL data, logs, and socket paths
-- runtime config file with `config_version = "v2"`
+- PostgreSQL 16 binaries at the absolute paths you will place in `process.binaries`:
+  `postgres`, `pg_ctl`, `pg_rewind`, `initdb`, `pg_basebackup`, and `psql`
+- Reachability to at least one etcd endpoint in the cluster scope you plan to use
+- Writable local paths for `postgres.data_dir`, `postgres.socket_dir`, and `postgres.log_file`
+- A `config_version = "v2"` runtime config file
 
-## Environment preparation
+Confirm these before you start:
 
-- Keep data directory ownership and permissions aligned with PostgreSQL requirements.
-- Keep socket directory paths short to avoid Unix socket path-length issues.
-- Ensure secrets referenced by file path are readable by the runtime account.
-- Ensure API listen address and PostgreSQL listen settings are valid for your topology.
+- The runtime account can read every referenced secret or certificate file.
+- The PostgreSQL data directory is empty if this will be an initial bootstrap.
+- The socket directory path is short enough for Unix socket limits.
+- The chosen `api.listen_addr` is deliberate. `127.0.0.1:8080` is the default if you omit it.
+- If you plan to expose the API off-host, you already have TLS material and API tokens ready instead of falling back to an open HTTP listener.
 
-## Why this matters
-
-Most startup failures are not logic errors. They are dependency and path problems. Verifying prerequisites first reduces noisy debugging and makes lifecycle behavior easier to interpret.
+If any of those are uncertain, fix them before launching. The startup path is much easier to reason about when the node is not simultaneously fighting filesystem, auth, and network mistakes.

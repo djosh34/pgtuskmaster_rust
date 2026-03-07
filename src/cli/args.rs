@@ -10,7 +10,7 @@ pub enum OutputFormat {
 #[command(name = "pgtuskmasterctl")]
 #[command(about = "HA admin CLI for PGTuskMaster API")]
 pub struct Cli {
-    #[arg(long, default_value = "http://127.0.0.1:8008")]
+    #[arg(long, default_value = "http://127.0.0.1:8080")]
     pub base_url: String,
     #[arg(long, env = "PGTUSKMASTER_READ_TOKEN")]
     pub read_token: Option<String>,
@@ -70,7 +70,7 @@ mod tests {
         let cli = Cli::try_parse_from(["pgtuskmasterctl", "ha", "state"])
             .map_err(|err| format!("parse should succeed: {err}"))?;
 
-        assert_eq!(cli.base_url, "http://127.0.0.1:8008");
+        assert_eq!(cli.base_url, "http://127.0.0.1:8080");
         assert_eq!(cli.timeout_ms, 5_000);
         assert_eq!(cli.output, OutputFormat::Json);
 

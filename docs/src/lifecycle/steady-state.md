@@ -3,19 +3,27 @@
 After startup planning, the runtime enters continuous reconciliation. Each loop reevaluates local PostgreSQL state, DCS trust, and coordination records.
 
 In stable operation:
+
 - one member acts as primary
 - replicas follow the current leader
 - leader record is re-evaluated each HA loop based on current DCS trust and coordination records
 - switchover intent is empty unless requested
 
-## Why this exists
+Steady state is not inactivity. It is the phase where the node keeps proving that the current role still matches the evidence it sees.
 
-Steady-state control is not inactivity. It is active validation that current role and coordination evidence still agree.
+## What to look for
 
-## Tradeoffs
+During healthy steady state, you should be able to explain:
 
-Continuous checking adds control-plane activity. The benefit is faster detection of drift and more reliable response when assumptions break.
+- why this node is primary or replica
+- whether `dcs_trust` is full quorum, fail-safe, or not trusted
+- whether any switchover intent is pending
+- whether the process worker is mostly idle because nothing needs doing
 
-## When this matters in operations
+## When steady state looks suspicious
 
-A node that appears idle may still be healthy and actively reconciling. Use API state and logs to differentiate idle stability from blocked action.
+A node that appears idle may still be healthy and actively reconciling. Differentiate these cases with `/ha/state` and recent logs:
+
+- healthy idle: stable phase, stable trust, no error churn
+- blocked action: repeated process or HA warnings
+- degraded trust: conservative phase changes without local PostgreSQL failure

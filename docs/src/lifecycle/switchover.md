@@ -19,14 +19,24 @@ sequenceDiagram
   HA->>DCS: clear switchover intent
 ```
 
-## Why this exists
+## How it starts
 
-Planned role changes should be explicit and observable. Intent records provide durable coordination and allow operators to track progress through standard state surfaces.
+An operator requests switchover through the API or CLI, which writes a `/<scope>/switchover` record. The HA loop then decides whether the request is currently safe to execute.
 
-## Tradeoffs
+## What successful progress looks like
 
-A strict sequence can be slower than forceful manual promotion. The benefit is lower risk of overlapping primaries and clearer auditability.
+The useful checkpoints are:
 
-## When this matters in operations
+- the switchover request appears in DCS and in `/ha/state`
+- the current primary begins a controlled step-down path
+- the target node becomes eligible and promotes only when the lease and readiness checks allow it
+- the HA worker clears the switchover record after handling completes
 
-If a switchover stalls, treat it as a precondition wait while trust, lease ownership/state, and PostgreSQL readiness constraints are enforced. Check trust posture, node reachability/readiness, and leader lease state first.
+## When it stalls
+
+Treat a stalled switchover as a precondition wait until you prove otherwise. Common blockers are:
+
+- trust is not at full quorum
+- the requested successor is not healthy or not visible as a viable member
+- the current leader cannot step down safely yet
+- PostgreSQL readiness or process work is still in progress

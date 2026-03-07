@@ -1,6 +1,6 @@
 # Runtime Topology and Boundaries
 
-A node contains multiple specialized workers with bounded responsibilities. In practice it manages a local PostgreSQL instance and participates in DCS coordination, with additional API/debug/logging workers to expose state and operator controls.
+A node contains multiple specialized workers with bounded responsibilities. In practice it manages a local PostgreSQL instance and participates in DCS coordination, with additional API, debug, and logging workers to expose state and operator controls.
 
 ```mermaid
 flowchart TB
@@ -21,14 +21,13 @@ flowchart TB
   Api --> DCS
 ```
 
-## Why this exists
+## How to use this map
 
-Bounded worker responsibilities reduce coupling and make transition reasoning clearer.
+When a symptom appears, ask which boundary owns it:
 
-## Tradeoffs
+- observation problem: `pginfo` or `dcs`
+- decision problem: `ha`
+- side-effect problem: `process`
+- intent or read problem: `api`
 
-More explicit worker boundaries create more internal interfaces. The benefit is better observability and easier targeted testing of behavior paths.
-
-## When this matters in operations
-
-When a symptom appears, this topology helps identify whether the issue starts in observation, decision, action, or coordination.
+That keeps incident analysis and code changes scoped to the right subsystem.

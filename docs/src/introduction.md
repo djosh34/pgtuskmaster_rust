@@ -1,25 +1,21 @@
 # Start Here
 
-This system is a local high-availability control plane for PostgreSQL. One `pgtuskmaster` node supervises one PostgreSQL instance, participates in shared coordination through etcd, and continuously decides whether that PostgreSQL should run as primary, replica, or in a conservative safety state.
+`pgtuskmaster` is a local HA controller for PostgreSQL. Each node supervises one PostgreSQL instance, keeps a watch on shared cluster state in etcd, and decides whether the local database should run as primary, replica, recovering follower, or in a conservative safety phase such as fail-safe or fencing.
 
-The practical goal is to keep role transitions safe and predictable. When a cluster is healthy, the system supports stable leadership, planned switchovers, and unplanned failover handling. When signals are inconsistent, the system prefers actions that reduce split-brain risk, even when those actions temporarily reduce write availability.
+The project is deliberately biased toward safe role changes. When the cluster view is healthy, the node can bootstrap, follow, promote, and handle planned switchover or unplanned failover. When trust in shared coordination drops, it slows down or refuses risky actions instead of guessing.
 
 ```mermaid
 flowchart LR
   Op[Operator] --> API[Node API / CLI]
   API --> Node[pgtuskmaster node]
-  Node <-->|coordination| ETCD[(etcd / DCS)]
+  Node <-->|coordination| ETCD[(etcd)]
   Node --> PG[(PostgreSQL)]
 ```
 
-This documentation is organized to support two reading modes:
+Read this book in the order that matches the job in front of you:
 
-- If you are setting up or operating the system, start with **Quick Start** and then **Operator Guide**.
-- If you need design confidence and lifecycle reasoning, continue with **System Lifecycle** and **Architecture Assurance**.
-- If you are modifying the project, use **Contributors** for code structure, worker flow, and test internals.
-
-The rest of this section answers three foundation questions in order:
-
-1. What problem is this system meant to solve?
-2. How does it solve that problem?
-3. How should you navigate the rest of the book?
+- Start with **Quick Start** if you need a first working node.
+- Continue to **Operator Guide** for configuration, deployment, observability, and troubleshooting.
+- Read **System Lifecycle** when you need to reason about startup, switchover, failover, recovery, or safety phases.
+- Use **Interfaces** for the concrete API and CLI contract.
+- Use **Contributors** only when you are changing the codebase itself.

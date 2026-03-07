@@ -1,43 +1,128 @@
 # Node API
 
-The Node API is a compact operational interface for state visibility and planned control intent.
+The node API is the runtime's operational control plane. It is intentionally small: one state endpoint, one planned switchover write path, one switchover clear path, a narrow fallback surface, and optional debug routes.
 
-## Main endpoints
+The default listen address is `127.0.0.1:8080`. In a secure deployment, bind it to the interface you actually need, enable TLS, and require role tokens rather than exposing an unauthenticated HTTP listener.
 
-- `GET /ha/state`: current HA-relevant state projection, including phase, tick, and decision label/detail
-- `POST /switchover`: create planned switchover intent
-- `DELETE /ha/switchover`: cancel or clear pending switchover intent
+## Core routes
 
-`GET /ha/state` is expected to stay responsive during degraded coordination windows, including no-quorum fail-safe transitions. Slow or failing DCS cleanup must not suppress the visible fail-safe phase.
+These are the routes the operator workflow depends on today:
 
-Initial primary bootstrap and replica cloning remain internal runtime behavior.
+| Method | Path | Purpose | Required role |
+| --- | --- | --- | --- |
+| `GET` | `/ha/state` | Read the current HA state projection | Read or admin |
+| `POST` | `/switchover` | Submit a planned switchover request | Admin |
+| `DELETE` | `/ha/switchover` | Clear a pending switchover request | Admin |
 
-## Fallback endpoints
+`GET /ha/state` stays useful even during degraded coordination windows. The implementation keeps it available so operators can still see phases such as fail-safe without depending on DCS cleanup succeeding first.
 
-These endpoints exist for compatibility and minimal external health/identity workflows:
+## Reading HA state
 
-- `GET /fallback/cluster`: minimal cluster identity view
-- `POST /fallback/heartbeat`: compatibility heartbeat (admin endpoint)
+`GET /ha/state` returns a typed JSON snapshot of the current HA-relevant view:
 
-## Optional debug endpoints
+- cluster name, DCS scope, and this node's member ID
+- current leader, if known
+- `switchover_requested_by`, if one is queued
+- member count
+- DCS trust state
+- HA phase and HA decision
+- snapshot sequence number
 
-When debug support is enabled in runtime configuration:
+Example:
 
-- `GET /debug/ui`
-- `GET /debug/verbose` (optionally accepts `?since=<sequence>` to filter)
-- `GET /debug/snapshot`
+```console
+curl \
+  --silent \
+  --show-error \
+  --header "Authorization: Bearer $PGTUSKMASTER_READ_TOKEN" \
+  https://node-a.example.internal:8443/ha/state
+```
 
-The debug verbose payload includes a bounded timeline/change stream that is intentionally *semantic*: it does not emit “tick-only churn” entries when the underlying state has not meaningfully changed.
+If API auth is disabled, the bearer token is not required. That may be convenient for a local lab, but it should not be your production posture.
 
-## Why this exists
+## Submitting a planned switchover
 
-The API is intentionally small to keep operational behavior explicit. It is designed around intent and state, not low-level procedure endpoints.
+To ask the cluster to begin a planned switchover, send a JSON body with `requested_by`:
 
-## Tradeoffs
+```console
+curl \
+  --silent \
+  --show-error \
+  --request POST \
+  --header "Authorization: Bearer $PGTUSKMASTER_ADMIN_TOKEN" \
+  --header "Content-Type: application/json" \
+  --data '{"requested_by":"node-b"}' \
+  https://node-a.example.internal:8443/switchover
+```
 
-A narrow API surface means fewer ad-hoc knobs. The benefit is clearer lifecycle behavior and smaller control-plane risk.
+Validation is strict:
 
-## When this matters in operations
+- the body must parse as JSON
+- unknown fields are rejected
+- `requested_by` must be non-empty after trimming
 
-For planned role changes, use API intent workflows instead of direct out-of-band coordination writes.
-For degraded coordination, rely on `/ha/state` as the primary operational confirmation that the node has entered fail-safe.
+On success the server returns `202 Accepted` with:
+
+```text
+{
+  "accepted": true
+}
+```
+
+That response confirms the intent was written. It does not mean the switchover has already completed, and `requested_by` is only an audit field in the current implementation rather than a target-member selector.
+
+## Clearing a pending switchover
+
+To cancel or clear a queued switchover intent:
+
+```console
+curl \
+  --silent \
+  --show-error \
+  --request DELETE \
+  --header "Authorization: Bearer $PGTUSKMASTER_ADMIN_TOKEN" \
+  https://node-a.example.internal:8443/ha/switchover
+```
+
+The server also returns `202 Accepted` when the request is recorded successfully.
+
+## Fallback routes
+
+The runtime also exposes a minimal compatibility surface:
+
+| Method | Path | Purpose | Required role |
+| --- | --- | --- | --- |
+| `GET` | `/fallback/cluster` | Minimal cluster identity view | Read or admin |
+| `POST` | `/fallback/heartbeat` | Compatibility heartbeat endpoint | Admin |
+
+These are intentionally narrow. They are not a second management API.
+
+## Optional debug routes
+
+When `debug.enabled = true`, the API enables three extra routes:
+
+| Method | Path | Purpose | Required role |
+| --- | --- | --- | --- |
+| `GET` | `/debug/ui` | Browser UI for the verbose stream | Read or admin |
+| `GET` | `/debug/verbose` | Structured debug payload, optionally filtered by `?since=<sequence>` | Read or admin |
+| `GET` | `/debug/snapshot` | Snapshot dump kept for compatibility | Read or admin |
+
+When debug is disabled, these routes return `404 Not Found`. When the runtime lacks the necessary snapshot subscriber, the read routes return `503 Service Unavailable`.
+
+## TLS and auth model
+
+The API security block is explicit in `config_version = "v2"`:
+
+- `api.security.tls.mode` controls whether the server runs without TLS, with optional TLS, or with required TLS
+- `api.security.tls.identity` is mandatory whenever TLS mode is `optional` or `required`
+- `api.security.auth` is either `disabled` or `role_tokens`
+- `role_tokens` may define a read token, an admin token, or both, but at least one token must be present
+
+For operator-facing environments, prefer:
+
+- `api.security.tls.mode = "required"`
+- a configured server certificate and private key
+- `api.security.auth.type = "role_tokens"`
+- separate read and admin tokens stored outside the config file when possible
+
+That keeps both state reads and write operations behind explicit credentials.

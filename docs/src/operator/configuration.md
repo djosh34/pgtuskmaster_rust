@@ -1,8 +1,10 @@
 # Configuration Guide
 
-This guide describes the current `config_version = "v2"` runtime schema. Replica cloning is supported through `pg_basebackup`.
+This guide describes the current `config_version = "v2"` runtime schema. The main rule to keep in mind is that the parser is explicit, not magical: it refuses missing required blocks, but it does not invent credentials, binary paths, or TLS material for you.
 
-## Baseline example
+## Production baseline
+
+This example keeps PostgreSQL on a private network, uses password-backed PostgreSQL roles, and protects the node API with required TLS plus role tokens.
 
 ```toml
 config_version = "v2"
@@ -12,20 +14,20 @@ name = "prod-cluster-a"
 member_id = "node-a"
 
 [postgres]
-data_dir = "/var/lib/postgresql/data"
-listen_host = "127.0.0.1"
+data_dir = "/var/lib/postgresql/16/data"
+listen_host = "10.0.0.41"
 listen_port = 5432
-socket_dir = "/var/run/pgtuskmaster/sock"
+socket_dir = "/var/run/pgtuskmaster"
 log_file = "/var/log/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
 roles = {
-  superuser = { username = "postgres", auth = { type = "tls" } },
-  replicator = { username = "replicator", auth = { type = "tls" } },
-  rewinder = { username = "rewinder", auth = { type = "tls" } },
+  superuser = { username = "postgres", auth = { type = "password", password = { path = "/etc/pgtuskmaster/secrets/postgres-superuser.password" } } },
+  replicator = { username = "replicator", auth = { type = "password", password = { path = "/etc/pgtuskmaster/secrets/replicator.password" } } },
+  rewinder = { username = "rewinder", auth = { type = "password", password = { path = "/etc/pgtuskmaster/secrets/rewinder.password" } } },
 }
-pg_hba = { source = { content = "local all all trust\nhost replication replicator 10.0.0.0/24 trust\n" } }
+pg_hba = { source = { path = "/etc/pgtuskmaster/pg_hba.conf" } }
 pg_ident = { source = { content = "# empty\n" } }
 extra_gucs = { shared_preload_libraries = "pg_stat_statements" }
 
@@ -63,110 +65,117 @@ cleanup = { enabled = true, max_files = 50, max_age_seconds = 604800, protect_re
 enabled = true
 
 [logging.sinks.file]
-enabled = false
+enabled = true
+path = "/var/log/pgtuskmaster/runtime.jsonl"
 mode = "append"
 
 [api]
-listen_addr = "0.0.0.0:8080"
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+listen_addr = "10.0.0.41:8080"
+security = {
+  tls = {
+    mode = "required",
+    identity = {
+      cert_chain = { path = "/etc/pgtuskmaster/tls/api-server.crt" },
+      private_key = { path = "/etc/pgtuskmaster/tls/api-server.key" }
+    }
+  },
+  auth = { type = "role_tokens", read_token = "REPLACE_WITH_READ_TOKEN", admin_token = "REPLACE_WITH_ADMIN_TOKEN" }
+}
 
 [debug]
 enabled = false
 ```
 
-## Why the schema is explicit
+Two important notes about that example:
 
-The v2 schema is intentionally fail-closed. Startup should fail before the node launches if process binaries, auth identities, TLS material, or DCS settings are incomplete.
+- `api.security.auth.role_tokens.*` are plain strings in the schema, so generate the config from your secret management system or another protected deployment path instead of committing real tokens.
+- `pg_hba` is operator-supplied. If you use password-backed replication or rewind identities, the HBA rules must allow them.
 
-## Field groups
+## Local-only development variant
+
+If you are doing a local lab run on one host, it is acceptable to keep the API loopback-only and disable TLS plus auth:
+
+```toml
+[api]
+listen_addr = "127.0.0.1:8080"
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+```
+
+Use that only for a machine you control locally. Do not copy it into a remotely reachable environment.
+
+## How to think about each section
 
 ### `config_version`
 
-- Must be `v2`.
-- `v1` is intentionally unsupported.
+`v2` is the only supported version. The parser intentionally rejects missing required blocks instead of inferring defaults for security-sensitive fields.
 
 ### `[cluster]`
 
-- `name` labels the cluster for logs and DCS payloads.
-- `member_id` is the stable node identity used in membership and leadership records.
+- `name` is the cluster label that shows up in state and logs.
+- `member_id` is the stable node identity written into DCS records and API responses.
 
 ### `[postgres]`
 
-- `data_dir`, `socket_dir`, and `log_file` define local process layout.
-- `listen_host` and `listen_port` control local PostgreSQL reachability.
-- `local_conn_identity` is used for local control operations.
-- `rewind_conn_identity` supplies the configured identity for rewind connections. Basebackup and rewind still use role-specific credentials from `roles.replicator` and `roles.rewinder`.
-- Basebackup and rewind source host/port are not configured statically. The node derives the source endpoint from the current leader/member PostgreSQL endpoint published in DCS.
-- `roles.superuser`, `roles.replicator`, and `roles.rewinder` define the PostgreSQL identities used by process jobs.
+This block controls the local PostgreSQL instance that the node manages.
+
+- `data_dir`, `socket_dir`, and `log_file` define the local filesystem layout.
+- `listen_host` and `listen_port` are what the node advertises for PostgreSQL reachability.
+- `local_conn_identity` is used for local control queries.
+- `rewind_conn_identity` is used when the node needs `pg_rewind`.
+- `roles.superuser`, `roles.replicator`, and `roles.rewinder` define the credentials passed into subprocess jobs.
 - `pg_hba.source` and `pg_ident.source` can be inline content or file-backed content.
-- `extra_gucs` is the only operator-facing surface for opaque PostgreSQL settings that pgtuskmaster does not interpret semantically.
-- pgtuskmaster owns the live PostgreSQL config file at `PGDATA/pgtm.postgresql.conf` and starts PostgreSQL with `config_file` pointing at that managed file.
-- `pg_hba.source` and `pg_ident.source` are materialized into `PGDATA/pgtm.pg_hba.conf` and `PGDATA/pgtm.pg_ident.conf`, then referenced from the managed `pgtm.postgresql.conf`.
-- Recovery posture is also part of the managed surface: pgtuskmaster owns `standby.signal` / `recovery.signal` materialization and reserves recovery-related GUCs such as `primary_conninfo`, `restore_command`, and `recovery_target_*` from `extra_gucs`.
-- Active `PGDATA/postgresql.auto.conf` is treated as out-of-band state. Managed startup quarantines it to `PGDATA/pgtm.unmanaged.postgresql.auto.conf` before PostgreSQL starts so it cannot silently override the managed config file.
-- Operator-supplied PostgreSQL TLS material is copied into managed files under `PGDATA`; production certificates, keys, and CA bundles are supplied by the operator rather than generated by pgtuskmaster.
-- Test harnesses may generate throwaway TLS material for isolated real-binary scenarios, but that is test-only scaffolding and not part of the production configuration contract.
+- `extra_gucs` is for PostgreSQL settings that `pgtuskmaster` does not model directly.
+
+`pgtuskmaster` owns the managed startup surface inside `PGDATA`. It writes `pgtm.postgresql.conf`, materializes managed `pg_hba` and `pg_ident` files, rebuilds recovery signal files, and quarantines an active `postgresql.auto.conf` out of the live startup path. If PostgreSQL is running from a different `config_file`, you are outside the supported managed contract.
 
 ### `[dcs]`
 
-- `endpoints` must contain at least one reachable etcd endpoint.
-- `scope` is the namespace prefix for cluster coordination keys.
-- `init` is optional and can seed DCS config during bootstrap when `write_on_bootstrap = true`.
+- `endpoints` must contain reachable etcd URLs.
+- `scope` is the namespace used for the cluster's keys.
+- `init` is optional and only matters if you want bootstrap-time DCS initialization.
+
+Use one consistent `scope` for all members of the same cluster. A scope mismatch looks like a broken cluster because the nodes simply are not talking about the same records.
 
 ### `[ha]`
 
-- `loop_interval_ms` is the HA decision cadence.
+- `loop_interval_ms` is how often the HA decision loop runs.
 - `lease_ttl_ms` must be greater than `loop_interval_ms`.
+
+Short intervals make the cluster react faster, but they also make poor etcd or PostgreSQL behavior show up more aggressively.
 
 ### `[process]`
 
-- `pg_rewind_timeout_ms`, `bootstrap_timeout_ms`, and `fencing_timeout_ms` control subprocess deadlines.
-- `process.binaries.*` values must be absolute paths.
-- The required binaries are:
-  - `postgres`
-  - `pg_ctl`
-  - `pg_rewind`
-  - `initdb`
-  - `pg_basebackup`
-  - `psql`
-
-Replica cloning depends on `pg_basebackup`.
+The runtime shells out to real PostgreSQL binaries. Every binary path must be absolute and valid on the node. `pg_basebackup` is required because replica cloning uses it directly, and `pg_rewind` is required for recovery paths that can reuse existing data safely.
 
 ### `[logging]`
 
-- `level` controls application log verbosity.
-- `capture_subprocess_output` determines whether subprocess stdout/stderr is captured into process logs.
-- `logging.postgres` controls PostgreSQL log tailing and cleanup.
-- `logging.sinks.stderr` and `logging.sinks.file` are backend destinations under the typed event/raw-record contract; they do not change the event schema emitted by domain code.
-- `logging.sinks.file.path` must not overlap PostgreSQL-owned log inputs.
-- JSONL stderr/file output is currently the supported backend surface. OpenTelemetry export is intentionally not configurable yet.
+`pgtuskmaster` emits typed application events and can also capture subprocess output.
+
+- `logging.sinks.stderr` is the default structured log path.
+- `logging.sinks.file` is optional and needs an explicit `path` when enabled.
+- PostgreSQL log ingest is controlled separately under `logging.postgres`.
+
+The currently supported operator-facing backend surface is JSONL to stderr and optional file sinks. OpenTelemetry export is intentionally not part of the configuration contract yet.
 
 ### `[api]`
 
-- `listen_addr` must be a stable, non-zero listen address.
-- `security.tls` controls API transport security.
-- `security.auth` controls whether the API is open or token-protected.
+The API defaults to `127.0.0.1:8080` if you omit `listen_addr`. The rest of the block is required:
+
+- `security.tls` controls whether the listener is plain HTTP, optional TLS, or required TLS
+- `security.auth` is either `disabled` or `role_tokens`
+
+For operator-facing deployments, keep the API on a dedicated management interface or behind another secured path. The bad example to avoid is `0.0.0.0:8080` with TLS and auth both disabled.
 
 ### `[debug]`
 
-- `enabled` controls the debug API surface.
-
-## Operational notes
-
-- Initial primary bootstrap uses `initdb`.
-- Replica bootstrap uses `pg_basebackup` against the current healthy primary endpoint advertised in DCS.
-- Rewind also targets the current leader/member endpoint from DCS instead of a statically configured source host/port.
-- `pg_basebackup` does not write recovery settings for pgtuskmaster. Replica follow state is regenerated by pgtuskmaster into `pgtm.postgresql.conf` plus the managed signal-file set before startup.
-- If an operator or external tool leaves `postgresql.auto.conf` behind in `PGDATA`, managed startup quarantines it instead of honoring it.
+`debug.enabled` controls the extra debug routes. Leave it off unless you actively need the debug surfaces.
 
 ## Common misconfigurations
 
 | Symptom | Likely cause | First check |
-|---|---|---|
-| Startup fails with missing required secure field | incomplete v2 config | required nested blocks and binary paths |
-| `pg_basebackup` auth failures | missing replication HBA rules | `pg_hba` replication entries |
-| Rewind jobs fail | rewinder auth or privilege mismatch | `postgres.rewind_conn_identity` and rewinder role wiring |
-| Node cannot spawn binaries | wrong absolute paths or permissions | `process.binaries.*` |
-| Trust degrades repeatedly | unhealthy or inconsistent DCS connectivity | `[dcs] endpoints` and `scope` |
-
-For interface details, see [Node API](../interfaces/node-api.md) and [CLI Workflows](../interfaces/cli.md).
+| --- | --- | --- |
+| startup fails before the node binds the API | missing required `v2` block or unreadable secret file | parser error and file permissions |
+| `pgtuskmasterctl ha state` cannot connect locally | API bound somewhere other than `127.0.0.1:8080` or listener failed to start | `[api].listen_addr` and startup logs |
+| replica bootstrap fails | replication credentials or `pg_hba` rules do not match the source primary | `postgres.roles.replicator` and HBA contents |
+| rewind jobs fail | rewinder credentials, privileges, or source reachability are wrong | `postgres.rewind_conn_identity`, `postgres.roles.rewinder`, and DCS leader endpoint |
+| runtime file sink never appears | file sink enabled without a usable path or permissions | `[logging.sinks.file]` and filesystem ownership |
