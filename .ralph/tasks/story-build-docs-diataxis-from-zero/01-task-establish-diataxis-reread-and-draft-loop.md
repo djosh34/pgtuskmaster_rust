@@ -1,4 +1,4 @@
-## Task: Establish Diataxis Reread And Draft Loop <status>not_started</status> <passes>false</passes>
+## Task: Establish Diataxis Reread And Draft Loop <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Establish only the Diataxis working method, the four documentation forms, and the exact authoring loop for later tasks: `draft -> check/edit -> revise`. Do not create documentation structure in this task. Do not create empty buckets in `docs/src/`.
@@ -12,6 +12,7 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
 - Do not create workflow pages under `docs/src/`.
 - Do not create empty tutorial/how-to/reference/explanation pages under `docs/src/`.
 - Create only `docs/drafts/` as the place for competing candidate drafts during authoring.
+- At this stage, `docs/drafts/` may contain only a tracked placeholder needed to preserve the directory in git; it must not become a backdoor for final docs structure.
 
 **Context from research:**
 - Diataxis is a guide, not a plan.
@@ -80,3 +81,41 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
 - [ ] `make lint` — passes cleanly
 - [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<implementation_plan>
+1. Re-read only the local sources needed to execute this task precisely:
+   - the Diataxis pages already named in `<description>`
+   - `docs/book.toml` and `docs/src/SUMMARY.md` only as guardrails to avoid introducing structure changes outside scope
+   - any existing docs-task files in `.ralph/tasks/story-build-docs-diataxis-from-zero/` only if needed to keep the story language consistent
+2. Create `docs/drafts/` and nothing broader under `docs/`:
+   - ensure it exists as the explicit workspace for competing candidate drafts
+   - add a tracked placeholder file inside `docs/drafts/` so the directory survives in git without smuggling actual workflow content into `docs/src/`
+   - do not create workflow prose pages under `docs/src/`
+   - do not create empty Diataxis category buckets under `docs/src/`
+3. Update this task file so it becomes the durable record of the authoring method for later runs:
+   - preserve the existing scope and Diataxis statements
+   - add concrete execution notes if needed so future runs can follow the mandatory reread loop without guesswork
+   - make the later-run loop explicit: classify with the compass, draft up to 5 pages, generate competing drafts in `docs/drafts/`, check/edit for drift and weakness, revise, append progress, and stop
+4. Verify that the implementation stayed within scope before broader checks:
+   - inspect the resulting tree to confirm `docs/drafts/` plus its tracked placeholder were added and `docs/src/` did not gain workflow-only pages or empty buckets
+   - inspect the task file to confirm the reread list, 5-page cap, and `draft -> check/edit -> revise` loop remain explicit
+5. Run the required verification commands in task order and fix any fallout:
+   - `make docs-build`
+   - `make check`
+   - `make test`
+   - `make test-long`
+   - `make lint`
+   - if any command fails, repair the underlying issue rather than weakening tests or checks
+6. Update task completion markers only after all verification passes:
+   - tick every satisfied acceptance criterion
+   - set `<passes>true</passes>`
+   - leave a concise record in the task file of any important verification detail if the story format needs it
+7. Finish the Ralph workflow only after implementation and verification are complete:
+   - run `/bin/bash .ralph/task_switch.sh`
+   - commit all changes, including `.ralph/`, with `task finished [task name]: [insert text]`
+   - include evidence of checks and any implementation obstacles in the commit message
+   - push with `git push`
+   - add to `AGENTS.md` only if a genuinely reusable learning surfaced
+
+NOW EXECUTE
+</implementation_plan>

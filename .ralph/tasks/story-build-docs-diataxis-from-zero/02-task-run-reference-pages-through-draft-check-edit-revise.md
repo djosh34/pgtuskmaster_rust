@@ -1,4 +1,4 @@
-## Task: Run Reference Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes>
+## Task: Run Reference Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Create the first real reference pages by running them through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.

@@ -1,11 +1,11 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 10:28:11 PM CET 2026
+Generated: Sat Mar  7 10:57:33 PM CET 2026
 
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/01-task-establish-diataxis-reread-and-draft-loop.md`
 
 ```
-## Task: Establish Diataxis Reread And Draft Loop <status>not_started</status> <passes>false</passes>
+## Task: Establish Diataxis Reread And Draft Loop <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Establish only the Diataxis working method, the four documentation forms, and the exact authoring loop for later tasks: `draft -> check/edit -> revise`. Do not create documentation structure in this task. Do not create empty buckets in `docs/src/`.
@@ -16,7 +16,7 @@ Generated: Sat Mar  7 10:28:11 PM CET 2026
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/02-task-run-reference-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run Reference Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes>
+## Task: Run Reference Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Create the first real reference pages by running them through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
@@ -27,7 +27,7 @@ Generated: Sat Mar  7 10:28:11 PM CET 2026
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/03-task-run-explanation-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run Explanation Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes>
+## Task: Run Explanation Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Create the first explanation pages by running them through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
@@ -38,7 +38,7 @@ Generated: Sat Mar  7 10:28:11 PM CET 2026
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/04-task-run-how-to-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run How-To Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes>
+## Task: Run How-To Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Create the first how-to guides by running them through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
@@ -49,7 +49,7 @@ Generated: Sat Mar  7 10:28:11 PM CET 2026
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/05-task-run-tutorial-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run Tutorial Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes>
+## Task: Run Tutorial Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Create the first tutorials by running them through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
@@ -60,7 +60,7 @@ Generated: Sat Mar  7 10:28:11 PM CET 2026
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/06-task-derive-navigation-from-authored-pages.md`
 
 ```
-## Task: Derive Navigation From Authored Pages <status>not_started</status> <passes>false</passes>
+## Task: Derive Navigation From Authored Pages <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** After real content exists across multiple Diataxis forms, derive mdBook navigation and any landing pages from that content. This task is for authored structure, not for the final truth-check pass.
@@ -68,10 +68,21 @@ Generated: Sat Mar  7 10:28:11 PM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-build-docs-diataxis-from-zero/07-task-run-final-accuracy-verification-and-create-bugs.md`
+# Task `.ralph/tasks/story-build-docs-diataxis-from-zero/07-task-run-contributor-codemap-codeguide-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run Final Accuracy Verification And Create Bugs <status>not_started</status> <passes>false</passes>
+## Task: Run Contributor Codemap Codeguide Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+**Goal:** Create a separate contributor chapter for codemap and codeguide material by running the pages through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
+```
+
+==============
+
+# Task `.ralph/tasks/story-build-docs-diataxis-from-zero/08-task-run-final-accuracy-verification-and-create-bugs.md`
+
+```
+## Task: Run Final Accuracy Verification And Create Bugs <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Perform the final accuracy-only verification pass after the authoring and navigation tasks are complete. This is the only task in the story that should introduce and use `docs/verifications/`. Its purpose is to check truth, not to do more drafting.

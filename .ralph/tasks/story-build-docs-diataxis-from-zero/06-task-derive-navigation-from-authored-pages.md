@@ -1,4 +1,4 @@
-## Task: Derive Navigation From Authored Pages <status>not_started</status> <passes>false</passes>
+## Task: Derive Navigation From Authored Pages <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** After real content exists across multiple Diataxis forms, derive mdBook navigation and any landing pages from that content. This task is for authored structure, not for the final truth-check pass.

@@ -1,4 +1,4 @@
-## Task: Run Final Accuracy Verification And Create Bugs <status>not_started</status> <passes>false</passes>
+## Task: Run Final Accuracy Verification And Create Bugs <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Perform the final accuracy-only verification pass after the authoring and navigation tasks are complete. This is the only task in the story that should introduce and use `docs/verifications/`. Its purpose is to check truth, not to do more drafting.
