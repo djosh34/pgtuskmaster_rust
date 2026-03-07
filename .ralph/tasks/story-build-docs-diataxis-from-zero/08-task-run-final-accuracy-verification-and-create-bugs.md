@@ -17,6 +17,11 @@
   - step accuracy
   - cross-page contradictions
 
+**Validation policy for this task:**
+- NEVER run tests in this task.
+- You may read test files as verification evidence, but do not execute any test command.
+- The only allowed validation commands in this task are `docs-lint` and `docs-build`.
+
 **Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
@@ -28,6 +33,7 @@
 - Verify docs against code, config, tests, commands, and runnable behavior, not against earlier drafts.
 - Create bug tasks for inaccuracies instead of silently tolerating them.
 - Only do tiny inline doc corrections when they are safe and unavoidable to complete the verification pass.
+- Do not let verification notes or prior prose override what the repository actually shows.
 
 **Run requirements:**
 1. Review the current authored docs and identify the next verification slice.

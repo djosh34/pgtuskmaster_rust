@@ -11,6 +11,11 @@
 - Rework navigation only from real existing pages.
 - If landing pages are needed, they must be real overviews, not placeholders.
 
+**Validation policy for this task:**
+- NEVER run tests in this task.
+- You may read test files as grounding sources when needed, but do not execute any test command.
+- The only allowed validation commands in this task are `docs-lint` and `docs-build`.
+
 **Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
@@ -28,7 +33,7 @@
 - Do not add empty buckets.
 
 **Run requirements:**
-1. Review the current authored pages and the content relationships they imply.
+1. Review the current authored pages and the content relationships they imply. Re-check any technical claims that must appear in overview prose against the repository instead of trusting prior prose.
 2. Build rich K2 context from those real pages, the navigation problem, and the relevant Diataxis guidance. Use a temporary context file whenever that helps.
 3. Use `ask-k2-docs` for any landing-page or overview prose and for prose revisions to those pages.
 4. Use differing prompts when comparing alternative navigation models, overview structures, or continuous update strategies would improve the result.
@@ -41,6 +46,7 @@
 - the real pages that currently exist
 - the user-facing grouping or entry problems those pages create
 - the intended overview role for any landing page
+- any existing overview prose only after its technical claims have been re-checked against repo sources
 - the Diataxis constraints that must shape the output
 </description>
 

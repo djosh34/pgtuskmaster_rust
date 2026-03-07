@@ -11,6 +11,11 @@
 - Build real task-oriented guides only from repo-backed workflows and operational goals.
 - Do not turn how-to pages into tutorials, explanations, or feature catalogs.
 
+**Validation policy for this task:**
+- NEVER run tests in this task.
+- You may read test files as grounding sources, but do not execute any test command.
+- The only allowed validation commands in this task are `docs-lint` and `docs-build`.
+
 **Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
@@ -26,7 +31,7 @@
 - Link out for reference or explanation instead of mixing forms.
 
 **Run requirements:**
-1. Gather exact commands, flags, config snippets, checkpoints, and repo-backed expectations for the next user-goal pages.
+1. Gather exact commands, flags, config snippets, checkpoints, and repo-backed expectations for the next user-goal pages. Use existing docs only as revision inputs after re-checking the facts against the repository.
 2. Package those facts plus the Diataxis how-to guidance into a rich K2 context payload, using a temporary context file when needed.
 3. Use `ask-k2-docs` for every initial draft and every prose revision.
 4. Use differing prompts when comparing multiple task sequences, stopping points, grouping options, or update strategies would improve the guide.
@@ -39,6 +44,7 @@
 **Context to provide to K2 instead of pre-writing prose here:**
 - exact operational user goals to cover next
 - concrete commands, config files, endpoints, and observables grounded in the repo
+- any existing draft prose only after its technical claims have been re-checked against repo sources
 - links to related reference or explanation pages
 - the Diataxis how-to rules that must constrain the output
 </description>

@@ -11,6 +11,11 @@
 - Build real explanation pages only where the codebase supports meaningful context and rationale.
 - Do not turn explanation pages into reference dumps or how-to procedures.
 
+**Validation policy for this task:**
+- NEVER run tests in this task.
+- You may read test files as grounding sources, but do not execute any test command.
+- The only allowed validation commands in this task are `docs-lint` and `docs-build`.
+
 **Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
@@ -25,7 +30,7 @@
 - If the page turns procedural or catalog-like, split or replace it.
 
 **Run requirements:**
-1. Gather the relevant code paths, tests, design tensions, and cross-links before drafting.
+1. Gather the relevant code paths, tests, design tensions, cross-links, and runnable behavior before drafting. Use existing docs only as revision inputs after re-checking their claims against the repository.
 2. Package those facts plus the Diataxis explanation guidance into rich K2 context, using a temporary context file when helpful.
 3. Use `ask-k2-docs` for all explanation-page prose drafts and prose revisions.
 4. Use meaningfully different prompts when comparing alternative explanatory frames, structures, or update strategies.
@@ -37,6 +42,7 @@
 
 **Context to provide to K2 instead of pre-writing prose here:**
 - exact modules, configs, tests, and control flows relevant to each topic
+- any existing draft prose only after its technical claims have been re-checked against repo sources
 - tensions or design questions the page should illuminate
 - links to related reference or how-to pages
 - the Diataxis explanation rules that must constrain the output

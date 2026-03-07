@@ -11,6 +11,11 @@
 - Build real tutorials only where the repo supports a safe, concrete learning path.
 - Do not let tutorial pages branch into how-to choice trees or explanation-heavy lectures.
 
+**Validation policy for this task:**
+- NEVER run tests in this task.
+- You may read test files as grounding sources, but do not execute any test command.
+- The only allowed validation commands in this task are `docs-lint` and `docs-build`.
+
 **Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
@@ -27,7 +32,7 @@
 - Minimize explanation and avoid unnecessary branches.
 
 **Run requirements:**
-1. Gather the exact learner journey, prerequisites, commands, checkpoints, and safe stopping points from the repo.
+1. Gather the exact learner journey, prerequisites, commands, checkpoints, safe stopping points, and runnable behavior from the repo. Use existing docs only as revision inputs after re-checking the facts against the repository.
 2. Package those facts plus the Diataxis tutorial guidance into rich K2 context, using a temporary context file whenever that makes the prompt clearer.
 3. Use `ask-k2-docs` for every tutorial draft and every prose revision.
 4. Use differing prompts when comparing lesson structure, learner pacing, or update strategies would improve the tutorial.
@@ -40,6 +45,7 @@
 **Context to provide to K2 instead of pre-writing prose here:**
 - the concrete learner outcomes to achieve
 - exact repo-backed commands, assets, configs, and checkpoints
+- any existing draft prose only after its technical claims have been re-checked against repo sources
 - links to supporting reference or explanation pages
 - the Diataxis tutorial rules that must constrain the output
 </description>

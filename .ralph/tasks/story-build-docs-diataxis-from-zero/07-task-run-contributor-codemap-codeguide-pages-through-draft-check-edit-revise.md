@@ -11,6 +11,11 @@
 - Build a contributor chapter only from real pages that exist.
 - Keep each page within a single Diataxis form even though the chapter serves contributors.
 
+**Validation policy for this task:**
+- NEVER run tests in this task.
+- You may read test files as grounding sources, but do not execute any test command.
+- The only allowed validation commands in this task are `docs-lint` and `docs-build`.
+
 **Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
@@ -32,7 +37,7 @@
 - Keep the wording rule: do not use `gate` where `test` is meant.
 
 **Run requirements:**
-1. Gather the next contributor topics directly from code structure, module boundaries, runtime flows, ownership boundaries, and tests.
+1. Gather the next contributor topics directly from code structure, module boundaries, runtime flows, ownership boundaries, tests, and runnable behavior where relevant. Use existing docs only as revision inputs after re-checking their claims against the repository.
 2. Build rich K2 context from those repo facts, the contributor audience, and the relevant Diataxis form guidance. Use a temporary context file whenever that is clearer.
 3. Use `ask-k2-docs` for every draft and every prose revision.
 4. Use differing prompts when comparing alternative codemap structures, audience framing, page splits, or update strategies would improve the chapter.
@@ -45,6 +50,7 @@
 **Context to provide to K2 instead of pre-writing prose here:**
 - exact code paths, modules, and tests that ground each page
 - intended contributor audience and page purpose
+- any existing draft prose only after its technical claims have been re-checked against repo sources
 - the required Diataxis form for each page
 - wording and terminology constraints that must shape the output
 </description>

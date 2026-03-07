@@ -11,6 +11,11 @@
 - Build real reference pages only from actual machinery boundaries.
 - Do not add empty sections or speculative placeholders.
 
+**Validation policy for this task:**
+- NEVER run tests in this task.
+- You may read test files as grounding sources, but do not execute any test command.
+- The only allowed validation commands in this task are `docs-lint` and `docs-build`.
+
 **Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
@@ -25,7 +30,7 @@
 - If explanation or procedure appears necessary, link to the right page type instead of mixing forms.
 
 **Run requirements:**
-1. Gather the concrete facts for the next candidate pages directly from code, config, tests, CLI/API surfaces, and existing docs references.
+1. Gather the concrete facts for the next candidate pages directly from code, config, tests, CLI/API surfaces, and runnable behavior. Use existing docs only as revision inputs after re-checking the facts against the repository.
 2. Build rich K2 prompt context from those facts and from the Diataxis reference guidance. Use a temporary context file whenever that is the clearest way to pass enough material.
 3. Use `ask-k2-docs` for every initial reference draft and every prose revision.
 4. Use differing prompts when comparing alternative page structures, coverage splits, or update strategies would be useful.
@@ -38,6 +43,7 @@
 **Context to provide to K2 instead of pre-writing prose here:**
 - current reference-page targets and any already-authored replacements
 - exact source modules and tests that ground each page
+- any existing draft prose only after its technical claims have been re-checked against repo sources
 - required boundaries, terms, and non-goals
 - the Diataxis reference rules that must constrain the output
 </description>
