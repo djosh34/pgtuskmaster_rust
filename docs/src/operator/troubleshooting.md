@@ -63,6 +63,25 @@ First checks:
 - `pg_hba` replication rules
 - current leader/member record in DCS and connectivity to its advertised PostgreSQL endpoint
 
+## PostgreSQL started, but runtime behavior does not match the managed config
+
+Likely causes:
+- PostgreSQL was started outside pgtuskmaster with a different `config_file`
+- managed config materialization drifted or failed before startup
+- an operator or external automation edited `PGDATA` directly
+
+First checks:
+- `SHOW config_file;` and confirm it points to `PGDATA/pgtm.postgresql.conf`
+- `SHOW hba_file;` and confirm it points to `PGDATA/pgtm.pg_hba.conf`
+- `SHOW ident_file;` and confirm it points to `PGDATA/pgtm.pg_ident.conf`
+- `SHOW data_directory;` so the expected managed paths are resolved against the right `PGDATA`
+- recent startup/process events for managed-config materialization failures
+
+What the results mean:
+- if `SHOW config_file;` points at plain `postgresql.conf`, the node is not using the pgtuskmaster-managed startup contract
+- if `SHOW hba_file;` or `SHOW ident_file;` point anywhere else, runtime-managed side files were bypassed or replaced
+- if the managed files on disk do not match the active `SHOW ..._file` outputs, treat that as startup drift or out-of-band interference rather than “normal” PostgreSQL behavior
+
 ## Leader flaps or repeated role churn
 
 Likely causes:

@@ -129,7 +129,9 @@ mod tests {
     use crate::state::{new_state_channel, MemberId, UnixMillis, WorkerStatus};
     use crate::test_harness::binaries::require_pg16_bin_for_real_tests;
     use crate::test_harness::namespace::NamespaceGuard;
-    use crate::test_harness::pg16::{prepare_pgdata_dir, spawn_pg16, PgHandle, PgInstanceSpec};
+    use crate::test_harness::pg16::{
+        prepare_pgdata_dir, spawn_pg16, spawn_pg16_for_vanilla_postgres, PgHandle, PgInstanceSpec,
+    };
     use crate::test_harness::ports::allocate_ports;
 
     use super::{step_once, PgInfoWorkerCtx, SqlStatus};
@@ -376,18 +378,6 @@ mod tests {
                     output.status
                 )));
             }
-            {
-                use std::io::Write;
-
-                let mut postgresql_conf = fs::OpenOptions::new()
-                    .append(true)
-                    .open(replica_data.join("postgresql.conf"))?;
-                writeln!(
-                    postgresql_conf,
-                    "primary_conninfo = 'host=127.0.0.1 port={} user=postgres dbname=postgres'",
-                    primary_port
-                )?;
-            }
             fs::write(replica_data.join("standby.signal"), b"")?;
 
             let replica_socket = ns.child_dir("run/replica");
@@ -399,7 +389,7 @@ mod tests {
             let replica_port = replica_reservation.as_slice()[0];
             drop(replica_reservation);
 
-            let replica_handle = spawn_pg16(PgInstanceSpec {
+            let replica_spec = PgInstanceSpec {
                 postgres_bin: postgres_bin.clone(),
                 initdb_bin: initdb_bin.clone(),
                 data_dir: replica_data.clone(),
@@ -407,8 +397,16 @@ mod tests {
                 log_dir: replica_logs,
                 port: replica_port,
                 startup_timeout: Duration::from_secs(30),
-            })
-            .await?;
+            };
+            let replica_conf_lines = vec![format!(
+                "primary_conninfo = 'host=127.0.0.1 port={} user=postgres dbname=postgres'",
+                primary_port
+            )];
+            // This test exercises PostgreSQL standby polling after pg_basebackup, so
+            // it uses the explicit vanilla-Postgres exception path instead of the
+            // pgtuskmaster-managed config flow.
+            let replica_handle =
+                spawn_pg16_for_vanilla_postgres(replica_spec, &replica_conf_lines).await?;
             replica = Some(replica_handle);
 
             let replica_dsn = format!(

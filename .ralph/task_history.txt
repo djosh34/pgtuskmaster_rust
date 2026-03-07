@@ -115,3 +115,4 @@
 .ralph/tasks/story-authoritative-managed-postgres-config/02-task-make-pgtm-postgresql-conf-the-only-startup-config-entrypoint.md
 .ralph/tasks/story-authoritative-managed-postgres-config/03-task-take-full-ownership-of-replica-recovery-signal-and-auto-conf-state.md
 .ralph/tasks/story-authoritative-managed-postgres-config/05-task-centralize-composable-sample-runtime-config-builders-for-tests.md
+.ralph/tasks/story-authoritative-managed-postgres-config/04-task-migrate-harness-tests-and-docs-to-the-authoritative-managed-conf-model.md

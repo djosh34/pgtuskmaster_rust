@@ -139,6 +139,14 @@ Key behaviors to know:
 
 Shutdown uses a “TERM then kill” pattern with timeouts so leftover processes do not accumulate.
 
+The ownership boundary matters here:
+
+- `spawn_pg16(...)` is the plain real-binary process helper with no direct `postgresql.conf` mutation
+- `spawn_pg16_for_vanilla_postgres(...)` is the explicit exception path for tests that truly need raw PostgreSQL config lines
+- pgtuskmaster-managed startup tests should prove behavior through the runtime/process materialization path that writes `PGDATA/pgtm.postgresql.conf` and the managed side files, not by appending ad hoc lines to `postgresql.conf`
+
+If you think a new test needs direct `postgresql.conf` edits, treat that as a narrow vanilla-Postgres exception and explain why in the test. Do not reintroduce a generic “pass arbitrary config lines into the harness” mental model.
+
 ## Fault injection: TCP proxy links
 
 Network fault injection uses a TCP proxy in `src/test_harness/net_proxy.rs`.

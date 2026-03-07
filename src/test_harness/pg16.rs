@@ -91,10 +91,10 @@ pub fn prepare_pgdata_dir(
 }
 
 pub async fn spawn_pg16(spec: PgInstanceSpec) -> Result<PgHandle, HarnessError> {
-    spawn_pg16_with_conf_lines(spec, &[]).await
+    spawn_pg16_for_vanilla_postgres(spec, &[]).await
 }
 
-pub async fn spawn_pg16_with_conf_lines(
+pub async fn spawn_pg16_for_vanilla_postgres(
     spec: PgInstanceSpec,
     postgresql_conf_lines: &[String],
 ) -> Result<PgHandle, HarnessError> {
@@ -105,7 +105,7 @@ pub async fn spawn_pg16_with_conf_lines(
     fs::create_dir_all(&spec.log_dir)?;
 
     initialize_pgdata_if_needed(&spec).await?;
-    append_postgresql_conf_lines(&spec.data_dir, postgresql_conf_lines)?;
+    append_vanilla_postgresql_conf_lines(&spec.data_dir, postgresql_conf_lines)?;
 
     let stdout_path = spec.log_dir.join("postgres.stdout.log");
     let stderr_path = spec.log_dir.join("postgres.stderr.log");
@@ -137,7 +137,10 @@ pub async fn spawn_pg16_with_conf_lines(
     Ok(PgHandle { child })
 }
 
-fn append_postgresql_conf_lines(data_dir: &Path, lines: &[String]) -> Result<(), HarnessError> {
+fn append_vanilla_postgresql_conf_lines(
+    data_dir: &Path,
+    lines: &[String],
+) -> Result<(), HarnessError> {
     if lines.is_empty() {
         return Ok(());
     }

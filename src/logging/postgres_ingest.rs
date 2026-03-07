@@ -1277,7 +1277,7 @@ mod tests {
         };
         use crate::test_harness::namespace::NamespaceGuard;
         use crate::test_harness::pg16::{
-            prepare_pgdata_dir, spawn_pg16_with_conf_lines, PgInstanceSpec,
+            prepare_pgdata_dir, spawn_pg16_for_vanilla_postgres, PgInstanceSpec,
         };
         use crate::test_harness::ports::allocate_ports;
 
@@ -1441,8 +1441,18 @@ mod tests {
             let log_dir = ns.child_dir("logs/pg16-node-a");
 
             let jsonlog_path = log_dir.join("postgres.json");
-            let _ = std::fs::create_dir_all(&log_dir);
-            let _ = std::fs::write(&jsonlog_path, b"");
+            std::fs::create_dir_all(&log_dir).map_err(|err| {
+                WorkerError::Message(format!(
+                    "create postgres ingest log dir {} failed: {err}",
+                    log_dir.display()
+                ))
+            })?;
+            std::fs::write(&jsonlog_path, b"").map_err(|err| {
+                WorkerError::Message(format!(
+                    "seed postgres ingest jsonlog file {} failed: {err}",
+                    jsonlog_path.display()
+                ))
+            })?;
 
             let conf_lines = vec![
                 "logging_collector = on".to_string(),
@@ -1464,7 +1474,10 @@ mod tests {
             reservation.release_port(port).map_err(|err| {
                 WorkerError::Message(format!("release reserved port failed: {err}"))
             })?;
-            let mut pg = spawn_pg16_with_conf_lines(spec, &conf_lines).await?;
+            // This test validates raw PostgreSQL log emission and ingest parsing, not
+            // pgtuskmaster-managed startup ownership, so it uses the explicit
+            // vanilla-Postgres config exception path.
+            let mut pg = spawn_pg16_for_vanilla_postgres(spec, &conf_lines).await?;
 
             let mut cfg = sample_runtime_config();
             cfg.logging.postgres.log_dir = Some(log_dir);
