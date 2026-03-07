@@ -697,8 +697,7 @@ mod tests {
 
     fn unique_temp_root(label: &str) -> PathBuf {
         let pid = std::process::id();
-        static COUNTER: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!("pgtuskmaster-{label}-{pid}-{unique}"))
     }

@@ -1,14 +1,14 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 08:52:06 CET 2026
+Generated: Sat Mar  7 09:27:21 CET 2026
 
-# Task `.ralph/tasks/bugs/postgres-auth-role-matrix-validation-and-e2e.md`
+# Task `.ralph/tasks/bugs/postgres-primary-conninfo-password-auth-missing.md`
 
 ```
-## Bug: PostgreSQL auth/role matrix validation and e2e coverage <status>not_started</status> <passes>false</passes>
+## Bug: PostgreSQL replica primary_conninfo password auth is missing <status>not_started</status> <passes>false</passes>
 
 <description>
-Pass-8 of the recurring deep-skeptical meta-task (`.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md`) built an explicit auth/role matrix under `.ralph/evidence/meta-18-pass8-20260307T065112Z/auth-matrix/auth-matrix.csv`.
+Real-binary HA work for `.ralph/tasks/bugs/postgres-auth-role-matrix-validation-and-e2e.md` exposed that password auth is only wired for libpq subprocesses like `pg_basebackup`/`pg_rewind`, not for steady-state standby streaming after bootstrap.
 ```
 
 ==============

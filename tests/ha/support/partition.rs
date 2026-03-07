@@ -82,6 +82,7 @@ impl PartitionFixture {
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
+            postgres_roles: None,
             mode: ha_e2e::Mode::PartitionProxy,
             timeouts: ha_e2e::TimeoutConfig {
                 command_timeout: E2E_COMMAND_TIMEOUT,

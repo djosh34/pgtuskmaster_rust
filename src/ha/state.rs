@@ -103,14 +103,22 @@ impl ProcessDispatchDefaults {
             socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
             log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
             replicator_username: "replicator".to_string(),
-            replicator_auth: crate::config::RoleAuthConfig::Tls,
+            replicator_auth: contract_stub_password_auth(),
             rewinder_username: "rewinder".to_string(),
-            rewinder_auth: crate::config::RoleAuthConfig::Tls,
+            rewinder_auth: contract_stub_password_auth(),
             remote_dbname: "postgres".to_string(),
             remote_ssl_mode: PgSslMode::Prefer,
             connect_timeout_s: 5,
             shutdown_mode: ShutdownMode::Fast,
         }
+    }
+}
+
+fn contract_stub_password_auth() -> RoleAuthConfig {
+    RoleAuthConfig::Password {
+        password: crate::config::SecretSource(crate::config::InlineOrPath::Inline {
+            content: "secret-password".to_string(),
+        }),
     }
 }
 

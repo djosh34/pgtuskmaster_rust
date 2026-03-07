@@ -109,6 +109,11 @@ This block controls the managed PostgreSQL contract:
 
 The practical lesson is that most PostgreSQL failures under `pgtuskmaster` are not random. They usually reflect one of three classes: unreadable secret material, a policy mismatch in `pg_hba` or `pg_ident`, or a wrong local path/identity assumption that later shows up during base backup or rewind.
 
+Two parser constraints are easy to miss:
+
+- PostgreSQL role auth currently supports `type = "password"` only. `type = "tls"` is rejected because the runtime does not yet expose client certificate/key material for libpq subprocesses.
+- `local_conn_identity.ssl_mode` and `rewind_conn_identity.ssl_mode` must not require server TLS when `postgres.tls.mode = "disabled"`. If an internal path insists on `require`, `verify-ca`, or `verify-full`, enable PostgreSQL TLS first.
+
 ### `[dcs]`
 
 `endpoints` must point at reachable etcd listeners, and `scope` must be identical across every node in the same cluster. If scope diverges, nodes are not "slightly misconfigured." They are effectively participating in different coordination universes.

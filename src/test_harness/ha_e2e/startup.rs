@@ -7,8 +7,9 @@ use tokio::task::JoinHandle;
 
 use crate::config::{
     BinaryPaths, DcsConfig, DcsInitConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
-    LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresLoggingConfig,
-    ProcessConfig, StderrSinkConfig,
+    LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
+    PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
+    ProcessConfig, RoleAuthConfig, SecretSource, StderrSinkConfig,
 };
 use crate::state::WorkerError;
 use crate::test_harness::binaries::{
@@ -41,6 +42,22 @@ const HARNESS_LOGGING_POLL_INTERVAL_MS: u64 = 200;
 const HARNESS_LOGGING_CLEANUP_MAX_FILES: u64 = 50;
 const HARNESS_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
 const HARNESS_LOGGING_PROTECT_RECENT_SECONDS: u64 = 300;
+
+fn inline_secret(content: &str) -> SecretSource {
+    SecretSource(InlineOrPath::Inline {
+        content: content.to_string(),
+    })
+}
+
+fn password_auth(content: &str) -> RoleAuthConfig {
+    RoleAuthConfig::Password {
+        password: inline_secret(content),
+    }
+}
+
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
 
 struct StartupGuard {
     guard: NamespaceGuard,
@@ -194,6 +211,7 @@ async fn start_cluster_inner(
         allocate_ha_topology_ports(config.node_count, etcd_member_count)?;
     let topology = topology_reservation.layout().clone();
     let node_ports = topology.node_ports.clone();
+    let postgres_roles = config.postgres_roles.clone().unwrap_or_default();
 
     let mut forbidden_ports: BTreeSet<u16> = topology
         .etcd_client_ports
@@ -383,13 +401,20 @@ async fn start_cluster_inner(
             }
         };
 
-        let pg_hba_contents = concat!(
-            "# managed by pgtuskmaster test harness\n",
-            "local all all trust\n",
-            "host all all 127.0.0.1/32 trust\n",
-            "host replication replicator 127.0.0.1/32 trust\n",
-        )
-        .to_string();
+        let replicator_username = postgres_roles.replicator_username.clone();
+        let replicator_password = postgres_roles.replicator_password.clone();
+        let rewinder_username = postgres_roles.rewinder_username.clone();
+        let rewinder_password = postgres_roles.rewinder_password.clone();
+        let pg_hba_contents = format!(
+            concat!(
+                "# managed by pgtuskmaster test harness\n",
+                "local all all trust\n",
+                "host replication {} 127.0.0.1/32 trust\n",
+                "host all {} 127.0.0.1/32 trust\n",
+                "host all all 127.0.0.1/32 trust\n",
+            ),
+            replicator_username, rewinder_username,
+        );
         let pg_ident_contents = "# empty\n".to_string();
 
         let dcs_endpoints_for_check = dcs_endpoints.clone();
@@ -406,12 +431,12 @@ async fn start_cluster_inner(
                 "socket_dir": socket_dir.display().to_string(),
                 "log_file": log_file.display().to_string(),
                 "local_conn_identity": { "user": "postgres", "dbname": "postgres", "ssl_mode": "prefer" },
-                "rewind_conn_identity": { "user": "rewinder", "dbname": "postgres", "ssl_mode": "prefer" },
+                "rewind_conn_identity": { "user": rewinder_username.clone(), "dbname": "postgres", "ssl_mode": "prefer" },
                 "tls": { "mode": "disabled", "identity": null, "client_auth": null },
                 "roles": {
-                    "superuser": { "username": "postgres", "auth": { "type": "tls" } },
-                    "replicator": { "username": "replicator", "auth": { "type": "tls" } },
-                    "rewinder": { "username": "rewinder", "auth": { "type": "tls" } },
+                    "superuser": { "username": "postgres", "auth": { "type": "password", "password": { "content": "secret-password" } } },
+                    "replicator": { "username": replicator_username.clone(), "auth": { "type": "password", "password": { "content": replicator_password.clone() } } },
+                    "rewinder": { "username": rewinder_username.clone(), "auth": { "type": "password", "password": { "content": rewinder_password.clone() } } },
                 },
                 "pg_hba": { "source": { "content": pg_hba_contents.clone() } },
                 "pg_ident": { "source": { "content": pg_ident_contents.clone() } },
@@ -473,6 +498,10 @@ async fn start_cluster_inner(
                 "encode dcs.init.payload_json failed for node {node_id}: {err}"
             ))
         })?;
+        let runtime_replicator_username = replicator_username.clone();
+        let runtime_replicator_password = replicator_password.clone();
+        let runtime_rewinder_username = rewinder_username.clone();
+        let runtime_rewinder_password = rewinder_password.clone();
 
         let runtime_cfg = crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
             .with_cluster_name(config.cluster_name.clone())
@@ -483,6 +512,24 @@ async fn start_cluster_inner(
                 listen_port: pg_port,
                 socket_dir,
                 log_file: log_file.clone(),
+                rewind_conn_identity: PostgresConnIdentityConfig {
+                    user: runtime_rewinder_username.clone(),
+                    ..postgres.rewind_conn_identity
+                },
+                roles: PostgresRolesConfig {
+                    superuser: PostgresRoleConfig {
+                        auth: password_auth("secret-password"),
+                        ..postgres.roles.superuser
+                    },
+                    replicator: PostgresRoleConfig {
+                        username: runtime_replicator_username.clone(),
+                        auth: password_auth(runtime_replicator_password.as_str()),
+                    },
+                    rewinder: PostgresRoleConfig {
+                        username: runtime_rewinder_username.clone(),
+                        auth: password_auth(runtime_rewinder_password.as_str()),
+                    },
+                },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
                         content: pg_hba_contents.clone(),
@@ -627,22 +674,59 @@ async fn start_cluster_inner(
             let create_roles_sql = r#"
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'replicator') THEN
-    CREATE ROLE replicator WITH LOGIN REPLICATION;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {replicator_name}) THEN
+    EXECUTE format(
+      'CREATE ROLE %I WITH LOGIN REPLICATION PASSWORD %L',
+      {replicator_name},
+      {replicator_password}
+    );
+  ELSE
+    EXECUTE format(
+      'ALTER ROLE %I WITH LOGIN REPLICATION PASSWORD %L',
+      {replicator_name},
+      {replicator_password}
+    );
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rewinder') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {rewinder_name}) THEN
     -- pg_rewind typically needs superuser privileges; keep tests conservative.
-    CREATE ROLE rewinder WITH LOGIN SUPERUSER;
+    EXECUTE format(
+      'CREATE ROLE %I WITH LOGIN SUPERUSER PASSWORD %L',
+      {rewinder_name},
+      {rewinder_password}
+    );
+  ELSE
+    EXECUTE format(
+      'ALTER ROLE %I WITH LOGIN SUPERUSER PASSWORD %L',
+      {rewinder_name},
+      {rewinder_password}
+    );
   END IF;
 END
 $$;
 "#;
+            let create_roles_sql = create_roles_sql
+                .replace(
+                    "{replicator_name}",
+                    sql_literal(replicator_username.as_str()).as_str(),
+                )
+                .replace(
+                    "{replicator_password}",
+                    sql_literal(replicator_password.as_str()).as_str(),
+                )
+                .replace(
+                    "{rewinder_name}",
+                    sql_literal(rewinder_username.as_str()).as_str(),
+                )
+                .replace(
+                    "{rewinder_password}",
+                    sql_literal(rewinder_password.as_str()).as_str(),
+                );
             let _ = super::util::run_psql_statement(
                 guard.binaries.psql.as_path(),
                 sql_port,
                 superuser_username,
                 superuser_dbname,
-                create_roles_sql,
+                create_roles_sql.as_str(),
                 guard.timeouts.command_timeout,
                 guard.timeouts.command_kill_wait_timeout,
             )

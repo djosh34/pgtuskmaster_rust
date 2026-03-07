@@ -382,7 +382,7 @@ fn assert_recovered_committed_keys_match_bounds(
 
 impl ClusterFixture {
     async fn start(node_count: usize) -> Result<Self, WorkerError> {
-        let config = ha_e2e::TestConfig {
+        Self::start_with_config(ha_e2e::TestConfig {
             test_name: "ha-e2e-multi-node".to_string(),
             cluster_name: "cluster-e2e".to_string(),
             scope: "scope-ha-e2e".to_string(),
@@ -392,6 +392,7 @@ impl ClusterFixture {
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
+            postgres_roles: None,
             mode: ha_e2e::Mode::Plain,
             timeouts: ha_e2e::TimeoutConfig {
                 command_timeout: E2E_COMMAND_TIMEOUT,
@@ -401,8 +402,11 @@ impl ClusterFixture {
                 bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
                 scenario_timeout: E2E_SCENARIO_TIMEOUT,
             },
-        };
+        })
+        .await
+    }
 
+    async fn start_with_config(config: ha_e2e::TestConfig) -> Result<Self, WorkerError> {
         let handle = ha_e2e::start_cluster(config).await?;
 
         let TestClusterHandle {
@@ -2568,6 +2572,216 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
 
     let artifact_path =
         fixture.write_timeline_artifact("ha-e2e-unassisted-failover-sql-consistency");
+    let shutdown_result = fixture.shutdown().await;
+
+    match (run_result, artifact_path, shutdown_result) {
+        (Ok(()), Ok(_), Ok(())) => Ok(()),
+        (Err(run_err), Ok(path), Ok(())) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline: {}",
+            path.display()
+        ))),
+        (Err(run_err), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline write failed: {artifact_err}"
+        ))),
+        (Ok(()), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "shutdown failed: {shutdown_err}; timeline: {}",
+            path.display()
+        ))),
+        (Ok(()), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+        ))),
+        (Err(run_err), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "{run_err}; shutdown failed: {shutdown_err}; timeline: {}",
+            path.display()
+        ))),
+        (Err(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+        ))),
+        (Ok(()), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+            "timeline write failed: {artifact_err}"
+        ))),
+    }
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rewind(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+    let mut fixture = ClusterFixture::start_with_config(ha_e2e::TestConfig {
+        test_name: "ha-e2e-custom-postgres-roles".to_string(),
+        cluster_name: "cluster-e2e-custom-postgres-roles".to_string(),
+        scope: "scope-ha-e2e-custom-postgres-roles".to_string(),
+        node_count: 3,
+        etcd_members: vec![
+            "etcd-a".to_string(),
+            "etcd-b".to_string(),
+            "etcd-c".to_string(),
+        ],
+        postgres_roles: Some(ha_e2e::PostgresRoleOverrides {
+            replicator_username: "replicator_custom".to_string(),
+            replicator_password: "replicator-secret".to_string(),
+            rewinder_username: "rewinder_custom".to_string(),
+            rewinder_password: "rewinder-secret".to_string(),
+        }),
+        mode: ha_e2e::Mode::Plain,
+        timeouts: ha_e2e::TimeoutConfig {
+            command_timeout: E2E_COMMAND_TIMEOUT,
+            command_kill_wait_timeout: E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            http_step_timeout: E2E_HTTP_STEP_TIMEOUT,
+            api_readiness_timeout: E2E_API_READINESS_TIMEOUT,
+            bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
+            scenario_timeout: E2E_SCENARIO_TIMEOUT,
+        },
+    })
+    .await?;
+    let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+        fixture.record("custom-role bootstrap: wait for stable primary");
+        let bootstrap_primary = fixture
+            .wait_for_stable_primary_resilient(
+                StablePrimaryWaitPlan {
+                    context: "custom-role bootstrap stable-primary",
+                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                    fallback_required_consecutive: 2,
+                    min_observed_nodes: 2,
+                },
+                &mut phase_history,
+            )
+            .await?;
+        fixture.record(format!(
+            "custom-role bootstrap success: primary={bootstrap_primary}"
+        ));
+        fixture
+            .assert_no_dual_primary_window(E2E_SHORT_NO_DUAL_PRIMARY_WINDOW)
+            .await?;
+
+        fixture.record("custom-role bootstrap proof: create table and seed row");
+        fixture
+            .run_sql_on_node_with_retry(
+                &bootstrap_primary,
+                "CREATE TABLE IF NOT EXISTS ha_custom_role_rewind_proof (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
+                E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+            )
+            .await?;
+        fixture
+            .run_sql_on_node_with_retry(
+                &bootstrap_primary,
+                "INSERT INTO ha_custom_role_rewind_proof (id, payload) VALUES (1, 'before-failover') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+                E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+            )
+            .await?;
+        let expected_pre_rows = vec!["1:before-failover".to_string()];
+        let replica_ids: Vec<String> = fixture
+            .nodes
+            .iter()
+            .filter(|node| node.id != bootstrap_primary)
+            .map(|node| node.id.clone())
+            .collect();
+        for replica_id in replica_ids {
+            fixture
+                .wait_for_rows_on_node(
+                    &replica_id,
+                    "SELECT id::text || ':' || payload FROM ha_custom_role_rewind_proof ORDER BY id",
+                    expected_pre_rows.as_slice(),
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "custom-role bootstrap proof replicated to {replica_id}"
+            ));
+        }
+
+        fixture.record(format!(
+            "custom-role failover injection: stop postgres on {bootstrap_primary}"
+        ));
+        fixture.stop_postgres_for_node(&bootstrap_primary).await?;
+        let failover_primary = match fixture
+            .wait_for_stable_primary_best_effort(
+                E2E_API_READINESS_TIMEOUT,
+                Some(&bootstrap_primary),
+                3,
+                1,
+                &mut phase_history,
+            )
+            .await
+        {
+            Ok(primary) => primary,
+            Err(wait_err) => {
+                fixture.record(format!(
+                    "custom-role failover stable-primary wait failed after forced stop: {wait_err}; retrying with relaxed primary-change detection"
+                ));
+                fixture
+                    .wait_for_primary_change(
+                        &bootstrap_primary,
+                        E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                    )
+                    .await?
+            }
+        };
+        fixture
+            .assert_no_dual_primary_window(E2E_LONG_NO_DUAL_PRIMARY_WINDOW)
+            .await?;
+        let failover_primary = fixture
+            .wait_for_stable_primary_via_sql(
+                E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                Some(&bootstrap_primary),
+                2,
+                1,
+            )
+            .await
+            .unwrap_or(failover_primary);
+        ClusterFixture::assert_phase_history_contains_failover(
+            &phase_history,
+            &bootstrap_primary,
+            &failover_primary,
+        )?;
+
+        fixture.record(format!(
+            "custom-role recovery proof: insert post-failover row on {failover_primary}"
+        ));
+        fixture
+            .run_sql_on_node_with_retry(
+                &failover_primary,
+                "INSERT INTO ha_custom_role_rewind_proof (id, payload) VALUES (2, 'after-failover') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+                Duration::from_secs(45),
+            )
+            .await?;
+        let expected_post_rows =
+            vec!["1:before-failover".to_string(), "2:after-failover".to_string()];
+        fixture
+            .wait_for_rows_on_node(
+                &bootstrap_primary,
+                "SELECT id::text || ':' || payload FROM ha_custom_role_rewind_proof ORDER BY id",
+                expected_post_rows.as_slice(),
+                Duration::from_secs(90),
+            )
+            .await?;
+        fixture.record(format!(
+            "custom-role rewind proof succeeded: former_primary={bootstrap_primary} rejoined with post-failover rows from {failover_primary}"
+        ));
+        Ok(())
+    })
+    .await
+    {
+        Ok(run_result) => run_result,
+        Err(_) => {
+            fixture.record(format!(
+                "custom-role scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ));
+            Err(WorkerError::Message(format!(
+                "custom-role scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            )))
+        }
+    };
+
+    let artifact_path = fixture.write_timeline_artifact("ha-e2e-custom-postgres-roles");
     let shutdown_result = fixture.shutdown().await;
 
     match (run_result, artifact_path, shutdown_result) {

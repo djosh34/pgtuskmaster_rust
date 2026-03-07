@@ -16,6 +16,12 @@ async fn e2e_multi_node_stress_planned_switchover_concurrent_sql(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rewind(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rewind().await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql(
 ) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
     multi_node::e2e_multi_node_stress_unassisted_failover_concurrent_sql().await

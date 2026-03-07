@@ -18,6 +18,25 @@ pub struct TimeoutConfig {
     pub scenario_timeout: Duration,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostgresRoleOverrides {
+    pub replicator_username: String,
+    pub replicator_password: String,
+    pub rewinder_username: String,
+    pub rewinder_password: String,
+}
+
+impl Default for PostgresRoleOverrides {
+    fn default() -> Self {
+        Self {
+            replicator_username: "replicator".to_string(),
+            replicator_password: "secret-password".to_string(),
+            rewinder_username: "rewinder".to_string(),
+            rewinder_password: "secret-password".to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TestConfig {
     pub test_name: String,
@@ -25,6 +44,7 @@ pub struct TestConfig {
     pub scope: String,
     pub node_count: usize,
     pub etcd_members: Vec<String>,
+    pub postgres_roles: Option<PostgresRoleOverrides>,
     pub mode: Mode,
     pub timeouts: TimeoutConfig,
 }
@@ -55,6 +75,25 @@ impl TestConfig {
             return Err(WorkerError::Message(
                 "TestConfig.etcd_members must include at least one member".to_string(),
             ));
+        }
+
+        if let Some(postgres_roles) = self.postgres_roles.as_ref() {
+            validate_non_empty_field(
+                "TestConfig.postgres_roles.replicator_username",
+                postgres_roles.replicator_username.as_str(),
+            )?;
+            validate_non_empty_field(
+                "TestConfig.postgres_roles.replicator_password",
+                postgres_roles.replicator_password.as_str(),
+            )?;
+            validate_non_empty_field(
+                "TestConfig.postgres_roles.rewinder_username",
+                postgres_roles.rewinder_username.as_str(),
+            )?;
+            validate_non_empty_field(
+                "TestConfig.postgres_roles.rewinder_password",
+                postgres_roles.rewinder_password.as_str(),
+            )?;
         }
 
         let mut seen = std::collections::BTreeSet::new();
@@ -100,4 +139,12 @@ impl TestConfig {
 
         Ok(())
     }
+}
+
+fn validate_non_empty_field(field: &str, value: &str) -> Result<(), WorkerError> {
+    if value.trim().is_empty() {
+        return Err(WorkerError::Message(format!("{field} must not be empty")));
+    }
+
+    Ok(())
 }

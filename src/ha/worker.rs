@@ -156,11 +156,10 @@ mod tests {
             },
             worker::{run, step_once},
         },
-        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, PgSslMode, Readiness, SqlStatus},
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::{
             jobs::{
                 ProcessCommandRunner, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle,
-                ShutdownMode,
             },
             state::{
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
@@ -405,20 +404,7 @@ mod tests {
     }
 
     fn sample_process_defaults() -> ProcessDispatchDefaults {
-        ProcessDispatchDefaults {
-            postgres_host: "127.0.0.1".to_string(),
-            postgres_port: 5432,
-            socket_dir: "/tmp/pgtuskmaster/socket".into(),
-            log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-            replicator_username: "replicator".to_string(),
-            replicator_auth: crate::config::RoleAuthConfig::Tls,
-            rewinder_username: "rewinder".to_string(),
-            rewinder_auth: crate::config::RoleAuthConfig::Tls,
-            remote_dbname: "postgres".to_string(),
-            remote_ssl_mode: PgSslMode::Prefer,
-            connect_timeout_s: 5,
-            shutdown_mode: ShutdownMode::Fast,
-        }
+        ProcessDispatchDefaults::contract_stub()
     }
 
     fn monotonic_clock(start: u64) -> Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send> {

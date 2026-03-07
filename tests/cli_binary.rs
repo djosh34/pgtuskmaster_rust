@@ -210,7 +210,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -247,6 +247,124 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
     assert!(
         stderr.contains("`process.binaries`"),
+        "stderr should mention stable field path, got: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn node_rejects_postgres_role_tls_auth_with_stable_field_path() -> Result<(), String> {
+    let bin = node_bin_path()?;
+    let path = write_temp_config(
+        "postgres-role-tls-auth",
+        r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#,
+    )?;
+
+    let output = Command::new(&bin)
+        .args(["--config", path.to_string_lossy().as_ref()])
+        .output()
+        .map_err(|err| format!("failed to run node with invalid config: {err}"))?;
+
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
+    assert!(
+        stderr.contains("`postgres.roles.superuser.auth`"),
+        "stderr should mention stable field path, got: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn node_rejects_ssl_mode_requiring_tls_when_postgres_tls_disabled() -> Result<(), String> {
+    let bin = node_bin_path()?;
+    let path = write_temp_config(
+        "postgres-ssl-mode-requires-tls",
+        r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#,
+    )?;
+
+    let output = Command::new(&bin)
+        .args(["--config", path.to_string_lossy().as_ref()])
+        .output()
+        .map_err(|err| format!("failed to run node with invalid config: {err}"))?;
+
+    assert_eq!(output.status.code(), Some(1));
+
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
+    assert!(
+        stderr.contains("`postgres.local_conn_identity.ssl_mode`"),
         "stderr should mention stable field path, got: {stderr}"
     );
 

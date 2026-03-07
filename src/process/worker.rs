@@ -1658,6 +1658,14 @@ mod tests {
         }
     }
 
+    fn sample_password_auth(secret: &str) -> RoleAuthConfig {
+        RoleAuthConfig::Password {
+            password: SecretSource(InlineOrPath::Inline {
+                content: secret.to_string(),
+            }),
+        }
+    }
+
     #[test]
     fn build_command_basebackup_uses_pg_basebackup_binary_and_args() {
         let config = sample_config();
@@ -1677,7 +1685,7 @@ mod tests {
                         ssl_mode: PgSslMode::Prefer,
                         options: None,
                     },
-                    auth: RoleAuthConfig::Tls,
+                    auth: sample_password_auth("secret-password"),
                 },
                 timeout_ms: Some(30_000),
             }),
@@ -1687,7 +1695,8 @@ mod tests {
         assert!(command.is_ok());
         if let Ok(spec) = command {
             assert_eq!(spec.program, config.binaries.pg_basebackup);
-            assert!(spec.env.is_empty());
+            assert_eq!(spec.env.len(), 1);
+            assert_eq!(spec.env[0].key, "PGPASSWORD".to_string());
             assert_eq!(
                 spec.args,
                 vec![
@@ -2156,7 +2165,7 @@ mod tests {
                             ssl_mode: PgSslMode::Prefer,
                             options: None,
                         },
-                        auth: RoleAuthConfig::Tls,
+                        auth: sample_password_auth("secret-password"),
                     },
                     timeout_ms: Some(30_000),
                 }),
@@ -2702,7 +2711,7 @@ mod tests {
                 target_data_dir: data_dir,
                 source: RewinderSourceConn {
                     conninfo: sample_rewind_conninfo(),
-                    auth: RoleAuthConfig::Tls,
+                    auth: sample_password_auth("rewindpass"),
                 },
                 timeout_ms: Some(5_000),
             }),

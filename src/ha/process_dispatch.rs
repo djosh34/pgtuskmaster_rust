@@ -339,7 +339,7 @@ mod tests {
     };
 
     use crate::{
-        config::{RoleAuthConfig, RuntimeConfig},
+        config::{InlineOrPath, RoleAuthConfig, RuntimeConfig, SecretSource},
         dcs::{
             state::{DcsCache, DcsState, DcsTrust, MemberRecord, MemberRole},
             store::{DcsStore, DcsStoreError, WatchEvent},
@@ -391,6 +391,14 @@ mod tests {
     }
 
     static TEST_DATA_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn sample_password_auth() -> RoleAuthConfig {
+        RoleAuthConfig::Password {
+            password: SecretSource(InlineOrPath::Inline {
+                content: "secret-password".to_string(),
+            }),
+        }
+    }
 
     fn unique_test_data_dir(label: &str) -> PathBuf {
         let millis = SystemTime::now()
@@ -822,7 +830,7 @@ mod tests {
             assert_eq!(spec.source.conninfo.host, "10.0.0.20".to_string());
             assert_eq!(spec.source.conninfo.port, 5440);
             assert_eq!(spec.source.conninfo.user, "replicator".to_string());
-            assert_eq!(spec.source.auth, RoleAuthConfig::Tls);
+            assert_eq!(spec.source.auth, sample_password_auth());
         } else {
             return Err(WorkerError::Message(
                 "expected basebackup request".to_string(),
@@ -875,7 +883,7 @@ mod tests {
             assert_eq!(spec.source.conninfo.host, "10.0.0.21".to_string());
             assert_eq!(spec.source.conninfo.port, 5441);
             assert_eq!(spec.source.conninfo.user, "rewinder".to_string());
-            assert_eq!(spec.source.auth, RoleAuthConfig::Tls);
+            assert_eq!(spec.source.auth, sample_password_auth());
         } else {
             return Err(WorkerError::Message("expected rewind request".to_string()));
         }

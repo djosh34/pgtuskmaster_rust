@@ -77,15 +77,21 @@ pub fn sample_postgres_roles_config() -> PostgresRolesConfig {
     PostgresRolesConfig {
         superuser: PostgresRoleConfig {
             username: "postgres".to_string(),
-            auth: RoleAuthConfig::Tls,
+            auth: RoleAuthConfig::Password {
+                password: sample_password_secret(),
+            },
         },
         replicator: PostgresRoleConfig {
             username: "replicator".to_string(),
-            auth: RoleAuthConfig::Tls,
+            auth: RoleAuthConfig::Password {
+                password: sample_password_secret(),
+            },
         },
         rewinder: PostgresRoleConfig {
             username: "rewinder".to_string(),
-            auth: RoleAuthConfig::Tls,
+            auth: RoleAuthConfig::Password {
+                password: sample_password_secret(),
+            },
         },
     }
 }

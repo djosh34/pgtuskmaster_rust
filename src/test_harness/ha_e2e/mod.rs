@@ -4,7 +4,7 @@ pub mod ops;
 pub mod startup;
 pub mod util;
 
-pub use config::{Mode, TestConfig, TimeoutConfig};
+pub use config::{Mode, PostgresRoleOverrides, TestConfig, TimeoutConfig};
 pub use handle::{NodeHandle, TestClusterHandle};
 pub use startup::start_cluster;
 
@@ -24,6 +24,7 @@ mod tests {
             scope: " ".to_string(),
             node_count: 0,
             etcd_members: Vec::new(),
+            postgres_roles: None,
             mode: Mode::Plain,
             timeouts: TimeoutConfig {
                 command_timeout: Duration::from_secs(1),
@@ -48,6 +49,7 @@ mod tests {
                 scope: "scope-ha-e2e-harness-smoke".to_string(),
                 node_count: 1,
                 etcd_members: vec!["etcd-a".to_string()],
+                postgres_roles: None,
                 mode: Mode::Plain,
                 timeouts: TimeoutConfig {
                     command_timeout: Duration::from_secs(30),

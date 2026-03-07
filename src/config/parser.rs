@@ -505,6 +505,8 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         });
     }
 
+    validate_postgres_auth_tls_invariants(cfg)?;
+
     validate_role_auth(
         "postgres.roles.superuser.auth.password.path",
         "postgres.roles.superuser.auth.password.content",
@@ -856,6 +858,78 @@ fn validate_role_auth(
     }
 }
 
+fn validate_postgres_auth_tls_invariants(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    validate_postgres_role_auth_supported(
+        "postgres.roles.superuser.auth",
+        &cfg.postgres.roles.superuser.auth,
+    )?;
+    validate_postgres_role_auth_supported(
+        "postgres.roles.replicator.auth",
+        &cfg.postgres.roles.replicator.auth,
+    )?;
+    validate_postgres_role_auth_supported(
+        "postgres.roles.rewinder.auth",
+        &cfg.postgres.roles.rewinder.auth,
+    )?;
+
+    validate_postgres_conn_identity_ssl_mode_supported(
+        "postgres.local_conn_identity.ssl_mode",
+        cfg.postgres.local_conn_identity.ssl_mode,
+        cfg.postgres.tls.mode,
+    )?;
+    validate_postgres_conn_identity_ssl_mode_supported(
+        "postgres.rewind_conn_identity.ssl_mode",
+        cfg.postgres.rewind_conn_identity.ssl_mode,
+        cfg.postgres.tls.mode,
+    )?;
+
+    Ok(())
+}
+
+fn validate_postgres_role_auth_supported(
+    field: &'static str,
+    auth: &RoleAuthConfig,
+) -> Result<(), ConfigError> {
+    match auth {
+        RoleAuthConfig::Tls => Err(ConfigError::Validation {
+            field,
+            message:
+                "postgresql role TLS client auth is not implemented; use type = \"password\" for now"
+                    .to_string(),
+        }),
+        RoleAuthConfig::Password { .. } => Ok(()),
+    }
+}
+
+fn validate_postgres_conn_identity_ssl_mode_supported(
+    field: &'static str,
+    ssl_mode: crate::pginfo::conninfo::PgSslMode,
+    tls_mode: crate::config::ApiTlsMode,
+) -> Result<(), ConfigError> {
+    if matches!(tls_mode, crate::config::ApiTlsMode::Disabled)
+        && postgres_ssl_mode_requires_server_tls(ssl_mode)
+    {
+        return Err(ConfigError::Validation {
+            field,
+            message: format!(
+                "must not require server TLS when postgres.tls.mode is disabled (got `{}`)",
+                ssl_mode.as_str()
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn postgres_ssl_mode_requires_server_tls(ssl_mode: crate::pginfo::conninfo::PgSslMode) -> bool {
+    matches!(
+        ssl_mode,
+        crate::pginfo::conninfo::PgSslMode::Require
+            | crate::pginfo::conninfo::PgSslMode::VerifyCa
+            | crate::pginfo::conninfo::PgSslMode::VerifyFull
+    )
+}
+
 fn validate_tls_server_config(
     identity_field: &'static str,
     cert_chain_field: &'static str,
@@ -977,6 +1051,39 @@ mod tests {
     };
     use crate::pginfo::conninfo::PgSslMode;
 
+    fn sample_password_auth() -> RoleAuthConfig {
+        RoleAuthConfig::Password {
+            password: crate::config::SecretSource(crate::config::InlineOrPath::Inline {
+                content: "secret-password".to_string(),
+            }),
+        }
+    }
+
+    fn expect_validation_error(
+        result: Result<(), ConfigError>,
+        expected_field: &'static str,
+        expected_message_fragment: &str,
+    ) -> Result<(), String> {
+        match result {
+            Err(ConfigError::Validation { field, message }) => {
+                if field != expected_field {
+                    return Err(format!(
+                        "expected validation field {expected_field}, got {field}"
+                    ));
+                }
+                if !message.contains(expected_message_fragment) {
+                    return Err(format!(
+                        "expected validation message to contain {expected_message_fragment:?}, got {message:?}"
+                    ));
+                }
+                Ok(())
+            }
+            other => Err(format!(
+                "expected validation error for {expected_field}, got {other:?}"
+            )),
+        }
+    }
+
     fn base_runtime_config() -> RuntimeConfig {
         RuntimeConfig {
             cluster: ClusterConfig {
@@ -1008,15 +1115,15 @@ mod tests {
                 roles: PostgresRolesConfig {
                     superuser: PostgresRoleConfig {
                         username: "postgres".to_string(),
-                        auth: RoleAuthConfig::Tls,
+                        auth: sample_password_auth(),
                     },
                     replicator: PostgresRoleConfig {
                         username: "replicator".to_string(),
-                        auth: RoleAuthConfig::Tls,
+                        auth: sample_password_auth(),
                     },
                     rewinder: PostgresRoleConfig {
                         username: "rewinder".to_string(),
-                        auth: RoleAuthConfig::Tls,
+                        auth: sample_password_auth(),
                     },
                 },
                 pg_hba: PgHbaConfig {
@@ -1096,6 +1203,59 @@ mod tests {
     fn validate_runtime_config_accepts_valid_config() {
         let cfg = base_runtime_config();
         assert!(validate_runtime_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_postgres_role_tls_auth() -> Result<(), String> {
+        let mut superuser_cfg = base_runtime_config();
+        superuser_cfg.postgres.roles.superuser.auth = RoleAuthConfig::Tls;
+        expect_validation_error(
+            validate_runtime_config(&superuser_cfg),
+            "postgres.roles.superuser.auth",
+            "type = \"password\"",
+        )?;
+
+        let mut replicator_cfg = base_runtime_config();
+        replicator_cfg.postgres.roles.replicator.auth = RoleAuthConfig::Tls;
+        expect_validation_error(
+            validate_runtime_config(&replicator_cfg),
+            "postgres.roles.replicator.auth",
+            "type = \"password\"",
+        )?;
+
+        let mut rewinder_cfg = base_runtime_config();
+        rewinder_cfg.postgres.roles.rewinder.auth = RoleAuthConfig::Tls;
+        expect_validation_error(
+            validate_runtime_config(&rewinder_cfg),
+            "postgres.roles.rewinder.auth",
+            "type = \"password\"",
+        )
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_local_conn_ssl_mode_requiring_tls_when_postgres_tls_disabled(
+    ) -> Result<(), String> {
+        let mut cfg = base_runtime_config();
+        cfg.postgres.local_conn_identity.ssl_mode = PgSslMode::Require;
+
+        expect_validation_error(
+            validate_runtime_config(&cfg),
+            "postgres.local_conn_identity.ssl_mode",
+            "postgres.tls.mode is disabled",
+        )
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_rewind_conn_ssl_mode_requiring_tls_when_postgres_tls_disabled(
+    ) -> Result<(), String> {
+        let mut cfg = base_runtime_config();
+        cfg.postgres.rewind_conn_identity.ssl_mode = PgSslMode::VerifyFull;
+
+        expect_validation_error(
+            validate_runtime_config(&cfg),
+            "postgres.rewind_conn_identity.ssl_mode",
+            "postgres.tls.mode is disabled",
+        )
     }
 
     #[test]
@@ -1398,7 +1558,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 unknown = 10
@@ -1460,7 +1620,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -1516,7 +1676,7 @@ socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -1576,7 +1736,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -1639,7 +1799,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "password" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password" } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -1759,7 +1919,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -1820,7 +1980,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -1881,7 +2041,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator" }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator" }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -1942,7 +2102,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "not-postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -2003,7 +2163,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "" } } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -2064,7 +2224,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "required" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -2125,7 +2285,7 @@ log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
 tls = { mode = "disabled", client_auth = { client_ca = { content = "client-ca" }, require_client_cert = false } }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "tls" } }, rewinder = { username = "rewinder", auth = { type = "tls" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
 
@@ -2154,6 +2314,146 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
                 ..
             })
         ));
+
+        std::fs::remove_file(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_rejects_postgres_role_tls_auth_with_actionable_error(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-postgres-role-tls-auth-{unique}.toml"
+        ));
+
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        let mapped = match err {
+            Err(ConfigError::Validation { field, message }) => {
+                if field != "postgres.roles.superuser.auth" {
+                    Err(format!(
+                        "expected validation field postgres.roles.superuser.auth, got {field}"
+                    ))
+                } else if !message.contains("type = \"password\"") {
+                    Err(format!(
+                        "expected validation message to mention password auth, got {message:?}"
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            other => Err(format!("expected validation error, got {other:?}")),
+        };
+        mapped.map_err(std::io::Error::other)?;
+
+        std::fs::remove_file(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_v2_rejects_ssl_mode_requiring_tls_when_postgres_tls_disabled(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-v2-postgres-ssl-mode-requires-tls-{unique}.toml"
+        ));
+
+        let toml = r#"
+config_version = "v2"
+
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full" }
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        let mapped = match err {
+            Err(ConfigError::Validation { field, message }) => {
+                if field != "postgres.local_conn_identity.ssl_mode" {
+                    Err(format!(
+                        "expected validation field postgres.local_conn_identity.ssl_mode, got {field}"
+                    ))
+                } else if !message.contains("postgres.tls.mode is disabled") {
+                    Err(format!(
+                        "expected validation message to mention disabled postgres TLS, got {message:?}"
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            other => Err(format!("expected validation error, got {other:?}")),
+        };
+        mapped.map_err(std::io::Error::other)?;
 
         std::fs::remove_file(&path)?;
         Ok(())
