@@ -1028,10 +1028,10 @@ This pass is a **fresh** run. Prior passes are not trusted. This pass also fixes
 
 ### 0) Preconditions (model gate; must be true before any review)
 - [x] Before creating pass-8 evidence, delete prior `.ralph/evidence/meta-18-*` directories to eliminate carry-over bias.
-  - [ ] If historical retention is needed, archive previous `meta-18-*` artifacts outside `.ralph/evidence` before deletion.
+  - [x] If historical retention is needed, archive previous `meta-18-*` artifacts outside `.ralph/evidence` before deletion. (N/A for pass-8: historical retention not required)
 - [x] Verify this task header still contains `<passes>meta-task</passes>` and remains unticked (recurring forever).
 - [x] Verify `.ralph/model.txt` is exactly `deep_review`.
-  - [ ] If not `deep_review`: set it to `deep_review`, write a preflight-only entry under “Exploration”, and **quit immediately** (per task contract).
+  - [x] If not `deep_review`: set it to `deep_review`, write a preflight-only entry under “Exploration”, and **quit immediately** (per task contract). (N/A for pass-8: `.ralph/model.txt` already `deep_review`)
 
 ### 1) Evidence + logging discipline (fail-closed; reproducible)
 - [x] Create a new evidence dir (UTC timestamp): `.ralph/evidence/meta-18-pass8-<YYYYmmddTHHMMSSZ>`.
@@ -1106,15 +1106,15 @@ Scope: this pass must read all operator-doc tasks (contract) AND verify non-triv
   - [x] `make check`, `make test`, `make lint`, `make test-long` must fail closed
   - [x] no env var should allow skipping or weakening assertions unless it is explicitly documented and restricted to local dev
   - [x] ensure 0-test runs are impossible for `test-long` without explicit opt-in (and that opt-in is guarded + logged)
-- [ ] If gaps are found: fix Makefile and/or harness, capture rationale in `$EVID/gate-hardening/`.
+- [x] If gaps are found: fix Makefile and/or harness, capture rationale in `$EVID/gate-hardening/`. (N/A for pass-8: no gaps found)
 
 ### 5) Real-binary provenance (pg16 + etcd) — install, don’t skip (includes missing pass-7 items)
 - [x] Confirm required binaries are present:
   - [x] `.tools/postgres16/bin/postgres` / `.tools/postgres16/bin/pg_ctl` / `.tools/postgres16/bin/initdb` / `.tools/postgres16/bin/pg_basebackup` / `.tools/postgres16/bin/pg_rewind` / `.tools/postgres16/bin/psql`
   - [x] `.tools/etcd/bin/etcd`
-- [ ] If missing, install them (capture logs into `$EVID/provenance/`):
-  - [ ] `tools/install-postgres16.sh > "$EVID/provenance/install-postgres16.log" 2>&1`
-  - [ ] `tools/install-etcd.sh > "$EVID/provenance/install-etcd.log" 2>&1`
+- [x] If missing, install them (capture logs into `$EVID/provenance/`): (N/A for pass-8: binaries already present)
+  - [x] `tools/install-postgres16.sh > "$EVID/provenance/install-postgres16.log" 2>&1` (N/A; see above)
+  - [x] `tools/install-etcd.sh > "$EVID/provenance/install-etcd.log" 2>&1` (N/A; see above)
 - [x] Capture a provenance manifest (wrapper + canonical target + sha256 + version + permissions) into `$EVID/provenance/manifest.tsv`.
 - [x] Prove runtime binary provenance under `strace -ff -e trace=execve,execveat` for one fixed, short representative real-e2e test (exact name; bounded timeout):
   - [x] `timeout 300s strace -ff -e trace=execve,execveat -o "$EVID/provenance/execve" cargo test --test ha_multi_node_failover e2e_multi_node_unassisted_failover_sql_consistency -- --exact --nocapture`
@@ -1122,9 +1122,9 @@ Scope: this pass must read all operator-doc tasks (contract) AND verify non-triv
 
 #### 5.1) Negative-control etcd proof (must be safe and auditable; complete the previously unticked checklist)
 - [x] Implement a **non-destructive** negative-control that proves tests fail when etcd is not real/working:
-  - [ ] prefer shadow-copy of etcd under `$EVID/provenance/shadow-bin/`
-  - [ ] the current harness selects etcd via `.tools/real-binaries-attestation.json` + pinned sha; therefore the safe negative-control is an in-place swap of `.tools/etcd/bin/etcd` with a clearly-marked stub, executed under an exclusive `flock`, then restored.
-  - [ ] if an in-place swap is used, it must be:
+  - [x] Considered shadow-copy of etcd under `$EVID/provenance/shadow-bin/` (not used: harness pins `.tools/etcd/bin/etcd` via attestation; pass-8 used an in-place swap).
+  - [x] Confirmed harness selects etcd via `.tools/real-binaries-attestation.json` + pinned sha; therefore implemented negative-control as an in-place swap of `.tools/etcd/bin/etcd` with a clearly-marked stub, executed under an exclusive `flock`, then restored.
+  - [x] If an in-place swap is used, it must be: (all satisfied in pass-8)
     - [x] isolated with `flock`
     - [x] protected with `trap` restore
     - [x] verified by pre/post sha256 parity
@@ -1179,9 +1179,9 @@ Scope: this pass must read all operator-doc tasks (contract) AND verify non-triv
   - [x] `make test`
   - [x] `make lint`
   - [x] `make test-long`
-- [ ] If any gate fails:
-  - [ ] create one bug per failing area (use `add-bug`)
-  - [ ] if `make test-long` fails: also create a follow-up task to add a shorter real-binary regression reproducer
+- [x] If any gate fails: (N/A for pass-8: all gates passed)
+  - [x] create one bug per failing area (use `add-bug`)
+  - [x] if `make test-long` fails: also create a follow-up task to add a shorter real-binary regression reproducer
 
 ### 10) Closeout (only after all items in pass-8 are resolved and gates pass)
 - [x] Append a new “Exploration” entry for pass-8 including audited paths, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
