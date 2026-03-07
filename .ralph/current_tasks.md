@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 08:35:42 PM CET 2026
+Generated: Sat Mar  7 08:55:16 PM CET 2026
 
 # Task `.ralph/tasks/bugs/typed-network-endpoints-instead-of-raw-strings.md`
 
@@ -13,7 +13,7 @@ The codebase carries API and DCS endpoint addresses as raw `String` values deep 
 
 ==============
 
-# Task `.ralph/tasks/story-rust-system-harness/18-task-recurring-meta-deep-skeptical-codebase-review.md`
+# Task `.ralph/tasks/meta-recurring-review/deep-review.md`
 
 ```
 DO NOT PICK THIS TASK UNLESS ALL OTHER TASKS ARE DONE.
@@ -25,7 +25,7 @@ NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recu
 
 ==============
 
-# Task `.ralph/tasks/story-rust-system-harness/task-remove-managed-conf-parseback-and-rederive-start-intent.md`
+# Task `.ralph/tasks/story-managed-start-intent-architecture/task-remove-managed-conf-parseback-and-rederive-start-intent.md`
 
 ```
 ## Task: Remove Managed Conf Parse-Back And Re-Derive Start Intent <status>not_started</status> <passes>false</passes>
