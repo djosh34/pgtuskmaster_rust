@@ -34,4 +34,4 @@ No backwards compatibility allowed!
 You are free and encouraged to make large code/schema changes, if that will improve the codebase.
 
 ## Cross application applicable learnings
-- ... (add here)
+- `git commit` triggers a post-commit hook that builds the mdBook and publishes `dist/` to the separate `pgtuskmaster-docs` repo; expect an extra docs publish step and ensure your environment has the needed Node/mdBook dependencies configured.
