@@ -1,4 +1,4 @@
-## Bug: Type network endpoints instead of carrying raw strings across runtime <status>not_started</status> <passes>false</passes>
+## Task: [Improvement] Type network endpoints instead of carrying raw strings across runtime <status>not_started</status> <passes>false</passes>
 
 <description>
 The codebase carries API and DCS endpoint addresses as raw `String` values deep into runtime and harness paths, then parses or binds them at scattered call sites. This was detected during a representation-integrity scan looking for cases where subsystem boundaries retain ad-hoc primitive encodings instead of canonical typed models.

@@ -1,50 +1,50 @@
 # What Problem This Solves
 
-PostgreSQL high availability fails in predictable ways when operations rely on ad-hoc scripts and implicit assumptions. The common failure mode is not only outage duration. The larger risk is unsafe role changes under partial information, which can lead to concurrent primaries and divergent histories.
+PostgreSQL high availability fails predictably when built on ad-hoc scripts and implicit assumptions. The primary risk isn't just outage duration; it's unsafe role changes made with incomplete information, leading to split-brain scenarios and divergent histories.
 
-This implementation reduces that risk by funneling role changes through shared, DCS-trust-aware HA logic. Promotion is gated by current evidence instead of a one-time operator guess, and planned transitions flow through the same control path as unplanned ones.
+This implementation reduces that risk by channeling all role changes through shared, DCS-trust-aware HA logic. Promotion requires current evidence rather than one-time operator judgment, and planned transitions follow the same control path as unplanned ones.
 
-## What changes for operators
+## What Changes for Operators
 
-Instead of treating leader selection as a manual procedure, `pgtuskmaster` turns it into a continuous control loop:
+Instead of manual leader selection, `pgtuskmaster` provides a continuous control loop:
 
-- local PostgreSQL state is observed directly
-- shared coordination state is read from etcd
-- operator intent is written into the same coordination model
-- the node slows down or refuses promotion when the evidence is weak
+- Local PostgreSQL state is observed directly
+- Shared coordination state is read from etcd
+- Operator intent is written into the same coordination model
+- Nodes throttle or refuse promotion when evidence is insufficient
 
-In a healthy cluster that gives you repeatable transitions. In a degraded cluster it gives you explicit conservatism instead of silent optimism.
+In healthy clusters, this yields repeatable transitions. In degraded clusters, it replaces silent optimism with explicit conservatism.
 
-## What that means in practice
+## What That Means in Practice
 
-The project intentionally trades maximum liveness for stronger safety under ambiguity. During network instability, etcd disruption, or partial-cluster failures, the correct expectation is not "always promote quickly." The correct expectation is "promote only when safety evidence is strong enough."
+This project intentionally trades maximum liveness for stronger safety under ambiguity. During network instability, etcd disruption, or partial-cluster failures, the goal isn't "always promote quickly" but "promote only when safety evidence is strong enough."
 
-## Why ad-hoc HA fails under pressure
+## Why Ad-Hoc HA Fails Under Pressure
 
-Most unsafe HA incidents do not begin with a dramatic single bug. They begin with incomplete evidence being treated as certainty. A node loses contact with a coordination service. An operator only sees one side of a partition. A demotion command is issued based on stale assumptions. A recovery script assumes the old primary is definitely dead when it is only temporarily unreachable. Each local step may look reasonable in isolation, but the combined outcome can still produce two writers or a replica that can no longer rejoin cleanly.
+Most unsafe HA incidents begin not with a single bug, but with incomplete evidence treated as certainty. A node loses contact with the coordination service. An operator sees only one side of a network partition. A demotion command executes on stale assumptions. A recovery script assumes the old primary is dead when it's merely unreachable. Each step may seem reasonable in isolation, yet the combined result can yield two writers or an unrecoverable replica.
 
-That is the operational pressure `pgtuskmaster` is designed to absorb. Instead of encoding the happy path only, it treats uncertainty itself as a first-class input. If DCS trust drops, if PostgreSQL is unreachable, if leadership evidence conflicts, or if recovery would require history to be rewritten, the controller does not continue as though the missing evidence is probably fine. It shifts into a slower and more conservative posture until the conditions become legible again.
+`pgtuskmaster` absorbs this operational pressure by treating uncertainty as a first-class input. When DCS trust drops, PostgreSQL becomes unreachable, leadership evidence conflicts, or recovery would require rewriting history, the controller slows down rather than assuming missing evidence is probably fine. It maintains a conservative posture until conditions become legible again.
 
-## The specific failure mechanics this project tries to bound
+## The Specific Failure Mechanics This Project Tries to Bound
 
-### Ambiguous leadership
+### Ambiguous Leadership
 
-Leadership changes are safe only when the system can distinguish "the old primary is gone" from "the old primary is merely not visible from here". When that distinction is fuzzy, aggressive promotion logic becomes dangerous. The local node may be healthy, but health alone is not enough to prove it is safe to accept writes. `pgtuskmaster` therefore uses DCS-backed leadership evidence and trust state as promotion gates instead of relying on a single observer's confidence.
+Leadership changes are safe only when the system can distinguish "the old primary is gone" from "the old primary is merely not visible from here." When this distinction blurs, aggressive promotion becomes dangerous. Local health alone doesn't prove write-safety. `pgtuskmaster` therefore uses DCS-backed leadership evidence and trust state as promotion gates rather than relying on a single observer's confidence.
 
-### Stale coordination assumptions
+### Stale Coordination Assumptions
 
-The most damaging HA mistakes often come from stale data that still looks structurally valid. A leader key that has not been refreshed, a member record from an earlier run, or a remembered topology assumption from before a restart can all point operators in the wrong direction. The project makes those coordination records visible through `/ha/state`, debug views, logs, and lifecycle-specific explanations so that operators can reason about freshness rather than merely presence.
+The most damaging HA mistakes often stem from stale data that still looks structurally valid: an unrefreshed leader key, a member record from a previous run, or a topology assumption from before a restart. The project makes these coordination records visible through `/ha/state`, debug views, logs, and lifecycle-specific explanations so operators can reason about freshness rather than just presence.
 
-### Unsafe manual failover habits
+### Unsafe Manual Failover Habits
 
-Manual failover runbooks often compress several separate questions into one command: is the current primary really lost, is a candidate actually caught up enough, will the demoted node stay down, and can the result be recovered later if conditions change? When those questions are hidden behind a shell script, the script inherits every blind spot of the human invoking it. `pgtuskmaster` separates those checks into explicit phases and decision gates so operators can see which precondition is missing instead of treating "no failover yet" as unexplained stubbornness.
+Manual failover runbooks often compress multiple safety checks into one command: Is the primary truly lost? Is the candidate caught up? Will the demoted node stay down? Can we recover if conditions change? When these questions hide behind a shell script, the script inherits every blind spot of the human invoking it. `pgtuskmaster` separates these checks into explicit phases and decision gates, revealing which precondition is missing rather than treating "no failover yet" as unexplained stubbornness.
 
-### Recovery after split or divergence
+### Recovery After Split or Divergence
 
-Even when an outage is survivable, rejoining the cluster after a role mistake can be the hardest part. A former primary may require `pg_rewind`, a fresh base backup, or a full bootstrap depending on the history and the visible leader. The real cost of unsafe promotion is therefore not just a few minutes of confusion; it can be prolonged repair work plus uncertainty about whether recovered nodes are trustworthy. That is why this project prefers bounded conservatism before the cut-over instead of cleanup after divergence.
+Even survivable outages create difficult rejoin scenarios. A former primary may require `pg_rewind`, a fresh base backup, or full bootstrap depending on history and visible leader state. The real cost of unsafe promotion isn't just minutes of confusion; it's prolonged repair work plus lingering uncertainty about node trustworthiness. This project prefers bounded conservatism before cut-over rather than cleanup after divergence.
 
-## Operational consequences of weak safety signals
+## Operational Consequences of Weak Safety Signals
 
-When safety signals are weak, the cluster may look slower or more restrictive than operators expect from optimistic HA tooling. A switchover request may be accepted but not complete until a successor is visible. A failover may be delayed because there is not yet enough evidence to name a safe replacement primary. A node that was writing moments ago may step down or enter fail-safe rather than continue as if coordination were healthy.
+When safety signals are weak, the cluster may appear slower or more restrictive than optimistic HA tools. A switchover request may be accepted but not complete until a successor appears. A failover may delay until sufficient evidence exists for a safe replacement primary. A node that was writing moments ago may step down or enter fail-safe rather than continue as if coordination were healthy.
 
-Those outcomes are intentional. They protect the data path from being driven by confidence theater. In practice, that means operators should interpret hesitation as a signal to inspect trust, leadership records, local PostgreSQL reachability, and recovery feasibility instead of immediately forcing another transition. The later Lifecycle, Troubleshooting, and Assurance chapters explain exactly how to perform that inspection.
+These outcomes are deliberate. They prevent the data path from being driven by confidence theater. In practice, operators should interpret hesitation as a signal to inspect trust, leadership records, PostgreSQL reachability, and recovery feasibility rather than immediately forcing another transition. The later Lifecycle, Troubleshooting, and Assurance chapters explain exactly how to perform that inspection.

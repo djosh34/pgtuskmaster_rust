@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": [
+    "openrouter"
+  ],
+  "model": "openrouter/kimi-k2-thinking",
+  "small_model": "openrouter/kimi-k2-thinking",
+  "provider": {
+    "openrouter": {
+      "models": {
+        "kimi-k2-thinking": {
+          "name": "Kimi K2 Thinking",
+          "options": {
+            "model": "moonshotai/kimi-k2-thinking"
+          }
+        }
+      }
+    }
+  },
+  "permission": {
+    "*": "deny"
+  }
+}
