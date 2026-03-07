@@ -1,223 +1,187 @@
 # Testing System Deep Dive
 
-This project verifies behavior at multiple layers so that:
+This repo uses several test layers because no single layer can prove HA behavior on its own. Pure logic tests keep refactors cheap, boundary tests prove that workers publish and dispatch the right things, BDD tests protect client-visible contracts, and real-binary scenarios prove that the system survives real Postgres, real etcd, and hostile timing.
 
-- pure logic is correct and remains easy to refactor, and
-- the “real world” system (real Postgres, real etcd, real timing) is exercised end-to-end.
+If you are trying to find the right place to add coverage, start with this map:
 
-HA systems are especially vulnerable to false confidence: a unit test can pass while the real system fails due to process startup behavior, coordination timing, or “unhappy path” state transitions.
+- change in pure HA logic or a small data invariant: start in `src/ha/decide.rs` or the owning module tests
+- change in worker behavior or side-effect mapping: start in `src/ha/worker.rs` or `src/worker_contract_tests.rs`
+- change in an external HTTP contract: start in `tests/bdd_api_http.rs`
+- change in startup, failover, fencing, partitions, or replication timing: start in the harness-backed HA scenarios under `tests/ha/`
 
-This chapter describes what each test layer can prove, how the Makefile gates are structured, and how to choose the right test type when adding coverage.
+The design contract is simple: fast tests should prove local correctness, and slower tests should prove that those decisions still hold once real binaries and asynchronous failures are involved.
 
-## Test layers
+## Where the main test layers live
 
-### Unit tests (fast, pure, refactor-friendly)
+The fastest way to navigate the test tree is to treat it as four different proof styles rather than one large pile of test files.
 
-Best for:
+### Unit tests: prove logic and data-shape invariants
 
-- pure decision logic (for example HA state machine transitions)
-- small data model invariants
-- parsing/validation behavior
-- edge-case matrices.
+Unit tests are the place to prove exact input-to-output behavior with minimal runtime noise. They should stay cheap enough that you can run them repeatedly while changing one function.
 
-Evidence style:
+Good starting points:
 
-- pass typed snapshots into functions
-- assert exact outputs and state transitions
-- prefer immutable builders/helpers for HA world snapshots so each case reads as "facts in -> phase and decision out"
-- avoid spawning real processes or relying on timing.
+- `src/ha/decide.rs`: HA phase transitions and decision selection
+- `src/ha/lower.rs`: decision-to-effect-plan lowering invariants
+- `src/state/watch_state.rs`: latest-snapshot semantics for `StatePublisher` and `StateSubscriber`
+- module-local `#[cfg(test)]` blocks in state/config/process code for parsing and type invariants
 
-Representative examples:
+When you change pure logic, keep the test at this layer unless the behavior depends on actual subprocesses, sockets, or multi-node timing.
 
-- HA transition matrix and invariants in `src/ha/decide.rs`
-- state channel semantics tests in `src/state/watch_state.rs`.
+### Worker contract tests: prove owned state plus side effects
 
-### Contract/unit-integration tests (workers in isolation)
+Worker contract tests answer a different question: given a concrete world snapshot, does the worker publish the right state and request the right side effects?
 
-Best for:
+In this repo, the key boundary is not just "did the function return the right enum?" but also:
 
-- “this worker does the right thing given these inputs”
-- dispatch behavior (which DCS keys are written, which process jobs are enqueued)
-- error handling (faulting worker status, retry behavior).
+- which DCS writes or deletes were attempted
+- which process jobs were enqueued
+- whether worker status was faulted or remained healthy
 
-These tests often use “contract stub” contexts (for example `HaWorkerCtx::contract_stub(...)`) with recording stores or fake inboxes.
+Best starting points:
 
-Evidence style:
+- `src/ha/worker.rs`: step-level dispatch behavior
+- `src/worker_contract_tests.rs`: reusable worker-boundary contract coverage
+- `src/api/controller.rs`: mapping internal state into API responses
 
-- build the worker context from immutable fixture inputs
-- assert both the published `HaState` and the dispatch side effects chosen for that same snapshot
-- keep "decision shape" and "dispatch boundary" assertions together when the test is about `step_once(...)`.
+If a change affects `step_once(...)`, dispatch ordering, or published status, keep one test here even if you also add e2e coverage later.
 
-Representative examples:
+### BDD tests: prove external contracts without a full HA cluster
 
-- dispatch tests in `src/ha/worker.rs` (recording DCS store, recording process inbox)
-- worker contract tests in `src/worker_contract_tests.rs`.
+BDD-style tests under `tests/` treat the system as an external client would: issue a request, observe the response, and confirm the contract that must remain stable.
 
-For generic runtime-backed tests, start from the shared builder in
-`pgtuskmaster_rust::test_harness::runtime_config` instead of copying a full
-`RuntimeConfig` literal. Use `RuntimeConfigBuilder::new()` plus targeted
-overrides for data directories, ports, auth, DCS scope, or logging behavior.
+Key entrypoints:
 
-Keep parser-shape tests explicit. If the point of the test is exact TOML shape,
-field-path validation, or user-facing parse errors, keep the fixture inline in
-`src/config/parser.rs` rather than routing it through the shared runtime builder.
+- `tests/bdd_api_http.rs`: request parsing, auth handling, debug routes, and DCS intent writes
+- `tests/bdd_state_watch.rs`: client-visible watch semantics
+- `tests/cli_binary.rs`: CLI process-level smoke behavior
+- `tests/policy_e2e_api_only.rs`: policy-oriented checks that do not require the full HA harness
 
-### Black-box / BDD-style integration tests (external behavior)
+Use this layer when the important question is "what does the caller observe?" rather than "which internal action bucket was selected?"
 
-Best for:
+### Real-binary HA scenarios: prove safety under real timing
 
-- “if I call the API endpoint, do I get the correct response shape and DCS writes?”
-- CLI behavior and compatibility expectations
-- policy/safety guards that should be enforced at the interface boundary.
+The most expensive tests use the harness in `src/test_harness/` and the scenario modules under `tests/ha/support/`. These tests are where the repo proves that the control loop, DCS integration, process control, and client-observable state still compose correctly when real binaries are involved.
 
-Representative examples (in `tests/`):
+The narrow entrypoint files are intentionally small:
 
-- `bdd_api_http.rs`: exercises the HTTP surface as an external client
-- `bdd_state_watch.rs`: asserts watch/state semantics from a client perspective
-- `cli_binary.rs`: smoke tests around the built binary invocation
-- `policy_e2e_api_only.rs`: policy-level checks that should hold without needing a full HA cluster.
+- `tests/ha_multi_node_failover.rs`
+- `tests/ha_partition_recovery.rs`
 
-### Real-binary e2e tests (slow, highest confidence)
+Those files delegate to the real scenario code in:
 
-Best for:
+- `tests/ha/support/multi_node.rs`
+- `tests/ha/support/partition.rs`
+- `tests/ha/support/observer.rs`
 
-- “does this work with real Postgres and real etcd?”
-- lifecycle sequencing under timing variation
-- process-level failure behavior (crashes, restarts, fencing, rewind behavior)
-- network fault injection (blocked links, latency).
+That split is a navigation hint for contributors. If you want to understand the scenario logic, open the support modules rather than stopping at the top-level test files.
 
-These tests use the harness (`src/test_harness/*`) together with HA scenario support under `tests/ha/support/*`, and they are considered required gates: missing binaries are an environment problem to fix, not a reason to skip tests.
+## The harness contract for HA evidence
 
-For HA specifically, end-to-end assertions should not rely only on a final converged state. Start a continuous observer window around the disruptive action, sample HA state throughout the scenario, and fail closed if there is insufficient evidence to prove invariants such as “never more than one primary”.
+The most important contributor rule in HA tests is that a final converged state is not enough evidence. The scenarios deliberately use `HaInvariantObserver` from `tests/ha/support/observer.rs` to sample API and SQL observations over a time window and fail closed if there are not enough successful samples to prove the claim being made.
 
-#### Real-binary provenance (policy + attestation)
+What that means in practice:
 
-Real-binary tests do not just check “file exists and is executable”. They enforce provenance:
+- no-dual-primary claims are proven over a sampled window, not inferred from one final poll
+- observation gaps are recorded explicitly rather than ignored
+- transport failures and blind spots count against confidence instead of being silently tolerated
 
-- a repo-tracked policy file: `tools/real-binaries-policy.json`
-- a local attestation manifest generated by installers: `.tools/real-binaries-attestation.json`
+If you add a new HA scenario, preserve that proof style. Do not replace a continuous invariant window with a single "eventually this node became primary" assertion.
 
-The harness fails closed if:
+## Shared test fixtures: where runtime config should come from
 
-- a required binary is missing,
-- a required `.tools/` path is a symlink that resolves outside the policy allowlist (and any symlinked directory under `.tools/` is rejected),
-- the file is group/other writable,
-- the sha256 or file size does not match the attestation, or
-- `--version` output does not satisfy policy expectations.
+When a test needs a valid `RuntimeConfig`, prefer `src/test_harness/runtime_config.rs`. `RuntimeConfigBuilder::new()` gives you a valid baseline and lets you override only the fields that matter for the scenario.
 
-To install/refresh prerequisites, run:
+That builder is the right tool for:
+
+- worker contract tests
+- harness-backed integration tests
+- examples or helpers that need a syntactically valid managed config
+
+It is not the right tool when the test is specifically about parser input shape or error messages. Those tests should keep the TOML fixture inline in the parser/config tests so the user-visible input remains obvious.
+
+## Real binaries are mandatory, not optional
+
+Harness-backed tests intentionally fail closed when required binaries are missing or untrusted. The public entrypoints in `src/test_harness/binaries.rs` delegate to provenance enforcement in `src/test_harness/provenance.rs`, which verifies:
+
+- the repo-tracked policy in `tools/real-binaries-policy.json`
+- the local attestation manifest in `.tools/real-binaries-attestation.json`
+- executable/file properties, path constraints, hashes, sizes, and expected versions
+
+If a real-binary test fails because a prerequisite is missing, the fix is to install or refresh the binaries:
 
 ```bash
 ./tools/install-etcd.sh
 ./tools/install-postgres16.sh
 ```
 
-If you suspect tampering or “wrong binary” behavior, capture execve evidence with:
+If you suspect the wrong binary is being executed, collect evidence with:
 
 ```bash
 ./tools/trace-real-binary-execve.sh
 ```
 
-## Why this depth exists
+## What `make test` and `make test-long` actually prove
 
-Each layer answers a different question:
+The split between `make test` and `make test-long` is defined by the nextest profiles in `.config/nextest.toml` and by extra Docker validation in the `Makefile`.
 
-- **unit tests**: “is the logic right?”
-- **worker/contract tests**: “is the boundary correct (writes, job dispatch, error handling)?”
-- **BDD tests**: “does the external contract behave as intended?”
-- **real-binary e2e**: “does the full system converge under real constraints?”
+- `make test` runs the default nextest profile across the workspace.
+- The default profile explicitly excludes the most expensive HA scenarios such as `e2e_multi_node_unassisted_failover_sql_consistency` and `e2e_partition_mixed_faults_heal_converges`.
+- `make test-long` runs the `ultra-long` nextest profile, which is serialized (`test-threads = 1`) and contains those focused HA scenarios.
+- After the ultra-long profile passes, `make test-long` also runs Docker Compose config validation plus the single-node and cluster smoke scripts.
 
-If you only add unit tests, you will miss regressions in side-effect boundaries. If you only add e2e, refactors become painful and slow.
+The important nuance is that `make test-long` is not "all real-binary tests" in the abstract. It is the home for the most expensive HA scenarios and the container-smoke verification owned by the repo. Keep that distinction when moving tests between gates.
 
-## Tradeoffs
+## How to choose the right new test
 
-Deep coverage costs runtime and requires local prerequisites (real binaries under `.tools/`). The payoff is confidence in failure-path behavior that matters in production, especially for HA transitions and fencing.
+Use this decision rule when adding coverage:
 
-This repo is intentionally strict about not silently skipping tests: a “green” run that skipped real-binary tests is worse than a failing run, because it hides risk.
+- pure transformation or state-machine rule: add a unit test in the owning module
+- worker chooses different DCS/process effects: add a worker contract test
+- HTTP or CLI contract changes: add a BDD test under `tests/`
+- timing-sensitive startup/failover/partition behavior: add or extend a harness-backed HA scenario
 
-## Makefile gates: `make test` vs `make test-long`
+When a change is safety-relevant, add one narrow fast test and one realistic system test if both layers cover different failure modes.
 
-The Makefile splits the default test run from the longest verification gate:
+## Safe ways to change the test system
 
-- `make test`:
-  - runs the default `cargo nextest` profile for the workspace
-  - is the supported fast gate for normal edit/compile/test loops.
-- `make test-long`:
-  - runs the ultra-long HA nextest profile first
-  - then runs Docker Compose validation owned by the repo:
-    - `docker compose ... config` for the single-node and cluster stacks
-    - the single-node smoke flow
-    - the three-node cluster smoke flow
-  - is the supported home for the focused real-binary HA coverage plus the container deployment smoke coverage
-  - intentionally does not include the deleted `e2e_multi_node_real_ha_scenario_matrix`; combined HA flows must earn their way back by adding unique invariant coverage beyond the focused scenarios already in `ULTRA_LONG_TESTS`.
+The test stack has a few design contracts that are easy to break accidentally:
 
-When you add a new slow scenario:
+- Do not silently skip real-binary tests. Missing prerequisites are an environment failure, not a green result.
+- Do not bypass the observer-based evidence model in HA scenarios. If the claim is about split-brain or fail-safe behavior, the scenario must collect enough samples to prove it.
+- Do not hide topology-specific details inside a generic fixture builder. Scenario wiring belongs in the harness and scenario code.
+- Do not move a slow scenario into `make test-long` just because it is inconvenient. Move it only when the runtime cost is consistently too high for the default developer loop.
 
-- first try to keep it in `make test`
-- if it consistently exceeds “developer cycle” time, move it to `make test-long` by adding it to the Makefile’s `ULTRA_LONG_TESTS` list.
+## Failure triage: where to look first
 
-## When to add which test type (decision guide)
+When a test fails, classify the failure before changing code.
 
-Use this as a rule of thumb:
+- unit failure: inspect the exact input snapshot and expected output in the module test
+- worker contract failure: inspect the published state and recorded DCS/process side effects
+- BDD failure: inspect the request/response pair and any store writes the test captures
+- harness-backed failure: inspect the namespace logs, observer summary, and the scenario support module that drove the fault
 
-- You changed **pure logic** (state transition rules, parsing, small helpers) → add/extend **unit tests**.
-- You changed **which side effects happen** (DCS key writes, process job mapping, dispatch retries) → add/extend a **worker contract test** with a recording store/inbox.
-- You changed **an external contract** (API route, response fields, auth behavior) → add/extend a **BDD test** in `tests/`.
-- You changed **timing, startup, or real processes** (basebackup/rewind, fencing, leader lease stability) → add/extend a **real-binary e2e** scenario using the harness.
-
-When in doubt, add two tests: one fast (unit/contract) and one realistic (BDD/e2e).
-
-## Minimal inventory: what protects what
-
-This is a deliberately small “map” of important tests and the subsystem boundary they protect:
-
-- `src/ha/decide.rs` tests: HA phase transitions and action selection logic.
-- `src/ha/worker.rs` tests: HA dispatch behavior (DCS writes/deletes, process job enqueueing), exact state publication, and error surfacing.
-- `tests/bdd_api_http.rs`: API contract and intent writes (for example switchover endpoints).
-- `tests/bdd_state_watch.rs`: state/watch semantics visible to clients.
-- `tests/cli_binary.rs`: binary-level smoke coverage (packaging, CLI invocation).
-- `tests/ha_multi_node_*.rs` and `tests/ha_partition_*.rs`: focused real-binary HA scenario entrypoints, backed by `tests/ha/support/{multi_node,partition,observer}.rs` for continuous invariant observation, fixtures, and artifact handling.
-
-## Flake triage (symptoms → likely causes → next probe)
-
-When a test fails, start by classifying it as:
-
-- deterministic logic failure (repeatable), or
-- environment/timing failure (intermittent).
-
-Common symptoms and next steps in this repo:
-
-- **“real-binary prerequisite missing”**:
-  - likely cause: `.tools/postgres16/bin/*` or `.tools/etcd/bin/etcd` not installed
-  - next probe: run the installer scripts under `tools/` and re-run the failing test.
-- **Port already in use / connection refused**:
-  - likely cause: incomplete teardown left a process running, or port reservation logic is being bypassed
-  - next probe: inspect the test namespace under `/tmp/pgtuskmaster-rust/*` for leftover processes/logs.
-- **Unix socket path length or permissions issues**:
-  - likely cause: too-long socket dir path or incorrect permissions on a data directory
-  - next probe: check harness namespace layout and postgres startup logs.
-- **DCS connect timeouts in single-threaded tokio tests**:
-  - likely cause: long synchronous work starving an in-runtime listener/proxy
-  - next probe: check whether a proxy listener is running on a dedicated thread runtime.
-
-Treat flakes as bugs. If a test is important enough to exist, it is important enough to be made reliable.
+That sequence keeps you from debugging a low-level harness issue as though it were an HA decision bug, or vice versa.
 
 ## Adjacent subsystem connections
 
-Testing coverage is meaningful only if you understand what is being exercised:
+Testing is only useful if you understand the code paths being exercised:
 
-- Read [Harness Internals](./harness-internals.md) for how real-binary tests construct namespaces, allocate ports, start etcd/postgres, and inject faults.
-- Read [HA Decision and Action Pipeline](./ha-pipeline.md) to understand which transitions your tests should assert for each scenario.
-- Read [API and Debug Contracts](./api-debug-contracts.md) to understand which interfaces need black-box coverage vs internal-only assertions.
+- Read [Harness Internals](./harness-internals.md) for `start_cluster(...)`, namespaces, port reservations, proxies, and cleanup behavior.
+- Read [HA Decision and Effect-Plan Pipeline](./ha-pipeline.md) before changing the assertions in HA scenario support modules.
+- Read [API and Debug Contracts](./api-debug-contracts.md) when you are deciding whether a behavior belongs in BDD coverage or in internal-only contract tests.
 
-## Failure triage workflow (simple loop)
+## Evidence pointers
 
-Use this operational loop when debugging:
+If you want to verify the claims in this chapter directly, start here:
 
-1. Reproduce in the narrowest failing layer (unit → contract → BDD → e2e).
-2. Identify which boundary is failing (observation, cache/trust, decision, dispatch, process).
-3. Capture the most useful artifact for the layer:
-   - unit/contract: the input snapshot that triggered failure
-   - BDD: request/response pairs and DCS writes
-   - e2e: namespace logs + debug snapshot timeline.
-4. Fix the root cause and add a regression test at the narrowest layer that can prove it.
+- `src/ha/decide.rs`
+- `src/ha/worker.rs`
+- `src/worker_contract_tests.rs`
+- `src/test_harness/runtime_config.rs`
+- `.config/nextest.toml`
+- `Makefile`
+- `tests/bdd_api_http.rs`
+- `tests/ha/support/observer.rs`
+- `tests/ha/support/multi_node.rs`
+- `tests/ha/support/partition.rs`

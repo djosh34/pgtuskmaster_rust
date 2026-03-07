@@ -1,183 +1,206 @@
 # Harness Internals
 
-The test harness exists to run **real-binary** HA scenarios in a repeatable way.
+The harness under `src/test_harness/` is the code that turns HA scenarios from "a pile of subprocess helpers" into repeatable evidence. Its job is not just to launch etcd and Postgres. Its real job is to create an isolated topology, wire the node runtimes, inject failures, and return enough handles that the scenario code can prove safety properties instead of merely hoping they held.
 
-In this repo, the harness is not “test convenience glue”; it is part of the system’s correctness story. If the harness is flaky, you can’t trust e2e results. If the harness silently skips prerequisites, you get false confidence.
+If you are new to this area, the best reading path is:
 
-This chapter describes the harness primitives you will interact with when adding or debugging real-binary tests.
+1. `src/test_harness/ha_e2e/startup.rs`
+2. `src/test_harness/ha_e2e/handle.rs`
+3. `src/test_harness/ha_e2e/ops.rs`
+4. `tests/ha/support/multi_node.rs` or `tests/ha/support/partition.rs`
 
-## Core harness responsibilities
+That sequence shows the real control path: cluster creation, returned handles, teardown, then scenario-specific assertions.
 
-At a high level, the harness is responsible for:
+## The main harness call path
 
-- creating **isolated namespaces** (directories, log roots, port allocations)
-- allocating and **leasing ports** to avoid cross-test interference
-- starting and stopping **etcd clusters** as real processes
-- starting and stopping **Postgres instances** as real processes
-- starting node runtimes and driving lifecycle scenarios
-- injecting failures (network blocks/latency) and collecting artifacts for debugging.
+The contributor entrypoint for HA scenarios is `ha_e2e::start_cluster(config)` in `src/test_harness/ha_e2e/startup.rs`.
 
-The harness lives under `src/test_harness/` and is consumed by real-binary e2e tests (for example the HA scenarios in `tests/ha_multi_node_*.rs`, `tests/ha_partition_*.rs`, and their shared support modules under `tests/ha/support/`).
+In the current implementation, `start_cluster(...)` does all of the following before a scenario begins:
 
-The same directory also contains the shared typed runtime-config fixture layer in
-`src/test_harness/runtime_config.rs`. Use it for tests, integration targets, and
-examples that need a valid `RuntimeConfig` but are not specifically testing
-parser input shape.
+- validates `TestConfig`
+- creates a unique `NamespaceGuard`
+- salts the DCS scope and cluster name with the namespace id to avoid cross-test collisions
+- verifies required real binaries through `require_pg16_process_binaries_for_real_tests()` and `require_etcd_bin_for_real_tests()`
+- allocates a full HA topology port reservation with `allocate_ha_topology_ports(...)`
+- starts the etcd cluster
+- prepares per-node runtime config and data directories
+- spawns the node runtimes and any proxy links needed for the scenario mode
+- returns a `TestClusterHandle` with node metadata, process handles, timeouts, and proxy controls
 
-When a real-binary test needs a node config, keep topology-specific values
-explicit in the harness code:
+That is the quickest place to start if you need to understand why an HA scenario has the topology it does.
 
-- node/member identity
-- allocated ports
-- namespace-scoped data/log/socket paths
-- DCS init payloads and cluster endpoints
+## What `TestClusterHandle` gives scenario code
 
-Layer those facts over `RuntimeConfigBuilder` rather than hiding topology inside
-the shared baseline fixture. The shared builder is for valid managed-config
-defaults; the harness still owns per-node wiring.
+`src/test_harness/ha_e2e/handle.rs` defines the objects that scenario modules actually use.
 
-## Common pitfalls addressed by harness design
+`NodeHandle` exposes the facts a scenario typically needs:
 
-The harness is designed to prevent “classic” e2e failure modes:
+- node identity
+- SQL and Postgres ports
+- API addresses, including `api_observe_addr` for observation loops
+- the node data directory
 
-- **port races** in parallel test execution
-- **stale directories** from prior runs (leading to confusing “already initialized” behavior)
-- **incomplete teardown** leaving processes behind (port collisions, slowdowns)
-- **path-length and permissions** issues (Unix sockets and PGDATA permissions)
-- **unstable startup ordering** masking real HA bugs.
+`TestClusterHandle` owns the wider cluster lifecycle:
 
-Some of these pitfalls are unavoidable when running real processes; the harness aims to make them deterministic and discoverable.
+- the namespace guard
+- binary paths and timeout policy
+- the etcd cluster handle
+- all node runtime tasks
+- proxy maps for etcd, API, and Postgres links
 
-## Namespaces: every scenario gets its own filesystem root
+That split is intentional. Scenario code should drive behavior through the returned handles rather than reaching back into startup internals.
 
-The namespace utility lives in `src/test_harness/namespace.rs`.
+## Cleanup is a first-class contract
 
-`NamespaceGuard::new(test_name)` creates a unique directory under the system temp dir:
+Both startup failure cleanup and normal teardown are explicit. `StartupGuard::cleanup_best_effort(...)` in `startup.rs` and `TestClusterHandle::shutdown(...)` in `ops.rs` abort runtime tasks, stop Postgres with `pg_ctl`, shut down proxy links, and then tear down etcd.
 
-- root: `$TMPDIR/pgtuskmaster-rust/<namespace-id>/`
-- subdirs: `logs/` and `run/`.
+The design contract is that cleanup failures are surfaced as aggregated errors, not swallowed. That matters because leftover processes or ports can poison later tests and create false flakes.
 
-The namespace id is intentionally unique (includes a timestamp, PID, and a counter) so that parallel tests do not collide.
+If you add a new long-lived resource to the harness, add it to both startup-failure cleanup and steady-state shutdown. Do not rely on process exit or `Drop` side effects alone.
 
-The guard cleans up the namespace directory on drop. If a test fails and you want to inspect artifacts, the first thing to do is locate the namespace directory path and review the logs inside `logs/`.
+## Namespaces: isolation on disk and in identifiers
 
-## Port allocation and leasing (how we avoid collisions)
+`src/test_harness/namespace.rs` is the root of test isolation. `NamespaceGuard::new(test_name)` creates a unique temp-root namespace with dedicated `logs/` and `run/` subdirectories.
 
-Port allocation is in `src/test_harness/ports.rs`.
+Two details matter for contributors:
 
-The harness does two things:
+- the namespace id is used both for filesystem isolation and for salting cluster scope/name in HA startup
+- the namespace path is the first place to inspect when an e2e scenario fails
 
-1. **binds actual listeners** on `127.0.0.1:0` to obtain ephemeral ports, and
-2. on Unix, it **leases those ports** across processes by writing a small registry file under `/tmp/` protected by a file lock.
+If your new scenario needs artifacts, put them under the namespace instead of writing to ad hoc temp paths.
 
-The concrete behavior:
+## Ports: reserve before you bind the world
 
-- `allocate_ports(n)` returns a `PortReservation` that holds the TCP listeners open, so no other process can bind them.
-- on Unix, ports are also leased in `/tmp/pgtuskmaster_rust_port_leases.json` using `flock` to reduce cross-process races between concurrent `cargo test` workers.
-- dropping the reservation best-effort releases the leases.
+`src/test_harness/ports.rs` does more than "pick a free port." It returns a `PortReservation` that keeps listeners open so other concurrent tests cannot steal the chosen ports, and on Unix it also records leases in `/tmp/pgtuskmaster_rust_port_leases.json`.
 
-The important sharp edge:
+For HA scenarios, `allocate_ha_topology_ports(...)` reserves the full topology in one shot. That is the safe default because the topology needs etcd client ports, etcd peer ports, node API ports, observe ports, and SQL/Postgres ports that must not overlap.
 
-- if you “reserve” a port and then drop the listener before the component binds, another test can steal it.
-- the harness therefore prefers passing already-bound listeners into components when possible (see `net_proxy` for the pattern).
+Safe change rule:
 
-## Real binaries are mandatory (and validated)
+- if a component can accept an already-bound listener, prefer that pattern
+- do not drop a reservation early and then hope the real component binds quickly enough
 
-The harness intentionally fails closed if prerequisites are missing.
+The TCP proxy helper follows the safer "pass the bound listener in" model via `spawn_with_listener(...)`.
 
-Binary validation is enforced by:
+## Real-binary verification is part of harness startup
 
-- `src/test_harness/binaries.rs`: the public harness entry points (`require_*_for_real_tests(...)`)
-- `src/test_harness/provenance.rs`: provenance verification (policy + attestation + hash/version checks)
+The harness treats binaries as part of the trusted test environment. `src/test_harness/binaries.rs` provides the public "require this binary" entrypoints, but the actual trust logic lives in `src/test_harness/provenance.rs`.
 
-Real-binary prerequisites are defined in the repo-tracked policy: `tools/real-binaries-policy.json`.
+The important contributor mental model is:
 
-Installers (`./tools/install-etcd.sh` and `./tools/install-postgres16.sh`) generate a local attestation manifest at `.tools/real-binaries-attestation.json` that records:
+- installers create an attestation manifest under `.tools/`
+- the harness validates path constraints, metadata, hashes, sizes, and version expectations
+- a missing or mismatched binary is a hard test failure
 
-- expected repo-relative path under `.tools/`
-- sha256 and file size
-- install timestamp (for debugging).
+This is why harness-backed scenarios are allowed to make strong claims: they are not running against arbitrary executables found on the machine.
 
-During tests, the harness verifies that required binaries are:
+## Process helpers: etcd and Postgres boundaries
 
-- regular executable files (symlinks are allowed only if policy explicitly allows them and the canonical target path is in the allowlist),
-- contained within `.tools/` after canonicalization (or, for allowlisted symlinks, contained within the allowlisted system prefixes),
-- not group/other writable,
-- byte-identical to the attested sha256/size, and
-- version-compatible with policy (checked via `--version` after hash validation).
+The harness has narrow helpers for the real binaries, and the separation between them matters.
 
-If a real-binary test fails with “missing prerequisite”, the fix is to install the binaries (via scripts under `tools/`), not to skip the test.
+### etcd: cluster spawning and readiness
 
-## Process lifecycle: etcd and Postgres
+`src/test_harness/etcd3.rs` owns member data directories, process spawn, readiness checks, and cluster shutdown. `spawn_etcd3_cluster(...)` validates member names and port uniqueness before launching anything, then waits for TCP reachability and a KV round-trip before considering the cluster ready.
 
-The harness runs etcd and Postgres as real OS processes and captures logs to namespace directories.
+That means a scenario that starts with an etcd cluster can assume more than "the process exists." It can assume the store actually accepts reads and writes.
 
-### etcd clusters (`src/test_harness/etcd3.rs`)
+### Postgres: plain helper versus managed-runtime path
 
-The etcd harness can spawn:
+`src/test_harness/pg16.rs` owns `prepare_pgdata_dir(...)`, `spawn_pg16(...)`, and `spawn_pg16_for_vanilla_postgres(...)`.
 
-- a single etcd instance (`spawn_etcd3`)
-- or a multi-member cluster (`spawn_etcd3_cluster`).
+The sharp edge here is intentional:
 
-It enforces basic sanity before spawning:
+- `spawn_pg16(...)` is the plain helper for launching a vanilla Postgres instance
+- `spawn_pg16_for_vanilla_postgres(...)` is the explicit escape hatch for tests that truly need raw `postgresql.conf` lines
+- pgtuskmaster-managed startup scenarios should still prove behavior through the runtime and process materialization path, not by sneaking config directly into the vanilla helper
 
-- member names must be unique
-- client and peer ports must not collide.
+If a proposed test change needs direct `postgresql.conf` edits, treat that as an exception that must be justified in the test.
 
-Readiness is currently checked in two stages: (1) a TCP connect probe to each member’s client port, then (2) an etcd KV round-trip (`put`/`get`/`delete`) via the etcd client before the cluster is treated as ready. If a member exits before readiness or does not become reachable before the timeout, the harness returns a structured error and attempts to shut down any already-started members.
+## Fault injection: proxy links are the network boundary
 
-### Postgres 16 instances (`src/test_harness/pg16.rs`)
+`src/test_harness/net_proxy.rs` provides `TcpProxyLink`, which is the harness mechanism for blocking or delaying traffic without rewriting the runtime.
 
-The Postgres harness spawns `initdb` and `postgres` using the configured binaries.
+Each proxy link can switch between:
 
-Key behaviors to know:
+- `PassThrough`
+- `Blocked`
+- `Latency { upstream_delay_ms, downstream_delay_ms }`
 
-- data directories are created under the namespace and rejected if they already exist (stale paths are treated as a test bug)
-- on Unix, PGDATA permissions are set to `0700` (Postgres rejects wider permissions)
-- `initdb` is currently invoked with `-A trust` and `-U postgres` for test simplicity
-- readiness is currently checked by attempting to connect to the TCP port.
+The proxy listeners run on their own dedicated thread with a single-threaded tokio runtime. That design avoids starving the proxy accept loop when the main test runtime is busy and makes network-fault scenarios more deterministic.
 
-Shutdown uses a “TERM then kill” pattern with timeouts so leftover processes do not accumulate.
+If you are debugging a partition scenario, this file is usually more important than the raw etcd or API helper modules.
 
-The ownership boundary matters here:
+## Scenario support: where assertions really live
 
-- `spawn_pg16(...)` is the plain real-binary process helper with no direct `postgresql.conf` mutation
-- `spawn_pg16_for_vanilla_postgres(...)` is the explicit exception path for tests that truly need raw PostgreSQL config lines
-- pgtuskmaster-managed startup tests should prove behavior through the runtime/process materialization path that writes `PGDATA/pgtm.postgresql.conf` and the managed side files, not by appending ad hoc lines to `postgresql.conf`
+The harness does not prove HA safety by itself. The scenario support modules under `tests/ha/support/` turn the returned cluster handle into evidence.
 
-If you think a new test needs direct `postgresql.conf` edits, treat that as a narrow vanilla-Postgres exception and explain why in the test. Do not reintroduce a generic “pass arbitrary config lines into the harness” mental model.
+The most important companion module is `tests/ha/support/observer.rs`, which collects repeated API or SQL observations and rejects "proof" that does not have enough successful samples. The multi-node and partition scenario modules build on that observer and on `NodeHandle.api_observe_addr` to prove properties such as:
 
-## Fault injection: TCP proxy links
+- no dual primary during the sampled window
+- fail-safe is observed on the expected nodes
+- healing returns the cluster to the intended topology
 
-Network fault injection uses a TCP proxy in `src/test_harness/net_proxy.rs`.
+That is why harness changes should be reviewed together with scenario support changes. A startup convenience change can accidentally weaken the quality of the evidence.
 
-Each `TcpProxyLink`:
+## Runtime config fixtures: keep shared defaults generic
 
-- listens on a local address
-- forwards to a target address
-- supports runtime mode changes:
-  - `PassThrough`
-  - `Blocked` (drops connections; aborts active tasks)
-  - `Latency { upstream_delay_ms, downstream_delay_ms }`.
+`src/test_harness/runtime_config.rs` provides `RuntimeConfigBuilder` and sample config fragments. Its role is to give tests a valid managed-config baseline, not to hide topology.
 
-Proxy listeners run on a dedicated thread with a single-threaded tokio runtime. This is deliberate: it prevents long-running work on the main test runtime from starving the proxy’s accept loop.
+Good use:
 
-## Determinism controls and timeouts
+- start from `RuntimeConfigBuilder::new()`
+- layer node-specific ports, paths, IDs, auth, or DCS scope in the harness/scenario code
 
-Real-binary e2e tests need explicit time bounds. The harness provides timeouts in many primitives (spawn readiness, shutdown), but scenario code must still:
+Bad use:
 
-- use bounded polling loops (with overall deadlines)
-- treat “transport errors” as part of the system’s behavior (retry if appropriate, or fail with clear context)
-- log enough context to make failures debuggable (namespace id, ports, member names, etc.).
+- baking scenario topology into the shared builder
+- using the shared builder to obscure parser-shape tests
+
+Keeping that split makes it much easier to reason about what the scenario is actually proving.
+
+## Safe ways to change the harness
+
+This area has several sharp edges that are easy to break accidentally:
+
+- Keep all new files, logs, and sockets inside the namespace.
+- Preserve aggregated cleanup errors; do not convert them into best-effort silent behavior.
+- Reserve ports before building topology, and keep reservations alive until the consumer is ready.
+- Add new long-lived resources to both startup cleanup and `TestClusterHandle::shutdown(...)`.
+- Keep topology-specific config explicit in startup/scenario code instead of burying it in generic fixtures.
+- Use the proxy layer for network-fault tests instead of inventing ad hoc blocking mechanisms.
+
+## Failure triage: where to start in code
+
+Use this map when a harness-backed test fails:
+
+- cluster never came up: start in `src/test_harness/ha_e2e/startup.rs`
+- etcd readiness or membership issue: open `src/test_harness/etcd3.rs`
+- Postgres spawn or stale-data-dir issue: open `src/test_harness/pg16.rs`
+- port collision or address reuse issue: open `src/test_harness/ports.rs`
+- partition or latency behavior looks wrong: open `src/test_harness/net_proxy.rs`
+- assertion quality looks weak or "insufficient evidence" fails: open `tests/ha/support/observer.rs`
+
+That path usually gets you to the real bug faster than starting in the top-level test file.
 
 ## Adjacent subsystem connections
 
-Harness code exists to exercise real runtime behavior:
+The harness is only meaningful in combination with the runtime and HA pipeline it exercises:
 
-- Read [Testing System Deep Dive](./testing-system.md) for how harness-based tests fit into `make test` vs `make test-long`.
-- Read [Worker Wiring and State Flow](./worker-wiring.md) to understand which worker channels you should observe or poll in an e2e scenario.
-- Read [API and Debug Contracts](./api-debug-contracts.md) for the debug snapshot tooling that makes e2e triage much faster.
+- Read [Testing System Deep Dive](./testing-system.md) for the full test-layer map and gate ownership.
+- Read [Worker Wiring and State Flow](./worker-wiring.md) before adding new observations to HA scenarios.
+- Read [API and Debug Contracts](./api-debug-contracts.md) when deciding whether a scenario should observe API state, SQL role state, or both.
 
-## Why this matters
+## Evidence pointers
 
-Without harness discipline, HA e2e tests produce false positives and false negatives. Reliable fixtures are part of correctness, not optional testing convenience.
+To verify the claims in this chapter directly, start here:
+
+- `src/test_harness/ha_e2e/startup.rs`
+- `src/test_harness/ha_e2e/handle.rs`
+- `src/test_harness/ha_e2e/ops.rs`
+- `src/test_harness/namespace.rs`
+- `src/test_harness/ports.rs`
+- `src/test_harness/etcd3.rs`
+- `src/test_harness/pg16.rs`
+- `src/test_harness/net_proxy.rs`
+- `src/test_harness/provenance.rs`
+- `tests/ha/support/observer.rs`

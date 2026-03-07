@@ -125,3 +125,4 @@
 .ralph/tasks/story-docs-useful-guides/01-task-rewrite-operator-docs-as-useful-user-guides.md
 .ralph/tasks/story-container-first-deployment/01-task-container-first-docker-deployment-and-compose.md
 .ralph/tasks/story-operator-architecture-docs/04-task-expand-non-contributor-docs-with-deep-subsubchapters.md
+.ralph/tasks/story-docs-useful-guides/02-task-rebuild-contributor-docs-as-codebase-navigation-and-contract-guide.md

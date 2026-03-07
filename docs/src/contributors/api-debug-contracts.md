@@ -1,178 +1,158 @@
 # API and Debug Contracts
 
-This chapter explains the “edges” of the system:
+This chapter explains the edges of the system:
 
-- the **Node API** (operator-facing HTTP surface), and
-- the **debug snapshot** and debug views (contributor-facing observability surface).
+- the Node API, which accepts operator intent and serves stable operational reads
+- the debug snapshot pipeline, which produces contributor-facing read models and history
 
-As a contributor, you should treat these as explicit contracts:
+These surfaces are contracts. They decide what clients may write, what they may rely on when reading state, and which internal projections must remain coherent even while the implementation behind them changes.
 
-- what external clients are allowed to do (write intents, read state)
-- what internal state is exposed and how it is projected
-- what is intentionally “best effort” (debug-only) vs stable.
+## Where to start in code
 
-## The Node API worker: where requests land
+The fastest entrypoints are all in `src/api/worker.rs`:
 
-The server loop lives in `src/api/worker.rs`.
+- `run(...)`: outer loop and fatal-vs-nonfatal handling
+- `step_once(...)`: timed accept, one request cycle, response logging
+- `authorize_request(...)`: role split and `401` vs `403`
+- `route_request(...)`: endpoint ownership
 
-The runtime binds the listener during startup wiring (`runtime/node.rs`), then runs the API worker as one of the steady-state tasks.
+For the projection side, open:
 
-The API worker is intentionally minimal:
+- `src/api/controller.rs`: stable operational read models and switchover intent writes
+- `src/debug_api/worker.rs`: snapshot production and semantic change tracking
+- `src/debug_api/snapshot.rs`: the raw composed `SystemSnapshot`
+- `src/debug_api/view.rs`: `/debug/verbose` JSON projection
 
-- accept a TCP connection
-- optionally negotiate TLS
-- parse one HTTP request
-- authorize it (if auth is configured)
-- route it to a handler
-- write an HTTP response.
+The API worker is intentionally hand-rolled. When you change TLS, auth, timeouts, routing, or error handling, you are editing explicit code paths rather than middleware defaults from a framework.
 
-This is not a general HTTP framework; it is a small purpose-built protocol implementation.
+## Runtime wiring
 
-### TLS modes and client certificates
+`src/runtime/node.rs::run_workers(...)` binds the API listener, creates a dedicated DCS store handle for API writes, and wires in a `StateSubscriber<SystemSnapshot>` for read endpoints.
 
-TLS behavior is configured in `RuntimeConfig` and interpreted by the API worker.
+That means:
 
-The current modes:
+- intent writes go through the API worker's own DCS handle
+- reads come from the composed debug snapshot, not from raw worker channels
+- API handlers should stay small because the projection logic already lives elsewhere
 
-- **Disabled**: plaintext only.
-- **Required**: the worker only accepts TLS connections.
-- **Optional**: the worker peeks the first byte and treats the connection as TLS if it “looks like” a TLS ClientHello.
+## TLS and connection handling
 
-Client certificate requirements are separate from “TLS required”:
+TLS behavior is configured in `RuntimeConfig` and interpreted in `src/api/worker.rs`.
 
-- when `require_client_cert` is set, the API worker rejects TLS connections that did not present a peer certificate.
+The current modes are:
 
-The key contributor takeaway: “Optional TLS” is a compatibility feature, but it also means clients need to be explicit about whether they expect encryption.
+- `Disabled`: plaintext only
+- `Required`: the worker must negotiate TLS
+- `Optional`: the worker peeks for a TLS client hello and decides per connection
 
-### Authorization model (read vs admin)
+Client-certificate requirements are a separate decision layered on top of TLS mode. If `require_client_cert` is enabled, a TLS connection without a peer certificate is rejected.
 
-Authorization happens inside the API worker, before routing.
+Because the worker is not using a framework, timeout behavior is also part of the contract:
 
-If auth is configured as role tokens, requests are classified into:
+- `step_once(...)` uses a short timed `accept()`
+- request parsing is separately time-bounded
+- nonfatal per-request failures are logged and the loop keeps serving future requests
 
-- **Read endpoints**: require either a read token or an admin token.
-- **Admin endpoints**: require the admin token; presenting only the read token returns **403 Forbidden** (not 401).
+## Authorization model
 
-This “Forbidden vs Unauthorized” distinction is intentional: it allows clients to detect “you authenticated but lack privileges”.
+Authorization happens before routing.
 
-Admin endpoints in the current routing table include:
+If auth is configured as role tokens, requests are classified into read or admin endpoints:
 
-- `POST /switchover`
-- `DELETE /ha/switchover`
-- `POST /fallback/heartbeat`.
+- admin endpoints currently are `POST /switchover`, `DELETE /ha/switchover`, and `POST /fallback/heartbeat`
+- read endpoints currently are `GET /ha/state`, `GET /fallback/cluster`, and the `GET /debug/*` routes
 
-Everything else is treated as read-only.
+The exact split lives in `endpoint_role(...)`.
 
-## Read contract: how state becomes API output
+The `401` vs `403` distinction is intentional:
 
-The Node API does not directly stitch together `pginfo`, `dcs`, `ha`, and `process` channels.
+- `401 Unauthorized` means no acceptable token was presented
+- `403 Forbidden` means the caller authenticated but lacks the required role
 
-Instead, the runtime wires a `StateSubscriber<SystemSnapshot>` into the API worker. That snapshot is produced by the debug snapshot worker in `src/debug_api/worker.rs` and is built by `debug_api::snapshot::build_snapshot(...)`.
+Treat that distinction as part of the client contract, not as an incidental status-code choice.
 
-That design choice matters:
+## Stable read contract: `/ha/state`
 
-- there is a single owned “projection” for “what the system believes right now”
-- debug views and operator reads can share the same composed snapshot
-- contributors can evolve internal state shapes without making every HTTP handler understand every worker channel.
+`GET /ha/state` is the small operational read model. It is projected in `src/api/controller.rs::get_ha_state(...)` from the composed `SystemSnapshot`.
 
-### `/ha/state`: stable-ish operational read
+The response includes:
 
-`GET /ha/state` returns a small `HaStateResponse` derived from the snapshot:
+- cluster identity
+- current leader and switchover request, if any
+- DCS trust
+- HA phase and tick
+- HA decision
+- snapshot sequence
 
-- cluster identity (cluster name, scope, self member id)
-- current leader and switchover request (if any)
-- typed DCS trust enum
-- typed HA phase enum plus tick
-- typed HA decision payload
-- the snapshot sequence (useful for polling clients).
+This endpoint should stay small and conservative. If you are tempted to add raw worker detail here, that field probably belongs in `/debug/verbose` instead.
 
-This endpoint is the best “simple operational signal” to rely on. It should remain small and understandable even as internal debug views become more detailed.
+## Intent write contract: switchover
 
-## Write contract: intent writes into DCS (switchover)
+The main operator write path is `POST /switchover`.
 
-The most important operator write path today is the switchover intent.
+`src/api/controller.rs::post_switchover(...)`:
 
-### `POST /switchover` (intent write)
+- validates `requested_by`
+- encodes a typed `SwitchoverRequest`
+- writes it to `/{scope}/switchover`
 
-The handler is `api/controller.rs::post_switchover(...)`.
+This is an intent write, not an immediate execution command.
 
-It:
+The matching cleanup path is `DELETE /ha/switchover`, which clears the same key through `DcsHaWriter::clear_switchover(...)`.
 
-- validates `requested_by` is non-empty
-- encodes a `SwitchoverRequest` record as JSON
-- writes it to the scoped key `/{scope}/switchover` via the DCS store.
+The end-to-end control flow is:
 
-This is an **intent** write, not an immediate execution command.
+1. API writes or clears the intent in DCS
+2. DCS worker observes and republishes the request in `DcsCache`
+3. HA reacts through the cached read model
 
-### How intent becomes action
+That pattern is the safe way to add future operator intents. Do not make handlers reach into HA directly.
 
-The write path is:
+## Debug snapshot contract
 
-1. API writes `/{scope}/switchover`
-2. DCS worker observes the key via its watch stream and publishes it in `DcsCache`
-3. HA consumes `DcsCache` and, if it is currently primary, transitions out of primary and emits:
-   - demote
-   - release leader lease
-   - clear switchover key.
+Debug routes are gated by `cfg.debug.enabled` and are intended for contributors, tests, and debugging tools rather than for a minimal operator contract.
 
-That end-to-end path is the pattern to follow for new “operator intents”:
+### `/debug/snapshot`
 
-- write a typed intent record to a stable key
-- have the DCS worker own the read model (decoding and caching)
-- have HA own the decision of “what to do about it”.
+Returns a pretty-printed `SystemSnapshot` for humans.
 
-## Debug contract: snapshots and verbose projections
+### `/debug/verbose`
 
-Debug endpoints are gated by config (`cfg.debug.enabled`).
+Returns JSON from `src/debug_api/view.rs::build_verbose_payload(...)` with:
 
-The debug surfaces exist for contributors and test fixtures. They are allowed to change more than the operator-facing `/ha/state` contract, as long as the behavior is well described and tested.
+- meta information such as schema version, generated timestamp, channel version, and sequence
+- one section each for config, pginfo, dcs, process, and ha
+- a small static API section listing exported endpoints
+- bounded `changes` and `timeline` arrays
 
-### `GET /debug/snapshot`
+The `since=<sequence>` query parameter filters the returned history incrementally.
 
-Returns a pretty-printed `SystemSnapshot` debug representation.
+`src/debug_api/worker.rs` only records history on semantic diffs. For HA specifically, a tick-only change does not create new timeline noise even though the latest snapshot still contains the new tick value.
 
-This is primarily useful for humans, not for stable automation.
+### `/debug/ui`
 
-### `GET /debug/verbose`
+Serves the lightweight built-in debug UI that polls `/debug/verbose`. It is intentionally simple, but it is part of the contributor debugging workflow and should not drift from the JSON payload it expects.
 
-Returns a structured JSON payload built by `src/debug_api/view.rs`:
+## How to change this area safely
 
-- a “meta” section (schema version, timestamps, channel version, snapshot sequence)
-- one section per subsystem (config, pginfo, dcs, process, ha)
-- a bounded history of changes and a timeline stream.
-
-The `since=<sequence>` query parameter allows clients (including the built-in debug UI) to poll incrementally.
-
-Important semantic rule (to avoid “timeline noise”):
-
-- timeline/change entries are recorded on *semantic* diffs, not just on monotonic `Version` churn
-- for HA specifically, tick-only changes do not generate new timeline entries (the tick is still part of the snapshot, but it is not used as a “did something change?” detector)
-
-### `GET /debug/ui`
-
-Serves a small HTML/JS page that polls `/debug/verbose` and renders:
-
-- current state sections
-- timeline entries
-- change events.
-
-This is intentionally crude but extremely useful during e2e debugging.
-
-## Client contract (what to rely on)
-
-When you extend the API/debug surface, be explicit about what clients can rely on.
-
-In the current codebase, a practical rule is:
-
-- `/ha/state` is the stable operational contract; keep it simple and conservative.
-- `/switchover` (and related admin endpoints) are stable “intent write” contracts; validate inputs and keep the DCS key/value formats deliberate.
-- `/debug/*` endpoints are contributor/debug contracts:
-  - allowed to evolve, but changes should be reflected in docs and test fixtures that consume them.
+- Add or change endpoint ownership in `route_request(...)` and `endpoint_role(...)` together.
+- Keep stable reads in controllers and keep debug projections in `src/debug_api/view.rs`; do not rebuild raw worker state inside handlers.
+- Treat `401` vs `403` behavior as part of the client contract.
+- Update `tests/bdd_api_http.rs` whenever you change a route, auth rule, or response shape.
+- Decide explicitly whether a new field belongs in the stable `/ha/state` projection or only in `/debug/verbose`.
 
 ## Adjacent subsystem connections
 
-This chapter is about the system’s edges. It connects directly to:
+- Read [Worker Wiring and State Flow](./worker-wiring.md) for how the debug snapshot subscriber reaches the API worker.
+- Read [HA Decision and Action Pipeline](./ha-pipeline.md) for how switchover intent turns into demote, lease-release, and clear-request effects.
+- Read [Testing System Deep Dive](./testing-system.md) for which tests prove stable HTTP contracts versus debug-only projections.
 
-- [Worker Wiring and State Flow](./worker-wiring.md): explains how the API reads state (debug snapshot subscriber) and how that snapshot is composed.
-- [HA Decision and Action Pipeline](./ha-pipeline.md): explains how the switchover intent turns into demote/release/clear actions.
-- [DCS Data Model and Write Paths](../assurance/dcs-data-model.md): operator-facing explanation of the keys and semantics; contributor docs should stay aligned with it.
+## Evidence pointers
+
+- `src/api/worker.rs`
+- `src/api/controller.rs`
+- `src/api/fallback.rs`
+- `src/debug_api/worker.rs`
+- `src/debug_api/snapshot.rs`
+- `src/debug_api/view.rs`
+- `tests/bdd_api_http.rs`

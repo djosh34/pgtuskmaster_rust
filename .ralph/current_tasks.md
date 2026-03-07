@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 06:19:37 AM CET 2026
-
-# Task `.ralph/tasks/story-docs-useful-guides/02-task-rebuild-contributor-docs-as-codebase-navigation-and-contract-guide.md`
-
-```
-## Task: Rebuild contributor docs as a codebase navigation and design-contract guide <status>not_started</status> <passes>false</passes>
-
-<description>
-Rewrite the contributor documentation so it becomes a genuinely useful guide for understanding the codebase, subsystem boundaries, implementation approach, and design contracts.
-```
-
-==============
+Generated: Sat Mar  7 06:44:07 AM CET 2026
 
 # Task `.ralph/tasks/story-docs-useful-guides/03-task-align-doc-file-order-and-names-with-rendered-site-structure.md`
 

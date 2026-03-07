@@ -1,181 +1,173 @@
 # Codebase Map
 
-This project is structured around **runtime responsibilities**. The modules are not “layers” (utils → services → controllers); they are closer to a set of **workers** with explicit inputs/outputs and a small number of side-effect boundaries.
+This project is structured around runtime responsibilities. The modules are not a generic controller-service-repository stack; they are closer to a set of workers with explicit publishers, subscribers, and a small number of side-effect boundaries.
 
 If you are new to the codebase, the fastest way to build a correct mental model is:
 
 1. understand where startup happens and where steady-state begins
 2. understand which worker owns which piece of state
-3. understand which components are allowed to perform side effects (DCS writes, process jobs).
+3. understand which components are allowed to perform side effects
 
 ## The top-level runtime shape
 
 At a high level, the node runtime does three things:
 
-1. **load + validate config**
-2. **plan and execute startup** (bootstrap / clone / resume)
-3. **run steady-state workers concurrently** (pginfo, dcs, ha, process, api, debug snapshot, log ingest).
+1. load and validate config
+2. plan and execute startup (bootstrap, clone, or resume)
+3. run steady-state workers concurrently (`pginfo`, `dcs`, `process`, `ha`, `debug_api`, and `api`)
 
 The canonical entrypoint is `src/runtime/node.rs`:
 
-- `run_node_from_config_path` → `run_node_from_config`
-- `plan_startup` (inspect data dir + probe DCS)
-- `execute_startup` (run bootstrap/basebackup/start-postgres as needed)
-- `run_workers` (create shared state channels, wire worker contexts, `tokio::try_join!` all workers).
+- `run_node_from_config_path(...)` -> `run_node_from_config(...)`
+- `plan_startup(...)` and `plan_startup_with_probe(...)`
+- `execute_startup(...)`
+- `run_workers(...)`
 
-The CLI binary wires this up in `src/bin/pgtuskmaster.rs`.
+The CLI binary in `src/bin/pgtuskmaster.rs` is intentionally thin. If you are tracing real runtime behavior, open `src/runtime/node.rs` first.
 
-## Primary modules and what they own
+## Startup ends before steady-state workers exist
 
-The following directories are the “spine” of the implementation. When you are making a change, start by deciding which of these modules should *own* it.
+The most important ownership boundary in the whole codebase is the split between startup and steady-state.
+
+Startup in `src/runtime/node.rs` owns:
+
+- data-dir inspection (`inspect_data_dir(...)`)
+- the one-shot DCS probe (`probe_dcs_cache(...)`)
+- startup-mode selection (`select_startup_mode(...)`)
+- init-lock claiming and config seeding
+- the initial bootstrap, basebackup, or start-postgres jobs
+
+Steady-state begins only after `run_workers(...)` creates the shared channels and starts the long-lived worker loops.
+
+If a behavior must happen before the API listener comes up or before HA begins ticking, it belongs in startup. If it must react continuously to changing evidence, it belongs in a worker.
+
+## Module ownership map
 
 ### `src/runtime/`
 
-Owns:
+Owns orchestration:
 
 - startup planning and execution
-- construction of state channels (`state::new_state_channel`)
-- wiring worker contexts (who receives what, who publishes what)
-- binding the Node API listener and configuring TLS.
+- shared state-channel creation via `state::new_state_channel(...)`
+- worker-context construction
+- API listener binding and TLS setup
 
-This module should mostly be about orchestration, not business logic.
+This module should coordinate; it should not quietly absorb HA or DCS business logic.
 
 ### `src/state/`
 
-Owns:
+Owns the latest-snapshot transport and version semantics:
 
-- the “latest snapshot” state channel model (`tokio::sync::watch` wrapped as `StatePublisher`/`StateSubscriber`)
-- version and timestamp semantics (`Versioned<T>`, `Version`, `UnixMillis`)
-- shared error and status types (`WorkerStatus`).
+- `StatePublisher<T>` and `StateSubscriber<T>`
+- `Versioned<T>`, `Version`, and `UnixMillis`
+- shared status and worker-error types
 
-This is where the system’s “what does latest mean?” semantics live.
+If you are debating what "latest" means in this codebase, the answer belongs here.
 
 ### `src/pginfo/`
 
-Owns:
+Owns local Postgres observation:
 
-- observing local Postgres via SQL and deriving a typed view (`PgInfoState`)
-- classifying reachability/health (`SqlStatus`, `Readiness`)
-- publishing a snapshot that other workers can use without doing their own SQL probing.
+- SQL reachability and readiness
+- role and timeline evidence
+- the typed `PgInfoState` that other workers consume
 
-If a decision depends on local Postgres reality, it should flow through pginfo.
+If another subsystem needs local Postgres truth, it should read the published pginfo state instead of probing the database ad hoc.
 
 ### `src/dcs/`
 
-Owns:
+Owns the distributed coordination read model and DCS trust:
 
-- the DCS cache (`DcsCache`) and “is DCS trustworthy right now?” (`DcsTrust`)
-- reading and decoding watch events (`refresh_from_etcd_watch`, key parsing in `dcs/keys.rs`)
-- publishing local membership records (member metadata derived from pginfo)
-- exposing a small writer interface used by HA and API for *intent/coordination* updates.
+- watch-event decoding
+- the `DcsCache`
+- member, leader, switchover, config, and init-lock records
+- `DcsTrust`
+- publishing this node's local member record
 
-The key distinction here is **read model vs write model**:
-
-- reads: watch stream + cache
-- writes: small explicit paths (leader lease, switchover intent, config/init records).
+One concrete runtime detail matters here: `run_workers(...)` creates separate `EtcdDcsStore` handles for the DCS worker, HA worker, and API worker. That keeps each boundary explicit instead of sharing one mutable store object across the whole runtime.
 
 ### `src/ha/`
 
-Owns:
+Owns lifecycle control:
 
-- the lifecycle state machine (`HaPhase`, `HaState`)
-- pure decision logic (`ha/decide.rs`)
-- mapping “what should happen” into side effects (`ha/worker.rs` dispatch: DCS writes/deletes and process job requests).
+- the HA phase machine (`HaPhase`, `HaState`)
+- pure decision logic (`decide.rs`, `decision.rs`)
+- lowering decisions into a bucketed plan (`lower.rs`)
+- applying DCS and process side effects (`apply.rs`, `process_dispatch.rs`)
 
-The HA module is deliberately split:
+The design contract is deliberate:
 
-- `decide(...)` is intended to be pure and testable
-- dispatch is a boundary that can fail and is surfaced via worker status.
+- decision logic should stay pure and testable
+- effect application is a failure-prone boundary and should stay explicit
 
 ### `src/process/`
 
-Owns:
+Owns local side effects against the host:
 
-- concrete action execution against the local host: running `pg_ctl`, `pg_rewind`, `pg_basebackup`, `initdb`, etc.
-- the state machine for in-flight work (`ProcessState`) and job kinds (`ProcessJobKind`)
-- timeouts and output capture for subprocesses.
+- `pg_ctl`, `pg_rewind`, `pg_basebackup`, `initdb`, and related subprocess work
+- the process job state machine
+- timeout and output handling
 
-This module is the “side effects for Postgres” boundary.
+If a change touches the local machine or Postgres data directory, it probably belongs here rather than in HA orchestration.
 
 ### `src/api/` and `src/debug_api/`
 
-Owns:
+Own the external and projected read surfaces:
 
-- operator-facing HTTP request routing (`api/worker.rs`)
-- controller logic and DCS intent writes (for example switchover requests in `api/controller.rs`)
-- debug snapshot building (`debug_api/worker.rs`, `debug_api/snapshot.rs`)
-- debug projection for “verbose” client payloads (`debug_api/view.rs`).
+- request parsing, auth, and routing in `src/api/worker.rs`
+- small stable read models in `src/api/controller.rs`
+- debug snapshot building in `src/debug_api/worker.rs` and `src/debug_api/snapshot.rs`
+- verbose debug projection in `src/debug_api/view.rs`
 
-The API reads from the **debug snapshot** (a composed view) rather than each worker’s raw channel, so that “what clients see” has a single owned projection path.
+The API reads from the composed debug snapshot instead of stitching together raw worker channels in every handler. That single projection path is part of the contract.
 
 ### `src/test_harness/` and `tests/`
 
-Owns:
+Own executable proof:
 
-- real-binary test orchestration (namespaces, port leasing, etcd/postgres process control)
-- fault injection primitives (TCP proxy)
-- black-box and BDD-style tests that assert external behavior, not internal details
-- focused HA integration entrypoints in `tests/ha_multi_node_*.rs` and `tests/ha_partition_*.rs`, with shared scenario support under `tests/ha/support/`.
+- namespace, port, etcd, Postgres, and proxy fixtures under `src/test_harness/`
+- black-box HTTP tests in `tests/`
+- focused HA real-binary scenarios in `tests/ha_*`
 
-The harness is part of correctness: HA logic is not “proven” until it survives real process timing and coordination.
+The harness is not optional scaffolding. For HA changes, it is part of the correctness story.
 
-## Startup vs steady-state: where behavior lives
+## How to find code for common tasks
 
-A common pitfall when changing this system is accidentally mixing:
-
-- **startup-only behavior** (bootstrap/clone/resume decisions), and
-- **steady-state HA behavior** (ongoing leader election, follow/promote/demote, fencing, rewind).
-
-In the current implementation:
-
-- startup planning happens in `runtime/node.rs` via:
-  - `inspect_data_dir` (Missing / Empty / Existing)
-  - `probe_dcs_cache` (connect etcd, drain watch events, build a snapshot cache)
-  - `select_startup_mode` (InitializePrimary / CloneReplica / ResumeExisting)
-- startup execution uses process jobs (`ProcessJobKind::Bootstrap`, `BaseBackup`, `StartPostgres`) before workers are started.
-- steady-state behavior happens after `run_workers` starts all worker loops.
-
-If you add behavior that must happen before any API is served (for example, ensuring directories exist, seeding DCS init records), it belongs in startup.
-
-If you add behavior that must react continuously to changes (DCS leader record changes, Postgres reachability changes), it belongs in a worker loop.
-
-## Adjacent subsystem connections
-
-This chapter describes “where things live”. The next step is learning “how they are wired” and “how decisions become side effects”:
-
-- Read [Worker Wiring and State Flow](./worker-wiring.md) to understand `StatePublisher`/`StateSubscriber` ownership and the steady-state feedback loop.
-- Read [HA Decision and Action Pipeline](./ha-pipeline.md) to understand how `ha::decide` and `ha::worker::dispatch_actions` compose.
-- Read [API and Debug Contracts](./api-debug-contracts.md) to understand the intent write path (`/switchover`) and the debug snapshot projection model.
-- Read [Testing System Deep Dive](./testing-system.md) to learn which tests protect which boundary, and how to extend coverage safely.
+- Startup behavior looks wrong: start in `src/runtime/node.rs`
+- State ownership or version semantics are unclear: start in `src/state/watch_state.rs`
+- HA chose an unexpected phase: start in `src/ha/worker.rs`, then `src/ha/decide.rs`
+- A switchover or API response looks wrong: start in `src/api/worker.rs` and `src/api/controller.rs`
+- A real-binary HA scenario is failing: start in `src/test_harness/ha_e2e/startup.rs` and the matching `tests/ha_*` entrypoint
 
 ## Failure behavior
 
-Most “things went wrong” paths in this codebase are surfaced through *typed state* and worker status, not implicit panics:
+Most failures in this codebase are surfaced through typed state and worker status rather than hidden behind panics:
 
-- startup planning returns an error early if prerequisites cannot be satisfied (missing config, unreadable paths, unreachable DCS during probe)
-- steady-state workers publish faulted status when a boundary fails (for example DCS connectivity loss, or process job failure)
-- HA decisions are conservative when inputs are missing or unhealthy: lack of trusted DCS state or lack of Postgres reachability tends to suppress promotion and prefer fail-safe waiting phases.
+- startup returns errors early when prerequisites are not satisfied
+- steady-state workers publish faulted status when a boundary fails
+- HA stays conservative when trust or Postgres reachability is weak
 
-When debugging a failure, start from the boundary that failed (API, DCS, pginfo, process) and trace what state it published.
+When debugging, start from the boundary that failed and follow the published state forward rather than jumping straight to the biggest module.
 
-## Tradeoffs / sharp edges
+## Tradeoffs and sharp edges
 
-This project chooses explicit ownership and a small number of side-effect boundaries over “everything can call everything” convenience.
+- Do not sneak business logic into `runtime/`; keep orchestration separate from decision logic.
+- Do not add new DCS write paths casually; coordination writes are one of the highest-risk surfaces in the repo.
+- Do not let HA or API perform direct probes that bypass shared state; that creates multiple truths.
+- When adding new shared state, decide who owns it and how it is versioned before wiring new consumers.
 
-Sharp edges to watch for when making changes:
+## Adjacent subsystem connections
 
-- don’t sneak business logic into `runtime/` orchestration; keep decisions in `ha/decide` and projections in controllers/views
-- don’t add new DCS write paths casually; coordination writes are the highest-risk surface
-- avoid “helpful” direct probing inside HA or API handlers; that creates split-brain between “what the system believes” and “what the handler did ad hoc”
-- when adding new state, decide who owns it and how it is versioned before wiring it to multiple consumers.
+- Read [Worker Wiring and State Flow](./worker-wiring.md) to understand publisher/subscriber ownership and the feedback loop.
+- Read [HA Decision and Effect-Plan Pipeline](./ha-pipeline.md) to understand how decisions become applied effects.
+- Read [API and Debug Contracts](./api-debug-contracts.md) to understand the external edges and projections.
+- Read [Testing System Deep Dive](./testing-system.md) to understand which tests protect each boundary.
 
 ## Evidence pointers
 
-If you want to quickly validate the mental model in code, these are the best starting points:
-
-- `src/runtime/node.rs`: startup planning + worker wiring
-- `src/state/`: watch-based “latest state” semantics
-- `src/ha/decide.rs` and `src/ha/worker.rs`: pure decisions + dispatch boundary
-- `src/dcs/worker.rs` and `src/dcs/etcd_store.rs`: watch cache + reconnect semantics
-- `src/process/worker.rs`: subprocess boundary, timeouts, and error surfacing
-- `tests/bdd_api_http.rs` and `tests/ha_multi_node_*.rs`: external-interface behavior and real-process e2e coverage
+- `src/runtime/node.rs`
+- `src/state/watch_state.rs`
+- `src/dcs/worker.rs`
+- `src/ha/worker.rs`
+- `src/api/worker.rs`
+- `src/test_harness/ha_e2e/startup.rs`

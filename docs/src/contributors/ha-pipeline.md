@@ -1,202 +1,183 @@
 # HA Decision and Effect-Plan Pipeline
 
-The HA pipeline is the architectural core: it is where the system decides **what role this node should be in**, and **which side effects must happen next** to converge to a safe lifecycle state.
+This chapter explains the current HA control loop in the code, not the idealized one you might expect from a generic leader-election system. The quickest way to build a correct mental model is to read one HA tick as four owned stages:
 
-This chapter is intentionally concrete. It describes:
+1. collect the latest world snapshot
+2. choose the next `HaDecision`
+3. lower that decision into a bucketed `HaEffectPlan`
+4. publish `HaState`, then try to apply the plan
 
-- what inputs HA reads (and from where)
-- what the decision function produces (phase + domain decision)
-- how the domain decision lowers into a typed effect plan
-- how effect buckets are dispatched (DCS writes/deletes vs process job requests)
-- how outcomes feed back into the next decision tick.
+If you keep those stages separate while editing HA code, the rest of the module layout starts to make sense.
 
-## Decision path
+## Where to start in code
 
-The canonical loop lives across a small HA pipeline:
+Open these files in this order:
 
-1. `src/ha/worker.rs` collects a **world snapshot** from input state channels (config/pg/dcs/process).
-2. `src/ha/decide.rs` runs pure decision logic: `ha::decide::decide(DecideInput { current, world })`.
-3. `src/ha/lower.rs` lowers the chosen `HaDecision` into a typed `HaEffectPlan`.
-4. `src/ha/apply.rs` dispatches the effect buckets in deterministic order.
-5. `src/ha/worker.rs` publishes the updated `HaState` (phase + tick + decision + worker status) and emits phase/role transition events.
+- `src/ha/worker.rs`: the runtime orchestration around one HA tick
+- `src/ha/decide.rs` and `src/ha/decision.rs`: pure decision inputs, facts, and domain decisions
+- `src/ha/lower.rs`: conversion from decision to effect plan
+- `src/ha/apply.rs`: deterministic bucket application and DCS coordination writes
+- `src/ha/process_dispatch.rs`: process job construction plus managed-config/filesystem prep
+- `src/ha/events.rs`: structured HA event payloads
 
-The decision function itself is in `src/ha/decide.rs`. It is intentionally structured to be testable as a pure function: given “current state” and “world view”, it returns a `PhaseOutcome { next_phase, decision }`. Effect-plan lowering lives separately in `src/ha/lower.rs`, `src/ha/apply.rs` owns effect application, `src/ha/process_dispatch.rs` owns local process request construction plus managed-config/filesystem preparation, and `src/ha/events.rs` owns the repetitive HA event payload construction.
+## One HA tick, exactly
 
-Contributor test guidance follows the same split:
+`src/ha/worker.rs::step_once(...)` is the canonical read of the current behavior.
 
-- `src/ha/decide.rs` should prove exact `DecisionFacts -> PhaseOutcome` mappings and lowered-plan invariants with immutable test builders.
-- `src/ha/worker.rs` should prove `step_once(...)` publishes the same decision-selected state and dispatches the matching side effects for a given snapshot.
-- `tests/ha_multi_node_*.rs` and `tests/ha_partition_*.rs` should keep scenario driving separate from continuous invariant observation; the observer window in `tests/ha/support/observer.rs` must cover the fault sequence, not only the final convergence point.
+The flow is:
 
-## Inputs: what HA reads
+1. `world_snapshot(ctx)` reads the latest config, pginfo, DCS, and process snapshots.
+2. `decide(DecideInput { current, world })` returns the next phase plus a `HaDecision`.
+3. `HaDecision::lower()` builds a `HaEffectPlan`.
+4. The worker emits decision and plan events.
+5. The worker publishes the next `HaState` with `WorkerStatus::Running`.
+6. The worker applies the plan unless redundant process dispatch suppression says it should skip.
+7. If any dispatches fail, the worker republishes the same state as `WorkerStatus::Faulted(...)`.
 
-HA does not probe the world directly. It reads the latest snapshots:
+That publish-before-apply shape is important. The system records what HA selected even when the side effects fail, so downstream readers can see the intended phase and the fact that execution faulted.
 
-- local Postgres health and role evidence from `PgInfoState` (`src/pginfo/state.rs`)
-- DCS cache + trust from `DcsState` (`src/dcs/state.rs`)
-- the outcome of the last process job from `ProcessState` (`src/process/state.rs`)
-- runtime config from `RuntimeConfig` (`src/config/schema.rs` and `src/config/parser.rs`).
+## Inputs: what HA is allowed to believe
 
-That separation matters: when HA is wrong, you can usually locate the failure to one of:
+HA does not probe the world directly. It builds `DecisionFacts` from a `WorldSnapshot` in `src/ha/decision.rs`, using only:
 
-- an incorrect observation (pginfo)
-- an incorrect cache/trust view (dcs)
-- a decision bug (ha/decide)
-- an apply/dispatch bug (`ha/apply.rs` or `ha/process_dispatch.rs`)
-- a process execution bug (process).
+- `PgInfoState` for local Postgres reachability and role evidence
+- `DcsState` for leader, members, switchover request, and trust
+- `ProcessState` for whether a relevant job is running, succeeded, or failed
+- `RuntimeConfig` for member identity and behavior settings
 
-## Outputs: `HaState`, `HaDecision`, and the lowered effect plan
+That separation is the core design contract. If HA looks wrong, the bug usually lives in one of five places:
 
-The HA worker publishes a `HaState` which includes:
+- observation is wrong (`pginfo`)
+- the DCS cache or trust view is wrong (`dcs`)
+- the decision logic is wrong (`decide.rs`)
+- the effect application is wrong (`apply.rs` or `process_dispatch.rs`)
+- the local process outcome is wrong (`process`)
 
-- `phase`: the lifecycle phase (state machine node)
-- `tick`: an incrementing counter
-- `decision`: the domain-level HA decision selected for this tick
+Do not patch HA by sneaking in new direct probes from the worker loop. That breaks the shared truth model.
 
-Before dispatch, `HaDecision::lower()` converts that decision into a fixed-shape `HaEffectPlan` with explicit buckets for:
+## Decisions and phases
 
-- lease effects
-- switchover cleanup
-- replication/recovery work
-- Postgres lifecycle
-- safety/fencing.
+The phase enum lives in `src/ha/state.rs`; the domain decisions live in `src/ha/decision.rs`; the actual transition rules live in `src/ha/decide.rs`.
 
-The worker dispatches those buckets in deterministic order rather than authoring an append-only action vector. There is intentionally **no cross-tick suppression**. If the world snapshot does not change (for example Postgres remains unreachable), the same effect plan can be re-issued on every tick until it succeeds.
+The steady-state mental map is:
 
-If you change decision or lowering semantics, update both layers and tests together. The invariants are covered by:
+- `Init`, `WaitingPostgresReachable`, and `WaitingDcsTrusted` are convergence phases before the node is allowed to make stronger HA moves.
+- `Replica`, `CandidateLeader`, and `Primary` are the normal role-control phases.
+- `Rewinding` and `Bootstrapping` are recovery phases driven by process outcomes and leader availability.
+- `Fencing` and `FailSafe` are protective phases when leadership evidence or trust is unsafe.
 
-- decision-level tests in `src/ha/decide.rs`
-- lowering tests in `src/ha/lower.rs`
-- apply-layer tests in `src/ha/apply.rs`, `src/ha/process_dispatch.rs`, and `src/ha/worker.rs`
-- continuous-observer HA scenario tests in `tests/ha_multi_node_*.rs`, `tests/ha_partition_*.rs`, and `tests/ha/support/observer.rs`
+The most important type for understanding transition inputs is `DecisionFacts`. It already encodes the facts the decision logic is allowed to use, including `active_leader_member_id`, `available_primary_member_id`, `switchover_requested_by`, and `rewind_required`.
 
-## The core phases (what they mean)
+## From decision to plan
 
-The phase enum is defined in `src/ha/state.rs` and transitions are decided in `src/ha/decide.rs`.
+`src/ha/lower.rs` intentionally turns `HaDecision` into a fixed-shape plan:
 
-In the current implementation, the phases cover:
+- lease
+- switchover
+- replication
+- postgres
+- safety
 
-- `Init` → `WaitingPostgresReachable` → `WaitingDcsTrusted`: early convergence before the node can make HA decisions.
-- `Replica`, `CandidateLeader`, `Primary`: the steady-state leader election and follow/promotion loop.
-- `Rewinding`, `Bootstrapping`: recovery paths when Postgres is unhealthy or history diverged.
-- `Fencing`: deliberate shutdown/fencing when split-brain is detected.
-- `FailSafe`: “no quorum” mode (do not attempt to act as primary without full trust).
+That plan shape matters because it prevents the worker from building an ad hoc action vector on each branch. Contributors changing HA semantics should update the decision and the lowering layer together so the meaning stays explicit and testable.
 
-The exact transition conditions are encoded directly in `decide(...)`; contributor docs should reference the code rather than inventing extra semantics.
+## The real dispatch order
 
-## How a decision becomes side effects
+The code does not apply effect buckets in the same order they appear in the plan struct. `src/ha/apply.rs::apply_effect_plan(...)` currently dispatches them in this exact order:
 
-There are two side-effect boundaries:
+1. Postgres
+2. Lease
+3. Switchover
+4. Replication
+5. Safety
 
-1. **DCS writes/deletes**: done directly by HA via a DCS store handle.
-2. **Local process jobs**: enqueued to the process worker via an inbox channel.
+That ordering is deliberate. It means a step-down can demote Postgres before releasing leadership, and switchover cleanup happens only after the lease work for the same tick.
 
-This split is enforced by `src/ha/apply.rs`:
+If you change the order, you are changing HA semantics, not just refactoring.
 
-- `apply_effect_plan(...)` owns bucket sequencing and DCS coordination calls.
-- `process_dispatch.rs` owns local process job construction and filesystem preparation.
-- `events.rs` owns decision/plan/action/lease event payload helpers.
+## What each boundary owns
 
-### Effect-plan dispatch matrix
+The side-effect split is strict:
 
-The table below is a practical “what will happen if HA chooses effect X?” guide. It matches the current dispatch implementation.
+- `src/ha/apply.rs` owns DCS coordination writes and the deterministic bucket walk.
+- `src/ha/process_dispatch.rs` owns local process requests, managed Postgres config materialization, data-dir wiping, and leader-source resolution.
+- `src/ha/events.rs` owns HA-specific structured event payloads so the orchestration code stays readable.
 
-| Effect bucket | Effect variant | Side effect category | Dispatch path |
-|---|---|---|
-| lease | `AcquireLeader` | DCS write | write leader lease to `/{scope}/leader` |
-| lease | `ReleaseLeader` | DCS delete | delete `/{scope}/leader` |
-| switchover | `ClearRequest` | DCS delete | delete `/{scope}/switchover` |
-| postgres | `Start` | process job | enqueue `ProcessJobKind::StartPostgres` after materializing `PGDATA/pgtm.postgresql.conf` and the managed side files |
-| postgres | `Promote` | process job | enqueue `ProcessJobKind::Promote` |
-| postgres | `Demote` | process job | enqueue `ProcessJobKind::Demote` |
-| replication | `RecoverReplica::Rewind { .. }` | process job | enqueue `ProcessJobKind::PgRewind` |
-| replication | `RecoverReplica::BaseBackup { .. }` | filesystem + process job | wipe data dir, then enqueue `ProcessJobKind::BaseBackup` |
-| replication | `RecoverReplica::Bootstrap` | filesystem + process job | wipe data dir, then enqueue `ProcessJobKind::Bootstrap` |
-| replication | `FollowLeader { .. }` | coordination-only (current task) | no process job; state remains explicit in the plan/logs |
-| safety | `FenceNode` | process job | enqueue `ProcessJobKind::Fencing` |
-| safety | `SignalFailSafe` | coordination-only (current task) | no process job; emits fail-safe intent in logs/state |
+Some effects are intentionally no-ops at the process boundary:
 
-Notes:
+- `FollowLeader` is represented in the decision and plan, but does not enqueue a local process job.
+- `SignalFailSafe` is also represented explicitly even though the current process-dispatch layer skips it.
 
-- The leader and switchover keys are scoped to `cfg.dcs.scope` and rendered as `/{scope}/leader` and `/{scope}/switchover`.
-- `StartPostgres` dispatch calls `postgres_managed::materialize_managed_postgres_config(...)` before enqueuing the job, so the authoritative managed config file `PGDATA/pgtm.postgresql.conf`, the managed signal-file set (`standby.signal`, `recovery.signal`, or neither), and the managed side files are regenerated consistently in both startup and HA-driven starts.
-- The same managed-postgres surface also owns quarantining `PGDATA/postgresql.auto.conf` to `PGDATA/pgtm.unmanaged.postgresql.auto.conf` on managed starts. HA and startup planning do not treat `postgresql.auto.conf` as authoritative configuration.
-- When HA needs to preserve previously managed replica follow state without a fresh DCS leader hint, it reuses the shared managed-state reader from `postgres_managed` instead of parsing ad hoc local PostgreSQL files in multiple places.
-- The current dispatch order is fixed by concern inside `apply_effect_plan(...)`: Postgres lifecycle, then lease effects, then switchover cleanup, then replication/recovery, then safety. That order is what enforces “demote before release” and “release before clear/signal” without preserving a generic action vector boundary.
+That explicitness is useful because the chosen plan still appears in logs and debug surfaces.
 
-## Phase transitions: the “story” paths contributors care about
+## Redundant dispatch suppression
 
-This section describes the main “stories” that show up in debugging and tests.
+The current implementation does have a narrow form of cross-tick suppression. `src/ha/worker.rs::should_skip_redundant_process_dispatch(...)` suppresses duplicate process dispatch only when the phase and decision are unchanged and the decision is one of:
 
-### Bootstrap path (first node initializes)
+- `WaitForPostgres { start_requested: true, .. }`
+- `RecoverReplica { .. }`
+- `FenceNode`
 
-Bootstrap is split across startup and HA:
+Everything else may be re-applied on later ticks if the same decision is still selected. That is why contributor docs should not claim broad "no cross-tick suppression" behavior.
 
-- Startup (`runtime/node.rs`) decides whether this node should initialize based on:
-  - data dir state (`inspect_data_dir`)
-  - DCS probe snapshot (`probe_dcs_cache`)
-  - init lock presence (`/{scope}/init`).
-- If it is the first node, startup claims the init lock and can seed config (if configured), then runs a bootstrap process job before starting Postgres.
+## Contributor story paths
 
-After workers start, HA converges from `Init` through “waiting” phases into `CandidateLeader` / `Primary` depending on leader lease outcomes.
+These are the fastest ways to reason about common HA changes.
 
-### Election and promotion path
+### Election and promotion
 
-In the steady-state path, HA:
+Read `decide_candidate_leader(...)` and `decide_primary(...)` in `src/ha/decide.rs`.
 
-- waits for DCS trust (`DcsTrust::FullQuorum`) and Postgres reachability
-- if there is no available leader, enters `CandidateLeader` and lowers to `LeaseEffect::AcquireLeader`
-- if it observes itself as leader, enters `Primary` and lowers to `PostgresEffect::Promote`.
+The important contract is that leadership selection uses DCS trust plus leader/member evidence from the cache. Promotion is not a free-standing process action; it is a decision that becomes a `PostgresEffect::Promote` only after the worker already chose the new phase.
 
-The “is a leader available?” check is intentionally conservative: it considers both the leader key and member metadata health.
+### Switchover
 
-### Switchover request path (API → DCS → HA)
+The end-to-end path is:
 
-The operator-facing switchover request is an intent written by the API into `/{scope}/switchover`.
+1. API writes `/{scope}/switchover`
+2. DCS worker decodes and caches the request
+3. HA sees `switchover_requested_by`
+4. HA lowers the step-down decision into demote, lease release, and switchover clear
 
-The DCS worker observes that key and publishes it as part of `DcsCache`.
+If you are changing switchover behavior, review `src/api/controller.rs`, `src/dcs/state.rs`, `src/ha/decide.rs`, `src/ha/lower.rs`, and `src/ha/apply.rs` together.
 
-HA reads the cache and, if it is currently primary and sees the request, it transitions to replica and emits:
+### Recovery
 
-- `PostgresEffect::Demote`
-- `LeaseEffect::ReleaseLeader`
-- `SwitchoverEffect::ClearRequest`.
+Read `recovery_after_rewind_failure(...)`, `follow_target(...)`, and the `RecoverReplica` lowering path. Recovery decisions depend on leader availability plus process outcomes; they are not only "leader exists or not". `process_dispatch.rs` is where those decisions become `pg_rewind`, `basebackup`, or bootstrap requests.
 
-This is a good example of the “write intent, then react via read model” pattern that keeps control flow explicit. Publication-time phase and role transition logs still stay in `worker.rs` because they describe the published state boundary, not the apply boundary.
+### Fencing and fail-safe
 
-### Fencing / split-brain path
+Read `decide_fencing(...)` and `decide_fail_safe(...)`. These phases are the protective edge of the state machine. Be especially careful with any change that weakens when lease release or fencing is requested.
 
-Split-brain signal in the current implementation is: this node believes it is primary, but the DCS leader record points to another member.
+## Failure behavior
 
-In that case, HA transitions into `Fencing` and emits:
+There are two important failure modes:
 
-- `PostgresEffect::Demote` (stop being primary)
-- `LeaseEffect::ReleaseLeader` (stop advertising leadership)
-- `SafetyEffect::FenceNode` (enforce a fail-safe local shutdown/fence action).
+- if HA cannot publish the chosen state, `step_once(...)` returns an error and the runtime can fail closed
+- if effect application fails after publishing, the worker republishes the same state as `Faulted(...)`
 
-### Rewind and recovery path
+That means a faulted HA snapshot still tells you which phase and decision were selected. It is not equivalent to "no decision".
 
-When the node is primary but Postgres becomes unreachable, HA moves to `Rewinding` and lowers to `ReplicationEffect::RecoverReplica { strategy: Rewind { .. } }`.
+## How to change HA safely
 
-Subsequent phase transitions depend on the process worker’s last outcome:
-
-- rewind success → go to `Replica` and (optionally) `FollowLeader`
-- rewind failure → attempt `Bootstrapping` as a recovery mechanism
-- repeated failures can lead to `Fencing` or `FailSafe` depending on trust.
-
-## Failure behavior and observability
-
-Two failure classes matter:
-
-- **Decision failure**: `decide(...)` returns an error → the HA worker returns a `WorkerError` and the whole node runtime can fail (because runtime uses `try_join`).
-- **Dispatch failure**: `decide(...)` succeeded but side effects could not be dispatched → HA still publishes a next state but marks `worker = Faulted(...)`.
-
-This is intentional: dispatch failures are “soft errors” that should be observable and recoverable without panicking the whole process.
+- Keep new cluster facts in `DecisionFacts` or upstream state, not hidden inside worker orchestration.
+- Update decision tests and lowering tests together when you add or change a decision variant.
+- Treat dispatch order changes as behavior changes that need explicit tests.
+- Preserve the separation between DCS coordination writes and local process jobs.
+- Verify the change in a real-binary HA scenario if it affects timing, fencing, promotion, or recovery.
 
 ## Adjacent subsystem connections
 
-The HA loop is only meaningful in context:
+- Read [Worker Wiring and State Flow](./worker-wiring.md) for the upstream channels HA consumes and the downstream feedback loop from process outcomes.
+- Read [API and Debug Contracts](./api-debug-contracts.md) for how operator intent enters the system and how HA state reaches clients.
+- Read [Testing System Deep Dive](./testing-system.md) for which tests should prove a decision-layer change versus an apply-layer change.
 
-- Read [Worker Wiring and State Flow](./worker-wiring.md) for the upstream snapshot channels HA consumes and the downstream feedback loop from process outcomes.
-- Read [API and Debug Contracts](./api-debug-contracts.md) for how external intent (switchover) is written and how client-visible state is derived from the debug snapshot.
-- Read [Harness Internals](./harness-internals.md) for how real-binary e2e tests construct multi-node scenarios that exercise these transitions.
+## Evidence pointers
+
+- `src/ha/worker.rs`
+- `src/ha/decide.rs`
+- `src/ha/decision.rs`
+- `src/ha/lower.rs`
+- `src/ha/apply.rs`
+- `src/ha/process_dispatch.rs`
+- `tests/ha_multi_node_failover.rs`
+- `tests/ha_partition_recovery.rs`

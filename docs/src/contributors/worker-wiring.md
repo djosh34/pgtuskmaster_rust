@@ -1,208 +1,147 @@
 # Worker Wiring and State Flow
 
-The runtime is a set of long-lived workers wired together with **typed “latest snapshot” channels**.
+The runtime is a set of long-lived workers wired together with typed latest-snapshot channels.
 
-The central idea is:
+The central idea is simple:
 
-> Observation feeds decision, decision feeds action, and action outcomes feed the next decision.
+> observation feeds decision, decision feeds action, and action outcomes feed the next decision
 
-This chapter explains the actual wiring: which worker owns which state, how updates propagate, and what “latest” means in this codebase.
+This chapter explains the actual wiring: which worker owns which state, how updates propagate, and what "latest" means in the code rather than in architecture diagrams.
 
-## The state channel model (what “latest” means)
+## The state-channel contract
 
 Workers communicate by publishing a `Versioned<T>` snapshot into a `tokio::sync::watch` channel.
 
-In `src/state/watch_state.rs`, the helper `new_state_channel(initial, now)` creates:
+In `src/state/watch_state.rs`, `new_state_channel(initial, now)` creates:
 
-- a `StatePublisher<T>` (owned by exactly one worker), and
-- a `StateSubscriber<T>` (cloned and passed to any worker that needs the latest snapshot).
+- one `StatePublisher<T>` owned by exactly one writer
+- one `StateSubscriber<T>` that can be cloned freely for readers
 
 Publishing:
 
-- increments a strictly monotonic `Version` (+1 per publish)
-- records an `updated_at` timestamp (`UnixMillis`)
-- replaces the channel value atomically.
+- increments the monotonic `Version`
+- stamps `updated_at`
+- replaces the channel value atomically
 
 Consuming:
 
-- `subscriber.latest()` returns the current snapshot immediately
-- `subscriber.changed().await` waits for the channel to change and then returns the latest snapshot.
+- `latest()` returns the current snapshot immediately
+- `changed().await` waits for a new version, then lets the consumer read the latest value
 
-This is a **latest-value** model, not an event stream. If a worker publishes 10 times quickly and you are slow, you may observe only the final value — which is intentional for “current world state” modeling.
+This is a latest-value model, not an event log. Missing intermediate versions is acceptable because the contract is "what does the system believe right now?" rather than "show me every micro-transition".
 
-## Where channels are created and wired
+## Where wiring happens
 
-The wiring is centralized in `src/runtime/node.rs` in `run_workers(...)`.
+All steady-state wiring is centralized in `src/runtime/node.rs::run_workers(...)`.
 
-Conceptually:
+That function:
+
+- creates the shared channels for config, pginfo, dcs, process, ha, and debug snapshot state
+- builds worker contexts from publishers, subscribers, and side-effect handles
+- creates three separate `EtcdDcsStore` handles for DCS watch/publication, HA writes, and API intent writes
+- starts the worker loops with `tokio::try_join!`
+
+The runtime graph is:
 
 ```text
-               (State channels: watch latest snapshots)
-
-  +--------+       +------+       +-----+       +---------+
-  | pginfo | ----> | dcs  | ----> | ha  | ----> | process |
-  +--------+       +------+       +-----+       +---------+
-       \               \             \              /
-        \               \             \            /
-         \               \             v          v
-          \               +---------> debug snapshot
-           \                             |
-            \                            v
-             +-------------------------- api
+pginfo ----\
+            \
+             -> dcs ----\
+                          \
+process ------------------> ha ----> process
+                             \
+config -----------------------\------> debug snapshot ---> api
 ```
 
-More concretely, `run_workers`:
+That graph is small on purpose. If a new edge feels convenient but hard to explain, it is probably a design smell.
 
-- creates channels for:
-  - runtime config (currently published once at startup)
-  - pginfo state (`PgInfoState`)
-  - dcs state (`DcsState`)
-  - process state (`ProcessState`)
-  - ha state (`HaState`)
-  - debug snapshot (`SystemSnapshot`)
-- constructs worker contexts that each include:
-  - one `StatePublisher<T>` for the state that worker owns, and
-  - zero or more `StateSubscriber<U>` inputs.
-- starts all worker loops concurrently using `tokio::try_join!`.
+## Ownership rule
 
-## Worker responsibilities and state ownership
+The most important contributor rule is:
 
-The key “ownership” rule is:
+> if you need to change how some shared state is computed, change the worker that publishes it
 
-> If you need to change how some state is computed, change the worker that publishes that state — do not compute it ad-hoc inside consumers.
+Do not rebuild shared state ad hoc inside consumers. That creates multiple truths and makes HA, API, and tests disagree about the same world.
 
-## Structured logs (operator-grade reconstruction)
+## Worker-by-worker ownership
 
-In addition to state channels, workers emit structured runtime events via `LogHandle`.
+### `pginfo`
 
-Contributor expectations:
+Owns `StatePublisher<PgInfoState>`.
 
-- Prefer `log.emit_event(...)` with explicit `event.name` / `event.domain` / `event.result`.
-- Include correlation attributes (`scope`, `member_id`, plus subsystem ids like `ha_tick`, `job_id`, `api.peer_addr`) so operators can connect intent → dispatch → outcome across workers.
-- Do not silently drop errors in hot loops:
-  - if the error is ignorable and the loop continues, emit a warn event and continue,
-  - if the error breaks invariants, emit an error event and return `Err` so the runtime can fail closed.
+It observes local Postgres, classifies reachability and readiness, and publishes a typed snapshot for everyone else. If HA or API needs local Postgres truth, it should flow through pginfo first.
 
-### `pginfo` worker (Postgres observation)
+### `dcs`
 
-Owns: `StatePublisher<PgInfoState>`
+Owns `StatePublisher<DcsState>`.
 
-Inputs: none (other than config inside its context, like DSN and interval)
+It reads watch events, maintains `DcsCache`, evaluates `DcsTrust`, and writes the local member record derived from pginfo. If the store becomes unhealthy or refresh logic fails, the published trust becomes `NotTrusted`.
 
-Publishes:
+### `process`
 
-- SQL reachability and derived status (`SqlStatus`, `Readiness`)
-- basic configuration facts and WAL/replication summaries, as available.
+Owns `StatePublisher<ProcessState>`.
 
-Failure behavior:
+It receives job requests over an unbounded inbox and reports whether a relevant action is running, succeeded, failed, or timed out. The process worker is intentionally boring; it should execute jobs, not decide policy.
 
-- if it cannot query Postgres, the published `PgInfoState` should reflect unreachable/unknown, and downstream workers should degrade gracefully.
+### `ha`
 
-### `dcs` worker (watch cache + trust)
+Owns `StatePublisher<HaState>`.
 
-Owns: `StatePublisher<DcsState>`
+It reads config, pginfo, dcs, and process snapshots; selects the next phase and decision; publishes the next state; and then applies the lowered effect plan. If dispatch fails, it republishes the same phase as `Faulted(...)` so readers can see both the selected decision and the failure.
 
-Inputs:
+### `debug_api`
 
-- `StateSubscriber<PgInfoState>` (to publish this node’s member record derived from local Postgres state)
-- a concrete store implementation (`EtcdDcsStore` behind `dyn DcsStore`).
+Owns `StatePublisher<SystemSnapshot>`.
 
-Publishes:
+It composes the read model that the API and debug clients consume. It also keeps the bounded change and timeline history that powers `/debug/verbose`.
 
-- `DcsCache` (decoded view of etcd keys under the cluster scope)
-- `DcsTrust` (whether it is safe to make coordination decisions right now).
+### `api`
 
-Failure behavior:
+Owns no shared state channel.
 
-- when the store is unhealthy or decoding fails, the worker marks itself faulted and publishes `DcsTrust::NotTrusted` in its output state.
+It is the external edge: one connection at a time, auth, routing, intent writes, and read responses from the composed snapshot.
 
-### `ha` worker (decision loop + dispatch boundary)
+## Wakeup strategy
 
-Owns: `StatePublisher<HaState>`
+Workers do not all wake up the same way:
 
-Inputs:
+- HA uses `tokio::select!` on upstream channel changes plus an interval tick.
+- DCS and debug snapshot use poll-and-sleep loops.
+- API also uses a poll-style loop, but its unit of work is a timed `accept()` plus one request/response cycle before the next sleep.
 
-- `StateSubscriber<RuntimeConfig>`
-- `StateSubscriber<PgInfoState>`
-- `StateSubscriber<DcsState>`
-- `StateSubscriber<ProcessState>`
-- a DCS writer handle (another etcd store instance)
-- an unbounded inbox sender to the process worker.
+That difference matters when you are debugging apparent latency. HA reacts quickly to upstream state changes. DCS, debug, and API responsiveness are bounded partly by poll intervals.
 
-Reads the latest snapshots, runs decision logic, lowers the selected `HaDecision`, and then applies side effects through the HA apply helpers:
+## Structured logs are part of the wiring story
 
-- `src/ha/apply.rs` owns bucket ordering plus DCS coordination writes/deletes (leader lease, switchover clear)
-- `src/ha/process_dispatch.rs` owns process job requests and local filesystem preparation (start postgres, promote/demote, rewind, fencing, bootstrap)
-- `src/ha/events.rs` owns the repetitive HA decision/plan/action/lease event payload construction
-- `src/ha/worker.rs` keeps orchestration plus published-state phase/role transition logging.
+In addition to state channels, workers emit structured events through `LogHandle::emit_app_event(...)`.
 
-Failure behavior:
+Contributors should preserve:
 
-- if dispatch fails (DCS write/delete fails, job send fails, clock fails, managed config cannot be materialized), the HA worker publishes its `WorkerStatus` as `Faulted(...)`.
-- the state machine continues to tick; callers should treat faulted HA state as an error signal, not as “no decision selected”.
+- explicit `event.name`, `event.domain`, and `event.result`
+- correlation fields such as `scope`, `member_id`, `ha_tick`, `job_id`, and `api.peer_addr`
+- fail-closed behavior when an error breaks invariants
 
-### `process` worker (side effects against the local host)
+Those events are how operators and tests reconstruct a path like intent -> decision -> dispatch -> outcome without attaching a debugger.
 
-Owns: `StatePublisher<ProcessState>`
+## How to change this area safely
 
-Inputs:
-
-- an unbounded inbox receiver (`mpsc::unbounded_channel`) of job requests
-- process config and default “dispatch” settings (paths, shutdown mode, timeout tuning).
-
-The process worker is intentionally boring: it runs job kinds and reports outcomes. It should not contain HA decision logic.
-
-Failure behavior:
-
-- job failures are surfaced in `ProcessState` as outcomes, which HA consumes to choose follow-up phases (for example after a rewind attempt).
-
-### `debug_api` worker (snapshot composition)
-
-Owns: `StatePublisher<SystemSnapshot>`
-
-Inputs:
-
-- config, pginfo, dcs, process, ha subscribers.
-
-This worker creates an owned “what the world looks like” projection and attaches:
-
-- a monotonic `sequence`
-- a limited change/timeline history used by debug clients.
-
-The important architectural consequence: **clients don’t need to understand every internal channel**; they can rely on a composed snapshot.
-
-### `api` worker (request routing + intent writes)
-
-Owns: no state channel; it is a server loop.
-
-Inputs:
-
-- a TCP listener bound at startup
-- a DCS store handle used for intent writes (for example `/switchover`)
-- a `StateSubscriber<SystemSnapshot>` provided by the debug snapshot worker (used for `/ha/state` and debug views).
-
-Failure behavior:
-
-- `api::worker::run` intentionally keeps serving future requests even if one request/connection cycle fails.
-
-## Update cadence and “event-driven” wakeups
-
-Workers use different wakeup strategies:
-
-- HA uses a `tokio::select!` that wakes on:
-  - any upstream state change (`changed().await`)
-  - a periodic interval tick
-- DCS/debug/API run “poll + sleep” loops (short poll interval, perform one unit of work per step).
-
-As a contributor:
-
-- prefer reacting to upstream channel changes when the work is logically event-driven
-- use periodic ticks when you need time-based retries/backoff or when upstream signals are not sufficient.
+- Keep one publisher per shared state type.
+- Prefer new subscribers over new direct probes.
+- Add new cross-worker edges only when you can state the ownership contract plainly.
+- Preserve the three-store split for DCS, HA, and API unless you are deliberately changing a concurrency boundary.
+- Update the debug snapshot worker when a new shared state must become client-visible.
 
 ## Adjacent subsystem connections
 
-This chapter is about wiring and state ownership. To understand the “meaning” of each state transition:
+- Read [HA Decision and Effect-Plan Pipeline](./ha-pipeline.md) to see how HA interprets pginfo, DCS, and process snapshots.
+- Read [API and Debug Contracts](./api-debug-contracts.md) to see how the composed debug snapshot becomes client-facing reads.
+- Read [Harness Internals](./harness-internals.md) to see how real-binary tests exercise the same wiring across multiple nodes.
 
-- Read [HA Decision and Action Pipeline](./ha-pipeline.md) to see how `ha::decide` interprets DCS trust, leader records, Postgres reachability, and process outcomes.
-- Read [API and Debug Contracts](./api-debug-contracts.md) to see how operator intent enters the system (DCS writes) and how client-visible state is projected.
-- Read [Harness Internals](./harness-internals.md) to see how real-binary tests construct the same wiring in multi-node scenarios and how they force failure conditions.
+## Evidence pointers
+
+- `src/runtime/node.rs`
+- `src/state/watch_state.rs`
+- `src/dcs/worker.rs`
+- `src/ha/worker.rs`
+- `src/debug_api/worker.rs`
+- `src/api/worker.rs`
