@@ -128,12 +128,13 @@ pub(crate) fn read_existing_replica_start_intent(
     };
 
     let managed_conf_path = data_dir.join(MANAGED_POSTGRESQL_CONF_NAME);
-    let rendered = fs::read_to_string(&managed_conf_path).map_err(|err| ManagedPostgresError::Io {
-        message: format!(
-            "failed to read existing managed postgres conf {}: {err}",
-            managed_conf_path.display()
-        ),
-    })?;
+    let rendered =
+        fs::read_to_string(&managed_conf_path).map_err(|err| ManagedPostgresError::Io {
+            message: format!(
+                "failed to read existing managed postgres conf {}: {err}",
+                managed_conf_path.display()
+            ),
+        })?;
 
     let primary_conninfo_raw = parse_managed_string_setting(rendered.as_str(), "primary_conninfo")?
         .ok_or_else(|| ManagedPostgresError::InvalidManagedState {
@@ -142,15 +143,14 @@ pub(crate) fn read_existing_replica_start_intent(
                 managed_conf_path.display()
             ),
         })?;
-    let primary_conninfo =
-        parse_pg_conninfo(primary_conninfo_raw.as_str()).map_err(|err| {
-            ManagedPostgresError::InvalidManagedState {
-                message: format!(
-                    "existing managed primary_conninfo at {} is invalid: {err}",
-                    managed_conf_path.display()
-                ),
-            }
-        })?;
+    let primary_conninfo = parse_pg_conninfo(primary_conninfo_raw.as_str()).map_err(|err| {
+        ManagedPostgresError::InvalidManagedState {
+            message: format!(
+                "existing managed primary_conninfo at {} is invalid: {err}",
+                managed_conf_path.display()
+            ),
+        }
+    })?;
     let primary_slot_name = parse_managed_string_setting(rendered.as_str(), "primary_slot_name")?;
 
     match recovery_signal {
@@ -254,7 +254,9 @@ fn map_managed_conf_error(err: ManagedPostgresConfError) -> ManagedPostgresError
     }
 }
 
-fn existing_recovery_signal(data_dir: &Path) -> Result<Option<ManagedRecoverySignal>, ManagedPostgresError> {
+fn existing_recovery_signal(
+    data_dir: &Path,
+) -> Result<Option<ManagedRecoverySignal>, ManagedPostgresError> {
     let standby_signal_path = data_dir.join(MANAGED_STANDBY_SIGNAL_NAME);
     let recovery_signal_path = data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME);
     let standby_present = file_exists(standby_signal_path.as_path())?;
@@ -433,8 +435,7 @@ fn unescape_managed_string(value: &str) -> Result<String, ManagedPostgresError> 
             '\\' => {
                 let Some(next) = chars.next() else {
                     return Err(ManagedPostgresError::InvalidManagedState {
-                        message: "managed config string ends with a trailing backslash"
-                            .to_string(),
+                        message: "managed config string ends with a trailing backslash".to_string(),
                     });
                 };
                 out.push(next);
@@ -532,7 +533,7 @@ fn now_millis() -> Result<u128, ManagedPostgresError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, io, path::PathBuf, time::Duration};
+    use std::{fs, io, path::PathBuf, time::Duration};
 
     use tokio::process::Command;
     use tokio::time::Instant;
@@ -540,20 +541,15 @@ mod tests {
 
     use crate::{
         config::{
-            ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
-            DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig, InlineOrPath,
-            LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
-            PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
-            PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
-            StderrSinkConfig, TlsServerConfig,
+            ApiTlsMode, HaConfig, InlineOrPath, ProcessConfig, RuntimeConfig, TlsServerConfig,
         },
         pginfo::{conninfo::PgSslMode, state::PgConnInfo},
         postgres_managed_conf::{
-            ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME,
-            MANAGED_RECOVERY_SIGNAL_NAME,
+            ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
         test_harness::{
-            binaries::require_pg16_bin_for_real_tests, namespace::NamespaceGuard,
+            binaries::require_pg16_bin_for_real_tests,
+            namespace::NamespaceGuard,
             pg16::{prepare_pgdata_dir, spawn_pg16, PgHandle, PgInstanceSpec},
             ports::allocate_ports,
         },
@@ -697,8 +693,12 @@ mod tests {
         let standby_signal = data_dir.join("standby.signal");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
-        fs::write(&standby_signal, b"")
-            .map_err(|err| format!("seed standby.signal {} failed: {err}", standby_signal.display()))?;
+        fs::write(&standby_signal, b"").map_err(|err| {
+            format!(
+                "seed standby.signal {} failed: {err}",
+                standby_signal.display()
+            )
+        })?;
 
         let managed = materialize_managed_postgres_config(
             &cfg,
@@ -737,17 +737,26 @@ mod tests {
     }
 
     #[test]
-    fn materialize_managed_postgres_config_quarantines_postgresql_auto_conf() -> Result<(), String> {
+    fn materialize_managed_postgres_config_quarantines_postgresql_auto_conf() -> Result<(), String>
+    {
         let data_dir = unique_test_data_dir("postgresql-auto-conf");
         let cfg = sample_runtime_config(data_dir.clone());
         let active_auto_conf = data_dir.join(POSTGRESQL_AUTO_CONF_NAME);
         let quarantined_auto_conf = data_dir.join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME);
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
-        fs::write(&active_auto_conf, "primary_conninfo = 'stale'\n")
-            .map_err(|err| format!("write active auto conf {} failed: {err}", active_auto_conf.display()))?;
-        fs::write(&quarantined_auto_conf, "stale previous quarantine\n")
-            .map_err(|err| format!("write quarantined auto conf {} failed: {err}", quarantined_auto_conf.display()))?;
+        fs::write(&active_auto_conf, "primary_conninfo = 'stale'\n").map_err(|err| {
+            format!(
+                "write active auto conf {} failed: {err}",
+                active_auto_conf.display()
+            )
+        })?;
+        fs::write(&quarantined_auto_conf, "stale previous quarantine\n").map_err(|err| {
+            format!(
+                "write quarantined auto conf {} failed: {err}",
+                quarantined_auto_conf.display()
+            )
+        })?;
 
         let managed =
             materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
@@ -987,7 +996,10 @@ mod tests {
                 .arg("-D")
                 .arg(&replica_data)
                 .arg("-c")
-                .arg(format!("config_file={}", managed.postgresql_conf_path.display()))
+                .arg(format!(
+                    "config_file={}",
+                    managed.postgresql_conf_path.display()
+                ))
                 .stdout(stdout_file)
                 .stderr(stderr_file)
                 .spawn()?;
@@ -1038,9 +1050,7 @@ mod tests {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(err), Ok(())) => Err(err),
                 (Ok(()), Err(err)) => Err(err),
-                (Err(err), Err(clean_err)) => Err(real_test_error(format!(
-                    "{err}; {clean_err}"
-                ))),
+                (Err(err), Err(clean_err)) => Err(real_test_error(format!("{err}; {clean_err}"))),
             }
         }
         .await;
@@ -1050,9 +1060,7 @@ mod tests {
             (Ok(()), Ok(())) => Ok(()),
             (Err(err), Ok(())) => Err(err),
             (Ok(()), Err(err)) => Err(err),
-            (Err(err), Err(clean_err)) => Err(real_test_error(format!(
-                "{err}; {clean_err}"
-            ))),
+            (Err(err), Err(clean_err)) => Err(real_test_error(format!("{err}; {clean_err}"))),
         }
     }
 
@@ -1060,8 +1068,10 @@ mod tests {
     fn read_existing_replica_start_intent_reads_managed_replica_state() -> Result<(), String> {
         let data_dir = unique_test_data_dir("read-existing-replica");
         let cfg = sample_runtime_config(data_dir.clone());
-        let expected =
-            ManagedPostgresStartIntent::replica(sample_replica_conninfo(), Some("slot_a".to_string()));
+        let expected = ManagedPostgresStartIntent::replica(
+            sample_replica_conninfo(),
+            Some("slot_a".to_string()),
+        );
 
         materialize_managed_postgres_config(&cfg, &expected)
             .map_err(|err| format!("materialize managed replica config failed: {err}"))?;
@@ -1086,8 +1096,12 @@ mod tests {
             .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
         let standby_signal = data_dir.join("standby.signal");
         let recovery_signal = data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME);
-        fs::write(&standby_signal, b"")
-            .map_err(|err| format!("write standby.signal {} failed: {err}", standby_signal.display()))?;
+        fs::write(&standby_signal, b"").map_err(|err| {
+            format!(
+                "write standby.signal {} failed: {err}",
+                standby_signal.display()
+            )
+        })?;
         fs::write(&recovery_signal, b"").map_err(|err| {
             format!(
                 "write recovery.signal {} failed: {err}",
@@ -1099,7 +1113,9 @@ mod tests {
         match actual {
             Err(ManagedPostgresError::InvalidManagedState { message }) => {
                 if !message.contains("conflicting managed recovery signal files") {
-                    return Err(format!("unexpected invalid managed state message: {message}"));
+                    return Err(format!(
+                        "unexpected invalid managed state message: {message}"
+                    ));
                 }
             }
             Ok(value) => {
@@ -1124,118 +1140,20 @@ mod tests {
     }
 
     fn sample_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
-        RuntimeConfig {
-            cluster: ClusterConfig {
-                name: "cluster-a".to_string(),
-                member_id: "node-a".to_string(),
-            },
-            postgres: PostgresConfig {
-                data_dir,
-                connect_timeout_s: 5,
-                listen_host: "127.0.0.1".to_string(),
-                listen_port: 5432,
-                socket_dir: "/tmp/pgtuskmaster/socket".into(),
-                log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-                local_conn_identity: PostgresConnIdentityConfig {
-                    user: "postgres".to_string(),
-                    dbname: "postgres".to_string(),
-                    ssl_mode: PgSslMode::Prefer,
-                },
-                rewind_conn_identity: PostgresConnIdentityConfig {
-                    user: "rewinder".to_string(),
-                    dbname: "postgres".to_string(),
-                    ssl_mode: PgSslMode::Prefer,
-                },
-                tls: TlsServerConfig {
-                    mode: ApiTlsMode::Disabled,
-                    identity: None,
-                    client_auth: None,
-                },
-                roles: PostgresRolesConfig {
-                    superuser: PostgresRoleConfig {
-                        username: "postgres".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                    replicator: PostgresRoleConfig {
-                        username: "replicator".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                    rewinder: PostgresRoleConfig {
-                        username: "rewinder".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                },
-                pg_hba: PgHbaConfig {
-                    source: InlineOrPath::Inline {
-                        content: "local all all trust\n".to_string(),
-                    },
-                },
-                pg_ident: PgIdentConfig {
-                    source: InlineOrPath::Inline {
-                        content: "# empty\n".to_string(),
-                    },
-                },
-                extra_gucs: BTreeMap::new(),
-            },
-            dcs: DcsConfig {
-                endpoints: vec!["http://127.0.0.1:2379".to_string()],
-                scope: "cluster-a".to_string(),
-                init: None,
-            },
-            ha: HaConfig {
+        crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
+            .with_dcs_scope("cluster-a")
+            .with_ha(HaConfig {
                 loop_interval_ms: 500,
                 lease_ttl_ms: 5_000,
-            },
-            process: ProcessConfig {
+            })
+            .with_process(ProcessConfig {
                 pg_rewind_timeout_ms: 30_000,
                 bootstrap_timeout_ms: 30_000,
                 fencing_timeout_ms: 10_000,
-                binaries: BinaryPaths {
-                    postgres: "/usr/bin/postgres".into(),
-                    pg_ctl: "/usr/bin/pg_ctl".into(),
-                    pg_rewind: "/usr/bin/pg_rewind".into(),
-                    initdb: "/usr/bin/initdb".into(),
-                    pg_basebackup: "/usr/bin/pg_basebackup".into(),
-                    psql: "/usr/bin/psql".into(),
-                },
-            },
-            logging: LoggingConfig {
-                level: LogLevel::Info,
-                capture_subprocess_output: true,
-                postgres: PostgresLoggingConfig {
-                    enabled: true,
-                    pg_ctl_log_file: None,
-                    log_dir: None,
-                    poll_interval_ms: 200,
-                    cleanup: LogCleanupConfig {
-                        enabled: true,
-                        max_files: 10,
-                        max_age_seconds: 60,
-                        protect_recent_seconds: 300,
-                    },
-                },
-                sinks: LoggingSinksConfig {
-                    stderr: StderrSinkConfig { enabled: true },
-                    file: FileSinkConfig {
-                        enabled: false,
-                        path: None,
-                        mode: FileSinkMode::Append,
-                    },
-                },
-            },
-            api: ApiConfig {
-                listen_addr: "127.0.0.1:8080".to_string(),
-                security: ApiSecurityConfig {
-                    tls: TlsServerConfig {
-                        mode: ApiTlsMode::Disabled,
-                        identity: None,
-                        client_auth: None,
-                    },
-                    auth: ApiAuthConfig::Disabled,
-                },
-            },
-            debug: DebugConfig { enabled: true },
-        }
+                binaries: crate::test_harness::runtime_config::sample_binary_paths(),
+            })
+            .build()
     }
 
     fn sample_replica_conninfo() -> PgConnInfo {
@@ -1283,9 +1201,10 @@ mod tests {
         label: &str,
         handle: &mut PgHandle,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        handle.shutdown().await.map_err(|err| {
-            real_test_error(format!("{label} shutdown failed: {err}"))
-        })
+        handle
+            .shutdown()
+            .await
+            .map_err(|err| real_test_error(format!("{label} shutdown failed: {err}")))
     }
 
     async fn shutdown_child(

@@ -53,6 +53,15 @@ Representative examples:
 - dispatch tests in `src/ha/worker.rs` (recording DCS store, recording process inbox)
 - worker contract tests in `src/worker_contract_tests.rs`.
 
+For generic runtime-backed tests, start from the shared builder in
+`pgtuskmaster_rust::test_harness::runtime_config` instead of copying a full
+`RuntimeConfig` literal. Use `RuntimeConfigBuilder::new()` plus targeted
+overrides for data directories, ports, auth, DCS scope, or logging behavior.
+
+Keep parser-shape tests explicit. If the point of the test is exact TOML shape,
+field-path validation, or user-facing parse errors, keep the fixture inline in
+`src/config/parser.rs` rather than routing it through the shared runtime builder.
+
 ### Black-box / BDD-style integration tests (external behavior)
 
 Best for:

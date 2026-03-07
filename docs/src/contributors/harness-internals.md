@@ -19,6 +19,23 @@ At a high level, the harness is responsible for:
 
 The harness lives under `src/test_harness/` and is consumed by real-binary e2e tests (for example the HA scenarios in `tests/ha_multi_node_*.rs`, `tests/ha_partition_*.rs`, and their shared support modules under `tests/ha/support/`).
 
+The same directory also contains the shared typed runtime-config fixture layer in
+`src/test_harness/runtime_config.rs`. Use it for tests, integration targets, and
+examples that need a valid `RuntimeConfig` but are not specifically testing
+parser input shape.
+
+When a real-binary test needs a node config, keep topology-specific values
+explicit in the harness code:
+
+- node/member identity
+- allocated ports
+- namespace-scoped data/log/socket paths
+- DCS init payloads and cluster endpoints
+
+Layer those facts over `RuntimeConfigBuilder` rather than hiding topology inside
+the shared baseline fixture. The shared builder is for valid managed-config
+defaults; the harness still owns per-node wiring.
+
 ## Common pitfalls addressed by harness design
 
 The harness is designed to prevent “classic” e2e failure modes:

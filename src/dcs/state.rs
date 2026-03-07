@@ -198,14 +198,8 @@ pub(crate) fn build_local_member_record(
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::pginfo::conninfo::PgSslMode;
     use crate::{
-        config::{
-            schema::ClusterConfig, ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode,
-            InlineOrPath, PgHbaConfig, PgIdentConfig, PostgresConnIdentityConfig,
-            PostgresRoleConfig, PostgresRolesConfig, RoleAuthConfig, RuntimeConfig,
-            TlsServerConfig,
-        },
+        config::RuntimeConfig,
         pginfo::state::{PgConfig, PgInfoCommon, ReplicationSlotInfo},
         state::{Version, WorkerStatus},
     };
@@ -220,118 +214,7 @@ mod tests {
     };
 
     fn sample_runtime_config() -> RuntimeConfig {
-        RuntimeConfig {
-            cluster: ClusterConfig {
-                name: "cluster-a".to_string(),
-                member_id: "node-a".to_string(),
-            },
-            postgres: crate::config::schema::PostgresConfig {
-                data_dir: "/tmp/pgdata".into(),
-                connect_timeout_s: 5,
-                listen_host: "127.0.0.1".to_string(),
-                listen_port: 5432,
-                socket_dir: "/tmp/pgtuskmaster/socket".into(),
-                log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-                local_conn_identity: PostgresConnIdentityConfig {
-                    user: "postgres".to_string(),
-                    dbname: "postgres".to_string(),
-                    ssl_mode: PgSslMode::Prefer,
-                },
-                rewind_conn_identity: PostgresConnIdentityConfig {
-                    user: "rewinder".to_string(),
-                    dbname: "postgres".to_string(),
-                    ssl_mode: PgSslMode::Prefer,
-                },
-                tls: TlsServerConfig {
-                    mode: ApiTlsMode::Disabled,
-                    identity: None,
-                    client_auth: None,
-                },
-                roles: PostgresRolesConfig {
-                    superuser: PostgresRoleConfig {
-                        username: "postgres".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                    replicator: PostgresRoleConfig {
-                        username: "replicator".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                    rewinder: PostgresRoleConfig {
-                        username: "rewinder".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                },
-                pg_hba: PgHbaConfig {
-                    source: InlineOrPath::Inline {
-                        content: "local all all trust\n".to_string(),
-                    },
-                },
-                pg_ident: PgIdentConfig {
-                    source: InlineOrPath::Inline {
-                        content: "# empty\n".to_string(),
-                    },
-                },
-                extra_gucs: std::collections::BTreeMap::new(),
-            },
-            dcs: crate::config::schema::DcsConfig {
-                endpoints: vec!["http://127.0.0.1:2379".to_string()],
-                scope: "scope-a".to_string(),
-                init: None,
-            },
-            ha: crate::config::schema::HaConfig {
-                loop_interval_ms: 1000,
-                lease_ttl_ms: 10_000,
-            },
-            process: crate::config::ProcessConfig {
-                pg_rewind_timeout_ms: 1000,
-                bootstrap_timeout_ms: 1000,
-                fencing_timeout_ms: 1000,
-                binaries: crate::config::BinaryPaths {
-                    postgres: "/usr/bin/postgres".into(),
-                    pg_ctl: "/usr/bin/pg_ctl".into(),
-                    pg_rewind: "/usr/bin/pg_rewind".into(),
-                    initdb: "/usr/bin/initdb".into(),
-                    pg_basebackup: "/usr/bin/pg_basebackup".into(),
-                    psql: "/usr/bin/psql".into(),
-                },
-            },
-            logging: crate::config::LoggingConfig {
-                level: crate::config::LogLevel::Info,
-                capture_subprocess_output: true,
-                postgres: crate::config::PostgresLoggingConfig {
-                    enabled: true,
-                    pg_ctl_log_file: None,
-                    log_dir: None,
-                    poll_interval_ms: 200,
-                    cleanup: crate::config::LogCleanupConfig {
-                        enabled: true,
-                        max_files: 10,
-                        max_age_seconds: 60,
-                        protect_recent_seconds: 300,
-                    },
-                },
-                sinks: crate::config::LoggingSinksConfig {
-                    stderr: crate::config::StderrSinkConfig { enabled: true },
-                    file: crate::config::FileSinkConfig {
-                        enabled: false,
-                        path: None,
-                        mode: crate::config::FileSinkMode::Append,
-                    },
-                },
-            },
-            api: ApiConfig {
-                listen_addr: "127.0.0.1:8080".to_string(),
-                security: ApiSecurityConfig {
-                    tls: TlsServerConfig {
-                        mode: ApiTlsMode::Disabled,
-                        identity: None,
-                        client_auth: None,
-                    },
-                    auth: ApiAuthConfig::Disabled,
-                },
-            },
-            debug: crate::config::schema::DebugConfig { enabled: true },
-        }
+        crate::test_harness::runtime_config::sample_runtime_config()
     }
 
     fn sample_cache() -> DcsCache {

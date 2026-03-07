@@ -6,13 +6,10 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use crate::config::{
-    ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig, DcsConfig,
-    DcsInitConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
-    PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
-    PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
-    StderrSinkConfig, TlsServerConfig,
+    BinaryPaths, DcsConfig, DcsInitConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
+    LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresLoggingConfig,
+    ProcessConfig, StderrSinkConfig,
 };
-use crate::pginfo::conninfo::PgSslMode;
 use crate::state::WorkerError;
 use crate::test_harness::binaries::{
     require_etcd_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
@@ -457,47 +454,15 @@ async fn start_cluster_inner(
             ))
         })?;
 
-        let runtime_cfg = RuntimeConfig {
-            cluster: ClusterConfig {
-                name: config.cluster_name.clone(),
-                member_id: node_id.clone(),
-            },
-            postgres: PostgresConfig {
+        let runtime_cfg = crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
+            .with_cluster_name(config.cluster_name.clone())
+            .with_member_id(node_id.clone())
+            .transform_postgres(|postgres| PostgresConfig {
                 data_dir: data_dir.clone(),
                 connect_timeout_s: 2,
-                listen_host: "127.0.0.1".to_string(),
                 listen_port: pg_port,
                 socket_dir,
                 log_file: log_file.clone(),
-                local_conn_identity: PostgresConnIdentityConfig {
-                    user: "postgres".to_string(),
-                    dbname: "postgres".to_string(),
-                    ssl_mode: PgSslMode::Prefer,
-                },
-                rewind_conn_identity: PostgresConnIdentityConfig {
-                    user: "rewinder".to_string(),
-                    dbname: "postgres".to_string(),
-                    ssl_mode: PgSslMode::Prefer,
-                },
-                tls: TlsServerConfig {
-                    mode: ApiTlsMode::Disabled,
-                    identity: None,
-                    client_auth: None,
-                },
-                roles: PostgresRolesConfig {
-                    superuser: PostgresRoleConfig {
-                        username: "postgres".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                    replicator: PostgresRoleConfig {
-                        username: "replicator".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                    rewinder: PostgresRoleConfig {
-                        username: "rewinder".to_string(),
-                        auth: RoleAuthConfig::Tls,
-                    },
-                },
                 pg_hba: PgHbaConfig {
                     source: InlineOrPath::Inline {
                         content: pg_hba_contents.clone(),
@@ -508,27 +473,27 @@ async fn start_cluster_inner(
                         content: pg_ident_contents.clone(),
                     },
                 },
-                extra_gucs: std::collections::BTreeMap::new(),
-            },
-            dcs: DcsConfig {
+                ..postgres
+            })
+            .with_dcs(DcsConfig {
                 endpoints: dcs_endpoints,
                 scope: config.scope.clone(),
                 init: Some(DcsInitConfig {
                     payload_json: dcs_init_payload_json.clone(),
                     write_on_bootstrap: true,
                 }),
-            },
-            ha: HaConfig {
+            })
+            .with_ha(HaConfig {
                 loop_interval_ms: 100,
                 lease_ttl_ms: 2_000,
-            },
-            process: ProcessConfig {
+            })
+            .with_process(ProcessConfig {
                 pg_rewind_timeout_ms: 5_000,
                 bootstrap_timeout_ms: 30_000,
                 fencing_timeout_ms: 5_000,
                 binaries: binaries.clone(),
-            },
-            logging: LoggingConfig {
+            })
+            .with_logging(LoggingConfig {
                 level: LogLevel::Info,
                 capture_subprocess_output: false,
                 postgres: PostgresLoggingConfig {
@@ -551,20 +516,10 @@ async fn start_cluster_inner(
                         mode: crate::config::FileSinkMode::Append,
                     },
                 },
-            },
-            api: ApiConfig {
-                listen_addr: api_addr.to_string(),
-                security: ApiSecurityConfig {
-                    tls: TlsServerConfig {
-                        mode: ApiTlsMode::Disabled,
-                        identity: None,
-                        client_auth: None,
-                    },
-                    auth: ApiAuthConfig::Disabled,
-                },
-            },
-            debug: DebugConfig { enabled: false },
-        };
+            })
+            .with_api_listen_addr(api_addr.to_string())
+            .with_debug(DebugConfig { enabled: false })
+            .build();
 
         let runtime_superuser_username = runtime_cfg.postgres.roles.superuser.username.clone();
         let runtime_superuser_dbname = runtime_cfg.postgres.local_conn_identity.dbname.clone();
