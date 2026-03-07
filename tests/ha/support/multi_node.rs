@@ -3078,7 +3078,7 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             ));
         }
 
-        let cutoff_ms = quorum_lost_at_ms.saturating_add(fencing_grace_ms);
+        let cutoff_ms = failsafe_observed_at_ms.saturating_add(fencing_grace_ms);
         let commits_after_cutoff =
             ClusterFixture::count_commits_after_cutoff_strict(&workload, cutoff_ms)?;
         let allowed_post_cutoff_commits = 10usize;
