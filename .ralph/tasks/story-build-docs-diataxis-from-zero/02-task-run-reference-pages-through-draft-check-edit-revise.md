@@ -68,3 +68,76 @@ The higher-order goal is to produce strong reference pages while keeping structu
 - [ ] `make lint` — passes cleanly
 - [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<implementation_plan>
+1. Re-read the mandatory Diataxis sources at the start of execution, not from memory:
+   - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
+   - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
+   - `.agents/skills/create-docs/references/diataxis.fr/how-to-use-diataxis/index.md`
+   - `.agents/skills/create-docs/references/diataxis.fr/reference/index.md`
+   - `./.ralph/tasks/story-build-docs-diataxis-from-zero/01-task-establish-diataxis-reread-and-draft-loop.md`
+   - Use this reread to police form drift during authoring: every selected page must remain `cognition + application`, must `describe and only describe`, and must mirror machinery instead of a user journey.
+2. Inspect the repo only enough to pick real machinery boundaries and facts before drafting:
+   - review `src/` module boundaries and the current `docs/src/` tree, including `docs/src/SUMMARY.md`
+   - prefer subsystems that are already stable top-level modules and have obvious reference value
+   - avoid speculative pages, cross-cutting tour pages, and anything that would become explanation or how-to material
+3. Check for overlap before selecting pages:
+   - verify whether any existing page in `docs/src/` already covers part of a candidate subsystem
+   - if overlap exists, prefer revising, splitting, moving, or deleting the weaker page instead of creating parallel pages with duplicated facts
+   - keep the output tree lean; this run should reduce ambiguity, not add competing documentation for the same machinery
+4. Select at most 5 first-batch reference pages from concrete subsystem boundaries:
+   - start with the strongest 3 candidates and expand to a fourth or fifth page only if the earlier pages remain crisp, factual, and non-overlapping after editing
+   - first-choice candidates for this run:
+     - `docs/src/reference/config.md` for `src/config/`
+     - `docs/src/reference/dcs.md` for `src/dcs/`
+     - `docs/src/reference/ha.md` for `src/ha/`
+     - `docs/src/reference/api.md` for `src/api/` plus `src/debug_api/` only if the relationship is factual and concise
+     - `docs/src/reference/cli.md` for `src/cli/` and the two binaries under `src/bin/`
+   - if one candidate proves too fuzzy or too explanation-heavy, replace it with another machinery-shaped page such as `process`, `logging`, `pginfo`, or `state`
+   - do not create empty landing pages or category placeholders beyond pages that actually exist by the end of the run
+5. Classify each chosen page explicitly with the compass before drafting:
+   - ask `action or cognition?` and `acquisition or application?`
+   - keep a short working note per page in draft material that confirms `cognition + application`
+   - if a page wants to teach, justify decisions, narrate flows, or recommend operations, split that material out mentally and exclude it from this reference pass
+6. Gather only the source facts needed for each chosen page:
+   - read the relevant Rust modules, types, functions, and any existing tests that reveal stable surface area
+   - extract neutral facts such as responsibilities, boundaries, key components, inputs/outputs, configuration surfaces, invariants, error surfaces, and relationships between modules
+   - do not infer undocumented guarantees; when uncertain, either verify in code or omit
+7. Draft in `docs/drafts/` before promoting anything into `docs/src/`:
+   - create one draft per page at minimum
+   - for the most important or structurally ambiguous pages, create multiple competing drafts under `docs/drafts/` so structure can be compared before choosing one
+   - keep drafts easy to diff and compare; draft filenames should map clearly to the intended final page
+8. Use `ask-k2-docs` only as a prose assistant where it adds value:
+   - provide the exact facts collected from code, the intended mdBook destination, and the explicit instruction that this is reference prose that must `describe and only describe`
+   - ask it to improve wording, compression, or structural ordering, not to discover facts or inspect the repo
+   - reject any output that introduces explanation, instruction, guesses, or marketing tone
+9. Check and edit each draft skeptically before promotion:
+   - remove any sentence that tells the reader what to do, why the design exists, or how to achieve an operational goal
+   - tighten headings so they mirror machinery, for example: purpose, module layout, key types/components, inputs and outputs, state/decision surfaces, API/CLI surface, errors, and limits
+   - prefer concise tables or bullet lists only when they improve consultation speed
+   - keep examples only if they illustrate a surface without turning into step-by-step instruction
+10. Promote only the strongest current version of each page into `docs/src/`:
+   - create real final pages only for drafts that survived the form check
+   - place them under a real reference section such as `docs/src/reference/*.md` if that grouping emerges naturally from the authored pages
+   - if the best structure is different after drafting, change the layout instead of preserving a weaker guess made earlier
+11. Update `docs/src/SUMMARY.md` strictly from real pages that now exist:
+   - add only links for authored pages
+   - keep navigation minimal and factual
+   - do not add empty reference indexes or future placeholders just to make the tree look complete
+12. Verify the authored docs and only the needed code-impact suites:
+   - run `make docs-build`
+   - run `make docs-lint`
+   - run `make check`
+   - run `make lint`
+   - inspect `git diff --name-only -- src tests` and the staged equivalent to confirm the expected docs-only case
+   - do not run `make test` or `make test-long` unless the run intentionally changed behavior under `src/` or `tests/`
+   - if code or test changes did occur and common sense says behavior changed, run `make test`
+   - only if those changes affect the ultra-long suite or its selection, run `make test-long`
+13. Finish the run without stretching scope:
+   - tick only the acceptance boxes that are actually satisfied
+   - append a concise progress note describing which reference pages were authored and any structural decisions
+   - end this task section with a record of what still needs truth-checking later if relevant
+   - QUIT IMMEDIATELY after the progress append; do not continue into a sixth page, bonus cleanup, or git workflow in this execution run
+
+NOW EXECUTE
+</implementation_plan>

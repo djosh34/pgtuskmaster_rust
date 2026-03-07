@@ -23,7 +23,7 @@ Then confirm it is inactive before continuing by checking the script-managed sta
 
 Expected status includes `Active: inactive` or `Loaded: not-found`.
 
-### 2. Stage all and clean up unsafe files
+### 2. Stage all and review staged changes
 
 Stage everything first:
 
@@ -31,14 +31,20 @@ Stage everything first:
 git add -A
 ```
 
-Then unstage anything that should NOT be committed:
+Then review what is staged:
 
 ```bash
-git rm --cached -r --ignore-unmatch log/ *.log
-git rm --cached --ignore-unmatch .env .env.* *credentials* *secret* *.pem *.key
+git status --short
+git diff --cached --stat
 ```
 
-Review `git diff --cached --stat` — if you see anything else suspicious (large binaries, temp files, etc.), `git rm --cached` those too and tell the user.
+Use common sense to spot anything suspicious that should NOT be committed, such as logs, temp files, generated junk, large binaries, or unrelated local artifacts. If needed, unstage exact paths with:
+
+```bash
+git restore --staged <path>
+```
+
+Tell the user if you had to unstage anything suspicious.
 
 ### 3. Commit changes
 
@@ -54,7 +60,13 @@ The `|| true` handles the case where there's nothing to commit.
 /bin/bash .ralph/task_switch.sh
 ```
 
-### 5. Start Ralph without attaching
+### 5. Delete the STOP file and start Ralph without attaching
+
+Delete `.ralph/STOP` first so Ralph can actually resume iterations:
+
+```bash
+rm -f .ralph/STOP
+```
 
 Use the start-only flag so the command returns immediately after starting the service:
 
