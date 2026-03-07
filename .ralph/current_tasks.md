@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 06:59:12 AM CET 2026
-
-# Task `.ralph/tasks/story-docs-useful-guides/04-task-create-repo-readme.md`
-
-```
-## Task: Create repository README as the front-door quick-start and project overview <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Add a normal, useful root `README.md` that explains what this project is, how to get started quickly, where to go next for deeper docs, and what the license status is.
-```
-
-==============
+Generated: Sat Mar  7 07:11:59 AM CET 2026
 
 # Task `.ralph/tasks/story-project-wide-code-hygiene/01-task-audit-and-replace-magic-numbers-project-wide.md`
 

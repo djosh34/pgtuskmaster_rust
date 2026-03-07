@@ -127,3 +127,4 @@
 .ralph/tasks/story-operator-architecture-docs/04-task-expand-non-contributor-docs-with-deep-subsubchapters.md
 .ralph/tasks/story-docs-useful-guides/02-task-rebuild-contributor-docs-as-codebase-navigation-and-contract-guide.md
 .ralph/tasks/story-docs-useful-guides/03-task-align-doc-file-order-and-names-with-rendered-site-structure.md
+.ralph/tasks/story-docs-useful-guides/04-task-create-repo-readme.md

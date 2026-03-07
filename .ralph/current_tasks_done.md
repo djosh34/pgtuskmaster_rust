@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 06:59:12 AM CET 2026
+Generated: Sat Mar  7 07:11:59 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -407,6 +407,17 @@ Rewrite the contributor documentation so it becomes a genuinely useful guide for
 
 <description>
 Make the docs source tree easier to navigate by aligning file names and ordering conventions with the rendered website structure.
+```
+
+==============
+
+# Task `.ralph/tasks/story-docs-useful-guides/04-task-create-repo-readme.md`
+
+```
+## Task: Create repository README as the front-door quick-start and project overview <status>done</status> <passes>true</passes>
+
+<description>
+**Goal:** Add a normal, useful root `README.md` that explains what this project is, how to get started quickly, where to go next for deeper docs, and what the license status is.
 ```
 
 ==============
