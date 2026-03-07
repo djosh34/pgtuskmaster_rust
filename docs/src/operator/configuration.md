@@ -137,7 +137,9 @@ Replica cloning depends on `pg_basebackup`.
 - `level` controls application log verbosity.
 - `capture_subprocess_output` determines whether subprocess stdout/stderr is captured into process logs.
 - `logging.postgres` controls PostgreSQL log tailing and cleanup.
+- `logging.sinks.stderr` and `logging.sinks.file` are backend destinations under the typed event/raw-record contract; they do not change the event schema emitted by domain code.
 - `logging.sinks.file.path` must not overlap PostgreSQL-owned log inputs.
+- JSONL stderr/file output is currently the supported backend surface. OpenTelemetry export is intentionally not configurable yet.
 
 ### `[api]`
 

@@ -46,7 +46,11 @@ Use planned switchover workflows for controlled role transitions. Avoid ad-hoc o
 
 ## Structured runtime event logs
 
-pgtuskmaster emits structured log records designed for “operator-grade reconstruction”.
+pgtuskmaster models runtime logs as typed application events and typed raw external records first, then routes the resulting structured `LogRecord` payloads through the logging backend.
+
+Today that backend writes JSONL to stderr and optional file sinks. The backend implementation is tracing-backed, but tracing does not define the application event taxonomy: event identity, domain, result, and structured fields remain owned by the typed logging contract.
+
+OpenTelemetry export is intentionally deferred. The current operator-facing contract is the typed event/raw-record model plus the stderr/file JSONL destinations described in configuration.
 
 Most runtime records include a small event taxonomy in attributes:
 

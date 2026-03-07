@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::LineWriter;
@@ -10,6 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
+use tracing::{dispatcher, Dispatch};
+use tracing_subscriber::layer::{Context, Layer};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::Registry;
 
 mod event;
 mod raw_record;
@@ -337,10 +342,159 @@ impl LogSink for FanoutSink {
     }
 }
 
+const TRACING_LOG_TARGET: &str = "pgtuskmaster::logging::record";
+
+thread_local! {
+    static CURRENT_TRACING_RECORD: RefCell<Option<LogRecord>> = const { RefCell::new(None) };
+    static CURRENT_TRACING_RESULT: RefCell<Option<Result<(), LogError>>> = const { RefCell::new(None) };
+}
+
+struct ActiveTracingRecordGuard;
+
+impl ActiveTracingRecordGuard {
+    fn new(record: &LogRecord) -> Result<Self, LogError> {
+        CURRENT_TRACING_RECORD.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_some() {
+                return Err(LogError::SinkIo(
+                    "nested tracing-backed log emission is not supported".to_string(),
+                ));
+            }
+            *slot = Some(record.clone());
+            Ok(())
+        })?;
+        CURRENT_TRACING_RESULT.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+        Ok(Self)
+    }
+}
+
+impl Drop for ActiveTracingRecordGuard {
+    fn drop(&mut self) {
+        CURRENT_TRACING_RECORD.with(|slot| {
+            let _ = slot.borrow_mut().take();
+        });
+        CURRENT_TRACING_RESULT.with(|slot| {
+            let _ = slot.borrow_mut().take();
+        });
+    }
+}
+
+struct TracingRecordLayer {
+    sink: Arc<dyn LogSink>,
+}
+
+impl<S> Layer<S> for TracingRecordLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        if event.metadata().target() != TRACING_LOG_TARGET {
+            return;
+        }
+
+        let result = CURRENT_TRACING_RECORD.with(|slot| {
+            let slot = slot.borrow();
+            match slot.as_ref() {
+                Some(record) => self.sink.emit(record),
+                None => Err(LogError::SinkIo(
+                    "tracing backend event emitted without an active record".to_string(),
+                )),
+            }
+        });
+
+        CURRENT_TRACING_RESULT.with(|slot| {
+            *slot.borrow_mut() = Some(result);
+        });
+    }
+}
+
+#[derive(Clone)]
+struct TracingBackend {
+    dispatch: Dispatch,
+}
+
+impl TracingBackend {
+    fn new(sink: Arc<dyn LogSink>) -> Self {
+        let subscriber = Registry::default().with(TracingRecordLayer { sink });
+        Self {
+            dispatch: Dispatch::new(subscriber),
+        }
+    }
+
+    fn emit(&self, record: &LogRecord) -> Result<(), LogError> {
+        let _guard = ActiveTracingRecordGuard::new(record)?;
+        dispatcher::with_default(&self.dispatch, || emit_tracing_record_event(record));
+        CURRENT_TRACING_RESULT.with(|slot| {
+            slot.borrow_mut().take().unwrap_or_else(|| {
+                Err(LogError::SinkIo(
+                    "tracing backend did not produce an emission result".to_string(),
+                ))
+            })
+        })
+    }
+}
+
+fn emit_tracing_record_event(record: &LogRecord) {
+    match record.severity_text {
+        SeverityText::Trace => tracing::event!(
+            target: TRACING_LOG_TARGET,
+            tracing::Level::TRACE,
+            origin = record.source.origin.as_str(),
+            producer = ?record.source.producer,
+            transport = ?record.source.transport,
+            parser = ?record.source.parser,
+            severity_number = record.severity_number,
+            message = record.message.as_str()
+        ),
+        SeverityText::Debug => tracing::event!(
+            target: TRACING_LOG_TARGET,
+            tracing::Level::DEBUG,
+            origin = record.source.origin.as_str(),
+            producer = ?record.source.producer,
+            transport = ?record.source.transport,
+            parser = ?record.source.parser,
+            severity_number = record.severity_number,
+            message = record.message.as_str()
+        ),
+        SeverityText::Info => tracing::event!(
+            target: TRACING_LOG_TARGET,
+            tracing::Level::INFO,
+            origin = record.source.origin.as_str(),
+            producer = ?record.source.producer,
+            transport = ?record.source.transport,
+            parser = ?record.source.parser,
+            severity_number = record.severity_number,
+            message = record.message.as_str()
+        ),
+        SeverityText::Warn => tracing::event!(
+            target: TRACING_LOG_TARGET,
+            tracing::Level::WARN,
+            origin = record.source.origin.as_str(),
+            producer = ?record.source.producer,
+            transport = ?record.source.transport,
+            parser = ?record.source.parser,
+            severity_number = record.severity_number,
+            message = record.message.as_str()
+        ),
+        SeverityText::Error | SeverityText::Fatal => tracing::event!(
+            target: TRACING_LOG_TARGET,
+            tracing::Level::ERROR,
+            origin = record.source.origin.as_str(),
+            producer = ?record.source.producer,
+            transport = ?record.source.transport,
+            parser = ?record.source.parser,
+            severity_number = record.severity_number,
+            message = record.message.as_str()
+        ),
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct LogHandle {
     hostname: String,
-    sink: Arc<dyn LogSink>,
+    backend: Arc<TracingBackend>,
     min_app_severity_number: u8,
 }
 
@@ -361,7 +515,7 @@ impl LogHandle {
     ) -> Self {
         Self {
             hostname,
-            sink,
+            backend: Arc::new(TracingBackend::new(sink)),
             min_app_severity_number: min_app_severity.number(),
         }
     }
@@ -370,7 +524,7 @@ impl LogHandle {
     pub(crate) fn null() -> Self {
         Self {
             hostname: "unknown".to_string(),
-            sink: Arc::new(NullSink),
+            backend: Arc::new(TracingBackend::new(Arc::new(NullSink))),
             min_app_severity_number: SeverityText::Trace.number(),
         }
     }
@@ -378,7 +532,7 @@ impl LogHandle {
     pub(crate) fn disabled() -> Self {
         Self {
             hostname: "unknown".to_string(),
-            sink: Arc::new(NullSink),
+            backend: Arc::new(TracingBackend::new(Arc::new(NullSink))),
             min_app_severity_number: SeverityText::Trace.number(),
         }
     }
@@ -400,7 +554,7 @@ impl LogHandle {
             message.into(),
             source,
         );
-        self.sink.emit(&record)
+        self.backend.emit(&record)
     }
 
     pub(crate) fn emit_app_event(
@@ -416,7 +570,7 @@ impl LogHandle {
             self.hostname.clone(),
             origin.into(),
         );
-        self.sink.emit(&record)
+        self.backend.emit(&record)
     }
 
     pub(crate) fn emit_raw_record(&self, record: RawRecordBuilder) -> Result<(), LogError> {
@@ -425,7 +579,7 @@ impl LogHandle {
     }
 
     pub(crate) fn emit_record(&self, record: &LogRecord) -> Result<(), LogError> {
-        self.sink.emit(record)
+        self.backend.emit(record)
     }
 }
 
@@ -855,6 +1009,56 @@ mod tests {
 
         let err = sink.emit(&sample_record("x"));
         assert!(matches!(err, Err(LogError::SinkIo(_))));
+    }
+
+    #[test]
+    fn tracing_backend_preserves_emit_errors_when_sink_fails() {
+        let sink: Arc<dyn LogSink> = Arc::new(FailSink);
+        let log = LogHandle::new("host-a".to_string(), sink, SeverityText::Trace);
+
+        let err = log.emit(
+            SeverityText::Info,
+            "should fail",
+            LogSource {
+                producer: LogProducer::App,
+                transport: LogTransport::Internal,
+                parser: LogParser::App,
+                origin: "test".to_string(),
+            },
+        );
+
+        assert!(matches!(err, Err(LogError::SinkIo(_))));
+    }
+
+    #[test]
+    fn tracing_backend_preserves_partial_fanout_success() -> Result<(), Box<dyn std::error::Error>>
+    {
+        FANOUT_DIAGNOSTIC_COUNT.store(0, Ordering::SeqCst);
+
+        let ok = TestSink::default();
+        let ok_records = ok.clone();
+        let sink: Arc<dyn LogSink> = Arc::new(FanoutSink::new(vec![
+            ("ok".to_string(), Arc::new(ok) as Arc<dyn LogSink>),
+            ("fail".to_string(), Arc::new(FailSink) as Arc<dyn LogSink>),
+        ]));
+        let log = LogHandle::new("host-a".to_string(), sink, SeverityText::Trace);
+
+        log.emit(
+            SeverityText::Info,
+            "fanout-through-tracing",
+            LogSource {
+                producer: LogProducer::App,
+                transport: LogTransport::Internal,
+                parser: LogParser::App,
+                origin: "test".to_string(),
+            },
+        )?;
+
+        let records = ok_records.take();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].message, "fanout-through-tracing");
+        assert!(FANOUT_DIAGNOSTIC_COUNT.load(Ordering::SeqCst) >= 1);
+        Ok(())
     }
 
     #[test]

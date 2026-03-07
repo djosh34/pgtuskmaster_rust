@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 04:00:21 AM CET 2026
+Generated: Sat Mar  7 04:17:10 AM CET 2026
 
 # Task `.ralph/tasks/story-container-first-deployment/01-task-container-first-docker-deployment-and-compose.md`
 
@@ -87,16 +87,5 @@ DO NOT PICK THIS TASK UNLESS ALL OTHER TASKS ARE DONE.
 NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-tracing-based-logging/04-task-rework-backends-exporters-tests-and-docs-after-typed-event-migration.md`
-
-```
-## Task: Rework logging backends, exporters, tests, and docs after typed event migration <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Revisit backend wiring, exporters, sink abstractions, and documentation only after the typed event contract is in place across the codebase. The higher order goal is to prevent backend work from distorting the event model, and to make any future `tracing` or OTEL integration consume the typed event contract instead of becoming a substitute for it.
 ```
 
