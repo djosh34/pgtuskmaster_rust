@@ -1,14 +1,14 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 01:39:55 CET 2026
+Generated: Sat Mar  7 02:13:37 AM CET 2026
 
-# Task `.ralph/tasks/bugs/failsafe-integrity-ultra-long-flake.md`
+# Task `.ralph/tasks/bugs/no-quorum-integrity-check-does-not-verify-committed-keys.md`
 
 ```
-## Bug: Ultra-long failsafe integrity scenario flakes during final table verification <status>not_started</status> <passes>false</passes>
+## Bug: No-quorum integrity check does not verify committed keys <status>not_started</status> <passes>false</passes>
 
 <description>
-`make test-long` failed during `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity` while this task was being verified on March 7, 2026.
+`tests/ha/support/multi_node.rs` records `committed_writes`, `committed_keys`, and commit timestamps during `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity`, but the final verification only calls `assert_table_key_integrity_strict(...)`, which succeeds when any reachable node reports `COUNT(*) >= min_rows` and no duplicate `(worker_id, seq)` rows.
 ```
 
 ==============

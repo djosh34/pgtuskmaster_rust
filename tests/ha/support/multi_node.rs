@@ -279,6 +279,80 @@ fn sanitize_sql_identifier(raw: &str) -> String {
     value
 }
 
+fn sample_key_set(keys: &BTreeSet<String>) -> String {
+    keys.iter().take(5).cloned().collect::<Vec<_>>().join(",")
+}
+
+fn committed_key_set_through_cutoff(
+    workload: &SqlWorkloadStats,
+    cutoff_ms: u64,
+) -> Result<BTreeSet<String>, WorkerError> {
+    let mut required_keys = BTreeSet::new();
+    for worker in &workload.worker_stats {
+        if worker.committed_keys.len() != worker.committed_at_unix_ms.len() {
+            return Err(WorkerError::Message(format!(
+                "worker {} committed key/timestamp length mismatch: keys={} timestamps={}",
+                worker.worker_id,
+                worker.committed_keys.len(),
+                worker.committed_at_unix_ms.len()
+            )));
+        }
+        for (key, committed_at_ms) in worker
+            .committed_keys
+            .iter()
+            .zip(worker.committed_at_unix_ms.iter())
+        {
+            if *committed_at_ms <= cutoff_ms {
+                required_keys.insert(key.clone());
+            }
+        }
+    }
+    Ok(required_keys)
+}
+
+fn assert_recovered_committed_keys_match_bounds(
+    observed_rows: &[String],
+    required_keys: &BTreeSet<String>,
+    allowed_keys: &BTreeSet<String>,
+    node_id: &str,
+    table_name: &str,
+) -> Result<u64, WorkerError> {
+    let observed_row_count = u64::try_from(observed_rows.len()).map_err(|_| {
+        WorkerError::Message(format!(
+            "observed row count overflow while verifying {table_name} on {node_id}"
+        ))
+    })?;
+    let observed_key_set: BTreeSet<String> = observed_rows.iter().cloned().collect();
+    let observed_unique_count = u64::try_from(observed_key_set.len()).map_err(|_| {
+        WorkerError::Message(format!(
+            "observed unique key count overflow while verifying {table_name} on {node_id}"
+        ))
+    })?;
+    if observed_unique_count != observed_row_count {
+        return Err(WorkerError::Message(format!(
+            "duplicate (worker_id,seq) rows detected on {node_id} for {table_name}: observed_rows={observed_row_count} unique_keys={observed_unique_count}"
+        )));
+    }
+
+    let missing_keys: BTreeSet<String> = required_keys
+        .difference(&observed_key_set)
+        .cloned()
+        .collect();
+    let unexpected_keys: BTreeSet<String> =
+        observed_key_set.difference(allowed_keys).cloned().collect();
+    if !missing_keys.is_empty() || !unexpected_keys.is_empty() {
+        return Err(WorkerError::Message(format!(
+            "recovered key-set mismatch on {node_id} for {table_name}: missing_required_count={} missing_sample=[{}] unexpected_count={} unexpected_sample=[{}]",
+            missing_keys.len(),
+            sample_key_set(&missing_keys),
+            unexpected_keys.len(),
+            sample_key_set(&unexpected_keys),
+        )));
+    }
+
+    Ok(observed_row_count)
+}
+
 impl ClusterFixture {
     async fn start(node_count: usize) -> Result<Self, WorkerError> {
         let config = ha_e2e::TestConfig {
@@ -864,6 +938,35 @@ impl ClusterFixture {
         Err(WorkerError::Message(format!(
             "table integrity could not be verified on any node for {table_name}; errors={errors:?}"
         )))
+    }
+
+    async fn assert_table_recovery_key_integrity_on_node(
+        &mut self,
+        node_id: &str,
+        table_name: &str,
+        required_keys: &BTreeSet<String>,
+        allowed_keys: &BTreeSet<String>,
+        timeout: Duration,
+    ) -> Result<u64, WorkerError> {
+        let query = format!(
+            "SELECT worker_id::text || ':' || seq::text FROM {table_name} ORDER BY worker_id, seq"
+        );
+        let rows_raw = self
+            .run_sql_on_node_with_retry(node_id, query.as_str(), timeout)
+            .await
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "recovery key verification query failed on {node_id} for {table_name}: {err}"
+                ))
+            })?;
+        let observed_rows = ha_e2e::util::parse_psql_rows(rows_raw.as_str());
+        assert_recovered_committed_keys_match_bounds(
+            observed_rows.as_slice(),
+            required_keys,
+            allowed_keys,
+            node_id,
+            table_name,
+        )
     }
 
     fn assert_no_split_brain_write_evidence(
@@ -1926,24 +2029,38 @@ impl ClusterFixture {
 
         let mut stopped = Vec::with_capacity(stop_count);
         for member_name in member_names.into_iter().take(stop_count) {
-            let stopped_member =
-                etcd_cluster
-                    .shutdown_member(&member_name)
-                    .await
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "failed to stop etcd member {member_name}: {err}"
-                        ))
-                    })?;
-            if !stopped_member {
-                return Err(WorkerError::Message(format!(
-                    "etcd member {member_name} was not found for shutdown"
-                )));
-            }
+            etcd_cluster
+                .shutdown_member(&member_name)
+                .await
+                .map_err(|err| {
+                    WorkerError::Message(format!("failed to stop etcd member {member_name}: {err}"))
+                })?;
             stopped.push(member_name);
         }
 
         Ok(stopped)
+    }
+
+    async fn restore_etcd_members(&mut self, member_names: &[String]) -> Result<(), WorkerError> {
+        if member_names.is_empty() {
+            return Err(WorkerError::Message(
+                "cannot restore etcd members: no member names provided".to_string(),
+            ));
+        }
+        let Some(etcd_cluster) = self.etcd.as_mut() else {
+            return Err(WorkerError::Message(
+                "cannot restore etcd members: cluster is not running".to_string(),
+            ));
+        };
+        etcd_cluster
+            .restart_members(member_names)
+            .await
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "failed to restore etcd members {}: {err}",
+                    member_names.join(",")
+                ))
+            })
     }
 
     fn write_timeline_artifact(&self, scenario: &str) -> Result<PathBuf, WorkerError> {
@@ -2205,7 +2322,7 @@ async fn stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
     fixture: &mut ClusterFixture,
     stop_count: usize,
     timeout: Duration,
-) -> Result<u64, WorkerError> {
+) -> Result<(Vec<String>, u64), WorkerError> {
     fixture.record("no-quorum: stop etcd majority");
     let stopped_members = fixture.stop_etcd_majority(stop_count).await?;
     fixture.record(format!(
@@ -2215,7 +2332,7 @@ async fn stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
 
     fixture.wait_for_all_nodes_failsafe(timeout).await?;
     fixture.record("no-quorum: fail-safe observed on all nodes");
-    Ok(ha_e2e::util::unix_now()?.0)
+    Ok((stopped_members, ha_e2e::util::unix_now()?.0))
 }
 
 pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
@@ -2807,7 +2924,8 @@ pub async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), Work
                 &mut phase_history,
             )
             .await?;
-        let failsafe_observed_at_ms = stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
+        let (_stopped_members, failsafe_observed_at_ms) =
+            stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
             &mut fixture,
             2,
             Duration::from_secs(60),
@@ -2928,13 +3046,14 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         fixture.record("no-quorum fencing: stop etcd majority while workload active");
-        fixture.record("no-quorum: stop etcd majority");
-        let stopped_members = fixture.stop_etcd_majority(2).await?;
-        fixture.record(format!(
-            "no-quorum: etcd members stopped: {}",
-            stopped_members.join(",")
-        ));
         let quorum_lost_at_ms = ha_e2e::util::unix_now()?.0;
+        let (stopped_members, failsafe_observed_at_ms) =
+            stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
+                &mut fixture,
+                2,
+                Duration::from_secs(60),
+            )
+            .await?;
         let ha_stats = fixture
             .sample_ha_states_window(Duration::from_secs(2), Duration::from_millis(150), 80)
             .await?;
@@ -2969,17 +3088,47 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             )));
         }
         ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
+        let required_committed_keys = committed_key_set_through_cutoff(&workload, cutoff_ms)?;
+        let allowed_committed_keys: BTreeSet<String> =
+            workload.committed_keys.iter().cloned().collect();
 
-        let (node_id, row_count) = fixture
-            .assert_table_key_integrity_strict(
-                bootstrap_primary.as_str(),
-                table_name.as_str(),
-                1,
-                Duration::from_secs(5),
+        fixture.record(format!(
+            "no-quorum fencing recovery: restore etcd members {}",
+            stopped_members.join(",")
+        ));
+        fixture.restore_etcd_members(stopped_members.as_slice()).await?;
+        fixture.ensure_runtime_tasks_healthy().await?;
+        let recovered_primary = fixture
+            .wait_for_stable_primary_resilient(
+                StablePrimaryWaitPlan {
+                    context: "no-quorum fencing recovery stable-primary",
+                    timeout: Duration::from_secs(90),
+                    excluded_primary: None,
+                    required_consecutive: 3,
+                    fallback_timeout: Duration::from_secs(90),
+                    fallback_required_consecutive: 1,
+                    min_observed_nodes: 2,
+                },
+                &mut phase_history,
             )
             .await?;
         fixture.record(format!(
-            "no-quorum fencing key integrity verified on {node_id} with row_count={row_count}"
+            "no-quorum fencing recovery: stable primary={recovered_primary}"
+        ));
+
+        let row_count = fixture
+            .assert_table_recovery_key_integrity_on_node(
+                recovered_primary.as_str(),
+                table_name.as_str(),
+                &required_committed_keys,
+                &allowed_committed_keys,
+                Duration::from_secs(45),
+            )
+            .await?;
+        fixture.record(format!(
+            "no-quorum fencing recovery key integrity verified on {recovered_primary} with row_count={row_count} required_pre_cutoff_keys={} allowed_committed_keys={}",
+            required_committed_keys.len(),
+            allowed_committed_keys.len(),
         ));
 
         let finished_at_unix_ms = ha_e2e::util::unix_now()?.0;
@@ -2989,8 +3138,8 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             status: "passed".to_string(),
             started_at_unix_ms,
             finished_at_unix_ms,
-            bootstrap_primary: Some(bootstrap_primary),
-            final_primary: None,
+            bootstrap_primary: Some(bootstrap_primary.clone()),
+            final_primary: Some(recovered_primary.clone()),
             former_primary_demoted: None,
             workload_spec: SqlWorkloadSpecSummary {
                 worker_count: workload_spec.worker_count,
@@ -3002,8 +3151,15 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             notes: vec![
                 format!("phase_history={}", ClusterFixture::format_phase_history(&phase_history)),
                 format!("quorum_lost_at_ms={quorum_lost_at_ms}"),
+                format!("failsafe_observed_at_ms={failsafe_observed_at_ms}"),
                 format!("fencing_cutoff_ms={cutoff_ms}"),
                 format!("allowed_post_cutoff_commits={allowed_post_cutoff_commits}"),
+                format!(
+                    "required_pre_cutoff_keys={}",
+                    required_committed_keys.len()
+                ),
+                format!("allowed_committed_keys={}", allowed_committed_keys.len()),
+                format!("recovered_primary={recovered_primary}"),
             ],
         })
     })
@@ -3109,6 +3265,88 @@ mod unit_tests {
     }
 
     #[test]
+    fn recovered_committed_keys_match_bounds_passes_with_allowed_post_cutoff_extra(
+    ) -> Result<(), WorkerError> {
+        let required_keys = BTreeSet::from(["1:1".to_string(), "1:2".to_string()]);
+        let allowed_keys =
+            BTreeSet::from(["1:1".to_string(), "1:2".to_string(), "1:3".to_string()]);
+        let observed_rows = vec!["1:1".to_string(), "1:2".to_string(), "1:3".to_string()];
+        let row_count = assert_recovered_committed_keys_match_bounds(
+            observed_rows.as_slice(),
+            &required_keys,
+            &allowed_keys,
+            "node-1",
+            "ha_table",
+        )?;
+        assert_eq!(row_count, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn recovered_committed_keys_match_bounds_fails_on_duplicates() {
+        let required_keys = BTreeSet::from(["1:1".to_string(), "1:2".to_string()]);
+        let allowed_keys = required_keys.clone();
+        let observed_rows = vec!["1:1".to_string(), "1:1".to_string()];
+        assert!(assert_recovered_committed_keys_match_bounds(
+            observed_rows.as_slice(),
+            &required_keys,
+            &allowed_keys,
+            "node-1",
+            "ha_table"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovered_committed_keys_match_bounds_fails_on_missing_required_key() {
+        let required_keys = BTreeSet::from(["1:1".to_string(), "1:2".to_string()]);
+        let allowed_keys =
+            BTreeSet::from(["1:1".to_string(), "1:2".to_string(), "9:9".to_string()]);
+        let observed_rows = vec!["1:1".to_string(), "9:9".to_string()];
+        assert!(assert_recovered_committed_keys_match_bounds(
+            observed_rows.as_slice(),
+            &required_keys,
+            &allowed_keys,
+            "node-1",
+            "ha_table"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovered_committed_keys_match_bounds_fails_on_unexpected_key() {
+        let required_keys = BTreeSet::from(["1:1".to_string()]);
+        let allowed_keys = required_keys.clone();
+        let observed_rows = vec!["1:1".to_string(), "2:1".to_string()];
+        assert!(assert_recovered_committed_keys_match_bounds(
+            observed_rows.as_slice(),
+            &required_keys,
+            &allowed_keys,
+            "node-1",
+            "ha_table"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn committed_key_set_through_cutoff_uses_per_worker_timestamp_alignment(
+    ) -> Result<(), WorkerError> {
+        let workload = SqlWorkloadStats {
+            worker_stats: vec![SqlWorkloadWorkerStats {
+                worker_id: 7,
+                committed_keys: vec!["7:1".to_string(), "7:2".to_string(), "7:3".to_string()],
+                committed_at_unix_ms: vec![100, 200, 300],
+                ..SqlWorkloadWorkerStats::default()
+            }],
+            ..SqlWorkloadStats::default()
+        };
+        let observed = committed_key_set_through_cutoff(&workload, 200)?;
+        let expected = BTreeSet::from(["7:1".to_string(), "7:2".to_string()]);
+        assert_eq!(observed, expected);
+        Ok(())
+    }
+
+    #[test]
     fn family_symbols_remain_reachable_for_split_targets() {
         let _ = E2E_COMMAND_TIMEOUT;
         let _ = E2E_COMMAND_KILL_WAIT_TIMEOUT;
@@ -3133,6 +3371,17 @@ mod unit_tests {
         let _ = classify_sql_error as fn(&str) -> SqlErrorClass;
         let _ = sanitize_component as fn(&str) -> String;
         let _ = sanitize_sql_identifier as fn(&str) -> String;
+        let _ = sample_key_set as fn(&BTreeSet<String>) -> String;
+        let _ = committed_key_set_through_cutoff
+            as fn(&SqlWorkloadStats, u64) -> Result<BTreeSet<String>, WorkerError>;
+        let _ = assert_recovered_committed_keys_match_bounds
+            as fn(
+                &[String],
+                &BTreeSet<String>,
+                &BTreeSet<String>,
+                &str,
+                &str,
+            ) -> Result<u64, WorkerError>;
         let _ = StressScenarioSummary::failed as fn(&str, String) -> StressScenarioSummary;
         let _ = ClusterFixture::start;
         let _: fn(&mut ClusterFixture, String) = ClusterFixture::record;
@@ -3151,6 +3400,7 @@ mod unit_tests {
         let _ = ClusterFixture::assert_former_primary_demoted_or_unreachable_after_transition;
         let _ = ClusterFixture::assert_table_key_integrity_on_node;
         let _ = ClusterFixture::assert_table_key_integrity_strict;
+        let _ = ClusterFixture::assert_table_recovery_key_integrity_on_node;
         let _ = ClusterFixture::assert_no_split_brain_write_evidence;
         let _ = ClusterFixture::update_phase_history;
         let _ = ClusterFixture::format_phase_history;
@@ -3175,6 +3425,7 @@ mod unit_tests {
         let _ = ClusterFixture::wait_for_all_nodes_failsafe;
         let _ = ClusterFixture::stop_postgres_for_node;
         let _ = ClusterFixture::stop_etcd_majority;
+        let _ = ClusterFixture::restore_etcd_members;
         let _ = ClusterFixture::write_timeline_artifact;
         let _ = ClusterFixture::write_stress_artifacts;
         let _ = ClusterFixture::shutdown;

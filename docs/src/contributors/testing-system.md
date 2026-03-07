@@ -151,7 +151,7 @@ The Makefile splits the default test run from “ultra-long” scenarios:
     - unassisted failover under concurrent SQL load
     - unassisted failover SQL continuity
     - strict no-quorum fail-safe observation
-    - no-quorum fencing and workload-integrity checks
+    - no-quorum fencing plus post-recovery committed-key verification on the recovered writable primary, requiring all pre-cutoff commits and rejecting phantom keys
   - intentionally does not include the deleted `e2e_multi_node_real_ha_scenario_matrix`; combined HA flows must earn their way back by adding unique invariant coverage beyond the focused scenarios already in `ULTRA_LONG_TESTS`.
 
 When you add a new slow scenario:

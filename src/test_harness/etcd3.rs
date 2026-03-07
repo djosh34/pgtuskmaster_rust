@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -100,6 +100,11 @@ impl EtcdHandle {
 #[derive(Debug)]
 pub struct EtcdClusterHandle {
     members: Vec<EtcdHandle>,
+    stopped_members: BTreeSet<String>,
+    member_specs: BTreeMap<String, EtcdClusterMemberSpec>,
+    etcd_bin: PathBuf,
+    namespace_id: String,
+    startup_timeout: Duration,
     client_endpoints: Vec<String>,
 }
 
@@ -115,18 +120,84 @@ impl EtcdClusterHandle {
             .collect()
     }
 
-    pub async fn shutdown_member(&mut self, member_name: &str) -> Result<bool, HarnessError> {
-        if let Some(position) = self
+    pub async fn shutdown_member(&mut self, member_name: &str) -> Result<(), HarnessError> {
+        if self.stopped_members.contains(member_name) {
+            return Err(HarnessError::InvalidInput(format!(
+                "etcd member {member_name} is already stopped"
+            )));
+        }
+        if !self.member_specs.contains_key(member_name) {
+            return Err(HarnessError::InvalidInput(format!(
+                "etcd member {member_name} was never part of this cluster"
+            )));
+        }
+        let position = self
             .members
             .iter()
             .position(|member| member.member_name() == member_name)
+            .ok_or_else(|| {
+                HarnessError::InvalidInput(format!(
+                    "etcd member {member_name} is not currently running"
+                ))
+            })?;
+        let mut member = self.members.swap_remove(position);
+        member.shutdown().await?;
+        self.stopped_members.insert(member_name.to_string());
+        Ok(())
+    }
+
+    pub async fn restart_member(&mut self, member_name: &str) -> Result<(), HarnessError> {
+        if self
+            .members
+            .iter()
+            .any(|member| member.member_name() == member_name)
         {
-            let mut member = self.members.swap_remove(position);
-            member.shutdown().await?;
-            Ok(true)
-        } else {
-            Ok(false)
+            return Err(HarnessError::InvalidInput(format!(
+                "etcd member {member_name} is already running"
+            )));
         }
+        if !self.stopped_members.remove(member_name) {
+            return Err(HarnessError::InvalidInput(format!(
+                "etcd member {member_name} is not stopped"
+            )));
+        }
+        let member_spec = self.member_specs.get(member_name).cloned().ok_or_else(|| {
+            HarnessError::InvalidInput(format!(
+                "etcd member {member_name} was never part of this cluster"
+            ))
+        })?;
+        let all_members: Vec<EtcdClusterMemberSpec> = self.member_specs.values().cloned().collect();
+        let initial_cluster = build_initial_cluster(all_members.as_slice())?;
+        match spawn_etcd_member(
+            &self.etcd_bin,
+            &self.namespace_id,
+            &initial_cluster,
+            self.startup_timeout,
+            &member_spec,
+        )
+        .await
+        {
+            Ok(handle) => {
+                self.members.push(handle);
+                Ok(())
+            }
+            Err(err) => {
+                self.stopped_members.insert(member_name.to_string());
+                Err(err)
+            }
+        }
+    }
+
+    pub async fn restart_members(&mut self, member_names: &[String]) -> Result<(), HarnessError> {
+        for member_name in member_names {
+            self.restart_member(member_name.as_str()).await?;
+        }
+        wait_for_cluster_readiness(
+            self.client_endpoints.as_slice(),
+            self.namespace_id.as_str(),
+            self.startup_timeout,
+        )
+        .await
     }
 
     pub async fn shutdown_all(&mut self) -> Result<(), HarnessError> {
@@ -137,6 +208,8 @@ impl EtcdClusterHandle {
                 failures.push(format!("{}: {err}", member.member_name()));
             }
         }
+
+        self.stopped_members.clear();
 
         if failures.is_empty() {
             Ok(())
@@ -275,8 +348,20 @@ pub async fn spawn_etcd3_cluster(spec: EtcdClusterSpec) -> Result<EtcdClusterHan
         };
     }
 
+    let member_specs: BTreeMap<String, EtcdClusterMemberSpec> = spec
+        .members
+        .iter()
+        .cloned()
+        .map(|member| (member.member_name.clone(), member))
+        .collect();
+
     Ok(EtcdClusterHandle {
         members: started_members,
+        stopped_members: BTreeSet::new(),
+        member_specs,
+        etcd_bin: spec.etcd_bin,
+        namespace_id: spec.namespace_id,
+        startup_timeout: spec.startup_timeout,
         client_endpoints: endpoints,
     })
 }
@@ -465,7 +550,7 @@ mod tests {
 
     use super::{
         build_initial_cluster, prepare_etcd_data_dir, prepare_etcd_member_data_dir, spawn_etcd3,
-        EtcdClusterMemberSpec, EtcdInstanceSpec,
+        spawn_etcd3_cluster, EtcdClusterMemberSpec, EtcdClusterSpec, EtcdInstanceSpec,
     };
     use crate::test_harness::binaries::require_etcd_bin_for_real_tests;
     use crate::test_harness::namespace::NamespaceGuard;
@@ -572,6 +657,84 @@ mod tests {
         drop(reservation);
         let mut handle = spawn_etcd3(spec).await?;
         handle.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn restart_stopped_cluster_member_restores_cluster_readiness() -> Result<(), HarnessError>
+    {
+        let etcd_bin = require_etcd_bin_for_real_tests()?;
+        let guard = NamespaceGuard::new("restart-etcd-member")?;
+        let ns = guard.namespace()?;
+        let reservation = allocate_ports(6)?;
+        let ports = reservation.as_slice();
+
+        let member_specs = vec![
+            EtcdClusterMemberSpec {
+                member_name: "node-a".to_string(),
+                data_dir: prepare_etcd_member_data_dir(ns, "node-a")?,
+                log_dir: ns.child_dir("logs/etcd3-node-a"),
+                client_port: ports[0],
+                peer_port: ports[1],
+            },
+            EtcdClusterMemberSpec {
+                member_name: "node-b".to_string(),
+                data_dir: prepare_etcd_member_data_dir(ns, "node-b")?,
+                log_dir: ns.child_dir("logs/etcd3-node-b"),
+                client_port: ports[2],
+                peer_port: ports[3],
+            },
+            EtcdClusterMemberSpec {
+                member_name: "node-c".to_string(),
+                data_dir: prepare_etcd_member_data_dir(ns, "node-c")?,
+                log_dir: ns.child_dir("logs/etcd3-node-c"),
+                client_port: ports[4],
+                peer_port: ports[5],
+            },
+        ];
+        let cluster_spec = EtcdClusterSpec {
+            etcd_bin,
+            namespace_id: ns.id.clone(),
+            startup_timeout: Duration::from_secs(15),
+            members: member_specs,
+        };
+
+        drop(reservation);
+        let mut cluster = spawn_etcd3_cluster(cluster_spec).await?;
+        cluster.shutdown_member("node-b").await?;
+        cluster.restart_members(&["node-b".to_string()]).await?;
+
+        let mut client = etcd_client::Client::connect(cluster.client_endpoints().to_vec(), None)
+            .await
+            .map_err(|err| {
+                HarnessError::InvalidInput(format!("connect etcd after restart failed: {err}"))
+            })?;
+        client
+            .put("/restart-test", "ok", None)
+            .await
+            .map_err(|err| {
+                HarnessError::InvalidInput(format!("put etcd after restart failed: {err}"))
+            })?;
+        let response = client.get("/restart-test", None).await.map_err(|err| {
+            HarnessError::InvalidInput(format!("get etcd after restart failed: {err}"))
+        })?;
+        let observed = response
+            .kvs()
+            .first()
+            .ok_or_else(|| {
+                HarnessError::InvalidInput(
+                    "restart verification get returned no key-values".to_string(),
+                )
+            })?
+            .value_str()
+            .map_err(|err| HarnessError::InvalidInput(format!("invalid etcd value utf8: {err}")))?;
+        if observed != "ok" {
+            return Err(HarnessError::InvalidInput(format!(
+                "restart verification value mismatch: expected ok, got {observed}"
+            )));
+        }
+
+        cluster.shutdown_all().await?;
         Ok(())
     }
 }

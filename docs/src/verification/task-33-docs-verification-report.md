@@ -354,9 +354,9 @@ Each claim row uses:
 
 | claim_id | doc_loc | claim | status | evidence | notes |
 |---|---|---|---|---|---|
-| stress-001 | `docs/src/testing/ha-e2e-stress-mapping.md:13` | The no-quorum stress scenario is covered by two focused real-binary tests in `make test-long`. | verified | `Makefile` `ULTRA_LONG_TESTS`, `tests/ha_multi_node_failsafe.rs` (`e2e_no_quorum_enters_failsafe_strict_all_nodes`, `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity`) | Coverage was moved out of the default suite because these scenarios are minutes-long. |
+| stress-001 | `docs/src/testing/ha-e2e-stress-mapping.md:13` | The no-quorum stress scenario is covered by two focused real-binary tests in `make test-long`. | verified | `Makefile` `ULTRA_LONG_TESTS`, `tests/ha_multi_node_failsafe.rs` (`e2e_no_quorum_enters_failsafe_strict_all_nodes`, `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity`) | Coverage was moved out of the default suite because these scenarios are minutes-long; the fencing scenario now restores quorum and verifies that the recovered writable primary contains every pre-cutoff committed key and no phantom keys outside the client-observed set, instead of accepting any outage-time readable node. |
 | stress-002 | `docs/src/testing/ha-e2e-stress-mapping.md:32` | Both tests write artifacts and shut down the fixture even on failure. | verified | `tests/ha/support/multi_node.rs` (stress artifact writing + fixture shutdown finalization helpers) |  |
-| stress-003 | `docs/src/testing/ha-e2e-stress-mapping.md:36` | Timing notes match the current tests (bounded waits, sampling windows, cutoff grace). | fixed | `tests/ha/support/multi_node.rs` (stress wait plans, sample windows, cutoff grace constants) | Docs were updated to match actual constants/values. |
+| stress-003 | `docs/src/testing/ha-e2e-stress-mapping.md:36` | Timing notes match the current tests (bounded waits, sampling windows, cutoff grace, and post-recovery verification sequencing). | fixed | `tests/ha/support/multi_node.rs` (stress wait plans, sample windows, cutoff grace constants, recovery-phase committed-key bounds verification) | Docs were updated to match actual constants/values and the current recovery-first verification flow. |
 
 #### `docs/src/testing/bdd.md`
 
