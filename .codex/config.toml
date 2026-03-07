@@ -14,12 +14,12 @@ model_reasoning_effort = "high"
 model_reasoning_summary = "none"
 model_supports_reasoning_summaries = false
 
-[profiles.normal_high]
+[profiles.normal_model]
 model = "gpt-5.4"
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
 
 [profiles.normal_medium]
-model = "gpt-5.3-codex"
+model = "gpt-5.4"
 model_reasoning_effort = "medium"
 
 [profiles.deep_review]
