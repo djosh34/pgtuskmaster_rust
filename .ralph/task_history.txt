@@ -119,3 +119,4 @@
 .ralph/tasks/bugs/failsafe-integrity-ultra-long-flake.md
 .ralph/tasks/bugs/no-quorum-integrity-check-does-not-verify-committed-keys.md
 .ralph/tasks/story-tracing-based-logging/01-task-establish-typed-event-contract-and-emit-ownership-rules.md
+.ralph/tasks/story-tracing-based-logging/02-task-migrate-runtime-process-and-api-to-owned-typed-events.md

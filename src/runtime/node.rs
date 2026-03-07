@@ -25,8 +25,8 @@ use crate::{
         HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
     },
     logging::{
-        EventMeta, LogParser, LogProducer, LogSource, LogTransport, SeverityText,
-        SubprocessLineRecord, SubprocessStream,
+        AppEvent, AppEventHeader, SeverityText, StructuredFields, SubprocessLineRecord,
+        SubprocessStream,
     },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     postgres_managed_conf::ManagedPostgresStartIntent,
@@ -89,6 +89,66 @@ enum DataDirState {
     Existing,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RuntimeEventKind {
+    StartupEntered,
+    DataDirInspected,
+    DcsCacheProbe,
+    ModeSelected,
+    ActionsPlanned,
+    Action,
+    Phase,
+    SubprocessLogEmitFailed,
+}
+
+impl RuntimeEventKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::StartupEntered => "runtime.startup.entered",
+            Self::DataDirInspected => "runtime.startup.data_dir.inspected",
+            Self::DcsCacheProbe => "runtime.startup.dcs_cache_probe",
+            Self::ModeSelected => "runtime.startup.mode_selected",
+            Self::ActionsPlanned => "runtime.startup.actions_planned",
+            Self::Action => "runtime.startup.action",
+            Self::Phase => "runtime.startup.phase",
+            Self::SubprocessLogEmitFailed => "runtime.startup.subprocess_log_emit_failed",
+        }
+    }
+}
+
+fn runtime_event(
+    kind: RuntimeEventKind,
+    result: &str,
+    severity: SeverityText,
+    message: impl Into<String>,
+) -> AppEvent {
+    AppEvent::new(
+        severity,
+        message,
+        AppEventHeader::new(kind.name(), "runtime", result),
+    )
+}
+
+fn runtime_base_fields(cfg: &RuntimeConfig, startup_run_id: &str) -> StructuredFields {
+    let mut fields = StructuredFields::new();
+    fields.insert("scope", cfg.dcs.scope.clone());
+    fields.insert("member_id", cfg.cluster.member_id.clone());
+    fields.insert("startup_run_id", startup_run_id.to_string());
+    fields
+}
+
+fn startup_mode_label(startup_mode: &StartupMode) -> String {
+    format!("{startup_mode:?}").to_lowercase()
+}
+
+fn startup_action_kind_label(action: &StartupAction) -> &'static str {
+    match action {
+        StartupAction::ClaimInitLockAndSeedConfig => "claim_init_lock_and_seed_config",
+        StartupAction::RunJob(_) => "run_job",
+        StartupAction::StartPostgres(_) => "start_postgres",
+    }
+}
+
 pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> {
     let cfg = load_runtime_config(path)?;
     run_node_from_config(cfg).await
@@ -106,30 +166,19 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         cfg.cluster.member_id,
         crate::logging::system_now_unix_millis()
     );
-    let mut start_attrs = BTreeMap::new();
-    start_attrs.insert(
-        "scope".to_string(),
-        serde_json::Value::String(cfg.dcs.scope.clone()),
-    );
-    start_attrs.insert(
-        "member_id".to_string(),
-        serde_json::Value::String(cfg.cluster.member_id.clone()),
-    );
-    start_attrs.insert(
-        "startup_run_id".to_string(),
-        serde_json::Value::String(startup_run_id.clone()),
-    );
-    start_attrs.insert(
-        "logging.level".to_string(),
-        serde_json::Value::String(format!("{:?}", cfg.logging.level).to_lowercase()),
-    );
-    log.emit_event(
+    let mut event = runtime_event(
+        RuntimeEventKind::StartupEntered,
+        "ok",
         SeverityText::Info,
         "runtime starting",
-        "runtime::run_node_from_config",
-        EventMeta::new("runtime.startup.entered", "runtime", "ok"),
-        start_attrs,
-    )
+    );
+    let fields = event.fields_mut();
+    fields.append_json_map(runtime_base_fields(&cfg, startup_run_id.as_str()).into_attributes());
+    fields.insert(
+        "logging.level",
+        format!("{:?}", cfg.logging.level).to_lowercase(),
+    );
+    log.emit_app_event("runtime::run_node_from_config", event)
     .map_err(|err| {
         RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
     })?;
@@ -184,68 +233,40 @@ fn plan_startup_with_probe(
 ) -> Result<StartupMode, RuntimeError> {
     let data_dir_state = match inspect_data_dir(&cfg.postgres.data_dir) {
         Ok(value) => {
-            let mut attrs = BTreeMap::new();
-            attrs.insert(
-                "scope".to_string(),
-                serde_json::Value::String(cfg.dcs.scope.clone()),
-            );
-            attrs.insert(
-                "member_id".to_string(),
-                serde_json::Value::String(cfg.cluster.member_id.clone()),
-            );
-            attrs.insert(
-                "startup_run_id".to_string(),
-                serde_json::Value::String(startup_run_id.to_string()),
-            );
-            attrs.insert(
-                "postgres.data_dir".to_string(),
-                serde_json::Value::String(cfg.postgres.data_dir.display().to_string()),
-            );
-            attrs.insert(
-                "data_dir_state".to_string(),
-                serde_json::Value::String(format!("{value:?}").to_lowercase()),
-            );
-            log.emit_event(
+            let mut event = runtime_event(
+                RuntimeEventKind::DataDirInspected,
+                "ok",
                 SeverityText::Debug,
                 "data dir inspected",
-                "runtime::plan_startup",
-                EventMeta::new("runtime.startup.data_dir.inspected", "runtime", "ok"),
-                attrs,
-            )
+            );
+            let fields = event.fields_mut();
+            fields.append_json_map(runtime_base_fields(cfg, startup_run_id).into_attributes());
+            fields.insert(
+                "postgres.data_dir",
+                cfg.postgres.data_dir.display().to_string(),
+            );
+            fields.insert("data_dir_state", format!("{value:?}").to_lowercase());
+            log.emit_app_event("runtime::plan_startup", event)
             .map_err(|err| {
                 RuntimeError::StartupPlanning(format!("data dir inspection log emit failed: {err}"))
             })?;
             value
         }
         Err(err) => {
-            let mut attrs = BTreeMap::new();
-            attrs.insert(
-                "scope".to_string(),
-                serde_json::Value::String(cfg.dcs.scope.clone()),
-            );
-            attrs.insert(
-                "member_id".to_string(),
-                serde_json::Value::String(cfg.cluster.member_id.clone()),
-            );
-            attrs.insert(
-                "startup_run_id".to_string(),
-                serde_json::Value::String(startup_run_id.to_string()),
-            );
-            attrs.insert(
-                "postgres.data_dir".to_string(),
-                serde_json::Value::String(cfg.postgres.data_dir.display().to_string()),
-            );
-            attrs.insert(
-                "error".to_string(),
-                serde_json::Value::String(err.to_string()),
-            );
-            log.emit_event(
+            let mut event = runtime_event(
+                RuntimeEventKind::DataDirInspected,
+                "failed",
                 SeverityText::Error,
                 "data dir inspection failed",
-                "runtime::plan_startup",
-                EventMeta::new("runtime.startup.data_dir.inspected", "runtime", "failed"),
-                attrs,
-            )
+            );
+            let fields = event.fields_mut();
+            fields.append_json_map(runtime_base_fields(cfg, startup_run_id).into_attributes());
+            fields.insert(
+                "postgres.data_dir",
+                cfg.postgres.data_dir.display().to_string(),
+            );
+            fields.insert("error", err.to_string());
+            log.emit_app_event("runtime::plan_startup", event)
             .map_err(|emit_err| {
                 RuntimeError::StartupPlanning(format!(
                     "data dir inspection log emit failed: {emit_err}"
@@ -257,64 +278,33 @@ fn plan_startup_with_probe(
 
     let cache = match probe(cfg) {
         Ok(cache) => {
-            let mut attrs = BTreeMap::new();
-            attrs.insert(
-                "scope".to_string(),
-                serde_json::Value::String(cfg.dcs.scope.clone()),
-            );
-            attrs.insert(
-                "member_id".to_string(),
-                serde_json::Value::String(cfg.cluster.member_id.clone()),
-            );
-            attrs.insert(
-                "startup_run_id".to_string(),
-                serde_json::Value::String(startup_run_id.to_string()),
-            );
-            attrs.insert(
-                "dcs_probe_status".to_string(),
-                serde_json::Value::String("ok".to_string()),
-            );
-            log.emit_event(
+            let mut event = runtime_event(
+                RuntimeEventKind::DcsCacheProbe,
+                "ok",
                 SeverityText::Info,
                 "startup dcs cache probe ok",
-                "runtime::plan_startup",
-                EventMeta::new("runtime.startup.dcs_cache_probe", "runtime", "ok"),
-                attrs,
-            )
+            );
+            let fields = event.fields_mut();
+            fields.append_json_map(runtime_base_fields(cfg, startup_run_id).into_attributes());
+            fields.insert("dcs_probe_status", "ok");
+            log.emit_app_event("runtime::plan_startup", event)
             .map_err(|err| {
                 RuntimeError::StartupPlanning(format!("dcs cache probe log emit failed: {err}"))
             })?;
             Some(cache)
         }
         Err(err) => {
-            let mut attrs = BTreeMap::new();
-            attrs.insert(
-                "scope".to_string(),
-                serde_json::Value::String(cfg.dcs.scope.clone()),
-            );
-            attrs.insert(
-                "member_id".to_string(),
-                serde_json::Value::String(cfg.cluster.member_id.clone()),
-            );
-            attrs.insert(
-                "startup_run_id".to_string(),
-                serde_json::Value::String(startup_run_id.to_string()),
-            );
-            attrs.insert(
-                "error".to_string(),
-                serde_json::Value::String(err.to_string()),
-            );
-            attrs.insert(
-                "dcs_probe_status".to_string(),
-                serde_json::Value::String("failed".to_string()),
-            );
-            log.emit_event(
+            let mut event = runtime_event(
+                RuntimeEventKind::DcsCacheProbe,
+                "failed",
                 SeverityText::Warn,
                 "startup dcs cache probe failed; continuing without cache",
-                "runtime::plan_startup",
-                EventMeta::new("runtime.startup.dcs_cache_probe", "runtime", "failed"),
-                attrs,
-            )
+            );
+            let fields = event.fields_mut();
+            fields.append_json_map(runtime_base_fields(cfg, startup_run_id).into_attributes());
+            fields.insert("error", err.to_string());
+            fields.insert("dcs_probe_status", "failed");
+            log.emit_app_event("runtime::plan_startup", event)
             .map_err(|emit_err| {
                 RuntimeError::StartupPlanning(format!(
                     "dcs cache probe log emit failed: {emit_err}"
@@ -332,30 +322,16 @@ fn plan_startup_with_probe(
         process_defaults,
     )?;
 
-    let mut attrs = BTreeMap::new();
-    attrs.insert(
-        "scope".to_string(),
-        serde_json::Value::String(cfg.dcs.scope.clone()),
-    );
-    attrs.insert(
-        "member_id".to_string(),
-        serde_json::Value::String(cfg.cluster.member_id.clone()),
-    );
-    attrs.insert(
-        "startup_run_id".to_string(),
-        serde_json::Value::String(startup_run_id.to_string()),
-    );
-    attrs.insert(
-        "startup_mode".to_string(),
-        serde_json::Value::String(format!("{startup_mode:?}").to_lowercase()),
-    );
-    log.emit_event(
+    let mut event = runtime_event(
+        RuntimeEventKind::ModeSelected,
+        "ok",
         SeverityText::Info,
         "startup mode selected",
-        "runtime::plan_startup",
-        EventMeta::new("runtime.startup.mode_selected", "runtime", "ok"),
-        attrs,
-    )
+    );
+    let fields = event.fields_mut();
+    fields.append_json_map(runtime_base_fields(cfg, startup_run_id).into_attributes());
+    fields.insert("startup_mode", startup_mode_label(&startup_mode));
+    log.emit_app_event("runtime::plan_startup", event)
     .map_err(|err| RuntimeError::StartupPlanning(format!("startup mode log emit failed: {err}")))?;
 
     Ok(startup_mode)
@@ -632,76 +608,37 @@ async fn execute_startup(
 
     let actions = build_startup_actions(cfg, startup_mode)?;
 
-    let mut planned_attrs = BTreeMap::new();
-    planned_attrs.insert(
-        "scope".to_string(),
-        serde_json::Value::String(cfg.dcs.scope.clone()),
-    );
-    planned_attrs.insert(
-        "member_id".to_string(),
-        serde_json::Value::String(cfg.cluster.member_id.clone()),
-    );
-    planned_attrs.insert(
-        "startup_run_id".to_string(),
-        serde_json::Value::String(startup_run_id.to_string()),
-    );
-    planned_attrs.insert(
-        "startup_mode".to_string(),
-        serde_json::Value::String(format!("{startup_mode:?}").to_lowercase()),
-    );
-    planned_attrs.insert(
-        "startup_actions_total".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(actions.len() as u64)),
-    );
-    log.emit_event(
+    let mut planned_event = runtime_event(
+        RuntimeEventKind::ActionsPlanned,
+        "ok",
         SeverityText::Debug,
         "startup actions planned",
-        "runtime::execute_startup",
-        EventMeta::new("runtime.startup.actions_planned", "runtime", "ok"),
-        planned_attrs,
-    )
+    );
+    let fields = planned_event.fields_mut();
+    fields.append_json_map(runtime_base_fields(cfg, startup_run_id).into_attributes());
+    fields.insert("startup_mode", startup_mode_label(startup_mode));
+    fields.insert("startup_actions_total", actions.len());
+    log.emit_app_event("runtime::execute_startup", planned_event)
     .map_err(|err| {
         RuntimeError::StartupExecution(format!("startup actions log emit failed: {err}"))
     })?;
 
     for (action_index, action) in actions.into_iter().enumerate() {
-        let action_kind = match &action {
-            StartupAction::ClaimInitLockAndSeedConfig => "claim_init_lock_and_seed_config",
-            StartupAction::RunJob(_) => "run_job",
-            StartupAction::StartPostgres(_) => "start_postgres",
-        };
-        let mut step_attrs = BTreeMap::new();
-        step_attrs.insert(
-            "scope".to_string(),
-            serde_json::Value::String(cfg.dcs.scope.clone()),
-        );
-        step_attrs.insert(
-            "member_id".to_string(),
-            serde_json::Value::String(cfg.cluster.member_id.clone()),
-        );
-        step_attrs.insert(
-            "startup_run_id".to_string(),
-            serde_json::Value::String(startup_run_id.to_string()),
-        );
-        step_attrs.insert(
-            "startup_mode".to_string(),
-            serde_json::Value::String(format!("{startup_mode:?}").to_lowercase()),
-        );
-        step_attrs.insert(
-            "startup_action_index".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-        );
-        step_attrs.insert(
-            "startup_action_kind".to_string(),
-            serde_json::Value::String(action_kind.to_string()),
-        );
-        log.emit_event(
+        let action_kind = startup_action_kind_label(&action);
+        let mut action_fields = runtime_base_fields(cfg, startup_run_id);
+        action_fields.insert("startup_mode", startup_mode_label(startup_mode));
+        action_fields.insert("startup_action_index", action_index);
+        action_fields.insert("startup_action_kind", action_kind);
+        let mut started_event = runtime_event(
+            RuntimeEventKind::Action,
+            "started",
             SeverityText::Info,
             "startup action started",
-            "runtime::execute_startup",
-            EventMeta::new("runtime.startup.action", "runtime", "started"),
-            step_attrs.clone(),
-        )
+        );
+        started_event
+            .fields_mut()
+            .append_json_map(action_fields.clone().into_attributes());
+        log.emit_app_event("runtime::execute_startup", started_event)
         .map_err(|err| {
             RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
         })?;
@@ -729,31 +666,31 @@ async fn execute_startup(
 
         match result {
             Ok(()) => {
-                let done_attrs = step_attrs;
-                log.emit_event(
+                let mut done_event = runtime_event(
+                    RuntimeEventKind::Action,
+                    "ok",
                     SeverityText::Info,
                     "startup action completed",
-                    "runtime::execute_startup",
-                    EventMeta::new("runtime.startup.action", "runtime", "ok"),
-                    done_attrs,
-                )
+                );
+                done_event
+                    .fields_mut()
+                    .append_json_map(action_fields.into_attributes());
+                log.emit_app_event("runtime::execute_startup", done_event)
                 .map_err(|err| {
                     RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
                 })?;
             }
             Err(err) => {
-                let mut failed_attrs = step_attrs;
-                failed_attrs.insert(
-                    "error".to_string(),
-                    serde_json::Value::String(err.to_string()),
-                );
-                log.emit_event(
+                let mut failed_event = runtime_event(
+                    RuntimeEventKind::Action,
+                    "failed",
                     SeverityText::Error,
                     "startup action failed",
-                    "runtime::execute_startup",
-                    EventMeta::new("runtime.startup.action", "runtime", "failed"),
-                    failed_attrs,
-                )
+                );
+                let fields = failed_event.fields_mut();
+                fields.append_json_map(action_fields.into_attributes());
+                fields.insert("error", err.to_string());
+                log.emit_app_event("runtime::execute_startup", failed_event)
                 .map_err(|emit_err| {
                     RuntimeError::StartupExecution(format!(
                         "startup action failure log emit failed: {emit_err}"
@@ -772,16 +709,16 @@ fn emit_startup_phase(
     phase: &str,
     detail: &str,
 ) -> Result<(), crate::logging::LogError> {
-    log.emit(
+    let mut event = runtime_event(
+        RuntimeEventKind::Phase,
+        "ok",
         SeverityText::Info,
         format!("startup phase={phase} ({detail})"),
-        LogSource {
-            producer: LogProducer::App,
-            transport: LogTransport::Internal,
-            parser: LogParser::App,
-            origin: "startup".to_string(),
-        },
-    )
+    );
+    let fields = event.fields_mut();
+    fields.insert("startup.phase", phase.to_string());
+    fields.insert("startup.detail", detail.to_string());
+    log.emit_app_event("startup", event)
 }
 
 fn build_startup_actions(
@@ -915,45 +852,26 @@ async fn run_startup_job(
         })?;
         for line in lines {
             if let Err(err) = emit_startup_subprocess_line(log, &log_identity, line.clone()) {
-                let mut attrs = BTreeMap::new();
-                attrs.insert(
-                    "job_id".to_string(),
-                    serde_json::Value::String(log_identity.job_id.0.clone()),
-                );
-                attrs.insert(
-                    "job_kind".to_string(),
-                    serde_json::Value::String(log_identity.job_kind.clone()),
-                );
-                attrs.insert(
-                    "binary".to_string(),
-                    serde_json::Value::String(log_identity.binary.clone()),
-                );
-                attrs.insert(
-                    "stream".to_string(),
-                    serde_json::Value::String(match line.stream {
-                        crate::process::jobs::ProcessOutputStream::Stdout => "stdout".to_string(),
-                        crate::process::jobs::ProcessOutputStream::Stderr => "stderr".to_string(),
-                    }),
-                );
-                attrs.insert(
-                    "bytes_len".to_string(),
-                    serde_json::Value::Number(serde_json::Number::from(line.bytes.len() as u64)),
-                );
-                attrs.insert(
-                    "error".to_string(),
-                    serde_json::Value::String(err.to_string()),
-                );
-                log.emit_event(
+                let mut event = runtime_event(
+                    RuntimeEventKind::SubprocessLogEmitFailed,
+                    "failed",
                     SeverityText::Warn,
                     "startup subprocess line emit failed",
-                    "runtime::run_startup_job",
-                    EventMeta::new(
-                        "runtime.startup.subprocess_log_emit_failed",
-                        "runtime",
-                        "failed",
-                    ),
-                    attrs,
-                )
+                );
+                let fields = event.fields_mut();
+                fields.insert("job_id", log_identity.job_id.0.clone());
+                fields.insert("job_kind", log_identity.job_kind.clone());
+                fields.insert("binary", log_identity.binary.clone());
+                fields.insert(
+                    "stream",
+                    match line.stream {
+                        crate::process::jobs::ProcessOutputStream::Stdout => "stdout",
+                        crate::process::jobs::ProcessOutputStream::Stderr => "stderr",
+                    },
+                );
+                fields.insert("bytes_len", line.bytes.len());
+                fields.insert("error", err.to_string());
+                log.emit_app_event("runtime::run_startup_job", event)
                 .map_err(|emit_err| {
                     RuntimeError::StartupExecution(format!(
                         "startup subprocess emit failure log emit failed: {emit_err}"
@@ -1276,7 +1194,7 @@ mod tests {
     use crate::{
         config::{PostgresConfig, RuntimeConfig},
         dcs::state::{DcsCache, LeaderRecord, MemberRecord, MemberRole},
-        logging::{LogHandle, LogSink, SeverityText, TestSink},
+        logging::{decode_app_event, LogHandle, LogSink, SeverityText, TestSink},
         pginfo::state::{Readiness, SqlStatus},
         state::{MemberId, UnixMillis, Version},
     };
@@ -1366,11 +1284,9 @@ mod tests {
             })?;
 
         let inspected = sink.collect_matching(|record| {
-            matches!(
-                record.attributes.get("event.name"),
-                Some(serde_json::Value::String(name))
-                    if name == "runtime.startup.data_dir.inspected"
-            )
+            decode_app_event(record)
+                .map(|event| event.header.name == "runtime.startup.data_dir.inspected")
+                .unwrap_or(false)
         })?;
         if inspected.is_empty() {
             return Err(Box::new(io::Error::other(
@@ -1379,11 +1295,9 @@ mod tests {
         }
 
         let probe = sink.collect_matching(|record| {
-            matches!(
-                record.attributes.get("event.name"),
-                Some(serde_json::Value::String(name))
-                    if name == "runtime.startup.dcs_cache_probe"
-            )
+            decode_app_event(record)
+                .map(|event| event.header.name == "runtime.startup.dcs_cache_probe")
+                .unwrap_or(false)
         })?;
         if probe.is_empty() {
             return Err(Box::new(io::Error::other(
@@ -1392,11 +1306,9 @@ mod tests {
         }
 
         let mode_selected = sink.collect_matching(|record| {
-            matches!(
-                record.attributes.get("event.name"),
-                Some(serde_json::Value::String(name))
-                    if name == "runtime.startup.mode_selected"
-            )
+            decode_app_event(record)
+                .map(|event| event.header.name == "runtime.startup.mode_selected")
+                .unwrap_or(false)
         })?;
         if mode_selected.is_empty() {
             return Err(Box::new(io::Error::other(

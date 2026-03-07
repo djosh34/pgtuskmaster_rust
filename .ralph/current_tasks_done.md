@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar  7 03:09:45 CET 2026
+Generated: Sat Mar  7 03:34:32 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-bdd-http-tests-false-pass-via-fragile-status-and-read-patterns.md`
 
@@ -1149,5 +1149,16 @@ This documentation and inventory cleanup belongs to the same high-priority remov
 
 <description>
 **Goal:** Replace the current partially typed logging contract with a fully typed application event contract that owns event identity, severity, result, and structured fields without requiring call sites to assemble `BTreeMap<String, serde_json::Value>`. The higher order goal is to separate event semantics from backend choice so later decisions about `tracing`, OTEL export, file sinks, or keeping the current sink stack are downstream implementation choices rather than the source of application event truth.
+```
+
+==============
+
+# Task `.ralph/tasks/story-tracing-based-logging/02-task-migrate-runtime-process-and-api-to-owned-typed-events.md`
+
+```
+## Task: Migrate runtime, process, and api logging to owned typed events <status>completed</status> <passes>true</passes>
+
+<description>
+**Goal:** Convert the most orchestration-heavy logging paths from ad hoc attr maps into typed domain events, and move event ownership to the code that actually owns the semantics of the action or failure. The higher order goal is to stop outer orchestration functions from being the default place where every event is assembled, while still preserving true orchestration boundary events where they add operator value.
 ```
 

@@ -404,6 +404,7 @@ impl LogHandle {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn emit(
         &self,
         severity_text: SeverityText,

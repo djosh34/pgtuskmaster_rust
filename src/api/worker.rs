@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use rustls::ServerConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -14,7 +14,7 @@ use crate::{
     config::{ApiAuthConfig, ApiTlsMode, RuntimeConfig},
     dcs::store::DcsStore,
     debug_api::{snapshot::SystemSnapshot, view::build_verbose_payload},
-    logging::{EventMeta, LogHandle, SeverityText},
+    logging::{AppEvent, AppEventHeader, LogHandle, SeverityText, StructuredFields},
     state::{StateSubscriber, WorkerError},
 };
 
@@ -22,6 +22,44 @@ use crate::{
 struct ApiRoleTokens {
     read_token: Option<String>,
     admin_token: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ApiEventKind {
+    StepOnceFailed,
+    ConnectionAccepted,
+    RequestParseFailed,
+    ResponseSent,
+    AuthDecision,
+    TlsClientCertMissing,
+    TlsHandshakeFailed,
+}
+
+impl ApiEventKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::StepOnceFailed => "api.step_once_failed",
+            Self::ConnectionAccepted => "api.connection_accepted",
+            Self::RequestParseFailed => "api.request_parse_failed",
+            Self::ResponseSent => "api.response_sent",
+            Self::AuthDecision => "api.auth_decision",
+            Self::TlsClientCertMissing => "api.tls_client_cert_missing",
+            Self::TlsHandshakeFailed => "api.tls_handshake_failed",
+        }
+    }
+}
+
+fn api_event(
+    kind: ApiEventKind,
+    result: &str,
+    severity: SeverityText,
+    message: impl Into<String>,
+) -> AppEvent {
+    AppEvent::new(
+        severity,
+        message,
+        AppEventHeader::new(kind.name(), "api", result),
+    )
 }
 
 pub struct ApiWorkerCtx {
@@ -143,24 +181,22 @@ pub async fn run(mut ctx: ApiWorkerCtx) -> Result<(), WorkerError> {
     loop {
         if let Err(err) = step_once(&mut ctx).await {
             let fatal = is_fatal_api_step_error(&err);
-            let mut attrs = api_base_attrs(&ctx);
-            attrs.insert(
-                "error".to_string(),
-                serde_json::Value::String(err.to_string()),
+            let mut event = api_event(
+                ApiEventKind::StepOnceFailed,
+                "failed",
+                if fatal {
+                    SeverityText::Error
+                } else {
+                    SeverityText::Warn
+                },
+                "api step failed",
             );
-            attrs.insert("fatal".to_string(), serde_json::Value::Bool(fatal));
+            let fields = event.fields_mut();
+            fields.append_json_map(api_base_fields(&ctx).into_attributes());
+            fields.insert("error", err.to_string());
+            fields.insert("fatal", fatal);
             ctx.log
-                .emit_event(
-                    if fatal {
-                        SeverityText::Error
-                    } else {
-                        SeverityText::Warn
-                    },
-                    "api step failed",
-                    "api_worker::run",
-                    EventMeta::new("api.step_once_failed", "api", "failed"),
-                    attrs,
-                )
+                .emit_app_event("api_worker::run", event)
                 .map_err(|emit_err| {
                     WorkerError::Message(format!("api step failure log emit failed: {emit_err}"))
                 })?;
@@ -184,23 +220,21 @@ pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
         };
 
     let cfg = ctx.config_subscriber.latest().value;
-    let mut accept_attrs = api_base_attrs(ctx);
-    accept_attrs.insert(
-        "api.peer_addr".to_string(),
-        serde_json::Value::String(peer.to_string()),
+    let mut accept_event = api_event(
+        ApiEventKind::ConnectionAccepted,
+        "ok",
+        SeverityText::Debug,
+        "api connection accepted",
     );
-    accept_attrs.insert(
-        "api.tls_mode".to_string(),
-        serde_json::Value::String(format!("{:?}", effective_tls_mode(ctx, &cfg)).to_lowercase()),
+    let fields = accept_event.fields_mut();
+    fields.append_json_map(api_base_fields(ctx).into_attributes());
+    fields.insert("api.peer_addr", peer.to_string());
+    fields.insert(
+        "api.tls_mode",
+        format!("{:?}", effective_tls_mode(ctx, &cfg)).to_lowercase(),
     );
     ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "api connection accepted",
-            "api_worker::step_once",
-            EventMeta::new("api.connection_accepted", "api", "ok"),
-            accept_attrs,
-        )
+        .emit_app_event("api_worker::step_once", accept_event)
         .map_err(|err| WorkerError::Message(format!("api accept log emit failed: {err}")))?;
 
     let mut stream = match accept_connection(ctx, &cfg, peer, stream).await? {
@@ -212,23 +246,18 @@ pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
         match tokio::time::timeout(Duration::from_millis(100), stream.read_http_request()).await {
             Ok(Ok(req)) => req,
             Ok(Err(message)) => {
-                let mut attrs = api_base_attrs(ctx);
-                attrs.insert(
-                    "api.peer_addr".to_string(),
-                    serde_json::Value::String(peer.to_string()),
+                let mut event = api_event(
+                    ApiEventKind::RequestParseFailed,
+                    "failed",
+                    SeverityText::Warn,
+                    "api request parse failed",
                 );
-                attrs.insert(
-                    "error".to_string(),
-                    serde_json::Value::String(message.clone()),
-                );
+                let fields = event.fields_mut();
+                fields.append_json_map(api_base_fields(ctx).into_attributes());
+                fields.insert("api.peer_addr", peer.to_string());
+                fields.insert("error", message.clone());
                 ctx.log
-                    .emit_event(
-                        SeverityText::Warn,
-                        "api request parse failed",
-                        "api_worker::step_once",
-                        EventMeta::new("api.request_parse_failed", "api", "failed"),
-                        attrs,
-                    )
+                    .emit_app_event("api_worker::step_once", event)
                     .map_err(|err| {
                         WorkerError::Message(format!("api parse failure log emit failed: {err}"))
                     })?;
@@ -261,38 +290,27 @@ pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
     let status_code = response.status;
     stream.write_http_response(response).await?;
 
-    let mut attrs = api_base_attrs(ctx);
-    attrs.insert(
-        "api.peer_addr".to_string(),
-        serde_json::Value::String(peer.to_string()),
+    let mut event = api_event(
+        ApiEventKind::ResponseSent,
+        "ok",
+        SeverityText::Debug,
+        "api response sent",
     );
-    attrs.insert(
-        "api.status_code".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(status_code as u64)),
-    );
+    let fields = event.fields_mut();
+    fields.append_json_map(api_base_fields(ctx).into_attributes());
+    fields.insert("api.peer_addr", peer.to_string());
+    fields.insert("api.status_code", u64::from(status_code));
     ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "api response sent",
-            "api_worker::step_once",
-            EventMeta::new("api.response_sent", "api", "ok"),
-            attrs,
-        )
+        .emit_app_event("api_worker::step_once", event)
         .map_err(|err| WorkerError::Message(format!("api response log emit failed: {err}")))?;
     Ok(())
 }
 
-fn api_base_attrs(ctx: &ApiWorkerCtx) -> BTreeMap<String, serde_json::Value> {
-    let mut attrs = BTreeMap::new();
-    attrs.insert(
-        "scope".to_string(),
-        serde_json::Value::String(ctx.scope.clone()),
-    );
-    attrs.insert(
-        "member_id".to_string(),
-        serde_json::Value::String(ctx.member_id.clone()),
-    );
-    attrs
+fn api_base_fields(ctx: &ApiWorkerCtx) -> StructuredFields {
+    let mut fields = StructuredFields::new();
+    fields.insert("scope", ctx.scope.clone());
+    fields.insert("member_id", ctx.member_id.clone());
+    fields
 }
 
 fn extract_request_id(request: &HttpRequest) -> Option<String> {
@@ -329,45 +347,28 @@ fn emit_api_auth_decision(
     request: &HttpRequest,
     decision: &str,
 ) -> Result<(), WorkerError> {
-    let mut attrs = api_base_attrs(ctx);
-    attrs.insert(
-        "api.peer_addr".to_string(),
-        serde_json::Value::String(peer.to_string()),
+    let mut event = api_event(
+        ApiEventKind::AuthDecision,
+        "ok",
+        SeverityText::Debug,
+        "api auth decision",
     );
-    attrs.insert(
-        "api.method".to_string(),
-        serde_json::Value::String(request.method.clone()),
-    );
-    attrs.insert(
-        "api.route_template".to_string(),
-        serde_json::Value::String(route_template(request)),
-    );
-    attrs.insert(
-        "api.auth.header_present".to_string(),
-        serde_json::Value::Bool(auth_header_present(request)),
-    );
-    attrs.insert(
-        "api.auth.result".to_string(),
-        serde_json::Value::String(decision.to_string()),
-    );
-    attrs.insert(
-        "api.auth.required_role".to_string(),
-        serde_json::Value::String(format!("{:?}", endpoint_role(request)).to_lowercase()),
+    let fields = event.fields_mut();
+    fields.append_json_map(api_base_fields(ctx).into_attributes());
+    fields.insert("api.peer_addr", peer.to_string());
+    fields.insert("api.method", request.method.clone());
+    fields.insert("api.route_template", route_template(request));
+    fields.insert("api.auth.header_present", auth_header_present(request));
+    fields.insert("api.auth.result", decision.to_string());
+    fields.insert(
+        "api.auth.required_role",
+        format!("{:?}", endpoint_role(request)).to_lowercase(),
     );
     if let Some(request_id) = extract_request_id(request) {
-        attrs.insert(
-            "api.request_id".to_string(),
-            serde_json::Value::String(request_id),
-        );
+        fields.insert("api.request_id", request_id);
     }
     ctx.log
-        .emit_event(
-            SeverityText::Debug,
-            "api auth decision",
-            "api_worker::authorize_request",
-            EventMeta::new("api.auth_decision", "api", "ok"),
-            attrs,
-        )
+        .emit_app_event("api_worker::authorize_request", event)
         .map_err(|err| WorkerError::Message(format!("api auth log emit failed: {err}")))?;
     Ok(())
 }
@@ -854,23 +855,18 @@ async fn accept_connection(
             match acceptor.accept(stream).await {
                 Ok(tls_stream) => {
                     if ctx.require_client_cert && !has_peer_client_cert(&tls_stream) {
-                        let mut attrs = api_base_attrs(ctx);
-                        attrs.insert(
-                            "api.peer_addr".to_string(),
-                            serde_json::Value::String(peer.to_string()),
+                        let mut event = api_event(
+                            ApiEventKind::TlsClientCertMissing,
+                            "failed",
+                            SeverityText::Warn,
+                            "tls client cert missing",
                         );
-                        attrs.insert(
-                            "api.tls_mode".to_string(),
-                            serde_json::Value::String("required".to_string()),
-                        );
+                        let fields = event.fields_mut();
+                        fields.append_json_map(api_base_fields(ctx).into_attributes());
+                        fields.insert("api.peer_addr", peer.to_string());
+                        fields.insert("api.tls_mode", "required");
                         ctx.log
-                            .emit_event(
-                                SeverityText::Warn,
-                                "tls client cert missing",
-                                "api_worker::accept_connection",
-                                EventMeta::new("api.tls_client_cert_missing", "api", "failed"),
-                                attrs,
-                            )
+                            .emit_app_event("api_worker::accept_connection", event)
                             .map_err(|err| {
                                 WorkerError::Message(format!(
                                     "api tls missing cert log emit failed: {err}"
@@ -881,27 +877,19 @@ async fn accept_connection(
                     Ok(Some(ApiConnection::Tls(Box::new(tls_stream))))
                 }
                 Err(err) => {
-                    let mut attrs = api_base_attrs(ctx);
-                    attrs.insert(
-                        "api.peer_addr".to_string(),
-                        serde_json::Value::String(peer.to_string()),
+                    let mut event = api_event(
+                        ApiEventKind::TlsHandshakeFailed,
+                        "failed",
+                        SeverityText::Warn,
+                        "tls handshake failed",
                     );
-                    attrs.insert(
-                        "api.tls_mode".to_string(),
-                        serde_json::Value::String("required".to_string()),
-                    );
-                    attrs.insert(
-                        "error".to_string(),
-                        serde_json::Value::String(err.to_string()),
-                    );
+                    let fields = event.fields_mut();
+                    fields.append_json_map(api_base_fields(ctx).into_attributes());
+                    fields.insert("api.peer_addr", peer.to_string());
+                    fields.insert("api.tls_mode", "required");
+                    fields.insert("error", err.to_string());
                     ctx.log
-                        .emit_event(
-                            SeverityText::Warn,
-                            "tls handshake failed",
-                            "api_worker::accept_connection",
-                            EventMeta::new("api.tls_handshake_failed", "api", "failed"),
-                            attrs,
-                        )
+                        .emit_app_event("api_worker::accept_connection", event)
                         .map_err(|emit_err| {
                             WorkerError::Message(format!(
                                 "api tls handshake log emit failed: {emit_err}"
@@ -920,23 +908,18 @@ async fn accept_connection(
             match acceptor.accept(stream).await {
                 Ok(tls_stream) => {
                     if ctx.require_client_cert && !has_peer_client_cert(&tls_stream) {
-                        let mut attrs = api_base_attrs(ctx);
-                        attrs.insert(
-                            "api.peer_addr".to_string(),
-                            serde_json::Value::String(peer.to_string()),
+                        let mut event = api_event(
+                            ApiEventKind::TlsClientCertMissing,
+                            "failed",
+                            SeverityText::Warn,
+                            "tls client cert missing",
                         );
-                        attrs.insert(
-                            "api.tls_mode".to_string(),
-                            serde_json::Value::String("optional".to_string()),
-                        );
+                        let fields = event.fields_mut();
+                        fields.append_json_map(api_base_fields(ctx).into_attributes());
+                        fields.insert("api.peer_addr", peer.to_string());
+                        fields.insert("api.tls_mode", "optional");
                         ctx.log
-                            .emit_event(
-                                SeverityText::Warn,
-                                "tls client cert missing",
-                                "api_worker::accept_connection",
-                                EventMeta::new("api.tls_client_cert_missing", "api", "failed"),
-                                attrs,
-                            )
+                            .emit_app_event("api_worker::accept_connection", event)
                             .map_err(|err| {
                                 WorkerError::Message(format!(
                                     "api tls missing cert log emit failed: {err}"
@@ -947,27 +930,19 @@ async fn accept_connection(
                     Ok(Some(ApiConnection::Tls(Box::new(tls_stream))))
                 }
                 Err(err) => {
-                    let mut attrs = api_base_attrs(ctx);
-                    attrs.insert(
-                        "api.peer_addr".to_string(),
-                        serde_json::Value::String(peer.to_string()),
+                    let mut event = api_event(
+                        ApiEventKind::TlsHandshakeFailed,
+                        "failed",
+                        SeverityText::Warn,
+                        "tls handshake failed",
                     );
-                    attrs.insert(
-                        "api.tls_mode".to_string(),
-                        serde_json::Value::String("optional".to_string()),
-                    );
-                    attrs.insert(
-                        "error".to_string(),
-                        serde_json::Value::String(err.to_string()),
-                    );
+                    let fields = event.fields_mut();
+                    fields.append_json_map(api_base_fields(ctx).into_attributes());
+                    fields.insert("api.peer_addr", peer.to_string());
+                    fields.insert("api.tls_mode", "optional");
+                    fields.insert("error", err.to_string());
                     ctx.log
-                        .emit_event(
-                            SeverityText::Warn,
-                            "tls handshake failed",
-                            "api_worker::accept_connection",
-                            EventMeta::new("api.tls_handshake_failed", "api", "failed"),
-                            attrs,
-                        )
+                        .emit_app_event("api_worker::accept_connection", event)
                         .map_err(|emit_err| {
                             WorkerError::Message(format!(
                                 "api tls handshake log emit failed: {emit_err}"
@@ -1233,14 +1208,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use serde_json::Value;
-
     use rustls::{pki_types::ServerName, ClientConfig};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
 
-    use crate::logging::{LogHandle, LogSink, SeverityText, TestSink};
+    use crate::logging::{decode_app_event, LogHandle, LogSink, SeverityText, TestSink};
 
     use crate::{
         api::worker::{step_once, ApiWorkerCtx},
@@ -1902,10 +1875,9 @@ mod tests {
             .map_err(|err| WorkerError::Message(format!("log snapshot failed: {err}")))?;
 
         let auth_decision_present = records.iter().any(|record| {
-            matches!(
-                record.attributes.get("event.name"),
-                Some(Value::String(name)) if name == "api.auth_decision"
-            )
+            decode_app_event(record)
+                .map(|event| event.header.name == "api.auth_decision")
+                .unwrap_or(false)
         });
         if !auth_decision_present {
             return Err(WorkerError::Message(
