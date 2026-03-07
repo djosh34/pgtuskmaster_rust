@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 03:34:32 CET 2026
+Generated: Sat Mar  7 04:00:21 AM CET 2026
 
 # Task `.ralph/tasks/story-container-first-deployment/01-task-container-first-docker-deployment-and-compose.md`
 
@@ -87,17 +87,6 @@ DO NOT PICK THIS TASK UNLESS ALL OTHER TASKS ARE DONE.
 NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-tracing-based-logging/03-task-migrate-ha-dcs-pginfo-and-postgres-ingest-to-owned-typed-events.md`
-
-```
-## Task: Migrate HA, DCS, PgInfo, and Postgres ingest logging to owned typed events <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Convert the remaining control-plane and ingest domains to the typed event contract, with special attention to keeping orchestration decisions separate from operation-owned results and keeping external postgres log lines on a typed raw-record path. The higher order goal is a uniform event model across control-plane state machines and ingest workers, without reintroducing free-form `serde_json` value assembly in domain code.
 ```
 
 ==============

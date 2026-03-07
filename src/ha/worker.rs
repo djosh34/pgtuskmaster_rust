@@ -1,14 +1,11 @@
-use crate::{
-    logging::{EventMeta, SeverityText},
-    state::{WorkerError, WorkerStatus},
-};
+use crate::state::{WorkerError, WorkerStatus};
 
 use super::{
     apply::{apply_effect_plan, format_dispatch_errors},
     decide::decide,
     events::{
-        emit_ha_decision_selected, emit_ha_effect_plan_selected, ha_base_attrs, ha_role_label,
-        serialize_attr_value,
+        emit_ha_decision_selected, emit_ha_effect_plan_selected, emit_ha_phase_transition,
+        emit_ha_role_transition, ha_role_label,
     },
     state::{DecideInput, HaWorkerCtx, WorldSnapshot},
 };
@@ -67,44 +64,13 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
         .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
 
     if prev_phase != published_next.phase {
-        let mut attrs = ha_base_attrs(ctx, published_next.tick);
-        attrs.insert("phase_prev".to_string(), serialize_attr_value(&prev_phase)?);
-        attrs.insert(
-            "phase_next".to_string(),
-            serialize_attr_value(&published_next.phase)?,
-        );
-        ctx.log
-            .emit_event(
-                SeverityText::Info,
-                "ha phase transition",
-                "ha_worker::step_once",
-                EventMeta::new("ha.phase.transition", "ha", "ok"),
-                attrs,
-            )
-            .map_err(|err| WorkerError::Message(format!("ha phase log emit failed: {err}")))?;
+        emit_ha_phase_transition(ctx, published_next.tick, &prev_phase, &published_next.phase)?;
     }
 
     let prev_role = ha_role_label(&prev_phase);
     let next_role = ha_role_label(&published_next.phase);
     if prev_role != next_role {
-        let mut attrs = ha_base_attrs(ctx, published_next.tick);
-        attrs.insert(
-            "role_prev".to_string(),
-            serde_json::Value::String(prev_role.to_string()),
-        );
-        attrs.insert(
-            "role_next".to_string(),
-            serde_json::Value::String(next_role.to_string()),
-        );
-        ctx.log
-            .emit_event(
-                SeverityText::Info,
-                "ha role transition",
-                "ha_worker::step_once",
-                EventMeta::new("ha.role.transition", "ha", "ok"),
-                attrs,
-            )
-            .map_err(|err| WorkerError::Message(format!("ha role log emit failed: {err}")))?;
+        emit_ha_role_transition(ctx, published_next.tick, prev_role, next_role)?;
     }
 
     ctx.state = published_next.clone();

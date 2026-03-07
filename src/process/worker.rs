@@ -9,8 +9,8 @@ use tokio::{
 use crate::{
     config::{ProcessConfig, RoleAuthConfig},
     logging::{
-        AppEvent, AppEventHeader, LogHandle, SeverityText, StructuredFields,
-        SubprocessLineRecord, SubprocessStream,
+        AppEvent, AppEventHeader, LogHandle, SeverityText, StructuredFields, SubprocessLineRecord,
+        SubprocessStream,
     },
     pginfo::state::render_pg_conninfo,
     state::{JobId, UnixMillis, WorkerError, WorkerStatus},
@@ -796,7 +796,9 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 "process output drain failed",
             );
             let fields = event.fields_mut();
-            fields.append_json_map(process_log_identity_fields(&runtime.log_identity).into_attributes());
+            fields.append_json_map(
+                process_log_identity_fields(&runtime.log_identity).into_attributes(),
+            );
             fields.insert("error", err.to_string());
             ctx.log
                 .emit_app_event("process_worker::tick_active_job", event)
@@ -814,9 +816,9 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             SeverityText::Warn,
             "process job timed out; cancelling",
         );
-        timeout_event.fields_mut().append_json_map(
-            process_log_identity_fields(&runtime.log_identity).into_attributes(),
-        );
+        timeout_event
+            .fields_mut()
+            .append_json_map(process_log_identity_fields(&runtime.log_identity).into_attributes());
         ctx.log
             .emit_app_event("process_worker::tick_active_job", timeout_event)
             .map_err(|err| {
@@ -988,7 +990,9 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 "process job exited unsuccessfully",
             );
             let fields = event.fields_mut();
-            fields.append_json_map(process_log_identity_fields(&runtime.log_identity).into_attributes());
+            fields.append_json_map(
+                process_log_identity_fields(&runtime.log_identity).into_attributes(),
+            );
             fields.insert("error", exit_error.to_string());
             ctx.log
                 .emit_app_event("process_worker::tick_active_job", event)
@@ -1048,7 +1052,9 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 "process job poll failed",
             );
             let fields = event.fields_mut();
-            fields.append_json_map(process_log_identity_fields(&runtime.log_identity).into_attributes());
+            fields.append_json_map(
+                process_log_identity_fields(&runtime.log_identity).into_attributes(),
+            );
             fields.insert("error", outcome_error_string(&outcome));
             ctx.log
                 .emit_app_event("process_worker::tick_active_job", event)

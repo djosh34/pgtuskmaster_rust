@@ -344,27 +344,6 @@ pub(crate) struct LogHandle {
     min_app_severity_number: u8,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct EventMeta {
-    pub(crate) name: String,
-    pub(crate) domain: String,
-    pub(crate) result: String,
-}
-
-impl EventMeta {
-    pub(crate) fn new(
-        name: impl Into<String>,
-        domain: impl Into<String>,
-        result: impl Into<String>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            domain: domain.into(),
-            result: result.into(),
-        }
-    }
-}
-
 impl std::fmt::Debug for LogHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogHandle")
@@ -422,24 +401,6 @@ impl LogHandle {
             source,
         );
         self.sink.emit(&record)
-    }
-
-    pub(crate) fn emit_event(
-        &self,
-        severity_text: SeverityText,
-        message: impl Into<String>,
-        origin: impl Into<String>,
-        meta: EventMeta,
-        attributes: BTreeMap<String, Value>,
-    ) -> Result<(), LogError> {
-        let event = AppEvent::new(
-            severity_text,
-            message,
-            AppEventHeader::new(meta.name, meta.domain, meta.result),
-        );
-        let mut event = event;
-        event.fields_mut().append_json_map(attributes);
-        self.emit_app_event(origin, event)
     }
 
     pub(crate) fn emit_app_event(

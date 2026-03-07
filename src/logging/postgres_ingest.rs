@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::config::{LogCleanupConfig, RuntimeConfig};
 use crate::logging::{
-    EventMeta, LogHandle, LogParser, LogProducer, LogTransport, PostgresLineRecordBuilder,
-    RawRecordBuilder, SeverityText, StructuredFields,
+    AppEvent, AppEventHeader, LogHandle, LogParser, LogProducer, LogTransport,
+    PostgresLineRecordBuilder, RawRecordBuilder, SeverityText, StructuredFields,
 };
 use crate::state::WorkerError;
 
@@ -160,54 +160,62 @@ fn ingest_error_key_best_effort(error: &WorkerError) -> IngestErrorKey {
     IngestErrorKey { stage, kind, path }
 }
 
+fn ingest_event(severity: SeverityText, message: &str, name: &str, result: &str) -> AppEvent {
+    AppEvent::new(
+        severity,
+        message,
+        AppEventHeader::new(name, "postgres_ingest", result),
+    )
+}
+
+fn emit_ingest_event(
+    log: &LogHandle,
+    origin: &str,
+    event: AppEvent,
+    error_prefix: &str,
+) -> Result<(), WorkerError> {
+    log.emit_app_event(origin, event)
+        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
+}
+
 fn emit_ingest_step_failure(
     log: &LogHandle,
     error: &WorkerError,
     attempts: u32,
     suppressed: u64,
 ) -> Result<(), WorkerError> {
-    let mut attrs = BTreeMap::new();
-    attrs.insert(
-        "attempts".to_string(),
-        Value::Number(serde_json::Number::from(attempts as u64)),
-    );
-    attrs.insert(
-        "suppressed".to_string(),
-        Value::Number(serde_json::Number::from(suppressed)),
-    );
-    attrs.insert("error".to_string(), Value::String(error.to_string()));
-    log.emit_event(
+    let mut event = ingest_event(
         SeverityText::Error,
         "postgres ingest step_once failed",
+        "postgres_ingest.step_once_failed",
+        "failed",
+    );
+    let fields = event.fields_mut();
+    fields.insert("attempts", attempts);
+    fields.insert("suppressed", suppressed);
+    fields.insert("error", error.to_string());
+    emit_ingest_event(
+        log,
         "postgres_ingest::run",
-        EventMeta::new(
-            "postgres_ingest.step_once_failed",
-            "postgres_ingest",
-            "failed",
-        ),
-        attrs,
+        event,
+        "postgres ingest error log emit failed",
     )
-    .map_err(|err| WorkerError::Message(format!("postgres ingest error log emit failed: {err}")))?;
-    Ok(())
 }
 
 fn emit_ingest_retry_recovered(log: &LogHandle, attempts: u32) -> Result<(), WorkerError> {
-    let mut attrs = BTreeMap::new();
-    attrs.insert(
-        "attempts".to_string(),
-        Value::Number(serde_json::Number::from(attempts as u64)),
-    );
-    log.emit_event(
+    let mut event = ingest_event(
         SeverityText::Info,
         "postgres ingest recovered",
+        "postgres_ingest.recovered",
+        "recovered",
+    );
+    event.fields_mut().insert("attempts", attempts);
+    emit_ingest_event(
+        log,
         "postgres_ingest::run",
-        EventMeta::new("postgres_ingest.recovered", "postgres_ingest", "recovered"),
-        attrs,
+        event,
+        "postgres ingest recovered log emit failed",
     )
-    .map_err(|err| {
-        WorkerError::Message(format!("postgres ingest recovered log emit failed: {err}"))
-    })?;
-    Ok(())
 }
 
 struct PostgresIngestWorkerState {
@@ -381,34 +389,23 @@ async fn step_once(
     }
 
     if issues.is_empty() {
-        let mut attrs = BTreeMap::new();
-        attrs.insert(
-            "pg_ctl_lines_emitted".to_string(),
-            Value::Number(serde_json::Number::from(pg_ctl_lines_emitted)),
+        let mut event = ingest_event(
+            SeverityText::Debug,
+            "postgres ingest iteration ok",
+            "postgres_ingest.iteration",
+            "ok",
         );
-        attrs.insert(
-            "log_dir_files_tailed".to_string(),
-            Value::Number(serde_json::Number::from(log_dir_files_tailed)),
-        );
-        attrs.insert(
-            "log_dir_lines_emitted".to_string(),
-            Value::Number(serde_json::Number::from(log_dir_lines_emitted)),
-        );
-        attrs.insert(
-            "dir_tailers".to_string(),
-            Value::Number(serde_json::Number::from(state.dir_tailers.len() as u64)),
-        );
-        ctx.log
-            .emit_event(
-                SeverityText::Debug,
-                "postgres ingest iteration ok",
-                "postgres_ingest::step_once",
-                EventMeta::new("postgres_ingest.iteration", "postgres_ingest", "ok"),
-                attrs,
-            )
-            .map_err(|err| {
-                WorkerError::Message(format!("postgres ingest debug log emit failed: {err}"))
-            })?;
+        let fields = event.fields_mut();
+        fields.insert("pg_ctl_lines_emitted", pg_ctl_lines_emitted);
+        fields.insert("log_dir_files_tailed", log_dir_files_tailed);
+        fields.insert("log_dir_lines_emitted", log_dir_lines_emitted);
+        fields.insert("dir_tailers", state.dir_tailers.len());
+        emit_ingest_event(
+            &ctx.log,
+            "postgres_ingest::step_once",
+            event,
+            "postgres ingest debug log emit failed",
+        )?;
         return Ok(());
     }
 
@@ -740,7 +737,7 @@ fn normalize_postgres_line(line: &str, builder: PostgresLineRecordBuilder) -> Ra
                 LogParser::PostgresJson,
                 parsed.severity,
                 parsed.message,
-                StructuredFields::from_json_map(parsed.attributes),
+                parsed.fields,
             );
         }
     }
@@ -750,7 +747,7 @@ fn normalize_postgres_line(line: &str, builder: PostgresLineRecordBuilder) -> Ra
             LogParser::PostgresPlain,
             parsed.severity,
             parsed.message,
-            StructuredFields::from_json_map(parsed.attributes),
+            parsed.fields,
         );
     }
 
@@ -763,7 +760,7 @@ fn normalize_postgres_line(line: &str, builder: PostgresLineRecordBuilder) -> Ra
 struct ParsedLine {
     severity: SeverityText,
     message: String,
-    attributes: BTreeMap<String, Value>,
+    fields: StructuredFields,
 }
 
 fn normalize_postgres_json(value: Value) -> Option<ParsedLine> {
@@ -783,13 +780,13 @@ fn normalize_postgres_json(value: Value) -> Option<ParsedLine> {
     let severity_raw = severity_raw.map_or("INFO", |severity| severity);
     let severity = map_pg_severity(severity_raw);
 
-    let mut attributes = BTreeMap::new();
-    attributes.insert("postgres.json".to_string(), value.clone());
+    let mut fields = StructuredFields::new();
+    fields.insert("postgres.json", value.clone());
 
     Some(ParsedLine {
         severity,
         message,
-        attributes,
+        fields,
     })
 }
 
@@ -807,16 +804,13 @@ fn normalize_postgres_plain(line: &str) -> Option<ParsedLine> {
         return None;
     }
     let severity = map_pg_severity(level);
-    let mut attributes = BTreeMap::new();
-    attributes.insert(
-        "postgres.level_raw".to_string(),
-        Value::String(level.to_string()),
-    );
+    let mut fields = StructuredFields::new();
+    fields.insert("postgres.level_raw", level.to_string());
 
     Some(ParsedLine {
         severity,
         message,
-        attributes,
+        fields,
     })
 }
 
@@ -848,8 +842,8 @@ mod tests {
         PostgresLoggingConfig, RuntimeConfig,
     };
     use crate::logging::{
-        LogHandle, LogParser, LogProducer, LogTransport, PostgresLineRecordBuilder, SeverityText,
-        TestSink,
+        decode_app_event, LogHandle, LogParser, LogProducer, LogTransport,
+        PostgresLineRecordBuilder, SeverityText, TestSink,
     };
 
     use crate::state::WorkerError;
@@ -945,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_ingest_step_failure_emits_internal_error_record() {
+    fn emit_ingest_step_failure_emits_internal_error_record() -> Result<(), WorkerError> {
         let (log, sink) = test_log_handle();
         let err = WorkerError::Message("stage=x kind=y path=/z error=boom".to_string());
 
@@ -954,23 +948,28 @@ mod tests {
 
         let records = sink.take();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].severity_text, SeverityText::Error);
-        assert_eq!(records[0].source.transport, LogTransport::Internal);
-        assert_eq!(records[0].source.origin, "postgres_ingest::run");
+        let decoded = decode_app_event(&records[0]).map_err(|err| {
+            WorkerError::Message(format!("decode postgres ingest event failed: {err}"))
+        })?;
+        assert_eq!(decoded.severity, SeverityText::Error);
+        assert_eq!(decoded.origin, "postgres_ingest::run");
         assert_eq!(
-            records[0].attributes.get("event.name"),
-            Some(&Value::String(
-                "postgres_ingest.step_once_failed".to_string()
-            ))
+            decoded.header,
+            crate::logging::AppEventHeader::new(
+                "postgres_ingest.step_once_failed",
+                "postgres_ingest",
+                "failed",
+            )
         );
         assert_eq!(
-            records[0].attributes.get("attempts"),
+            decoded.fields.get("attempts"),
             Some(&Value::Number(serde_json::Number::from(2_u64)))
         );
         assert_eq!(
-            records[0].attributes.get("suppressed"),
+            decoded.fields.get("suppressed"),
             Some(&Value::Number(serde_json::Number::from(7_u64)))
         );
+        Ok(())
     }
 
     #[test]

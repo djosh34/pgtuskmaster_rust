@@ -36,12 +36,6 @@ impl StructuredFields {
         Self::default()
     }
 
-    pub(crate) fn from_json_map(attributes: BTreeMap<String, Value>) -> Self {
-        let mut fields = Self::new();
-        fields.append_json_map(attributes);
-        fields
-    }
-
     pub(crate) fn append_json_map(&mut self, attributes: BTreeMap<String, Value>) {
         self.fields.extend(
             attributes
@@ -165,6 +159,12 @@ impl From<&str> for StructuredValue {
 impl From<String> for StructuredValue {
     fn from(value: String) -> Self {
         Self::String(value)
+    }
+}
+
+impl From<Value> for StructuredValue {
+    fn from(value: Value) -> Self {
+        Self::Json(value)
     }
 }
 

@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
-
-use crate::state::WorkerError;
+use crate::{
+    logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
+    state::WorkerError,
+};
 
 use super::{
     keys::DcsKey,
@@ -24,6 +25,42 @@ pub(crate) enum DcsValue {
 pub(crate) enum DcsWatchUpdate {
     Put { key: DcsKey, value: Box<DcsValue> },
     Delete { key: DcsKey },
+}
+
+fn dcs_append_base_fields(fields: &mut StructuredFields, ctx: &DcsWorkerCtx) {
+    fields.insert("scope", ctx.scope.clone());
+    fields.insert("member_id", ctx.self_id.0.clone());
+}
+
+fn dcs_event(severity: SeverityText, message: &str, name: &str, result: &str) -> AppEvent {
+    AppEvent::new(severity, message, AppEventHeader::new(name, "dcs", result))
+}
+
+fn emit_dcs_event(
+    ctx: &DcsWorkerCtx,
+    origin: &str,
+    event: AppEvent,
+    error_prefix: &str,
+) -> Result<(), WorkerError> {
+    ctx.log
+        .emit_app_event(origin, event)
+        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
+}
+
+fn dcs_io_error_severity(err: &crate::dcs::store::DcsStoreError) -> SeverityText {
+    match err {
+        crate::dcs::store::DcsStoreError::Io(_) => SeverityText::Warn,
+        _ => SeverityText::Error,
+    }
+}
+
+fn dcs_refresh_error_severity(err: &crate::dcs::store::DcsStoreError) -> SeverityText {
+    match err {
+        crate::dcs::store::DcsStoreError::Io(_)
+        | crate::dcs::store::DcsStoreError::InvalidKey(_)
+        | crate::dcs::store::DcsStoreError::MissingValue(_) => SeverityText::Warn,
+        _ => SeverityText::Error,
+    }
 }
 
 pub(crate) async fn run(mut ctx: DcsWorkerCtx) -> Result<(), WorkerError> {
@@ -95,41 +132,21 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
                 local_member_publish_succeeded = true;
             }
             Err(err) => {
-                let mut attrs = BTreeMap::new();
-                attrs.insert(
-                    "scope".to_string(),
-                    serde_json::Value::String(ctx.scope.clone()),
+                let mut event = dcs_event(
+                    dcs_io_error_severity(&err),
+                    "dcs local member write failed",
+                    "dcs.local_member.write_failed",
+                    "failed",
                 );
-                attrs.insert(
-                    "member_id".to_string(),
-                    serde_json::Value::String(ctx.self_id.0.clone()),
-                );
-                attrs.insert(
-                    "error".to_string(),
-                    serde_json::Value::String(err.to_string()),
-                );
-                ctx.log
-                    .emit_event(
-                        match &err {
-                            crate::dcs::store::DcsStoreError::Io(_) => {
-                                crate::logging::SeverityText::Warn
-                            }
-                            _ => crate::logging::SeverityText::Error,
-                        },
-                        "dcs local member write failed",
-                        "dcs_worker::step_once",
-                        crate::logging::EventMeta::new(
-                            "dcs.local_member.write_failed",
-                            "dcs",
-                            "failed",
-                        ),
-                        attrs,
-                    )
-                    .map_err(|emit_err| {
-                        WorkerError::Message(format!(
-                            "dcs local member write log emit failed: {emit_err}"
-                        ))
-                    })?;
+                let fields = event.fields_mut();
+                dcs_append_base_fields(fields, ctx);
+                fields.insert("error", err.to_string());
+                emit_dcs_event(
+                    ctx,
+                    "dcs_worker::step_once",
+                    event,
+                    "dcs local member write log emit failed",
+                )?;
                 store_healthy = false;
             }
         }
@@ -138,35 +155,21 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let events = match ctx.store.drain_watch_events() {
         Ok(events) => events,
         Err(err) => {
-            let mut attrs = BTreeMap::new();
-            attrs.insert(
-                "scope".to_string(),
-                serde_json::Value::String(ctx.scope.clone()),
+            let mut event = dcs_event(
+                dcs_io_error_severity(&err),
+                "dcs watch drain failed",
+                "dcs.watch.drain_failed",
+                "failed",
             );
-            attrs.insert(
-                "member_id".to_string(),
-                serde_json::Value::String(ctx.self_id.0.clone()),
-            );
-            attrs.insert(
-                "error".to_string(),
-                serde_json::Value::String(err.to_string()),
-            );
-            ctx.log
-                .emit_event(
-                    match &err {
-                        crate::dcs::store::DcsStoreError::Io(_) => {
-                            crate::logging::SeverityText::Warn
-                        }
-                        _ => crate::logging::SeverityText::Error,
-                    },
-                    "dcs watch drain failed",
-                    "dcs_worker::step_once",
-                    crate::logging::EventMeta::new("dcs.watch.drain_failed", "dcs", "failed"),
-                    attrs,
-                )
-                .map_err(|emit_err| {
-                    WorkerError::Message(format!("dcs drain log emit failed: {emit_err}"))
-                })?;
+            let fields = event.fields_mut();
+            dcs_append_base_fields(fields, ctx);
+            fields.insert("error", err.to_string());
+            emit_dcs_event(
+                ctx,
+                "dcs_worker::step_once",
+                event,
+                "dcs drain log emit failed",
+            )?;
             store_healthy = false;
             Vec::new()
         }
@@ -174,73 +177,40 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     match refresh_from_etcd_watch(&ctx.scope, &mut ctx.cache, events) {
         Ok(result) => {
             if result.had_errors {
-                let mut attrs = BTreeMap::new();
-                attrs.insert(
-                    "scope".to_string(),
-                    serde_json::Value::String(ctx.scope.clone()),
+                let mut event = dcs_event(
+                    SeverityText::Warn,
+                    "dcs watch refresh had errors",
+                    "dcs.watch.apply_had_errors",
+                    "failed",
                 );
-                attrs.insert(
-                    "member_id".to_string(),
-                    serde_json::Value::String(ctx.self_id.0.clone()),
-                );
-                attrs.insert(
-                    "applied".to_string(),
-                    serde_json::Value::Number(serde_json::Number::from(result.applied as u64)),
-                );
-                ctx.log
-                    .emit_event(
-                        crate::logging::SeverityText::Warn,
-                        "dcs watch refresh had errors",
-                        "dcs_worker::step_once",
-                        crate::logging::EventMeta::new(
-                            "dcs.watch.apply_had_errors",
-                            "dcs",
-                            "failed",
-                        ),
-                        attrs,
-                    )
-                    .map_err(|emit_err| {
-                        WorkerError::Message(format!(
-                            "dcs refresh had_errors log emit failed: {emit_err}"
-                        ))
-                    })?;
+                let fields = event.fields_mut();
+                dcs_append_base_fields(fields, ctx);
+                fields.insert("applied", result.applied);
+                emit_dcs_event(
+                    ctx,
+                    "dcs_worker::step_once",
+                    event,
+                    "dcs refresh had_errors log emit failed",
+                )?;
                 store_healthy = false;
             }
         }
         Err(err) => {
-            let mut attrs = BTreeMap::new();
-            attrs.insert(
-                "scope".to_string(),
-                serde_json::Value::String(ctx.scope.clone()),
+            let mut event = dcs_event(
+                dcs_refresh_error_severity(&err),
+                "dcs watch refresh failed",
+                "dcs.watch.refresh_failed",
+                "failed",
             );
-            attrs.insert(
-                "member_id".to_string(),
-                serde_json::Value::String(ctx.self_id.0.clone()),
-            );
-            attrs.insert(
-                "error".to_string(),
-                serde_json::Value::String(err.to_string()),
-            );
-            ctx.log
-                .emit_event(
-                    match &err {
-                        crate::dcs::store::DcsStoreError::Io(_) => {
-                            crate::logging::SeverityText::Warn
-                        }
-                        crate::dcs::store::DcsStoreError::InvalidKey(_)
-                        | crate::dcs::store::DcsStoreError::MissingValue(_) => {
-                            crate::logging::SeverityText::Warn
-                        }
-                        _ => crate::logging::SeverityText::Error,
-                    },
-                    "dcs watch refresh failed",
-                    "dcs_worker::step_once",
-                    crate::logging::EventMeta::new("dcs.watch.refresh_failed", "dcs", "failed"),
-                    attrs,
-                )
-                .map_err(|emit_err| {
-                    WorkerError::Message(format!("dcs refresh log emit failed: {emit_err}"))
-                })?;
+            let fields = event.fields_mut();
+            dcs_append_base_fields(fields, ctx);
+            fields.insert("error", err.to_string());
+            emit_dcs_event(
+                ctx,
+                "dcs_worker::step_once",
+                event,
+                "dcs refresh log emit failed",
+            )?;
             store_healthy = false;
         }
     }
@@ -268,38 +238,25 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     };
     if ctx.last_emitted_store_healthy != Some(store_healthy) {
         ctx.last_emitted_store_healthy = Some(store_healthy);
-        let mut attrs = BTreeMap::new();
-        attrs.insert(
-            "scope".to_string(),
-            serde_json::Value::String(ctx.scope.clone()),
+        let mut event = dcs_event(
+            if store_healthy {
+                SeverityText::Info
+            } else {
+                SeverityText::Warn
+            },
+            "dcs store health transition",
+            "dcs.store.health_transition",
+            if store_healthy { "recovered" } else { "failed" },
         );
-        attrs.insert(
-            "member_id".to_string(),
-            serde_json::Value::String(ctx.self_id.0.clone()),
-        );
-        attrs.insert(
-            "store_healthy".to_string(),
-            serde_json::Value::Bool(store_healthy),
-        );
-        ctx.log
-            .emit_event(
-                if store_healthy {
-                    crate::logging::SeverityText::Info
-                } else {
-                    crate::logging::SeverityText::Warn
-                },
-                "dcs store health transition",
-                "dcs_worker::step_once",
-                crate::logging::EventMeta::new(
-                    "dcs.store.health_transition",
-                    "dcs",
-                    if store_healthy { "recovered" } else { "failed" },
-                ),
-                attrs,
-            )
-            .map_err(|emit_err| {
-                WorkerError::Message(format!("dcs health transition log emit failed: {emit_err}"))
-            })?;
+        let fields = event.fields_mut();
+        dcs_append_base_fields(fields, ctx);
+        fields.insert("store_healthy", store_healthy);
+        emit_dcs_event(
+            ctx,
+            "dcs_worker::step_once",
+            event,
+            "dcs health transition log emit failed",
+        )?;
     }
     if ctx.last_emitted_trust.as_ref() != Some(&next.trust) {
         let prev = ctx
@@ -308,31 +265,22 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             .map(|value| format!("{value:?}").to_lowercase())
             .unwrap_or_else(|| "unknown".to_string());
         ctx.last_emitted_trust = Some(next.trust.clone());
-        let mut attrs = BTreeMap::new();
-        attrs.insert(
-            "scope".to_string(),
-            serde_json::Value::String(ctx.scope.clone()),
+        let mut event = dcs_event(
+            SeverityText::Info,
+            "dcs trust transition",
+            "dcs.trust.transition",
+            "ok",
         );
-        attrs.insert(
-            "member_id".to_string(),
-            serde_json::Value::String(ctx.self_id.0.clone()),
-        );
-        attrs.insert("trust_prev".to_string(), serde_json::Value::String(prev));
-        attrs.insert(
-            "trust_next".to_string(),
-            serde_json::Value::String(format!("{:?}", next.trust).to_lowercase()),
-        );
-        ctx.log
-            .emit_event(
-                crate::logging::SeverityText::Info,
-                "dcs trust transition",
-                "dcs_worker::step_once",
-                crate::logging::EventMeta::new("dcs.trust.transition", "dcs", "ok"),
-                attrs,
-            )
-            .map_err(|emit_err| {
-                WorkerError::Message(format!("dcs trust transition log emit failed: {emit_err}"))
-            })?;
+        let fields = event.fields_mut();
+        dcs_append_base_fields(fields, ctx);
+        fields.insert("trust_prev", prev);
+        fields.insert("trust_next", format!("{:?}", next.trust).to_lowercase());
+        emit_dcs_event(
+            ctx,
+            "dcs_worker::step_once",
+            event,
+            "dcs trust transition log emit failed",
+        )?;
     }
     ctx.publisher
         .publish(next, now)
@@ -367,7 +315,7 @@ mod tests {
             store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
             worker::{apply_watch_update, DcsValue, DcsWatchUpdate},
         },
-        logging::{LogHandle, LogSink, SeverityText, TestSink},
+        logging::{decode_app_event, LogHandle, LogSink, SeverityText, TestSink},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
@@ -729,14 +677,18 @@ mod tests {
         assert_eq!(latest.value.trust, DcsTrust::NotTrusted);
 
         let failures = sink
-            .collect_matching(|record| {
-                matches!(
-                    record.attributes.get("event.name"),
-                    Some(serde_json::Value::String(name))
-                        if name == "dcs.local_member.write_failed"
-                )
+            .take()
+            .into_iter()
+            .filter_map(|record| decode_app_event(&record).ok())
+            .filter(|event| {
+                event.header
+                    == crate::logging::AppEventHeader::new(
+                        "dcs.local_member.write_failed",
+                        "dcs",
+                        "failed",
+                    )
             })
-            .map_err(|err| WorkerError::Message(format!("log snapshot failed: {err}")))?;
+            .collect::<Vec<_>>();
         if failures.is_empty() {
             return Err(WorkerError::Message(
                 "expected dcs.local_member.write_failed event".to_string(),
@@ -744,7 +696,7 @@ mod tests {
         }
         if !failures
             .iter()
-            .any(|record| record.severity_text == SeverityText::Warn)
+            .any(|event| event.severity == SeverityText::Warn)
         {
             return Err(WorkerError::Message(
                 "expected dcs.local_member.write_failed severity warn".to_string(),

@@ -179,9 +179,9 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         format!("{:?}", cfg.logging.level).to_lowercase(),
     );
     log.emit_app_event("runtime::run_node_from_config", event)
-    .map_err(|err| {
-        RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
-    })?;
+        .map_err(|err| {
+            RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
+        })?;
 
     let process_defaults = process_defaults_from_config(&cfg);
     let startup_mode = plan_startup(&cfg, &process_defaults, &log, startup_run_id.as_str())?;
@@ -247,9 +247,11 @@ fn plan_startup_with_probe(
             );
             fields.insert("data_dir_state", format!("{value:?}").to_lowercase());
             log.emit_app_event("runtime::plan_startup", event)
-            .map_err(|err| {
-                RuntimeError::StartupPlanning(format!("data dir inspection log emit failed: {err}"))
-            })?;
+                .map_err(|err| {
+                    RuntimeError::StartupPlanning(format!(
+                        "data dir inspection log emit failed: {err}"
+                    ))
+                })?;
             value
         }
         Err(err) => {
@@ -267,11 +269,11 @@ fn plan_startup_with_probe(
             );
             fields.insert("error", err.to_string());
             log.emit_app_event("runtime::plan_startup", event)
-            .map_err(|emit_err| {
-                RuntimeError::StartupPlanning(format!(
-                    "data dir inspection log emit failed: {emit_err}"
-                ))
-            })?;
+                .map_err(|emit_err| {
+                    RuntimeError::StartupPlanning(format!(
+                        "data dir inspection log emit failed: {emit_err}"
+                    ))
+                })?;
             return Err(err);
         }
     };
@@ -288,9 +290,9 @@ fn plan_startup_with_probe(
             fields.append_json_map(runtime_base_fields(cfg, startup_run_id).into_attributes());
             fields.insert("dcs_probe_status", "ok");
             log.emit_app_event("runtime::plan_startup", event)
-            .map_err(|err| {
-                RuntimeError::StartupPlanning(format!("dcs cache probe log emit failed: {err}"))
-            })?;
+                .map_err(|err| {
+                    RuntimeError::StartupPlanning(format!("dcs cache probe log emit failed: {err}"))
+                })?;
             Some(cache)
         }
         Err(err) => {
@@ -305,11 +307,11 @@ fn plan_startup_with_probe(
             fields.insert("error", err.to_string());
             fields.insert("dcs_probe_status", "failed");
             log.emit_app_event("runtime::plan_startup", event)
-            .map_err(|emit_err| {
-                RuntimeError::StartupPlanning(format!(
-                    "dcs cache probe log emit failed: {emit_err}"
-                ))
-            })?;
+                .map_err(|emit_err| {
+                    RuntimeError::StartupPlanning(format!(
+                        "dcs cache probe log emit failed: {emit_err}"
+                    ))
+                })?;
             None
         }
     };
@@ -332,7 +334,9 @@ fn plan_startup_with_probe(
     fields.append_json_map(runtime_base_fields(cfg, startup_run_id).into_attributes());
     fields.insert("startup_mode", startup_mode_label(&startup_mode));
     log.emit_app_event("runtime::plan_startup", event)
-    .map_err(|err| RuntimeError::StartupPlanning(format!("startup mode log emit failed: {err}")))?;
+        .map_err(|err| {
+            RuntimeError::StartupPlanning(format!("startup mode log emit failed: {err}"))
+        })?;
 
     Ok(startup_mode)
 }
@@ -619,9 +623,9 @@ async fn execute_startup(
     fields.insert("startup_mode", startup_mode_label(startup_mode));
     fields.insert("startup_actions_total", actions.len());
     log.emit_app_event("runtime::execute_startup", planned_event)
-    .map_err(|err| {
-        RuntimeError::StartupExecution(format!("startup actions log emit failed: {err}"))
-    })?;
+        .map_err(|err| {
+            RuntimeError::StartupExecution(format!("startup actions log emit failed: {err}"))
+        })?;
 
     for (action_index, action) in actions.into_iter().enumerate() {
         let action_kind = startup_action_kind_label(&action);
@@ -639,9 +643,9 @@ async fn execute_startup(
             .fields_mut()
             .append_json_map(action_fields.clone().into_attributes());
         log.emit_app_event("runtime::execute_startup", started_event)
-        .map_err(|err| {
-            RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
-        })?;
+            .map_err(|err| {
+                RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
+            })?;
 
         if let StartupAction::StartPostgres(_) = &action {
             emit_startup_phase(log, "start", "start postgres with managed config").map_err(
@@ -676,9 +680,11 @@ async fn execute_startup(
                     .fields_mut()
                     .append_json_map(action_fields.into_attributes());
                 log.emit_app_event("runtime::execute_startup", done_event)
-                .map_err(|err| {
-                    RuntimeError::StartupExecution(format!("startup action log emit failed: {err}"))
-                })?;
+                    .map_err(|err| {
+                        RuntimeError::StartupExecution(format!(
+                            "startup action log emit failed: {err}"
+                        ))
+                    })?;
             }
             Err(err) => {
                 let mut failed_event = runtime_event(
@@ -691,11 +697,11 @@ async fn execute_startup(
                 fields.append_json_map(action_fields.into_attributes());
                 fields.insert("error", err.to_string());
                 log.emit_app_event("runtime::execute_startup", failed_event)
-                .map_err(|emit_err| {
-                    RuntimeError::StartupExecution(format!(
-                        "startup action failure log emit failed: {emit_err}"
-                    ))
-                })?;
+                    .map_err(|emit_err| {
+                        RuntimeError::StartupExecution(format!(
+                            "startup action failure log emit failed: {emit_err}"
+                        ))
+                    })?;
                 return Err(err);
             }
         };
@@ -872,11 +878,11 @@ async fn run_startup_job(
                 fields.insert("bytes_len", line.bytes.len());
                 fields.insert("error", err.to_string());
                 log.emit_app_event("runtime::run_startup_job", event)
-                .map_err(|emit_err| {
-                    RuntimeError::StartupExecution(format!(
-                        "startup subprocess emit failure log emit failed: {emit_err}"
-                    ))
-                })?;
+                    .map_err(|emit_err| {
+                        RuntimeError::StartupExecution(format!(
+                            "startup subprocess emit failure log emit failed: {emit_err}"
+                        ))
+                    })?;
             }
         }
 

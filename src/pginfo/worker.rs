@@ -1,10 +1,38 @@
-use std::collections::BTreeMap;
-
-use crate::state::WorkerError;
 use crate::state::{UnixMillis, WorkerStatus};
+use crate::{
+    logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
+    state::WorkerError,
+};
 
 use super::query::poll_once;
 use super::state::{to_member_status, PgInfoState, PgInfoWorkerCtx, SqlStatus};
+
+fn pginfo_append_base_fields(fields: &mut StructuredFields, ctx: &PgInfoWorkerCtx) {
+    fields.insert("member_id", ctx.self_id.0.clone());
+}
+
+fn pginfo_event(severity: SeverityText, message: &str, name: &str, result: &str) -> AppEvent {
+    AppEvent::new(
+        severity,
+        message,
+        AppEventHeader::new(name, "pginfo", result),
+    )
+}
+
+fn emit_pginfo_event(
+    ctx: &PgInfoWorkerCtx,
+    origin: &str,
+    event: AppEvent,
+    error_prefix: &str,
+) -> Result<(), WorkerError> {
+    ctx.log
+        .emit_app_event(origin, event)
+        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
+}
+
+fn sql_status_label(status: &SqlStatus) -> String {
+    format!("{status:?}").to_lowercase()
+}
 
 pub(crate) async fn run(mut ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
     loop {
@@ -21,26 +49,21 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
             to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))
         }
         Err(ref err) => {
-            let mut attrs = BTreeMap::new();
-            attrs.insert(
-                "member_id".to_string(),
-                serde_json::Value::String(ctx.self_id.0.clone()),
+            let mut event = pginfo_event(
+                SeverityText::Warn,
+                "pginfo poll failed",
+                "pginfo.poll_failed",
+                "failed",
             );
-            attrs.insert(
-                "error".to_string(),
-                serde_json::Value::String(err.to_string()),
-            );
-            ctx.log
-                .emit_event(
-                    crate::logging::SeverityText::Warn,
-                    "pginfo poll failed",
-                    "pginfo_worker::step_once",
-                    crate::logging::EventMeta::new("pginfo.poll_failed", "pginfo", "failed"),
-                    attrs,
-                )
-                .map_err(|emit_err| {
-                    WorkerError::Message(format!("pginfo poll failure log emit failed: {emit_err}"))
-                })?;
+            let fields = event.fields_mut();
+            pginfo_append_base_fields(fields, ctx);
+            fields.insert("error", err.to_string());
+            emit_pginfo_event(
+                ctx,
+                "pginfo_worker::step_once",
+                event,
+                "pginfo poll failure log emit failed",
+            )?;
             to_member_status(WorkerStatus::Running, SqlStatus::Unreachable, now, None)
         }
     };
@@ -51,39 +74,27 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
         .clone()
         .unwrap_or(SqlStatus::Unknown);
     if prev_sql != next_sql {
-        let mut attrs = BTreeMap::new();
-        attrs.insert(
-            "member_id".to_string(),
-            serde_json::Value::String(ctx.self_id.0.clone()),
-        );
-        attrs.insert(
-            "sql_status_prev".to_string(),
-            serde_json::Value::String(format!("{prev_sql:?}").to_lowercase()),
-        );
-        attrs.insert(
-            "sql_status_next".to_string(),
-            serde_json::Value::String(format!("{next_sql:?}").to_lowercase()),
-        );
         let (severity, result) = match (prev_sql.clone(), next_sql.clone()) {
-            (SqlStatus::Healthy, SqlStatus::Unreachable) => {
-                (crate::logging::SeverityText::Warn, "failed")
-            }
-            (SqlStatus::Unreachable, SqlStatus::Healthy) => {
-                (crate::logging::SeverityText::Info, "recovered")
-            }
-            _ => (crate::logging::SeverityText::Debug, "ok"),
+            (SqlStatus::Healthy, SqlStatus::Unreachable) => (SeverityText::Warn, "failed"),
+            (SqlStatus::Unreachable, SqlStatus::Healthy) => (SeverityText::Info, "recovered"),
+            _ => (SeverityText::Debug, "ok"),
         };
-        ctx.log
-            .emit_event(
-                severity,
-                "pginfo sql status transition",
-                "pginfo_worker::step_once",
-                crate::logging::EventMeta::new("pginfo.sql_transition", "pginfo", result),
-                attrs,
-            )
-            .map_err(|emit_err| {
-                WorkerError::Message(format!("pginfo sql transition log emit failed: {emit_err}"))
-            })?;
+        let mut event = pginfo_event(
+            severity,
+            "pginfo sql status transition",
+            "pginfo.sql_transition",
+            result,
+        );
+        let fields = event.fields_mut();
+        pginfo_append_base_fields(fields, ctx);
+        fields.insert("sql_status_prev", sql_status_label(&prev_sql));
+        fields.insert("sql_status_next", sql_status_label(&next_sql));
+        emit_pginfo_event(
+            ctx,
+            "pginfo_worker::step_once",
+            event,
+            "pginfo sql transition log emit failed",
+        )?;
         ctx.last_emitted_sql_status = Some(next_sql.clone());
     }
 
@@ -124,7 +135,7 @@ mod tests {
     use tokio::time::Instant;
     use tokio_postgres::NoTls;
 
-    use crate::logging::{LogHandle, LogSink, SeverityText, TestSink};
+    use crate::logging::{decode_app_event, LogHandle, LogSink, SeverityText, TestSink};
     use crate::pginfo::state::{PgConfig, PgInfoCommon};
     use crate::state::{new_state_channel, MemberId, UnixMillis, WorkerStatus};
     use crate::test_harness::binaries::require_pg16_bin_for_real_tests;
@@ -245,16 +256,22 @@ mod tests {
             wait_for_postgres_ready(&dsn, Duration::from_secs(10)).await?;
             step_once(&mut ctx).await?;
 
-            let transitions = sink.collect_matching(|record| {
-                matches!(
-                    record.attributes.get("event.name"),
-                    Some(serde_json::Value::String(name)) if name == "pginfo.sql_transition"
-                )
-            })?;
+            let transitions = sink
+                .take()
+                .into_iter()
+                .filter_map(|record| decode_app_event(&record).ok())
+                .filter(|event| event.header.name == "pginfo.sql_transition")
+                .collect::<Vec<_>>();
             if transitions.is_empty() {
                 return Err(test_error(
                     "expected pginfo.sql_transition event on first poll".to_string(),
                 ));
+            }
+            if transitions[0].header.result != "ok" {
+                return Err(test_error(format!(
+                    "expected initial pginfo.sql_transition result ok, got {:?}",
+                    transitions[0].header.result
+                )));
             }
 
             let first = subscriber.latest().value;
@@ -446,12 +463,12 @@ mod tests {
 
                 let polled = subscriber.latest().value;
                 if matches!(polled, PgInfoState::Replica { .. }) {
-                    let transitions = sink.collect_matching(|record| {
-                        matches!(
-                            record.attributes.get("event.name"),
-                            Some(serde_json::Value::String(name)) if name == "pginfo.sql_transition"
-                        )
-                    })?;
+                    let transitions = sink
+                        .take()
+                        .into_iter()
+                        .filter_map(|record| decode_app_event(&record).ok())
+                        .filter(|event| event.header.name == "pginfo.sql_transition")
+                        .collect::<Vec<_>>();
                     if transitions.is_empty() {
                         return Err(test_error(
                             "expected pginfo.sql_transition event during replica convergence"

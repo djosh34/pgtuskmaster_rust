@@ -1,7 +1,5 @@
-use std::collections::BTreeMap;
-
 use crate::{
-    logging::{EventMeta, SeverityText},
+    logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
     state::WorkerError,
 };
 
@@ -12,28 +10,44 @@ use super::{
     state::{HaPhase, HaWorkerCtx},
 };
 
-pub(crate) fn ha_base_attrs(
+fn ha_append_base_fields(fields: &mut StructuredFields, ctx: &HaWorkerCtx, ha_tick: u64) {
+    fields.insert("scope", ctx.scope.clone());
+    fields.insert("member_id", ctx.self_id.0.clone());
+    fields.insert("ha_tick", ha_tick);
+    fields.insert("ha_dispatch_seq", ha_tick);
+}
+
+fn ha_append_action_fields(fields: &mut StructuredFields, action_index: usize, action: &HaAction) {
+    fields.insert("action_index", action_index);
+    fields.insert("action_id", action.id().label());
+    if let HaAction::FollowLeader { leader_member_id } = action {
+        fields.insert("leader_member_id", leader_member_id.clone());
+    }
+}
+
+fn ha_insert_serialized<T: serde::Serialize>(
+    fields: &mut StructuredFields,
+    key: &str,
+    value: &T,
+) -> Result<(), WorkerError> {
+    fields
+        .insert_serialized(key, value)
+        .map_err(|err| WorkerError::Message(format!("ha attr serialization failed: {err}")))
+}
+
+fn ha_event(severity: SeverityText, message: &str, name: &str, result: &str) -> AppEvent {
+    AppEvent::new(severity, message, AppEventHeader::new(name, "ha", result))
+}
+
+fn emit_ha_event(
     ctx: &HaWorkerCtx,
-    ha_tick: u64,
-) -> BTreeMap<String, serde_json::Value> {
-    let mut attrs = BTreeMap::new();
-    attrs.insert(
-        "scope".to_string(),
-        serde_json::Value::String(ctx.scope.clone()),
-    );
-    attrs.insert(
-        "member_id".to_string(),
-        serde_json::Value::String(ctx.self_id.0.clone()),
-    );
-    attrs.insert(
-        "ha_tick".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(ha_tick)),
-    );
-    attrs.insert(
-        "ha_dispatch_seq".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(ha_tick)),
-    );
-    attrs
+    origin: &str,
+    event: AppEvent,
+    error_prefix: &str,
+) -> Result<(), WorkerError> {
+    ctx.log
+        .emit_app_event(origin, event)
+        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
 }
 
 pub(crate) fn emit_ha_action_intent(
@@ -42,28 +56,19 @@ pub(crate) fn emit_ha_action_intent(
     action_index: usize,
     action: &HaAction,
 ) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action.id().label()),
-    );
-    if let HaAction::FollowLeader { leader_member_id } = action {
-        attrs.insert(
-            "leader_member_id".to_string(),
-            serde_json::Value::String(leader_member_id.clone()),
-        );
-    }
-    emit_event(
-        ctx,
+    let mut event = ha_event(
         SeverityText::Debug,
         "ha action intent",
+        "ha.action.intent",
+        "ok",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    ha_append_action_fields(fields, action_index, action);
+    emit_ha_event(
+        ctx,
         "ha_worker::step_once",
-        EventMeta::new("ha.action.intent", "ha", "ok"),
-        attrs,
+        event,
         "ha intent log emit failed",
     )
 }
@@ -74,19 +79,20 @@ pub(crate) fn emit_ha_decision_selected(
     decision: &HaDecision,
     plan: &HaEffectPlan,
 ) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert("decision".to_string(), serialize_attr_value(decision)?);
-    attrs.insert(
-        "planned_dispatch_step_count".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(plan.dispatch_step_count() as u64)),
-    );
-    emit_event(
-        ctx,
+    let mut event = ha_event(
         SeverityText::Debug,
         "ha decision selected",
+        "ha.decision.selected",
+        "ok",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    ha_insert_serialized(fields, "decision", decision)?;
+    fields.insert("planned_dispatch_step_count", plan.dispatch_step_count());
+    emit_ha_event(
+        ctx,
         "ha_worker::step_once",
-        EventMeta::new("ha.decision.selected", "ha", "ok"),
-        attrs,
+        event,
         "ha decision log emit failed",
     )
 }
@@ -96,15 +102,19 @@ pub(crate) fn emit_ha_effect_plan_selected(
     ha_tick: u64,
     plan: &HaEffectPlan,
 ) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert("effect_plan".to_string(), serialize_attr_value(plan)?);
-    emit_event(
-        ctx,
+    let mut event = ha_event(
         SeverityText::Debug,
         "ha effect plan selected",
+        "ha.effect_plan.selected",
+        "ok",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    ha_insert_serialized(fields, "effect_plan", plan)?;
+    emit_ha_event(
+        ctx,
         "ha_worker::step_once",
-        EventMeta::new("ha.effect_plan.selected", "ha", "ok"),
-        attrs,
+        event,
         "ha effect plan log emit failed",
     )
 }
@@ -115,22 +125,19 @@ pub(crate) fn emit_ha_action_dispatch(
     action_index: usize,
     action: &HaAction,
 ) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action.id().label()),
-    );
-    emit_event(
-        ctx,
+    let mut event = ha_event(
         SeverityText::Debug,
         "ha action dispatch",
+        "ha.action.dispatch",
+        "ok",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    ha_append_action_fields(fields, action_index, action);
+    emit_ha_event(
+        ctx,
         "ha_worker::dispatch_actions",
-        EventMeta::new("ha.action.dispatch", "ha", "ok"),
-        attrs,
+        event,
         "ha dispatch log emit failed",
     )
 }
@@ -141,22 +148,19 @@ pub(crate) fn emit_ha_action_result_ok(
     action_index: usize,
     action: &HaAction,
 ) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action.id().label()),
-    );
-    emit_event(
-        ctx,
+    let mut event = ha_event(
         SeverityText::Debug,
         "ha action result",
+        "ha.action.result",
+        "ok",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    ha_append_action_fields(fields, action_index, action);
+    emit_ha_event(
+        ctx,
         "ha_worker::dispatch_actions",
-        EventMeta::new("ha.action.result", "ha", "ok"),
-        attrs,
+        event,
         "ha result log emit failed",
     )
 }
@@ -167,22 +171,19 @@ pub(crate) fn emit_ha_action_result_skipped(
     action_index: usize,
     action: &HaAction,
 ) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action.id().label()),
-    );
-    emit_event(
-        ctx,
+    let mut event = ha_event(
         SeverityText::Debug,
         "ha action skipped",
+        "ha.action.result",
+        "skipped",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    ha_append_action_fields(fields, action_index, action);
+    emit_ha_event(
+        ctx,
         "ha_worker::dispatch_actions",
-        EventMeta::new("ha.action.result", "ha", "skipped"),
-        attrs,
+        event,
         "ha result log emit failed",
     )
 }
@@ -194,23 +195,20 @@ pub(crate) fn emit_ha_action_result_failed(
     action: &HaAction,
     error: String,
 ) -> Result<(), WorkerError> {
-    let mut attrs = ha_base_attrs(ctx, ha_tick);
-    attrs.insert(
-        "action_index".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(action_index as u64)),
-    );
-    attrs.insert(
-        "action_id".to_string(),
-        serde_json::Value::String(action.id().label()),
-    );
-    attrs.insert("error".to_string(), serde_json::Value::String(error));
-    emit_event(
-        ctx,
+    let mut event = ha_event(
         SeverityText::Warn,
         "ha action failed",
+        "ha.action.result",
+        "failed",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    ha_append_action_fields(fields, action_index, action);
+    fields.insert("error", error);
+    emit_ha_event(
+        ctx,
         "ha_worker::dispatch_actions",
-        EventMeta::new("ha.action.result", "ha", "failed"),
-        attrs,
+        event,
         "ha result log emit failed",
     )
 }
@@ -220,20 +218,74 @@ pub(crate) fn emit_ha_lease_transition(
     ha_tick: u64,
     acquired: bool,
 ) -> Result<(), WorkerError> {
-    let attrs = ha_base_attrs(ctx, ha_tick);
-    let (name, message) = if acquired {
-        ("ha.lease.acquired", "ha leader lease acquired")
-    } else {
-        ("ha.lease.released", "ha leader lease released")
-    };
-    emit_event(
-        ctx,
+    let mut event = ha_event(
         SeverityText::Info,
-        message,
+        if acquired {
+            "ha leader lease acquired"
+        } else {
+            "ha leader lease released"
+        },
+        if acquired {
+            "ha.lease.acquired"
+        } else {
+            "ha.lease.released"
+        },
+        "ok",
+    );
+    ha_append_base_fields(event.fields_mut(), ctx, ha_tick);
+    emit_ha_event(
+        ctx,
         "ha_worker::dispatch_actions",
-        EventMeta::new(name, "ha", "ok"),
-        attrs,
+        event,
         "ha lease log emit failed",
+    )
+}
+
+pub(crate) fn emit_ha_phase_transition(
+    ctx: &HaWorkerCtx,
+    ha_tick: u64,
+    prev_phase: &HaPhase,
+    next_phase: &HaPhase,
+) -> Result<(), WorkerError> {
+    let mut event = ha_event(
+        SeverityText::Info,
+        "ha phase transition",
+        "ha.phase.transition",
+        "ok",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    ha_insert_serialized(fields, "phase_prev", prev_phase)?;
+    ha_insert_serialized(fields, "phase_next", next_phase)?;
+    emit_ha_event(
+        ctx,
+        "ha_worker::step_once",
+        event,
+        "ha phase log emit failed",
+    )
+}
+
+pub(crate) fn emit_ha_role_transition(
+    ctx: &HaWorkerCtx,
+    ha_tick: u64,
+    prev_role: &str,
+    next_role: &str,
+) -> Result<(), WorkerError> {
+    let mut event = ha_event(
+        SeverityText::Info,
+        "ha role transition",
+        "ha.role.transition",
+        "ok",
+    );
+    let fields = event.fields_mut();
+    ha_append_base_fields(fields, ctx, ha_tick);
+    fields.insert("role_prev", prev_role.to_string());
+    fields.insert("role_next", next_role.to_string());
+    emit_ha_event(
+        ctx,
+        "ha_worker::step_once",
+        event,
+        "ha role log emit failed",
     )
 }
 
@@ -243,27 +295,6 @@ pub(crate) fn ha_role_label(phase: &HaPhase) -> &'static str {
         HaPhase::Replica => "replica",
         _ => "unknown",
     }
-}
-
-pub(crate) fn serialize_attr_value<T: serde::Serialize>(
-    value: &T,
-) -> Result<serde_json::Value, WorkerError> {
-    serde_json::to_value(value)
-        .map_err(|err| WorkerError::Message(format!("ha attr serialization failed: {err}")))
-}
-
-fn emit_event(
-    ctx: &HaWorkerCtx,
-    severity: SeverityText,
-    message: &str,
-    origin: &str,
-    meta: EventMeta,
-    attrs: BTreeMap<String, serde_json::Value>,
-    error_prefix: &str,
-) -> Result<(), WorkerError> {
-    ctx.log
-        .emit_event(severity, message, origin, meta, attrs)
-        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
 }
 
 #[cfg(test)]
@@ -285,7 +316,7 @@ mod tests {
             events::emit_ha_action_intent,
             state::{HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx},
         },
-        logging::{LogHandle, LogRecord, LogSink, SeverityText},
+        logging::{decode_app_event, LogHandle, LogRecord, LogSink, SeverityText},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
         state::{new_state_channel, MemberId, UnixMillis, WorkerError, WorkerStatus},
@@ -457,28 +488,30 @@ mod tests {
 
         let records = sink.records()?;
         assert_eq!(records.len(), 1);
-        let record = &records[0];
-        assert_eq!(record.message, "ha action intent".to_string());
+        let decoded = decode_app_event(&records[0]).map_err(|err| {
+            WorkerError::Message(format!("decode ha action intent event failed: {err}"))
+        })?;
+        assert_eq!(decoded.message, "ha action intent".to_string());
         assert_eq!(
-            record.attributes.get("event.name"),
-            Some(&serde_json::Value::String("ha.action.intent".to_string()))
+            decoded.header,
+            crate::logging::AppEventHeader::new("ha.action.intent", "ha", "ok")
         );
         assert_eq!(
-            record.attributes.get("action_id"),
+            decoded.fields.get("action_id"),
             Some(&serde_json::Value::String(
                 "follow_leader_node-b".to_string()
             ))
         );
         assert_eq!(
-            record.attributes.get("leader_member_id"),
+            decoded.fields.get("leader_member_id"),
             Some(&serde_json::Value::String("node-b".to_string()))
         );
         assert_eq!(
-            record.attributes.get("scope"),
+            decoded.fields.get("scope"),
             Some(&serde_json::Value::String("scope-a".to_string()))
         );
         assert_eq!(
-            record.attributes.get("member_id"),
+            decoded.fields.get("member_id"),
             Some(&serde_json::Value::String("node-a".to_string()))
         );
         Ok(())
