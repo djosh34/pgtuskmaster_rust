@@ -36,13 +36,16 @@ The higher-order goal is to separate authoring from factual validation. Earlier 
 6. Group related failures into one bug only when they are genuinely the same problem. Otherwise create separate bugs.
 7. If a page is accurate, record that outcome in `docs/verifications/`.
 8. If a tiny factual correction is safe and obvious, it may be fixed inline, but the main purpose is detection and bug creation, not another drafting pass.
-9. Append progress and quit.
+9. After the scoped verification work for this run is done, write to `progress_append`.
+10. QUIT IMMEDIATELY after the progress append. Do not continue into more docs churn or git workflow.
+11. No git commit is required for this stop point.
 
 **Expected outcome:**
 - `docs/verifications/` contains the accuracy-verification artifacts for the docs set.
 - Every factual inaccuracy found during the pass has a corresponding bug task under `.ralph/tasks/bugs/`.
 - The story now cleanly separates authoring from final truth checking.
 - Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
+- This run stops immediately after the scoped verification work and progress append, to keep focus on new docs, refresh the Diataxis method in the next run, and reduce context bloat.
 
 </description>
 

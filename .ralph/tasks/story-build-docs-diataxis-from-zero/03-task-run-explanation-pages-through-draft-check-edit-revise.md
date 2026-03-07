@@ -40,12 +40,15 @@ The higher-order goal is to make the docs more understandable without polluting 
 8. Write the current best version under `docs/src/` and link to reference where appropriate.
 9. Update `docs/src/SUMMARY.md` only with real pages that now exist.
 10. If better grouping emerges, change the layout.
-11. Append progress and quit.
+11. After the capped work for this run is done, write to `progress_append`.
+12. QUIT IMMEDIATELY after the progress append. Do not continue into a sixth page, extra cleanup, or git workflow.
+13. No git commit is required for this stop point.
 
 **Expected outcome:**
 - The docs now include explanation pages created through the agreed authoring loop.
 - Explanation remains distinct from reference and how-to material.
 - Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
+- This run stops immediately after the capped docs work and progress append, to keep focus on new docs, refresh the Diataxis method in the next run, and reduce context bloat.
 
 </description>
 

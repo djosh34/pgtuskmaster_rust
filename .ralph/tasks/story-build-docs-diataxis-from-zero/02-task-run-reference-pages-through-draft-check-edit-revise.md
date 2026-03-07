@@ -40,13 +40,16 @@ The higher-order goal is to produce strong reference pages while keeping structu
 8. Write the current best version under `docs/src/`.
 9. Update `docs/src/SUMMARY.md` only with real pages that now exist.
 10. If the new pages suggest better grouping, change the layout. Do not preserve a weaker structure.
-11. Append progress and quit.
+11. After the capped work for this run is done, write to `progress_append`.
+12. QUIT IMMEDIATELY after the progress append. Do not continue into a sixth page, extra cleanup, or git workflow.
+13. No git commit is required for this stop point.
 
 **Expected outcome:**
 - The docs now contain a first reference batch written through the agreed authoring loop.
 - The layout reflects only real pages, not speculative future sections.
 - These pages are ready for the later accuracy pass, but are not yet treated as finally checked for truth.
 - Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
+- This run stops immediately after the capped docs work and progress append, to keep focus on new docs, refresh the Diataxis method in the next run, and reduce context bloat.
 
 </description>
 

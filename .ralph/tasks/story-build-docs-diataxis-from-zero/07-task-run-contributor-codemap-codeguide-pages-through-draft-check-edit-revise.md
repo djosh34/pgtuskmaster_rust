@@ -51,13 +51,16 @@ The higher-order goal is to give contributors a very detailed, in-depth explanat
 9. Choose the strongest draft and revise it again after agent edits.
 10. Write the current best version under `docs/src/` and update `docs/src/SUMMARY.md` only with real pages that now exist.
 11. If a stronger contributor hierarchy emerges, change the layout. Do not preserve a weaker structure.
-12. Append progress and quit.
+12. After the capped work for this run is done, write to `progress_append`.
+13. QUIT IMMEDIATELY after the progress append. Do not continue into a sixth page, extra cleanup, or git workflow.
+14. No git commit is required for this stop point.
 
 **Expected outcome:**
 - The docs now contain a separate contributor/codemap/codeguide chapter justified by real contributor needs.
 - The new pages give a detailed, in-depth explanation of how the codebase works.
 - The chapter keeps Diataxis forms separate page by page while still serving contributors as a distinct audience.
 - Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
+- This run stops immediately after the capped docs work and progress append, to keep focus on new docs, refresh the Diataxis method in the next run, and reduce context bloat.
 
 </description>
 

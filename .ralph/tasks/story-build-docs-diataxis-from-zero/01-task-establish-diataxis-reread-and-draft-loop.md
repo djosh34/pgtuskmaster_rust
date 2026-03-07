@@ -60,13 +60,21 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
 6. Check/edit each candidate draft for page-type drift, structural weakness, and poor wording.
 7. Choose the strongest draft.
 8. Revise it again, directly or with `ask-k2-docs`, after the agent edits.
-9. Append progress and quit so the next run starts fresh from rereading the sources again.
+9. When the run has completed its capped docs work, write to `progress_append`.
+10. QUIT IMMEDIATELY after the progress append. Do not continue into extra docs, cleanup churn, or git workflow.
+11. No git commit is required for this stop point.
+
+**Why the run must quit immediately after the capped docs work:**
+- keep focus on the new docs instead of drifting into unrelated follow-up work
+- make the Diataxis framework and method fresh again in the next run
+- reduce context bloat before the next authoring pass
 
 **Expected outcome:**
 - `docs/drafts/` exists for competing drafts.
 - The story now has an explicit Diataxis-first authoring loop built around `draft -> check/edit -> revise`.
 - No documentation structure has been imposed in `docs/src/`.
 - Verification for docs tasks is explicit: always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected case during docs creation is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the docs work intentionally changed behavior under `src/` or `tests/`.
+- Later docs runs stop immediately after the capped docs work, after writing progress, with no git commit required at that stop point.
 
 </description>
 
@@ -98,7 +106,7 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
 3. Update this task file so it becomes the durable record of the authoring method for later runs:
    - preserve the existing scope and Diataxis statements
    - add concrete execution notes if needed so future runs can follow the mandatory reread loop without guesswork
-   - make the later-run loop explicit: classify with the compass, draft up to 5 pages, generate competing drafts in `docs/drafts/`, check/edit for drift and weakness, revise, append progress, and stop
+   - make the later-run loop explicit: classify with the compass, draft up to 5 pages, generate competing drafts in `docs/drafts/`, check/edit for drift and weakness, revise, append progress, and QUIT IMMEDIATELY
 4. Verify that the implementation stayed within scope before broader checks:
    - inspect the resulting tree to confirm `docs/drafts/` plus its tracked placeholder were added and `docs/src/` did not gain workflow-only pages or empty buckets
    - inspect the task file to confirm the reread list, 5-page cap, and `draft -> check/edit -> revise` loop remain explicit
@@ -117,12 +125,11 @@ The higher-order goal is to remove ambiguity from future doc-writing runs while 
    - tick every satisfied acceptance criterion
    - set `<passes>true</passes>`
    - leave a concise record in the task file of any important verification detail if the story format needs it
-7. Finish the Ralph workflow only after implementation and verification are complete:
-   - run `/bin/bash .ralph/task_switch.sh`
-   - commit all changes, including `.ralph/`, with `task finished [task name]: [insert text]`
-   - include evidence of checks and any implementation obstacles in the commit message
-   - push with `git push`
-   - add to `AGENTS.md` only if a genuinely reusable learning surfaced
+7. Stop the run immediately after the scoped docs work and progress append:
+   - QUIT IMMEDIATELY once the capped docs work is done
+   - do not continue into more docs authoring in the same run
+   - do not require a git commit at this stop point
+   - preserve freshness for the next Diataxis reread instead of stretching one run too far
 
 NOW EXECUTE
 </implementation_plan>

@@ -40,12 +40,15 @@ The higher-order goal is to make visible structure emerge from authored pages ra
 7. Use `ask-k2-docs` when useful for landing-page prose, with mdBook context and explicit instruction that the page must read like an overview.
 8. Check/edit and revise the navigation and landing-page candidates.
 9. Choose the strongest arrangement, update `docs/src/SUMMARY.md`, and remove weaker obsolete groupings.
-10. Append progress and quit.
+10. After the scoped navigation work for this run is done, write to `progress_append`.
+11. QUIT IMMEDIATELY after the progress append. Do not continue into extra docs churn or git workflow.
+12. No git commit is required for this stop point.
 
 **Expected outcome:**
 - The visible mdBook structure now reflects real authored content instead of speculative planning.
 - If explicit Diataxis categories appear in navigation, they do so because the authored pages justify them.
 - Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
+- This run stops immediately after the scoped navigation work and progress append, to keep focus on new docs, refresh the Diataxis method in the next run, and reduce context bloat.
 
 </description>
 
