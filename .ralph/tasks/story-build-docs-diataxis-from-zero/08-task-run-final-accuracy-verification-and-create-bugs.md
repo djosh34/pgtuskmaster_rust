@@ -1,9 +1,7 @@
 ## Task: Run Final Accuracy Verification And Create Bugs <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** Perform the final accuracy-only verification pass after the authoring and navigation tasks are complete. This is the only task in the story that should introduce and use `docs/verifications/`. Its purpose is to check truth, not to do more drafting.
-
-The higher-order goal is to separate authoring from factual validation. Earlier tasks draft, check/edit, revise, and publish the current best pages. This task verifies those pages against the actual repository and creates bug tasks for any factual inaccuracy or unsupported claim.
+**Goal:** Perform the final accuracy-only verification pass after the authoring and navigation tasks are complete. This task verifies K2-authored docs against the repository and creates bug tasks for unsupported or inaccurate claims. It is not a drafting task.
 
 **Scope:**
 - Work in:
@@ -11,7 +9,6 @@ The higher-order goal is to separate authoring from factual validation. Earlier 
   - `docs/verifications/`
   - `.ralph/tasks/bugs/`
   - `.ralph/tasks/story-build-docs-diataxis-from-zero/`
-- Do not use this task to rewrite prose except where a tiny correction is unavoidable to complete the verification pass.
 - Focus on truth only:
   - factual claims
   - command names and behavior
@@ -20,46 +17,37 @@ The higher-order goal is to separate authoring from factual validation. Earlier 
   - step accuracy
   - cross-page contradictions
 
-**Mandatory reread before this run:**
+**Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/how-to-use-diataxis/index.md`
 - `./.agents/skills/add-bug/SKILL.md`
 - all story tasks in `./.ralph/tasks/story-build-docs-diataxis-from-zero/`
 
-**Required execution loop:**
-1. Create `docs/verifications/` if it does not already exist.
-2. Review the authored pages in `docs/src/` form by form.
-3. Check each factual claim against code, config, commands, tests, and runnable behavior.
-4. Record the verification work under `docs/verifications/`.
-5. For every factual inaccuracy, unsupported claim, or contradiction discovered, create a bug task using the `add-bug` skill rules in `.ralph/tasks/bugs/`.
-6. Group related failures into one bug only when they are genuinely the same problem. Otherwise create separate bugs.
-7. If a page is accurate, record that outcome in `docs/verifications/`.
-8. If a tiny factual correction is safe and obvious, it may be fixed inline, but the main purpose is detection and bug creation, not another drafting pass.
-9. After the scoped verification work for this run is done, write to `progress_append`.
-10. QUIT IMMEDIATELY after the progress append. Do not continue into more docs churn or git workflow.
-11. No git commit is required for this stop point.
+**Verification constraints:**
+- Verify docs against code, config, tests, commands, and runnable behavior, not against earlier drafts.
+- Create bug tasks for inaccuracies instead of silently tolerating them.
+- Only do tiny inline doc corrections when they are safe and unavoidable to complete the verification pass.
 
-**Expected outcome:**
-- `docs/verifications/` contains the accuracy-verification artifacts for the docs set.
-- Every factual inaccuracy found during the pass has a corresponding bug task under `.ralph/tasks/bugs/`.
-- The story now cleanly separates authoring from final truth checking.
-- Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
-- This run stops immediately after the scoped verification work and progress append, to keep focus on new docs, refresh the Diataxis method in the next run, and reduce context bloat.
+**Run requirements:**
+1. Review the current authored docs and identify the next verification slice.
+2. Check each claim against repo facts and runnable behavior where needed.
+3. Record verification artifacts under `docs/verifications/`.
+4. Use the `add-bug` skill for every factual inaccuracy, unsupported claim, contradiction, or major Diataxis-form error that should be tracked separately.
+5. If a tiny doc correction is unavoidable, use `update-docs` for that edit instead of freehand drifting into another drafting pass.
+6. Verify at most 3 docs pages per run, then quit immediately.
+7. Keep `<passes>false</passes>` until the full authored-doc set has been verified and every necessary bug has been created.
 
+**Context to provide during verification instead of rewriting docs from task text:**
+- which pages were authored in earlier tasks
+- where their source facts are expected to come from in the repo
+- which verification artifacts or bug tasks already exist
 </description>
 
 <acceptance_criteria>
-- [ ] `docs/verifications/` exists and contains the final accuracy-verification artifacts
-- [ ] The verification pass checks factual claims against the actual repository rather than against earlier drafts
-- [ ] Every factual inaccuracy, unsupported claim, or contradiction found results in a bug task created under `.ralph/tasks/bugs/` following the `add-bug` skill format
-- [ ] Related failures are grouped only when they are genuinely the same underlying problem
-- [ ] This task focuses on truth rather than re-running the earlier drafting loop
-- [ ] `make docs-build` — passes cleanly
-- [ ] `make docs-lint` — passes cleanly
-- [ ] `make check` — passes cleanly
-- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Verification proceeds against the actual repository and runnable behavior
+- [ ] Every discovered docs bug is turned into a bug task with the `add-bug` skill
+- [ ] Any unavoidable tiny docs correction goes through `update-docs`
+- [ ] Each run is capped at 3 docs pages and ends immediately after that capped work
+- [ ] `<passes>true</passes>` is set only once the full verification task scope is complete
 </acceptance_criteria>

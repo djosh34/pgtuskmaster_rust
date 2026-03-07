@@ -1,14 +1,47 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 23:54:14 CET 2026
+Generated: Sun Mar  8 00:33:22 CET 2026
+
+# Task `.ralph/tasks/story-build-docs-diataxis-from-zero/01-task-establish-diataxis-reread-and-draft-loop.md`
+
+```
+## Task: Establish Diataxis Reread And K2 Draft Loop <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+**Goal:** Establish the documentation-production method for this story. This task defines how later docs tasks must gather repo facts, ground themselves in Diataxis, and use K2 for all prose drafting and prose revision. It must not author final docs pages itself.
+```
+
+==============
+
+# Task `.ralph/tasks/story-build-docs-diataxis-from-zero/02-task-run-reference-pages-through-draft-check-edit-revise.md`
+
+```
+## Task: Run Reference Pages Through K2 Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+**Goal:** Build the reference chapter through repeated capped runs. Every reference page must be drafted and revised by K2 under strict Diataxis reference guidance. The agent must gather facts and shape prompts, not pre-write the reference prose in this task file.
+```
+
+==============
+
+# Task `.ralph/tasks/story-build-docs-diataxis-from-zero/03-task-run-explanation-pages-through-draft-check-edit-revise.md`
+
+```
+## Task: Run Explanation Pages Through K2 Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+**Goal:** Build the explanation chapter through repeated capped runs. Every explanation page must be drafted and revised by K2 under strict Diataxis explanation guidance. The task must provide source context, tensions, and grounding, not hand-write the explanation prose.
+```
+
+==============
 
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/04-task-run-how-to-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run How-To Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Run How-To Pages Through K2 Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** Create the first how-to guides by running them through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
+**Goal:** Build the how-to chapter through repeated capped runs. Every how-to page must be drafted and revised by K2 under strict Diataxis how-to guidance. The task must provide operational facts and constraints, not write the page prose itself.
 ```
 
 ==============
@@ -16,10 +49,10 @@ Generated: Sat Mar  7 23:54:14 CET 2026
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/05-task-run-tutorial-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run Tutorial Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Run Tutorial Pages Through K2 Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** Create the first tutorials by running them through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
+**Goal:** Build the tutorial chapter through repeated capped runs. Every tutorial page must be drafted and revised by K2 under strict Diataxis tutorial guidance. The task must provide the learner path, guardrails, and source facts, not hand-write the tutorial prose.
 ```
 
 ==============
@@ -27,10 +60,10 @@ Generated: Sat Mar  7 23:54:14 CET 2026
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/06-task-derive-navigation-from-authored-pages.md`
 
 ```
-## Task: Derive Navigation From Authored Pages <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Derive Navigation From Authored Pages With K2 Overviews <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** After real content exists across multiple Diataxis forms, derive mdBook navigation and any landing pages from that content. This task is for authored structure, not for the final truth-check pass.
+**Goal:** Derive mdBook navigation and any needed landing or overview pages from real authored docs. Any new overview prose must be drafted and revised by K2 under Diataxis guidance. The task must provide navigation facts and content relationships, not hand-write the overview prose itself.
 ```
 
 ==============
@@ -38,10 +71,10 @@ Generated: Sat Mar  7 23:54:14 CET 2026
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/07-task-run-contributor-codemap-codeguide-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run Contributor Codemap Codeguide Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Run Contributor Codemap Codeguide Pages Through K2 Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** Create a separate contributor chapter for codemap and codeguide material by running the pages through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
+**Goal:** Build contributor-focused codemap and codeguide docs through repeated capped runs. Every contributor page must be drafted and revised by K2 under the correct Diataxis form. The task must provide codebase context, audience needs, and constraints, not hand-write the docs prose itself.
 ```
 
 ==============
@@ -52,7 +85,7 @@ Generated: Sat Mar  7 23:54:14 CET 2026
 ## Task: Run Final Accuracy Verification And Create Bugs <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** Perform the final accuracy-only verification pass after the authoring and navigation tasks are complete. This is the only task in the story that should introduce and use `docs/verifications/`. Its purpose is to check truth, not to do more drafting.
+**Goal:** Perform the final accuracy-only verification pass after the authoring and navigation tasks are complete. This task verifies K2-authored docs against the repository and creates bug tasks for unsupported or inaccurate claims. It is not a drafting task.
 ```
 
 ==============

@@ -1,19 +1,17 @@
-## Task: Derive Navigation From Authored Pages <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Derive Navigation From Authored Pages With K2 Overviews <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** After real content exists across multiple Diataxis forms, derive mdBook navigation and any landing pages from that content. This task is for authored structure, not for the final truth-check pass.
-
-The higher-order goal is to make visible structure emerge from authored pages rather than from speculation.
+**Goal:** Derive mdBook navigation and any needed landing or overview pages from real authored docs. Any new overview prose must be drafted and revised by K2 under Diataxis guidance. The task must provide navigation facts and content relationships, not hand-write the overview prose itself.
 
 **Scope:**
 - Work in:
   - `docs/src/`
   - `docs/drafts/`
   - `docs/src/SUMMARY.md`
-- Rework navigation, grouping, and landing pages only from real existing pages.
-- If explicit Diataxis categories now make sense in navigation, expose them. Do not add empty sections.
+- Rework navigation only from real existing pages.
+- If landing pages are needed, they must be real overviews, not placeholders.
 
-**Mandatory reread before this run:**
+**Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/how-to-use-diataxis/index.md`
@@ -24,45 +22,32 @@ The higher-order goal is to make visible structure emerge from authored pages ra
 - `./.ralph/tasks/story-build-docs-diataxis-from-zero/04-task-run-how-to-pages-through-draft-check-edit-revise.md`
 - `./.ralph/tasks/story-build-docs-diataxis-from-zero/05-task-run-tutorial-pages-through-draft-check-edit-revise.md`
 
-**Navigation summary, cross-checked from the source:**
-- Diataxis is not a rigid four-box scheme.
-- Clear structural division into the four categories is a likely outcome of good practice, not the starting requirement.
-- Landing pages should read like overviews, not empty lists.
-- The user experience matters more than forcing the scheme.
+**Navigation constraints:**
+- Navigation must emerge from real pages, not speculative structure.
+- If overview pages are added, they must stay within an appropriate Diataxis form.
+- Do not add empty buckets.
 
-**Required execution loop:**
-1. Reread the mandatory sources.
-2. Review the real pages that now exist.
-3. Decide whether explicit Diataxis grouping in navigation is now justified by the content.
-4. If yes, expose tutorial/how-to/reference/explanation groupings in `docs/src/SUMMARY.md`, but only where there are real pages to place.
-5. If landing pages are needed, create them as real overviews that introduce the pages beneath them.
-6. Create multiple candidate navigation or landing drafts in `docs/drafts/` when comparison is useful.
-7. Use `ask-k2-docs` when useful for landing-page prose, with mdBook context and explicit instruction that the page must read like an overview.
-8. Check/edit and revise the navigation and landing-page candidates.
-9. Choose the strongest arrangement, update `docs/src/SUMMARY.md`, and remove weaker obsolete groupings.
-10. After the scoped navigation work for this run is done, write to `progress_append`.
-11. QUIT IMMEDIATELY after the progress append. Do not continue into extra docs churn or git workflow.
-12. No git commit is required for this stop point.
+**Run requirements:**
+1. Review the current authored pages and the content relationships they imply.
+2. Build rich K2 context from those real pages, the navigation problem, and the relevant Diataxis guidance. Use a temporary context file whenever that helps.
+3. Use `ask-k2-docs` for any landing-page or overview prose and for prose revisions to those pages.
+4. Use differing prompts when comparing alternative navigation models, overview structures, or continuous update strategies would improve the result.
+5. Tell K2 to leave placeholders like `[diagram about docs map]` for any diagram needs.
+6. Use `update-docs` for every revision to existing overview pages and for `docs/src/SUMMARY.md`.
+7. Draft or revise at most 3 docs pages in one run, then quit immediately.
+8. Keep the task open across runs until navigation and any needed overviews are actually complete. Only then set `<passes>true</passes>`.
 
-**Expected outcome:**
-- The visible mdBook structure now reflects real authored content instead of speculative planning.
-- If explicit Diataxis categories appear in navigation, they do so because the authored pages justify them.
-- Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
-- This run stops immediately after the scoped navigation work and progress append, to keep focus on new docs, refresh the Diataxis method in the next run, and reduce context bloat.
-
+**Context to provide to K2 instead of pre-writing prose here:**
+- the real pages that currently exist
+- the user-facing grouping or entry problems those pages create
+- the intended overview role for any landing page
+- the Diataxis constraints that must shape the output
 </description>
 
 <acceptance_criteria>
-- [ ] `docs/src/SUMMARY.md` is derived from real content rather than speculative future sections
-- [ ] Any explicit Diataxis groupings exposed in navigation contain real pages and no empty buckets
-- [ ] Any landing page created is a real overview page, not a placeholder
-- [ ] Competing drafts, when used, live under `docs/drafts/`
-- [ ] The resulting navigation improves clarity without muddling tutorial, how-to, reference, and explanation
-- [ ] `make docs-build` — passes cleanly
-- [ ] `make docs-lint` — passes cleanly
-- [ ] `make check` — passes cleanly
-- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Every new or revised overview page is written through `ask-k2-docs`
+- [ ] Navigation and overview work is derived only from real authored pages
+- [ ] The task text supplies structure/context inputs instead of writing the docs prose itself
+- [ ] Each run is capped at 3 docs pages and ends immediately after that capped work
+- [ ] `<passes>true</passes>` is set only once the full navigation task scope is complete
 </acceptance_criteria>

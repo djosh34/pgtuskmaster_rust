@@ -1,21 +1,17 @@
-## Task: Run Contributor Codemap Codeguide Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Run Contributor Codemap Codeguide Pages Through K2 Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** Create a separate contributor chapter for codemap and codeguide material by running the pages through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
-
-The higher-order goal is to give contributors a very detailed, in-depth explanation of how the codebase works without muddling up the different forms of documentation. The chapter may be contributor-focused because the bundled Diataxis source explicitly recognizes documentation for `the contributors who help maintain it`, but each page must still be classified with the compass and kept true to its form.
+**Goal:** Build contributor-focused codemap and codeguide docs through repeated capped runs. Every contributor page must be drafted and revised by K2 under the correct Diataxis form. The task must provide codebase context, audience needs, and constraints, not hand-write the docs prose itself.
 
 **Scope:**
 - Work in:
   - `docs/src/`
   - `docs/drafts/`
   - `docs/src/SUMMARY.md`
-- Create at most 5 real contributor-facing pages in this run.
-- Create a separate contributor/codemap/codeguide chapter only from real pages that exist now.
-- Do not create an empty contributor bucket or empty Diataxis buckets.
-- Prefer pages that explain actual code structure, module boundaries, runtime flows, ownership boundaries, and test surfaces from the current repo.
+- Build a contributor chapter only from real pages that exist.
+- Keep each page within a single Diataxis form even though the chapter serves contributors.
 
-**Mandatory reread before this run:**
+**Mandatory reread before each run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/how-to-use-diataxis/index.md`
@@ -29,56 +25,34 @@ The higher-order goal is to give contributors a very detailed, in-depth explanat
 - `./.ralph/tasks/story-build-docs-diataxis-from-zero/05-task-run-tutorial-pages-through-draft-check-edit-revise.md`
 - `./.ralph/tasks/story-build-docs-diataxis-from-zero/06-task-derive-navigation-from-authored-pages.md`
 
-**Contributor chapter summary, cross-checked from the source:**
-- Diataxis is not a rigid four-box scheme.
-- The docs may address different concerns, including `the contributors who help maintain it`.
-- What matters is the experience of the reader.
-- Documentation should be as complex as it needs to be.
-- The contributor chapter may be a separate audience-facing hierarchy if that fits user needs, but it must still keep the forms separate instead of mixing them on one page.
-- Use the compass by asking `action or cognition?` and `acquisition or application?`
-- Reference should `describe and only describe` and mirror the structure of the machinery.
-- Explanation should provide context, background, reasons, alternatives, and why.
+**Contributor-doc constraints:**
+- Every page must be classified with the Diataxis compass.
+- Reference pages must describe and only describe.
+- Explanation pages must provide context and reasons without turning procedural.
+- Keep the wording rule: do not use `gate` where `test` is meant.
 
-**Required execution loop:**
-1. Reread the mandatory sources.
-2. Review the current repo and existing docs to identify the highest-value contributor pages.
-3. Decide the separate contributor/codemap/codeguide chapter layout from real content only.
-4. Select at most 5 pages.
-5. For each page, classify it with the compass before drafting. If a page drifts between explanation and reference, split it instead of mixing forms.
-6. Create multiple candidate drafts in `docs/drafts/` when comparison is useful.
-7. Use `ask-k2-docs` when useful, with mdBook context, contributor audience, verified facts, explicit non-facts, relevant Diataxis reminders, and this additional writing rule: do not use `gate` for anything that means `test`.
-8. Check/edit each candidate for form drift, invented facts, vague architecture hand-waving, shallow codemap coverage, and forbidden wording that uses `gate` where `test` is meant.
-9. Choose the strongest draft and revise it again after agent edits.
-10. Write the current best version under `docs/src/` and update `docs/src/SUMMARY.md` only with real pages that now exist.
-11. If a stronger contributor hierarchy emerges, change the layout. Do not preserve a weaker structure.
-12. After the capped work for this run is done, write to `progress_append`.
-13. QUIT IMMEDIATELY after the progress append. Do not continue into a sixth page, extra cleanup, or git workflow.
-14. No git commit is required for this stop point.
+**Run requirements:**
+1. Gather the next contributor topics directly from code structure, module boundaries, runtime flows, ownership boundaries, and tests.
+2. Build rich K2 context from those repo facts, the contributor audience, and the relevant Diataxis form guidance. Use a temporary context file whenever that is clearer.
+3. Use `ask-k2-docs` for every draft and every prose revision.
+4. Use differing prompts when comparing alternative codemap structures, audience framing, page splits, or update strategies would improve the chapter.
+5. Tell K2 to leave placeholders like `[diagram about module ownership map]` instead of inventing diagrams.
+6. Check/edit K2 output for invented facts, vague architecture prose, mixed forms, or the forbidden `gate` wording.
+7. Use `update-docs` whenever revising an existing contributor page or `docs/src/SUMMARY.md`.
+8. Draft or revise at most 3 pages in one run, then quit immediately.
+9. Keep `<passes>false</passes>` until the whole contributor-doc scope is complete across however many runs are needed.
 
-**Expected outcome:**
-- The docs now contain a separate contributor/codemap/codeguide chapter justified by real contributor needs.
-- The new pages give a detailed, in-depth explanation of how the codebase works.
-- The chapter keeps Diataxis forms separate page by page while still serving contributors as a distinct audience.
-- Verification for this docs task must always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected docs-creation case is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the work intentionally changed behavior under `src/` or `tests/`.
-- This run stops immediately after the capped docs work and progress append, to keep focus on new docs, refresh the Diataxis method in the next run, and reduce context bloat.
-
+**Context to provide to K2 instead of pre-writing prose here:**
+- exact code paths, modules, and tests that ground each page
+- intended contributor audience and page purpose
+- the required Diataxis form for each page
+- wording and terminology constraints that must shape the output
 </description>
 
 <acceptance_criteria>
-- [ ] No more than 5 pages are authored in this run
-- [ ] A separate contributor/codemap/codeguide chapter is created only from real existing pages
-- [ ] Every created page is classified with the compass and kept within a single Diataxis form
-- [ ] Reference pages in the chapter `describe and only describe` and mirror the structure of the machinery
-- [ ] Explanation pages in the chapter provide context, background, reasons, alternatives, and why without turning into procedure
-- [ ] Competing drafts, when used, live under `docs/drafts/`
-- [ ] `ask-k2-docs` is used only for prose work and its prompt includes the rule not to use `gate` where `test` is meant
-- [ ] `docs/src/SUMMARY.md` contains only real existing pages
-- [ ] The task is free to radically change contributor-facing navigation if a stronger hierarchy emerges
-- [ ] `make docs-build` — passes cleanly
-- [ ] `make docs-lint` — passes cleanly
-- [ ] `make check` — passes cleanly
-- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Every drafted or revised contributor page is written through `ask-k2-docs`
+- [ ] Every page is explicitly kept within a single Diataxis form
+- [ ] The task text supplies codebase context and constraints instead of writing the docs prose itself
+- [ ] Each run is capped at 3 docs pages and ends immediately after that capped work
+- [ ] `<passes>true</passes>` is set only once the full contributor-doc task scope is complete
 </acceptance_criteria>

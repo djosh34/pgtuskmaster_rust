@@ -1,141 +1,47 @@
-## Task: Establish Diataxis Reread And Draft Loop <status>done</status> <passes>true</passes> <priority>high</priority>
+## Task: Establish Diataxis Reread And K2 Draft Loop <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
-**Goal:** Establish only the Diataxis working method, the four documentation forms, and the exact authoring loop for later tasks: `draft -> check/edit -> revise`. Do not create documentation structure in this task. Do not create empty buckets in `docs/src/`.
-
-The higher-order goal is to remove ambiguity from future doc-writing runs while still obeying the Diataxis rule not to start by imposing structure from above.
+**Goal:** Establish the documentation-production method for this story. This task defines how later docs tasks must gather repo facts, ground themselves in Diataxis, and use K2 for all prose drafting and prose revision. It must not author final docs pages itself.
 
 **Scope:**
 - Work only in:
   - `docs/drafts/`
   - `.ralph/tasks/story-build-docs-diataxis-from-zero/`
-- Do not create workflow pages under `docs/src/`.
-- Do not create empty tutorial/how-to/reference/explanation pages under `docs/src/`.
-- Create only `docs/drafts/` as the place for competing candidate drafts during authoring.
-- At this stage, `docs/drafts/` may contain only a tracked placeholder needed to preserve the directory in git; it must not become a backdoor for final docs structure.
+- Do not write final docs pages under `docs/src/` in this task.
+- Do not create speculative mdBook structure.
 
-**Context from research:**
-- Diataxis is a guide, not a plan.
-- It explicitly says: `do not create empty structures for tutorials/howto guides/reference/explanation with nothing in them`.
-- It also says: `using Diataxis means not spending energy trying to get its structure correct`.
-- It says documentation should take shape because it has been improved, not the other way around.
-- mdBook remains the engine, but navigation should emerge from real pages only.
-
-**Mandatory reread before each later run:**
+**Mandatory source reread before every later docs run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/compass/index.md`
 - `.agents/skills/create-docs/references/diataxis.fr/how-to-use-diataxis/index.md`
-- plus the specific source page for the current form:
-  - `.agents/skills/create-docs/references/diataxis.fr/reference/index.md`
-  - `.agents/skills/create-docs/references/diataxis.fr/explanation/index.md`
-  - `.agents/skills/create-docs/references/diataxis.fr/how-to-guides/index.md`
-  - `.agents/skills/create-docs/references/diataxis.fr/tutorials/index.md`
+- plus the form-specific Diataxis page for the current task
 
-**Diataxis summary, cross-checked from the bundled sources:**
-- There are four kinds of documentation: tutorial, how-to guide, reference, and explanation.
-- Use the compass by asking: `action or cognition?` and `acquisition or application?`
-- `action + acquisition` means tutorial.
-- `action + application` means how-to guide.
-- `cognition + application` means reference.
-- `cognition + acquisition` means explanation.
-- Tutorials are lessons. They are practical, carefully managed, concrete, and should minimise explanation.
-- How-to guides are goal-oriented directions for work. They should contain `action and only action`.
-- Reference should `describe and only describe`. It should be neutral, factual, and structured according to the machinery.
-- Explanation provides context, background, reasons, alternatives, and why. It should not become instruction or raw catalog.
-- Work iteratively: choose something, assess it, decide one next action, do it, and repeat.
-- Do not seek a top-down structure first. Let structure emerge from real content.
-- If better content later demands moving, splitting, merging, renaming, or deleting pages, do it.
-
-**Required authoring loop for later tasks:**
-1. Reread the mandatory Diataxis sources for the current run.
-2. Work on at most 5 pages in the run.
-3. Classify each page with the compass before drafting.
-4. Create multiple competing drafts for important pages in `docs/drafts/`.
-5. Use `ask-k2-docs` only for prose generation or prose revision:
-   - provide mdBook context
-   - provide the facts and constraints currently believed to be true
-   - provide explicit non-facts when needed
-   - provide the relevant Diataxis guidance
-   - never ask K2 to inspect the repo, judge truth, or make diagrams
-6. Check/edit each candidate draft for page-type drift, structural weakness, and poor wording.
-7. Choose the strongest draft.
-8. Revise it again, directly or with `ask-k2-docs`, after the agent edits.
-9. When the run has completed its capped docs work, write to `progress_append`.
-10. QUIT IMMEDIATELY after the progress append. Do not continue into extra docs, cleanup churn, or git workflow.
-11. No git commit is required for this stop point.
-
-**Why the run must quit immediately after the capped docs work:**
-- keep focus on the new docs instead of drifting into unrelated follow-up work
-- make the Diataxis framework and method fresh again in the next run
-- reduce context bloat before the next authoring pass
+**Required method for later docs tasks:**
+1. Re-read the relevant Diataxis sources at the start of every run. Use the correct form language: tutorial, how-to, reference, explanation.
+2. Gather facts directly from code, config, tests, runnable assets, and the Diataxis references. The task text must provide context sources and constraints, but must not try to write the docs prose itself.
+3. Use the `ask-k2-docs` skill for every docs draft and every prose revision. The agent must not hand-write final docs prose except tiny factual repairs during the final verification task.
+4. Use the `update-docs` skill whenever an existing docs page or mdBook navigation page is being revised or promoted.
+5. Give K2 a large, explicit context payload instead of a thin summary when needed:
+   - create a temporary context file if that is the clearest way to package repo facts and Diataxis excerpts
+   - pipe that context into the K2/opencode workflow used by `ask-k2-docs`
+   - include long relevant Diataxis excerpts or summaries when they help keep the form strict
+6. Generate multiple materially different K2 prompts when comparing structure, tone, or update strategy would improve the page. Do not ask the same prompt repeatedly with tiny wording changes.
+7. When revising or promoting docs, ask K2 not only for better prose but also for how the page or docs structure should be updated continuously as the docs set grows, while still staying inside Diataxis boundaries.
+8. Tell K2 to write only the page prose. For diagrams, instruct it to leave placeholders such as `[diagram about failover state transitions]`.
+9. Each execution run may draft or revise at most 3 docs pages. After the capped work for that run is complete, quit immediately.
+10. A task is not complete just because one run finished. Keep `<passes>false</passes>` until all pages, revisions, and related navigation work required by that specific task are fully done.
+11. Only set `<passes>true</passes>` once the entire task scope is complete and the required verification for that task has passed.
 
 **Expected outcome:**
-- `docs/drafts/` exists for competing drafts.
-- The story now has an explicit Diataxis-first authoring loop built around `draft -> check/edit -> revise`.
-- No documentation structure has been imposed in `docs/src/`.
-- Verification for docs tasks is explicit: always run `make docs-build`, `make docs-lint`, `make check`, and `make lint`; the expected case during docs creation is zero changes under `src/` or `tests/`; use `git` plus common sense, and do not run `make test` or `make test-long` unless the docs work intentionally changed behavior under `src/` or `tests/`.
-- Later docs runs stop immediately after the capped docs work, after writing progress, with no git commit required at that stop point.
-
+- The story uses a K2-authored, Diataxis-grounded docs workflow.
+- Later task files give the agent enough repo context and source references to drive K2 well, without pre-writing the documentation themselves.
+- Later runs stop after at most 3 docs pages per run and resume in subsequent runs until the task is actually complete.
 </description>
 
 <acceptance_criteria>
-- [x] `docs/drafts/` exists and is reserved for competing non-final draft generations
-- [x] No workflow page is created under `docs/src/`
-- [x] No empty tutorial/how-to/reference/explanation bucket is created under `docs/src/`
-- [x] The task clearly establishes the mandatory reread list, the 5-pages-per-run cap, and the `draft -> check/edit -> revise` method for later tasks
-- [x] The task clearly establishes that later tasks may radically change docs structure as content emerges
-- [x] `make docs-build` — passes cleanly
-- [ ] `make docs-lint` — passes cleanly
-- [x] `make check` — passes cleanly
-- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [x] `make lint` — passes cleanly
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [ ] The task clearly requires `ask-k2-docs` for all docs prose drafting and prose revision
+- [ ] The task clearly requires Diataxis rereads before each docs run
+- [ ] The task clearly limits each run to at most 3 docs pages before quitting immediately
+- [ ] The task clearly states that `<passes>true</passes>` is allowed only after the full task scope is complete
+- [ ] The task clearly directs agents to provide K2 with rich repo and Diataxis context rather than writing docs prose in the task file
 </acceptance_criteria>
-
-<implementation_plan>
-1. Re-read only the local sources needed to execute this task precisely:
-   - the Diataxis pages already named in `<description>`
-   - `docs/book.toml` and `docs/src/SUMMARY.md` only as guardrails to avoid introducing structure changes outside scope
-   - any existing docs-task files in `.ralph/tasks/story-build-docs-diataxis-from-zero/` only if needed to keep the story language consistent
-2. Create `docs/drafts/` and nothing broader under `docs/`:
-   - ensure it exists as the explicit workspace for competing candidate drafts
-   - add a tracked placeholder file inside `docs/drafts/` so the directory survives in git without smuggling actual workflow content into `docs/src/`
-   - do not create workflow prose pages under `docs/src/`
-   - do not create empty Diataxis category buckets under `docs/src/`
-3. Update this task file so it becomes the durable record of the authoring method for later runs:
-   - preserve the existing scope and Diataxis statements
-   - add concrete execution notes if needed so future runs can follow the mandatory reread loop without guesswork
-   - make the later-run loop explicit: classify with the compass, draft up to 5 pages, generate competing drafts in `docs/drafts/`, check/edit for drift and weakness, revise, append progress, and QUIT IMMEDIATELY
-4. Verify that the implementation stayed within scope before broader checks:
-   - inspect the resulting tree to confirm `docs/drafts/` plus its tracked placeholder were added and `docs/src/` did not gain workflow-only pages or empty buckets
-   - inspect the task file to confirm the reread list, 5-page cap, and `draft -> check/edit -> revise` loop remain explicit
-5. Run the required verification commands in task order and fix any fallout:
-   - `make docs-build`
-   - `make docs-lint`
-   - `make check`
-   - inspect `git diff --name-only -- src tests` and `git diff --cached --name-only -- src tests`; during docs creation the expected result is no changes
-   - use common sense: do not turn docs-only work into a retest run
-   - if there are no intentional changes under `src/` or `tests/`, MUST NOT run `make test` or `make test-long`
-   - only if there are intentional changes under `src/` or `tests/`, and behavior may have changed, run `make test`
-   - only if those intentional `src/` or `tests/` changes impact ultra-long tests, run `make test-long`
-   - `make lint`
-   - if any command fails, repair the underlying issue rather than weakening tests or checks
-6. Update task completion markers only after all verification passes:
-   - tick every satisfied acceptance criterion
-   - set `<passes>true</passes>`
-   - leave a concise record in the task file of any important verification detail if the story format needs it
-7. Stop the run immediately after the scoped docs work and progress append:
-   - QUIT IMMEDIATELY once the capped docs work is done
-   - do not continue into more docs authoring in the same run
-   - do not require a git commit at this stop point
-   - preserve freshness for the next Diataxis reread instead of stretching one run too far
-
-NOW EXECUTE
-</implementation_plan>
-
-<verification>
-- `docs/drafts/.gitkeep` was added as the only tracked artifact under `docs/drafts/`; `docs/src/` gained no workflow page or empty Diataxis bucket.
-- Passed on 2026-03-07: `make docs-build`, `make check`, `make test`, `make test-long`, and `make lint`.
-- This task predates the tightened docs-only verification rule update; later docs-only runs must also run `make docs-lint`, and must skip `make test` plus `make test-long` unless `git` shows intentional changes under `src/` or `tests/`.
-</verification>
