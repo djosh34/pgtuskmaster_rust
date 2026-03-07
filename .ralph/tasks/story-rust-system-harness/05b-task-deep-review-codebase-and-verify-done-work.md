@@ -21,7 +21,7 @@
 - Review either confirms correctness with evidence or produces concrete follow-up tasks for every gap.
 - If tests are missing and not already represented in planned tasks, new test-creation tasks are added immediately.
 - Any missing real-binary tests for `etcd3` and PostgreSQL 16 are treated as major findings and turned into remediation tasks.
-- `.ralph/model.txt` is restored to `normal_high` only after all review obligations, task creation, and commits are fully complete.
+- `.ralph/model.txt` is restored to `normal_model` only after all review obligations, task creation, and commits are fully complete.
 
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
@@ -43,7 +43,7 @@
 - [x] For each large change/refactor finding, create a task via `$add-task-as-agent`; set `<priority>high</priority>` only when immediate action is required, otherwise leave priority unset.
 - [x] Newly created follow-up tasks are placed at sensible positions in story ordering (not dumped at end by default).
 - [x] All created task files and related bookkeeping changes are committed.
-- [x] Final step only: set `.ralph/model.txt` content to exactly `normal_high`.
+- [x] Final step only: set `.ralph/model.txt` content to exactly `normal_model`.
 - [x] `make check` — passes cleanly, or failure is captured with follow-up task(s).
 - [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`); failures become follow-up task(s).
 - [x] `make lint` — passes cleanly; failures become follow-up task(s).
@@ -130,7 +130,7 @@ Execution notes (2026-03-02):
 
 9. Phase I: closeout protocol (only after all above complete)
 - [x] Commit all created/updated task artifacts with evidence-oriented message.
-- [x] Set `.ralph/model.txt` to exactly `normal_high` as final action of completed review cycle.
+- [x] Set `.ralph/model.txt` to exactly `normal_model` as final action of completed review cycle.
 - [x] Re-run any required final checks if closeout edits touched executable code (expected: task-only changes, so likely unnecessary).
 
 NOW EXECUTE

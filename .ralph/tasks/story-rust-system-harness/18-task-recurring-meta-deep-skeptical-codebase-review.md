@@ -36,7 +36,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - Final phase after findings/code-smell audit: run `make check`, `make test`, `make lint`, and `make test-long`.
 - If any final-phase test gate fails, create bug task(s) with `$add-bug` for each failing area before closeout.
 - If `make test-long` fails, also create a follow-up task to add a shorter real-binary e2e regression that reproduces the same failure.
-- Only after the full review/fanout is complete, set `.ralph/model.txt` back to exactly `normal_high`.
+- Only after the full review/fanout is complete, set `.ralph/model.txt` back to exactly `normal_model`.
 
 **NEVER set this task's passes to anything other than meta-task.**
 
@@ -112,16 +112,16 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - `make test`: initial failure on `dcs::etcd_store::tests::etcd_store_disconnect_clears_pending_queue_before_reconnect_snapshot` (`.ralph/evidence/meta-18-pass7-20260304T205520Z/gates/gate-make-test.log`), fixed and re-run pass (`.ralph/evidence/meta-18-pass7-20260304T205520Z/gates/gate-make-test-after-fix.log`)
   - `make lint`: pass (`.ralph/evidence/meta-18-pass7-20260304T205520Z/gates/gate-make-lint.log`)
   - `make test-long`: pass (`.ralph/evidence/meta-18-pass7-20260304T205520Z/gates/gate-make-test-long.log`)
-- Closeout model reset to `normal_high`: done
+- Closeout model reset to `normal_model`: done
 
 ### 2026-03-04 (fresh run, pass-5 preflight only)
 - Reviewer: codex
-- Preflight model check result: `.ralph/model.txt` was `normal_high` (mismatch), updated to `deep_review` to satisfy run precondition.
+- Preflight model check result: `.ralph/model.txt` was `normal_model` (mismatch), updated to `deep_review` to satisfy run precondition.
 - Files/modules audited: none yet (execution paused at preflight gate before substantive review).
 - Findings summary: no code findings in this preflight-only step.
 - Small issues -> bug tasks: none (not started due preflight gate).
 - Large issues -> agent tasks: none (not started due preflight gate).
-- Closeout model reset to `normal_high`: not applicable yet; full review still pending.
+- Closeout model reset to `normal_model`: not applicable yet; full review still pending.
 
 ### 2026-03-04 (fresh run, pass-5 full review complete)
 - Reviewer: codex
@@ -146,16 +146,16 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - `make test`: pass (`gate-make-test.log`)
   - `make lint`: pass (`gate-make-lint.log`)
   - `make test-long`: pass (`gate-make-test-long.log`)
-- Closeout model reset to `normal_high`: done (after gates).
+- Closeout model reset to `normal_model`: done (after gates).
 
 ### 2026-03-04 (fresh run, pass-4 preflight only)
 - Reviewer: codex
-- Preflight model check result: `.ralph/model.txt` was `normal_high` (mismatch), updated to `deep_review` to satisfy run precondition.
+- Preflight model check result: `.ralph/model.txt` was `normal_model` (mismatch), updated to `deep_review` to satisfy run precondition.
 - Files/modules audited: none yet (execution paused at preflight gate before substantive review).
 - Findings summary: no code findings in this preflight-only step.
 - Small issues -> bug tasks: none (not started due preflight gate).
 - Large issues -> agent tasks: none (not started due preflight gate).
-- Closeout model reset to `normal_high`: not applicable yet; full review still pending.
+- Closeout model reset to `normal_model`: not applicable yet; full review still pending.
 
 ### 2026-03-04 (fresh run, pass-4 full review complete)
 - Reviewer: codex
@@ -179,7 +179,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - `make test`: pass (`make-test.log`)
   - `make lint`: pass (`make-lint.log`)
   - `make test-long`: pass (`make-test-long.log`)
-- Closeout model reset to `normal_high`: done (after gates; see `.ralph/model.txt`)
+- Closeout model reset to `normal_model`: done (after gates; see `.ralph/model.txt`)
 
 ### 2026-03-03 (fresh run, pass-3 full review complete)
 - Reviewer: codex
@@ -203,16 +203,16 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - Real-binary enforcement gate: `make test-long`: pass (`make-test-long.log`)
   - `make test`: pass (`make-test.log`)
   - `make lint`: pass (`make-lint.log`)
-- Closeout model reset to `normal_high`: done (after full review + gates).
+- Closeout model reset to `normal_model`: done (after full review + gates).
 
 ### 2026-03-03 (fresh run, pass-3 preflight only)
 - Reviewer: codex
-- Preflight model check result: `.ralph/model.txt` was `normal_high` (mismatch), updated to `deep_review` to satisfy run precondition.
+- Preflight model check result: `.ralph/model.txt` was `normal_model` (mismatch), updated to `deep_review` to satisfy run precondition.
 - Files/modules audited: none yet (execution paused at preflight gate before substantive review).
 - Findings summary: no code findings in this preflight-only step.
 - Small issues -> bug tasks: none (not started due preflight gate).
 - Large issues -> agent tasks: none (not started due preflight gate).
-- Closeout model reset to `normal_high`: not applicable yet; full review still pending.
+- Closeout model reset to `normal_model`: not applicable yet; full review still pending.
 
 ### 2026-03-03 (fresh run, pass-2 full review complete)
 - Reviewer: codex
@@ -242,16 +242,16 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - `make test-long`: pass (`make-test-long.log`)
   - `make lint`: pass (`make-lint.log`)
   - Real-binary enforcement gate: `make test-long`: pass (`make-test-long.log`)
-- Closeout model reset to `normal_high`: done (after gates; see `.ralph/model.txt`)
+- Closeout model reset to `normal_model`: done (after gates; see `.ralph/model.txt`)
 
 ### 2026-03-03 (fresh run, pass-2 preflight only)
 - Reviewer: codex
-- Preflight model check result: `.ralph/model.txt` was `normal_high` (mismatch), updated to `deep_review` to satisfy run precondition.
+- Preflight model check result: `.ralph/model.txt` was `normal_model` (mismatch), updated to `deep_review` to satisfy run precondition.
 - Files/modules audited: none yet (execution halted at preflight by task contract).
 - Findings summary: no code findings yet; this entry only documents mandatory model gate enforcement for pass-2.
 - Small issues -> bug tasks: none (not started due preflight halt).
 - Large issues -> agent tasks: none (not started due preflight halt).
-- Closeout model reset to `normal_high`: not applicable yet; full review not started.
+- Closeout model reset to `normal_model`: not applicable yet; full review not started.
 
 ### 2026-03-03 (fresh run, pass-1 full review in progress)
 - Reviewer: codex
@@ -276,16 +276,16 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
   - `make test-long`: pass (`make-test-long.log`)
   - `make lint`: pass (`make-lint.log`)
   - Real-binary enforcement gate: `make test-long`: pass (`make-test-long.log`)
-- Closeout model reset to `normal_high`: done (verified `.ralph/model.txt` is `normal_high`).
+- Closeout model reset to `normal_model`: done (verified `.ralph/model.txt` is `normal_model`).
 
 ### 2026-03-03 (fresh run, pass-1 preflight only)
 - Reviewer: codex
-- Preflight model check result: `.ralph/model.txt` was `normal_high` (mismatch), updated to `deep_review` to satisfy run precondition.
+- Preflight model check result: `.ralph/model.txt` was `normal_model` (mismatch), updated to `deep_review` to satisfy run precondition.
 - Files/modules audited: none yet (execution halted at preflight by task contract).
 - Findings summary: no code findings yet; this entry only documents mandatory model gate enforcement.
 - Small issues -> bug tasks: none (not started due preflight halt).
 - Large issues -> agent tasks: none (not started due preflight halt).
-- Closeout model reset to `normal_high`: not applicable yet; full review not started.
+- Closeout model reset to `normal_model`: not applicable yet; full review not started.
 
 ### YYYY-MM-DD (fresh run)
 - Reviewer:
@@ -294,7 +294,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - Findings summary:
 - Small issues -> bug tasks:
 - Large issues -> agent tasks:
-- Closeout model reset to `normal_high`:
+- Closeout model reset to `normal_model`:
 
 **Execution:** Use subagents (Task tool) to implement changes in parallel where possible.
 </description>
@@ -316,7 +316,7 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - [ ] Every larger issue is turned into a task via `$add-task-as-agent`.
 - [ ] Final verification runs all gates: `make check`, `make test`, `make lint`, `make test-long`.
 - [ ] Every failing final-phase gate results in bug task(s) via `$add-bug` with actionable failure details.
-- [ ] Final closeout step sets `.ralph/model.txt` to exactly `normal_high`.
+- [ ] Final closeout step sets `.ralph/model.txt` to exactly `normal_model`.
 - THIS TASK STAYS AS meta-task FOREVER
 </acceptance_criteria>
 
@@ -420,7 +420,7 @@ Important: `make test` is wrapped in `timeout 120s` including compilation; warm 
 ### 4) Closeout (only after gates + tasks are created)
 - [x] Append a new “Exploration” entry for pass-4 including:
   - [x] audited modules/files, findings summary, tasks/bugs created, evidence dir.
-- [x] Set `.ralph/model.txt` back to exactly `normal_high`.
+- [x] Set `.ralph/model.txt` back to exactly `normal_model`.
 
 PASS-4 COMPLETE
 
@@ -583,7 +583,7 @@ Important: `make test` is wrapped in `timeout 120s` including compilation; warm 
 ### 5) Closeout (only after all gates + tasks/bugs are created)
 - [x] Append a new “Exploration” entry for pass-5 including:
   - [x] audited modules/files, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
-- [x] Set `.ralph/model.txt` back to exactly `normal_high`.
+- [x] Set `.ralph/model.txt` back to exactly `normal_model`.
 - [x] Only if pass-5 includes code changes: run `.ralph/task_switch.sh`, commit, and `git push` per repo workflow.
 
 	PASS-5 EXECUTED (historical; do not re-run)
@@ -802,7 +802,7 @@ If any forbidden tokens or bypass markers are found:
 
 ### 8) Closeout (only after all gates + tasks/bugs are created)
 - [ ] Append a new “Exploration” entry for pass-6 including audited paths, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
-- [ ] Set `.ralph/model.txt` back to exactly `normal_high`.
+- [ ] Set `.ralph/model.txt` back to exactly `normal_model`.
 
 PASS-6 PLAN READY (historical marker; do not execute blindly — see pass-7 plan below)
 
@@ -1020,7 +1020,7 @@ Scope: this pass must read all operator-doc tasks (contract) AND verify non-triv
 
 ### 10) Closeout (only after all gates + tasks/bugs are created)
 - [x] Append a new “Exploration” entry for pass-7 including audited paths, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
-- [x] Set `.ralph/model.txt` back to exactly `normal_high`.
+- [x] Set `.ralph/model.txt` back to exactly `normal_model`.
 
 PASS-7 COMPLETE (historical marker; do not execute pass-7 plan again)
 
@@ -1189,6 +1189,6 @@ Scope: this pass must read all operator-doc tasks (contract) AND verify non-triv
 
 ### 10) Closeout (only after all items in pass-8 are resolved and gates pass)
 - [x] Append a new “Exploration” entry for pass-8 including audited paths, findings summary, tasks/bugs created, evidence dir, and gate outcomes.
-- [x] Set `.ralph/model.txt` back to exactly `normal_high`.
+- [x] Set `.ralph/model.txt` back to exactly `normal_model`.
 
 NOW EXECUTE
