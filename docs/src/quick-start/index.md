@@ -1,11 +1,11 @@
 # Quick Start
 
-This path gets one node running with a real config, a reachable etcd cluster, and enough verification to prove the control loop is alive. It is not the full production guide. It is the shortest route to a first successful run that still reflects how the product actually works.
+This path is now explicitly container-first. The shortest supported route to a real first run is the checked-in Docker Compose setup that starts `etcd` plus one or three `pgtuskmaster` nodes with tracked configs and file-backed Docker secrets.
 
 You will do three things:
 
-1. Confirm the required binaries, directories, and secrets exist.
-2. Start one node with an explicit `config_version = "v2"` config.
-3. Verify the node API, logs, and DCS state before you move on.
+1. Prepare `.env.docker` and local secret files.
+2. Start the single-node stack with `make docker-up`.
+3. Validate the published API, debug, and PostgreSQL endpoints with the checked-in smoke flow.
 
-After this section, go straight to the [Operator Guide](../operator/index.md) before you expose the API to other hosts or add more nodes.
+After this section, go straight to the [Operator Guide](../operator/index.md) before you expose the API outside the local lab or translate the stack into a hardened production deployment.

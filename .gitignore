@@ -6,6 +6,7 @@ log
 # dotenv environment variable files
 .env
 .env*
+!.env.docker.example
 
 # IntelliJ based IDEs
 .idea
@@ -27,3 +28,7 @@ target_verify_*/
 
 # mdBook generated output
 /docs/book/
+
+# compose-managed secret sources
+docker/secrets/*
+!docker/secrets/*.example

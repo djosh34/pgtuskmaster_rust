@@ -11,6 +11,7 @@
   - [Initial Validation](./quick-start/initial-validation.md)
 
 - [Operator Guide](./operator/index.md)
+  - [Container Deployment](./operator/container-deployment.md)
   - [Configuration Guide](./operator/configuration.md)
   - [Deployment and Topology](./operator/deployment.md)
   - [Observability and Day-2 Operations](./operator/observability.md)

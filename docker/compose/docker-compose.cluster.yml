@@ -1,0 +1,151 @@
+services:
+  etcd:
+    image: ${ETCD_IMAGE}
+    command:
+      - etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-cluster-state=new
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - pgtm-internal
+    volumes:
+      - etcd-cluster-data:/etcd-data
+
+  node-a:
+    image: ${PGTUSKMASTER_IMAGE}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.prod
+    depends_on:
+      etcd:
+        condition: service_healthy
+    restart: unless-stopped
+    configs:
+      - source: runtime-node-a
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: common-pg-hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: common-pg-ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+    secrets:
+      - source: superuser-password
+        target: postgres-superuser-password
+      - source: replicator-password
+        target: replicator-password
+      - source: rewinder-password
+        target: rewinder-password
+    networks:
+      - pgtm-internal
+    ports:
+      - "${PGTM_CLUSTER_NODE_A_API_PORT}:8080"
+      - "${PGTM_CLUSTER_NODE_A_PG_PORT}:5432"
+    volumes:
+      - node-a-cluster-data:/var/lib/postgresql
+      - node-a-cluster-logs:/var/log/pgtuskmaster
+
+  node-b:
+    image: ${PGTUSKMASTER_IMAGE}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.prod
+    depends_on:
+      etcd:
+        condition: service_healthy
+    restart: unless-stopped
+    configs:
+      - source: runtime-node-b
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: common-pg-hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: common-pg-ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+    secrets:
+      - source: superuser-password
+        target: postgres-superuser-password
+      - source: replicator-password
+        target: replicator-password
+      - source: rewinder-password
+        target: rewinder-password
+    networks:
+      - pgtm-internal
+    ports:
+      - "${PGTM_CLUSTER_NODE_B_API_PORT}:8080"
+      - "${PGTM_CLUSTER_NODE_B_PG_PORT}:5432"
+    volumes:
+      - node-b-cluster-data:/var/lib/postgresql
+      - node-b-cluster-logs:/var/log/pgtuskmaster
+
+  node-c:
+    image: ${PGTUSKMASTER_IMAGE}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.prod
+    depends_on:
+      etcd:
+        condition: service_healthy
+    restart: unless-stopped
+    configs:
+      - source: runtime-node-c
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: common-pg-hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: common-pg-ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+    secrets:
+      - source: superuser-password
+        target: postgres-superuser-password
+      - source: replicator-password
+        target: replicator-password
+      - source: rewinder-password
+        target: rewinder-password
+    networks:
+      - pgtm-internal
+    ports:
+      - "${PGTM_CLUSTER_NODE_C_API_PORT}:8080"
+      - "${PGTM_CLUSTER_NODE_C_PG_PORT}:5432"
+    volumes:
+      - node-c-cluster-data:/var/lib/postgresql
+      - node-c-cluster-logs:/var/log/pgtuskmaster
+
+configs:
+  runtime-node-a:
+    file: ../configs/cluster/node-a/runtime.toml
+  runtime-node-b:
+    file: ../configs/cluster/node-b/runtime.toml
+  runtime-node-c:
+    file: ../configs/cluster/node-c/runtime.toml
+  common-pg-hba:
+    file: ../configs/common/pg_hba.conf
+  common-pg-ident:
+    file: ../configs/common/pg_ident.conf
+
+secrets:
+  superuser-password:
+    file: ${PGTM_SECRET_SUPERUSER_FILE}
+  replicator-password:
+    file: ${PGTM_SECRET_REPLICATOR_FILE}
+  rewinder-password:
+    file: ${PGTM_SECRET_REWINDER_FILE}
+
+networks:
+  pgtm-internal:
+    driver: bridge
+
+volumes:
+  etcd-cluster-data:
+  node-a-cluster-data:
+  node-a-cluster-logs:
+  node-b-cluster-data:
+  node-b-cluster-logs:
+  node-c-cluster-data:
+  node-c-cluster-logs:

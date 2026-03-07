@@ -776,6 +776,25 @@ fn ensure_start_paths(
         })?;
     }
 
+    fs::create_dir_all(data_dir).map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "failed to create postgres data dir `{}`: {err}",
+            data_dir.display()
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            RuntimeError::StartupExecution(format!(
+                "failed to set postgres data dir permissions on `{}`: {err}",
+                data_dir.display()
+            ))
+        })?;
+    }
+
     fs::create_dir_all(&process_defaults.socket_dir).map_err(|err| {
         RuntimeError::StartupExecution(format!(
             "failed to create postgres socket dir `{}`: {err}",
@@ -1149,7 +1168,7 @@ fn local_postgres_dsn(
 ) -> String {
     format!(
         "host={} port={} user={} dbname={} connect_timeout={} sslmode={}",
-        process_defaults.postgres_host,
+        process_defaults.socket_dir.display(),
         process_defaults.postgres_port,
         superuser_username,
         identity.dbname,

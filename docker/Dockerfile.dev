@@ -1,0 +1,64 @@
+ARG RUST_IMAGE=rust:1.93-bookworm
+
+FROM ${RUST_IMAGE} AS rust-toolchain
+
+WORKDIR /workspace
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        pkg-config \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+RUN cargo build --locked --release --bin pgtuskmaster
+
+FROM postgres:16-bookworm AS dev
+
+USER root
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        make \
+        nodejs \
+        npm \
+        pkg-config \
+        protobuf-compiler \
+        python3 \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+COPY --from=rust-toolchain /workspace/target/release/pgtuskmaster /usr/local/bin/pgtuskmaster
+
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH=/usr/local/cargo/bin:${PATH}
+ENV PGTUSKMASTER_CONFIG=/etc/pgtuskmaster/runtime.toml
+
+RUN rustup component add clippy rustfmt \
+    && install -d -o postgres -g postgres \
+        /etc/pgtuskmaster \
+        /var/lib/pgtuskmaster \
+        /var/log/pgtuskmaster \
+        /workspace \
+    && chown -R postgres:postgres /usr/local/cargo /usr/local/rustup
+
+COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+RUN chmod 0755 /usr/local/bin/pgtuskmaster /usr/local/bin/docker-entrypoint.sh
+
+USER postgres
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

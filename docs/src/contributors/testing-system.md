@@ -137,21 +137,18 @@ This repo is intentionally strict about not silently skipping tests: a “green�
 
 ## Makefile gates: `make test` vs `make test-long`
 
-The Makefile splits the default test run from “ultra-long” scenarios:
+The Makefile splits the default test run from the longest verification gate:
 
 - `make test`:
-  - runs `cargo test --all-targets`
-  - skips a curated list of ultra-long tests
-  - validates that every skip token is an **exact match** (preflight `-- --list`), so the run fails closed if a test is renamed or missing.
+  - runs the default `cargo nextest` profile for the workspace
+  - is the supported fast gate for normal edit/compile/test loops.
 - `make test-long`:
-  - builds the workspace test targets once, then runs only the ultra-long tests in parallel via their exact test executables
-  - is intended for scenarios that take minutes and are not appropriate for a tight edit/compile loop.
-  - is the supported home for the focused real-binary HA coverage:
-    - planned switchover under concurrent SQL load
-    - unassisted failover under concurrent SQL load
-    - unassisted failover SQL continuity
-    - strict no-quorum fail-safe observation
-    - no-quorum fencing plus post-recovery committed-key verification on the recovered writable primary, requiring all pre-cutoff commits and rejecting phantom keys
+  - runs the ultra-long HA nextest profile first
+  - then runs Docker Compose validation owned by the repo:
+    - `docker compose ... config` for the single-node and cluster stacks
+    - the single-node smoke flow
+    - the three-node cluster smoke flow
+  - is the supported home for the focused real-binary HA coverage plus the container deployment smoke coverage
   - intentionally does not include the deleted `e2e_multi_node_real_ha_scenario_matrix`; combined HA flows must earn their way back by adding unique invariant coverage beyond the focused scenarios already in `ULTRA_LONG_TESTS`.
 
 When you add a new slow scenario:

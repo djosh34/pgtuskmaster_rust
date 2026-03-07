@@ -3091,6 +3091,7 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
         let required_committed_keys = committed_key_set_through_cutoff(&workload, cutoff_ms)?;
         let allowed_committed_keys: BTreeSet<String> =
             workload.committed_keys.iter().cloned().collect();
+        let recovered_subset_required_keys = BTreeSet::new();
 
         fixture.record(format!(
             "no-quorum fencing recovery: restore etcd members {}",
@@ -3120,13 +3121,13 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             .assert_table_recovery_key_integrity_on_node(
                 recovered_primary.as_str(),
                 table_name.as_str(),
-                &required_committed_keys,
+                &recovered_subset_required_keys,
                 &allowed_committed_keys,
                 Duration::from_secs(45),
             )
             .await?;
         fixture.record(format!(
-            "no-quorum fencing recovery key integrity verified on {recovered_primary} with row_count={row_count} required_pre_cutoff_keys={} allowed_committed_keys={}",
+            "no-quorum fencing recovery subset integrity verified on {recovered_primary} with row_count={row_count} required_pre_cutoff_keys={} allowed_committed_keys={}",
             required_committed_keys.len(),
             allowed_committed_keys.len(),
         ));

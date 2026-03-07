@@ -1,36 +1,53 @@
 # First Run
 
-Use a small, explicit config for the first launch. Keep the scope narrow: one node, one etcd cluster, one PostgreSQL data directory, and no speculative deployment extras.
+Start with the single-node Compose stack. It gives you one `etcd` service plus one `pgtuskmaster` node named `node-a`, wired with tracked configs and file-backed Docker secrets.
 
-1. Prepare the runtime config.
-
-Use the production or local-only examples in [Configuration Guide](../operator/configuration.md). For the first run, keep every path absolute and keep `cluster.member_id` and `dcs.scope` consistent with the etcd namespace you intend to use.
-
-2. Start etcd and confirm the node can reach it.
-
-The node will not guess around a broken DCS path. If etcd is unreachable, fix that first.
-
-3. Start the node.
+## 1. Validate your local Compose render
 
 ```console
-pgtuskmaster --config /path/to/runtime.toml
+docker compose --env-file .env.docker -f docker/compose/docker-compose.single.yml config
+docker compose --env-file .env.docker -f docker/compose/docker-compose.cluster.yml config
 ```
 
-4. Query the node state.
+This fails closed if:
 
-If you are using the local-only API example, the CLI works against the default runtime API address without extra flags:
+- `.env.docker` is missing or incomplete
+- a required secret file path does not exist
+- the Compose config, config mounts, or secret mounts are malformed
+
+If you are changing the repo-owned Docker assets themselves, `make docker-compose-config` still exists as the contributor-facing gate that validates the checked-in example env file.
+
+## 2. Bring up the single-node stack
 
 ```console
-pgtuskmasterctl ha state
+make docker-up
 ```
 
-If you exposed the API on another host or enabled HTTPS and tokens, point the CLI at that endpoint instead:
+That target builds `docker/Dockerfile.prod`, starts `etcd`, and starts `node-a` with:
+
+- `docker/configs/single/node-a/runtime.toml`
+- `docker/configs/common/pg_hba.conf`
+- `docker/configs/common/pg_ident.conf`
+- Docker secrets mounted from the three secret files referenced in `.env.docker`
+
+The stack publishes only two host ports:
+
+- `PGTM_SINGLE_API_PORT` for both `/ha/state` and `/debug/*`
+- `PGTM_SINGLE_PG_PORT` for PostgreSQL client traffic
+
+## 3. Confirm the API is live
 
 ```console
-pgtuskmasterctl \
-  --base-url https://node-a.example.com:8080 \
-  --read-token "$PGTUSKMASTER_READ_TOKEN" \
-  ha state
+curl --silent --show-error http://127.0.0.1:${PGTM_SINGLE_API_PORT}/ha/state
+curl --silent --show-error http://127.0.0.1:${PGTM_SINGLE_API_PORT}/debug/verbose
 ```
 
-The first successful run is not just “the process stayed up.” It is “the node published a coherent `/ha/state`, the logs explain the chosen startup path, and the DCS scope reflects the same member identity you configured.”
+The starter stack intentionally enables debug routes and disables API auth so the lab flow is easy to inspect. That is a quick-start convenience, not a production hardening posture.
+
+## 4. Tear the lab stack down when you are done
+
+```console
+make docker-down
+```
+
+`make docker-down` removes the containers plus their named volumes. If you want to keep the single-node data directory around between restarts, use raw `docker compose stop/start` instead of the destructive helper.

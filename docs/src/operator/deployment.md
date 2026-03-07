@@ -1,82 +1,66 @@
 # Deployment and Topology
 
-A standard deployment runs one `pgtuskmaster` process per PostgreSQL instance, with all nodes connected to a shared etcd cluster for coordination.
+The default deployment story is now container-first:
 
-```mermaid
-flowchart TB
-  subgraph ETCD[etcd cluster]
-    E1[(etcd)]
-    E2[(etcd)]
-    EN[(...)]
-  end
+- build the production node image from `docker/Dockerfile.prod`
+- use the checked-in Compose stacks under `docker/compose/`
+- mount runtime TOML and managed PostgreSQL config sources through Compose `configs`
+- mount credentials through Compose `secrets`
 
-  subgraph N1[Node A]
-    A[pgtuskmaster]
-    APG[(PostgreSQL)]
-    A --> APG
-  end
+If you are learning the system or validating a change, start with [Container Deployment](./container-deployment.md). Manual host-native deployment is still possible, but it is the advanced path now.
 
-  subgraph N2[Node B]
-    B[pgtuskmaster]
-    BPG[(PostgreSQL)]
-    B --> BPG
-  end
+## Starter topologies
 
-  subgraph N3[Node C]
-    C[pgtuskmaster]
-    CPG[(PostgreSQL)]
-    C --> CPG
-  end
+### Single-node lab
 
-  A <-->|coordination| ETCD
-  B <-->|coordination| ETCD
-  C <-->|coordination| ETCD
-```
+`docker/compose/docker-compose.single.yml` starts:
 
-This layout keeps responsibilities clean:
+- one `etcd` service
+- one node service named `node-a`
+- one published API/debug port
+- one published PostgreSQL port
 
-- PostgreSQL stays local to the host that stores its data directory.
-- `pgtuskmaster` makes decisions from local PostgreSQL state plus shared coordination state.
-- etcd is coordination memory, not the source of truth for database health.
+This is the shortest supported path to a coherent `/ha/state`.
 
-## What must be consistent across nodes
+### Three-node lab cluster
 
-Some settings should match across every member in the same cluster:
+`docker/compose/docker-compose.cluster.yml` starts:
 
-- `[cluster].name`
-- `[dcs].scope`
-- the etcd deployment they are talking to
-- the basic HA timing model, unless you have a specific reason to diverge
+- one `etcd` service
+- three node services: `node-a`, `node-b`, `node-c`
+- one published API/debug port per node
+- one published PostgreSQL port per node
 
-If those drift, the cluster can look split even when PostgreSQL is healthy.
+The cluster stack is the default day-1 topology for proving inter-node reachability, replica bootstrap, and DCS coordination behavior inside containers.
 
-## What should remain node-specific
+## Network exposure rule
 
-These values normally differ per node:
+The checked-in Compose files intentionally keep exposure narrow:
 
-- `[cluster].member_id`
-- PostgreSQL `data_dir`, `listen_host`, and local filesystem paths
-- API `listen_addr` and certificates
-- any host-specific secret paths
+- etcd stays internal to the Compose bridge network
+- the API and debug routes share the same published port on each node
+- PostgreSQL gets one published client port per node
+- there is no separate published debug port
 
-Treat copy-pasted configs with only one or two edits as a risk. The easiest way to create an impossible cluster is to duplicate a `member_id` or leave one node pointing at the wrong scope.
+That matches the runtime contract: `debug.enabled = true` adds `/debug/*` routes on the API listener instead of creating a second socket.
 
-## API exposure choices
+## Secrets and config ownership
 
-The recommended progression is:
+The container deployment surface is split deliberately:
 
-1. First run: keep `api.listen_addr = "127.0.0.1:8080"` and use the CLI locally.
-2. Real deployment: move the API to a deliberate network address, require TLS, and enable role tokens.
+- `docker/configs/**`: tracked runtime TOMLs and managed `pg_hba` / `pg_ident` sources
+- `docker/secrets/*.example`: tracked placeholders only
+- `.env.docker`: local path mapping for the real secret files that Compose mounts
 
-Do not expose an unauthenticated, plaintext API on `0.0.0.0` unless the host is isolated specifically for a short-lived lab.
+Do not push real password files into the repo. The runtime already supports file-backed secrets; use that instead of environment-variable secrets for the PostgreSQL roles.
 
-## Checks before you call the deployment healthy
+## Manual deployment is secondary
 
-- PostgreSQL data directories have the required ownership and permissions.
-- Socket paths are short and deterministic.
-- Every node can reach its configured etcd endpoints.
-- Every node advertises the same cluster scope.
-- API security matches the actual exposure level of the listener.
-- Required binaries exist at the configured absolute paths.
+If you are not using containers, you still need to satisfy the same runtime contract:
 
-During network partitions or etcd instability, nodes can enter conservative states even if local PostgreSQL still looks healthy. Read that through `dcs_trust` and lifecycle phase, not through process count alone.
+- real PostgreSQL 16 binaries at absolute paths
+- a reachable etcd deployment
+- readable secret files
+- deliberate API exposure and auth/TLS choices
+
+Use the host-native path only when you are intentionally translating the checked-in container contract into another deployment system.

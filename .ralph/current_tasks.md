@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar  7 04:49:50 AM CET 2026
-
-# Task `.ralph/tasks/story-container-first-deployment/01-task-container-first-docker-deployment-and-compose.md`
-
-```
-## Task: Container-first deployment baseline with Docker images, Compose stacks, and secrets <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Make container deployment the default operational path by adding production/development images and turnkey Docker Compose stacks that run etcd3 + pgtuskmaster with config maps and Docker secrets.
-```
-
-==============
+Generated: Sat Mar  7 05:50:12 AM CET 2026
 
 # Task `.ralph/tasks/story-docs-useful-guides/02-task-rebuild-contributor-docs-as-codebase-navigation-and-contract-guide.md`
 

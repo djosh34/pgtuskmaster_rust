@@ -1,27 +1,27 @@
 # Initial Validation
 
-Treat the first launch as incomplete until you can explain what the node is doing from outside the process.
+Treat the first launch as incomplete until you can prove the checked-in container stack is reachable from outside the containers.
 
 Run through this checklist:
 
-- `pgtuskmasterctl ha state` returns a coherent response instead of timing out or failing auth unexpectedly.
-- `dcs_trust`, `ha_phase`, and `ha_decision` make sense for the environment you just started.
-- The local PostgreSQL instance is reachable on the configured socket or listen address.
-- The etcd scope contains the expected member and, once a leader exists, leader information under `/<scope>/...`.
-- The logs show the startup path the node chose, not just a running PID.
+- `make docker-smoke-single` passes cleanly.
+- `GET /ha/state` on `http://127.0.0.1:${PGTM_SINGLE_API_PORT}` returns a coherent JSON payload for `node-a`.
+- `GET /debug/verbose` on the same published API port succeeds, proving the debug routes ride the API listener instead of a second debug socket.
+- the published PostgreSQL port at `PGTM_SINGLE_PG_PORT` accepts TCP connections
+- `etcdctl endpoint health` succeeds inside the `etcd` container
+- PostgreSQL accepts a local control query inside the node container
 
 What good looks like:
 
-- a brand new single-node cluster normally settles into a primary-oriented state
-- a node joining an existing healthy cluster reports follower-oriented behavior
-- fail-safe and trust-related phases are visible through `/ha/state` instead of being hidden behind an API blackout
+- a brand new single-node lab usually converges to a primary-oriented state
+- the member identity in `/ha/state` matches `node-a`
+- the API and PostgreSQL ports exposed by Compose are the only externally published service ports
+- the logs explain the chosen startup path instead of leaving you to infer behavior from container liveness alone
 
-Common first-run mistakes:
+When you are ready for the full multi-node lab, run:
 
-- wrong absolute paths in `process.binaries`
-- unreadable password, token, or certificate files
-- `pg_hba` rules that do not match the replication or rewind path you configured
-- using the wrong etcd scope or endpoints
-- PostgreSQL directory permissions that prevent `initdb`, `pg_ctl`, or normal server start
+```console
+make docker-smoke-cluster
+```
 
-Once those checks are clean, move on to the [Operator Guide](../operator/index.md).
+That smoke flow brings up `etcd`, `node-a`, `node-b`, and `node-c`, verifies `/ha/state`, `/debug/verbose`, and published PostgreSQL ports for every node, then tears the stack down automatically.
