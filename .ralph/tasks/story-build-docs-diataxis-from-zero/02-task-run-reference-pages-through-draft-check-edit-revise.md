@@ -1,4 +1,4 @@
-## Task: Run Reference Pages Through Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Run Reference Pages Through Draft Check Edit Revise <status>done</status> <passes>true</passes> <priority>high</priority>
 
 <description>
 **Goal:** Create the first real reference pages by running them through the authoring loop `draft -> check/edit -> revise`. This task is for authoring, not for the final truth-check pass.
@@ -54,19 +54,19 @@ The higher-order goal is to produce strong reference pages while keeping structu
 </description>
 
 <acceptance_criteria>
-- [ ] No more than 5 pages are authored in this run
-- [ ] Every created page is intended as reference and passes the compass as `cognition + application`
-- [ ] Competing drafts, when used, live under `docs/drafts/`
-- [ ] No page drifts into how-to or explanation content
-- [ ] `docs/src/SUMMARY.md` contains only real existing pages
-- [ ] The task is free to radically change navigation if stronger reference groupings emerge
-- [ ] `make docs-build` — passes cleanly
-- [ ] `make docs-lint` — passes cleanly
-- [ ] `make check` — passes cleanly
-- [ ] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`, so `make test` and `make test-long` are not run
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and common sense says behavior may have changed: `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] Only if `git` shows intentional changes under `src/` or `tests/`, and those changes impact ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] No more than 5 pages are authored in this run
+- [x] Every created page is intended as reference and passes the compass as `cognition + application`
+- [x] Competing drafts, when used, live under `docs/drafts/`
+- [x] No page drifts into how-to or explanation content
+- [x] `docs/src/SUMMARY.md` contains only real existing pages
+- [x] The task is free to radically change navigation if stronger reference groupings emerge
+- [x] `make docs-build` — passes cleanly
+- [x] `make docs-lint` — passes cleanly
+- [x] `make check` — passes cleanly
+- [x] Expected docs-creation case: `git` shows no intentional changes under `src/` or `tests/`
+- [x] `make test` — passes cleanly
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly
 </acceptance_criteria>
 
 <implementation_plan>
@@ -141,3 +141,12 @@ The higher-order goal is to produce strong reference pages while keeping structu
 
 NOW EXECUTE
 </implementation_plan>
+
+<verification>
+- Authored three reference pages under `docs/src/reference/`: `config.md`, `dcs.md`, and `ha.md`.
+- Added draft material under `docs/drafts/`, including two competing HA drafts before promoting the final page.
+- Updated `docs/src/SUMMARY.md` to include only the real authored reference pages.
+- Confirmed the docs-only condition with `git diff --name-only -- src tests`, which returned no intentional `src/` or `tests/` changes for this run.
+- Passed on 2026-03-07: `make docs-build`, `make docs-lint`, `make check`, `make test`, `make test-long`, and `make lint`.
+- `make test` and `make test-long` were still run even though this was a docs-only change, because the repo-level completion rule for this run was stricter than the docs-task default skip condition.
+</verification>
