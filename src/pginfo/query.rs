@@ -1,4 +1,7 @@
-use crate::state::{TimelineId, WalLsn, WorkerError};
+use crate::{
+    pginfo::state::{render_pg_conninfo, PgConnInfo},
+    state::{TimelineId, WalLsn, WorkerError},
+};
 
 pub(crate) const PGINFO_POLL_SQL: &str = r#"
 SELECT
@@ -41,8 +44,9 @@ pub(crate) struct PgPollData {
     pub(crate) slot_names: Vec<String>,
 }
 
-pub(crate) async fn poll_once(postgres_dsn: &str) -> Result<PgPollData, WorkerError> {
-    let (client, connection) = tokio_postgres::connect(postgres_dsn, tokio_postgres::NoTls)
+pub(crate) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollData, WorkerError> {
+    let postgres_dsn = render_pg_conninfo(postgres_conninfo);
+    let (client, connection) = tokio_postgres::connect(&postgres_dsn, tokio_postgres::NoTls)
         .await
         .map_err(|err| WorkerError::Message(format!("postgres connect failed: {err}")))?;
 

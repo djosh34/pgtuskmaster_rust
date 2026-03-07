@@ -1061,7 +1061,7 @@ async fn run_workers(
 
     let pg_ctx = crate::pginfo::state::PgInfoWorkerCtx {
         self_id: self_id.clone(),
-        postgres_dsn: local_postgres_dsn(
+        postgres_conninfo: local_postgres_conninfo(
             &process_defaults,
             &cfg.postgres.local_conn_identity,
             cfg.postgres.roles.superuser.username.as_str(),
@@ -1181,21 +1181,22 @@ async fn run_workers(
     Ok(())
 }
 
-fn local_postgres_dsn(
+fn local_postgres_conninfo(
     process_defaults: &ProcessDispatchDefaults,
     identity: &crate::config::PostgresConnIdentityConfig,
     superuser_username: &str,
     connect_timeout_s: u32,
-) -> String {
-    format!(
-        "host={} port={} user={} dbname={} connect_timeout={} sslmode={}",
-        process_defaults.socket_dir.display(),
-        process_defaults.postgres_port,
-        superuser_username,
-        identity.dbname,
-        connect_timeout_s,
-        identity.ssl_mode.as_str()
-    )
+) -> crate::pginfo::state::PgConnInfo {
+    crate::pginfo::state::PgConnInfo {
+        host: process_defaults.socket_dir.display().to_string(),
+        port: process_defaults.postgres_port,
+        user: superuser_username.to_string(),
+        dbname: identity.dbname.clone(),
+        application_name: None,
+        connect_timeout_s: Some(connect_timeout_s),
+        ssl_mode: identity.ssl_mode,
+        options: None,
+    }
 }
 
 fn initial_pg_state() -> PgInfoState {
@@ -1722,13 +1723,13 @@ mod tests {
         assert_eq!(defaults.replicator_username, "repl_user");
         assert_eq!(defaults.rewinder_username, "rewind_user");
 
-        let local_dsn = super::local_postgres_dsn(
+        let local_conninfo = super::local_postgres_conninfo(
             &defaults,
             &cfg.postgres.local_conn_identity,
             cfg.postgres.roles.superuser.username.as_str(),
             cfg.postgres.connect_timeout_s,
         );
-        assert!(local_dsn.contains("user=su_admin"));
+        assert_eq!(local_conninfo.user, "su_admin");
 
         let leader_source = crate::ha::source_conn::basebackup_source_from_member(
             &MemberId("node-a".to_string()),

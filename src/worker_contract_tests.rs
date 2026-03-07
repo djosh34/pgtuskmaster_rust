@@ -288,7 +288,16 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
     let (publisher, pg_subscriber) = new_state_channel(initial_pg.clone(), UnixMillis(1));
     let mut pg_ctx = PgInfoWorkerCtx {
         self_id: self_member_id.clone(),
-        postgres_dsn: "host=127.0.0.1 port=1 user=postgres dbname=postgres".to_string(),
+        postgres_conninfo: crate::pginfo::state::PgConnInfo {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            user: "postgres".to_string(),
+            dbname: "postgres".to_string(),
+            application_name: None,
+            connect_timeout_s: None,
+            ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
+            options: None,
+        },
         poll_interval: CONTRACT_WORKER_POLL_INTERVAL,
         publisher,
         log: crate::logging::LogHandle::null(),

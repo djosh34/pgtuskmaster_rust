@@ -43,7 +43,7 @@ pub(crate) async fn run(mut ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
 
 pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerError> {
     let now = now_unix_millis()?;
-    let poll = poll_once(&ctx.postgres_dsn).await;
+    let poll = poll_once(&ctx.postgres_conninfo).await;
     let next_state = match poll {
         Ok(polled) => {
             to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))
@@ -146,7 +146,7 @@ mod tests {
     use crate::test_harness::ports::allocate_ports;
 
     use super::{step_once, PgInfoWorkerCtx, SqlStatus};
-    use crate::pginfo::state::{PgInfoState, Readiness};
+    use crate::pginfo::state::{PgConnInfo, PgInfoState, PgSslMode, Readiness};
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -161,6 +161,19 @@ mod tests {
             LogHandle::new("host-a".to_string(), sink_dyn, SeverityText::Trace),
             sink,
         )
+    }
+
+    fn local_test_conninfo(port: u16) -> PgConnInfo {
+        PgConnInfo {
+            host: "127.0.0.1".to_string(),
+            port,
+            user: "postgres".to_string(),
+            dbname: "postgres".to_string(),
+            application_name: None,
+            connect_timeout_s: None,
+            ssl_mode: PgSslMode::Prefer,
+            options: None,
+        }
     }
 
     async fn wait_for_postgres_ready(dsn: &str, timeout: Duration) -> TestResult {
@@ -223,7 +236,7 @@ mod tests {
         drop(reservation);
         let mut handle = spawn_pg16(spec).await?;
 
-        let dsn = format!("host=127.0.0.1 port={} user=postgres dbname=postgres", port);
+        let conninfo = local_test_conninfo(port);
 
         let unknown = PgInfoState::Unknown {
             common: PgInfoCommon {
@@ -245,7 +258,7 @@ mod tests {
         let (log, sink) = test_log_handle();
         let mut ctx = PgInfoWorkerCtx {
             self_id: MemberId("node-a".to_string()),
-            postgres_dsn: dsn.clone(),
+            postgres_conninfo: conninfo.clone(),
             poll_interval: Duration::from_millis(25),
             publisher,
             log,
@@ -253,6 +266,7 @@ mod tests {
         };
 
         let run_result: TestResult = async {
+            let dsn = crate::pginfo::state::render_pg_conninfo(&conninfo);
             wait_for_postgres_ready(&dsn, Duration::from_secs(10)).await?;
             step_once(&mut ctx).await?;
 
@@ -426,10 +440,6 @@ mod tests {
                 spawn_pg16_for_vanilla_postgres(replica_spec, &replica_conf_lines).await?;
             replica = Some(replica_handle);
 
-            let replica_dsn = format!(
-                "host=127.0.0.1 port={} user=postgres dbname=postgres",
-                replica_port
-            );
             let initial = PgInfoState::Unknown {
                 common: PgInfoCommon {
                     worker: WorkerStatus::Starting,
@@ -450,7 +460,7 @@ mod tests {
             let (log, sink) = test_log_handle();
             let mut ctx = PgInfoWorkerCtx {
                 self_id: MemberId("node-b".to_string()),
-                postgres_dsn: replica_dsn,
+                postgres_conninfo: local_test_conninfo(replica_port),
                 poll_interval: Duration::from_millis(50),
                 publisher,
                 log,

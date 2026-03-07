@@ -14,6 +14,10 @@ Every time this task is picked up, the engineer must run a **FRESH verification*
 - Validate test reality and anti-silent-pass guarantees, including real pg16 and real `etcd` binary usage.
 - Validate e2e/integration behavior comes from real implementation, not accidental effects.
 - Audit all code smells and broader quality concerns with nothing out of scope.
+- Audit representation integrity across subsystem boundaries:
+  - Look for places where the codebase already has a typed/canonical model, but another path carries the same domain concept as ad-hoc primitives, partially-parsed values, duplicated field bundles, or hand-built strings/maps.
+  - For each such case, verify whether the looser representation is a deliberate boundary-only encoding or an avoidable internal drift from the canonical model.
+  - Prefer generic evidence-gathering that starts from domain concepts and boundary crossings rather than from preselected examples, so the review does not anchor on one known mismatch.
 - Validate documentation correctness as part of the same skepticism pass:
   - Read every task in `.ralph/tasks/story-operator-architecture-docs/` every time this meta-task is run, including tasks currently marked pass.
   - For every non-trivial doc claim (behavioral guarantee, safety claim, endpoint behavior, config effect, failure-mode expectation), trace the supporting evidence to either code, tests, runtime artifacts, or explicit docs rationale.

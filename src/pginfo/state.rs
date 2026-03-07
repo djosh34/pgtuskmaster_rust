@@ -72,7 +72,7 @@ pub(crate) enum PgInfoState {
 #[derive(Clone, Debug)]
 pub(crate) struct PgInfoWorkerCtx {
     pub(crate) self_id: MemberId,
-    pub(crate) postgres_dsn: String,
+    pub(crate) postgres_conninfo: PgConnInfo,
     pub(crate) poll_interval: Duration,
     pub(crate) publisher: StatePublisher<PgInfoState>,
     pub(crate) log: LogHandle,
