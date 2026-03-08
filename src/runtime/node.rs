@@ -479,12 +479,13 @@ fn select_resume_start_intent(
     process_defaults: &ProcessDispatchDefaults,
 ) -> Result<ManagedPostgresStartIntent, RuntimeError> {
     let self_member_id = MemberId(self_member_id.to_string());
-    let existing_managed_replica =
-        crate::postgres_managed::read_existing_replica_start_intent(data_dir)
-            .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
+    let managed_recovery_state = crate::postgres_managed::inspect_managed_recovery_state(data_dir)
+        .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
+    let has_local_managed_replica_residue =
+        managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None;
 
     let Some(cache) = cache else {
-        if existing_managed_replica.is_some() {
+        if has_local_managed_replica_residue {
             return Err(RuntimeError::StartupPlanning(
                 "existing postgres data dir contains managed replica recovery state but startup dcs cache probe was unavailable; cannot rebuild authoritative startup intent"
                     .to_string(),
@@ -515,7 +516,7 @@ fn select_resume_start_intent(
         return Ok(ManagedPostgresStartIntent::primary());
     }
 
-    if existing_managed_replica.is_some() {
+    if has_local_managed_replica_residue {
         return Err(RuntimeError::StartupPlanning(
             "existing postgres data dir contains managed replica recovery state but no healthy primary is available in DCS to rebuild authoritative managed config"
                 .to_string(),

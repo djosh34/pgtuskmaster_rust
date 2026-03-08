@@ -9,11 +9,10 @@ use thiserror::Error;
 use crate::{
     config::{ApiTlsMode, InlineOrPath, RoleAuthConfig, RuntimeConfig, SecretSource},
     postgres_managed_conf::{
-        managed_standby_passfile_path, parse_managed_primary_conninfo,
-        render_managed_postgres_conf, ManagedPostgresConf, ManagedPostgresConfError,
-        ManagedPostgresStartIntent, ManagedPostgresTlsConfig, ManagedRecoverySignal,
-        ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
-        MANAGED_STANDBY_SIGNAL_NAME,
+        managed_standby_passfile_path, render_managed_postgres_conf, ManagedPostgresConf,
+        ManagedPostgresConfError, ManagedPostgresStartIntent, ManagedPostgresTlsConfig,
+        ManagedRecoverySignal, ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME,
+        MANAGED_RECOVERY_SIGNAL_NAME, MANAGED_STANDBY_SIGNAL_NAME,
     },
 };
 
@@ -131,54 +130,10 @@ pub(crate) fn materialize_managed_postgres_config(
     })
 }
 
-pub(crate) fn read_existing_replica_start_intent(
+pub(crate) fn inspect_managed_recovery_state(
     data_dir: &Path,
-) -> Result<Option<ManagedPostgresStartIntent>, ManagedPostgresError> {
-    let recovery_signal = existing_recovery_signal(data_dir)?;
-    let Some(recovery_signal) = recovery_signal else {
-        return Ok(None);
-    };
-
-    let managed_conf_path = data_dir.join(MANAGED_POSTGRESQL_CONF_NAME);
-    let rendered =
-        fs::read_to_string(&managed_conf_path).map_err(|err| ManagedPostgresError::Io {
-            message: format!(
-                "failed to read existing managed postgres conf {}: {err}",
-                managed_conf_path.display()
-            ),
-        })?;
-
-    let primary_conninfo_raw = parse_managed_string_setting(rendered.as_str(), "primary_conninfo")?
-        .ok_or_else(|| ManagedPostgresError::InvalidManagedState {
-            message: format!(
-                "existing managed replica state at {} is missing primary_conninfo",
-                managed_conf_path.display()
-            ),
-        })?;
-    let parsed =
-        parse_managed_primary_conninfo(primary_conninfo_raw.as_str(), data_dir).map_err(|err| {
-            ManagedPostgresError::InvalidManagedState {
-                message: format!(
-                    "existing managed primary_conninfo at {} is invalid: {err}",
-                    managed_conf_path.display()
-                ),
-            }
-        })?;
-    let primary_slot_name = parse_managed_string_setting(rendered.as_str(), "primary_slot_name")?;
-
-    match recovery_signal {
-        ManagedRecoverySignal::Standby => Ok(Some(ManagedPostgresStartIntent::replica(
-            parsed.conninfo,
-            parsed.standby_auth,
-            primary_slot_name,
-        ))),
-        ManagedRecoverySignal::Recovery => Ok(Some(ManagedPostgresStartIntent::recovery(
-            parsed.conninfo,
-            parsed.standby_auth,
-            primary_slot_name,
-        ))),
-        ManagedRecoverySignal::None => Ok(None),
-    }
+) -> Result<ManagedRecoverySignal, ManagedPostgresError> {
+    existing_recovery_signal(data_dir).map(|state| state.unwrap_or(ManagedRecoverySignal::None))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -557,58 +512,6 @@ fn quarantine_postgresql_auto_conf(
     }
 }
 
-fn parse_managed_string_setting(
-    contents: &str,
-    key: &str,
-) -> Result<Option<String>, ManagedPostgresError> {
-    let prefix = format!("{key} = '");
-    for line in contents.lines() {
-        if let Some(rest) = line.strip_prefix(prefix.as_str()) {
-            let Some(quoted) = rest.strip_suffix('\'') else {
-                return Err(ManagedPostgresError::InvalidManagedState {
-                    message: format!("managed config setting `{key}` is missing a closing quote"),
-                });
-            };
-            return unescape_managed_string(quoted).map(Some);
-        }
-    }
-    Ok(None)
-}
-
-fn unescape_managed_string(value: &str) -> Result<String, ManagedPostgresError> {
-    let mut chars = value.chars().peekable();
-    let mut out = String::with_capacity(value.len());
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\'' => {
-                let Some(next) = chars.next() else {
-                    return Err(ManagedPostgresError::InvalidManagedState {
-                        message: "managed config string contains an unescaped single quote"
-                            .to_string(),
-                    });
-                };
-                if next != '\'' {
-                    return Err(ManagedPostgresError::InvalidManagedState {
-                        message: "managed config string contains an unescaped single quote"
-                            .to_string(),
-                    });
-                }
-                out.push('\'');
-            }
-            '\\' => {
-                let Some(next) = chars.next() else {
-                    return Err(ManagedPostgresError::InvalidManagedState {
-                        message: "managed config string ends with a trailing backslash".to_string(),
-                    });
-                };
-                out.push(next);
-            }
-            other => out.push(other),
-        }
-    }
-    Ok(out)
-}
-
 fn write_atomic(
     path: &Path,
     contents: &[u8],
@@ -715,8 +618,8 @@ mod tests {
         },
         pginfo::{conninfo::PgSslMode, state::PgConnInfo},
         postgres_managed_conf::{
-            managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedStandbyAuth,
-            MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
+            managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
+            ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
         test_harness::{
             binaries::require_pg16_bin_for_real_tests,
@@ -727,8 +630,8 @@ mod tests {
     };
 
     use super::{
-        materialize_managed_postgres_config, read_existing_replica_start_intent,
-        ManagedPostgresError, POSTGRESQL_AUTO_CONF_NAME, QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
+        inspect_managed_recovery_state, materialize_managed_postgres_config, ManagedPostgresError,
+        POSTGRESQL_AUTO_CONF_NAME, QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
     };
 
     #[test]
@@ -1393,8 +1296,8 @@ mod tests {
     }
 
     #[test]
-    fn read_existing_replica_start_intent_reads_managed_replica_state() -> Result<(), String> {
-        let data_dir = unique_test_data_dir("read-existing-replica");
+    fn inspect_managed_recovery_state_reports_replica_signal() -> Result<(), String> {
+        let data_dir = unique_test_data_dir("inspect-managed-recovery");
         let cfg = sample_runtime_config(data_dir.clone());
         let expected = ManagedPostgresStartIntent::replica(
             sample_replica_conninfo(),
@@ -1405,11 +1308,12 @@ mod tests {
         materialize_managed_postgres_config(&cfg, &expected)
             .map_err(|err| format!("materialize managed replica config failed: {err}"))?;
 
-        let actual = read_existing_replica_start_intent(&data_dir)
-            .map_err(|err| format!("read existing replica start intent failed: {err}"))?;
-        if actual != Some(expected.clone()) {
+        let actual = inspect_managed_recovery_state(&data_dir)
+            .map_err(|err| format!("inspect managed recovery state failed: {err}"))?;
+        if actual != ManagedRecoverySignal::Standby {
             return Err(format!(
-                "unexpected existing managed replica state: expected={expected:?} actual={actual:?}"
+                "unexpected managed recovery state: expected={:?} actual={actual:?}",
+                ManagedRecoverySignal::Standby
             ));
         }
 
@@ -1419,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn read_existing_replica_start_intent_rejects_conflicting_signal_files() -> Result<(), String> {
+    fn inspect_managed_recovery_state_rejects_conflicting_signal_files() -> Result<(), String> {
         let data_dir = unique_test_data_dir("conflicting-signals");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
@@ -1438,7 +1342,7 @@ mod tests {
             )
         })?;
 
-        let actual = read_existing_replica_start_intent(&data_dir);
+        let actual = inspect_managed_recovery_state(&data_dir);
         match actual {
             Err(ManagedPostgresError::InvalidManagedState { message }) => {
                 if !message.contains("conflicting managed recovery signal files") {

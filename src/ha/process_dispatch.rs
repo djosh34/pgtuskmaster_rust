@@ -261,29 +261,21 @@ fn start_intent_from_dcs(
         ));
     }
 
-    if let Some(existing_replica) = existing_replica_start_intent(
-        ctx.config_subscriber
-            .latest()
-            .value
-            .postgres
-            .data_dir
-            .as_path(),
-    )? {
-        return Ok(existing_replica);
+    let managed_recovery_state = crate::postgres_managed::inspect_managed_recovery_state(data_dir)
+        .map_err(|err| ProcessDispatchError::ManagedConfig {
+            action: ActionId::StartPostgres,
+            message: err.to_string(),
+        })?;
+    if managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None {
+        return Err(ProcessDispatchError::ManagedConfig {
+            action: ActionId::StartPostgres,
+            message:
+                "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config"
+                    .to_string(),
+        });
     }
 
     Ok(ManagedPostgresStartIntent::primary())
-}
-
-fn existing_replica_start_intent(
-    data_dir: &Path,
-) -> Result<Option<ManagedPostgresStartIntent>, ProcessDispatchError> {
-    crate::postgres_managed::read_existing_replica_start_intent(data_dir).map_err(|err| {
-        ProcessDispatchError::ManagedConfig {
-            action: ActionId::StartPostgres,
-            message: err.to_string(),
-        }
-    })
 }
 
 fn process_job_id(
@@ -694,9 +686,9 @@ mod tests {
     }
 
     #[test]
-    fn start_postgres_dispatch_preserves_existing_replica_state_without_dcs_leader(
+    fn start_postgres_dispatch_rejects_existing_replica_state_without_dcs_leader(
     ) -> Result<(), WorkerError> {
-        let data_dir = unique_test_data_dir("start-existing-replica");
+        let data_dir = unique_test_data_dir("start-existing-replica-without-leader");
         let runtime_config = sample_runtime_config(data_dir.clone());
         let (mut ctx, _dcs_publisher, mut process_rx) = build_context(runtime_config.clone());
         let existing_conninfo = crate::pginfo::state::PgConnInfo {
@@ -730,39 +722,11 @@ mod tests {
 
         let outcome =
             dispatch_process_action(&mut ctx, 7, 3, &HaAction::StartPostgres, &runtime_config);
-        assert_eq!(outcome, Ok(ProcessDispatchOutcome::Applied));
-
-        let request = process_rx
-            .try_recv()
-            .map_err(|err| WorkerError::Message(format!("process request missing: {err}")))?;
-        if !matches!(request.kind, ProcessJobKind::StartPostgres(_)) {
-            return Err(WorkerError::Message(
-                "expected start postgres request".to_string(),
-            ));
-        }
-
-        let managed_conf_path = runtime_config
-            .postgres
-            .data_dir
-            .join("pgtm.postgresql.conf");
-        let rendered = fs::read_to_string(&managed_conf_path).map_err(|err| {
-            WorkerError::Message(format!(
-                "read managed postgres conf failed at {}: {err}",
-                managed_conf_path.display()
-            ))
-        })?;
-        if !rendered.contains("primary_conninfo") || !rendered.contains("primary_slot_name") {
-            return Err(WorkerError::Message(format!(
-                "expected preserved replica managed config, got:\n{rendered}"
-            )));
-        }
-        let standby_signal = runtime_config.postgres.data_dir.join("standby.signal");
-        if !standby_signal.exists() {
-            return Err(WorkerError::Message(format!(
-                "expected standby.signal to exist at {}",
-                standby_signal.display()
-            )));
-        }
+        assert!(matches!(
+            outcome,
+            Err(ProcessDispatchError::ManagedConfig { .. })
+        ));
+        assert!(process_rx.try_recv().is_err());
 
         remove_dir_if_present(&data_dir)?;
         Ok(())

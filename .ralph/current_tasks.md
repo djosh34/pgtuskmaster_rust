@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sun Mar  8 06:14:25 PM CET 2026
+Generated: Sun Mar  8 06:41:35 PM CET 2026
 
 # Task `.ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md`
 
@@ -10,17 +10,6 @@ Generated: Sun Mar  8 06:14:25 PM CET 2026
 <priority>low</priority>
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-managed-start-intent-architecture/task-remove-managed-conf-parseback-and-rederive-start-intent.md`
-
-```
-## Task: Remove Managed Conf Parse-Back And Re-Derive Start Intent <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Remove the current pattern where pgtuskmaster reparses its own managed PostgreSQL startup artifacts from `PGDATA` back into typed startup intent. Replace it with a stricter architecture where typed Rust models are the only authoritative internal model, startup intent is re-derived from DCS plus runtime config plus minimal local physical facts, and managed PostgreSQL files are treated as render outputs only.
 ```
 
 ==============
