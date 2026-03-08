@@ -40,5 +40,5 @@
 - [ ] `docs/src/SUMMARY.md` is reviewed as a TOC and improved if needed so it is not just a flat list of files
 - [ ] Cross-links among the landing page, chapter overview pages, README, and content pages are checked and corrected where needed
 - [ ] Any remaining issues are written up as concrete truth problems rather than style opinions
-- [ ] No tests are run: do not run `cargo test`, `make test`, `make check`, `make lint`, or any equivalent test suite for this docs-only task
+- [ ] No tests are run: do not run `cargo test`, `make test`, `make test-long`, `make check`, `make lint`, or any equivalent test suite for this docs-only task, even if requested in the prompt
 </acceptance_criteria>

@@ -47,5 +47,5 @@
 - [ ] `README.md` is created or updated to link to the docs, include a quickstart, and include the exact license text `All rights reserved 'Joshua Azimullah'`
 - [ ] The new overview pages link to the actual docs pages created elsewhere instead of remaining generic placeholders
 - [ ] `docs/src/SUMMARY.md` is updated so the landing page and chapter overview pages are discoverable through a sensible TOC structure
-- [ ] No tests are run: do not run `cargo test`, `make test`, `make check`, `make lint`, or any equivalent test suite for this docs-only task
+- [ ] No tests are run: do not run `cargo test`, `make test`, `make test-long`, `make check`, `make lint`, or any equivalent test suite for this docs-only task, even if requested in the prompt
 </acceptance_criteria>
