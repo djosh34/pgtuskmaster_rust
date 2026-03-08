@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sun Mar  8 07:29:26 PM CET 2026
+Generated: Sun Mar  8 08:00:57 PM CET 2026
 
 # Task `.ralph/tasks/story-docs-k2-expansion/01-task-run-k2-docs-loop-in-five-way-parallel-batches.md`
 
@@ -71,10 +71,10 @@ The codebase carries API and DCS endpoint addresses as raw `String` values deep 
 
 ==============
 
-# Task `.ralph/tasks/story-switchover-operator-model/task-redesign-switchover-request-semantics-for-operators.md`
+# Task `.ralph/tasks/story-switchover-operator-model/task-add-optional-switchover-to-and-targeted-switchover.md`
 
 ```
-## Task: Redesign Switchover Request Semantics For Operators <status>done</status> <passes>true</passes>
+## Task: Add Optional `switchover_to` And Targeted Switchover Support <status>done</status> <passes>true</passes>
 
 <priority>low</priority>
 

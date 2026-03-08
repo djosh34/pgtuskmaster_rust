@@ -71,7 +71,9 @@ The worker builds member records from the latest PostgreSQL state:
 
 `SwitchoverRequest` contains:
 
-- no fields; the record is a marker that a generic switchover request is pending
+- `switchover_to: Option<MemberId>`
+
+When `switchover_to` is `None`, the record means a generic switchover request is pending. When it is set, the record captures the requested target member for a targeted switchover.
 
 ### `InitLockRecord`
 

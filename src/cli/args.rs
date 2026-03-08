@@ -50,14 +50,22 @@ pub struct SwitchoverArgs {
 #[derive(Clone, Debug, Subcommand)]
 pub enum SwitchoverCommand {
     Clear,
-    Request,
+    Request(SwitchoverRequestArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct SwitchoverRequestArgs {
+    #[arg(long)]
+    pub switchover_to: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use crate::cli::args::{Cli, Command, HaCommand, OutputFormat, SwitchoverCommand};
+    use crate::cli::args::{
+        Cli, Command, HaCommand, OutputFormat, SwitchoverCommand, SwitchoverRequestArgs,
+    };
 
     #[test]
     fn parse_ha_state_with_defaults() -> Result<(), String> {
@@ -99,7 +107,9 @@ mod tests {
         match cli.command {
             Command::Ha(ha) => match ha.command {
                 HaCommand::Switchover(switchover) => match switchover.command {
-                    SwitchoverCommand::Request => Ok(()),
+                    SwitchoverCommand::Request(SwitchoverRequestArgs { switchover_to: None }) => {
+                        Ok(())
+                    }
                     _ => Err("expected switchover request".to_string()),
                 },
                 _ => Err("expected switchover command".to_string()),
@@ -115,8 +125,35 @@ mod tests {
         match cli.command {
             Command::Ha(ha) => match ha.command {
                 HaCommand::Switchover(switchover) => match switchover.command {
-                    SwitchoverCommand::Request => Ok(()),
+                    SwitchoverCommand::Request(SwitchoverRequestArgs { switchover_to: None }) => {
+                        Ok(())
+                    }
                     _ => Err("expected switchover request".to_string()),
+                },
+                _ => Err("expected switchover command".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn parse_targeted_switchover_request() -> Result<(), String> {
+        let cli = Cli::try_parse_from([
+            "pgtuskmasterctl",
+            "ha",
+            "switchover",
+            "request",
+            "--switchover-to",
+            "node-b",
+        ])
+        .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        match cli.command {
+            Command::Ha(ha) => match ha.command {
+                HaCommand::Switchover(switchover) => match switchover.command {
+                    SwitchoverCommand::Request(SwitchoverRequestArgs {
+                        switchover_to: Some(member_id),
+                    }) if member_id == "node-b" => Ok(()),
+                    _ => Err("expected targeted switchover request".to_string()),
                 },
                 _ => Err("expected switchover command".to_string()),
             },

@@ -463,7 +463,9 @@ mod tests {
         cache.leader = Some(crate::dcs::state::LeaderRecord {
             member_id: MemberId("node-stale".to_string()),
         });
-        cache.switchover = Some(crate::dcs::state::SwitchoverRequest {});
+        cache.switchover = Some(crate::dcs::state::SwitchoverRequest {
+            switchover_to: None,
+        });
         cache.init_lock = Some(crate::dcs::state::InitLockRecord {
             holder: MemberId("node-stale".to_string()),
         });

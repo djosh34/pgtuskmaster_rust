@@ -405,7 +405,13 @@ fn route_request(
                     return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
                 }
             };
-            match post_switchover(&ctx.scope, &mut *ctx.dcs_store, input) {
+            let snapshot = ctx.debug_snapshot_subscriber.as_ref().map(|subscriber| subscriber.latest());
+            match post_switchover(
+                &ctx.scope,
+                &mut *ctx.dcs_store,
+                snapshot.as_ref().map(|value| &value.value),
+                input,
+            ) {
                 Ok(value) => HttpResponse::json(202, "Accepted", &value),
                 Err(err) => api_error_to_http(err),
             }
@@ -1917,6 +1923,9 @@ mod tests {
             Some(roles.read_token.clone()),
             Some(roles.admin_token.clone()),
         )?;
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
         let post_body = br#"{}"#.to_vec();
         let response = send_plain_request(
@@ -1954,6 +1963,7 @@ mod tests {
         assert_eq!(decoded["self_member_id"], "node-a");
         assert_eq!(decoded["leader"], serde_json::Value::Null);
         assert_eq!(decoded["switchover_pending"], false);
+        assert_eq!(decoded["switchover_to"], serde_json::Value::Null);
         assert_eq!(decoded["member_count"], 0);
         assert_eq!(decoded["dcs_trust"], "full_quorum");
         assert_eq!(decoded["ha_phase"], "replica");

@@ -13,6 +13,7 @@ use crate::{
     debug_api::snapshot::SystemSnapshot,
     ha::{
         decision::{
+            eligible_switchover_targets,
             HaDecision, LeaseReleaseReason, RecoveryStrategy, StepDownPlan, StepDownReason,
         },
         state::HaPhase,
@@ -22,14 +23,18 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SwitchoverRequestInput {}
+pub(crate) struct SwitchoverRequestInput {
+    #[serde(default)]
+    pub(crate) switchover_to: Option<String>,
+}
 
 pub(crate) fn post_switchover(
     scope: &str,
     store: &mut dyn DcsStore,
-    _input: SwitchoverRequestInput,
+    snapshot: Option<&SystemSnapshot>,
+    input: SwitchoverRequestInput,
 ) -> ApiResult<AcceptedResponse> {
-    let request = SwitchoverRequest {};
+    let request = validate_switchover_request(snapshot, input)?;
     let encoded = serde_json::to_string(&request)
         .map_err(|err| ApiError::internal(format!("switchover encode failed: {err}")))?;
 
@@ -64,6 +69,14 @@ pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateRespo
             .as_ref()
             .map(|leader| leader.member_id.0.clone()),
         switchover_pending: snapshot.value.dcs.value.cache.switchover.is_some(),
+        switchover_to: snapshot
+            .value
+            .dcs
+            .value
+            .cache
+            .switchover
+            .as_ref()
+            .and_then(|request| request.switchover_to.as_ref().map(|member_id| member_id.0.clone())),
         member_count: snapshot.value.dcs.value.cache.members.len(),
         dcs_trust: map_dcs_trust(&snapshot.value.dcs.value.trust),
         ha_phase: map_ha_phase(&snapshot.value.ha.value.phase),
@@ -71,6 +84,67 @@ pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateRespo
         ha_decision: map_ha_decision(&snapshot.value.ha.value.decision),
         snapshot_sequence: snapshot.value.sequence,
     }
+}
+
+fn validate_switchover_request(
+    snapshot: Option<&SystemSnapshot>,
+    input: SwitchoverRequestInput,
+) -> ApiResult<SwitchoverRequest> {
+    let Some(raw_target) = input.switchover_to else {
+        return Ok(SwitchoverRequest {
+            switchover_to: None,
+        });
+    };
+    let snapshot = snapshot.ok_or_else(|| ApiError::DcsStore("snapshot unavailable".to_string()))?;
+
+    let target = raw_target.trim();
+    if target.is_empty() {
+        return Err(ApiError::bad_request(
+            "switchover_to must not be empty".to_string(),
+        ));
+    }
+
+    let target_member_id = crate::state::MemberId(target.to_string());
+    let members = &snapshot.dcs.value.cache.members;
+    if !members.contains_key(&target_member_id) {
+        return Err(ApiError::bad_request(format!(
+            "unknown switchover_to member `{target}`"
+        )));
+    }
+
+    if snapshot
+        .dcs
+        .value
+        .cache
+        .leader
+        .as_ref()
+        .map(|leader| leader.member_id == target_member_id)
+        .unwrap_or(false)
+    {
+        return Err(ApiError::bad_request(format!(
+            "switchover_to member `{target}` is already the leader"
+        )));
+    }
+
+    let self_member_id = crate::state::MemberId(snapshot.config.value.cluster.member_id.clone());
+    let eligible_targets = eligible_switchover_targets(
+        &crate::ha::state::WorldSnapshot {
+            config: snapshot.config.clone(),
+            pg: snapshot.pg.clone(),
+            dcs: snapshot.dcs.clone(),
+            process: snapshot.process.clone(),
+        },
+        &self_member_id,
+    );
+    if !eligible_targets.contains(&target_member_id) {
+        return Err(ApiError::bad_request(format!(
+            "switchover_to member `{target}` is not an eligible switchover target"
+        )));
+    }
+
+    Ok(SwitchoverRequest {
+        switchover_to: Some(target_member_id),
+    })
 }
 
 fn map_dcs_trust(value: &DcsTrust) -> DcsTrustResponse {
@@ -172,14 +246,22 @@ fn map_lease_release_reason(value: &LeaseReleaseReason) -> LeaseReleaseReasonRes
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{BTreeMap, VecDeque};
 
     use crate::{
         api::controller::{delete_switchover, post_switchover, SwitchoverRequestInput},
         dcs::{
-            state::SwitchoverRequest,
+            state::{
+                DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole,
+                SwitchoverRequest,
+            },
             store::{DcsStore, DcsStoreError, WatchEvent},
         },
+        debug_api::snapshot::{AppLifecycle, SystemSnapshot},
+        ha::{decision::HaDecision, state::{HaPhase, HaState}},
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        process::state::ProcessState,
+        state::{MemberId, UnixMillis, Version, Versioned, WorkerStatus},
     };
 
     #[derive(Default)]
@@ -227,6 +309,102 @@ mod tests {
         }
     }
 
+    fn sample_snapshot() -> SystemSnapshot {
+        let cfg = crate::test_harness::runtime_config::sample_runtime_config();
+        let members = BTreeMap::from([
+            (member_id("node-a"), member_record("node-a", MemberRole::Primary)),
+            (member_id("node-b"), member_record("node-b", MemberRole::Replica)),
+            (member_id("node-c"), member_record("node-c", MemberRole::Replica)),
+        ]);
+
+        SystemSnapshot {
+            app: AppLifecycle::Running,
+            config: Versioned::new(Version(1), UnixMillis(1), cfg.clone()),
+            pg: Versioned::new(
+                Version(1),
+                UnixMillis(1),
+                PgInfoState::Primary {
+                    common: pg_common(SqlStatus::Healthy),
+                    wal_lsn: crate::state::WalLsn(10),
+                    slots: Vec::new(),
+                },
+            ),
+            dcs: Versioned::new(
+                Version(1),
+                UnixMillis(1),
+                DcsState {
+                    worker: WorkerStatus::Running,
+                    trust: DcsTrust::FullQuorum,
+                    cache: DcsCache {
+                        members,
+                        leader: Some(LeaderRecord {
+                            member_id: member_id("node-a"),
+                        }),
+                        switchover: None,
+                        config: cfg,
+                        init_lock: None,
+                    },
+                    last_refresh_at: Some(UnixMillis(1)),
+                },
+            ),
+            process: Versioned::new(Version(1), UnixMillis(1), ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: None,
+            }),
+            ha: Versioned::new(
+                Version(1),
+                UnixMillis(1),
+                HaState {
+                    worker: WorkerStatus::Running,
+                    phase: HaPhase::Primary,
+                    tick: 1,
+                    decision: HaDecision::NoChange,
+                },
+            ),
+            generated_at: UnixMillis(1),
+            sequence: 1,
+            changes: Vec::new(),
+            timeline: Vec::new(),
+        }
+    }
+
+    fn member_id(value: &str) -> MemberId {
+        MemberId(value.to_string())
+    }
+
+    fn member_record(member_name: &str, role: MemberRole) -> MemberRecord {
+        MemberRecord {
+            member_id: member_id(member_name),
+            postgres_host: "127.0.0.1".to_string(),
+            postgres_port: 5432,
+            role,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            write_lsn: None,
+            replay_lsn: None,
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        }
+    }
+
+    fn pg_common(sql: SqlStatus) -> PgInfoCommon {
+        PgInfoCommon {
+            worker: WorkerStatus::Running,
+            sql,
+            readiness: Readiness::Ready,
+            timeline: None,
+            pg_config: PgConfig {
+                port: None,
+                hot_standby: None,
+                primary_conninfo: None,
+                primary_slot_name: None,
+                extra: BTreeMap::new(),
+            },
+            last_refresh_at: Some(UnixMillis(1)),
+        }
+    }
+
     #[test]
     fn switchover_input_denies_unknown_fields() {
         let raw = r#"{"extra":1}"#;
@@ -237,7 +415,15 @@ mod tests {
     #[test]
     fn post_switchover_writes_typed_record_to_expected_key() -> Result<(), crate::api::ApiError> {
         let mut store = RecordingStore::default();
-        let response = post_switchover("scope-a", &mut store, SwitchoverRequestInput {})?;
+        let snapshot = sample_snapshot();
+        let response = post_switchover(
+            "scope-a",
+            &mut store,
+            Some(&snapshot),
+            SwitchoverRequestInput {
+                switchover_to: None,
+            },
+        )?;
         assert!(response.accepted);
 
         let (path, raw) = store
@@ -246,7 +432,12 @@ mod tests {
         assert_eq!(path, "/scope-a/switchover");
         let decoded = serde_json::from_str::<SwitchoverRequest>(&raw)
             .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
-        assert_eq!(decoded, SwitchoverRequest {});
+        assert_eq!(
+            decoded,
+            SwitchoverRequest {
+                switchover_to: None
+            }
+        );
         Ok(())
     }
 
@@ -255,9 +446,113 @@ mod tests {
         let parsed = serde_json::from_str::<SwitchoverRequestInput>("{}")
             .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
         let mut store = RecordingStore::default();
-        let result = post_switchover("scope-a", &mut store, parsed)?;
+        let snapshot = sample_snapshot();
+        let result = post_switchover("scope-a", &mut store, Some(&snapshot), parsed)?;
         assert!(result.accepted);
         Ok(())
+    }
+
+    #[test]
+    fn switchover_input_accepts_targeted_request() -> Result<(), crate::api::ApiError> {
+        let parsed = serde_json::from_str::<SwitchoverRequestInput>(
+            r#"{"switchover_to":"node-b"}"#,
+        )
+        .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
+        let snapshot = sample_snapshot();
+        let mut store = RecordingStore::default();
+        let result = post_switchover("scope-a", &mut store, Some(&snapshot), parsed)?;
+        assert!(result.accepted);
+
+        let (_path, raw) = store
+            .pop_write()
+            .ok_or_else(|| crate::api::ApiError::internal("expected one DCS write".to_string()))?;
+        let decoded = serde_json::from_str::<SwitchoverRequest>(&raw)
+            .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
+        assert_eq!(
+            decoded,
+            SwitchoverRequest {
+                switchover_to: Some(member_id("node-b"))
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn switchover_input_rejects_unknown_target() {
+        let parsed = serde_json::from_str::<SwitchoverRequestInput>(
+            r#"{"switchover_to":"node-z"}"#,
+        );
+        assert!(parsed.is_ok());
+
+        let snapshot = sample_snapshot();
+        let mut store = RecordingStore::default();
+        let result = post_switchover(
+            "scope-a",
+            &mut store,
+            Some(&snapshot),
+            parsed.unwrap_or(SwitchoverRequestInput {
+                switchover_to: None,
+            }),
+        );
+        assert!(matches!(
+            result,
+            Err(crate::api::ApiError::BadRequest(message))
+                if message.contains("unknown switchover_to member")
+        ));
+    }
+
+    #[test]
+    fn switchover_input_rejects_empty_target() {
+        let snapshot = sample_snapshot();
+        let mut store = RecordingStore::default();
+        let result = post_switchover(
+            "scope-a",
+            &mut store,
+            Some(&snapshot),
+            SwitchoverRequestInput {
+                switchover_to: Some("   ".to_string()),
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(crate::api::ApiError::BadRequest(message))
+                if message.contains("must not be empty")
+        ));
+    }
+
+    #[test]
+    fn switchover_input_rejects_ineligible_target() {
+        let mut snapshot = sample_snapshot();
+        snapshot.dcs.value.cache.members.insert(
+            member_id("node-z"),
+            MemberRecord {
+                member_id: member_id("node-z"),
+                postgres_host: "127.0.0.1".to_string(),
+                postgres_port: 5432,
+                role: MemberRole::Unknown,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+        let mut store = RecordingStore::default();
+        let result = post_switchover(
+            "scope-a",
+            &mut store,
+            Some(&snapshot),
+            SwitchoverRequestInput {
+                switchover_to: Some("node-z".to_string()),
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(crate::api::ApiError::BadRequest(message))
+                if message.contains("not an eligible switchover target")
+        ));
     }
 
     #[test]

@@ -1,1 +1,0 @@
-<|tool_calls_section_begin|> <|tool_call_begin|> functions.Bash:0 <|tool_call_argument_begin|> {"command": "find . -name \"*.rs\" -path \"*/src/ha/*\" | head -20"} <|tool_call_end|> <|tool_calls_section_end|>

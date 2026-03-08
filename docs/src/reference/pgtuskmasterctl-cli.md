@@ -52,6 +52,7 @@ JSON output contains these top-level fields:
 - `self_member_id`
 - `leader`
 - `switchover_pending`
+- `switchover_to`
 - `member_count`
 - `dcs_trust`
 - `ha_phase`
@@ -59,7 +60,7 @@ JSON output contains these top-level fields:
 - `ha_decision`
 - `snapshot_sequence`
 
-Text output renders the same state as newline-delimited `key=value` pairs. Missing `leader` is rendered as `<none>`.
+Text output renders the same state as newline-delimited `key=value` pairs. Missing `leader` and `switchover_to` values are rendered as `<none>`.
 
 ### `ha switchover clear`
 
@@ -79,9 +80,9 @@ Submits a switchover request.
 - HTTP method: `POST`
 - Path: `/switchover`
 - Auth role: admin
-- Request body: `{}`
+- Request body: `{}` or `{"switchover_to":"<member_id>"}`
 
-This command submits a generic planned switchover request. The runtime chooses the successor automatically from observed cluster state.
+Add `--switchover-to <member_id>` to request a specific eligible replica. If you omit it, the command submits a generic planned switchover request and the runtime chooses the successor automatically from observed cluster state.
 
 In text mode the response is rendered as `accepted=<bool>`.
 
@@ -112,5 +113,6 @@ The `ha_decision` field is rendered in text as a compact variant string such as 
 pgtuskmasterctl ha state
 pgtuskmasterctl --base-url http://127.0.0.1:18081 --output text ha state
 pgtuskmasterctl --admin-token "$ADMIN_TOKEN" ha switchover request
+pgtuskmasterctl --admin-token "$ADMIN_TOKEN" ha switchover request --switchover-to node-b
 pgtuskmasterctl --admin-token "$ADMIN_TOKEN" ha switchover clear
 ```

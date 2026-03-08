@@ -172,6 +172,9 @@ fn decide_replica(facts: &DecisionFacts) -> PhaseOutcome {
                 leader_member_id: leader_member_id.clone(),
             },
         ),
+        None if targeted_switchover_blocks_leadership_attempt(facts) => {
+            PhaseOutcome::new(HaPhase::Replica, HaDecision::WaitForDcsTrust)
+        }
         None => PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership),
     }
 }
@@ -195,6 +198,10 @@ fn decide_candidate_leader(facts: &DecisionFacts) -> PhaseOutcome {
             HaPhase::Replica,
             HaDecision::FollowLeader { leader_member_id },
         );
+    }
+
+    if targeted_switchover_blocks_leadership_attempt(facts) {
+        return PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::WaitForDcsTrust);
     }
 
     PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership)
@@ -350,16 +357,25 @@ fn recovery_after_rewind_failure(facts: &DecisionFacts) -> Option<RecoveryStrate
 
 fn recovery_leader_member_id(facts: &DecisionFacts) -> Option<MemberId> {
     facts
-        .available_primary_member_id
+        .followable_member_id
         .clone()
         .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
 }
 
 fn follow_target(facts: &DecisionFacts) -> Option<MemberId> {
     facts
-        .available_primary_member_id
+        .followable_member_id
         .clone()
         .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
+}
+
+fn targeted_switchover_blocks_leadership_attempt(facts: &DecisionFacts) -> bool {
+    match facts.pending_switchover_target.as_ref() {
+        Some(target_member_id) => {
+            target_member_id != &facts.self_member_id || !facts.switchover_target_is_eligible(target_member_id)
+        }
+        None => false,
+    }
 }
 
 fn other_leader_record(facts: &DecisionFacts) -> Option<MemberId> {
@@ -432,7 +448,7 @@ mod tests {
         leader: Option<MemberId>,
         process: ProcessState,
         members: BTreeMap<MemberId, MemberRecord>,
-        switchover_pending: bool,
+        switchover_request: Option<SwitchoverRequest>,
     }
 
     impl WorldBuilder {
@@ -443,7 +459,7 @@ mod tests {
                 leader: None,
                 process: process_idle(None),
                 members: BTreeMap::new(),
-                switchover_pending: false,
+                switchover_request: None,
             }
         }
 
@@ -468,7 +484,18 @@ mod tests {
 
         fn with_switchover_request(self) -> Self {
             Self {
-                switchover_pending: true,
+                switchover_request: Some(SwitchoverRequest {
+                    switchover_to: None,
+                }),
+                ..self
+            }
+        }
+
+        fn with_targeted_switchover_request(self, member_id: &str) -> Self {
+            Self {
+                switchover_request: Some(SwitchoverRequest {
+                    switchover_to: Some(MemberId(member_id.to_string())),
+                }),
                 ..self
             }
         }
@@ -489,7 +516,7 @@ mod tests {
                 self.leader,
                 self.process,
                 self.members,
-                self.switchover_pending,
+                self.switchover_request,
             )
         }
     }
@@ -968,6 +995,70 @@ mod tests {
                 leader_member_id: MemberId("node-b".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn candidate_leader_with_targeted_switchover_waits_when_not_target() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::CandidateLeader,
+                tick: 14,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_replica(SqlStatus::Healthy))
+                .with_targeted_switchover_request("node-b")
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Replica,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
+    fn candidate_leader_with_targeted_switchover_attempts_when_self_is_target() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::CandidateLeader,
+                tick: 15,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_replica(SqlStatus::Healthy))
+                .with_targeted_switchover_request("node-a")
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-a".to_string()),
+                    postgres_host: "10.0.0.11".to_string(),
+                    postgres_port: 5432,
+                    role: MemberRole::Replica,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
     }
 
     #[test]
@@ -2010,7 +2101,7 @@ mod tests {
         leader: Option<MemberId>,
         process: ProcessState,
         members: BTreeMap<MemberId, MemberRecord>,
-        switchover_pending: bool,
+        switchover_request: Option<SwitchoverRequest>,
     ) -> WorldSnapshot {
         let cfg = crate::test_harness::runtime_config::sample_runtime_config();
 
@@ -2028,7 +2119,7 @@ mod tests {
                     cache: DcsCache {
                         members,
                         leader: leader_record,
-                        switchover: switchover_pending.then_some(SwitchoverRequest {}),
+                        switchover: switchover_request,
                         config: cfg,
                         init_lock: None,
                     },

@@ -1149,7 +1149,9 @@ mod tests {
                     pg_version: crate::state::Version(1),
                 },
             );
-            cache.switchover = Some(SwitchoverRequest {});
+            cache.switchover = Some(SwitchoverRequest {
+                switchover_to: None,
+            });
             cache.init_lock = Some(InitLockRecord {
                 holder: MemberId("node-stale".to_string()),
             });

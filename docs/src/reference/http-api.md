@@ -77,10 +77,12 @@ Initiates a planned leader switchover.
 
 **Request Body** (`SwitchoverRequestInput`)
 ```text
-{}
+{
+  "switchover_to": "<string>" | null
+}
 ```
 
-The request body is an empty object. Unknown fields are rejected.
+The request body may be empty for a generic switchover, or it may set `switchover_to` to request a specific eligible replica. Unknown fields are rejected.
 
 **Response** (`AcceptedResponse`)
 ```text
@@ -91,10 +93,10 @@ The request body is an empty object. Unknown fields are rejected.
 
 **Status Codes**
 - `202 Accepted`: Switchover request accepted and written to DCS
-- `400 Bad Request`: Invalid JSON or unknown request fields
+- `400 Bad Request`: Invalid JSON, unknown request fields, empty target, unknown target member, or ineligible target member
 - `401 Unauthorized`: Missing or invalid token
 - `403 Forbidden`: Read token used for admin endpoint
-- `503 Service Unavailable`: DCS store error
+- `503 Service Unavailable`: DCS store error, or targeted validation could not load the current cluster snapshot
 
 #### Cancel Switchover Request
 
@@ -137,6 +139,7 @@ Retrieves current high-availability state.
   "self_member_id": "<string>",
   "leader": "<string>" | null,
   "switchover_pending": <bool>,
+  "switchover_to": "<string>" | null,
   "member_count": <number>,
   "dcs_trust": "<trust_variant>",
   "ha_phase": "<phase_variant>",
@@ -152,6 +155,7 @@ Retrieves current high-availability state.
 - `self_member_id`: Local member identifier
 - `leader`: Current leader member ID if one exists
 - `switchover_pending`: Whether a switchover request is currently pending
+- `switchover_to`: Requested switchover target when the pending request is explicit, otherwise `null`
 - `member_count`: Number of members in DCS cache
 - `dcs_trust`: Trust level of DCS (see DcsTrustResponse variants)
 - `ha_phase`: Current HA phase (see HaPhaseResponse variants)
@@ -159,7 +163,7 @@ Retrieves current high-availability state.
 - `ha_decision`: Current HA decision (see HaDecisionResponse variants)
 - `snapshot_sequence`: Monotonic snapshot version
 
-Successor choice remains automatic. `POST /switchover` signals intent to switch over, and the HA engine picks the replacement primary from observed cluster state.
+When `switchover_to` is omitted, successor choice remains automatic. `POST /switchover` signals intent to switch over, and the HA engine picks the replacement primary from observed cluster state. When `switchover_to` is present, the API accepts only a known, eligible replica and the HA engine holds non-target nodes back from acquiring leadership during that switchover.
 
 **Status Codes**
 - `200 OK`: State retrieved successfully

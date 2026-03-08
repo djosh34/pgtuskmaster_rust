@@ -275,6 +275,7 @@ mod unit_tests {
             self_member_id: member_id.to_string(),
             leader: leader.map(ToString::to_string),
             switchover_pending: false,
+            switchover_to: None,
             member_count: 3,
             dcs_trust: DcsTrustResponse::FullQuorum,
             ha_phase: phase,

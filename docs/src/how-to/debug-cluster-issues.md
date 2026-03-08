@@ -35,6 +35,7 @@ Focus on these fields first:
 - `ha_phase`
 - `ha_decision`
 - `switchover_pending`
+- `switchover_to`
 
 These values tell you whether the node sees a healthy leader, whether DCS is trusted, and whether it is waiting, following, promoting, rewinding, fencing, or in fail-safe behavior.
 
@@ -192,12 +193,13 @@ At the same time, inspect `timeline` and `changes` to see whether the cluster wa
 Check:
 
 - `switchover_pending`
+- `switchover_to`
 - `dcs_trust`
 - `ha_phase`
 - `ha_decision`
 - `leader`
 
-If `switchover_pending=true` but DCS trust is degraded, fix trust first. The runtime will not complete the automatic switchover path safely until it has a healthy cluster view.
+If `switchover_pending=true` but DCS trust is degraded, fix trust first. The runtime will not complete the switchover path safely until it has a healthy cluster view. If `switchover_to` is set, also verify that member is still present and healthy in cluster state.
 
 ## Next Step
 

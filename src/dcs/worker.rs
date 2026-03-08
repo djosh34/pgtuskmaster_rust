@@ -532,7 +532,9 @@ mod tests {
             &mut cache,
             DcsWatchUpdate::Put {
                 key: DcsKey::Switchover,
-                value: Box::new(DcsValue::Switchover(SwitchoverRequest {})),
+                value: Box::new(DcsValue::Switchover(SwitchoverRequest {
+                    switchover_to: None,
+                })),
             },
         );
         assert!(cache.switchover.is_some());

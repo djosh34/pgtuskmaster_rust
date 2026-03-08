@@ -18,7 +18,7 @@ Identify the relevant member IDs:
 pgtuskmasterctl ha state
 ```
 
-The API response includes `self_member_id`, `leader`, and `switchover_pending`. Use those fields to confirm the current primary and whether a switchover request is already pending.
+The API response includes `self_member_id`, `leader`, `switchover_pending`, and `switchover_to`. Use those fields to confirm the current primary, whether a switchover request is already pending, and whether the pending request is generic or targeted.
 
 ## Submit the switchover request
 
@@ -28,7 +28,13 @@ Run the request against a node API endpoint that can accept admin requests:
 pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover request
 ```
 
-This request is generic: it records pending switchover intent, but it does not let the caller specify the successor. If API role tokens are enabled in your deployment, add `--admin-token "$PGTUSKMASTER_ADMIN_TOKEN"` or set `PGTUSKMASTER_ADMIN_TOKEN` in the environment because switchover requests are admin operations. A successful request returns:
+For a targeted switchover, add the optional member flag:
+
+```bash
+pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover request --switchover-to node-b
+```
+
+The generic form records pending switchover intent and lets the runtime choose the successor automatically. The targeted form is accepted only when `node-b` is a known, eligible replica. If API role tokens are enabled in your deployment, add `--admin-token "$PGTUSKMASTER_ADMIN_TOKEN"` or set `PGTUSKMASTER_ADMIN_TOKEN` in the environment because switchover requests are admin operations. A successful request returns:
 
 ```text
 {"accepted": true}
@@ -51,7 +57,7 @@ Observe these source-backed state changes:
 3. After a different leader appears, the former primary converges back to replica behavior and follows the new leader.
 4. The new primary reports `ha_phase=primary`, and the `leader` field changes to that member ID.
 
-Successor selection is automatic. The HA engine chooses the next primary from observed cluster state and healthy follow targets rather than from an operator-supplied member ID.
+Generic successor selection is automatic. The HA engine chooses the next primary from observed cluster state and healthy follow targets when no target is supplied. For a targeted switchover, the HA engine keeps non-target nodes from acquiring leadership and waits for the requested eligible replica to take over.
 
 The transition is complete when `/ha/state` shows one primary and the other nodes have converged on follower behavior.
 
@@ -62,6 +68,7 @@ Use `/ha/state` on more than one node and compare the results:
 - confirm all nodes agree on the same `leader`
 - confirm only one node reports `ha_phase=primary`
 - confirm `switchover_pending=false` after the transition settles
+- confirm `switchover_to=null` or `switchover_to=<none>` after the transition settles
 
 If you also want a PostgreSQL-level confirmation, connect to the suspected new primary and run:
 

@@ -1,1 +1,0 @@
-<|tool_calls_section_begin|> <|tool_call_begin|> functions.Ls:0 <|tool_call_argument_begin|> {"path": "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust"} <|tool_call_end|> <|tool_calls_section_end|>

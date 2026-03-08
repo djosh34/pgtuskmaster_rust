@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    dcs::state::{DcsTrust, MemberRole},
-    pginfo::state::{PgInfoState, SqlStatus},
+    dcs::state::{DcsTrust, MemberRecord, MemberRole},
+    pginfo::state::{PgInfoState, Readiness, SqlStatus},
     process::{
         jobs::ActiveJobKind,
         state::{JobOutcome, ProcessState},
@@ -20,8 +22,10 @@ pub(crate) struct DecisionFacts {
     pub(crate) postgres_primary: bool,
     pub(crate) leader_member_id: Option<MemberId>,
     pub(crate) active_leader_member_id: Option<MemberId>,
-    pub(crate) available_primary_member_id: Option<MemberId>,
+    pub(crate) followable_member_id: Option<MemberId>,
     pub(crate) switchover_pending: bool,
+    pub(crate) pending_switchover_target: Option<MemberId>,
+    pub(crate) eligible_switchover_targets: BTreeSet<MemberId>,
     pub(crate) i_am_leader: bool,
     pub(crate) has_other_leader_record: bool,
     pub(crate) has_available_other_leader: bool,
@@ -116,7 +120,7 @@ impl DecisionFacts {
         let active_leader_member_id = leader_member_id
             .clone()
             .filter(|leader_id| is_available_primary_leader(world, leader_id));
-        let available_primary_member_id = active_leader_member_id.clone().or_else(|| {
+        let followable_member_id = active_leader_member_id.clone().or_else(|| {
             world
                 .dcs
                 .value
@@ -130,6 +134,7 @@ impl DecisionFacts {
                 })
                 .map(|member| member.member_id.clone())
         });
+        let eligible_switchover_targets = eligible_switchover_targets(world, &self_member_id);
         let i_am_leader = leader_member_id.as_ref() == Some(&self_member_id);
         let has_other_leader_record = leader_member_id
             .as_ref()
@@ -147,12 +152,20 @@ impl DecisionFacts {
             postgres_primary: is_local_primary(&world.pg.value),
             leader_member_id,
             active_leader_member_id: active_leader_member_id.clone(),
-            available_primary_member_id: available_primary_member_id.clone(),
+            followable_member_id: followable_member_id.clone(),
             switchover_pending: world.dcs.value.cache.switchover.is_some(),
+            pending_switchover_target: world
+                .dcs
+                .value
+                .cache
+                .switchover
+                .as_ref()
+                .and_then(|request| request.switchover_to.clone()),
+            eligible_switchover_targets,
             i_am_leader,
             has_other_leader_record,
             has_available_other_leader,
-            rewind_required: available_primary_member_id
+            rewind_required: followable_member_id
                 .as_ref()
                 .map(|leader_id| should_rewind_from_leader(world, leader_id))
                 .unwrap_or(false),
@@ -217,6 +230,10 @@ impl DecisionFacts {
 
     pub(crate) fn fencing_activity(&self) -> ProcessActivity {
         ProcessActivity::from_process_state(&self.process_state, &[ActiveJobKind::Fencing])
+    }
+
+    pub(crate) fn switchover_target_is_eligible(&self, member_id: &MemberId) -> bool {
+        self.eligible_switchover_targets.contains(member_id)
     }
 }
 
@@ -368,4 +385,28 @@ fn is_available_primary_leader(world: &WorldSnapshot, leader_member_id: &MemberI
 
     matches!(member.role, crate::dcs::state::MemberRole::Primary)
         && matches!(member.sql, SqlStatus::Healthy)
+}
+
+pub(crate) fn eligible_switchover_targets(
+    world: &WorldSnapshot,
+    self_member_id: &MemberId,
+) -> BTreeSet<MemberId> {
+    world
+        .dcs
+        .value
+        .cache
+        .members
+        .values()
+        .filter(|member| switchover_target_is_eligible_member(member, self_member_id))
+        .map(|member| member.member_id.clone())
+        .collect()
+}
+
+pub(crate) fn switchover_target_is_eligible_member(
+    member: &MemberRecord,
+    _self_member_id: &MemberId,
+) -> bool {
+    member.role == MemberRole::Replica
+        && member.sql == SqlStatus::Healthy
+        && member.readiness == Readiness::Ready
 }

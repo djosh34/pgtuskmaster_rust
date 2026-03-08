@@ -23,7 +23,10 @@ enum AuthRole {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SwitchoverRequestInput {}
+struct SwitchoverRequestInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    switchover_to: Option<String>,
+}
 
 impl CliApiClient {
     pub fn new(
@@ -63,8 +66,11 @@ impl CliApiClient {
         .await
     }
 
-    pub async fn post_switchover(&self) -> Result<AcceptedResponse, CliError> {
-        let body = SwitchoverRequestInput {};
+    pub async fn post_switchover(
+        &self,
+        switchover_to: Option<String>,
+    ) -> Result<AcceptedResponse, CliError> {
+        let body = SwitchoverRequestInput { switchover_to };
         self.send_json_with_body(
             Method::POST,
             "/switchover",
@@ -198,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_uses_read_token_when_configured() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(
@@ -223,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_falls_back_to_admin_token_when_read_missing() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(
@@ -254,6 +260,45 @@ mod tests {
         assert_eq!(request.method, "DELETE");
         assert_eq!(request.path, "/ha/switchover");
         assert_header(&request.headers, "authorization", "Bearer admin")?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn switchover_request_without_target_posts_empty_object() -> Result<(), CliError> {
+        let (addr, handle) = spawn_server(http_response(202, r#"{"accepted":true}"#)).await?;
+        let client = CliApiClient::new(
+            format!("http://{addr}"),
+            5_000,
+            Some("reader".to_string()),
+            Some("admin".to_string()),
+        )?;
+
+        let _ = client.post_switchover(None).await?;
+        let request = handle_request(handle).await?;
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/switchover");
+        assert_eq!(String::from_utf8_lossy(&request.body), "{}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn switchover_request_with_target_posts_member_id() -> Result<(), CliError> {
+        let (addr, handle) = spawn_server(http_response(202, r#"{"accepted":true}"#)).await?;
+        let client = CliApiClient::new(
+            format!("http://{addr}"),
+            5_000,
+            Some("reader".to_string()),
+            Some("admin".to_string()),
+        )?;
+
+        let _ = client.post_switchover(Some("node-b".to_string())).await?;
+        let request = handle_request(handle).await?;
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/switchover");
+        assert_eq!(
+            String::from_utf8_lossy(&request.body),
+            r#"{"switchover_to":"node-b"}"#
+        );
         Ok(())
     }
 

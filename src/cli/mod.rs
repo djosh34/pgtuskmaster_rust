@@ -29,8 +29,8 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
                 SwitchoverCommand::Clear => {
                     CommandOutput::Accepted(client.delete_switchover().await?)
                 }
-                SwitchoverCommand::Request => {
-                    CommandOutput::Accepted(client.post_switchover().await?)
+                SwitchoverCommand::Request(request) => {
+                    CommandOutput::Accepted(client.post_switchover(request.switchover_to).await?)
                 }
             },
         },

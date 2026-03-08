@@ -51,7 +51,11 @@ pub(crate) struct LeaderRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SwitchoverRequest {}
+#[serde(deny_unknown_fields)]
+pub(crate) struct SwitchoverRequest {
+    #[serde(default)]
+    pub(crate) switchover_to: Option<MemberId>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InitLockRecord {

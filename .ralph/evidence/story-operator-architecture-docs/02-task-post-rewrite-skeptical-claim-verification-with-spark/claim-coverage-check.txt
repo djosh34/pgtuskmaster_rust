@@ -1,7 +1,0 @@
-claim coverage check
-
-claims: 165
-
-- removed: 11
-- rewritten: 44
-- verified: 110
