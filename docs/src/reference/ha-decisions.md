@@ -30,7 +30,7 @@ That is why some decisions only appear during healthy DCS trust.
 
 ### `no_change`
 
-```json
+```text
 {
   "kind": "no_change"
 }
@@ -40,7 +40,7 @@ No new action is requested for this tick.
 
 ### `wait_for_postgres`
 
-```json
+```text
 {
   "kind": "wait_for_postgres",
   "start_requested": true,
@@ -57,7 +57,7 @@ This decision is used when PostgreSQL is not yet reachable enough for the next H
 
 ### `wait_for_dcs_trust`
 
-```json
+```text
 {
   "kind": "wait_for_dcs_trust"
 }
@@ -67,7 +67,7 @@ PostgreSQL is reachable enough to continue, but the node is still waiting for tr
 
 ### `attempt_leadership`
 
-```json
+```text
 {
   "kind": "attempt_leadership"
 }
@@ -77,7 +77,7 @@ The node should try to acquire leadership.
 
 ### `follow_leader`
 
-```json
+```text
 {
   "kind": "follow_leader",
   "leader_member_id": "node-a"
@@ -90,7 +90,7 @@ Field:
 
 ### `become_primary`
 
-```json
+```text
 {
   "kind": "become_primary",
   "promote": true
@@ -103,7 +103,7 @@ Field:
 
 ### `step_down`
 
-```json
+```text
 {
   "kind": "step_down",
   "reason": {
@@ -131,7 +131,7 @@ Fields:
 
 ### `recover_replica`
 
-```json
+```text
 {
   "kind": "recover_replica",
   "strategy": {
@@ -149,7 +149,7 @@ Fields:
 
 ### `fence_node`
 
-```json
+```text
 {
   "kind": "fence_node"
 }
@@ -159,7 +159,7 @@ The node should enter fencing behavior to protect against unsafe primary behavio
 
 ### `release_leader_lease`
 
-```json
+```text
 {
   "kind": "release_leader_lease",
   "reason": "postgres_unreachable"
@@ -173,7 +173,7 @@ The node should enter fencing behavior to protect against unsafe primary behavio
 
 ### `enter_fail_safe`
 
-```json
+```text
 {
   "kind": "enter_fail_safe",
   "release_leader_lease": false

@@ -30,7 +30,7 @@ The debug endpoints run on the same listener as the main HTTP API and inherit it
 
 ### Top-level shape
 
-```json
+```text
 {
   "meta": {},
   "config": {},
@@ -149,7 +149,7 @@ The response-facing `ha.decision` labels are:
 
 `api.endpoints` is a static list of surfaced routes:
 
-```json
+```text
 [
   "/debug/snapshot",
   "/debug/verbose",
