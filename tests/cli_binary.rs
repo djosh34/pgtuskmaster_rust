@@ -156,7 +156,7 @@ fn node_help_exits_success() -> Result<(), String> {
 }
 
 #[test]
-fn node_missing_config_version_prints_explicit_v2_migration_hint() -> Result<(), String> {
+fn node_missing_incomplete_config_reports_parse_error() -> Result<(), String> {
     let bin = node_bin_path()?;
     let path = write_temp_config(
         "missing-config-version",
@@ -170,7 +170,7 @@ member_id = "member-a"
     let output = Command::new(&bin)
         .args(["--config", path.to_string_lossy().as_ref()])
         .output()
-        .map_err(|err| format!("failed to run node with missing config_version: {err}"))?;
+        .map_err(|err| format!("failed to run node with incomplete config: {err}"))?;
 
     assert_eq!(
         output.status.code(),
@@ -181,8 +181,8 @@ member_id = "member-a"
     let stderr = String::from_utf8(output.stderr)
         .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
     assert!(
-        stderr.contains("set config_version = \"v2\""),
-        "stderr should include explicit v2 migration hint, got: {stderr}"
+        stderr.contains("failed to parse config file"),
+        "stderr should include parse failure details, got: {stderr}"
     );
 
     let _ = std::fs::remove_file(path);
@@ -195,8 +195,6 @@ fn node_missing_secure_field_prints_stable_field_path() -> Result<(), String> {
     let path = write_temp_config(
         "missing-process-binaries",
         r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -260,8 +258,6 @@ fn node_rejects_postgres_role_tls_auth_with_stable_field_path() -> Result<(), St
     let path = write_temp_config(
         "postgres-role-tls-auth",
         r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -319,8 +315,6 @@ fn node_rejects_ssl_mode_requiring_tls_when_postgres_tls_disabled() -> Result<()
     let path = write_temp_config(
         "postgres-ssl-mode-requires-tls",
         r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"

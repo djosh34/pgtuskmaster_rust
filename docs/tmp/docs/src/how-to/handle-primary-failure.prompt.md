@@ -3671,7 +3671,6 @@ mod tests {
 
 
 ===== docker/configs/cluster/node-a/runtime.toml =====
-config_version = "v2"
 
 [cluster]
 name = "docker-cluster"

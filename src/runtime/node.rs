@@ -1568,10 +1568,7 @@ mod tests {
             intent,
             ManagedPostgresStartIntent::replica(
                 expected_source.conninfo,
-                managed_standby_auth_from_role_auth(
-                    &expected_source.auth,
-                    &data_dir,
-                ),
+                managed_standby_auth_from_role_auth(&expected_source.auth, &data_dir,),
                 None,
             )
         );

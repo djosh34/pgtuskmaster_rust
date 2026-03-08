@@ -5,10 +5,10 @@ pub(crate) mod schema;
 pub use parser::{load_runtime_config, validate_runtime_config, ConfigError};
 pub use schema::{
     ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
-    ClusterConfig, ConfigVersion, DcsConfig, DcsInitConfig, DebugConfig, FileSinkConfig,
-    FileSinkMode, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
-    LoggingSinksConfig, PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
-    PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig,
-    RuntimeConfig, RuntimeConfigV2Input, SecretSource, StderrSinkConfig, TlsClientAuthConfig,
-    TlsServerConfig, TlsServerIdentityConfig,
+    ClusterConfig, DcsConfig, DcsInitConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
+    InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
+    PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
+    PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
+    RuntimeConfigInput, SecretSource, StderrSinkConfig, TlsClientAuthConfig, TlsServerConfig,
+    TlsServerIdentityConfig,
 };

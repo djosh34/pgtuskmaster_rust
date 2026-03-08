@@ -152,3 +152,4 @@
 .ralph/tasks/story-docs-k2-expansion/01-task-run-k2-docs-loop-in-five-way-parallel-batches.md
 .ralph/tasks/story-docs-k2-expansion/02-task-write-chapter-overviews-and-landing-pages-with-ask-k2.md
 .ralph/tasks/story-docs-k2-expansion/03-task-run-truth-only-docs-verification.md
+.ralph/tasks/story-secure-explicit-node-config/07-task-remove-phantom-config-versioning-and-restore-single-config-contract.md

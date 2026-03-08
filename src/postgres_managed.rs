@@ -155,14 +155,15 @@ pub(crate) fn read_existing_replica_start_intent(
                 managed_conf_path.display()
             ),
         })?;
-    let parsed = parse_managed_primary_conninfo(primary_conninfo_raw.as_str(), data_dir).map_err(
-        |err| ManagedPostgresError::InvalidManagedState {
-            message: format!(
-                "existing managed primary_conninfo at {} is invalid: {err}",
-                managed_conf_path.display()
-            ),
-        },
-    )?;
+    let parsed =
+        parse_managed_primary_conninfo(primary_conninfo_raw.as_str(), data_dir).map_err(|err| {
+            ManagedPostgresError::InvalidManagedState {
+                message: format!(
+                    "existing managed primary_conninfo at {} is invalid: {err}",
+                    managed_conf_path.display()
+                ),
+            }
+        })?;
     let primary_slot_name = parse_managed_string_setting(rendered.as_str(), "primary_slot_name")?;
 
     match recovery_signal {
@@ -346,11 +347,10 @@ fn resolve_secret_source_string(
     secret: &SecretSource,
 ) -> Result<String, ManagedPostgresError> {
     let value = match &secret.0 {
-        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => {
-            fs::read_to_string(path).map_err(|err| ManagedPostgresError::Io {
+        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => fs::read_to_string(path)
+            .map_err(|err| ManagedPostgresError::Io {
                 message: format!("failed to read `{key}` from {}: {err}", path.display()),
-            })?
-        }
+            })?,
         InlineOrPath::Inline { content } => content.clone(),
     };
 
@@ -361,9 +361,14 @@ fn render_libpq_passfile_entry(
     conninfo: &crate::pginfo::state::PgConnInfo,
     password: &str,
 ) -> Result<String, ManagedPostgresError> {
-    if [conninfo.host.as_str(), conninfo.dbname.as_str(), conninfo.user.as_str(), password]
-        .iter()
-        .any(|value| value.chars().any(|ch| ch == '\n' || ch == '\r'))
+    if [
+        conninfo.host.as_str(),
+        conninfo.dbname.as_str(),
+        conninfo.user.as_str(),
+        password,
+    ]
+    .iter()
+    .any(|value| value.chars().any(|ch| ch == '\n' || ch == '\r'))
     {
         return Err(ManagedPostgresError::InvalidConfig {
             message: "managed standby passfile fields must not contain newlines".to_string(),
@@ -691,7 +696,11 @@ fn now_millis() -> Result<u128, ManagedPostgresError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io, path::{Path, PathBuf}, time::Duration};
+    use std::{
+        fs, io,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -919,7 +928,10 @@ mod tests {
             .standby_passfile_path
             .ok_or_else(|| "missing standby passfile path".to_string())?;
         let contents = fs::read_to_string(&passfile_path).map_err(|err| {
-            format!("read standby passfile {} failed: {err}", passfile_path.display())
+            format!(
+                "read standby passfile {} failed: {err}",
+                passfile_path.display()
+            )
         })?;
         if contents != "leader.internal:5432:postgres:replicator:secret-password\n" {
             return Err(format!(
@@ -1145,14 +1157,12 @@ mod tests {
                 tokio_postgres::connect(&primary_dsn, NoTls).await?;
             let primary_connection_task = tokio::spawn(primary_connection);
             primary_client
-                .batch_execute(
-                    concat!(
-                        "CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD 'secret-password';",
-                        "CREATE TABLE IF NOT EXISTS public.passfile_replay_test (",
-                        "id integer PRIMARY KEY, note text NOT NULL",
-                        ");",
-                    ),
-                )
+                .batch_execute(concat!(
+                    "CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD 'secret-password';",
+                    "CREATE TABLE IF NOT EXISTS public.passfile_replay_test (",
+                    "id integer PRIMARY KEY, note text NOT NULL",
+                    ");",
+                ))
                 .await?;
             append_to_file(
                 primary_data.join("pg_hba.conf").as_path(),
@@ -1161,7 +1171,9 @@ mod tests {
                     "host replication replicator 127.0.0.1/32 scram-sha-256\n",
                 ),
             )?;
-            let _ = primary_client.query_one("SELECT pg_reload_conf()", &[]).await?;
+            let _ = primary_client
+                .query_one("SELECT pg_reload_conf()", &[])
+                .await?;
 
             let replica_data = namespace.child_dir("pg16/replica/data");
             let replica_parent = replica_data
@@ -1309,7 +1321,8 @@ mod tests {
                     .standby_passfile_path
                     .clone()
                     .ok_or_else(|| real_test_error("expected managed standby passfile path"))?;
-                if !primary_conninfo_text.contains(standby_passfile.display().to_string().as_str()) {
+                if !primary_conninfo_text.contains(standby_passfile.display().to_string().as_str())
+                {
                     return Err(real_test_error(format!(
                         "expected primary_conninfo to reference standby passfile {}, got {}",
                         standby_passfile.display(),
@@ -1543,12 +1556,8 @@ mod tests {
                     }
                     format!("unexpected row value {actual:?}")
                 }
-                Ok(None) => {
-                    "row not replayed yet".to_string()
-                }
-                Err(err) => {
-                    err.to_string()
-                }
+                Ok(None) => "row not replayed yet".to_string(),
+                Err(err) => err.to_string(),
             };
 
             if Instant::now() >= deadline {

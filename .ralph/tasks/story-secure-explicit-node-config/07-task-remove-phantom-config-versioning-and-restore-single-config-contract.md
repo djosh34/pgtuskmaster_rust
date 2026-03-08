@@ -1,4 +1,4 @@
-## Task: Remove phantom config versioning and restore a single as-is config contract <status>not_started</status> <passes>false</passes>
+## Task: Remove phantom config versioning and restore a single as-is config contract <status>completed</status> <passes>true</passes>
 
 <description>
 **Goal:** Fully remove the hallucinated runtime-config versioning model from this repository. There is one config contract only. There is no `config_version` field, there never was a `v1` config, there never was a `v2` config, and no code, test, doc, fixture, or generated doc artifact may describe or enforce such a split.
@@ -38,16 +38,16 @@ This is a cleanup/correction task, not a migration task. The higher-order goal i
 </description>
 
 <acceptance_criteria>
-- [ ] Full exhaustive checklist of all files/modules to modify with specific requirements for each
-- [ ] `src/config/parser.rs`, `src/config/schema.rs`, `src/config/defaults.rs`, and `src/config/mod.rs` contain no runtime-config version field/type/check/branch/migration logic
-- [ ] No tracked runtime config example or fixture contains `config_version`
-- [ ] No CLI or parser test asserts on missing/required `config_version`, `config_version = "v2"`, or rejection of `config_version = "v1"`
-- [ ] No docs page, draft page, or tracked generated docs artifact describes runtime config as `v1`/`v2` or instructs the operator to set `config_version`
-- [ ] `rg -n "config_version|config version|runtime config.*v1|runtime config.*v2|config_version = \\\"v1\\\"|config_version = \\\"v2\\\"" src tests docs docker .ralph/tasks` returns no config-versioning matches after intentional exclusions are documented
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If the touched area still impacts ultra-long coverage after cleanup: `make test-long` — passes cleanly (ultra-long-only)
+- [x] Full exhaustive checklist of all files/modules to modify with specific requirements for each
+- [x] `src/config/parser.rs`, `src/config/schema.rs`, `src/config/defaults.rs`, and `src/config/mod.rs` contain no runtime-config version field/type/check/branch/migration logic
+- [x] No tracked runtime config example or fixture contains `config_version`
+- [x] No CLI or parser test asserts on missing/required `config_version`, `config_version = "v2"`, or rejection of `config_version = "v1"`
+- [x] No docs page, draft page, or tracked generated docs artifact describes runtime config as `v1`/`v2` or instructs the operator to set `config_version`
+- [x] `rg -n "config_version|config version|runtime config.*v1|runtime config.*v2|config_version = \\\"v1\\\"|config_version = \\\"v2\\\"" src tests docs docker .ralph/tasks` returns no config-versioning matches after intentional exclusions are documented
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If the touched area still impacts ultra-long coverage after cleanup: `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ## Plan (full dehallucination of config versioning)
@@ -62,67 +62,74 @@ This is a cleanup/correction task, not a migration task. The higher-order goal i
   - unrelated and safe to keep
   - generated/tracked artifact that must be regenerated or deleted
 - Record the intentional exclusions explicitly in the task notes or commit message so the final grep gate is defensible.
+- Treat `src/debug_api/worker.rs` `config_version: Version` snapshot fields as unrelated unless the scan proves they are derived from the runtime-config hallucination; the current evidence says those are ordinary observed-version fields, not runtime-config schema gates.
 
 ### 2) Remove the false model from runtime config code first
-- [ ] `src/config/parser.rs`
+- [x] `src/config/parser.rs`
   - Delete `ConfigEnvelope`/`config_version` parsing.
   - Delete `ConfigVersion`-driven branching.
   - Delete v1-probing compatibility paths and all migration/rejection messages.
   - Normalize and validate a single config shape directly.
   - Rewrite parser tests so they assert the single as-is config contract rather than versioned behavior.
-- [ ] `src/config/schema.rs`
+- [x] `src/config/schema.rs`
   - Remove config-version fields/types from runtime config input structs.
   - Collapse `RuntimeConfigV2Input` naming/semantics if it only exists to support the phantom split.
   - Rename types/functions/comments so they describe one real config contract instead of a staged schema epoch.
-- [ ] `src/config/defaults.rs`
+- [x] `src/config/defaults.rs`
   - Remove error text that mentions `config_version=v2`.
   - Ensure defaults/validation helpers no longer assume a versioned config world.
-- [ ] `src/config/mod.rs`
+- [x] `src/config/mod.rs`
   - Remove version-related exports and stale comments.
 
 ### 3) Remove the false model from tests and examples
-- [ ] `tests/cli_binary.rs`
+- [x] `tests/cli_binary.rs`
   - Delete tests for missing `config_version`, `v2` migration hints, and `v1` rejection.
   - Replace them with assertions for the real single-config behavior if needed.
-- [ ] `src/config/parser.rs` test fixtures
+- [x] `src/config/parser.rs` test fixtures
   - Remove `config_version = "v2"` / `config_version = "v1"` literals and version-specific temp-file names/messages.
-- [ ] `docker/configs/cluster/node-a/runtime.toml`
-- [ ] `docker/configs/cluster/node-b/runtime.toml`
-- [ ] `docker/configs/cluster/node-c/runtime.toml`
-- [ ] `docker/configs/single/node-a/runtime.toml`
+- [x] `docker/configs/cluster/node-a/runtime.toml`
+- [x] `docker/configs/cluster/node-b/runtime.toml`
+- [x] `docker/configs/cluster/node-c/runtime.toml`
+- [x] `docker/configs/single/node-a/runtime.toml`
   - Remove the top-level `config_version` field from every tracked runtime config file.
 - [ ] Any additional config TOML literals under `src/`, `tests/`, `examples/`, and harness files
   - Remove the field and adjust expectations to the single config contract.
 
 ### 4) Remove the false model from docs and tracked generated artifacts
-- [ ] `docs/src/reference/runtime-configuration.md`
+- [x] `docs/src/reference/runtime-configuration.md`
   - Rewrite as a single runtime-config reference with no version field and no migration framing.
-- [ ] `docs/src/explanation/architecture.md`
+- [x] `docs/src/explanation/architecture.md`
   - Remove prose describing the runtime config as a “complete `config_version = "v2"` file”.
-- [ ] `docs/src/reference/http-api.md`
+- [x] `docs/book/` generated artifacts
+  - Regenerate or remove tracked built-book outputs such as `docs/book/searchindex.json` if they still index the false runtime-config story after the source docs are fixed.
+- [x] `docs/src/reference/http-api.md`
   - Only touch if runtime config versioning leaked into HTTP docs. Do not remove unrelated HTTP schema metadata unless it is also part of the same hallucinated story and should be corrected separately.
-- [ ] `docs/draft/docs/src/reference/runtime-configuration.md`
-- [ ] `docs/draft/docs/src/reference/runtime-configuration.revised.md`
-- [ ] `docs/tmp/docs/src/reference/runtime-configuration.prompt.md`
-- [ ] `docs/tmp/docs/src/reference/cli.prompt.md`
-- [ ] `docs/tmp/docs/src/reference/pgtuskmasterctl-cli.prompt.md`
-- [ ] `docs/tmp/verbose_extra_context/runtime-config-summary.md`
-- [ ] `docs/tmp/verbose_extra_context/runtime-config-deep-summary.md`
+- [x] `docs/draft/docs/src/reference/runtime-configuration.md`
+- [x] `docs/draft/docs/src/reference/runtime-configuration.revised.md`
+- [x] `docs/tmp/docs/src/reference/runtime-configuration.prompt.md`
+- [x] `docs/tmp/docs/src/reference/cli.prompt.md`
+- [x] `docs/tmp/docs/src/reference/pgtuskmasterctl-cli.prompt.md`
+- [x] `docs/tmp/docs/src/how-to/*.prompt.md`
+- [x] `docs/tmp/docs/src/tutorial/*.prompt.md`
+- [x] `docs/tmp/docs/src/explanation/*.prompt.md`
+  - Clean tracked prompt artifacts that embed copied parser/config snippets or sample TOML containing `config_version = "v2"`, not just the reference pages.
+- [x] `docs/tmp/verbose_extra_context/runtime-config-summary.md`
+- [x] `docs/tmp/verbose_extra_context/runtime-config-deep-summary.md`
   - Remove or regenerate tracked artifacts so they stop repeating the phantom v1/v2 story.
-- [ ] Any other tracked `docs/tmp` or `docs/draft` file that still mentions runtime config versioning
+- [x] Any other tracked `docs/tmp` or `docs/draft` file that still mentions runtime config versioning
   - Expand the checklist and clean it too.
 
 ### 5) Clean up Ralph task/story residue that perpetuates the false model
-- [ ] Audit current tracked `.ralph/tasks` files for active instructions that still describe runtime config as `v1`/`v2`.
-- [ ] Remove or rewrite active task references that would reintroduce the hallucinated model on a future pass.
-- [ ] Do not rewrite archival evidence under `.ralph/archive/archive_tasks/` just to hide history; keep archive as evidence unless project conventions require archive scrubbing. If archive files are intentionally left unchanged, state that explicitly as an exclusion in the final grep evidence.
+- [x] Audit current tracked `.ralph/tasks` files for active instructions that still describe runtime config as `v1`/`v2`.
+- [x] Remove or rewrite active task references that would reintroduce the hallucinated model on a future pass.
+- [x] Do not rewrite archival evidence under `.ralph/archive/archive_tasks/` just to hide history; keep archive as evidence unless project conventions require archive scrubbing. If archive files are intentionally left unchanged, state that explicitly as an exclusion in the final grep evidence.
 
 ### 6) Verification gates
-- [ ] Run the repo-wide grep gate and confirm only intentional exclusions remain.
-- [ ] Run `make check`
-- [ ] Run `make test`
-- [ ] Run `make lint`
-- [ ] If any touched behavior is covered only by ultra-long tests, run `make test-long`
+- [x] Run the repo-wide grep gate and confirm only intentional exclusions remain.
+- [x] Run `make check`
+- [x] Run `make test`
+- [x] Run `make lint`
+- [x] If any touched behavior is covered only by ultra-long tests, run `make test-long`
 
 ### 7) Passes-true rule
 - Do not set `<passes>true</passes>` until all of the following are simultaneously true:
@@ -132,3 +139,23 @@ This is a cleanup/correction task, not a migration task. The higher-order goal i
   - parser/CLI/tests no longer talk about config migration or version rejection
   - the grep gate is clean except for explicitly documented non-config exclusions
   - build/test/lint gates are green
+
+NOW EXECUTE
+
+## Execution Notes
+
+- The runtime config parser now deserializes a single `RuntimeConfigInput` shape directly. The old `ConfigVersion` enum, `config_version` field, envelope parsing, v1 probing path, and v2-only naming layer were removed.
+- Parser and CLI tests were rewritten around the real single-shape contract. The invalid partial config path now fails as a parse error, and the unknown top-level `config_version` field is rejected as an unknown-field parse error.
+- All tracked runtime TOML examples under `docker/configs/` had their top-level `config_version` line removed.
+- Runtime-config source docs and draft docs were rewritten to stop describing versioned schemas. Stale prompt/summary artifacts that copied the hallucinated story were deleted.
+- `make docs-build` regenerated the tracked book outputs after the source-doc cleanup.
+- Intentional grep exclusions kept in place:
+  - `src/debug_api/worker.rs` uses `config_version: Version` for debug snapshot version counters, not runtime-config schema gating.
+  - `docs/tmp/docs/src/reference/http-api.prompt.md`, `docs/tmp/docs/src/how-to/monitor-via-metrics.prompt.md`, `docs/tmp/docs/src/tutorial/debug-api-usage.prompt.md`, and generated `docs/book/searchindex.js` mirror those same debug snapshot counters rather than a runtime-config version split.
+  - This task file intentionally contains the historical search terms and checklist wording needed to document the cleanup scope and exclusions.
+- Verification completed successfully:
+  - `make check`
+  - `make test`
+  - `make test-long`
+  - `make lint`
+  - `make docs-build`

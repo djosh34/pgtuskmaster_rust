@@ -1,5 +1,5 @@
 use super::schema::{
-    BinaryPaths, BinaryPathsV2Input, DebugConfig, FileSinkConfig, FileSinkMode, LogCleanupConfig,
+    BinaryPaths, BinaryPathsInput, DebugConfig, FileSinkConfig, FileSinkMode, LogCleanupConfig,
     LogLevel, LoggingConfig, LoggingSinksConfig, PostgresLoggingConfig, ProcessConfig,
     StderrSinkConfig,
 };
@@ -72,13 +72,13 @@ pub(crate) fn default_logging_config() -> LoggingConfig {
 }
 
 pub(crate) fn normalize_process_config(
-    input: super::schema::ProcessConfigV2Input,
+    input: super::schema::ProcessConfigInput,
 ) -> Result<ProcessConfig, ConfigError> {
     let binaries = input.binaries.ok_or_else(|| ConfigError::Validation {
         field: "process.binaries",
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
-    let binaries = normalize_binary_paths_v2(binaries)?;
+    let binaries = normalize_binary_paths(binaries)?;
 
     Ok(ProcessConfig {
         pg_rewind_timeout_ms: input
@@ -94,7 +94,7 @@ pub(crate) fn normalize_process_config(
     })
 }
 
-fn normalize_binary_paths_v2(input: BinaryPathsV2Input) -> Result<BinaryPaths, ConfigError> {
+fn normalize_binary_paths(input: BinaryPathsInput) -> Result<BinaryPaths, ConfigError> {
     Ok(BinaryPaths {
         postgres: require_binary_path("process.binaries.postgres", input.postgres)?,
         pg_ctl: require_binary_path("process.binaries.pg_ctl", input.pg_ctl)?,
@@ -111,7 +111,7 @@ fn require_binary_path(
 ) -> Result<std::path::PathBuf, ConfigError> {
     value.ok_or_else(|| ConfigError::Validation {
         field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })
 }
 

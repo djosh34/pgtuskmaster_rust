@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sun Mar  8 05:50:45 PM CET 2026
+Generated: Sun Mar  8 06:13:46 PM CET 2026
 
 # Task `.ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md`
 
@@ -32,17 +32,6 @@ Generated: Sun Mar  8 05:50:45 PM CET 2026
 
 <description>
 The codebase carries API and DCS endpoint addresses as raw `String` values deep into runtime and harness paths, then parses or binds them at scattered call sites. This was detected during a representation-integrity scan looking for cases where subsystem boundaries retain ad-hoc primitive encodings instead of canonical typed models.
-```
-
-==============
-
-# Task `.ralph/tasks/story-secure-explicit-node-config/07-task-remove-phantom-config-versioning-and-restore-single-config-contract.md`
-
-```
-## Task: Remove phantom config versioning and restore a single as-is config contract <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Fully remove the hallucinated runtime-config versioning model from this repository. There is one config contract only. There is no `config_version` field, there never was a `v1` config, there never was a `v2` config, and no code, test, doc, fixture, or generated doc artifact may describe or enforce such a split.
 ```
 
 ==============

@@ -86,7 +86,6 @@ services:
 configs:
   runtime-node-a:
     content: |
-      config_version = "v2"
       
       [cluster]
       name = "docker-single"

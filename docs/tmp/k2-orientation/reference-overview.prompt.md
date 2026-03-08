@@ -1072,10 +1072,8 @@ This document describes the TOML schema and validation rules for pgtuskmaster ru
 ## Config Version
 
 ```toml
-config_version = "v2"
 ```
 
-`config_version` is a required top-level field that declares the schema variant. The loader rejects `v1` with a migration message and fails if the field is absent. Only `config_version = "v2"` is accepted.
 
 ## Top-Level Sections
 
@@ -1744,3 +1742,4 @@ The core is the four kinds of documentation. If encountering Diátaxis for the f
 ---
 
 Missing source support: None. All requested information is available in the provided Diátaxis source files.
+                      

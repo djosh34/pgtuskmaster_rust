@@ -7,10 +7,10 @@ use super::defaults::{
     default_postgres_connect_timeout_s, normalize_process_config,
 };
 use super::schema::{
-    ApiConfig, ApiSecurityConfig, ConfigVersion, InlineOrPath, PgHbaConfig, PgIdentConfig,
-    PostgresConfig, PostgresConnIdentityConfig, PostgresRoleConfig, PostgresRolesConfig,
-    RoleAuthConfig, RoleAuthConfigV2Input, RuntimeConfig, RuntimeConfigV2Input, SecretSource,
-    TlsServerConfig, TlsServerIdentityConfig,
+    ApiConfig, ApiSecurityConfig, InlineOrPath, PgHbaConfig, PgIdentConfig, PostgresConfig,
+    PostgresConnIdentityConfig, PostgresRoleConfig, PostgresRolesConfig, RoleAuthConfig,
+    RoleAuthConfigInput, RuntimeConfig, RuntimeConfigInput, SecretSource, TlsServerConfig,
+    TlsServerIdentityConfig,
 };
 use crate::postgres_managed_conf::{validate_extra_guc_entry, ManagedPostgresConfError};
 
@@ -44,76 +44,21 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfig, ConfigError> {
         source,
     })?;
 
-    #[derive(serde::Deserialize)]
-    struct ConfigEnvelope {
-        config_version: Option<ConfigVersion>,
-    }
-
-    let envelope: ConfigEnvelope =
+    let raw: RuntimeConfigInput =
         toml::from_str(&contents).map_err(|source| ConfigError::Parse {
             path: path.display().to_string(),
             source,
         })?;
-
-    let config_version = envelope.config_version.ok_or_else(|| ConfigError::Validation {
-        field: "config_version",
-        message: "missing required field; set config_version = \"v2\" to use the explicit secure schema".to_string(),
-    })?;
-
-    match config_version {
-        ConfigVersion::V1 => {
-            probe_legacy_v1_shape_for_diagnostics(&contents);
-            Err(ConfigError::Validation {
-                field: "config_version",
-                message: "config_version = \"v1\" is no longer supported because it depends on implicit security defaults; migrate to config_version = \"v2\""
-                    .to_string(),
-            })
-        }
-        ConfigVersion::V2 => {
-            let raw: RuntimeConfigV2Input =
-                toml::from_str(&contents).map_err(|source| ConfigError::Parse {
-                    path: path.display().to_string(),
-                    source,
-                })?;
-            let cfg = normalize_runtime_config_v2(raw)?;
-            validate_runtime_config(&cfg)?;
-            Ok(cfg)
-        }
-    }
+    let cfg = normalize_runtime_config(raw)?;
+    validate_runtime_config(&cfg)?;
+    Ok(cfg)
 }
 
-fn probe_legacy_v1_shape_for_diagnostics(contents: &str) {
-    // We keep the legacy v1 deserialization surface "alive" to:
-    // - avoid unused-schema drift during the transition
-    // - allow future improvements that surface rich TOML diagnostics for v1 migrations
-    //
-    // This must never override the v1 migration guidance with a parse error.
-    let parsed: Result<toml::Value, toml::de::Error> = toml::from_str(contents);
-    let Ok(mut value) = parsed else {
-        return;
-    };
-
-    let Some(table) = value.as_table_mut() else {
-        return;
-    };
-
-    let _ = table.remove("config_version");
-
-    let _: Result<super::schema::PartialRuntimeConfig, toml::de::Error> = value.try_into();
-}
-
-fn normalize_runtime_config_v2(input: RuntimeConfigV2Input) -> Result<RuntimeConfig, ConfigError> {
-    if !matches!(input.config_version, ConfigVersion::V2) {
-        return Err(ConfigError::Validation {
-            field: "config_version",
-            message: "expected config_version = \"v2\"".to_string(),
-        });
-    }
-
-    let postgres = normalize_postgres_config_v2(input.postgres)?;
+fn normalize_runtime_config(input: RuntimeConfigInput) -> Result<RuntimeConfig, ConfigError> {
+    let postgres = normalize_postgres_config(input.postgres)?;
     let process = normalize_process_config(input.process)?;
     let logging = input.logging.unwrap_or_else(default_logging_config);
-    let api = normalize_api_config_v2(input.api)?;
+    let api = normalize_api_config(input.api)?;
     let debug = input.debug.unwrap_or_else(default_debug_config);
 
     Ok(RuntimeConfig {
@@ -128,26 +73,26 @@ fn normalize_runtime_config_v2(input: RuntimeConfigV2Input) -> Result<RuntimeCon
     })
 }
 
-fn normalize_postgres_config_v2(
-    input: super::schema::PostgresConfigV2Input,
+fn normalize_postgres_config(
+    input: super::schema::PostgresConfigInput,
 ) -> Result<PostgresConfig, ConfigError> {
     let connect_timeout_s = input
         .connect_timeout_s
         .unwrap_or_else(default_postgres_connect_timeout_s);
 
-    let local_conn_identity = normalize_postgres_conn_identity_v2(
+    let local_conn_identity = normalize_postgres_conn_identity(
         "postgres.local_conn_identity",
         input.local_conn_identity,
     )?;
-    let rewind_conn_identity = normalize_postgres_conn_identity_v2(
+    let rewind_conn_identity = normalize_postgres_conn_identity(
         "postgres.rewind_conn_identity",
         input.rewind_conn_identity,
     )?;
 
-    let tls = normalize_tls_server_config_v2("postgres.tls", input.tls)?;
-    let roles = normalize_postgres_roles_v2(input.roles)?;
-    let pg_hba = normalize_pg_hba_v2(input.pg_hba)?;
-    let pg_ident = normalize_pg_ident_v2(input.pg_ident)?;
+    let tls = normalize_tls_server_config("postgres.tls", input.tls)?;
+    let roles = normalize_postgres_roles(input.roles)?;
+    let pg_hba = normalize_pg_hba(input.pg_hba)?;
+    let pg_ident = normalize_pg_ident(input.pg_ident)?;
 
     Ok(PostgresConfig {
         data_dir: input.data_dir,
@@ -162,11 +107,11 @@ fn normalize_postgres_config_v2(
         roles,
         pg_hba,
         pg_ident,
-        extra_gucs: normalize_postgres_extra_gucs_v2(input.extra_gucs)?,
+        extra_gucs: normalize_postgres_extra_gucs(input.extra_gucs)?,
     })
 }
 
-fn normalize_postgres_extra_gucs_v2(
+fn normalize_postgres_extra_gucs(
     input: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<std::collections::BTreeMap<String, String>, ConfigError> {
     let extra_gucs = input.unwrap_or_default();
@@ -176,13 +121,13 @@ fn normalize_postgres_extra_gucs_v2(
     Ok(extra_gucs)
 }
 
-fn normalize_postgres_conn_identity_v2(
+fn normalize_postgres_conn_identity(
     field_prefix: &'static str,
-    input: Option<super::schema::PostgresConnIdentityConfigV2Input>,
+    input: Option<super::schema::PostgresConnIdentityConfigInput>,
 ) -> Result<PostgresConnIdentityConfig, ConfigError> {
     let identity = input.ok_or_else(|| ConfigError::Validation {
         field: field_prefix,
-        message: "missing required secure config block for config_version=v2".to_string(),
+        message: "missing required secure config block".to_string(),
     })?;
 
     let user_field = match field_prefix {
@@ -203,19 +148,19 @@ fn normalize_postgres_conn_identity_v2(
 
     let user = identity.user.ok_or_else(|| ConfigError::Validation {
         field: user_field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
     validate_non_empty(user_field, user.as_str())?;
 
     let dbname = identity.dbname.ok_or_else(|| ConfigError::Validation {
         field: dbname_field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
     validate_non_empty(dbname_field, dbname.as_str())?;
 
     let ssl_mode = identity.ssl_mode.ok_or_else(|| ConfigError::Validation {
         field: ssl_mode_field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
 
     Ok(PostgresConnIdentityConfig {
@@ -225,17 +170,17 @@ fn normalize_postgres_conn_identity_v2(
     })
 }
 
-fn normalize_postgres_roles_v2(
-    input: Option<super::schema::PostgresRolesConfigV2Input>,
+fn normalize_postgres_roles(
+    input: Option<super::schema::PostgresRolesConfigInput>,
 ) -> Result<PostgresRolesConfig, ConfigError> {
     let roles = input.ok_or_else(|| ConfigError::Validation {
         field: "postgres.roles",
-        message: "missing required secure config block for config_version=v2".to_string(),
+        message: "missing required secure config block".to_string(),
     })?;
 
-    let superuser = normalize_postgres_role_v2("postgres.roles.superuser", roles.superuser)?;
-    let replicator = normalize_postgres_role_v2("postgres.roles.replicator", roles.replicator)?;
-    let rewinder = normalize_postgres_role_v2("postgres.roles.rewinder", roles.rewinder)?;
+    let superuser = normalize_postgres_role("postgres.roles.superuser", roles.superuser)?;
+    let replicator = normalize_postgres_role("postgres.roles.replicator", roles.replicator)?;
+    let rewinder = normalize_postgres_role("postgres.roles.rewinder", roles.rewinder)?;
 
     Ok(PostgresRolesConfig {
         superuser,
@@ -244,13 +189,13 @@ fn normalize_postgres_roles_v2(
     })
 }
 
-fn normalize_postgres_role_v2(
+fn normalize_postgres_role(
     field_prefix: &'static str,
-    input: Option<super::schema::PostgresRoleConfigV2Input>,
+    input: Option<super::schema::PostgresRoleConfigInput>,
 ) -> Result<PostgresRoleConfig, ConfigError> {
     let role = input.ok_or_else(|| ConfigError::Validation {
         field: field_prefix,
-        message: "missing required secure config block for config_version=v2".to_string(),
+        message: "missing required secure config block".to_string(),
     })?;
 
     let username_field = match field_prefix {
@@ -268,13 +213,13 @@ fn normalize_postgres_role_v2(
 
     let username = role.username.ok_or_else(|| ConfigError::Validation {
         field: username_field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
     validate_non_empty(username_field, username.as_str())?;
 
     let auth = role.auth.ok_or_else(|| ConfigError::Validation {
         field: auth_field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
 
     let auth = normalize_role_auth_config_v2(auth_field, auth)?;
@@ -284,11 +229,11 @@ fn normalize_postgres_role_v2(
 
 fn normalize_role_auth_config_v2(
     field_prefix: &'static str,
-    input: RoleAuthConfigV2Input,
+    input: RoleAuthConfigInput,
 ) -> Result<RoleAuthConfig, ConfigError> {
     match input {
-        RoleAuthConfigV2Input::Tls => Ok(RoleAuthConfig::Tls),
-        RoleAuthConfigV2Input::Password { password } => {
+        RoleAuthConfigInput::Tls => Ok(RoleAuthConfig::Tls),
+        RoleAuthConfigInput::Password { password } => {
             let password_field = match field_prefix {
                 "postgres.roles.superuser.auth" => "postgres.roles.superuser.auth.password",
                 "postgres.roles.replicator.auth" => "postgres.roles.replicator.auth.password",
@@ -298,7 +243,7 @@ fn normalize_role_auth_config_v2(
 
             let password = password.ok_or_else(|| ConfigError::Validation {
                 field: password_field,
-                message: "missing required secure field for config_version=v2".to_string(),
+                message: "missing required secure field".to_string(),
             })?;
 
             Ok(RoleAuthConfig::Password { password })
@@ -306,48 +251,46 @@ fn normalize_role_auth_config_v2(
     }
 }
 
-fn normalize_pg_hba_v2(
-    input: Option<super::schema::PgHbaConfigV2Input>,
+fn normalize_pg_hba(
+    input: Option<super::schema::PgHbaConfigInput>,
 ) -> Result<PgHbaConfig, ConfigError> {
     let cfg = input.ok_or_else(|| ConfigError::Validation {
         field: "postgres.pg_hba",
-        message: "missing required secure config block for config_version=v2".to_string(),
+        message: "missing required secure config block".to_string(),
     })?;
     let source = cfg.source.ok_or_else(|| ConfigError::Validation {
         field: "postgres.pg_hba.source",
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
     Ok(PgHbaConfig { source })
 }
 
-fn normalize_pg_ident_v2(
-    input: Option<super::schema::PgIdentConfigV2Input>,
+fn normalize_pg_ident(
+    input: Option<super::schema::PgIdentConfigInput>,
 ) -> Result<PgIdentConfig, ConfigError> {
     let cfg = input.ok_or_else(|| ConfigError::Validation {
         field: "postgres.pg_ident",
-        message: "missing required secure config block for config_version=v2".to_string(),
+        message: "missing required secure config block".to_string(),
     })?;
     let source = cfg.source.ok_or_else(|| ConfigError::Validation {
         field: "postgres.pg_ident.source",
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
     Ok(PgIdentConfig { source })
 }
 
-fn normalize_api_config_v2(
-    input: super::schema::ApiConfigV2Input,
-) -> Result<ApiConfig, ConfigError> {
+fn normalize_api_config(input: super::schema::ApiConfigInput) -> Result<ApiConfig, ConfigError> {
     let listen_addr = input.listen_addr.unwrap_or_else(default_api_listen_addr);
 
     let security = input.security.ok_or_else(|| ConfigError::Validation {
         field: "api.security",
-        message: "missing required secure config block for config_version=v2".to_string(),
+        message: "missing required secure config block".to_string(),
     })?;
 
-    let tls = normalize_tls_server_config_v2("api.security.tls", security.tls)?;
+    let tls = normalize_tls_server_config("api.security.tls", security.tls)?;
     let auth = security.auth.ok_or_else(|| ConfigError::Validation {
         field: "api.security.auth",
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
 
     Ok(ApiConfig {
@@ -356,13 +299,13 @@ fn normalize_api_config_v2(
     })
 }
 
-fn normalize_tls_server_config_v2(
+fn normalize_tls_server_config(
     field_prefix: &'static str,
-    input: Option<super::schema::TlsServerConfigV2Input>,
+    input: Option<super::schema::TlsServerConfigInput>,
 ) -> Result<TlsServerConfig, ConfigError> {
     let tls = input.ok_or_else(|| ConfigError::Validation {
         field: field_prefix,
-        message: "missing required secure config block for config_version=v2".to_string(),
+        message: "missing required secure config block".to_string(),
     })?;
 
     let mode_field = match field_prefix {
@@ -378,7 +321,7 @@ fn normalize_tls_server_config_v2(
 
     let mode = tls.mode.ok_or_else(|| ConfigError::Validation {
         field: mode_field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
 
     let identity = match tls.identity {
@@ -395,7 +338,7 @@ fn normalize_tls_server_config_v2(
 
 fn normalize_tls_server_identity_v2(
     field_prefix: &'static str,
-    input: super::schema::TlsServerIdentityConfigV2Input,
+    input: super::schema::TlsServerIdentityConfigInput,
 ) -> Result<TlsServerIdentityConfig, ConfigError> {
     let cert_chain_field = match field_prefix {
         "postgres.tls.identity" => "postgres.tls.identity.cert_chain",
@@ -410,11 +353,11 @@ fn normalize_tls_server_identity_v2(
 
     let cert_chain = input.cert_chain.ok_or_else(|| ConfigError::Validation {
         field: cert_chain_field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
     let private_key = input.private_key.ok_or_else(|| ConfigError::Validation {
         field: private_key_field,
-        message: "missing required secure field for config_version=v2".to_string(),
+        message: "missing required secure field".to_string(),
     })?;
 
     Ok(TlsServerIdentityConfig {
@@ -1478,7 +1421,7 @@ mod tests {
     }
 
     #[test]
-    fn load_runtime_config_missing_config_version_is_rejected(
+    fn load_runtime_config_missing_required_sections_is_rejected(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -1494,40 +1437,27 @@ member_id = "member-a"
         std::fs::write(&path, toml)?;
 
         let err = load_runtime_config(&path);
-        assert!(matches!(
-            err,
-            Err(ConfigError::Validation {
-                field: "config_version",
-                ..
-            })
-        ));
+        assert!(matches!(err, Err(ConfigError::Parse { .. })));
 
         std::fs::remove_file(&path)?;
         Ok(())
     }
 
     #[test]
-    fn load_runtime_config_config_version_v1_is_rejected() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn load_runtime_config_rejects_unknown_top_level_version_field(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!("runtime-config-invalid-{unique}.toml"));
 
         let toml = r#"
-config_version = "v1"
 "#;
 
         std::fs::write(&path, toml)?;
 
         let err = load_runtime_config(&path);
-        assert!(matches!(
-            err,
-            Err(ConfigError::Validation {
-                field: "config_version",
-                ..
-            })
-        ));
+        assert!(matches!(err, Err(ConfigError::Parse { .. })));
 
         std::fs::remove_file(&path)?;
         Ok(())
@@ -1542,8 +1472,6 @@ config_version = "v1"
         let path = std::env::temp_dir().join(format!("runtime-config-invalid-{unique}.toml"));
 
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -1597,16 +1525,14 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_happy_path_with_safe_defaults(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_runtime_config_happy_path_with_safe_defaults() -> Result<(), Box<dyn std::error::Error>>
+    {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!("runtime-config-v2-{unique}.toml"));
 
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -1653,7 +1579,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_missing_secure_fields_is_actionable(
+    fn load_runtime_config_missing_secure_fields_is_actionable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -1662,8 +1588,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally omit `postgres.local_conn_identity`.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -1711,7 +1635,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_missing_process_binaries_is_actionable(
+    fn load_runtime_config_missing_process_binaries_is_actionable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -1721,8 +1645,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally omit `process.binaries`.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -1773,7 +1695,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_password_auth_missing_password_is_actionable(
+    fn load_runtime_config_password_auth_missing_password_is_actionable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -1784,8 +1706,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally omit `postgres.roles.superuser.auth.password`.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -1834,7 +1754,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_missing_postgres_roles_block_is_actionable(
+    fn load_runtime_config_missing_postgres_roles_block_is_actionable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -1844,8 +1764,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally omit `postgres.roles`.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -1893,7 +1811,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_missing_replicator_role_is_actionable(
+    fn load_runtime_config_missing_replicator_role_is_actionable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -1904,8 +1822,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally omit `postgres.roles.replicator`.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -1954,7 +1870,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_missing_replicator_username_is_actionable(
+    fn load_runtime_config_missing_replicator_username_is_actionable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -1965,8 +1881,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally omit `postgres.roles.replicator.username`.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -2015,7 +1929,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_missing_replicator_auth_is_actionable(
+    fn load_runtime_config_missing_replicator_auth_is_actionable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -2026,8 +1940,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally omit `postgres.roles.replicator.auth`.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -2076,7 +1988,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_rejects_conn_identity_role_mismatch(
+    fn load_runtime_config_rejects_conn_identity_role_mismatch(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -2087,8 +1999,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally set local_conn_identity.user to a different user than roles.superuser.username.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -2137,8 +2047,8 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_rejects_blank_password_secret(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_runtime_config_rejects_blank_password_secret() -> Result<(), Box<dyn std::error::Error>>
+    {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
@@ -2148,8 +2058,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally set password secret content to empty.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -2198,7 +2106,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_rejects_tls_required_without_identity(
+    fn load_runtime_config_rejects_tls_required_without_identity(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -2209,8 +2117,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally omit `postgres.tls.identity` while requiring TLS.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -2259,7 +2165,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_rejects_client_auth_with_tls_disabled(
+    fn load_runtime_config_rejects_client_auth_with_tls_disabled(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -2270,8 +2176,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
         // Intentionally configure client auth while TLS is disabled.
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -2320,7 +2224,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_rejects_postgres_role_tls_auth_with_actionable_error(
+    fn load_runtime_config_rejects_postgres_role_tls_auth_with_actionable_error(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -2330,8 +2234,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         ));
 
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
@@ -2390,7 +2292,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn load_runtime_config_v2_rejects_ssl_mode_requiring_tls_when_postgres_tls_disabled(
+    fn load_runtime_config_rejects_ssl_mode_requiring_tls_when_postgres_tls_disabled(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -2400,8 +2302,6 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         ));
 
         let toml = r#"
-config_version = "v2"
-
 [cluster]
 name = "cluster-a"
 member_id = "member-a"

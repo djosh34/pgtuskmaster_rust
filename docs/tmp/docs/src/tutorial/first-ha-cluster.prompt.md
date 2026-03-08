@@ -581,7 +581,6 @@ volumes:
 
 
 ===== docker/configs/cluster/node-a/runtime.toml =====
-config_version = "v2"
 
 [cluster]
 name = "docker-cluster"
@@ -658,7 +657,6 @@ enabled = true
 
 
 ===== docker/configs/cluster/node-b/runtime.toml =====
-config_version = "v2"
 
 [cluster]
 name = "docker-cluster"
@@ -735,7 +733,6 @@ enabled = true
 
 
 ===== docker/configs/cluster/node-c/runtime.toml =====
-config_version = "v2"
 
 [cluster]
 name = "docker-cluster"

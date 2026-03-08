@@ -2,14 +2,6 @@
 
 This document describes the TOML schema and validation rules for pgtuskmaster runtime configuration.
 
-## Config Version
-
-```toml
-config_version = "v2"
-```
-
-`config_version` is a required top-level field that declares the schema variant. The loader rejects `v1` with a migration message and fails if the field is absent. Only `config_version = "v2"` is accepted.
-
 ## Top-Level Sections
 
 The normalized runtime config contains exactly these blocks:
@@ -392,8 +384,8 @@ All rules above are enforced by `load_runtime_config`. The parser returns a `Val
 
 Common patterns:
 
-- **Missing required block** - `missing required secure config block for config_version=v2`
-- **Missing required field** - `missing required secure field for config_version=v2`
+- **Missing required block** - `missing required secure config block`
+- **Missing required field** - `missing required secure field`
 - **Empty value** - `must not be empty`
 - **Relative path** - `must be an absolute path`
 - **Interval mismatch** - `must be greater than ha.loop_interval_ms`

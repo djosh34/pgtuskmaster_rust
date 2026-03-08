@@ -289,7 +289,10 @@ pub(crate) fn parse_managed_primary_conninfo(
             if passfile.is_some() {
                 return Err(ManagedPrimaryConninfoError::DuplicateKey(key));
             }
-            passfile = Some(validate_managed_passfile_path(data_dir, PathBuf::from(value))?);
+            passfile = Some(validate_managed_passfile_path(
+                data_dir,
+                PathBuf::from(value),
+            )?);
         } else {
             upstream_tokens.push(format!("{key}={}", render_conninfo_value(value.as_str())));
         }
@@ -491,7 +494,9 @@ fn absolutize_path(path: &Path) -> Result<PathBuf, ManagedPrimaryConninfoError> 
     Ok(cwd.join(path))
 }
 
-fn parse_conninfo_entries(input: &str) -> Result<Vec<(String, String)>, ManagedPrimaryConninfoError> {
+fn parse_conninfo_entries(
+    input: &str,
+) -> Result<Vec<(String, String)>, ManagedPrimaryConninfoError> {
     let mut cursor = ManagedConninfoCursor::new(input);
     let mut entries = Vec::new();
 
@@ -670,7 +675,9 @@ mod tests {
                     options: Some("-c wal_receiver_status_interval=5s".to_string()),
                 },
                 ManagedStandbyAuth::PasswordPassfile {
-                    path: managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path()),
+                    path: managed_standby_passfile_path(
+                        PathBuf::from("/var/lib/postgresql/data").as_path(),
+                    ),
                 },
                 Some("slot_a".to_string()),
             ),
@@ -915,9 +922,8 @@ mod tests {
             err,
             Err(ManagedPrimaryConninfoError::InvalidPassfilePath {
                 path: PathBuf::from("/tmp/bad.pass"),
-                message:
-                    "passfile path must stay under managed data dir /var/lib/postgresql/data"
-                        .to_string(),
+                message: "passfile path must stay under managed data dir /var/lib/postgresql/data"
+                    .to_string(),
             })
         );
     }

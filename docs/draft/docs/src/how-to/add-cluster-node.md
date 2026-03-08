@@ -18,7 +18,6 @@ Create a `runtime.toml` file on the new node that matches the existing cluster c
 Example template (adapt `node-c` to your node identity and network addresses):
 
 ```toml
-config_version = "v2"
 
 [cluster]
 name = "docker-cluster"
