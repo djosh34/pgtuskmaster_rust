@@ -1,4 +1,4 @@
-## Task: Run K2 Docs Loop In Five-Way Parallel Batches Until All Diataxis Sections Have Enough Pages <status>not_started</status> <passes>false</passes>
+## Task: Run K2 Docs Loop In Five-Way Parallel Batches Until All Diataxis Sections Have Enough Pages <status>in_progress</status> <passes>false</passes>
 
 <priority>high</priority>
 
@@ -14,13 +14,13 @@
 - For each of those five chosen pages, do exactly as the 'k2-docs-loop' requires for each of the 5 parallel requests.
 - After all five choices are known, run `prepare-draft` for those five chosen pages in parallel as five separate lanes.
 - Keep each lane fully independent.
-- Once 5 parallel runs are done, append progress and then QUIT IMMEDIATELY
+- Once 5 parallel runs are done, commit all changed files and push, append progress and then QUIT IMMEDIATELY
 - NEVER EVER RUN any tests or code-oriented validation commands. This task changes no `src/` or `tests/` files. NOT A SINGLE TEST MUST BE RAN
 
 **Expected outcome:**
 - Five-page batches are executed in parallel without cross-contamination between chosen docs, requested sources, drafts, or revision prompts.
 - The task stops only when all four Diataxis sections have enough published pages in `docs/src/` to count as meaningfully populated.
-- `<passes>true</passes>` is set only after that coverage gate is actually met at startup of a batch decision point; otherwise the task remains incomplete and you should QUIT IMMEDIATELY
+- `<passes>true</passes>` is set only after that coverage gate is actually met at startup of a batch decision point; otherwise the task remains incomplete and you should commit, progress and QUIT IMMEDIATELY
 - No tests are run anywhere in this task.
 
 NOW EXECUTE
