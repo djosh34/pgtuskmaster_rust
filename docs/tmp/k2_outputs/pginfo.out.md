@@ -76,17 +76,37 @@ Always renders `host`, `port`, `user`, `dbname`, and `sslmode`. Conditionally re
 
 ### `PGINFO_POLL_SQL`
 
-| Output column | Expression |
-|---|---|
-| `in_recovery` | `pg_is_in_recovery()` |
-| `is_ready` | `TRUE` on primaries; on replicas `TRUE` only when `pg_last_wal_replay_lsn()` is not `NULL` |
-| `timeline_id` | `(pg_control_checkpoint()).timeline_id::bigint` |
-| `current_wal_lsn` | `pg_current_wal_lsn()::text` when not in recovery, otherwise `NULL` |
-| `replay_lsn` | `pg_last_wal_replay_lsn()::text` |
-| `receive_lsn` | `pg_last_wal_receive_lsn()::text` |
-| `slot_names` | `COALESCE(array_remove(array_agg(slot_name ORDER BY slot_name), NULL), '{}'::text[])` |
+```sql
+SELECT
+    s.in_recovery,
+    s.is_ready,
+    s.timeline_id,
+    s.current_wal_lsn,
+    s.replay_lsn,
+    s.receive_lsn,
+    COALESCE(r.slot_names, '{}'::text[]) AS slot_names
+FROM (
+    SELECT
+        pg_is_in_recovery() AS in_recovery,
+        CASE
+            WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() IS NOT NULL
+            ELSE TRUE
+        END AS is_ready,
+        (pg_control_checkpoint()).timeline_id::bigint AS timeline_id,
+        CASE
+            WHEN pg_is_in_recovery() THEN NULL
+            ELSE pg_current_wal_lsn()::text
+        END AS current_wal_lsn,
+        pg_last_wal_replay_lsn()::text AS replay_lsn,
+        pg_last_wal_receive_lsn()::text AS receive_lsn
+) AS s
+CROSS JOIN (
+    SELECT COALESCE(array_remove(array_agg(slot_name ORDER BY slot_name), NULL), '{}'::text[]) AS slot_names
+    FROM pg_replication_slots
+) AS r;
+```
 
-The statement selects through a single outer `SELECT`, a nested state subquery, and a `CROSS JOIN` subquery over `pg_replication_slots`. It ends with exactly one semicolon.
+The statement uses exactly one semicolon.
 
 ### `PgPollData`
 

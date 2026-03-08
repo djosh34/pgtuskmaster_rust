@@ -1,21 +1,26 @@
 # Logging Reference
 
-Records, sinks, tailing, and PostgreSQL ingest in `src/logging/mod.rs`, `src/logging/event.rs`, `src/logging/raw_record.rs`, `src/logging/tailer.rs`, and `src/logging/postgres_ingest.rs`.
+The logging layer provides structured record emission, multi-sink output, file tailing, and PostgreSQL log ingestion through the `src/logging` module family.
 
-## Record Model
+## Module surface
 
-### Core enums
+`src/logging/mod.rs` declares private modules `event` and `raw_record`, and crate-visible modules `postgres_ingest` and `tailer`. It re-exports:
 
-| Enum | Serialized values | Purpose |
-|---|---|---|
-| `SeverityText` | `trace`, `debug`, `info`, `warn`, `error`, `fatal` | log severity levels |
-| `LogProducer` | `app`, `postgres`, `pg_tool` | origin component |
-| `LogTransport` | `internal`, `file_tail`, `child_stdout`, `child_stderr` | delivery mechanism |
-| `LogParser` | `app`, `postgres_json`, `postgres_plain`, `raw` | line parsing strategy |
+| Symbol | Description |
+|---|---|
+| `AppEvent` | Application event carrier |
+| `AppEventHeader` | Event classification header |
+| `StructuredFields` | Ordered key/value builder |
+| `PostgresLineRecordBuilder` | PostgreSQL-oriented raw-record builder |
+| `RawRecordBuilder` | General raw-record builder |
+| `SubprocessLineRecord` | Child-process output container |
+| `SubprocessStream` | Stdout or stderr discriminator |
 
-### `SeverityText` mapping
+## Record model
 
-| Variant | `severity_number` |
+### `SeverityText`
+
+| Variant | Number |
 |---|---|
 | `Trace` | `1` |
 | `Debug` | `5` |
@@ -24,7 +29,17 @@ Records, sinks, tailing, and PostgreSQL ingest in `src/logging/mod.rs`, `src/log
 | `Error` | `17` |
 | `Fatal` | `21` |
 
-`From<crate::config::LogLevel>` maps matching log levels one-to-one.
+`From<crate::config::LogLevel>` maps matching runtime log levels one-to-one.
+
+### Enum surfaces
+
+| Enum | Variants |
+|---|---|
+| `LogProducer` | `App`, `Postgres`, `PgTool` |
+| `LogTransport` | `Internal`, `FileTail`, `ChildStdout`, `ChildStderr` |
+| `LogParser` | `App`, `PostgresJson`, `PostgresPlain`, `Raw` |
+
+All three enums serialize with `snake_case` names.
 
 ### `LogSource`
 
@@ -47,21 +62,21 @@ Records, sinks, tailing, and PostgreSQL ingest in `src/logging/mod.rs`, `src/log
 | `source` | `LogSource` |
 | `attributes` | `BTreeMap<String, serde_json::Value>` |
 
-`attributes` is omitted from serialized output when empty.
+`LogRecord::new` sets `severity_number` from `severity_text.number()` and initializes `attributes` as an empty `BTreeMap`. Serialization omits `attributes` when the map is empty.
 
-## Application Event Helpers
+## Application events
 
 ### `AppEventHeader`
 
-| Field | Meaning |
+| Field | Type |
 |---|---|
-| `name` | event identifier |
-| `domain` | event namespace |
-| `result` | event outcome |
+| `name` | `String` |
+| `domain` | `String` |
+| `result` | `String` |
 
-### `StructuredValue` variants
+### `StructuredValue`
 
-| Variant | Stored value type |
+| Variant | Stored value |
 |---|---|
 | `Bool` | `bool` |
 | `I64` | `i64` |
@@ -71,226 +86,249 @@ Records, sinks, tailing, and PostgreSQL ingest in `src/logging/mod.rs`, `src/log
 
 ### `StructuredFields`
 
-Stores ordered key/value pairs. Methods: `append_json_map`, `insert`, `insert_optional`, `insert_serialized`, `into_attributes`.
-
-### `AppEvent::into_record`
-
-Emits a `LogRecord` with:
-
-- `producer`: `App`
-- `transport`: `Internal`
-- `parser`: `App`
-- `attributes`: `event.name`, `event.domain`, `event.result`
-
-## Builders And Handles
-
-### `RawRecordBuilder`
-
-Stores `severity`, `message`, `source`, and `StructuredFields`. Converts them into a `LogRecord`.
-
-### `SubprocessStream`
-
-| Variant | Severity | Transport |
-|---|---|---|
-| `Stdout` | `Info` | `ChildStdout` |
-| `Stderr` | `Warn` | `ChildStderr` |
-
-### `SubprocessLineRecord`
-
-Stores `producer`, `origin`, `job_id`, `job_kind`, `binary`, `stream`, and `bytes`.
-
-`SubprocessLineRecord::into_raw_record` decodes UTF-8 when possible. Non-UTF-8 produces message `non_utf8_bytes_hex=<hex>` and stores the same hex string in `raw_bytes_hex`.
-
-### `PostgresLineRecordBuilder`
-
-Stores `producer`, `transport`, and `origin`. `build(parser, severity, message, fields)` returns a `RawRecordBuilder`.
-
-### `LogHandle`
-
-Stores `hostname`, a tracing-backed backend, and `min_app_severity_number`.
+`StructuredFields` stores ordered `(String, StructuredValue)` pairs in a `Vec`.
 
 | Method | Behavior |
 |---|---|
-| `emit_app_event` | drops events below `min_app_severity_number` |
-| `emit_raw_record` | stamps `system_now_unix_millis()` and `hostname`, then emits |
-| `emit_record` | emits a supplied `LogRecord` through the backend |
+| `append_json_map` | Appends `BTreeMap<String, serde_json::Value>` entries as `StructuredValue::Json` |
+| `insert` | Appends one key/value pair when the value implements `Into<StructuredValue>` |
+| `insert_optional` | Appends only when the option is `Some` |
+| `insert_serialized` | Serializes a value with `serde_json::to_value` and appends it as `StructuredValue::Json` |
+| `into_attributes` | Consumes the ordered fields and writes them into a `BTreeMap<String, serde_json::Value>` |
 
-`system_now_unix_millis()` returns milliseconds since `UNIX_EPOCH` or `0` when the system clock is before `UNIX_EPOCH`.
+### `AppEvent`
 
-`detect_hostname()` uses a non-blank `HOSTNAME` environment value when present and `unknown` otherwise.
+`AppEvent` stores `header`, `severity`, `message`, and `fields`.
 
-## Sink Bootstrap
+`AppEvent::into_record` creates a `LogRecord` with:
 
-### `bootstrap(cfg)` outcomes
-
-| Configuration | Result |
+| Source field | Value |
 |---|---|
-| `cfg.logging.sinks.stderr.enabled = true` | add `JsonlStderrSink` |
-| `cfg.logging.sinks.file.enabled = true` with path | add `JsonlFileSink` |
-| file sink enabled without path | return `LogBootstrapError::Misconfigured` |
-| zero sinks configured | use `NullSink` |
-| exactly one sink configured | use that sink directly |
-| multiple sinks configured | use `FanoutSink` |
+| `producer` | `LogProducer::App` |
+| `transport` | `LogTransport::Internal` |
+| `parser` | `LogParser::App` |
+| `origin` | supplied argument |
 
-Returns `LoggingSystem { handle }` where `handle` is `LogHandle::new(hostname, sink, SeverityText::from(cfg.logging.level))`.
+It also inserts `event.name`, `event.domain`, and `event.result` into the emitted attribute map.
 
-### Sink behavior
+## Raw record builders
 
-| Sink | Behavior |
+### `RawRecordBuilder`
+
+| Field | Type |
 |---|---|
-| `JsonlStderrSink` | writes one JSON line per `LogRecord` to stderr |
-| `JsonlFileSink` | rejects empty path, creates parent directories, opens in append or truncate mode per `crate::config::FileSinkMode`, writes one JSON line per `LogRecord` |
-| `NullSink` | accepts records and performs no write |
-| `FanoutSink` | emits to every configured sink, writes stderr diagnostic per sink failure, succeeds when at least one sink succeeds, errors only when every sink fails |
+| `severity` | `SeverityText` |
+| `message` | `String` |
+| `source` | `LogSource` |
+| `fields` | `StructuredFields` |
 
-### Error types
+`with_fields` replaces the stored fields. `into_record` builds a `LogRecord` and converts the stored fields into `attributes`.
 
-| Type | Variants |
+### `SubprocessStream`
+
+| Variant | `severity()` | `transport()` |
+|---|---|---|
+| `Stdout` | `SeverityText::Info` | `LogTransport::ChildStdout` |
+| `Stderr` | `SeverityText::Warn` | `LogTransport::ChildStderr` |
+
+### `SubprocessLineRecord`
+
+| Field | Type |
+|---|---|
+| `producer` | `LogProducer` |
+| `origin` | `String` |
+| `job_id` | `String` |
+| `job_kind` | `String` |
+| `binary` | `String` |
+| `stream` | `SubprocessStream` |
+| `bytes` | `Vec<u8>` |
+
+`into_raw_record` decodes the stored bytes, uses parser `LogParser::Raw`, inserts `job_id`, `job_kind`, `binary`, serialized `stream`, and optional `raw_bytes_hex`, then returns a `RawRecordBuilder`.
+
+`decode_bytes` returns UTF-8 text when decoding succeeds. On invalid UTF-8 it returns message text `non_utf8_bytes_hex={hex}` and sets `raw_bytes_hex` to the same hex string.
+
+### `PostgresLineRecordBuilder`
+
+| Field | Type |
+|---|---|
+| `producer` | `LogProducer` |
+| `transport` | `LogTransport` |
+| `origin` | `String` |
+
+`build` returns a `RawRecordBuilder` from the supplied parser, severity, message, and fields.
+
+## Sink bootstrap and sinks
+
+### Error enums
+
+| Enum | Variants |
 |---|---|
 | `LogError` | `Json(String)`, `SinkIo(String)` |
 | `LogBootstrapError` | `Misconfigured(String)`, `SinkInit(String)` |
 
-### Tracing-backed backend errors
+### Sink implementations
 
-- nested tracing-backed emission: `LogError::SinkIo("nested tracing-backed log emission is not supported")`
-- `TracingRecordLayer` without active record: `LogError::SinkIo("tracing backend event emitted without an active record")`
-- `TracingBackend` without emission result: `LogError::SinkIo("tracing backend did not produce an emission result")`
+| Sink | Behavior |
+|---|---|
+| `JsonlStderrSink` | Writes one JSON line per record to stderr behind a mutex |
+| `JsonlFileSink` | Rejects an empty path, creates parent directories when needed, opens the file in append or truncate mode according to `crate::config::FileSinkMode`, and writes one JSON line per record |
+| `NullSink` | Accepts a record and performs no write |
+| `FanoutSink` | Emits to every configured sink, prints `fanout sink failure: {label}: {error}` to stderr for each sink error, succeeds when at least one sink succeeds, and returns `LogError::SinkIo` only when every sink fails |
 
-## File Tailing
+### `bootstrap`
+
+`bootstrap(cfg)` builds the active sink set from `cfg.logging.sinks.stderr.enabled` and `cfg.logging.sinks.file.enabled`.
+
+| Condition | Result |
+|---|---|
+| `cfg.logging.sinks.file.enabled = true` and `cfg.logging.sinks.file.path` is unset | `LogBootstrapError::Misconfigured("logging.sinks.file.enabled=true but logging.sinks.file.path is not set")` |
+| zero configured sinks | `NullSink` |
+| one configured sink | that sink |
+| multiple configured sinks | `FanoutSink` |
+
+On success it returns `LoggingSystem { handle: LogHandle::new(detect_hostname(), sink, SeverityText::from(cfg.logging.level)) }`.
+
+## Log handle and tracing backend
+
+### `LogHandle`
+
+| Field | Type |
+|---|---|
+| `hostname` | `String` |
+| `backend` | `Arc<TracingBackend>` |
+| `min_app_severity_number` | `u8` |
+
+`LogHandle::new` stores the hostname, creates a `TracingBackend`, and stores the minimum app severity number from `SeverityText::number()`. `LogHandle::null()` uses hostname `unknown`, a `NullSink`, and minimum severity `SeverityText::Fatal`.
+
+| Method | Behavior |
+|---|---|
+| `emit_app_event` | Drops events whose severity number is below `min_app_severity_number`; otherwise stamps `system_now_unix_millis()` and the stored hostname, converts the event into a record, and emits it |
+| `emit_raw_record` | Stamps `system_now_unix_millis()` and the stored hostname, then emits the built record |
+| `emit_record` | Forwards a completed `LogRecord` to the tracing backend |
+
+`system_now_unix_millis()` returns milliseconds since `UNIX_EPOCH`, or `0` if the system clock is before `UNIX_EPOCH`. `detect_hostname()` returns the non-empty trimmed `HOSTNAME` environment variable, otherwise `unknown`.
+
+### `TracingBackend`
+
+`TracingBackend::emit` uses a thread-local active-record guard, dispatches a tracing event with target `pgtuskmaster::logging::record`, and returns the sink result recorded by `TracingRecordLayer`.
+
+| Failure condition | Result |
+|---|---|
+| nested tracing-backed emission | `LogError::SinkIo("nested tracing-backed log emission is not supported")` |
+| tracing record event without an active record | `LogError::SinkIo("tracing backend event emitted without an active record")` |
+| missing emission result | `LogError::SinkIo("tracing backend did not produce an emission result")` |
+
+## File tailing
 
 ### `StartPosition`
 
-Values: `Beginning`, `End`.
-
-### `FileTailer` fields
-
-| Field | Purpose |
+| Variant | Initial offset behavior |
 |---|---|
-| `path` | tracked file path |
-| `start` | initial read position |
-| `offset` | current read offset when present |
-| `pending` | buffered bytes without complete newline |
-| `last_inode` | unix inode tracker for rotation detection |
+| `Beginning` | starts at byte `0` |
+| `End` | starts at the current file length |
 
-### `FileTailer::read_new_lines(max_bytes)`
+### `FileTailer`
 
-- returns no lines when `max_bytes` is `0`
-- resets `offset`, `pending`, and `last_inode` and returns an empty vector when the target file is missing
-- resets on truncation or, on unix, inode rotation
-- strips trailing newline and trailing carriage return
-- reads at most `max_bytes` bytes per call
+| Field | Type |
+|---|---|
+| `path` | `PathBuf` |
+| `start` | `StartPosition` |
+| `offset` | `Option<u64>` |
+| `pending` | `Vec<u8>` |
+| `last_inode` | `Option<u64>` on Unix builds |
+
+`read_new_lines(max_bytes)` returns an empty vector when `max_bytes == 0`.
+
+| Condition | Behavior |
+|---|---|
+| tailed file missing | clears `offset`, clears `pending`, clears `last_inode` on Unix, returns an empty vector |
+| inode changed on Unix | resets `offset` and `pending` |
+| file length shorter than stored offset | restarts from offset `0` |
+
+`read_new_lines` opens the file, seeks to the selected offset, reads up to `max_bytes`, appends bytes to `pending`, splits on newline, strips trailing `\n` and `\r`, updates the stored offset, and returns completed lines as `Vec<Vec<u8>>`.
 
 ### `DirTailers`
 
-Stores path-to-`FileTailer` entries. Methods: `ensure_file`, `iter_mut`, `len`.
+`DirTailers` stores tailers in a `BTreeMap<PathBuf, FileTailer>`.
 
-## PostgreSQL Ingest
-
-### Worker context and state
-
-| Type | Fields |
+| Method | Behavior |
 |---|---|
-| `PostgresIngestWorkerCtx` | `cfg`, `log` |
-| `PostgresIngestWorkerState` | `pg_ctl_log`, `dir_tailers` |
+| `ensure_file` | inserts a tailer only when the path is not already present |
+| `iter_mut` | yields mutable `(path, tailer)` pairs |
+| `len` | returns the number of tracked tailers |
 
-Constants:
+## PostgreSQL ingest worker
 
-- `POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS = 30_000`
-- `POSTGRES_INGEST_MAX_BYTES_PER_FILE = 256 * 1024`
+### `PostgresIngestWorkerCtx`
 
-### Worker lifecycle
+| Field | Type |
+|---|---|
+| `cfg` | `RuntimeConfig` |
+| `log` | `LogHandle` |
 
-Runs forever. Performs work only when `cfg.logging.postgres.enabled` is true. Sleeps `cfg.logging.postgres.poll_interval_ms` between iterations. Tracks consecutive failures, rate-limits repeated error reports, emits `postgres_ingest.recovered` after a failure streak clears, and resets the streak on success.
+### Constants
+
+| Name | Value |
+|---|---|
+| `POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS` | `30_000` |
+| `POSTGRES_INGEST_MAX_BYTES_PER_FILE` | `256 * 1024` |
+
+Repeated error reports are rate-limited by keys built from `stage`, `kind`, and `path`.
+
+### `run`
+
+`run(ctx)` loops forever. When `cfg.logging.postgres.enabled` is true it calls `step_once`, tracks consecutive failures, rate-limits repeated error reports, and sleeps for `cfg.logging.postgres.poll_interval_ms` between iterations.
+
+When an iteration succeeds after prior failures, the worker emits:
+
+| Event name | Message | Result | Fields |
+|---|---|---|---|
+| `postgres_ingest.recovered` | `postgres ingest recovered` | `recovered` | `attempts` |
+
+When `step_once` fails and the rate limiter allows emission, the worker emits:
+
+| Event name | Message | Result | Fields |
+|---|---|---|---|
+| `postgres_ingest.step_once_failed` | `postgres ingest step_once failed` | `failed` | `attempts`, `suppressed`, `error` |
 
 ### `PostgresIngestWorkerState::new`
 
-Uses `cfg.logging.postgres.pg_ctl_log_file` when present, otherwise `cfg.postgres.log_file`. Starts `pg_ctl_log` from `Beginning`.
+The worker chooses `cfg.logging.postgres.pg_ctl_log_file` when set, otherwise `cfg.postgres.log_file`, and creates that tailer with `StartPosition::Beginning`.
 
-### Log discovery
+### `step_once`
 
-`discover_log_dir` registers only files ending in `.log` or `.json`.
+`step_once` reads the pg ctl log tailer first, then optionally processes `cfg.logging.postgres.log_dir`.
 
-| File name | Start position |
+| Record source | Producer | Transport | Origin |
+|---|---|---|---|
+| pg ctl log | `Postgres` | `FileTail` | `pg_ctl_log_file` |
+| log-dir file | `Postgres` | `FileTail` | `postgres_log_dir:{file_name}` where `file_name` is the basename or `log` |
+
+`discover_log_dir` ignores missing directories, scans only regular files, keeps only `.log` and `.json` files, and starts `postgres.stderr.log` and `postgres.stdout.log` at `Beginning` while other files start at `End`.
+
+On a clean iteration, `step_once` emits:
+
+| Event name | Message | Result | Fields |
+|---|---|---|---|
+| `postgres_ingest.iteration` | `postgres ingest iteration ok` | `ok` | `pg_ctl_lines_emitted`, `log_dir_files_tailed`, `log_dir_lines_emitted`, `dir_tailers` |
+
+On failure, `step_once` returns `WorkerError::Message` beginning with `postgres_ingest iteration_errors count=...`.
+
+## Cleanup
+
+Cleanup runs only when `cfg.logging.postgres.cleanup.enabled` is true.
+
+`cleanup_log_dir`:
+
+| Rule | Behavior |
 |---|---|
-| `postgres.stderr.log` | `Beginning` |
-| `postgres.stdout.log` | `Beginning` |
-| other `.log` or `.json` files | `End` |
+| directory handling | ignores missing directories |
+| file filter | scans only regular `.log` and `.json` files |
+| always protected basenames | `postgres.json`, `postgres.stderr.log`, `postgres.stdout.log` |
+| additional protected paths | explicit protected paths passed by the caller |
+| recent-file protection | protects files newer than `cleanup.protect_recent_seconds` |
+| ordering | sorts eligible files by modified time and then path |
+| count limit | when `cleanup.max_files > 0`, removes the oldest eligible files until the count is within the limit |
+| age limit | when `cleanup.max_age_seconds > 0`, also removes eligible files older than that age |
 
-### Line normalization
-
-`decode_line` returns UTF-8 text when possible and `non_utf8_bytes_hex=<hex>` otherwise.
-
-`normalize_postgres_line` applies parsers in order:
-
-1. JSON with non-empty `message` field: `PostgresJson`
-2. Plain format matching `timestamp [pid] LEVEL: message`: `PostgresPlain`
-3. Raw fallback: `Raw`
-
-#### JSON normalization
-
-Stores full object under `postgres.json`. Derives severity from `error_severity`, then `severity`, defaulting to `Info`.
-
-#### Plain normalization
-
-Stores original level text under `postgres.level_raw`.
-
-#### Raw fallback
-
-Uses severity `Info` and fields `parse_failed=true` and `raw_line`.
-
-### PostgreSQL severity mapping
-
-| PostgreSQL level | `SeverityText` |
-|---|---|
-| `DEBUG`, `DEBUG1` through `DEBUG5` | `Debug` |
-| `INFO`, `NOTICE`, `LOG` | `Info` |
-| `WARNING` | `Warn` |
-| `ERROR` | `Error` |
-| `FATAL`, `PANIC` | `Fatal` |
-| unknown values | `Info` |
-
-### Iteration events and errors
-
-Success: emits debug app event `postgres_ingest.iteration` with fields `pg_ctl_lines_emitted`, `log_dir_files_tailed`, `log_dir_lines_emitted`, and `dir_tailers`.
-
-Failure: returns `WorkerError::Message` beginning with `postgres_ingest iteration_errors count=` and includes `stage`, `kind`, `path`, and error details.
-
-The run loop may emit:
-
-- `postgres_ingest.step_once_failed` with fields `attempts`, `suppressed`, and `error`
-- `postgres_ingest.recovered` with field `attempts`
-
-Repeated failure reports are rate-limited by `stage`, `kind`, and `path`.
-
-### Cleanup
-
-Cleanup is attempted only when `cfg.logging.postgres.cleanup.enabled` is true.
-
-`cleanup_log_dir` operates only on `.log` and `.json` files.
-
-Protected basenames:
-
-- `postgres.json`
-- `postgres.stderr.log`
-- `postgres.stdout.log`
-
-Additional protections:
-
-- explicit protected paths passed by the caller
-- files newer than `protect_recent_seconds`
-
-Cleanup behavior:
-
-- eligible files are sorted by modified time and then by path
-- when `max_files > 0`, the oldest eligible files are removed first until the count no longer exceeds `max_files`
-- when `max_age_seconds > 0`, eligible files older than that age are also removed
-
-Cleanup returns `CleanupReport { issue_count, first_issue }`.
-
-When cleanup reports issues, `step_once` records them as `stage=log_dir.cleanup kind=cleanup.issues`.
-
-## Verified Behaviors
-
-- `src/logging/mod.rs`: app event encoding, severity filtering, sink bootstrap variants, file output, fanout behavior, and the all-sinks-disabled bootstrap path
-- `src/logging/tailer.rs`: file tailing append and rotation handling
-- `src/logging/postgres_ingest.rs`: parser selection for JSON, plain, and raw PostgreSQL lines; non-UTF-8 fallback encoding and emission; ingest error rate limiting; cleanup protections and removal rules; recovery events after failure streaks
+The function returns `CleanupReport { issue_count, first_issue }`.

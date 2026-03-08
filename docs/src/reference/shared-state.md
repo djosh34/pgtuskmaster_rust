@@ -1,29 +1,33 @@
 # Shared State Reference
 
-The `pgtuskmaster_rust::state` module provides the shared identifier, versioning, worker-status, and watch-channel primitives that runtime workers publish and consume across the system.
+The `pgtuskmaster_rust::state` module provides shared identifier primitives, versioning infrastructure, worker-status reporting, and watch-channel communication.
 
-## Module Surface
+## Overview
+
+The module organizes its public API into four submodules and re-exports their items at the module root. The surface consists of identifier newtypes, versioning primitives, a watch-channel constructor with publisher and subscriber handles, and error enums for worker and channel operations.
+
+## Module surface
 
 | Path | Contents |
 |---|---|
-| `src/state/mod.rs` | module definition and public re-exports |
-| `src/state/errors.rs` | worker and channel error enums |
-| `src/state/ids.rs` | identifier, WAL, and timeline newtypes |
-| `src/state/time.rs` | timestamp, version, snapshot, and worker-status types |
-| `src/state/watch_state.rs` | state-channel constructor, publisher, and subscriber |
+| `src/state/mod.rs` | Module definition and public re-exports |
+| `src/state/errors.rs` | Worker and channel error enums |
+| `src/state/ids.rs` | Identifier, WAL, and timeline newtypes |
+| `src/state/time.rs` | Timestamp, version, snapshot, and worker-status types |
+| `src/state/watch_state.rs` | State-channel constructor, publisher, and subscriber |
 
-`src/state/mod.rs` re-exports:
+Re-exports from `src/state/mod.rs`:
 
 | Re-export | Kind |
 |---|---|
-| `new_state_channel` | constructor function |
-| `StatePublisher` | publisher handle |
-| `StateSubscriber` | subscriber handle |
-| `StatePublishError` | publish error enum |
-| `StateRecvError` | receive error enum |
-| `WorkerError` | worker error enum |
-| `WorkerStatus` | worker status enum |
-| `Versioned` | snapshot wrapper struct |
+| `new_state_channel` | Constructor function |
+| `StatePublisher` | Publisher handle |
+| `StateSubscriber` | Subscriber handle |
+| `StatePublishError` | Publish error enum |
+| `StateRecvError` | Receive error enum |
+| `WorkerError` | Worker error enum |
+| `WorkerStatus` | Worker status enum |
+| `Versioned` | Snapshot wrapper struct |
 | `ClusterName` | `String` newtype |
 | `JobId` | `String` newtype |
 | `MemberId` | `String` newtype |
@@ -33,11 +37,11 @@ The `pgtuskmaster_rust::state` module provides the shared identifier, versioning
 | `UnixMillis` | `u64` newtype |
 | `Version` | `u64` newtype |
 
-## Wrapper Types
+## Identifier and scalar wrapper types
 
-The identifier and scalar wrappers are tuple structs.
+Tuple structs with derived traits:
 
-| Type | Inner type | Derived traits |
+| Type | Inner | Derived traits |
 |---|---|---|
 | `MemberId` | `String` | `Clone`, `Debug`, `PartialEq`, `Eq`, `Hash`, `PartialOrd`, `Ord`, `Serialize`, `Deserialize` |
 | `ClusterName` | `String` | `Clone`, `Debug`, `PartialEq`, `Eq`, `Hash`, `Serialize`, `Deserialize` |
@@ -48,85 +52,86 @@ The identifier and scalar wrappers are tuple structs.
 | `UnixMillis` | `u64` | `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`, `Hash`, `PartialOrd`, `Ord`, `Serialize`, `Deserialize` |
 | `Version` | `u64` | `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`, `Hash`, `PartialOrd`, `Ord`, `Serialize`, `Deserialize` |
 
-## Snapshot And Worker Types
+## Versioned snapshot and worker status types
 
 ### `Versioned<T>`
 
-| Field | Type |
+Fields:
+- `version: Version`
+- `updated_at: UnixMillis`
+- `value: T`
+
+| Constructor | Signature |
 |---|---|
-| `version` | `Version` |
-| `updated_at` | `UnixMillis` |
-| `value` | `T` |
+| `new` | `Versioned::new(version, updated_at, value)` |
 
-Constructor: `Versioned::new(version, updated_at, value)`
-
-`Versioned<T>` derives `Clone`, `Debug`, `PartialEq`, and `Eq`.
+Derived: `Clone`, `Debug`, `PartialEq`, `Eq`
 
 ### `WorkerStatus`
 
-| Variant | Payload |
-|---|---|
-| `Starting` | none |
-| `Running` | none |
-| `Stopping` | none |
-| `Stopped` | none |
-| `Faulted` | `WorkerError` |
+Variants:
+- `Starting`
+- `Running`
+- `Stopping`
+- `Stopped`
+- `Faulted(WorkerError)`
 
-`WorkerStatus` derives `Clone`, `Debug`, `PartialEq`, and `Eq`.
+Derived: `Clone`, `Debug`, `PartialEq`, `Eq`
 
-## Error Types
+## Error enums
 
 ### `WorkerError`
 
-| Variant | Payload |
-|---|---|
-| `Message` | `String` |
+Variants:
+- `Message(String)`
 
-`impl From<crate::test_harness::HarnessError> for WorkerError` maps to `WorkerError::Message(format!("test harness error: {value}"))`.
+`impl From<crate::test_harness::HarnessError> for WorkerError` produces `WorkerError::Message(format!("test harness error: {value}"))`.
 
 ### `StatePublishError`
 
-| Variant | Meaning |
-|---|---|
-| `ChannelClosed` | the watch channel is closed |
-| `VersionOverflow` | the next version cannot be represented |
+Variants:
+- `ChannelClosed`
+- `VersionOverflow`
 
 ### `StateRecvError`
 
-| Variant | Meaning |
-|---|---|
-| `ChannelClosed` | the watch channel is closed |
+Variants:
+- `ChannelClosed`
 
-## Watch Channel API
+## Watch-channel constructor and handles
 
-`new_state_channel(initial, now)` requires `T: Clone`, seeds the channel with `Versioned::new(Version(0), now, initial)`, and returns `(StatePublisher<T>, StateSubscriber<T>)`.
+### `new_state_channel`
+
+`new_state_channel<T: Clone>(initial, now) -> (StatePublisher<T>, StateSubscriber<T>)` creates a watch channel seeded with `Versioned::new(Version(0), now, initial)`.
 
 ### `StatePublisher<T>`
 
-`StatePublisher<T>` wraps `tokio::sync::watch::Sender<Versioned<T>>` and implements `Clone`.
+Wraps `tokio::sync::watch::Sender<Versioned<T>>`. Derived: `Clone`.
 
-| Method | Behavior |
-|---|---|
-| `publish(next, now)` | reads the current version, increments it by exactly `1` with checked addition, returns `StatePublishError::VersionOverflow` on overflow, sends the updated snapshot, maps send failure to `StatePublishError::ChannelClosed`, and returns the new `Version` |
-| `latest()` | clones the latest sender-visible `Versioned<T>` snapshot |
+Methods:
+- `publish(next, now) -> Result<Version, StatePublishError>`: Publishes a new state and returns the assigned `Version`
+- `latest() -> Versioned<T>`: Returns a clone of the sender-visible snapshot
 
 ### `StateSubscriber<T>`
 
-`StateSubscriber<T>` wraps `tokio::sync::watch::Receiver<Versioned<T>>` and implements `Clone`.
+Wraps `tokio::sync::watch::Receiver<Versioned<T>>`. Derived: `Clone`.
 
-| Method | Behavior |
-|---|---|
-| `latest()` | clones the latest receiver-visible `Versioned<T>` snapshot |
-| `changed().await` | waits for a watch change, maps closure to `StateRecvError::ChannelClosed`, and returns the latest snapshot |
+Methods:
+- `latest() -> Versioned<T>`: Returns a clone of the receiver-visible snapshot
+- `changed() -> impl Future<Output = Result<Versioned<T>, StateRecvError>> + '_`: Waits for a change and returns the latest snapshot
 
-## Verified Behaviors
+## Verified behaviors from tests when directly supported
 
-Unit tests in `src/state/watch_state.rs` verify:
+`src/state/watch_state.rs` tests verify:
 
-- the initial snapshot uses `Version(0)` and the supplied timestamp
-- `publish` increments version and updates `updated_at`
+- The initial snapshot uses `Version(0)` and the supplied timestamp
+- Version increments by exactly `1` with each publish
+- Publish updates `updated_at` to the supplied timestamp
 - `changed()` returns the latest snapshot after a publish
 - `changed()` returns `StateRecvError::ChannelClosed` after the publisher drops
-- publisher-side and subscriber-side `latest()` snapshots match
+- Publisher and subscriber `latest()` snapshots match
 
-`tests/bdd_state_watch.rs` verifies the public flow from the initial `Version(0)` snapshot at `UnixMillis(1)` through one publish to `Version(1)` at `UnixMillis(2)`, then closure handling after the publisher drops.
+`tests/bdd_state_watch.rs` verifies:
+
+- Channel flow from initial `Version(0)` at `UnixMillis(1)` through one publish to `Version(1)` at `UnixMillis(2)`
+- Closure handling after publisher drop

@@ -2,6 +2,12 @@
 
 The debug API publishes runtime snapshot data through a snapshot worker, three read-only HTTP endpoints, and an embedded HTML view.
 
+## Module Surface
+
+- `src/debug_api/snapshot.rs`: snapshot model and build logic
+- `src/debug_api/view.rs`: verbose payload construction and view types
+- `src/debug_api/worker.rs`: snapshot worker and observation loop
+
 ## Snapshot Model
 
 ### `AppLifecycle`
@@ -155,6 +161,32 @@ HA tick-only changes therefore do not create new history entries.
 `DEFAULT_HISTORY_LIMIT` is `300`.
 
 `trim_history` removes entries from the front of `changes` and `timeline` until both lengths are less than or equal to `history_limit`.
+
+## Embedded UI
+
+`GET /debug/ui` returns HTML titled `PGTuskMaster Debug UI`.
+
+Panels:
+
+- `Runtime Meta`
+- `Config`
+- `PgInfo`
+- `DCS`
+- `Process`
+- `HA`
+- `Timeline`
+- `Changes`
+
+The embedded script:
+
+- initializes `state.since` to `0`
+- fetches `/debug/verbose?since=${state.since}` with `cache: no-store`
+- sets the badge to `http-<status>` on non-success HTTP responses
+- sets the badge to `offline` on fetch exceptions
+- updates `state.since` to the maximum observed `payload.meta.sequence`
+- renders the config, pginfo, dcs, process, ha, timeline, and changes panels
+- runs once immediately
+- polls every `900 ms`
 
 ## HTTP Endpoints
 

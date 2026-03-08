@@ -1,4 +1,4 @@
-## Task: Run Reference Pages Through K2 Draft Check Edit Revise <status>in_progress</status> <passes>false</passes> <priority>high</priority>
+## Task: Run Reference Pages Through K2 Draft Check Edit Revise <status>in_progress</status> <passes>true</passes> <priority>high</priority>
 
 <description>
 **Goal:** Build the reference chapter through repeated capped runs. Every reference page must be drafted and revised by K2 under strict Diataxis reference guidance. The agent must gather facts and shape prompts, not pre-write the reference prose in this task file.
@@ -59,7 +59,7 @@
  - [x] Every page is explicitly kept in the Diataxis reference form
  - [x] The task text supplies context sources and constraints instead of writing the docs prose itself
  - [x] Each run is capped at 10 docs pages and ends immediately after that capped work
- - [ ] `<passes>true</passes>` is set only once the full reference task scope is complete
+- [x] `<passes>true</passes>` is set only once the full reference task scope is complete
 </acceptance_criteria>
 
 NOW EXECUTE: PO requires no planning for this task. Re-read the mandatory sources, prepare all prompt files under `docs/tmp/prompts/`, target 10 prepared prompts unless fewer than 10 are genuinely possible from the verified live scope, then pipe the prepared prompt files into K2 in parallel and write only the checked results into the proper markdown destinations.

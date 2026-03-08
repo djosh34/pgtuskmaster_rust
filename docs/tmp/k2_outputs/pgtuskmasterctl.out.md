@@ -27,15 +27,17 @@ Token strings are trimmed. Blank token strings become `None`.
 
 ## Command tree
 
-| Level | Shape |
-|---|---|
-| root | `Cli` |
-| subcommand | `Command::Ha(HaArgs)` |
-| nested command | `HaCommand::State` |
-| nested command | `HaCommand::Switchover(SwitchoverArgs)` |
-| leaf command | `SwitchoverCommand::Clear` |
-| leaf command | `SwitchoverCommand::Request(RequestSwitchoverArgs)` |
-| request argument | `requested_by: String` |
+```
+Cli
+└─ Command::Ha(HaArgs)
+   └─ HaCommand
+      ├─ State
+      └─ Switchover(SwitchoverArgs)
+         └─ SwitchoverCommand
+            ├─ Clear
+            └─ Request(RequestSwitchoverArgs)
+               └─ requested_by: String (required)
+```
 
 `--requested-by` is required for `ha switchover request`.
 
@@ -78,19 +80,19 @@ Missing `leader` and `switchover_requested_by` render as `<none>`.
 
 `ha_decision` text forms:
 
-| Decision response variant | Text form |
-|---|---|
-| `NoChange` | `no_change` |
-| `WaitForPostgres` | `wait_for_postgres(start_requested=..., leader_member_id=...)` |
-| `WaitForDcsTrust` | `wait_for_dcs_trust` |
-| `AttemptLeadership` | `attempt_leadership` |
-| `FollowLeader` | `follow_leader(leader_member_id=...)` |
-| `BecomePrimary` | `become_primary(promote=...)` |
-| `StepDown` | `step_down(reason=..., release_leader_lease=..., clear_switchover=..., fence=...)` |
-| `RecoverReplica` | `recover_replica(strategy=...)` |
-| `FenceNode` | `fence_node` |
-| `ReleaseLeaderLease` | `release_leader_lease(reason=...)` |
-| `EnterFailSafe` | `enter_fail_safe(release_leader_lease=...)` |
+```
+no_change
+wait_for_postgres(start_requested=..., leader_member_id=...)
+wait_for_dcs_trust
+attempt_leadership
+follow_leader(leader_member_id=...)
+become_primary(promote=...)
+step_down(reason=..., release_leader_lease=..., clear_switchover=..., fence=...)
+recover_replica(strategy=...)
+fence_node
+release_leader_lease(reason=...)
+enter_fail_safe(release_leader_lease=...)
+```
 
 ## Exit behavior
 

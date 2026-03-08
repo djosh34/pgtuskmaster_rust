@@ -181,91 +181,91 @@ Returns `WaitingPostgresReachable + WaitForPostgres { start_requested: false, le
 
 ### WaitingPostgresReachable
 
-- reachable PostgreSQL -> `WaitingDcsTrusted + WaitForDcsTrust`
-- completed `StartPostgres` job -> `WaitingDcsTrusted + WaitForDcsTrust`
-- otherwise -> `wait_for_postgres(facts)`
+- reachable PostgreSQL → `WaitingDcsTrusted + WaitForDcsTrust`
+- completed `StartPostgres` job → `WaitingDcsTrusted + WaitForDcsTrust`
+- otherwise → `wait_for_postgres(facts)`
 
 ### WaitingDcsTrusted
 
 - unreachable PostgreSQL after `ReleaseLeaderLease { reason: FencingComplete }`
-  - if a recovery leader or other leader record exists -> `Bootstrapping + RecoverReplica(BaseBackup { leader_member_id })`
-  - otherwise -> `WaitingDcsTrusted + WaitForDcsTrust`
-- other unreachable cases -> `wait_for_postgres(facts)`
-- active leader is self -> `Primary + BecomePrimary { promote: false }`
-- follow target exists -> `Replica + FollowLeader`
-- no follow target and local PostgreSQL is not primary -> `WaitingDcsTrusted + WaitForDcsTrust`
-- otherwise -> `CandidateLeader + AttemptLeadership`
+  - if a recovery leader or other leader record exists → `Bootstrapping + RecoverReplica(BaseBackup { leader_member_id })`
+  - otherwise → `WaitingDcsTrusted + WaitForDcsTrust`
+- other unreachable cases → `wait_for_postgres(facts)`
+- active leader is self → `Primary + BecomePrimary { promote: false }`
+- follow target exists → `Replica + FollowLeader`
+- no follow target and local PostgreSQL is not primary → `WaitingDcsTrusted + WaitForDcsTrust`
+- otherwise → `CandidateLeader + AttemptLeadership`
 
 ### WaitingSwitchoverSuccessor
 
-- no leader or leader is self -> `WaitingSwitchoverSuccessor + WaitForDcsTrust`
-- unreachable PostgreSQL -> `wait_for_postgres(facts)`
-- follow target exists -> `Replica + FollowLeader`
-- otherwise -> `WaitingSwitchoverSuccessor + WaitForDcsTrust`
+- no leader or leader is self → `WaitingSwitchoverSuccessor + WaitForDcsTrust`
+- unreachable PostgreSQL → `wait_for_postgres(facts)`
+- follow target exists → `Replica + FollowLeader`
+- otherwise → `WaitingSwitchoverSuccessor + WaitForDcsTrust`
 
 ### Replica
 
-- unreachable PostgreSQL -> `wait_for_postgres(facts)`
-- switchover requested and active leader is self -> `Replica + NoChange`
-- active leader is self -> `Primary + BecomePrimary { promote: true }`
-- other active leader and `rewind_required` -> `Rewinding + RecoverReplica(Rewind { leader_member_id })`
-- other active leader without `rewind_required` -> `Replica + FollowLeader`
-- no active leader -> `CandidateLeader + AttemptLeadership`
+- unreachable PostgreSQL → `wait_for_postgres(facts)`
+- switchover requested and active leader is self → `Replica + NoChange`
+- active leader is self → `Primary + BecomePrimary { promote: true }`
+- other active leader and `rewind_required` → `Rewinding + RecoverReplica(Rewind { leader_member_id })`
+- other active leader without `rewind_required` → `Replica + FollowLeader`
+- no active leader → `CandidateLeader + AttemptLeadership`
 
 ### CandidateLeader
 
-- unreachable PostgreSQL -> `wait_for_postgres(facts)`
-- `i_am_leader` -> `Primary + BecomePrimary { promote: !postgres_primary }`
-- follow target exists -> `Replica + FollowLeader`
-- otherwise -> `CandidateLeader + AttemptLeadership`
+- unreachable PostgreSQL → `wait_for_postgres(facts)`
+- `i_am_leader` → `Primary + BecomePrimary { promote: !postgres_primary }`
+- follow target exists → `Replica + FollowLeader`
+- otherwise → `CandidateLeader + AttemptLeadership`
 
 ### Primary
 
-- switchover requested and `i_am_leader` -> `WaitingSwitchoverSuccessor + StepDown { reason: Switchover, release_leader_lease: true, clear_switchover: true, fence: false }`
-- unreachable PostgreSQL and `i_am_leader` -> `Rewinding + ReleaseLeaderLease { reason: PostgresUnreachable }`
+- switchover requested and `i_am_leader` → `WaitingSwitchoverSuccessor + StepDown { reason: Switchover, release_leader_lease: true, clear_switchover: true, fence: false }`
+- unreachable PostgreSQL and `i_am_leader` → `Rewinding + ReleaseLeaderLease { reason: PostgresUnreachable }`
 - unreachable PostgreSQL and not leader
-  - if a recovery leader exists -> `Rewinding + RecoverReplica(Rewind { leader_member_id })`
-  - otherwise -> `Rewinding + NoChange`
-- other active leader -> `Fencing + StepDown { reason: ForeignLeaderDetected { leader_member_id }, release_leader_lease: true, clear_switchover: false, fence: true }`
+  - if a recovery leader exists → `Rewinding + RecoverReplica(Rewind { leader_member_id })`
+  - otherwise → `Rewinding + NoChange`
+- other active leader → `Fencing + StepDown { reason: ForeignLeaderDetected { leader_member_id }, release_leader_lease: true, clear_switchover: false, fence: true }`
 - otherwise
-  - if `i_am_leader` -> `Primary + NoChange`
-  - else -> `Primary + AttemptLeadership`
+  - if `i_am_leader` → `Primary + NoChange`
+  - else → `Primary + AttemptLeadership`
 
 ### Rewinding
 
-- `Running` -> `Rewinding + NoChange`
+- `Running` → `Rewinding + NoChange`
 - `IdleSuccess`
-  - if follow target exists -> `Replica + FollowLeader`
-  - otherwise -> `Replica + NoChange`
+  - if follow target exists → `Replica + FollowLeader`
+  - otherwise → `Replica + NoChange`
 - `IdleFailure`
-  - if a recovery leader exists -> `Bootstrapping + RecoverReplica(BaseBackup { leader_member_id })`
-  - otherwise -> `Rewinding + NoChange`
+  - if a recovery leader exists → `Bootstrapping + RecoverReplica(BaseBackup { leader_member_id })`
+  - otherwise → `Rewinding + NoChange`
 - `IdleNoOutcome`
-  - if a recovery leader exists -> `Rewinding + RecoverReplica(Rewind { leader_member_id })`
-  - otherwise -> `Rewinding + NoChange`
+  - if a recovery leader exists → `Rewinding + RecoverReplica(Rewind { leader_member_id })`
+  - otherwise → `Rewinding + NoChange`
 
 ### Bootstrapping
 
-- `Running` -> `Bootstrapping + NoChange`
-- `IdleSuccess` -> `wait_for_postgres(facts)`
-- `IdleFailure` -> `Fencing + FenceNode`
+- `Running` → `Bootstrapping + NoChange`
+- `IdleSuccess` → `wait_for_postgres(facts)`
+- `IdleFailure` → `Fencing + FenceNode`
 - `IdleNoOutcome`
-  - if a recovery leader exists -> `Bootstrapping + RecoverReplica(BaseBackup { leader_member_id })`
-  - otherwise -> `Bootstrapping + NoChange`
+  - if a recovery leader exists → `Bootstrapping + RecoverReplica(BaseBackup { leader_member_id })`
+  - otherwise → `Bootstrapping + NoChange`
 
 ### Fencing
 
-- `Running` -> `Fencing + NoChange`
-- `IdleSuccess` -> `WaitingDcsTrusted + ReleaseLeaderLease { reason: FencingComplete }`
-- `IdleFailure` -> `FailSafe + EnterFailSafe { release_leader_lease: false }`
-- `IdleNoOutcome` -> `Fencing + FenceNode`
+- `Running` → `Fencing + NoChange`
+- `IdleSuccess` → `WaitingDcsTrusted + ReleaseLeaderLease { reason: FencingComplete }`
+- `IdleFailure` → `FailSafe + EnterFailSafe { release_leader_lease: false }`
+- `IdleNoOutcome` → `Fencing + FenceNode`
 
 ### FailSafe
 
-- `Running` -> `FailSafe + NoChange`
-- otherwise if local PostgreSQL is primary -> routes through the `Primary` decision path
-- otherwise if `i_am_leader` -> `FailSafe + ReleaseLeaderLease { reason: FencingComplete }`
-- otherwise -> `WaitingDcsTrusted + WaitForDcsTrust`
+- `Running` → `FailSafe + NoChange`
+- otherwise if local PostgreSQL is primary → routes through the `Primary` decision path
+- otherwise if `i_am_leader` → `FailSafe + ReleaseLeaderLease { reason: FencingComplete }`
+- otherwise → `WaitingDcsTrusted + WaitForDcsTrust`
 
 ### wait_for_postgres(facts)
 
@@ -295,7 +295,7 @@ Returns `WaitingPostgresReachable + WaitForPostgres { start_requested: facts.sta
 
 ### Lowering Rules
 
-| Decision | Lowered effect plan |
+| Decision | Lowered Effects |
 |---|---|
 | `NoChange` and `WaitForDcsTrust` | empty plan |
 | `WaitForPostgres` with `start_requested = true` | postgres `Start` |
@@ -317,22 +317,22 @@ Returns `WaitingPostgresReachable + WaitForPostgres { start_requested: facts.sta
 
 `HaEffectPlan::dispatch_step_count()` sums bucket step counts:
 
-| Effect | Count |
+| Operation | Count |
 |---|---|
-| lease acquire or release | `1` |
-| switchover clear | `1` |
-| follow-leader | `1` |
-| rewind recovery | `1` |
-| base-backup recovery | `2` |
-| bootstrap recovery | `2` |
-| postgres start, promote, or demote | `1` |
-| safety fence or signal fail-safe | `1` |
+| lease acquire or release | 1 |
+| switchover clear | 1 |
+| follow-leader | 1 |
+| rewind recovery | 1 |
+| base-backup recovery | 2 |
+| bootstrap recovery | 2 |
+| postgres start, promote, or demote | 1 |
+| safety fence or signal fail-safe | 1 |
 
-## Verified Behaviors
+## Selected Invariants from Tests
 
 ### Core State Transitions
 
-- Tests verify `step_once` consumes the latest subscriber snapshots and publishes the next HA state with incremented tick and `WorkerStatus::Running`.
+- `src/ha/worker.rs` tests verify `step_once` consumes the latest subscriber snapshots and publishes the next HA state with incremented tick and `WorkerStatus::Running`.
 - Tests verify duplicate `StartPostgres` dispatch is suppressed while PostgreSQL remains unreachable in `WaitingPostgresReachable`.
 - Tests verify `step_once` matches the output of `decide(...)` for the same world snapshot.
 - Tests verify a primary that loses quorum enters `FailSafe` with `EnterFailSafe { release_leader_lease: false }` and enqueues fencing without deleting the leader lease.
@@ -341,7 +341,7 @@ Returns `WaitingPostgresReachable + WaitForPostgres { start_requested: facts.sta
 
 ### Effect Application and Loop Behavior
 
-- Tests verify `apply_effect_plan` maps lease and process effects to DCS writes, DCS deletes, and process job requests.
+- `src/ha/worker.rs` tests verify `apply_effect_plan` maps lease and process effects to DCS writes, DCS deletes, and process job requests.
 - Tests verify `apply_effect_plan` is best-effort and reports typed dispatch errors.
 - Tests verify `apply_effect_plan` clears the switchover key when the plan includes `SwitchoverEffect::ClearRequest`.
 - Tests verify leader lease conflicts surface as a typed `ActionDispatchError::DcsWrite`.
@@ -351,8 +351,8 @@ Returns `WaitingPostgresReachable + WaitForPostgres { start_requested: facts.sta
 ### Integration Coverage
 
 - `src/ha/worker.rs` integration tests exercise replica-to-candidate-to-primary-to-fail-safe transitions.
-- `src/ha/worker.rs` integration tests exercise primary-outage rewind recovery back to replica.
-- `src/ha/worker.rs` integration tests exercise split-brain fencing, demotion, lease release, and post-process feedback transition back to `WaitingDcsTrusted`.
-- `src/ha/worker.rs` integration tests exercise start-postgres dispatch and the resulting process-state version changes.
+- Integration tests exercise primary-outage rewind recovery back to replica.
+- Integration tests exercise split-brain fencing, demotion, lease release, and post-process feedback transition back to `WaitingDcsTrusted`.
+- Integration tests exercise start-postgres dispatch and the resulting process-state version changes.
 - `tests/ha_multi_node_failover.rs` covers unassisted failover, stress planned switchover, stress failover under concurrent SQL, custom PostgreSQL role names through bootstrap and rewind, and no-quorum fail-safe and fencing behavior.
 - `tests/ha_partition_isolation.rs` covers minority isolation, primary isolation failover, API-path isolation, and mixed-fault healing without split brain.
