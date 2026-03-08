@@ -1,16 +1,46 @@
 # HTTP API Reference
 
-The API worker provides HTTP control and observation routes. Implementation spans `src/api/worker.rs`, `src/api/controller.rs`, and `src/api/fallback.rs`.
+The HTTP API worker accepts at most one request per accepted connection, negotiates plain or TLS transport, authorizes the request, routes it, and writes one HTTP response.
 
-## Worker Loop And Transport
+## Worker And Transport Behavior
 
-`ApiWorkerCtx` fields: `listener`, `poll_interval`, `scope`, `member_id`, `config_subscriber`, `dcs_store`, `debug_snapshot_subscriber`, `tls_mode_override`, `tls_acceptor`, `role_tokens`, `require_client_cert`, `log`.
+### `ApiWorkerCtx`
 
-`ApiWorkerCtx::new` copies `scope` from `cfg.dcs.scope`, copies `member_id` from `cfg.cluster.member_id`, sets `poll_interval` to `10 ms`, initializes `debug_snapshot_subscriber`, `tls_mode_override`, `tls_acceptor`, and `role_tokens` to `None`, and sets `require_client_cert` to `false`.
+`ApiWorkerCtx` fields:
 
-`api::worker::run` loops forever. It calls `step_once`, logs `api.step_once_failed` on error, returns the error only when fatal, then sleeps for the poll interval.
+| Field |
+|---|
+| `listener` |
+| `poll_interval` |
+| `scope` |
+| `member_id` |
+| `config_subscriber` |
+| `dcs_store` |
+| `debug_snapshot_subscriber` |
+| `tls_mode_override` |
+| `tls_acceptor` |
+| `role_tokens` |
+| `require_client_cert` |
+| `log` |
 
-Fatal step errors contain one of the following messages:
+`ApiWorkerCtx::new`:
+
+- copies `scope` from `cfg.dcs.scope`
+- copies `member_id` from `cfg.cluster.member_id`
+- sets `poll_interval` to `10 ms`
+- sets `debug_snapshot_subscriber`, `tls_mode_override`, `tls_acceptor`, and `role_tokens` to `None`
+- sets `require_client_cert` to `false`
+
+### Worker Loop
+
+`api::worker::run` loops forever. Each iteration:
+
+1. calls `step_once`
+2. logs `api.step_once_failed` on error
+3. returns only fatal step errors
+4. sleeps for `API_LOOP_POLL_INTERVAL`
+
+Fatal step error messages:
 
 | Message |
 |---|
@@ -18,7 +48,7 @@ Fatal step errors contain one of the following messages:
 | `tls mode requires a configured tls acceptor` |
 | `api local_addr failed` |
 
-### Connection And Request Constants
+### Request Processing Constants
 
 | Constant | Value |
 |---|---|
@@ -32,37 +62,51 @@ Fatal step errors contain one of the following messages:
 | `HTTP_REQUEST_SCRATCH_BUFFER_BYTES` | `4096` |
 | `HTTP_REQUEST_HEADER_CAPACITY` | `64` |
 
-`step_once` accepts at most one connection attempt per loop iteration. An accept timeout returns `Ok(())`.
+### Per-Connection Flow
 
-After accept, the worker logs `api.connection_accepted` with the peer address and effective TLS mode, negotiates plain or TLS transport, reads at most one HTTP request, authorizes it, routes it, writes one HTTP response, then logs `api.response_sent`.
+`step_once`:
+
+1. accepts at most one connection attempt per loop iteration
+2. returns `Ok(())` when accept times out
+3. logs `api.connection_accepted` with peer address and effective TLS mode after accept
+4. negotiates plain or TLS transport
+5. reads at most one HTTP request
+6. authorizes the request
+7. routes the request
+8. writes one HTTP response
+9. logs `api.response_sent`
 
 Request-read timeout returns `Ok(())` without writing an HTTP response.
 
 Parse failures before routing return `400 Bad Request` with the parser message body and log `api.request_parse_failed`.
 
-## Security Configuration
+## Authentication
 
-### Authentication
+Authentication resolves from `cfg.api.security.auth` unless overridden with `ApiWorkerCtx.configure_role_tokens(read_token, admin_token)`.
 
-Authentication configuration comes from `cfg.api.security.auth` unless overridden with `ApiWorkerCtx.configure_role_tokens(read_token, admin_token)`.
+### Config Variants
 
-Auth config variants:
+| Variant |
+|---|
+| `ApiAuthConfig::Disabled` |
+| `ApiAuthConfig::RoleTokens(ApiRoleTokensConfig { read_token, admin_token })` |
 
-- `ApiAuthConfig::Disabled`
-- `ApiAuthConfig::RoleTokens(ApiRoleTokensConfig { read_token, admin_token })`
+Runtime token normalization trims configured runtime-config token strings and converts blank strings to `None`.
 
-Runtime token normalization trims configured runtime-config token strings and converts blank strings to `None`. `configure_role_tokens` uses `normalize_optional_token`, which rejects blank override strings with `WorkerError::Message("role token must not be empty when configured")`. If both resolved tokens are absent, requests are allowed without authorization.
+`configure_role_tokens` rejects blank override strings with `WorkerError::Message("role token must not be empty when configured")`.
+
+If both resolved tokens are absent, requests are allowed without authorization.
 
 Authorization-header lookup is case-insensitive. Bearer extraction trims the full header value, requires the exact prefix `Bearer `, trims the remainder, and rejects an empty remainder.
 
-Route roles:
+### Route Roles
 
 | Role | Routes |
 |---|---|
 | admin | `POST /switchover`, `POST /fallback/heartbeat`, `DELETE /ha/switchover` |
 | read | all other supported routes |
 
-Authorization outcomes:
+### Authorization Outcomes
 
 | Condition | Result |
 |---|---|
@@ -73,22 +117,24 @@ Authorization outcomes:
 | bearer token matches `read_token` and request is an admin route | `403 Forbidden` with body `forbidden` |
 | any other token mismatch | `401 Unauthorized` with body `unauthorized` |
 
-Auth decision logs include the following fields:
+Auth decision logs include:
 
-| Field | Description |
-|---|---|
-| `api.method` | HTTP method |
-| `api.route_template` | matched route template |
-| `api.auth.header_present` | boolean |
-| `api.auth.result` | authorization result |
-| `api.auth.required_role` | required role for route |
-| `api.request_id` | optional truncated request ID |
+| Field |
+|---|
+| `api.method` |
+| `api.route_template` |
+| `api.auth.header_present` |
+| `api.auth.result` |
+| `api.auth.required_role` |
+| `api.request_id` |
 
-`x-request-id` values are trimmed; empty values are ignored and non-empty values are truncated to `128` characters.
+`x-request-id` values are trimmed. Empty values are ignored. Non-empty values are truncated to `128` characters.
 
-### TLS
+## TLS
 
-TLS configuration comes from `cfg.api.security.tls` unless overridden with `ApiWorkerCtx.configure_tls(mode, server_config)`.
+TLS configuration resolves from `cfg.api.security.tls` unless overridden with `ApiWorkerCtx.configure_tls(mode, server_config)`.
+
+### TLS Config Fields
 
 | Field | Type |
 |---|---|
@@ -96,7 +142,13 @@ TLS configuration comes from `cfg.api.security.tls` unless overridden with `ApiW
 | `identity` | `Option<TlsServerIdentityConfig>` |
 | `client_auth` | `Option<TlsClientAuthConfig>` |
 
-`ApiTlsMode` values: `disabled`, `optional`, `required`.
+`ApiTlsMode` values:
+
+- `disabled`
+- `optional`
+- `required`
+
+### Identity And Client Auth Fields
 
 `TlsServerIdentityConfig` fields:
 
@@ -112,32 +164,39 @@ TLS configuration comes from `cfg.api.security.tls` unless overridden with `ApiW
 | `client_ca` | `InlineOrPath` |
 | `require_client_cert` | `bool` |
 
-`configure_tls` clears the acceptor in disabled mode and requires a server config for optional or required mode. Calling it without a server config in optional or required mode returns `WorkerError::Message("tls mode optional/required requires a server tls config")`.
+### Override Behavior
+
+`configure_tls`:
+
+- clears the acceptor in disabled mode
+- requires a server config for optional or required mode
+
+Calling `configure_tls` without a server config in optional or required mode returns `WorkerError::Message("tls mode optional/required requires a server tls config")`.
 
 Effective TLS mode uses the override when present, otherwise `cfg.api.security.tls.mode`.
 
-Connection handling by effective TLS mode:
+### Connection Handling By Effective TLS Mode
 
 | Mode | Accept behavior |
 |---|---|
-| disabled | connection stays plain TCP |
-| required | always start a TLS handshake |
-| optional | peek one byte for up to `10 ms`; if the byte is not `0x16`, or the peek times out, or returns `WouldBlock`, stay plain TCP; otherwise start a TLS handshake |
+| `disabled` | connection stays plain TCP |
+| `required` | always starts a TLS handshake |
+| `optional` | peeks one byte for up to `10 ms`; if the byte is not `0x16`, or the peek times out, or returns `WouldBlock`, the connection stays plain TCP; otherwise the worker starts a TLS handshake |
 
 Missing TLS acceptor in optional or required mode returns `WorkerError::Message("tls mode requires a configured tls acceptor")`.
 
-TLS handshake failures log `api.tls_handshake_failed` and the connection is dropped without an HTTP response.
+TLS handshake failures log `api.tls_handshake_failed` and drop the connection without an HTTP response.
 
-If `require_client_cert` is true and the accepted TLS stream has no peer certificate, the worker logs `api.tls_client_cert_missing` and drops the connection without an HTTP response.
+If `require_client_cert` is `true` and the accepted TLS stream has no peer certificate, the worker logs `api.tls_client_cert_missing` and drops the connection without an HTTP response.
 
 ## Route Table
 
 | Method | Path | Role | Success status | Success payload | Notes |
 |---|---|---|---|---|---|
-| `POST` | `/switchover` | admin | `202 Accepted` | `AcceptedResponse` | writes serialized `SwitchoverRequest` JSON to `/{scope}/switchover` after trimming leading and trailing `/` from scope |
+| `POST` | `/switchover` | admin | `202 Accepted` | `AcceptedResponse` | writes serialized `SwitchoverRequest` JSON to `/{scope}/switchover` after trimming leading and trailing `/` from `scope` |
 | `DELETE` | `/ha/switchover` | admin | `202 Accepted` | `AcceptedResponse` | clears switchover through `DcsHaWriter::clear_switchover` |
 | `GET` | `/ha/state` | read | `200 OK` | `HaStateResponse` | returns `503 Service Unavailable` with body `snapshot unavailable` when no snapshot subscriber is configured |
-| `GET` | `/fallback/cluster` | read | `200 OK` | `FallbackClusterView` | `name` is copied from `cfg.cluster.name` |
+| `GET` | `/fallback/cluster` | read | `200 OK` | `FallbackClusterView` | `name` copies `cfg.cluster.name` |
 | `POST` | `/fallback/heartbeat` | admin | `202 Accepted` | `AcceptedResponse` | request body is `FallbackHeartbeatInput` |
 | `GET` | `/debug/snapshot` | read | `200 OK` | text from `format!("{:#?}", snapshot)` | returns `404 Not Found` with body `not found` when `cfg.debug.enabled` is false; returns `503 Service Unavailable` with body `snapshot unavailable` when no snapshot subscriber is configured |
 | `GET` | `/debug/verbose` | read | `200 OK` | JSON from `build_verbose_payload` | returns `404 Not Found` with body `not found` when `cfg.debug.enabled` is false; returns `503 Service Unavailable` with body `snapshot unavailable` when no snapshot subscriber is configured; invalid `since` returns `400 Bad Request` with body `invalid since query parameter: <parse error>` |
@@ -145,9 +204,11 @@ If `require_client_cert` is true and the accepted TLS stream has no peer certifi
 
 Unknown routes return `404 Not Found` with body `not found`.
 
-Removed `/ha/leader` routes also return `404 Not Found` and do not mutate DCS state. `tests/policy_e2e_api_only.rs` enforces observation through `GET /ha/state` plus admin switchover requests instead of direct controller or worker steering after startup.
+Removed `/ha/leader` routes also return `404 Not Found` and do not mutate DCS state.
 
-## Request Inputs
+`tests/policy_e2e_api_only.rs` enforces post-start observation through `GET /ha/state` plus admin switchover requests instead of direct controller or worker steering after startup.
+
+## Request Payloads And Query Parameters
 
 ### `SwitchoverRequestInput`
 
@@ -155,7 +216,9 @@ Removed `/ha/leader` routes also return `404 Not Found` and do not mutate DCS st
 |---|---|
 | `requested_by` | `MemberId` |
 
-`#[serde(deny_unknown_fields)]`. Blank `requested_by` returns `400 Bad Request` with body `requested_by must be non-empty`.
+`#[serde(deny_unknown_fields)]`
+
+Blank `requested_by` returns `400 Bad Request` with body `requested_by must be non-empty`.
 
 Successful requests are serialized to DCS `SwitchoverRequest` JSON and written to `/{scope}/switchover` after trimming leading and trailing `/` from `scope`.
 
@@ -165,7 +228,9 @@ Successful requests are serialized to DCS `SwitchoverRequest` JSON and written t
 |---|---|
 | `source` | `String` |
 
-`#[serde(deny_unknown_fields)]`. Blank `source` returns `400 Bad Request` with body `source must be non-empty`.
+`#[serde(deny_unknown_fields)]`
+
+Blank `source` returns `400 Bad Request` with body `source must be non-empty`.
 
 ### `GET /debug/verbose` Query
 
@@ -201,9 +266,25 @@ Successful requests are serialized to DCS `SwitchoverRequest` JSON and written t
 | `ha_decision` | `HaDecisionResponse` |
 | `snapshot_sequence` | `u64` |
 
-`DcsTrustResponse` values: `full_quorum`, `fail_safe`, `not_trusted`.
+`DcsTrustResponse` values:
 
-`HaPhaseResponse` values: `init`, `waiting_postgres_reachable`, `waiting_dcs_trusted`, `waiting_switchover_successor`, `replica`, `candidate_leader`, `primary`, `rewinding`, `bootstrapping`, `fencing`, `fail_safe`.
+- `full_quorum`
+- `fail_safe`
+- `not_trusted`
+
+`HaPhaseResponse` values:
+
+- `init`
+- `waiting_postgres_reachable`
+- `waiting_dcs_trusted`
+- `waiting_switchover_successor`
+- `replica`
+- `candidate_leader`
+- `primary`
+- `rewinding`
+- `bootstrapping`
+- `fencing`
+- `fail_safe`
 
 ### `HaDecisionResponse`
 
@@ -223,18 +304,18 @@ Successful requests are serialized to DCS `SwitchoverRequest` JSON and written t
 | `release_leader_lease` | `reason` |
 | `enter_fail_safe` | `release_leader_lease` |
 
-`step_down.reason` is tagged with `kind` and supports:
+`step_down.reason` variants:
 
 - `switchover`
 - `foreign_leader_detected { leader_member_id }`
 
-`recover_replica.strategy` is tagged with `kind` and supports:
+`recover_replica.strategy` variants:
 
 - `rewind { leader_member_id }`
 - `base_backup { leader_member_id }`
 - `bootstrap`
 
-`release_leader_lease.reason` supports:
+`release_leader_lease.reason` variants:
 
 - `fencing_complete`
 - `postgres_unreachable`

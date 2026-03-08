@@ -8,30 +8,32 @@ CLI surface, HTTP mapping, output rendering, token selection, and exit behavior 
 |---|---|
 | Source | `src/bin/pgtuskmasterctl.rs` |
 | Runtime | `#[tokio::main(flavor = "current_thread")]` |
-| Entry point | `main()` parses `Cli::parse()` and calls `pgtuskmaster_rust::cli::run(cli).await` |
+| Entry point | `main()` parses `Cli::parse()` and awaits `pgtuskmaster_rust::cli::run(cli)` |
 | Success output | `println!` of the returned string |
 | Error output | `eprintln!` of the formatted error |
-| Exit code | `0` on success, `err.exit_code()` on failure |
+| Exit code | `0` on success, otherwise `err.exit_code()` |
 
 ## Global Options
 
-| Option | Environment | Default | Values |
-|---|---|---|---|
-| `--base-url` | none | `http://127.0.0.1:8080` | `String` |
-| `--read-token` | `PGTUSKMASTER_READ_TOKEN` | none | `Option<String>` |
-| `--admin-token` | `PGTUSKMASTER_ADMIN_TOKEN` | none | `Option<String>` |
-| `--timeout-ms` | none | `5000` | `u64` |
-| `--output` | none | `json` | `json`, `text` |
+| Option | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--base-url` | `String` | `http://127.0.0.1:8080` | none | HTTP base URL for API requests |
+| `--read-token` | `Option<String>` | none | `PGTUSKMASTER_READ_TOKEN` | Token for read operations |
+| `--admin-token` | `Option<String>` | none | `PGTUSKMASTER_ADMIN_TOKEN` | Token for admin operations |
+| `--timeout-ms` | `u64` | `5000` | none | Request timeout in milliseconds |
+| `--output` | `json` or `text` | `json` | none | Output format |
 
-Tokens are trimmed; blank strings become `None`.
+Configured token strings are trimmed. Blank token strings become `None`.
 
-## Commands
+## Command Tree
 
-| Command | Arguments | Client method | HTTP mapping |
-|---|---|---|---|
-| `ha state` | none | `get_ha_state()` | `GET /ha/state` |
-| `ha switchover clear` | none | `delete_switchover()` | `DELETE /ha/switchover` |
-| `ha switchover request` | `--requested-by <STRING>` | `post_switchover(requested_by)` | `POST /switchover` |
+```text
+ha state
+ha switchover clear
+ha switchover request --requested-by <STRING>
+```
+
+The `--requested-by` argument is required for `ha switchover request`.
 
 ## Client Construction
 
@@ -45,28 +47,21 @@ Tokens are trimmed; blank strings become `None`.
 | Token normalization | Trimmed; blanks become `None` |
 | URL parse or client build failure | `CliError::RequestBuild(...)` |
 
-## HTTP Details
+## HTTP Mapping
 
-| Command | Method | Endpoint | Role | Expected status | Request body |
+| Command | Method | Path | Token role | Expected status | Request body |
 |---|---|---|---|---|---|
 | `ha state` | `GET` | `/ha/state` | read | `200 OK` | none |
 | `ha switchover clear` | `DELETE` | `/ha/switchover` | admin | `202 Accepted` | none |
 | `ha switchover request` | `POST` | `/switchover` | admin | `202 Accepted` | `{"requested_by":"..."}` |
 
-### Token Selection
+Read requests use `read_token` when present, otherwise fall back to `admin_token`. Admin requests use `admin_token` only.
 
-| Request role | Token used |
-|---|---|
-| read | `read_token` if present, else `admin_token` |
-| admin | `admin_token` only |
+Unexpected HTTP status returns `CliError::ApiStatus { status, body }`. If reading the error response body fails, `body` becomes `<failed to read response body: ...>`.
 
-## Output Formats
-
-### JSON
+## Output Rendering
 
 `--output json` uses `serde_json::to_string_pretty` over an untagged enum containing `AcceptedResponse` or `HaStateResponse`.
-
-### Text
 
 `--output text` renders:
 
@@ -93,27 +88,16 @@ release_leader_lease(reason=...)
 enter_fail_safe(release_leader_lease=...)
 ```
 
-## Errors and Exit Codes
+## Exit Behavior
 
-| Failure | `CliError` variant | Exit code |
-|---|---|---|
-| URL parse or join failure | `RequestBuild(...)` | `3` |
-| HTTP client build failure | `RequestBuild(...)` | `3` |
-| HTTP send failure | `Transport(...)` | `3` |
-| Unexpected HTTP status | `ApiStatus { status, body }` | `4` |
-| Response body read failure | `body = "<failed to read response body: ...>"` | `4` |
-| JSON decode failure | `Decode(...)` | `5` |
-| JSON output encode failure | `Output(...)` | `5` |
-| Clap usage failure before `cli::run` | n/a | `2` |
-
-The `body` field in `ApiStatus` falls back to `<failed to read response body: ...>` if reading the response body fails.
-
-## Verified Behaviors
-
-| Test file | What it verifies |
+| Condition | Exit code |
 |---|---|
-| `tests/cli_binary.rs` | `--help` includes `ha`; invalid subcommand usage exits `2`; `ha state` against a refused connection exits `3` with stderr containing `transport error` |
-| `src/cli/args.rs` | default parsing of `ha state`; environment-variable token loading; `ha switchover request` requires `--requested-by` |
-| `src/cli/client.rs` | read-token selection with admin fallback; `DELETE /ha/switchover`; API status mapping; malformed JSON decode mapping; refused-connection transport mapping |
-| `src/cli/output.rs` | text rendering for HA state lines; JSON rendering for accepted payloads |
-| `src/cli/mod.rs` | stable exit-code mapping |
+| Success | `0` |
+| Clap usage failure before `cli::run` | `2` |
+| `CliError::RequestBuild` | `3` |
+| `CliError::Transport` | `3` |
+| `CliError::ApiStatus` | `4` |
+| `CliError::Decode` | `5` |
+| `CliError::Output` | `5` |
+
+The command surface and exit mapping are exercised by `tests/cli_binary.rs`, `src/cli/args.rs`, `src/cli/client.rs`, `src/cli/output.rs`, and `src/cli/mod.rs`.

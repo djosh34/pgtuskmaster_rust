@@ -36,8 +36,10 @@
 1. Review the current authored pages and the content relationships they imply. Treat any existing overview prose as non-authoritative revision input only, and re-check every technical claim that must appear in overview prose against the repository instead of trusting prior prose.
 2. Build rich K2 context from those real pages, the navigation problem, and the relevant Diataxis guidance. Use a temporary context file whenever that helps.
 3. Use a `prepare -> execute -> write` flow:
-   - prepare the K2 input files first, with one prepared input per target page or materially different prompt variant
-   - execute the prepared K2 generations after preparation is complete, running multiple independent K2 doc generations in parallel whenever the prepared inputs do not depend on one another
+   - prepare ALL prompt files first under `docs/tmp/prompts/`, with one prepared prompt file per target page or materially different prompt variant
+   - prepare 10 prompt files for the run unless fewer than 10 independent navigation-page, overview-page, or variant prompts are genuinely possible from the verified live scope
+   - each prepared prompt file must contain the full execution prompt, including the exact instructions, Diataxis constraints, and any raw repo files or excerpts that need to be appended verbatim for grounding
+   - execute only after the full prompt-file set is prepared, piping those prepared prompt files into K2 in parallel whenever they do not depend on one another
    - write the returned docs only after checking each K2 result against the prepared facts and Diataxis constraints
 4. Use `ask-k2-docs` for any landing-page or overview prose and for prose revisions to those pages.
 5. Use differing prompts when comparing alternative navigation models, overview structures, or continuous update strategies would improve the result.

@@ -40,8 +40,10 @@
 1. Gather the next contributor topics directly from code structure, module boundaries, runtime flows, ownership boundaries, tests, and runnable behavior where relevant. Use existing docs only as revision inputs after re-checking their claims against the repository.
 2. Build rich K2 context from those repo facts, the contributor audience, and the relevant Diataxis form guidance. Use a temporary context file whenever that is clearer.
 3. Use a `prepare -> execute -> write` flow:
-   - prepare the K2 input files first, with one prepared input per target page or materially different prompt variant
-   - execute the prepared K2 generations after preparation is complete, running multiple independent K2 doc generations in parallel whenever the prepared inputs do not depend on one another
+   - prepare ALL prompt files first under `docs/tmp/prompts/`, with one prepared prompt file per target page or materially different prompt variant
+   - prepare 10 prompt files for the run unless fewer than 10 independent contributor-page or variant prompts are genuinely possible from the verified live scope
+   - each prepared prompt file must contain the full execution prompt, including the exact instructions, Diataxis constraints, and any raw repo files or excerpts that need to be appended verbatim for grounding
+   - execute only after the full prompt-file set is prepared, piping those prepared prompt files into K2 in parallel whenever they do not depend on one another
    - write the returned docs only after checking each K2 result against the prepared facts and Diataxis constraints
 4. Use `ask-k2-docs` for every draft and every prose revision.
 5. Use differing prompts when comparing alternative codemap structures, audience framing, page splits, or update strategies would improve the chapter.

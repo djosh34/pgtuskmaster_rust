@@ -33,8 +33,10 @@
 1. Gather the relevant code paths, tests, design tensions, cross-links, and runnable behavior before drafting. Use existing docs only as revision inputs after re-checking their claims against the repository.
 2. Package those facts plus the Diataxis explanation guidance into rich K2 context, using a temporary context file when helpful.
 3. Use a `prepare -> execute -> write` flow:
-   - prepare the K2 input files first, with one prepared input per target page or materially different prompt variant
-   - execute the prepared K2 generations after preparation is complete, running multiple independent K2 doc generations in parallel whenever the prepared inputs do not depend on one another
+   - prepare ALL prompt files first under `docs/tmp/prompts/`, with one prepared prompt file per target page or materially different prompt variant
+   - prepare 10 prompt files for the run unless fewer than 10 independent explanation-page or variant prompts are genuinely possible from the verified live scope
+   - each prepared prompt file must contain the full execution prompt, including the exact instructions, Diataxis constraints, and any raw repo files or excerpts that need to be appended verbatim for grounding
+   - execute only after the full prompt-file set is prepared, piping those prepared prompt files into K2 in parallel whenever they do not depend on one another
    - write the returned docs only after checking each K2 result against the prepared facts and Diataxis constraints
 4. Use `ask-k2-docs` for all explanation-page prose drafts and prose revisions.
 5. Use meaningfully different prompts when comparing alternative explanatory frames, structures, or update strategies.

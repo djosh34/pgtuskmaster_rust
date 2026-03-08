@@ -34,8 +34,10 @@
    - pipe that context into the K2/opencode workflow used by `ask-k2-docs`
    - include long relevant Diataxis excerpts or summaries when they help keep the form strict
 7. Use a `prepare -> execute -> write` loop for every authoring run:
-   - prepare the K2 input files first, one prepared input per target page or materially different prompt variant
-   - execute the prepared K2 generations after preparation is complete, running multiple independent K2 doc generations in parallel whenever the prepared inputs do not depend on one another
+   - prepare ALL prompt files first under `docs/tmp/prompts/`, with one prepared prompt file per target page or materially different prompt variant
+   - in any run that can support it, prepare 10 prompt files; do fewer only when fewer than 10 independent page or variant prompts are genuinely possible for that task's current repo-backed scope
+   - each prepared prompt file must contain the full execution prompt, including the exact instructions, Diataxis constraints, and any raw file content or excerpts that need to be appended verbatim for grounding
+   - execute only after the full prompt-file set is prepared, piping those prepared prompt files into K2 in parallel whenever they do not depend on one another
    - write the returned docs only after checking each K2 result against the prepared facts and Diataxis constraints
 8. Generate multiple materially different K2 prompts when comparing structure, tone, or update strategy would improve the page. Do not ask the same prompt repeatedly with tiny wording changes.
 9. When revising or promoting docs, ask K2 not only for better prose but also for how the page or docs structure should be updated continuously as the docs set grows, while still staying inside Diataxis boundaries.
@@ -48,12 +50,14 @@
 **Expected outcome:**
 - The story uses a K2-authored, Diataxis-grounded docs workflow.
 - Later task files give the agent enough repo context and source references to drive K2 well, without pre-writing the documentation themselves.
+- Later task files require prompt preparation under `docs/tmp/prompts/`, with 10 prepared prompts per run unless fewer are genuinely possible from the task's live scope.
 - Later runs stop after at most 10 docs pages per run and resume in subsequent runs until the task is actually complete.
 </description>
 
 <acceptance_criteria>
 - [x] The task clearly requires `ask-k2-docs` for all docs prose drafting and prose revision
 - [x] The task clearly requires Diataxis rereads before each docs run
+- [x] The task clearly requires prepared prompt files under `docs/tmp/prompts/`, aiming for 10 per run unless fewer are genuinely possible
 - [x] The task clearly limits each run to at most 10 docs pages before quitting immediately
 - [x] The task clearly states that `<passes>true</passes>` is allowed only after the full task scope is complete
 - [x] The task clearly directs agents to provide K2 with rich repo and Diataxis context rather than writing docs prose in the task file
