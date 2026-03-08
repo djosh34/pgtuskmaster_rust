@@ -14,8 +14,20 @@ readonly ENV_FILE="${TEMP_ROOT}/smoke-single.env"
 readonly PROJECT_NAME="pgtuskmaster-smoke-single-$$"
 
 cleanup() {
-  compose_down "${COMPOSE_FILE}" "${ENV_FILE}" "${PROJECT_NAME}" >/dev/null 2>&1 || true
+  local exit_status=$?
+  local cleanup_output=""
+
+  if [[ -f "${ENV_FILE}" ]]; then
+    if ! cleanup_output="$(compose_down_with_diagnostics "${COMPOSE_FILE}" "${ENV_FILE}" "${PROJECT_NAME}")"; then
+      printf 'failed to tear down smoke project %s\n' "${PROJECT_NAME}" >&2
+      if [[ -n "${cleanup_output}" ]]; then
+        printf '%s\n' "${cleanup_output}" >&2
+      fi
+    fi
+  fi
+
   rm -rf "${TEMP_ROOT}"
+  return "${exit_status}"
 }
 trap cleanup EXIT
 

@@ -81,28 +81,105 @@ wait_for_ha_member_count() {
   local timeout_secs="$3"
   local deadline
   local response
+  local analysis
+  local last_reason="no response received yet"
+  local last_detail=""
   deadline=$((SECONDS + timeout_secs))
   while (( SECONDS < deadline )); do
-    if response="$(curl --silent --show-error --fail "${url}")" && [[ -n "${response}" ]] && python3 -c '
+    if ! response="$(curl --silent --show-error --fail "${url}" 2>&1)"; then
+      last_reason="HTTP request failed"
+      last_detail="${response}"
+      sleep 1
+      continue
+    fi
+
+    if [[ -z "${response}" ]]; then
+      last_reason="endpoint returned an empty body"
+      last_detail=""
+      sleep 1
+      continue
+    fi
+
+    if analysis="$(python3 - "${expected_count}" "${response}" <<'PY'
 import json
 import sys
 
 expected = int(sys.argv[1])
-payload = json.load(sys.stdin)
+body = sys.argv[2]
+
+try:
+    payload = json.loads(body)
+except json.JSONDecodeError as exc:
+    print(f"invalid JSON: {exc.msg} at line {exc.lineno} column {exc.colno}")
+    sys.exit(10)
+
+if not isinstance(payload, dict):
+    print(f"unexpected JSON type: {type(payload).__name__}")
+    sys.exit(11)
+
 member_count = payload.get("member_count")
 phase = payload.get("ha_phase")
 decision = payload.get("ha_decision")
+
 if isinstance(member_count, int) and member_count >= expected and phase and decision:
     sys.exit(0)
-sys.exit(1)
-' "${expected_count}" <<<"${response}"
-    then
+
+summary = []
+summary.append(f"member_count={member_count!r}")
+summary.append(f"ha_phase={phase!r}")
+summary.append(f"ha_decision={decision!r}")
+leader_id = payload.get("leader_id")
+if leader_id is not None:
+    summary.append(f"leader_id={leader_id!r}")
+print(", ".join(summary))
+sys.exit(11)
+PY
+    )"; then
       return 0
     fi
+
+    case "$?" in
+      10)
+        last_reason="endpoint returned malformed JSON"
+        last_detail="${analysis}"
+        ;;
+      11)
+        last_reason="cluster has not converged yet"
+        last_detail="${analysis}"
+        ;;
+      *)
+        last_reason="readiness parser failed unexpectedly"
+        last_detail="${analysis}"
+        ;;
+    esac
     sleep 1
   done
-  printf 'timed out waiting for %s members at %s\n' "${expected_count}" "${url}" >&2
+  printf 'timed out waiting for %s members at %s; last observed reason: %s\n' "${expected_count}" "${url}" "${last_reason}" >&2
+  if [[ -n "${last_detail}" ]]; then
+    printf 'last observed detail: %s\n' "${last_detail}" >&2
+  fi
   return 1
+}
+
+compose_down_with_diagnostics() {
+  local compose_file="$1"
+  local env_file="$2"
+  local project_name="$3"
+  local output
+  local status
+  local max_chars=4000
+
+  if output="$(compose_down "${compose_file}" "${env_file}" "${project_name}" 2>&1)"; then
+    return 0
+  fi
+
+  status=$?
+  if (( ${#output} > max_chars )); then
+    output="${output: -max_chars}"
+  fi
+
+  printf '%s' "${output}"
+  return "${status}"
 }
 
 compose_ps_service_names() {
@@ -127,28 +204,63 @@ compose_running_service_names() {
     ps --services --status running
 }
 
+compose_container_id() {
+  local compose_file="$1"
+  local env_file="$2"
+  local project_name="$3"
+  local service_name="$4"
+  docker compose \
+    --project-name "${project_name}" \
+    --env-file "${env_file}" \
+    -f "${compose_file}" \
+    ps -q "${service_name}"
+}
+
 wait_for_sql_ready() {
   local compose_file="$1"
   local env_file="$2"
   local project_name="$3"
   local service_name="$4"
-  local _password="$5"
+  local password="$5"
   local timeout_secs="$6"
+  local container_id=""
   local deadline
+  local probe_timeout_secs=10
+  local last_reason="no probe executed yet"
   deadline=$((SECONDS + timeout_secs))
+
+  require_cmd timeout
   while (( SECONDS < deadline )); do
-    if docker compose \
-      --project-name "${project_name}" \
-      --env-file "${env_file}" \
-      -f "${compose_file}" \
-      exec -T "${service_name}" \
-      /bin/bash -lc "/usr/lib/postgresql/16/bin/psql -h /var/lib/pgtuskmaster/socket -U postgres -d postgres -Atqc 'select 1'" \
-      >/dev/null 2>&1; then
+    container_id="$(compose_container_id "${compose_file}" "${env_file}" "${project_name}" "${service_name}" 2>/dev/null)"
+    if [[ -z "${container_id}" ]]; then
+      last_reason="service container is not created yet"
+      sleep 1
+      continue
+    fi
+
+    if timeout --kill-after=5s "${probe_timeout_secs}s" \
+      docker exec \
+        --env "PGPASSWORD=${password}" \
+        "${container_id}" \
+        /usr/lib/postgresql/16/bin/psql -w -h /var/lib/pgtuskmaster/socket -U postgres -d postgres -Atqc 'select 1' \
+        >/dev/null 2>&1; then
       return 0
     fi
+
+    case "$?" in
+      124)
+        last_reason="probe command timed out after ${probe_timeout_secs}s"
+        ;;
+      125)
+        last_reason="timeout command failed to start"
+        ;;
+      *)
+        last_reason="service rejected the SQL readiness probe"
+        ;;
+    esac
     sleep 1
   done
-  printf 'timed out waiting for SQL readiness on service %s\n' "${service_name}" >&2
+  printf 'timed out waiting for SQL readiness on service %s; last observed reason: %s\n' "${service_name}" "${last_reason}" >&2
   return 1
 }
 
@@ -156,11 +268,15 @@ check_etcd_health() {
   local compose_file="$1"
   local env_file="$2"
   local project_name="$3"
-  docker compose \
-    --project-name "${project_name}" \
-    --env-file "${env_file}" \
-    -f "${compose_file}" \
-    exec -T etcd \
+  local container_id
+
+  container_id="$(compose_container_id "${compose_file}" "${env_file}" "${project_name}" "etcd")"
+  if [[ -z "${container_id}" ]]; then
+    printf 'etcd container is not running for project %s\n' "${project_name}" >&2
+    return 1
+  fi
+
+  docker exec "${container_id}" \
     etcdctl --endpoints=http://127.0.0.1:2379 endpoint health
 }
 
@@ -253,12 +369,19 @@ query_pg_is_in_recovery() {
   local env_file="$2"
   local project_name="$3"
   local service_name="$4"
-  docker compose \
-    --project-name "${project_name}" \
-    --env-file "${env_file}" \
-    -f "${compose_file}" \
-    exec -T "${service_name}" \
-    /bin/bash -lc "/usr/lib/postgresql/16/bin/psql -h /var/lib/pgtuskmaster/socket -U postgres -d postgres -Atqc 'select pg_is_in_recovery()'"
+  local password="$5"
+  local container_id
+
+  container_id="$(compose_container_id "${compose_file}" "${env_file}" "${project_name}" "${service_name}")"
+  if [[ -z "${container_id}" ]]; then
+    printf 'container for service %s is not running in project %s\n' "${service_name}" "${project_name}" >&2
+    return 1
+  fi
+
+  docker exec \
+    --env "PGPASSWORD=${password}" \
+    "${container_id}" \
+    /usr/lib/postgresql/16/bin/psql -w -h /var/lib/pgtuskmaster/socket -U postgres -d postgres -Atqc 'select pg_is_in_recovery()'
 }
 
 cluster_role_from_recovery_value() {
@@ -281,7 +404,8 @@ wait_for_cluster_replication_roles() {
   local compose_file="$1"
   local env_file="$2"
   local project_name="$3"
-  local timeout_secs="$4"
+  local password="$4"
+  local timeout_secs="$5"
   local deadline
   deadline=$((SECONDS + timeout_secs))
   while (( SECONDS < deadline )); do
@@ -289,7 +413,7 @@ wait_for_cluster_replication_roles() {
     local node_name
     for node_name in "${CLUSTER_NODE_NAMES[@]}"; do
       local raw_value
-      if ! raw_value="$(query_pg_is_in_recovery "${compose_file}" "${env_file}" "${project_name}" "${node_name}")"; then
+      if ! raw_value="$(query_pg_is_in_recovery "${compose_file}" "${env_file}" "${project_name}" "${node_name}" "${password}")"; then
         recovery_values=()
         break
       fi

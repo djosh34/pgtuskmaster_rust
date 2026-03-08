@@ -47,15 +47,21 @@ resolve_default_env_file() {
 wait_for_cluster_readiness() {
   local env_file="$1"
   local project_name="$2"
+  local password_file
+  local psql_password
   local node_name
+
+  password_file="$(read_env_value "${env_file}" "PGTM_SECRET_SUPERUSER_FILE")"
+  require_file "${password_file}"
+  psql_password="$(cat "${password_file}")"
   for node_name in "${CLUSTER_NODE_NAMES[@]}"; do
     wait_for_http_ok "$(cluster_ha_state_url "${env_file}" "${node_name}")" "${node_name} /ha/state" 180
     wait_for_http_ok "$(cluster_debug_url "${env_file}" "${node_name}")" "${node_name} /debug/verbose" 180
     wait_for_tcp_port "127.0.0.1" "$(cluster_pg_port_from_env "${env_file}" "${node_name}")" "${node_name} published PostgreSQL" 180
     wait_for_ha_member_count "$(cluster_ha_state_url "${env_file}" "${node_name}")" 3 180
-    wait_for_sql_ready "${COMPOSE_FILE}" "${env_file}" "${project_name}" "${node_name}" "<unused>" 180
+    wait_for_sql_ready "${COMPOSE_FILE}" "${env_file}" "${project_name}" "${node_name}" "${psql_password}" 180
   done
-  wait_for_cluster_replication_roles "${COMPOSE_FILE}" "${env_file}" "${project_name}" 180
+  wait_for_cluster_replication_roles "${COMPOSE_FILE}" "${env_file}" "${project_name}" "${psql_password}" 180
   check_etcd_health "${COMPOSE_FILE}" "${env_file}" "${project_name}" >/dev/null
 }
 

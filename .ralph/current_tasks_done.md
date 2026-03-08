@@ -1,6 +1,17 @@
 # Done Tasks Summary
 
-Generated: Sun Mar  8 08:22:59 PM CET 2026
+Generated: Sun Mar  8 09:23:34 PM CET 2026
+
+# Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
+
+```
+## Bug: Docker helper scripts ignore command failures during readiness and cleanup <status>completed</status> <passes>true</passes>
+
+<description>
+The Docker helper flow currently contains ignored-error patterns that hide real failures instead of handling them explicitly.
+```
+
+==============
 
 # Task `.ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md`
 
