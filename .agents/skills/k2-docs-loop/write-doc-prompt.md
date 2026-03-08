@@ -6,7 +6,7 @@ Rules:
 - If a fact is missing, say "missing source support" instead of inventing.
 - ASCII only.
 - No em dashes.
-- Prefer diagrams only when the supplied facts support every node and edge.
+- Add diagrams where deemed fitting
 
 Behavior requirements:
 - Read the target path and infer the intended page boundary from it.
