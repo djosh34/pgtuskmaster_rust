@@ -51,9 +51,7 @@ pub(crate) struct LeaderRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SwitchoverRequest {
-    pub(crate) requested_by: MemberId,
-}
+pub(crate) struct SwitchoverRequest {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InitLockRecord {

@@ -1297,7 +1297,7 @@ impl ClusterFixture {
         Ok((node_id, client))
     }
 
-    async fn request_switchover_via_cli(&mut self, requested_by: &str) -> Result<(), WorkerError> {
+    async fn request_switchover_via_cli(&mut self) -> Result<(), WorkerError> {
         if self.nodes.is_empty() {
             return Err(WorkerError::Message(
                 "no nodes available for API control".to_string(),
@@ -1317,7 +1317,7 @@ impl ClusterFixture {
             for node_index in 0..self.nodes.len() {
                 let (node_id, base_url) = self.node_api_base_url_by_index(node_index)?;
                 self.record(format!(
-                    "cli request start: round={round}/{max_transport_rounds} node={node_id} ha switchover request requested_by={requested_by}"
+                    "cli request start: round={round}/{max_transport_rounds} node={node_id} ha switchover request"
                 ));
                 let argv: Vec<String> = vec![
                     "pgtuskmasterctl".to_string(),
@@ -1330,8 +1330,6 @@ impl ClusterFixture {
                     "ha".to_string(),
                     "switchover".to_string(),
                     "request".to_string(),
-                    "--requested-by".to_string(),
-                    requested_by.to_string(),
                 ];
                 let cli = Cli::try_parse_from(argv).map_err(|err| {
                     WorkerError::Message(format!("parse switchover CLI args failed: {err}"))
@@ -1339,7 +1337,7 @@ impl ClusterFixture {
                 match cli::run(cli).await {
                     Ok(out) => {
                         self.record(format!(
-                            "cli request success: round={round}/{max_transport_rounds} node={node_id} ha switchover request accepted=true requested_by={requested_by}"
+                            "cli request success: round={round}/{max_transport_rounds} node={node_id} ha switchover request accepted=true"
                         ));
                         output = Some(out);
                         break;
@@ -1350,7 +1348,7 @@ impl ClusterFixture {
                             last_transport_error =
                                 format!("node={node_id} round={round} err={err_string}");
                             self.record(format!(
-                                "cli request transport failure: round={round}/{max_transport_rounds} node={node_id} requested_by={requested_by} err={err_string}"
+                                "cli request transport failure: round={round}/{max_transport_rounds} node={node_id} err={err_string}"
                             ));
                         }
                         _ => {
@@ -1400,7 +1398,6 @@ impl ClusterFixture {
     async fn request_switchover_until_stable_primary_changes(
         &mut self,
         previous_primary: &str,
-        requested_by: &str,
         max_attempts: usize,
         per_attempt_timeout: Duration,
         required_consecutive: usize,
@@ -1419,7 +1416,7 @@ impl ClusterFixture {
 
         let mut last_error = "none".to_string();
         for attempt in 1..=max_attempts {
-            self.request_switchover_via_cli(requested_by).await?;
+            self.request_switchover_via_cli().await?;
             match self
                 .wait_for_stable_primary_best_effort(
                     per_attempt_timeout,
@@ -2853,9 +2850,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
         tokio::time::sleep(E2E_STRESS_WORKLOAD_SETTLE_WAIT).await;
 
         fixture.record("stress switchover: trigger API switchover while workload is active");
-        fixture
-            .request_switchover_via_cli("e2e-stress-switchover")
-            .await?;
+        fixture.request_switchover_via_cli().await?;
         let ha_stats = fixture
             .sample_ha_states_window(
                 E2E_STRESS_SHORT_OBSERVATION_WINDOW,
@@ -2897,7 +2892,6 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
                 fixture
                     .request_switchover_until_stable_primary_changes(
                         &bootstrap_primary,
-                        "e2e-stress-switchover-retry",
                         2,
                         Duration::from_secs(35),
                         1,

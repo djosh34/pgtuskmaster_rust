@@ -21,7 +21,7 @@ pub(crate) struct DecisionFacts {
     pub(crate) leader_member_id: Option<MemberId>,
     pub(crate) active_leader_member_id: Option<MemberId>,
     pub(crate) available_primary_member_id: Option<MemberId>,
-    pub(crate) switchover_requested_by: Option<MemberId>,
+    pub(crate) switchover_pending: bool,
     pub(crate) i_am_leader: bool,
     pub(crate) has_other_leader_record: bool,
     pub(crate) has_available_other_leader: bool,
@@ -148,13 +148,7 @@ impl DecisionFacts {
             leader_member_id,
             active_leader_member_id: active_leader_member_id.clone(),
             available_primary_member_id: available_primary_member_id.clone(),
-            switchover_requested_by: world
-                .dcs
-                .value
-                .cache
-                .switchover
-                .as_ref()
-                .map(|request| request.requested_by.clone()),
+            switchover_pending: world.dcs.value.cache.switchover.is_some(),
             i_am_leader,
             has_other_leader_record,
             has_available_other_leader,

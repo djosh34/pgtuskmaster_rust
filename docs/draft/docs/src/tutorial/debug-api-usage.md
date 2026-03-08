@@ -178,9 +178,9 @@ In a new terminal, request a switchover from node-a to node-b:
 // todo: The endpoint path `/api/switchover` is not supported by the requested sources. Switchover handling/path details need to be rederived from the actual API implementation or existing docs before publication.
 
 ```bash
-curl -X POST http://localhost:18081/api/switchover \
+curl -X POST http://localhost:18081/switchover \
   -H "Content-Type: application/json" \
-  -d '{"requested_by": "admin-user"}'
+  -d '{}'
 ```
 
 The monitoring script will print timeline events showing:

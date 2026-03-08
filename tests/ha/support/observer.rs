@@ -274,7 +274,7 @@ mod unit_tests {
             scope: "scope-ha-e2e".to_string(),
             self_member_id: member_id.to_string(),
             leader: leader.map(ToString::to_string),
-            switchover_requested_by: None,
+            switchover_pending: false,
             member_count: 3,
             dcs_trust: DcsTrustResponse::FullQuorum,
             ha_phase: phase,

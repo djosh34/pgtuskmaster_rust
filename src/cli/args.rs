@@ -50,13 +50,7 @@ pub struct SwitchoverArgs {
 #[derive(Clone, Debug, Subcommand)]
 pub enum SwitchoverCommand {
     Clear,
-    Request(RequestSwitchoverArgs),
-}
-
-#[derive(Clone, Debug, Args)]
-pub struct RequestSwitchoverArgs {
-    #[arg(long)]
-    pub requested_by: String,
+    Request,
 }
 
 #[cfg(test)]
@@ -83,12 +77,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_requires_requested_by_for_switchover_request() {
-        let parsed = Cli::try_parse_from(["pgtuskmasterctl", "ha", "switchover", "request"]);
-        assert!(parsed.is_err(), "requested-by is required");
-    }
-
-    #[test]
     fn parse_full_switchover_write_command() -> Result<(), String> {
         let cli = Cli::try_parse_from([
             "pgtuskmasterctl",
@@ -101,8 +89,6 @@ mod tests {
             "ha",
             "switchover",
             "request",
-            "--requested-by",
-            "node-a",
         ])
         .map_err(|err| format!("parse should succeed: {err}"))?;
 
@@ -113,10 +99,7 @@ mod tests {
         match cli.command {
             Command::Ha(ha) => match ha.command {
                 HaCommand::Switchover(switchover) => match switchover.command {
-                    SwitchoverCommand::Request(request) => {
-                        assert_eq!(request.requested_by, "node-a");
-                        Ok(())
-                    }
+                    SwitchoverCommand::Request => Ok(()),
                     _ => Err("expected switchover request".to_string()),
                 },
                 _ => Err("expected switchover command".to_string()),
@@ -126,23 +109,13 @@ mod tests {
 
     #[test]
     fn parse_switchover_request() -> Result<(), String> {
-        let cli = Cli::try_parse_from([
-            "pgtuskmasterctl",
-            "ha",
-            "switchover",
-            "request",
-            "--requested-by",
-            "node-b",
-        ])
-        .map_err(|err| format!("parse should succeed: {err}"))?;
+        let cli = Cli::try_parse_from(["pgtuskmasterctl", "ha", "switchover", "request"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
 
         match cli.command {
             Command::Ha(ha) => match ha.command {
                 HaCommand::Switchover(switchover) => match switchover.command {
-                    SwitchoverCommand::Request(request) => {
-                        assert_eq!(request.requested_by, "node-b");
-                        Ok(())
-                    }
+                    SwitchoverCommand::Request => Ok(()),
                     _ => Err("expected switchover request".to_string()),
                 },
                 _ => Err("expected switchover command".to_string()),

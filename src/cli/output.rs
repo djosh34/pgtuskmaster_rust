@@ -40,13 +40,12 @@ fn render_text(command_output: &CommandOutput) -> String {
         CommandOutput::HaState(value) => {
             let value = value.as_ref();
             let leader = value.leader.as_deref().unwrap_or("<none>");
-            let switchover = value.switchover_requested_by.as_deref().unwrap_or("<none>");
             [
                 format!("cluster_name={}", value.cluster_name),
                 format!("scope={}", value.scope),
                 format!("self_member_id={}", value.self_member_id),
                 format!("leader={leader}"),
-                format!("switchover_requested_by={switchover}"),
+                format!("switchover_pending={}", value.switchover_pending),
                 format!("member_count={}", value.member_count),
                 format!("dcs_trust={}", value.dcs_trust),
                 format!("ha_phase={}", value.ha_phase),
@@ -117,7 +116,7 @@ mod tests {
                 scope: "scope-a".to_string(),
                 self_member_id: "node-a".to_string(),
                 leader: Some("node-a".to_string()),
-                switchover_requested_by: None,
+                switchover_pending: false,
                 member_count: 3,
                 dcs_trust: crate::api::DcsTrustResponse::FullQuorum,
                 ha_phase: crate::api::HaPhaseResponse::Primary,
@@ -132,7 +131,7 @@ mod tests {
         assert!(!rendered.is_empty(), "rendered text should not be empty");
         assert!(rendered.contains("cluster_name=cluster-a"));
         assert!(rendered.contains("leader=node-a"));
-        assert!(rendered.contains("switchover_requested_by=<none>"));
+        assert!(rendered.contains("switchover_pending=false"));
         assert!(rendered.contains("ha_decision=become_primary(promote=true)"));
     }
 

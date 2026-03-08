@@ -28,7 +28,7 @@ Expected output per node:
   "scope": "pgtusk/prod",
   "self_member_id": "node-a",
   "leader": "node-a",
-  "switchover_requested_by": null,
+  "switchover_pending": false,
   "member_count": 3,
   "dcs_trust": "full_quorum",
   "ha_phase": "primary",

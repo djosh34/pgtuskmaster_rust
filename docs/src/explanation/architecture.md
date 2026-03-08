@@ -50,7 +50,7 @@ The API layer in [`src/api/controller.rs`](/home/joshazimullah.linux/work_mounts
 - project internal HA and DCS state into stable response enums and structs
 - write or clear switchover requests in the DCS namespace
 
-That keeps the API as a control and observability surface rather than the place where HA decisions are computed.
+That keeps the API as a control and observability surface rather than the place where HA decisions are computed. The switchover request itself is generic; the HA loop still chooses the eligible successor from observed cluster state.
 
 ## HA Phase Machine
 
@@ -160,14 +160,14 @@ The controller surface in [`src/api/controller.rs`](/home/joshazimullah.linux/wo
 - scope
 - self member id
 - leader
-- switchover requester
+- switchover pending
 - member count
 - DCS trust
 - HA phase
 - HA decision
 - snapshot sequence
 
-The same controller also accepts switchover input and writes it into the DCS namespace. That means operator intent enters through the API, but the HA loop still decides what to do with that request.
+The same controller also accepts a generic switchover request and writes it into the DCS namespace. That means operator intent enters through the API, but the HA loop still decides what to do with that request and which member becomes the new primary.
 
 The HA observer in [`tests/ha/support/observer.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tests/ha/support/observer.rs) gives another useful architectural clue: the project explicitly measures whether more than one primary is observed during a sample window. Split-brain avoidance is not implicit; it is a tested operational invariant.
 

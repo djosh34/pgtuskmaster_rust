@@ -50,6 +50,8 @@ Each phase handler answers a narrow question:
 - should it recover
 - should it demote or fence
 
+For switchovers, the decisive fact is only whether a request is pending. The engine does not consume a caller-supplied successor identity; successor choice is derived from observed cluster state.
+
 The engine does not jump directly to process jobs. It first emits a semantic `HaDecision`.
 
 ## Decision Taxonomy

@@ -46,7 +46,7 @@ pgtuskmasterctl ha state
 - `scope`
 - `self_member_id`
 - `leader`
-- `switchover_requested_by`
+- `switchover_pending`
 - `member_count`
 - `dcs_trust`
 - `ha_phase`
@@ -60,7 +60,7 @@ cluster_name=...
 scope=...
 self_member_id=...
 leader=... or <none>
-switchover_requested_by=... or <none>
+switchover_pending=true|false
 member_count=...
 dcs_trust=...
 ha_phase=...
@@ -105,15 +105,15 @@ pgtuskmasterctl ha switchover clear
 Request a switchover to a new primary.
 
 **Syntax:**
-pgtuskmasterctl ha switchover request **--requested-by**=*id*
+pgtuskmasterctl ha switchover request
 
 **HTTP method:** POST /switchover (note: path is `/switchover`, not `/ha/switchover`)  
 **Auth role:** admin
 
 **Options:**
-**--requested-by**=*member_id* (required)
+Request body: `{}`
 
-Request body: `{"requested_by": "member_id"}`
+The request is generic. The runtime chooses the successor automatically from observed cluster state.
 
 **Output:**
 - JSON: `{"accepted": true|false}`
@@ -138,7 +138,7 @@ pgtuskmasterctl --base-url http://cluster.example:8080 ha state
 
 Request switchover:
 ```
-pgtuskmasterctl --admin-token $ADMIN_TOKEN ha switchover request --requested-by node-b
+pgtuskmasterctl --admin-token $ADMIN_TOKEN ha switchover request
 ```
 
 Clear switchover:

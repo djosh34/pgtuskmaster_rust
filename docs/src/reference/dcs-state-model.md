@@ -71,7 +71,7 @@ The worker builds member records from the latest PostgreSQL state:
 
 `SwitchoverRequest` contains:
 
-- `requested_by`
+- no fields; the record is a marker that a generic switchover request is pending
 
 ### `InitLockRecord`
 

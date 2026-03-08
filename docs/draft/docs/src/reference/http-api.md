@@ -77,12 +77,10 @@ Initiates a planned leader switchover.
 
 **Request Body** (`SwitchoverRequestInput`)
 ```json
-{
-  "requested_by": "<member_id>"
-}
+{}
 ```
 
-- `requested_by`: Non-empty string identifying the requester
+The request body is an empty object. Unknown fields are rejected.
 
 **Response** (`AcceptedResponse`)
 ```json
@@ -93,7 +91,7 @@ Initiates a planned leader switchover.
 
 **Status Codes**
 - `202 Accepted`: Switchover request accepted and written to DCS
-- `400 Bad Request`: Invalid JSON or empty `requested_by` field
+- `400 Bad Request`: Invalid JSON or unknown request fields
 - `401 Unauthorized`: Missing or invalid token
 - `403 Forbidden`: Read token used for admin endpoint
 - `503 Service Unavailable`: DCS store error
@@ -138,7 +136,7 @@ Retrieves current high-availability state.
   "scope": "<string>",
   "self_member_id": "<string>",
   "leader": "<string>" | null,
-  "switchover_requested_by": "<string>" | null,
+  "switchover_pending": <bool>,
   "member_count": <number>,
   "dcs_trust": "<trust_variant>",
   "ha_phase": "<phase_variant>",
@@ -153,7 +151,7 @@ Retrieves current high-availability state.
 - `scope`: DCS scope for this cluster
 - `self_member_id`: Local member identifier
 - `leader`: Current leader member ID if one exists
-- `switchover_requested_by`: Member ID that requested switchover if pending
+- `switchover_pending`: Whether a switchover request is currently pending
 - `member_count`: Number of members in DCS cache
 - `dcs_trust`: Trust level of DCS (see DcsTrustResponse variants)
 - `ha_phase`: Current HA phase (see HaPhaseResponse variants)

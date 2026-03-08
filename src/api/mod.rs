@@ -40,7 +40,7 @@ pub struct HaStateResponse {
     pub scope: String,
     pub self_member_id: String,
     pub leader: Option<String>,
-    pub switchover_requested_by: Option<String>,
+    pub switchover_pending: bool,
     pub member_count: usize,
     pub dcs_trust: DcsTrustResponse,
     pub ha_phase: HaPhaseResponse,

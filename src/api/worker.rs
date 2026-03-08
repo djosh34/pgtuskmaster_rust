@@ -1841,7 +1841,7 @@ mod tests {
         .await?;
         assert_eq!(response.status_code, 200);
 
-        let post_body = br#"{"requested_by":"node-a"}"#.to_vec();
+        let post_body = br#"{}"#.to_vec();
         let response = send_plain_request(
             &mut ctx,
             format_post(
@@ -1918,7 +1918,7 @@ mod tests {
             Some(roles.admin_token.clone()),
         )?;
 
-        let post_body = br#"{"requested_by":"node-a"}"#.to_vec();
+        let post_body = br#"{}"#.to_vec();
         let response = send_plain_request(
             &mut ctx,
             format_post(
@@ -1953,7 +1953,7 @@ mod tests {
         assert_eq!(decoded["scope"], "scope-a");
         assert_eq!(decoded["self_member_id"], "node-a");
         assert_eq!(decoded["leader"], serde_json::Value::Null);
-        assert_eq!(decoded["switchover_requested_by"], serde_json::Value::Null);
+        assert_eq!(decoded["switchover_pending"], false);
         assert_eq!(decoded["member_count"], 0);
         assert_eq!(decoded["dcs_trust"], "full_quorum");
         assert_eq!(decoded["ha_phase"], "replica");

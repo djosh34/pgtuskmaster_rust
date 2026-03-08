@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sun Mar  8 06:41:35 PM CET 2026
+Generated: Sun Mar  8 07:06:58 PM CET 2026
 
 # Task `.ralph/tasks/story-docs-k2-expansion/01-task-run-k2-docs-loop-in-five-way-parallel-batches.md`
 
@@ -56,5 +56,17 @@ Generated: Sun Mar  8 06:41:35 PM CET 2026
 
 <description>
 **Goal:** Fully remove the hallucinated runtime-config versioning model from this repository. There is one config contract only. There is no `config_version` field, there never was a `v1` config, there never was a `v2` config, and no code, test, doc, fixture, or generated doc artifact may describe or enforce such a split.
+```
+
+==============
+
+# Task `.ralph/tasks/story-switchover-operator-model/task-redesign-switchover-request-semantics-for-operators.md`
+
+```
+## Task: Redesign Switchover Request Semantics For Operators <status>done</status> <passes>true</passes>
+
+<priority>low</priority>
+
+<description>
 ```
 

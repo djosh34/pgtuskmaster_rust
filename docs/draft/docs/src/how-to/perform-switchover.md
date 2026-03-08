@@ -25,10 +25,10 @@ Note the `member_count` and `self_member_id` values for each node.
 Run against a node API endpoint that can accept admin requests:
 
 ```bash
-pgtuskmasterctl ha switchover request --requested-by node-b
+pgtuskmasterctl ha switchover request
 ```
 
-Replace `node-b` with the member ID you want recorded in the switchover request. The command returns:
+The command records a generic pending switchover request. It does not let the caller select the successor directly. The command returns:
 
 ```json
 {"accepted": true}

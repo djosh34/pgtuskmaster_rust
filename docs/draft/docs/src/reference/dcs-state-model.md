@@ -62,7 +62,7 @@ Singleton record at `/{scope}/switchover` requesting a planned primary change.
 
 | Field | Type | Description |
 |-------------|------|-------------|
-| `requested_by` | MemberId | Member that created the request. |
+| none | n/a | Marker record indicating that a generic switchover request is pending. |
 
 ### InitLockRecord
 

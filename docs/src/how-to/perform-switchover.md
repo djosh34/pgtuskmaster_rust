@@ -18,17 +18,17 @@ Identify the relevant member IDs:
 pgtuskmasterctl ha state
 ```
 
-The API response includes `self_member_id`, `leader`, and `switchover_requested_by`. Use those fields to confirm the current primary and the member ID you want represented in the switchover request.
+The API response includes `self_member_id`, `leader`, and `switchover_pending`. Use those fields to confirm the current primary and whether a switchover request is already pending.
 
 ## Submit the switchover request
 
 Run the request against a node API endpoint that can accept admin requests:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover request --requested-by node-b
+pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover request
 ```
 
-Replace `node-b` with the member ID you want recorded in the switchover request. If API role tokens are enabled in your deployment, add `--admin-token "$PGTUSKMASTER_ADMIN_TOKEN"` or set `PGTUSKMASTER_ADMIN_TOKEN` in the environment because switchover requests are admin operations. A successful request returns:
+This request is generic: it records pending switchover intent, but it does not let the caller specify the successor. If API role tokens are enabled in your deployment, add `--admin-token "$PGTUSKMASTER_ADMIN_TOKEN"` or set `PGTUSKMASTER_ADMIN_TOKEN` in the environment because switchover requests are admin operations. A successful request returns:
 
 ```text
 {"accepted": true}
@@ -51,6 +51,8 @@ Observe these source-backed state changes:
 3. After a different leader appears, the former primary converges back to replica behavior and follows the new leader.
 4. The new primary reports `ha_phase=primary`, and the `leader` field changes to that member ID.
 
+Successor selection is automatic. The HA engine chooses the next primary from observed cluster state and healthy follow targets rather than from an operator-supplied member ID.
+
 The transition is complete when `/ha/state` shows one primary and the other nodes have converged on follower behavior.
 
 ## Verify the new primary
@@ -59,7 +61,7 @@ Use `/ha/state` on more than one node and compare the results:
 
 - confirm all nodes agree on the same `leader`
 - confirm only one node reports `ha_phase=primary`
-- confirm `switchover_requested_by` is no longer needed for the operation you just completed
+- confirm `switchover_pending=false` after the transition settles
 
 If you also want a PostgreSQL-level confirmation, connect to the suspected new primary and run:
 

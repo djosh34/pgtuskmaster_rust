@@ -147,7 +147,7 @@ fn decide_replica(facts: &DecisionFacts) -> PhaseOutcome {
         return wait_for_postgres(facts);
     }
 
-    if facts.switchover_requested_by.is_some()
+    if facts.switchover_pending
         && facts.active_leader_member_id.as_ref() == Some(&facts.self_member_id)
     {
         return PhaseOutcome::new(HaPhase::Replica, HaDecision::NoChange);
@@ -201,7 +201,7 @@ fn decide_candidate_leader(facts: &DecisionFacts) -> PhaseOutcome {
 }
 
 fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
-    if facts.switchover_requested_by.is_some() && facts.i_am_leader {
+    if facts.switchover_pending && facts.i_am_leader {
         return PhaseOutcome::new(
             HaPhase::WaitingSwitchoverSuccessor,
             HaDecision::StepDown(StepDownPlan {
@@ -432,7 +432,7 @@ mod tests {
         leader: Option<MemberId>,
         process: ProcessState,
         members: BTreeMap<MemberId, MemberRecord>,
-        switchover_requested_by: Option<MemberId>,
+        switchover_pending: bool,
     }
 
     impl WorldBuilder {
@@ -443,7 +443,7 @@ mod tests {
                 leader: None,
                 process: process_idle(None),
                 members: BTreeMap::new(),
-                switchover_requested_by: None,
+                switchover_pending: false,
             }
         }
 
@@ -466,9 +466,9 @@ mod tests {
             }
         }
 
-        fn with_switchover_request(self, requested_by: &str) -> Self {
+        fn with_switchover_request(self) -> Self {
             Self {
-                switchover_requested_by: Some(MemberId(requested_by.to_string())),
+                switchover_pending: true,
                 ..self
             }
         }
@@ -489,7 +489,7 @@ mod tests {
                 self.leader,
                 self.process,
                 self.members,
-                self.switchover_requested_by,
+                self.switchover_pending,
             )
         }
     }
@@ -879,7 +879,7 @@ mod tests {
             world: WorldBuilder::new()
                 .with_pg(pg_primary(SqlStatus::Healthy))
                 .with_leader("node-a")
-                .with_switchover_request("node-b")
+                .with_switchover_request()
                 .build(),
         });
 
@@ -1211,7 +1211,7 @@ mod tests {
             },
             world: WorldBuilder::new()
                 .with_leader("node-a")
-                .with_switchover_request("node-b")
+                .with_switchover_request()
                 .build(),
         });
 
@@ -2010,7 +2010,7 @@ mod tests {
         leader: Option<MemberId>,
         process: ProcessState,
         members: BTreeMap<MemberId, MemberRecord>,
-        switchover_requested_by: Option<MemberId>,
+        switchover_pending: bool,
     ) -> WorldSnapshot {
         let cfg = crate::test_harness::runtime_config::sample_runtime_config();
 
@@ -2028,8 +2028,7 @@ mod tests {
                     cache: DcsCache {
                         members,
                         leader: leader_record,
-                        switchover: switchover_requested_by
-                            .map(|requested_by| SwitchoverRequest { requested_by }),
+                        switchover: switchover_pending.then_some(SwitchoverRequest {}),
                         config: cfg,
                         init_lock: None,
                     },

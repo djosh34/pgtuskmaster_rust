@@ -92,8 +92,7 @@ Try an admin operation with the admin token:
 pgtuskmasterctl \
   --base-url https://127.0.0.1:8080 \
   --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" \
-  ha switchover request \
-  --requested-by node-a
+  ha switchover request
 ```
 
 That verifies both layers at once:

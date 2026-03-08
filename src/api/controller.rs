@@ -17,27 +17,19 @@ use crate::{
         },
         state::HaPhase,
     },
-    state::{MemberId, Versioned},
+    state::Versioned,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SwitchoverRequestInput {
-    pub(crate) requested_by: MemberId,
-}
+pub(crate) struct SwitchoverRequestInput {}
 
 pub(crate) fn post_switchover(
     scope: &str,
     store: &mut dyn DcsStore,
-    input: SwitchoverRequestInput,
+    _input: SwitchoverRequestInput,
 ) -> ApiResult<AcceptedResponse> {
-    if input.requested_by.0.trim().is_empty() {
-        return Err(ApiError::bad_request("requested_by must be non-empty"));
-    }
-
-    let request = SwitchoverRequest {
-        requested_by: input.requested_by,
-    };
+    let request = SwitchoverRequest {};
     let encoded = serde_json::to_string(&request)
         .map_err(|err| ApiError::internal(format!("switchover encode failed: {err}")))?;
 
@@ -71,14 +63,7 @@ pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateRespo
             .leader
             .as_ref()
             .map(|leader| leader.member_id.0.clone()),
-        switchover_requested_by: snapshot
-            .value
-            .dcs
-            .value
-            .cache
-            .switchover
-            .as_ref()
-            .map(|switchover| switchover.requested_by.0.clone()),
+        switchover_pending: snapshot.value.dcs.value.cache.switchover.is_some(),
         member_count: snapshot.value.dcs.value.cache.members.len(),
         dcs_trust: map_dcs_trust(&snapshot.value.dcs.value.trust),
         ha_phase: map_ha_phase(&snapshot.value.ha.value.phase),
@@ -195,7 +180,6 @@ mod tests {
             state::SwitchoverRequest,
             store::{DcsStore, DcsStoreError, WatchEvent},
         },
-        state::MemberId,
     };
 
     #[derive(Default)]
@@ -245,7 +229,7 @@ mod tests {
 
     #[test]
     fn switchover_input_denies_unknown_fields() {
-        let raw = r#"{"requested_by":"node-a","extra":1}"#;
+        let raw = r#"{"extra":1}"#;
         let parsed = serde_json::from_str::<SwitchoverRequestInput>(raw);
         assert!(parsed.is_err());
     }
@@ -253,13 +237,7 @@ mod tests {
     #[test]
     fn post_switchover_writes_typed_record_to_expected_key() -> Result<(), crate::api::ApiError> {
         let mut store = RecordingStore::default();
-        let response = post_switchover(
-            "scope-a",
-            &mut store,
-            SwitchoverRequestInput {
-                requested_by: MemberId("node-a".to_string()),
-            },
-        )?;
+        let response = post_switchover("scope-a", &mut store, SwitchoverRequestInput {})?;
         assert!(response.accepted);
 
         let (path, raw) = store
@@ -268,21 +246,18 @@ mod tests {
         assert_eq!(path, "/scope-a/switchover");
         let decoded = serde_json::from_str::<SwitchoverRequest>(&raw)
             .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
-        assert_eq!(decoded.requested_by, MemberId("node-a".to_string()));
+        assert_eq!(decoded, SwitchoverRequest {});
         Ok(())
     }
 
     #[test]
-    fn post_switchover_rejects_empty_requested_by() {
+    fn switchover_input_accepts_empty_object() -> Result<(), crate::api::ApiError> {
+        let parsed = serde_json::from_str::<SwitchoverRequestInput>("{}")
+            .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
         let mut store = RecordingStore::default();
-        let result = post_switchover(
-            "scope-a",
-            &mut store,
-            SwitchoverRequestInput {
-                requested_by: MemberId("".to_string()),
-            },
-        );
-        assert!(matches!(result, Err(crate::api::ApiError::BadRequest(_))));
+        let result = post_switchover("scope-a", &mut store, parsed)?;
+        assert!(result.accepted);
+        Ok(())
     }
 
     #[test]

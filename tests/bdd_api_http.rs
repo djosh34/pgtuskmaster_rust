@@ -374,7 +374,7 @@ async fn bdd_api_post_switchover_writes_dcs_key() -> Result<(), WorkerError> {
     let mut client = tokio::net::TcpStream::connect(addr)
         .await
         .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    let body = br#"{"requested_by":"node-a"}"#;
+    let body = br#"{}"#;
     let request = format!(
         "POST /switchover HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         body.len()

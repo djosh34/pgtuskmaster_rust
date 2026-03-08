@@ -23,9 +23,7 @@ enum AuthRole {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SwitchoverRequestInput {
-    requested_by: String,
-}
+struct SwitchoverRequestInput {}
 
 impl CliApiClient {
     pub fn new(
@@ -65,11 +63,8 @@ impl CliApiClient {
         .await
     }
 
-    pub async fn post_switchover(
-        &self,
-        requested_by: String,
-    ) -> Result<AcceptedResponse, CliError> {
-        let body = SwitchoverRequestInput { requested_by };
+    pub async fn post_switchover(&self) -> Result<AcceptedResponse, CliError> {
+        let body = SwitchoverRequestInput {};
         self.send_json_with_body(
             Method::POST,
             "/switchover",
@@ -203,7 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_uses_read_token_when_configured() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(
@@ -228,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_falls_back_to_admin_token_when_read_missing() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_requested_by":null,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(
