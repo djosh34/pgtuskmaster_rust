@@ -9,6 +9,7 @@ DOCS_TARGET_DIST="$DOCS_TARGET/dist"
 DOCS_REPO="djosh34/pgtuskmaster-docs"
 MDBOOK_BIN="$REPO_ROOT/.tools/mdbook/bin/mdbook"
 MDBOOK_MERMAID_BIN="$REPO_ROOT/.tools/mdbook/bin/mdbook-mermaid"
+DOCS_MERMAID_NODE_MODULE="$REPO_ROOT/tools/node_modules/mermaid/package.json"
 
 # --- Bootstrap: create ../pgtuskmaster-docs if it doesn't exist ---
 if [[ ! -d "$DOCS_TARGET/.git" ]]; then
@@ -28,6 +29,11 @@ fi
 if [[ ! -x "$MDBOOK_MERMAID_BIN" ]]; then
   echo "mdbook-mermaid not found; installing pinned version..."
   "$REPO_ROOT/tools/install-mdbook-mermaid.sh"
+fi
+
+if [[ ! -f "$DOCS_MERMAID_NODE_MODULE" ]]; then
+  echo "docs Mermaid npm dependency not found; installing pinned Node deps..."
+  "$REPO_ROOT/tools/install-docs-node-deps.sh"
 fi
 
 # --- Build docs ---

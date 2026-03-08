@@ -1,0 +1,8 @@
+{
+  "name": "pgtuskmaster-docs-tooling",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "mermaid": "11.12.3"
+  }
+}

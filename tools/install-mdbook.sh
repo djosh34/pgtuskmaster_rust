@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-PINNED_VERSION="v0.4.40"
+PINNED_VERSION="v0.4.36"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
@@ -49,12 +49,12 @@ EXPECTED_SHA256=""
 case "${ARCH}" in
     x86_64)
         TARGET_TRIPLE="x86_64-unknown-linux-gnu"
-        EXPECTED_SHA256="9ef07fd288ba58ff3b99d1c94e6d414d431c9a61fdb20348e5beb74b823d546b"
+        EXPECTED_SHA256="72a50f5eecefef173114b53543a968fd1e8265ef67760b9d5bb20cd7712a9511"
         ;;
     aarch64 | arm64)
         # Upstream currently publishes an aarch64 linux-musl release asset.
         TARGET_TRIPLE="aarch64-unknown-linux-musl"
-        EXPECTED_SHA256="d5ebfd2e31755726f8c0988a423b1ab5d950bb894fbba170355bb7d1cb852586"
+        EXPECTED_SHA256="dad8195fca7bac42b91cc9f7be12509425153df6c87d947699a4b04f9a84f844"
         ;;
     *)
         echo "unsupported architecture: ${ARCH}" >&2

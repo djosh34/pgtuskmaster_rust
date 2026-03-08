@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import vm from "node:vm";
 
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const DOCS_ROOT = path.join(REPO_ROOT, "docs", "src");
-const MERMAID_BUNDLE = path.join(REPO_ROOT, "docs", "mermaid.min.js");
 
 function walkMarkdownFiles(rootDir) {
   const out = [];
@@ -90,15 +88,21 @@ function escapedNewlineLine(content, startLine) {
   return null;
 }
 
-function loadMermaid() {
-  if (!fs.existsSync(MERMAID_BUNDLE)) {
+async function loadMermaid() {
+  let mermaidModule;
+  try {
+    mermaidModule = await import("mermaid");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `missing Mermaid bundle: ${MERMAID_BUNDLE} (run ./.tools/mdbook/bin/mdbook-mermaid install docs)`
+      `failed to load Mermaid npm package (${message}); run ./tools/install-docs-node-deps.sh`
     );
   }
-  // Mermaid's browser bundle can route through a DOMPurify code path where the
-  // imported default is a function-like object in Node. Add minimal no-op
-  // compatibility methods so parser-only linting works in headless CI.
+
+  const mermaid = mermaidModule.default;
+  if (!mermaid || typeof mermaid.parse !== "function") {
+    throw new Error("failed to load Mermaid parser from npm package");
+  }
   if (typeof Function.prototype.addHook !== "function") {
     Function.prototype.addHook = function addHookShim() {
       return undefined;
@@ -109,14 +113,9 @@ function loadMermaid() {
       return input;
     };
   }
-
-  const code = fs.readFileSync(MERMAID_BUNDLE, "utf8");
-  vm.runInThisContext(code, { filename: MERMAID_BUNDLE });
-  const mermaid = globalThis.mermaid;
-  if (!mermaid || typeof mermaid.parse !== "function") {
-    throw new Error("failed to load Mermaid parser from docs/mermaid.min.js");
-  }
-  mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+  // This lint only checks Mermaid syntax. "strict" routes through DOMPurify
+  // in Node and introduces headless-only failures unrelated to diagram validity.
+  mermaid.initialize({ startOnLoad: false, securityLevel: "loose" });
   return mermaid;
 }
 
@@ -132,7 +131,7 @@ async function main() {
     process.exit(1);
   }
 
-  const mermaid = loadMermaid();
+  const mermaid = await loadMermaid();
 
   const failures = [];
   for (const filePath of files) {

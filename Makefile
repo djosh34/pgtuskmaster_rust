@@ -8,7 +8,7 @@ DOCKER_CLUSTER_PROJECT ?= pgtuskmaster-cluster
 
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test-long lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-docker ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-nextest ensure-timeout guard-makeflags docker-compose-config docker-up docker-down docker-up-cluster docker-status-cluster docker-down-cluster docker-smoke-single docker-smoke-cluster
+.PHONY: check test test-long lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-docker ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest ensure-timeout guard-makeflags docker-compose-config docker-up docker-down docker-up-cluster docker-status-cluster docker-down-cluster docker-smoke-single docker-smoke-cluster
 
 SINGLE_DASH_MAKEFLAGS := $(filter -%,$(MAKEFLAGS))
 SINGLE_DASH_MAKEFLAGS := $(filter-out --%,$(SINGLE_DASH_MAKEFLAGS))
@@ -130,6 +130,9 @@ ensure-mdbook-mermaid: ensure-mdbook
 ensure-node:
 	@command -v node >/dev/null 2>&1 || (echo "missing node binary (required for Mermaid docs lint)" >&2; exit 1)
 
+ensure-docs-node-deps: ensure-node
+	@test -f "$(CURDIR)/tools/node_modules/mermaid/package.json" || (echo "missing docs Mermaid npm dependency: run ./tools/install-docs-node-deps.sh" >&2; exit 1)
+
 ensure-nextest:
 	@command -v cargo-nextest >/dev/null 2>&1 || (echo "missing cargo-nextest binary: run ./tools/install-cargo-nextest.sh" >&2; exit 1)
 
@@ -169,7 +172,7 @@ test-long: guard-makeflags ensure-nextest ensure-timeout ensure-docker
 	"$(GATE_STEP)" --gate test-long --step test_long.docker_smoke_cluster --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(DOCKER_SMOKE_CLUSTER_TIMEOUT_SECS)" --kill-after-secs "$(DOCKER_SMOKE_CLUSTER_TIMEOUT_KILL_AFTER_SECS)" -- \
 		./tools/docker/smoke-cluster.sh
 
-docs-lint: guard-makeflags ensure-timeout ensure-node
+docs-lint: guard-makeflags ensure-timeout ensure-docs-node-deps
 	@echo "gate evidence: $(GATE_EVIDENCE_DIR)"
 	"$(GATE_STEP)" --gate docs-lint --step docs_lint.mermaid --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(LINT_DOCS_TIMEOUT_SECS)" --kill-after-secs "$(LINT_DOCS_TIMEOUT_KILL_AFTER_SECS)" -- \
 		node ./tools/docs-mermaid-lint.mjs

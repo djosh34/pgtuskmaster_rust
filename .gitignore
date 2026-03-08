@@ -29,6 +29,9 @@ target_verify_*/
 # mdBook generated output
 /docs/book/
 
+# local Node dependencies for docs tooling
+/tools/node_modules/
+
 # compose-managed secret sources
 docker/secrets/*
 !docker/secrets/*.example

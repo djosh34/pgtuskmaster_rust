@@ -12,6 +12,8 @@ make docs-serve
 
 The mdBook will be available at `http://127.0.0.1:3000`.
 
+Docs validation uses a pinned Mermaid Node dependency. If `make docs-lint` reports it missing, install it with `./tools/install-docs-node-deps.sh`.
+
 Start with the [docs overview](docs/src/overview.md), then use the chapter entry pages for [tutorials](docs/src/tutorial/overview.md), [how-to guides](docs/src/how-to/overview.md), [explanation](docs/src/explanation/overview.md), and [reference](docs/src/reference/overview.md).
 
 ### Run local cluster examples
