@@ -3,12 +3,12 @@
   "enabled_providers": [
     "openrouter"
   ],
-  "model": "openrouter/kimi-k2-thinking",
-  "small_model": "openrouter/kimi-k2-thinking",
+  "model": "openrouter/moonshotai/kimi-k2-thinking",
+  "small_model": "openrouter/moonshotai/kimi-k2-thinking",
   "provider": {
     "openrouter": {
       "models": {
-        "kimi-k2-thinking": {
+        "moonshotai/kimi-k2-thinking": {
           "name": "Kimi K2 Thinking",
           "options": {
             "provider": {
