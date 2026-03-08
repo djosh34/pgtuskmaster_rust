@@ -8,6 +8,7 @@
 
 - [How-To]()
     - [Check Cluster Health](how-to/check-cluster-health.md)
+    - [Perform a Planned Switchover](how-to/perform-switchover.md)
 
 # Explanation
 
@@ -17,5 +18,6 @@
 # Reference
 
 - [Reference]()
+    - [pgtuskmaster CLI](reference/pgtuskmaster-cli.md)
     - [pgtuskmasterctl CLI](reference/pgtuskmasterctl-cli.md)
     - [Runtime Configuration](reference/runtime-configuration.md)
