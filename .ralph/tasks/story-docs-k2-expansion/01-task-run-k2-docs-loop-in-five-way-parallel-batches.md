@@ -14,7 +14,7 @@
 - For each of those five chosen pages, do exactly as the 'k2-docs-loop' requires for each of the 5 parallel requests.
 - After all five choices are known, run `prepare-draft` for those five chosen pages in parallel as five separate lanes.
 - Keep each lane fully independent.
-- Once 5 parallel runs are done, commit all changed files and push, append progress and then QUIT IMMEDIATELY
+- Once 5 parallel runs are done, commit all files and push, append progress and then QUIT IMMEDIATELY
 - NEVER EVER RUN any tests or code-oriented validation commands. This task changes no `src/` or `tests/` files. NOT A SINGLE TEST MUST BE RAN
 
 **Expected outcome:**
