@@ -36,6 +36,8 @@ Artifacts:
 Workflow:
 
 1. Run `choose-doc` to show the prompt and ask K2 to choose one new doc and report the exact raw files and exact optional runtime evidence needed.
+   The chosen target must be a real content page under a subdirectory like `docs/src/tutorial/...`, `docs/src/how-to/...`, `docs/src/reference/...`, or `docs/src/explanation/...`.
+   Never choose `docs/src/SUMMARY.md` as the output document.
 2. Gather the exact raw files K2 requested. When K2 asks for overviews and explanations, make those VERY VERBOSE. 
    You tend to output far too little info, so it should feel to you, you're providing too much info. Give it very exhaustively all details.
     Write those extra context intro docs/tmp/verbose_extra_context/[filename].md and include that in the requested files as well.
@@ -46,4 +48,3 @@ Workflow:
 7. Then pipe that entire draft into ask-k2 raw together with `.agents/skills/k2-docs-loop/revise_prompt.md` and pipe the output into another draft file
 8. Do a final check, on the output. Alter trim the last stuff. PLEASE DO NOT EMPOSE YOUR OPINION AT ALL. Just clean up the artifact output minimally. This is also the moment to write the mermaid diagram, and to make sure it works via docs-lint.
 9. Finally, move it to the docs/src part where it belongs.
-

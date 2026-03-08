@@ -35,6 +35,7 @@ Optional runtime evidence to generate:
 
 Hard constraints on your answer:
 - Be specific.
+- The target docs path must be a content page under `docs/src/<section>/...` and must not be `docs/src/SUMMARY.md`.
 - Name exact file paths whenever possible.
 - Do not write the page.
 - Do not propose multiple competing next pages.
