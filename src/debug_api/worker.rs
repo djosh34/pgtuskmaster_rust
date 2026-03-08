@@ -18,7 +18,7 @@ const DEFAULT_HISTORY_LIMIT: usize = 300;
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DebugObservedState {
     app: AppLifecycle,
-    config_version: Version,
+    config_revision: Version,
     config_sig: String,
     pg_version: Version,
     pg_sig: String,
@@ -158,7 +158,7 @@ pub(crate) async fn step_once(ctx: &mut DebugApiCtx) -> Result<(), WorkerError> 
 
     let observed = DebugObservedState {
         app: snapshot_ctx.app.clone(),
-        config_version: snapshot_ctx.config.version,
+        config_revision: snapshot_ctx.config.version,
         config_sig: config_summary.clone(),
         pg_version: snapshot_ctx.pg.version,
         pg_sig: pg_summary.clone(),
@@ -184,8 +184,8 @@ pub(crate) async fn step_once(ctx: &mut DebugApiCtx) -> Result<(), WorkerError> 
             ctx.record_change(
                 now,
                 DebugDomain::Config,
-                Some(previous.config_version),
-                Some(observed.config_version),
+                Some(previous.config_revision),
+                Some(observed.config_revision),
                 config_summary.clone(),
             )?;
         }
@@ -237,7 +237,7 @@ pub(crate) async fn step_once(ctx: &mut DebugApiCtx) -> Result<(), WorkerError> 
             now,
             DebugDomain::Config,
             None,
-            Some(observed.config_version),
+            Some(observed.config_revision),
             config_summary,
         )?;
         ctx.record_change(

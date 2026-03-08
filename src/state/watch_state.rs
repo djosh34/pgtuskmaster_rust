@@ -101,8 +101,8 @@ mod tests {
         assert_eq!(latest.updated_at, UnixMillis(200));
         assert_eq!(latest.value, "b");
 
-        let v2 = publisher.publish("c".to_string(), UnixMillis(300))?;
-        assert_eq!(v2, Version(2));
+        let second_version = publisher.publish("c".to_string(), UnixMillis(300))?;
+        assert_eq!(second_version, Version(2));
         let latest = subscriber.latest();
         assert_eq!(latest.version, Version(2));
         assert_eq!(latest.updated_at, UnixMillis(300));

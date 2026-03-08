@@ -224,12 +224,12 @@ fn normalize_postgres_role(
         message: "missing required secure field".to_string(),
     })?;
 
-    let auth = normalize_role_auth_config_v2(auth_field, auth)?;
+    let auth = normalize_role_auth_config(auth_field, auth)?;
 
     Ok(PostgresRoleConfig { username, auth })
 }
 
-fn normalize_role_auth_config_v2(
+fn normalize_role_auth_config(
     field_prefix: &'static str,
     input: RoleAuthConfigInput,
 ) -> Result<RoleAuthConfig, ConfigError> {
@@ -364,7 +364,7 @@ fn normalize_tls_server_config(
 
     let identity = match tls.identity {
         None => None,
-        Some(identity) => Some(normalize_tls_server_identity_v2(identity_field, identity)?),
+        Some(identity) => Some(normalize_tls_server_identity(identity_field, identity)?),
     };
 
     Ok(TlsServerConfig {
@@ -374,7 +374,7 @@ fn normalize_tls_server_config(
     })
 }
 
-fn normalize_tls_server_identity_v2(
+fn normalize_tls_server_identity(
     field_prefix: &'static str,
     input: super::schema::TlsServerIdentityConfigInput,
 ) -> Result<TlsServerIdentityConfig, ConfigError> {
@@ -1495,7 +1495,7 @@ member_id = "member-a"
     }
 
     #[test]
-    fn load_runtime_config_rejects_unknown_fields_in_v2() -> Result<(), Box<dyn std::error::Error>>
+    fn load_runtime_config_rejects_unknown_fields() -> Result<(), Box<dyn std::error::Error>>
     {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -1561,7 +1561,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("runtime-config-v2-{unique}.toml"));
+        let path = std::env::temp_dir().join(format!("runtime-config-{unique}.toml"));
 
         let toml = r#"
 [cluster]
@@ -1615,7 +1615,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("runtime-config-v2-missing-{unique}.toml"));
+        let path = std::env::temp_dir().join(format!("runtime-config-missing-{unique}.toml"));
 
         // Intentionally omit `postgres.local_conn_identity`.
         let toml = r#"
@@ -1672,7 +1672,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path =
-            std::env::temp_dir().join(format!("runtime-config-v2-missing-binaries-{unique}.toml"));
+            std::env::temp_dir().join(format!("runtime-config-missing-binaries-{unique}.toml"));
 
         // Intentionally omit `process.binaries`.
         let toml = r#"
@@ -1732,7 +1732,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-missing-auth-password-{unique}.toml"
+            "runtime-config-missing-auth-password-{unique}.toml"
         ));
 
         // Intentionally omit `postgres.roles.superuser.auth.password`.
@@ -1791,7 +1791,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path =
-            std::env::temp_dir().join(format!("runtime-config-v2-missing-roles-{unique}.toml"));
+            std::env::temp_dir().join(format!("runtime-config-missing-roles-{unique}.toml"));
 
         // Intentionally omit `postgres.roles`.
         let toml = r#"
@@ -1848,7 +1848,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-missing-replicator-role-{unique}.toml"
+            "runtime-config-missing-replicator-role-{unique}.toml"
         ));
 
         // Intentionally omit `postgres.roles.replicator`.
@@ -1907,7 +1907,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-missing-replicator-username-{unique}.toml"
+            "runtime-config-missing-replicator-username-{unique}.toml"
         ));
 
         // Intentionally omit `postgres.roles.replicator.username`.
@@ -1966,7 +1966,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-missing-replicator-auth-{unique}.toml"
+            "runtime-config-missing-replicator-auth-{unique}.toml"
         ));
 
         // Intentionally omit `postgres.roles.replicator.auth`.
@@ -2025,7 +2025,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-conn-identity-mismatch-{unique}.toml"
+            "runtime-config-conn-identity-mismatch-{unique}.toml"
         ));
 
         // Intentionally set local_conn_identity.user to a different user than roles.superuser.username.
@@ -2084,7 +2084,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-blank-password-secret-{unique}.toml"
+            "runtime-config-blank-password-secret-{unique}.toml"
         ));
 
         // Intentionally set password secret content to empty.
@@ -2143,7 +2143,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-required-tls-no-identity-{unique}.toml"
+            "runtime-config-required-tls-no-identity-{unique}.toml"
         ));
 
         // Intentionally omit `postgres.tls.identity` while requiring TLS.
@@ -2202,7 +2202,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-client-auth-with-tls-disabled-{unique}.toml"
+            "runtime-config-client-auth-with-tls-disabled-{unique}.toml"
         ));
 
         // Intentionally configure client auth while TLS is disabled.
@@ -2261,7 +2261,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-postgres-role-tls-auth-{unique}.toml"
+            "runtime-config-postgres-role-tls-auth-{unique}.toml"
         ));
 
         let toml = r#"
@@ -2329,7 +2329,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "runtime-config-v2-postgres-ssl-mode-requires-tls-{unique}.toml"
+            "runtime-config-postgres-ssl-mode-requires-tls-{unique}.toml"
         ));
 
         let toml = r#"

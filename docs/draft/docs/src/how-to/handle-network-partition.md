@@ -252,7 +252,7 @@ Freshness is calculated as `now - updated_at <= lease_ttl_ms`. The default `leas
 [diagram about primary node behavior during partition, **more details on diagram**]
 
 ```
-stateDiagram-v2
+stateDiagram
     [*] --> Primary: Normal operation
     Primary --> FailSafe: DCS trust lost
     FailSafe --> Primary: DCS trust restored (automatic)

@@ -127,8 +127,7 @@ the system enters `Fencing` through a step-down plan.
 
 Runtime configuration is loaded from a TOML file into a `RuntimeConfig` struct.
 The schema distinguishes between `InlineOrPath` references and secret-bearing
-fields that can use `SecretSource`. Configuration is versioned with
-`ConfigVersion`.
+fields that can use `SecretSource`. Configuration is parsed as a single contract.
 // todo: The removed "secure-by-default" and "immutable at runtime" claims were interpretive rather than directly sourced.
 
 Key sections include:
@@ -144,7 +143,7 @@ Key sections include:
 -   **debug**: Enables read-only introspection endpoints.
 
 The configuration file in `docker/configs/cluster/node-a/runtime.toml`
-demonstrates a complete v2 configuration. Binary paths, role credentials, and
+demonstrates a complete runtime configuration. Binary paths, role credentials, and
 `pg_hba` sources are explicit, allowing operators to bind-mount or inject
 secrets without rebuilding images.
 

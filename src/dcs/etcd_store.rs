@@ -1365,12 +1365,13 @@ mod tests {
                 )));
             }
 
-            let seeded = store_a.put_path_if_absent(path_config.as_str(), "config-v1".to_string())?;
+            let seeded =
+                store_a.put_path_if_absent(path_config.as_str(), "config-a".to_string())?;
             if !seeded {
                 return Err(boxed_error("expected config seed to succeed on first write"));
             }
             let seeded_again =
-                store_b.put_path_if_absent(path_config.as_str(), "config-v2".to_string())?;
+                store_b.put_path_if_absent(path_config.as_str(), "config-b".to_string())?;
             if seeded_again {
                 return Err(boxed_error(
                     "expected config seed to be rejected when key already exists",

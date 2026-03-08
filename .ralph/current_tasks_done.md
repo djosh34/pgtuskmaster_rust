@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sun Mar  8 09:23:34 PM CET 2026
+Generated: Sun Mar  8 10:45:22 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -79,17 +79,6 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 
 <description>
 The codebase carries API and DCS endpoint addresses as raw `String` values deep into runtime and harness paths, then parses or binds them at scattered call sites. This was detected during a representation-integrity scan looking for cases where subsystem boundaries retain ad-hoc primitive encodings instead of canonical typed models.
-```
-
-==============
-
-# Task `.ralph/tasks/story-secure-explicit-node-config/07-task-remove-phantom-config-versioning-and-restore-single-config-contract.md`
-
-```
-## Task: Remove phantom config versioning and restore a single as-is config contract <status>completed</status> <passes>true</passes>
-
-<description>
-**Goal:** Fully remove the hallucinated runtime-config versioning model from this repository. There is one config contract only. There is no `config_version` field, there never was a `v1` config, there never was a `v2` config, and no code, test, doc, fixture, or generated doc artifact may describe or enforce such a split.
 ```
 
 ==============

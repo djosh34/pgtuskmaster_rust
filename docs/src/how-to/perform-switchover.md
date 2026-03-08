@@ -117,7 +117,7 @@ Treat that as an immediate incident. Recheck `/ha/state` across all nodes, inspe
 ## State Transition Diagram
 
 ```mermaid
-stateDiagram-v2
+stateDiagram
     [*] --> Primary
     [*] --> Replica
 

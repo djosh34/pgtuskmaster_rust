@@ -119,7 +119,7 @@ If the count exceeds 1, investigate network partitions and DCS connectivity. Aut
 ## State transition diagram
 
 ```mermaid
-stateDiagram-v2
+stateDiagram
     [*] --> Primary : start as primary
     [*] --> Replica : start as replica
     
