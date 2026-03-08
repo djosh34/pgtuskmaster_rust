@@ -2,7 +2,7 @@
 
 This guide shows how to monitor a running cluster using the JSON observation surfaces that pgtuskmaster already exposes.
 
-At the time of writing, the source-backed observability surfaces in this repo are JSON API and CLI outputs rather than a dedicated Prometheus or StatsD exporter.
+In this repository, the source-backed observability surfaces are JSON API and CLI outputs rather than a dedicated Prometheus or StatsD exporter.
 
 ## Goal
 

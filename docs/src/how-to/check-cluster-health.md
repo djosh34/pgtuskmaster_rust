@@ -75,12 +75,6 @@ If the CLI reports a `transport error`, verify:
 - the node API is listening on the configured port
 - network access from the host running `pgtuskmasterctl`
 
-In this documentation cycle, the command below failed with a transport error because no responsive API was reachable at `127.0.0.1:18081` at the time of capture:
-
-```bash
-pgtuskmasterctl --base-url http://127.0.0.1:18081 --output json ha state
-```
-
 ## Text output shape
 
 The text formatter emits newline-delimited key-value lines in this order:
@@ -98,5 +92,4 @@ ha_tick=...
 ha_decision=...
 snapshot_sequence=...
 ```
-
-That shape is reconstructed from the CLI formatter source. No successful runtime `ha state` response was captured during this documentation cycle.
+That shape is reconstructed from the CLI formatter source in `src/cli/output.rs`.

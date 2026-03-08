@@ -4,7 +4,6 @@
 
 # Tutorials
 - [Tutorials](tutorial/overview.md)
-    - [Overview](tutorial/overview.md)
     - [First HA Cluster](tutorial/first-ha-cluster.md)
     - [Single-Node Setup](tutorial/single-node-setup.md)
     - [Observing a Failover Event](tutorial/observing-failover.md)
@@ -13,7 +12,6 @@
 # How-To
 
 - [How-To](how-to/overview.md)
-    - [Overview](how-to/overview.md)
     - [Bootstrap a New Cluster from Zero State](how-to/bootstrap-cluster.md)
     - [Check Cluster Health](how-to/check-cluster-health.md)
     - [Add a Cluster Node](how-to/add-cluster-node.md)
@@ -30,7 +28,6 @@
 # Explanation
 
 - [Explanation](explanation/overview.md)
-    - [Overview](explanation/overview.md)
     - [Introduction](explanation/introduction.md)
     - [Architecture](explanation/architecture.md)
     - [Failure Modes and Recovery Behavior](explanation/failure-modes.md)
@@ -39,7 +36,6 @@
 # Reference
 
 - [Reference](reference/overview.md)
-    - [Overview](reference/overview.md)
     - [HTTP API](reference/http-api.md)
     - [HA Decisions](reference/ha-decisions.md)
     - [Debug API](reference/debug-api.md)

@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sun Mar  8 17:21:44 CET 2026
+Generated: Sun Mar  8 05:50:24 PM CET 2026
 
 # Task `.ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md`
 
@@ -8,18 +8,6 @@ Generated: Sun Mar  8 17:21:44 CET 2026
 ## Task: Smooth The Local Docker Cluster Startup Experience <status>not_started</status> <passes>false</passes>
 
 <priority>low</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-docs-k2-expansion/03-task-run-truth-only-docs-verification.md`
-
-```
-## Task: Run Truth-Only Verification For Documentation Accuracy, Mermaid Diagrams, And Navigation <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
 
 <description>
 ```

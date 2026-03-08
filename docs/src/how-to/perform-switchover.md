@@ -28,7 +28,7 @@ Run the request against a node API endpoint that can accept admin requests:
 pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover request --requested-by node-b
 ```
 
-Replace `node-b` with the member ID you want recorded in the switchover request. A successful request returns:
+Replace `node-b` with the member ID you want recorded in the switchover request. If API role tokens are enabled in your deployment, add `--admin-token "$PGTUSKMASTER_ADMIN_TOKEN"` or set `PGTUSKMASTER_ADMIN_TOKEN` in the environment because switchover requests are admin operations. A successful request returns:
 
 ```text
 {"accepted": true}
@@ -76,6 +76,8 @@ The successful primary step-down path clears the switchover marker automatically
 ```bash
 pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover clear
 ```
+
+If API role tokens are enabled, the clear operation also requires the admin token path described above.
 
 A successful clear returns:
 
