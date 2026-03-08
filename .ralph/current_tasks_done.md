@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 12:22:24 AM CET 2026
+Generated: Mon Mar  9 00:46:00 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -9,6 +9,18 @@ Generated: Mon Mar  9 12:22:24 AM CET 2026
 
 <description>
 The Docker helper flow currently contains ignored-error patterns that hide real failures instead of handling them explicitly.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-nextest-ultra-long-profile-disables-required-parallelism.md`
+
+```
+## Bug: Nextest ultra-long profile disables required parallel execution for isolated tests <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
 ```
 
 ==============

@@ -1390,9 +1390,9 @@ mod tests {
             };
             let value = std::str::from_utf8(kv.value())
                 .map_err(|err| boxed_error(format!("config value not utf8: {err}")))?;
-            if value != "config-v1" {
+            if value != "config-a" {
                 return Err(boxed_error(format!(
-                    "expected config to remain 'config-v1', got: {value:?}"
+                    "expected config to remain 'config-a', got: {value:?}"
                 )));
             }
 

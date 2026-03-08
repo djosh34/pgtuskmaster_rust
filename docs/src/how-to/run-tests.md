@@ -53,7 +53,7 @@ make test
 
 This uses `cargo nextest run --workspace --all-targets --profile default --no-fail-fast --no-tests fail`.
 
-That is the normal validation path for most code changes.
+That is the normal validation path for most code changes. The default profile excludes the long-running HA integration-test binaries selected by the `tests/ha_*.rs` layout rule, so new scenarios added to those binaries automatically stay out of the default gate.
 
 ## Long HA And Docker Validation
 
@@ -69,6 +69,8 @@ This target is intentionally heavier than `make test`. It runs:
 2. Docker Compose config validation
 3. single-node Docker smoke coverage
 4. cluster Docker smoke coverage
+
+The `ultra-long` nextest profile selects the `tests/ha_*.rs` integration-test binaries and still runs them through normal nextest parallel scheduling. Those HA scenarios use isolated ports, namespaces, and working directories, so serial-only behavior is treated as a bug in the tests rather than as an accepted workaround in the gate config.
 
 Use it when your change can affect HA behavior, Docker packaging, or longer-running operational scenarios.
 
@@ -104,6 +106,8 @@ The HA harness allocates dynamic ports, builds isolated namespaces, and starts r
 - a more realistic environment than unit-only testing
 - higher runtime cost than a lightweight mock suite
 - failures that can come from system prerequisites, not only from Rust code
+
+The longer runtime is why the HA binaries stay in `make test-long`. It is not a license to serialize them.
 
 ## Picking The Right Command
 

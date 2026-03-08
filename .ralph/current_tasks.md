@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 12:22:24 AM CET 2026
-
-# Task `.ralph/tasks/bugs/bug-nextest-ultra-long-profile-disables-required-parallelism.md`
-
-```
-## Bug: Nextest ultra-long profile disables required parallel execution for isolated tests <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
+Generated: Mon Mar  9 00:46:00 CET 2026
 
 # Task `.ralph/tasks/story-ctl-operator-experience/01-task-rename-the-operator-cli-to-pgtm-and-flatten-the-command-tree.md`
 

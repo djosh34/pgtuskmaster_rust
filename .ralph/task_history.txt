@@ -158,3 +158,4 @@
 .ralph/tasks/story-switchover-operator-model/task-add-optional-switchover-to-and-targeted-switchover.md
 .ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md
 .ralph/tasks/bugs/bug-docker-helper-ignored-errors.md
+.ralph/tasks/bugs/bug-nextest-ultra-long-profile-disables-required-parallelism.md
