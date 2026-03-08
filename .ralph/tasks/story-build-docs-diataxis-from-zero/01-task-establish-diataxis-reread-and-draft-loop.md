@@ -33,24 +33,28 @@
    - create a temporary context file if that is the clearest way to package repo facts and Diataxis excerpts
    - pipe that context into the K2/opencode workflow used by `ask-k2-docs`
    - include long relevant Diataxis excerpts or summaries when they help keep the form strict
-7. Generate multiple materially different K2 prompts when comparing structure, tone, or update strategy would improve the page. Do not ask the same prompt repeatedly with tiny wording changes.
-8. When revising or promoting docs, ask K2 not only for better prose but also for how the page or docs structure should be updated continuously as the docs set grows, while still staying inside Diataxis boundaries.
-9. Tell K2 to write only the page prose. For diagrams, instruct it to leave placeholders such as `[diagram about failover state transitions]`.
-10. Each execution run may draft or revise at most 3 docs pages. After the capped work for that run is complete, quit immediately.
-11. A task is not complete just because one run finished. Keep `<passes>false</passes>` until all pages, revisions, and related navigation work required by that specific task are fully done.
-12. Tick task checkboxes only after the underlying work actually happened in that run. Do not mark planning expectations as complete ahead of execution.
-13. Only set `<passes>true</passes>` once the entire task scope is complete and the required verification for that task has passed.
+7. Use a `prepare -> execute -> write` loop for every authoring run:
+   - prepare the K2 input files first, one prepared input per target page or materially different prompt variant
+   - execute the prepared K2 generations after preparation is complete, running multiple independent K2 doc generations in parallel whenever the prepared inputs do not depend on one another
+   - write the returned docs only after checking each K2 result against the prepared facts and Diataxis constraints
+8. Generate multiple materially different K2 prompts when comparing structure, tone, or update strategy would improve the page. Do not ask the same prompt repeatedly with tiny wording changes.
+9. When revising or promoting docs, ask K2 not only for better prose but also for how the page or docs structure should be updated continuously as the docs set grows, while still staying inside Diataxis boundaries.
+10. Tell K2 to write only the page prose. For diagrams, instruct it to leave placeholders such as `[diagram about failover state transitions]`.
+11. Each execution run may draft or revise at most 10 docs pages. After the capped work for that run is complete, quit immediately.
+12. A task is not complete just because one run finished. Keep `<passes>false</passes>` until all pages, revisions, and related navigation work required by that specific task are fully done.
+13. Tick task checkboxes only after the underlying work actually happened in that run. Do not mark planning expectations as complete ahead of execution.
+14. Only set `<passes>true</passes>` once the entire task scope is complete and the required verification for that task has passed.
 
 **Expected outcome:**
 - The story uses a K2-authored, Diataxis-grounded docs workflow.
 - Later task files give the agent enough repo context and source references to drive K2 well, without pre-writing the documentation themselves.
-- Later runs stop after at most 3 docs pages per run and resume in subsequent runs until the task is actually complete.
+- Later runs stop after at most 10 docs pages per run and resume in subsequent runs until the task is actually complete.
 </description>
 
 <acceptance_criteria>
 - [x] The task clearly requires `ask-k2-docs` for all docs prose drafting and prose revision
 - [x] The task clearly requires Diataxis rereads before each docs run
-- [x] The task clearly limits each run to at most 3 docs pages before quitting immediately
+- [x] The task clearly limits each run to at most 10 docs pages before quitting immediately
 - [x] The task clearly states that `<passes>true</passes>` is allowed only after the full task scope is complete
 - [x] The task clearly directs agents to provide K2 with rich repo and Diataxis context rather than writing docs prose in the task file
 </acceptance_criteria>
@@ -73,7 +77,7 @@
      - large, explicit K2 context payloads and temporary context files must be encouraged when needed
      - materially different prompts must be used when comparing structure, framing, or update strategy
      - K2 must be told to produce only page prose and diagram placeholders
-     - each execution run must stop after at most 3 pages
+     - each execution run must stop after at most 10 pages
      - checkbox ticking must happen only after execution
      - `<passes>true</passes>` must remain forbidden until the full task scope is complete
 

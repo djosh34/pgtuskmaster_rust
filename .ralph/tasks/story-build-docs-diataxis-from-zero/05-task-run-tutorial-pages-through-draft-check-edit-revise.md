@@ -34,13 +34,17 @@
 **Run requirements:**
 1. Gather the exact learner journey, prerequisites, commands, checkpoints, safe stopping points, and runnable behavior from the repo. Use existing docs only as revision inputs after re-checking the facts against the repository.
 2. Package those facts plus the Diataxis tutorial guidance into rich K2 context, using a temporary context file whenever that makes the prompt clearer.
-3. Use `ask-k2-docs` for every tutorial draft and every prose revision.
-4. Use differing prompts when comparing lesson structure, learner pacing, or update strategies would improve the tutorial.
-5. Tell K2 to leave placeholders like `[diagram about tutorial environment layout]` instead of inventing diagrams.
-6. Check/edit K2 output for branching how-to drift, lecture drift, invented steps, or unstable assumptions.
-7. Use `update-docs` whenever revising an existing tutorial page or `docs/src/SUMMARY.md`.
-8. Draft or revise at most 3 pages in one run, then quit immediately.
-9. Keep the task open until the tutorial sequence for this story is actually complete. Only then set `<passes>true</passes>`.
+3. Use a `prepare -> execute -> write` flow:
+   - prepare the K2 input files first, with one prepared input per target page or materially different prompt variant
+   - execute the prepared K2 generations after preparation is complete, running multiple independent K2 doc generations in parallel whenever the prepared inputs do not depend on one another
+   - write the returned docs only after checking each K2 result against the prepared facts and Diataxis constraints
+4. Use `ask-k2-docs` for every tutorial draft and every prose revision.
+5. Use differing prompts when comparing lesson structure, learner pacing, or update strategies would improve the tutorial.
+6. Tell K2 to leave placeholders like `[diagram about tutorial environment layout]` instead of inventing diagrams.
+7. Check/edit K2 output for branching how-to drift, lecture drift, invented steps, or unstable assumptions.
+8. Use `update-docs` whenever revising an existing tutorial page or `docs/src/SUMMARY.md`.
+9. Draft or revise at most 10 pages in one run, then quit immediately.
+10. Keep the task open until the tutorial sequence for this story is actually complete. Only then set `<passes>true</passes>`.
 
 **Context to provide to K2 instead of pre-writing prose here:**
 - the concrete learner outcomes to achieve
@@ -54,6 +58,6 @@
 - [ ] Every drafted or revised tutorial page is written through `ask-k2-docs`
 - [ ] Every page is explicitly kept in the Diataxis tutorial form
 - [ ] The task text supplies repo facts and learner constraints instead of writing the docs prose itself
-- [ ] Each run is capped at 3 docs pages and ends immediately after that capped work
+- [ ] Each run is capped at 10 docs pages and ends immediately after that capped work
 - [ ] `<passes>true</passes>` is set only once the full tutorial task scope is complete
 </acceptance_criteria>

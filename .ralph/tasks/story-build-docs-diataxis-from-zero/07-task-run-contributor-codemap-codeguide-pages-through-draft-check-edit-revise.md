@@ -39,13 +39,17 @@
 **Run requirements:**
 1. Gather the next contributor topics directly from code structure, module boundaries, runtime flows, ownership boundaries, tests, and runnable behavior where relevant. Use existing docs only as revision inputs after re-checking their claims against the repository.
 2. Build rich K2 context from those repo facts, the contributor audience, and the relevant Diataxis form guidance. Use a temporary context file whenever that is clearer.
-3. Use `ask-k2-docs` for every draft and every prose revision.
-4. Use differing prompts when comparing alternative codemap structures, audience framing, page splits, or update strategies would improve the chapter.
-5. Tell K2 to leave placeholders like `[diagram about module ownership map]` instead of inventing diagrams.
-6. Check/edit K2 output for invented facts, vague architecture prose, mixed forms, or the forbidden `gate` wording.
-7. Use `update-docs` whenever revising an existing contributor page or `docs/src/SUMMARY.md`.
-8. Draft or revise at most 3 pages in one run, then quit immediately.
-9. Keep `<passes>false</passes>` until the whole contributor-doc scope is complete across however many runs are needed.
+3. Use a `prepare -> execute -> write` flow:
+   - prepare the K2 input files first, with one prepared input per target page or materially different prompt variant
+   - execute the prepared K2 generations after preparation is complete, running multiple independent K2 doc generations in parallel whenever the prepared inputs do not depend on one another
+   - write the returned docs only after checking each K2 result against the prepared facts and Diataxis constraints
+4. Use `ask-k2-docs` for every draft and every prose revision.
+5. Use differing prompts when comparing alternative codemap structures, audience framing, page splits, or update strategies would improve the chapter.
+6. Tell K2 to leave placeholders like `[diagram about module ownership map]` instead of inventing diagrams.
+7. Check/edit K2 output for invented facts, vague architecture prose, mixed forms, or the forbidden `gate` wording.
+8. Use `update-docs` whenever revising an existing contributor page or `docs/src/SUMMARY.md`.
+9. Draft or revise at most 10 pages in one run, then quit immediately.
+10. Keep `<passes>false</passes>` until the whole contributor-doc scope is complete across however many runs are needed.
 
 **Context to provide to K2 instead of pre-writing prose here:**
 - exact code paths, modules, and tests that ground each page
@@ -59,6 +63,6 @@
 - [ ] Every drafted or revised contributor page is written through `ask-k2-docs`
 - [ ] Every page is explicitly kept within a single Diataxis form
 - [ ] The task text supplies codebase context and constraints instead of writing the docs prose itself
-- [ ] Each run is capped at 3 docs pages and ends immediately after that capped work
+- [ ] Each run is capped at 10 docs pages and ends immediately after that capped work
 - [ ] `<passes>true</passes>` is set only once the full contributor-doc task scope is complete
 </acceptance_criteria>

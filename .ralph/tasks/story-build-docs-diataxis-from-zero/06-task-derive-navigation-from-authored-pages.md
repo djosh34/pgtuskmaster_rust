@@ -35,12 +35,16 @@
 **Run requirements:**
 1. Review the current authored pages and the content relationships they imply. Treat any existing overview prose as non-authoritative revision input only, and re-check every technical claim that must appear in overview prose against the repository instead of trusting prior prose.
 2. Build rich K2 context from those real pages, the navigation problem, and the relevant Diataxis guidance. Use a temporary context file whenever that helps.
-3. Use `ask-k2-docs` for any landing-page or overview prose and for prose revisions to those pages.
-4. Use differing prompts when comparing alternative navigation models, overview structures, or continuous update strategies would improve the result.
-5. Tell K2 to leave placeholders like `[diagram about docs map]` for any diagram needs.
-6. Use `update-docs` for every revision to existing overview pages and for `docs/src/SUMMARY.md`.
-7. Draft or revise at most 3 docs pages in one run, then quit immediately.
-8. Keep the task open across runs until navigation and any needed overviews are actually complete. Only then set `<passes>true</passes>`.
+3. Use a `prepare -> execute -> write` flow:
+   - prepare the K2 input files first, with one prepared input per target page or materially different prompt variant
+   - execute the prepared K2 generations after preparation is complete, running multiple independent K2 doc generations in parallel whenever the prepared inputs do not depend on one another
+   - write the returned docs only after checking each K2 result against the prepared facts and Diataxis constraints
+4. Use `ask-k2-docs` for any landing-page or overview prose and for prose revisions to those pages.
+5. Use differing prompts when comparing alternative navigation models, overview structures, or continuous update strategies would improve the result.
+6. Tell K2 to leave placeholders like `[diagram about docs map]` for any diagram needs.
+7. Use `update-docs` for every revision to existing overview pages and for `docs/src/SUMMARY.md`.
+8. Draft or revise at most 10 docs pages in one run, then quit immediately.
+9. Keep the task open across runs until navigation and any needed overviews are actually complete. Only then set `<passes>true</passes>`.
 
 **Context to provide to K2 instead of pre-writing prose here:**
 - the real pages that currently exist
@@ -54,6 +58,6 @@
 - [ ] Every new or revised overview page is written through `ask-k2-docs`
 - [ ] Navigation and overview work is derived only from real authored pages
 - [ ] The task text supplies structure/context inputs instead of writing the docs prose itself
-- [ ] Each run is capped at 3 docs pages and ends immediately after that capped work
+- [ ] Each run is capped at 10 docs pages and ends immediately after that capped work
 - [ ] `<passes>true</passes>` is set only once the full navigation task scope is complete
 </acceptance_criteria>

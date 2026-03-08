@@ -42,7 +42,7 @@
 3. Record verification artifacts under `docs/verifications/`.
 4. Use the `add-bug` skill for every factual inaccuracy, unsupported claim, contradiction, or major Diataxis-form error that should be tracked separately.
 5. If a tiny doc correction is unavoidable, use `update-docs` for that edit instead of freehand drifting into another drafting pass.
-6. Verify at most 3 docs pages per run, then quit immediately.
+6. Verify at most 10 docs pages per run, then quit immediately.
 7. Keep `<passes>false</passes>` until the full authored-doc set has been verified and every necessary bug has been created.
 
 **Context to provide during verification instead of rewriting docs from task text:**
@@ -55,6 +55,6 @@
 - [ ] Verification proceeds against the actual repository and runnable behavior
 - [ ] Every discovered docs bug is turned into a bug task with the `add-bug` skill
 - [ ] Any unavoidable tiny docs correction goes through `update-docs`
-- [ ] Each run is capped at 3 docs pages and ends immediately after that capped work
+- [ ] Each run is capped at 10 docs pages and ends immediately after that capped work
 - [ ] `<passes>true</passes>` is set only once the full verification task scope is complete
 </acceptance_criteria>

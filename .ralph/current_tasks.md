@@ -1,11 +1,11 @@
 # Current Tasks Summary
 
-Generated: Sun Mar  8 01:01:58 CET 2026
+Generated: Sun Mar  8 08:38:12 AM CET 2026
 
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/02-task-run-reference-pages-through-draft-check-edit-revise.md`
 
 ```
-## Task: Run Reference Pages Through K2 Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Task: Run Reference Pages Through K2 Draft Check Edit Revise <status>in_progress</status> <passes>false</passes> <priority>high</priority>
 
 <description>
 **Goal:** Build the reference chapter through repeated capped runs. Every reference page must be drafted and revised by K2 under strict Diataxis reference guidance. The agent must gather facts and shape prompts, not pre-write the reference prose in this task file.
