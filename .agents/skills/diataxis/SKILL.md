@@ -5,6 +5,6 @@ description: Local copy of the original Diataxis reference.
 
 # Diataxis
 
-This skill is only a local copy of the Diataxis reference material.
+This skill is only a local copy of the Diataxis source material from GitHub.
 
-Read from `references/diataxis.fr/`.
+Read from the `.rst` files in `references/`.
