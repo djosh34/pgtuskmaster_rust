@@ -1333,7 +1333,7 @@ mod tests {
         };
 
         crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
-            .with_api_listen_addr("127.0.0.1:0")
+            .with_api_listen_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
             .with_api_auth(auth)
             .build()
     }

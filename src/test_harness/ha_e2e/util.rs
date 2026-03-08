@@ -516,17 +516,6 @@ pub fn parse_loopback_socket(port: u16) -> Result<SocketAddr, WorkerError> {
         .map_err(|err| WorkerError::Message(format!("parse socket failed for port={port}: {err}")))
 }
 
-pub fn parse_http_endpoint(endpoint: &str) -> Result<SocketAddr, WorkerError> {
-    let host_port = endpoint.strip_prefix("http://").ok_or_else(|| {
-        WorkerError::Message(format!(
-            "unsupported endpoint format for proxy target: {endpoint}"
-        ))
-    })?;
-    host_port.parse::<SocketAddr>().map_err(|err| {
-        WorkerError::Message(format!("parse endpoint socket failed: {endpoint} ({err})"))
-    })
-}
-
 pub fn reserve_non_overlapping_ports(
     count: usize,
     forbidden: &BTreeSet<u16>,

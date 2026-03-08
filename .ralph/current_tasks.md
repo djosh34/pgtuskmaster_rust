@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sun Mar  8 07:07:32 PM CET 2026
+Generated: Sun Mar  8 07:29:26 PM CET 2026
 
 # Task `.ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md`
 
@@ -10,17 +10,6 @@ Generated: Sun Mar  8 07:07:32 PM CET 2026
 <priority>low</priority>
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-managed-start-intent-architecture/typed-network-endpoints-instead-of-raw-strings.md`
-
-```
-## Task: [Improvement] Type network endpoints instead of carrying raw strings across runtime <status>not_started</status> <passes>false</passes>
-
-<description>
-The codebase carries API and DCS endpoint addresses as raw `String` values deep into runtime and harness paths, then parses or binds them at scattered call sites. This was detected during a representation-integrity scan looking for cases where subsystem boundaries retain ad-hoc primitive encodings instead of canonical typed models.
 ```
 
 ==============

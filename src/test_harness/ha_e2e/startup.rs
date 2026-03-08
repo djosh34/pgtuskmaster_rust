@@ -6,8 +6,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use crate::config::{
-    BinaryPaths, DcsConfig, DcsInitConfig, DebugConfig, HaConfig, InlineOrPath, LogCleanupConfig,
-    LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
+    BinaryPaths, DcsConfig, DcsEndpoint, DcsInitConfig, DebugConfig, HaConfig, InlineOrPath,
+    LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
     PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
     ProcessConfig, RoleAuthConfig, SecretSource, StderrSinkConfig,
 };
@@ -27,8 +27,8 @@ use crate::test_harness::ports::{allocate_ha_topology_ports, PortReservation};
 use super::config::{Mode, TestConfig};
 use super::handle::{NodeHandle, TestClusterHandle};
 use super::util::{
-    parse_http_endpoint, parse_loopback_socket, reserve_non_overlapping_ports,
-    wait_for_bootstrap_primary, wait_for_node_api_ready_or_task_exit,
+    parse_loopback_socket, reserve_non_overlapping_ports, wait_for_bootstrap_primary,
+    wait_for_node_api_ready_or_task_exit,
 };
 
 const ETCD_CLUSTER_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -386,7 +386,7 @@ async fn start_cluster_inner(
         };
 
         let dcs_endpoints = match (config.mode, &dcs_endpoints_by_node) {
-            (Mode::Plain, _) => endpoints.clone(),
+            (Mode::Plain, _) => parse_runtime_dcs_endpoints(endpoints.as_slice())?,
             (Mode::PartitionProxy, Some(map)) => {
                 map.get(node_id.as_str()).cloned().ok_or_else(|| {
                     WorkerError::Message(format!(
@@ -584,7 +584,7 @@ async fn start_cluster_inner(
                     },
                 },
             })
-            .with_api_listen_addr(api_addr.to_string())
+            .with_api_listen_addr(api_addr)
             .with_debug(DebugConfig { enabled: false })
             .build();
 
@@ -855,8 +855,12 @@ $$;
 
             let init_key = format!("/{}/init", config.scope.trim_matches('/'));
             let config_key = format!("/{}/config", config.scope.trim_matches('/'));
+            let dcs_endpoints_for_client = dcs_endpoints_for_check
+                .iter()
+                .map(DcsEndpoint::to_client_string)
+                .collect::<Vec<_>>();
             let mut etcd_client =
-                etcd_client::Client::connect(dcs_endpoints_for_check.clone(), None)
+                etcd_client::Client::connect(dcs_endpoints_for_client, None)
                     .await
                     .map_err(|err| {
                         WorkerError::Message(format!(
@@ -924,7 +928,7 @@ async fn spawn_partition_etcd_proxies(
     proxy_ports: &[u16],
     cursor: &mut usize,
     proxy_reservation: &mut PortReservation,
-) -> Result<BTreeMap<String, Vec<String>>, WorkerError> {
+    ) -> Result<BTreeMap<String, Vec<DcsEndpoint>>, WorkerError> {
     let member_names = guard
         .etcd
         .as_ref()
@@ -956,7 +960,7 @@ async fn spawn_partition_etcd_proxies(
         })
     };
 
-    let mut dcs_endpoints_by_node: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut dcs_endpoints_by_node: BTreeMap<String, Vec<DcsEndpoint>> = BTreeMap::new();
     for node_index in 0..node_count {
         let node_id = format!("node-{}", node_index.saturating_add(1));
         let endpoint_index = node_index % endpoints.len();
@@ -968,7 +972,13 @@ async fn spawn_partition_etcd_proxies(
         let endpoint = endpoints.get(endpoint_index).ok_or_else(|| {
             WorkerError::Message(format!("missing etcd endpoint for index {endpoint_index}"))
         })?;
-        let target_addr = parse_http_endpoint(endpoint.as_str())?;
+        let target_addr = parse_runtime_dcs_endpoint(endpoint.as_str())?.socket_addr().map_err(
+            |err| {
+                WorkerError::Message(format!(
+                    "derive loopback proxy target failed for endpoint {endpoint}: {err}"
+                ))
+            },
+        )?;
         let link_name = format!("{node_id}-to-{member_name}-etcd");
         let listener = next_listener(proxy_ports, cursor, proxy_reservation)?;
         let link = TcpProxyLink::spawn_with_listener(link_name.clone(), listener, target_addr)
@@ -978,11 +988,24 @@ async fn spawn_partition_etcd_proxies(
                     "spawn etcd proxy failed for node {node_id} link={link_name}: {err}"
                 ))
             })?;
+        let proxy_addr = link.listen_addr();
 
-        let proxy_url = format!("http://{}", link.listen_addr());
         guard.etcd_proxies.insert(link_name.clone(), link);
-        dcs_endpoints_by_node.insert(node_id, vec![proxy_url]);
+        dcs_endpoints_by_node.insert(node_id, vec![DcsEndpoint::from_socket_addr(proxy_addr)]);
     }
 
     Ok(dcs_endpoints_by_node)
+}
+
+fn parse_runtime_dcs_endpoints(endpoints: &[String]) -> Result<Vec<DcsEndpoint>, WorkerError> {
+    endpoints
+        .iter()
+        .map(|endpoint| parse_runtime_dcs_endpoint(endpoint.as_str()))
+        .collect()
+}
+
+fn parse_runtime_dcs_endpoint(endpoint: &str) -> Result<DcsEndpoint, WorkerError> {
+    DcsEndpoint::parse(endpoint).map_err(|err| {
+        WorkerError::Message(format!("parse runtime DCS endpoint failed for {endpoint}: {err}"))
+    })
 }

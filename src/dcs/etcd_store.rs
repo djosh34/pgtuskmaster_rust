@@ -17,6 +17,7 @@ use etcd_client::{
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::store::{DcsStore, DcsStoreError, WatchEvent, WatchOp};
+use crate::config::DcsEndpoint;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -52,12 +53,12 @@ pub(crate) struct EtcdDcsStore {
 }
 
 impl EtcdDcsStore {
-    pub(crate) fn connect(endpoints: Vec<String>, scope: &str) -> Result<Self, DcsStoreError> {
+    pub(crate) fn connect(endpoints: Vec<DcsEndpoint>, scope: &str) -> Result<Self, DcsStoreError> {
         Self::connect_with_worker_bootstrap_timeout(endpoints, scope, WORKER_BOOTSTRAP_TIMEOUT)
     }
 
     fn connect_with_worker_bootstrap_timeout(
-        endpoints: Vec<String>,
+        endpoints: Vec<DcsEndpoint>,
         scope: &str,
         worker_bootstrap_timeout: Duration,
     ) -> Result<Self, DcsStoreError> {
@@ -159,7 +160,7 @@ impl EtcdDcsStore {
 }
 
 fn run_worker_loop(
-    endpoints: Vec<String>,
+    endpoints: Vec<DcsEndpoint>,
     scope_prefix: String,
     healthy: Arc<AtomicBool>,
     events: Arc<Mutex<VecDeque<WatchEvent>>>,
@@ -313,7 +314,7 @@ fn run_worker_loop(
 
 async fn handle_worker_command(
     command: WorkerCommand,
-    endpoints: &[String],
+    endpoints: &[DcsEndpoint],
     healthy: &Arc<AtomicBool>,
     events: &Arc<Mutex<VecDeque<WatchEvent>>>,
     client: &mut Option<Client>,
@@ -388,7 +389,7 @@ fn invalidate_watch_session(
 }
 
 async fn establish_watch_session(
-    endpoints: &[String],
+    endpoints: &[DcsEndpoint],
     scope_prefix: &str,
     events: &Arc<Mutex<VecDeque<WatchEvent>>>,
     is_reconnect: bool,
@@ -405,12 +406,16 @@ async fn establish_watch_session(
     Ok((client, watcher, watch_stream))
 }
 
-async fn connect_client(endpoints: &[String]) -> Result<Client, DcsStoreError> {
-    timeout_etcd("etcd connect", Client::connect(endpoints.to_vec(), None)).await
+async fn connect_client(endpoints: &[DcsEndpoint]) -> Result<Client, DcsStoreError> {
+    let client_endpoints = endpoints
+        .iter()
+        .map(DcsEndpoint::to_client_string)
+        .collect::<Vec<_>>();
+    timeout_etcd("etcd connect", Client::connect(client_endpoints, None)).await
 }
 
 async fn execute_write(
-    endpoints: &[String],
+    endpoints: &[DcsEndpoint],
     client: &mut Option<Client>,
     healthy: &Arc<AtomicBool>,
     path: &str,
@@ -441,7 +446,7 @@ async fn execute_write(
 }
 
 async fn execute_delete(
-    endpoints: &[String],
+    endpoints: &[DcsEndpoint],
     client: &mut Option<Client>,
     healthy: &Arc<AtomicBool>,
     path: &str,
@@ -471,7 +476,7 @@ async fn execute_delete(
 }
 
 async fn execute_put_if_absent(
-    endpoints: &[String],
+    endpoints: &[DcsEndpoint],
     client: &mut Option<Client>,
     healthy: &Arc<AtomicBool>,
     path: &str,
@@ -682,7 +687,7 @@ async fn apply_test_establish_delay() {
 }
 
 async fn execute_read(
-    endpoints: &[String],
+    endpoints: &[DcsEndpoint],
     client: &mut Option<Client>,
     healthy: &Arc<AtomicBool>,
     path: &str,
@@ -919,6 +924,11 @@ mod tests {
             self.handle = handle;
             Ok(())
         }
+
+        fn endpoint_model(&self) -> Result<crate::config::DcsEndpoint, BoxError> {
+            crate::config::DcsEndpoint::parse(self.endpoint.as_str())
+                .map_err(|err| boxed_error(format!("parse fixture endpoint failed: {err}")))
+        }
     }
 
     struct EstablishDelayGuard {
@@ -1055,7 +1065,7 @@ mod tests {
         let fixture = fixture;
         let result: TestResult = async {
             let _delay_guard = EstablishDelayGuard::new(2_500);
-            let endpoint = fixture.endpoint.clone();
+            let endpoint = fixture.endpoint_model()?;
             let scope = fixture.scope.clone();
 
             let handle = tokio::task::spawn_blocking(move || {
@@ -1120,7 +1130,7 @@ mod tests {
 
         let mut fixture = fixture;
         let result: TestResult = async {
-            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
             let mut cache = sample_cache(&fixture.scope);
 
             cache.members.insert(
@@ -1247,7 +1257,7 @@ mod tests {
 
         let mut fixture = fixture;
         let result: TestResult = async {
-            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
 
             let stale_leader = serde_json::to_string(&LeaderRecord {
                 member_id: MemberId("node-stale".to_string()),
@@ -1306,7 +1316,7 @@ mod tests {
 
         let fixture = fixture;
         let result: TestResult = async {
-            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut store = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
             let path = format!("/{}/member/node-a", fixture.scope);
             let value = r#"{"member_id":"node-a","role":"Primary"}"#.to_string();
 
@@ -1342,8 +1352,8 @@ mod tests {
             let path_init = format!("/{}/init", fixture.scope);
             let path_config = format!("/{}/config", fixture.scope);
 
-            let mut store_a = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
-            let mut store_b = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let mut store_a = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
+            let mut store_b = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
 
             let claimed_a = store_a.put_path_if_absent(path_init.as_str(), "init-a".to_string())?;
             let claimed_b = store_b.put_path_if_absent(path_init.as_str(), "init-b".to_string())?;
@@ -1396,7 +1406,7 @@ mod tests {
 
         let fixture = fixture;
         let result: TestResult = async {
-            let store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let store = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
             let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
                 .await
                 .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
@@ -1470,7 +1480,7 @@ mod tests {
 
         let fixture = fixture;
         let result: TestResult = async {
-            let store = EtcdDcsStore::connect(vec![fixture.endpoint.clone()], &fixture.scope)?;
+            let store = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
             let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
                 .await
                 .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
@@ -1518,7 +1528,13 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn etcd_store_write_reports_unreachable_endpoint() -> TestResult {
-        match EtcdDcsStore::connect(vec!["http://127.0.0.1:1".to_string()], "scope-a") {
+        match EtcdDcsStore::connect(
+            vec![crate::config::DcsEndpoint::from_socket_addr(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                1,
+            )))],
+            "scope-a",
+        ) {
             Ok(mut store) => match store.write_path("/scope-a/member/node-a", "{}".to_string()) {
                 Ok(_) => Err(boxed_error(
                     "expected write against unreachable endpoint to fail",

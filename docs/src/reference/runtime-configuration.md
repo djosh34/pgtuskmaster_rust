@@ -152,11 +152,11 @@ scope = "docker-cluster"
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `endpoints` | array of strings | non-empty; each entry non-empty after trim |
+| `endpoints` | array of strings | non-empty; each entry must be an `http://host:port` endpoint URL with an explicit port |
 | `scope` | string | non-empty after trim |
 | `init` | init block (optional) | see below |
 
-At least one endpoint is required; empty endpoint strings are rejected.
+At least one endpoint is required. Each endpoint must be a valid `http://host:port` URL; blank values, missing ports, paths, queries, fragments, and unsupported schemes are rejected during config parsing.
 
 ### DCS Init Payload
 

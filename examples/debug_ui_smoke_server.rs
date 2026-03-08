@@ -40,7 +40,7 @@ impl DcsStore for SmokeStore {
 
 fn sample_runtime_config() -> RuntimeConfig {
     pgtuskmaster_rust::test_harness::runtime_config::RuntimeConfigBuilder::new()
-        .with_api_listen_addr(DEBUG_UI_SMOKE_API_LISTEN_ADDR)
+        .with_api_listen_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 18080)))
         .build()
 }
 

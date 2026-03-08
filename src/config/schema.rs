@@ -1,6 +1,8 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{collections::BTreeMap, fmt, net::SocketAddr, path::PathBuf};
 
 use serde::Deserialize;
+
+use super::endpoint::DcsEndpoint;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
@@ -146,6 +148,14 @@ pub struct PgIdentConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DcsConfig {
+    pub endpoints: Vec<DcsEndpoint>,
+    pub scope: String,
+    pub init: Option<DcsInitConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DcsConfigInput {
     pub endpoints: Vec<String>,
     pub scope: String,
     pub init: Option<DcsInitConfig>,
@@ -260,7 +270,7 @@ pub struct BinaryPaths {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiConfig {
-    pub listen_addr: String,
+    pub listen_addr: SocketAddr,
     pub security: ApiSecurityConfig,
 }
 
@@ -296,7 +306,7 @@ pub struct DebugConfig {
 pub struct RuntimeConfigInput {
     pub cluster: ClusterConfig,
     pub postgres: PostgresConfigInput,
-    pub dcs: DcsConfig,
+    pub dcs: DcsConfigInput,
     pub ha: HaConfig,
     pub process: ProcessConfigInput,
     pub logging: Option<LoggingConfig>,

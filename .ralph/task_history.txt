@@ -155,3 +155,4 @@
 .ralph/tasks/story-secure-explicit-node-config/07-task-remove-phantom-config-versioning-and-restore-single-config-contract.md
 .ralph/tasks/story-managed-start-intent-architecture/task-remove-managed-conf-parseback-and-rederive-start-intent.md
 .ralph/tasks/story-switchover-operator-model/task-redesign-switchover-request-semantics-for-operators.md
+.ralph/tasks/story-managed-start-intent-architecture/typed-network-endpoints-instead-of-raw-strings.md

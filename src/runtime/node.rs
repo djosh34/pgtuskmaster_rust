@@ -62,7 +62,7 @@ pub enum RuntimeError {
     StartupExecution(String),
     #[error("api bind failed at `{listen_addr}`: {message}")]
     ApiBind {
-        listen_addr: String,
+        listen_addr: std::net::SocketAddr,
         message: String,
     },
     #[error("worker failed: {0}")]
@@ -1146,10 +1146,10 @@ async fn run_workers(
 
     let api_store = EtcdDcsStore::connect(cfg.dcs.endpoints.clone(), &scope)
         .map_err(|err| RuntimeError::Worker(format!("api store connect failed: {err}")))?;
-    let listener = TcpListener::bind(cfg.api.listen_addr.as_str())
+    let listener = TcpListener::bind(cfg.api.listen_addr)
         .await
         .map_err(|err| RuntimeError::ApiBind {
-            listen_addr: cfg.api.listen_addr.clone(),
+            listen_addr: cfg.api.listen_addr,
             message: err.to_string(),
         })?;
     let mut api_ctx = ApiWorkerCtx::new(listener, cfg_subscriber, Box::new(api_store), log.clone());

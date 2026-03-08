@@ -6,11 +6,12 @@ use super::defaults::{
     default_api_listen_addr, default_debug_config, default_logging_config,
     default_postgres_connect_timeout_s, normalize_process_config,
 };
+use super::endpoint::DcsEndpoint;
 use super::schema::{
-    ApiConfig, ApiSecurityConfig, InlineOrPath, PgHbaConfig, PgIdentConfig, PostgresConfig,
-    PostgresConnIdentityConfig, PostgresRoleConfig, PostgresRolesConfig, RoleAuthConfig,
-    RoleAuthConfigInput, RuntimeConfig, RuntimeConfigInput, SecretSource, TlsServerConfig,
-    TlsServerIdentityConfig,
+    ApiConfig, ApiSecurityConfig, DcsConfig, DcsConfigInput, InlineOrPath, PgHbaConfig,
+    PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresRoleConfig,
+    PostgresRolesConfig, RoleAuthConfig, RoleAuthConfigInput, RuntimeConfig, RuntimeConfigInput,
+    SecretSource, TlsServerConfig, TlsServerIdentityConfig,
 };
 use crate::postgres_managed_conf::{validate_extra_guc_entry, ManagedPostgresConfError};
 
@@ -56,6 +57,7 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfig, ConfigError> {
 
 fn normalize_runtime_config(input: RuntimeConfigInput) -> Result<RuntimeConfig, ConfigError> {
     let postgres = normalize_postgres_config(input.postgres)?;
+    let dcs = normalize_dcs_config(input.dcs)?;
     let process = normalize_process_config(input.process)?;
     let logging = input.logging.unwrap_or_else(default_logging_config);
     let api = normalize_api_config(input.api)?;
@@ -64,7 +66,7 @@ fn normalize_runtime_config(input: RuntimeConfigInput) -> Result<RuntimeConfig, 
     Ok(RuntimeConfig {
         cluster: input.cluster,
         postgres,
-        dcs: input.dcs,
+        dcs,
         ha: input.ha,
         process,
         logging,
@@ -280,7 +282,12 @@ fn normalize_pg_ident(
 }
 
 fn normalize_api_config(input: super::schema::ApiConfigInput) -> Result<ApiConfig, ConfigError> {
-    let listen_addr = input.listen_addr.unwrap_or_else(default_api_listen_addr);
+    let listen_addr = normalize_api_listen_addr(
+        "api.listen_addr",
+        input.listen_addr
+            .unwrap_or_else(default_api_listen_addr)
+            .as_str(),
+    )?;
 
     let security = input.security.ok_or_else(|| ConfigError::Validation {
         field: "api.security",
@@ -296,6 +303,37 @@ fn normalize_api_config(input: super::schema::ApiConfigInput) -> Result<ApiConfi
     Ok(ApiConfig {
         listen_addr,
         security: ApiSecurityConfig { tls, auth },
+    })
+}
+
+fn normalize_dcs_config(input: DcsConfigInput) -> Result<DcsConfig, ConfigError> {
+    let endpoints = input
+        .endpoints
+        .into_iter()
+        .map(|endpoint| normalize_dcs_endpoint("dcs.endpoints", endpoint.as_str()))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(DcsConfig {
+        endpoints,
+        scope: input.scope,
+        init: input.init,
+    })
+}
+
+fn normalize_api_listen_addr(
+    field: &'static str,
+    value: &str,
+) -> Result<std::net::SocketAddr, ConfigError> {
+    value.parse::<std::net::SocketAddr>().map_err(|err| ConfigError::Validation {
+        field,
+        message: format!("must be a valid socket address: {err}"),
+    })
+}
+
+fn normalize_dcs_endpoint(field: &'static str, value: &str) -> Result<DcsEndpoint, ConfigError> {
+    DcsEndpoint::parse(value).map_err(|err| ConfigError::Validation {
+        field,
+        message: err.to_string(),
     })
 }
 
@@ -587,15 +625,6 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
             field: "dcs.endpoints",
             message: "must contain at least one endpoint".to_string(),
         });
-    }
-
-    for endpoint in &cfg.dcs.endpoints {
-        if endpoint.trim().is_empty() {
-            return Err(ConfigError::Validation {
-                field: "dcs.endpoints",
-                message: "must not contain empty endpoint values".to_string(),
-            });
-        }
     }
 
     if cfg.dcs.scope.trim().is_empty() {
@@ -1082,7 +1111,9 @@ mod tests {
                 extra_gucs: std::collections::BTreeMap::new(),
             },
             dcs: DcsConfig {
-                endpoints: vec!["http://127.0.0.1:2379".to_string()],
+                endpoints: vec![crate::config::DcsEndpoint::from_socket_addr(
+                    std::net::SocketAddr::from(([127, 0, 0, 1], 2379)),
+                )],
                 scope: "scope-a".to_string(),
                 init: None,
             },
@@ -1128,7 +1159,7 @@ mod tests {
                 },
             },
             api: ApiConfig {
-                listen_addr: "127.0.0.1:8080".to_string(),
+                listen_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
                 security: ApiSecurityConfig {
                     tls: TlsServerConfig {
                         mode: ApiTlsMode::Disabled,
@@ -1571,7 +1602,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         assert_eq!(cfg.process.pg_rewind_timeout_ms, 120_000);
         assert_eq!(cfg.process.bootstrap_timeout_ms, 300_000);
         assert_eq!(cfg.process.fencing_timeout_ms, 30_000);
-        assert_eq!(cfg.api.listen_addr, "127.0.0.1:8080");
+        assert_eq!(cfg.api.listen_addr, std::net::SocketAddr::from(([127, 0, 0, 1], 8080)));
         assert!(!cfg.debug.enabled);
 
         std::fs::remove_file(&path)?;

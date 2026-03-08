@@ -1,14 +1,14 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 
 use crate::{
     config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
-        DcsConfig, DcsInitConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
-        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
-        PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
-        PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
-        SecretSource, StderrSinkConfig, TlsClientAuthConfig, TlsServerConfig,
-        TlsServerIdentityConfig,
+        DcsConfig, DcsEndpoint, DcsInitConfig, DebugConfig, FileSinkConfig, FileSinkMode,
+        HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig,
+        PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
+        PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
+        RoleAuthConfig, RuntimeConfig, SecretSource, StderrSinkConfig, TlsClientAuthConfig,
+        TlsServerConfig, TlsServerIdentityConfig,
     },
     pginfo::conninfo::PgSslMode,
 };
@@ -18,7 +18,6 @@ const SAMPLE_PG_IDENT_CONTENTS: &str = "# empty\n";
 const SAMPLE_TLS_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
 const SAMPLE_TLS_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n";
 const SAMPLE_TLS_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBCA\n-----END CERTIFICATE-----\n";
-const SAMPLE_DCS_ENDPOINT: &str = "http://127.0.0.1:2379";
 const SAMPLE_HA_LOOP_INTERVAL_MS: u64 = 1000;
 const SAMPLE_HA_LEASE_TTL_MS: u64 = 10_000;
 const SAMPLE_PROCESS_TIMEOUT_MS: u64 = 1000;
@@ -26,7 +25,6 @@ const SAMPLE_LOGGING_POSTGRES_POLL_INTERVAL_MS: u64 = 200;
 const SAMPLE_LOGGING_CLEANUP_MAX_FILES: u64 = 10;
 const SAMPLE_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 60;
 const SAMPLE_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS: u64 = 300;
-const SAMPLE_API_LISTEN_ADDR: &str = "127.0.0.1:8080";
 const SAMPLE_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
 const SAMPLE_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
 const SAMPLE_POSTGRES_LISTEN_PORT: u16 = 5432;
@@ -173,7 +171,7 @@ pub fn sample_logging_config() -> LoggingConfig {
 
 pub fn sample_dcs_config() -> DcsConfig {
     DcsConfig {
-        endpoints: vec![SAMPLE_DCS_ENDPOINT.to_string()],
+        endpoints: vec![sample_dcs_endpoint()],
         scope: "scope-a".to_string(),
         init: None,
     }
@@ -208,9 +206,17 @@ pub fn sample_api_security_config() -> ApiSecurityConfig {
 
 pub fn sample_api_config() -> ApiConfig {
     ApiConfig {
-        listen_addr: SAMPLE_API_LISTEN_ADDR.to_string(),
+        listen_addr: sample_api_listen_addr(),
         security: sample_api_security_config(),
     }
+}
+
+pub fn sample_dcs_endpoint() -> DcsEndpoint {
+    DcsEndpoint::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 2379)))
+}
+
+pub fn sample_api_listen_addr() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 8080))
 }
 
 pub fn sample_debug_config() -> DebugConfig {
@@ -288,7 +294,7 @@ impl RuntimeConfigBuilder {
         self.transform_dcs(move |dcs| DcsConfig { scope, ..dcs })
     }
 
-    pub fn with_dcs_endpoints(self, endpoints: Vec<String>) -> Self {
+    pub fn with_dcs_endpoints(self, endpoints: Vec<DcsEndpoint>) -> Self {
         self.transform_dcs(move |dcs| DcsConfig { endpoints, ..dcs })
     }
 
@@ -296,8 +302,7 @@ impl RuntimeConfigBuilder {
         self.transform_dcs(move |dcs| DcsConfig { init, ..dcs })
     }
 
-    pub fn with_api_listen_addr(self, listen_addr: impl Into<String>) -> Self {
-        let listen_addr = listen_addr.into();
+    pub fn with_api_listen_addr(self, listen_addr: SocketAddr) -> Self {
         self.transform_api(move |api| ApiConfig { listen_addr, ..api })
     }
 
@@ -535,7 +540,9 @@ mod tests {
         sample_postgres_tls_config_enabled, sample_runtime_config, RuntimeConfigBuilder,
     };
 
-    const SAMPLE_OVERRIDE_API_LISTEN_ADDR: &str = "127.0.0.1:18080";
+    fn sample_override_api_listen_addr() -> std::net::SocketAddr {
+        std::net::SocketAddr::from(([127, 0, 0, 1], 18080))
+    }
 
     fn unique_temp_dir(label: &str) -> Result<std::path::PathBuf, String> {
         let millis = SystemTime::now()
@@ -591,12 +598,12 @@ mod tests {
         let baseline = sample_runtime_config();
         let updated = RuntimeConfigBuilder::new()
             .with_postgres_listen_port(6543)
-            .with_api_listen_addr(SAMPLE_OVERRIDE_API_LISTEN_ADDR)
+            .with_api_listen_addr(sample_override_api_listen_addr())
             .with_dcs_scope("scope-b")
             .build();
 
         assert_eq!(updated.postgres.listen_port, 6543);
-        assert_eq!(updated.api.listen_addr, SAMPLE_OVERRIDE_API_LISTEN_ADDR);
+        assert_eq!(updated.api.listen_addr, sample_override_api_listen_addr());
         assert_eq!(updated.dcs.scope, "scope-b");
         assert_eq!(updated.cluster, baseline.cluster);
         assert_eq!(updated.postgres.listen_host, baseline.postgres.listen_host);
