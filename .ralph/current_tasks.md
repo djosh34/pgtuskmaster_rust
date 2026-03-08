@@ -1,6 +1,18 @@
 # Current Tasks Summary
 
-Generated: Sun Mar  8 03:40:31 PM CET 2026
+Generated: Sun Mar  8 14:58:41 UTC 2026
+
+# Task `.ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md`
+
+```
+## Task: Smooth The Local Docker Cluster Startup Experience <status>not_started</status> <passes>false</passes>
+
+<priority>low</priority>
+
+<description>
+```
+
+==============
 
 # Task `.ralph/tasks/story-docs-k2-expansion/01-task-run-k2-docs-loop-in-five-way-parallel-batches.md`
 
@@ -56,5 +68,29 @@ Generated: Sun Mar  8 03:40:31 PM CET 2026
 
 <description>
 The codebase carries API and DCS endpoint addresses as raw `String` values deep into runtime and harness paths, then parses or binds them at scattered call sites. This was detected during a representation-integrity scan looking for cases where subsystem boundaries retain ad-hoc primitive encodings instead of canonical typed models.
+```
+
+==============
+
+# Task `.ralph/tasks/story-switchover-operator-model/task-redesign-switchover-request-semantics-for-operators.md`
+
+```
+## Task: Redesign Switchover Request Semantics For Operators <status>not_started</status> <passes>false</passes>
+
+<priority>low</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-switchover-operator-model/task-remove-requested-by-and-add-optional-switchover-to.md`
+
+```
+## Task: Remove `requested_by` And Add Optional `switchover_to` <status>not_started</status> <passes>false</passes>
+
+<priority>low</priority>
+
+<description>
 ```
 
