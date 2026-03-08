@@ -1,5 +1,15 @@
 # Summary
 
+- [Why DCS trust and coordination shape the cluster](explanation/dcs-trust-and-coordination.md)
+- [How HA turns shared state into actions](explanation/ha-decisions-and-actions.md)
+- [Why the runtime is built from workers and versioned state](explanation/workers-and-versioned-state.md)
+- [Why startup planning is separate from steady-state control](explanation/startup-versus-steady-state.md)
+- [Why pgtuskmaster materializes managed PostgreSQL files](explanation/managed-postgres-boundary.md)
+- [Why the control API and debug API are separate](explanation/api-and-debug-boundaries.md)
+- [Why TLS remains operator-supplied but runtime-enforced](explanation/tls-posture.md)
+- [Why pginfo observes PostgreSQL instead of controlling it](explanation/pginfo-observation-boundary.md)
+- [Why process execution is isolated behind the process worker](explanation/process-worker-boundary.md)
+- [Why the CLI stays outside the control loop](explanation/cli-and-daemon-boundary.md)
 - [Runtime Config Reference](reference/runtime-config.md)
 - [DCS Reference](reference/dcs.md)
 - [HTTP API Reference](reference/http-api.md)

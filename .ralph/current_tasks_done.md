@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sun Mar  8 09:50:37 AM CET 2026
+Generated: Sun Mar  8 10:07:14 AM CET 2026
 
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/01-task-establish-diataxis-reread-and-draft-loop.md`
 
@@ -20,5 +20,16 @@ Generated: Sun Mar  8 09:50:37 AM CET 2026
 
 <description>
 **Goal:** Build the reference chapter through repeated capped runs. Every reference page must be drafted and revised by K2 under strict Diataxis reference guidance. The agent must gather facts and shape prompts, not pre-write the reference prose in this task file.
+```
+
+==============
+
+# Task `.ralph/tasks/story-build-docs-diataxis-from-zero/03-task-run-explanation-pages-through-draft-check-edit-revise.md`
+
+```
+## Task: Run Explanation Pages Through K2 Draft Check Edit Revise <status>completed</status> <passes>true</passes> <priority>high</priority>
+
+<description>
+**Goal:** Build the explanation chapter through repeated capped runs. Every explanation page must be drafted and revised by K2 under strict Diataxis explanation guidance. The task must provide source context, tensions, and grounding, not hand-write the explanation prose.
 ```
 

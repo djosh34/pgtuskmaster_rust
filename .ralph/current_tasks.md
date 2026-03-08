@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sun Mar  8 09:50:37 AM CET 2026
-
-# Task `.ralph/tasks/story-build-docs-diataxis-from-zero/03-task-run-explanation-pages-through-draft-check-edit-revise.md`
-
-```
-## Task: Run Explanation Pages Through K2 Draft Check Edit Revise <status>not_started</status> <passes>false</passes> <priority>high</priority>
-
-<description>
-**Goal:** Build the explanation chapter through repeated capped runs. Every explanation page must be drafted and revised by K2 under strict Diataxis explanation guidance. The task must provide source context, tensions, and grounding, not hand-write the explanation prose.
-```
-
-==============
+Generated: Sun Mar  8 10:07:14 AM CET 2026
 
 # Task `.ralph/tasks/story-build-docs-diataxis-from-zero/04-task-run-how-to-pages-through-draft-check-edit-revise.md`
 
