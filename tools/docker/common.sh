@@ -5,6 +5,7 @@ readonly TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${TOOL_DIR}/../.." && pwd)"
 readonly DEFAULT_ETCD_IMAGE="quay.io/coreos/etcd:v3.5.21"
 readonly DEFAULT_PGTUSKMASTER_IMAGE="pgtuskmaster:local"
+readonly CLUSTER_NODE_NAMES=("node-a" "node-b" "node-c")
 
 log() {
   printf '[tools/docker] %s\n' "$*"
@@ -14,6 +15,14 @@ require_cmd() {
   local cmd="$1"
   if ! command -v "${cmd}" >/dev/null 2>&1; then
     printf 'missing required command: %s\n' "${cmd}" >&2
+    exit 1
+  fi
+}
+
+require_file() {
+  local path="$1"
+  if [[ ! -f "${path}" ]]; then
+    printf 'missing required file: %s\n' "${path}" >&2
     exit 1
   fi
 }
@@ -74,8 +83,7 @@ wait_for_ha_member_count() {
   local response
   deadline=$((SECONDS + timeout_secs))
   while (( SECONDS < deadline )); do
-    response="$(curl --silent --show-error --fail "${url}" 2>/dev/null || true)"
-    if [[ -n "${response}" ]] && python3 -c '
+    if response="$(curl --silent --show-error --fail "${url}")" && [[ -n "${response}" ]] && python3 -c '
 import json
 import sys
 
@@ -95,6 +103,28 @@ sys.exit(1)
   done
   printf 'timed out waiting for %s members at %s\n' "${expected_count}" "${url}" >&2
   return 1
+}
+
+compose_ps_service_names() {
+  local compose_file="$1"
+  local env_file="$2"
+  local project_name="$3"
+  docker compose \
+    --project-name "${project_name}" \
+    --env-file "${env_file}" \
+    -f "${compose_file}" \
+    ps --services
+}
+
+compose_running_service_names() {
+  local compose_file="$1"
+  local env_file="$2"
+  local project_name="$3"
+  docker compose \
+    --project-name "${project_name}" \
+    --env-file "${env_file}" \
+    -f "${compose_file}" \
+    ps --services --status running
 }
 
 wait_for_sql_ready() {
@@ -143,6 +173,239 @@ compose_down() {
     --env-file "${env_file}" \
     -f "${compose_file}" \
     down -v --remove-orphans
+}
+
+read_env_value() {
+  local env_file="$1"
+  local key="$2"
+  python3 - "${env_file}" "${key}" <<'PY'
+import pathlib
+import sys
+
+env_path = pathlib.Path(sys.argv[1])
+key = sys.argv[2]
+
+for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        continue
+    if "=" not in line:
+        continue
+    current_key, value = line.split("=", 1)
+    if current_key == key:
+        print(value)
+        sys.exit(0)
+
+sys.exit(1)
+PY
+}
+
+cluster_node_env_key() {
+  local node_name="$1"
+  local suffix="$2"
+  local normalized="${node_name//-/_}"
+  normalized="${normalized^^}"
+  printf 'PGTM_CLUSTER_%s_%s\n' "${normalized}" "${suffix}"
+}
+
+cluster_api_port_from_env() {
+  local env_file="$1"
+  local node_name="$2"
+  local key
+  key="$(cluster_node_env_key "${node_name}" "API_PORT")"
+  read_env_value "${env_file}" "${key}"
+}
+
+cluster_pg_port_from_env() {
+  local env_file="$1"
+  local node_name="$2"
+  local key
+  key="$(cluster_node_env_key "${node_name}" "PG_PORT")"
+  read_env_value "${env_file}" "${key}"
+}
+
+cluster_api_url() {
+  local env_file="$1"
+  local node_name="$2"
+  printf 'http://127.0.0.1:%s\n' "$(cluster_api_port_from_env "${env_file}" "${node_name}")"
+}
+
+cluster_debug_url() {
+  local env_file="$1"
+  local node_name="$2"
+  printf '%s/debug/verbose\n' "$(cluster_api_url "${env_file}" "${node_name}")"
+}
+
+cluster_ha_state_url() {
+  local env_file="$1"
+  local node_name="$2"
+  printf '%s/ha/state\n' "$(cluster_api_url "${env_file}" "${node_name}")"
+}
+
+cluster_pg_endpoint() {
+  local env_file="$1"
+  local node_name="$2"
+  printf '127.0.0.1:%s\n' "$(cluster_pg_port_from_env "${env_file}" "${node_name}")"
+}
+
+query_pg_is_in_recovery() {
+  local compose_file="$1"
+  local env_file="$2"
+  local project_name="$3"
+  local service_name="$4"
+  docker compose \
+    --project-name "${project_name}" \
+    --env-file "${env_file}" \
+    -f "${compose_file}" \
+    exec -T "${service_name}" \
+    /bin/bash -lc "/usr/lib/postgresql/16/bin/psql -h /var/lib/pgtuskmaster/socket -U postgres -d postgres -Atqc 'select pg_is_in_recovery()'"
+}
+
+cluster_role_from_recovery_value() {
+  local recovery_value="$1"
+  case "${recovery_value}" in
+    f)
+      printf 'primary\n'
+      ;;
+    t)
+      printf 'replica\n'
+      ;;
+    *)
+      printf 'unknown\n'
+      return 1
+      ;;
+  esac
+}
+
+wait_for_cluster_replication_roles() {
+  local compose_file="$1"
+  local env_file="$2"
+  local project_name="$3"
+  local timeout_secs="$4"
+  local deadline
+  deadline=$((SECONDS + timeout_secs))
+  while (( SECONDS < deadline )); do
+    local recovery_values=()
+    local node_name
+    for node_name in "${CLUSTER_NODE_NAMES[@]}"; do
+      local raw_value
+      if ! raw_value="$(query_pg_is_in_recovery "${compose_file}" "${env_file}" "${project_name}" "${node_name}")"; then
+        recovery_values=()
+        break
+      fi
+      raw_value="$(printf '%s\n' "${raw_value}" | tr -d '\r' | tail -n 1)"
+      if [[ "${raw_value}" != "t" && "${raw_value}" != "f" ]]; then
+        recovery_values=()
+        break
+      fi
+      recovery_values+=("${raw_value}")
+    done
+
+    if [[ "${#recovery_values[@]}" -eq "${#CLUSTER_NODE_NAMES[@]}" ]]; then
+      local primaries=0
+      local replicas=0
+      local recovery_value
+      for recovery_value in "${recovery_values[@]}"; do
+        if [[ "${recovery_value}" == "f" ]]; then
+          primaries=$((primaries + 1))
+        else
+          replicas=$((replicas + 1))
+        fi
+      done
+
+      if [[ "${primaries}" -eq 1 && "${replicas}" -eq 2 ]]; then
+        return 0
+      fi
+    fi
+
+    sleep 1
+  done
+
+  printf 'timed out waiting for cluster replication roles: expected 1 primary + 2 replicas (pg_is_in_recovery)\n' >&2
+  return 1
+}
+
+fetch_ha_state_json() {
+  local env_file="$1"
+  local node_name="$2"
+  curl --silent --show-error --fail "$(cluster_ha_state_url "${env_file}" "${node_name}")"
+}
+
+ha_state_field() {
+  local json_payload="$1"
+  local field_name="$2"
+  python3 -c '
+import json
+import sys
+
+field_name = sys.argv[1]
+payload = json.load(sys.stdin)
+value = payload.get(field_name)
+if value is None:
+    print("<none>")
+elif isinstance(value, bool):
+    print(str(value).lower())
+elif isinstance(value, (dict, list)):
+    print(json.dumps(value, sort_keys=True))
+else:
+    print(value)
+' "${field_name}" <<<"${json_payload}"
+}
+
+print_cluster_summary() {
+  local env_file="$1"
+  local project_name="$2"
+  local compose_file="$3"
+  local leader="<unknown>"
+  local node_name
+
+  for node_name in "${CLUSTER_NODE_NAMES[@]}"; do
+    local node_payload
+    node_payload="$(fetch_ha_state_json "${env_file}" "${node_name}")"
+    leader="$(ha_state_field "${node_payload}" "leader")"
+    break
+  done
+
+  printf 'Compose project: %s\n' "${project_name}"
+  printf 'Compose file: %s\n' "${compose_file}"
+  printf 'Env file: %s\n' "${env_file}"
+  printf 'Leader: %s\n' "${leader}"
+  printf '\n'
+  printf '%-7s %-10s %-22s %-28s %-17s %-12s %-12s %s\n' \
+    'Node' 'Role' 'API' 'Debug' 'PostgreSQL' 'Members' 'HA phase' 'HA decision'
+
+  for node_name in "${CLUSTER_NODE_NAMES[@]}"; do
+    local payload
+    local api_url
+    local debug_url
+    local pg_endpoint
+    local role
+    local member_count
+    local ha_phase
+    local ha_decision
+
+    payload="$(fetch_ha_state_json "${env_file}" "${node_name}")"
+    api_url="$(cluster_api_url "${env_file}" "${node_name}")"
+    debug_url="$(cluster_debug_url "${env_file}" "${node_name}")"
+    pg_endpoint="$(cluster_pg_endpoint "${env_file}" "${node_name}")"
+    ha_phase="$(ha_state_field "${payload}" "ha_phase")"
+    ha_decision="$(ha_state_field "${payload}" "ha_decision")"
+    member_count="$(ha_state_field "${payload}" "member_count")"
+    role="${ha_phase}"
+    if [[ "${role}" != "primary" && "${role}" != "replica" ]]; then
+      role="unknown"
+    fi
+
+    printf '%-7s %-10s %-22s %-28s %-17s %-12s %-12s %s\n' \
+      "${node_name}" \
+      "${role}" \
+      "${api_url}" \
+      "${debug_url}" \
+      "${pg_endpoint}" \
+      "${member_count}" \
+      "${ha_phase}" \
+      "${ha_decision}"
+  done
 }
 
 write_smoke_env_file() {

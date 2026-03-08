@@ -8,6 +8,18 @@ This guide shows you how to inspect the runtime health of a PGTuskMaster cluster
 - At least one cluster node is running with an accessible API endpoint.
 - You know the base URL for the node you want to inspect. The CLI default is `http://127.0.0.1:8080`.
 
+If you are using the local Docker HA cluster, you can first print the current endpoints and topology with:
+
+```bash
+tools/docker/cluster.sh status --env-file .env.docker.example
+```
+
+Or, when your local stack is configured through `.env.docker`:
+
+```bash
+make docker-status-cluster
+```
+
 ## Inspect current HA state
 
 Run the HA state command against a node:

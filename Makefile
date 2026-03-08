@@ -8,7 +8,7 @@ DOCKER_CLUSTER_PROJECT ?= pgtuskmaster-cluster
 
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test-long lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-docker ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-nextest ensure-timeout guard-makeflags docker-compose-config docker-up docker-down docker-up-cluster docker-down-cluster docker-smoke-single docker-smoke-cluster
+.PHONY: check test test-long lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-docker ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-nextest ensure-timeout guard-makeflags docker-compose-config docker-up docker-down docker-up-cluster docker-status-cluster docker-down-cluster docker-smoke-single docker-smoke-cluster
 
 SINGLE_DASH_MAKEFLAGS := $(filter -%,$(MAKEFLAGS))
 SINGLE_DASH_MAKEFLAGS := $(filter-out --%,$(SINGLE_DASH_MAKEFLAGS))
@@ -221,12 +221,13 @@ docker-down: guard-makeflags ensure-docker
 	docker compose --project-name "$(DOCKER_SINGLE_PROJECT)" --env-file "$(DOCKER_ENV_FILE)" -f "$(DOCKER_SINGLE_COMPOSE_FILE)" down -v --remove-orphans
 
 docker-up-cluster: guard-makeflags ensure-docker
-	@test -f "$(DOCKER_ENV_FILE)" || (echo "missing $(DOCKER_ENV_FILE); copy .env.docker.example and point it at real secret files first" >&2; exit 1)
-	docker compose --project-name "$(DOCKER_CLUSTER_PROJECT)" --env-file "$(DOCKER_ENV_FILE)" -f "$(DOCKER_CLUSTER_COMPOSE_FILE)" up -d --build
+	./tools/docker/cluster.sh up --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
+
+docker-status-cluster: guard-makeflags ensure-docker
+	./tools/docker/cluster.sh status --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
 
 docker-down-cluster: guard-makeflags ensure-docker
-	@test -f "$(DOCKER_ENV_FILE)" || (echo "missing $(DOCKER_ENV_FILE); nothing to tear down" >&2; exit 1)
-	docker compose --project-name "$(DOCKER_CLUSTER_PROJECT)" --env-file "$(DOCKER_ENV_FILE)" -f "$(DOCKER_CLUSTER_COMPOSE_FILE)" down -v --remove-orphans
+	./tools/docker/cluster.sh down --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
 
 docker-smoke-single: guard-makeflags ensure-timeout ensure-docker
 	"$(GATE_STEP)" --gate docker --step docker.smoke_single --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(DOCKER_SMOKE_SINGLE_TIMEOUT_SECS)" --kill-after-secs "$(DOCKER_SMOKE_SINGLE_TIMEOUT_KILL_AFTER_SECS)" -- \

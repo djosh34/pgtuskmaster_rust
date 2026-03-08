@@ -15,33 +15,29 @@ You will start a three-node PostgreSQL HA cluster on your local machine and iden
 1. **Start the cluster**
 
    ```bash
-   docker compose --env-file .env.docker.example -f docker/compose/docker-compose.cluster.yml up -d --build
+   tools/docker/cluster.sh up --env-file .env.docker.example
    ```
 
    This command:
 
    - Reads environment variables from `.env.docker.example`
-   - Builds the `pgtuskmaster:local` image when needed
-   - Starts `etcd`, `node-a`, `node-b`, and `node-c`
-   - Publishes the API on `127.0.0.1:18081`, `127.0.0.1:18082`, and `127.0.0.1:18083`
-   - Publishes PostgreSQL on `127.0.0.1:15433`, `127.0.0.1:15434`, and `127.0.0.1:15435`
+   - Builds the `pgtuskmaster:local` image when needed; the first run can take a while because Docker has to build the image
+   - Starts `etcd`, `node-a`, `node-b`, and `node-c` as a persistent local stack
+   - Waits until the HA API, debug API, PostgreSQL ports, SQL readiness, and `1 primary + 2 replicas` topology are all healthy
+   - Prints the API URL, debug URL, PostgreSQL endpoint, leader, and current role for each node
    - Uses the compose-defined bridge network keyed as `pgtm-internal` for internal traffic
 
-2. **Wait for the node-a API to become reachable**
+2. **Inspect the running stack later without rebuilding it**
 
    ```bash
-   until curl -sf http://127.0.0.1:18081/ha/state >/dev/null; do
-     sleep 1
-   done
+   tools/docker/cluster.sh status --env-file .env.docker.example
    ```
 
-   Then list the services:
+   This prints the same endpoint and topology summary for the already-running stack. If you prefer the Makefile wrapper and your `.env.docker` matches the same ports, you can also use:
 
    ```bash
-   docker compose --env-file .env.docker.example -f docker/compose/docker-compose.cluster.yml ps
+   make docker-status-cluster
    ```
-
-   At that point you should see the four compose services from this stack: `etcd`, `node-a`, `node-b`, and `node-c`.
 
 3. **Check the current leader through node-a**
 
@@ -76,3 +72,5 @@ You will start a three-node PostgreSQL HA cluster on your local machine and iden
 - Etcd backing the cluster's distributed state
 - Reachable HA APIs on ports `18081`, `18082`, and `18083`
 - Reachable PostgreSQL ports on `15433`, `15434`, and `15435`
+- A repeatable status command: `tools/docker/cluster.sh status --env-file .env.docker.example`
+- A matching teardown command: `tools/docker/cluster.sh down --env-file .env.docker.example`

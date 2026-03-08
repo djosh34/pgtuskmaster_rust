@@ -27,10 +27,20 @@ API available at `http://127.0.0.1:18080`, PostgreSQL at `127.0.0.1:15432`.
 Three-node HA cluster:
 
 ```bash
-docker compose --env-file .env.docker.example -f docker/compose/docker-compose.cluster.yml up -d --build
+make docker-up-cluster
 ```
 
-API available at ports `18081`, `18082`, and `18083`; PostgreSQL at `15433`, `15434`, and `15435`.
+The persistent cluster flow uses `tools/docker/cluster.sh` under the hood. It prints the effective compose project, env file, API URLs, debug URLs, PostgreSQL endpoints, leader, and each node's current HA role once readiness succeeds.
+
+By default the cluster targets read `.env.docker`. If you want the stable example ports from `.env.docker.example`, either copy it to `.env.docker` or run the script directly:
+
+```bash
+tools/docker/cluster.sh up --env-file .env.docker.example
+tools/docker/cluster.sh status --env-file .env.docker.example
+tools/docker/cluster.sh down --env-file .env.docker.example
+```
+
+The example env file publishes node APIs on `18081`, `18082`, and `18083`, and PostgreSQL on `15433`, `15434`, and `15435`. The first run can take noticeably longer because Docker needs to build `pgtuskmaster:local`.
 
 For guided walkthroughs, see [Single-Node Setup](docs/src/tutorial/single-node-setup.md), [First HA Cluster](docs/src/tutorial/first-ha-cluster.md), and [Check Cluster Health](docs/src/how-to/check-cluster-health.md).
 
