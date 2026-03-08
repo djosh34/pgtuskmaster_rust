@@ -221,7 +221,7 @@ flowchart TD
     ha[HA state]
     worker[Debug API worker]
     snap[System snapshot]
-    verbose[/debug/verbose]
+    verbose["/debug/verbose"]
 
     cfg --> worker
     pg --> worker
