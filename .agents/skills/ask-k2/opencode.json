@@ -11,7 +11,10 @@
         "kimi-k2-thinking": {
           "name": "Kimi K2 Thinking",
           "options": {
-            "model": "moonshotai/kimi-k2-thinking"
+            "provider": {
+              "order": ["google-vertex","baseten"],
+              "allow_fallbacks": false
+            }
           }
         }
       }
