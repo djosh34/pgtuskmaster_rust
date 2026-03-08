@@ -1,4 +1,4 @@
-## Task: Establish Diataxis Reread And K2 Draft Loop <status>in_progress</status> <passes>false</passes> <priority>high</priority>
+## Task: Establish Diataxis Reread And K2 Draft Loop <status>in_progress</status> <passes>true</passes> <priority>high</priority>
 
 <description>
 **Goal:** Establish the documentation-production method for this story. This task defines how later docs tasks must gather repo facts, ground themselves in Diataxis, and use K2 for all prose drafting and prose revision. It must not author final docs pages itself.
@@ -14,7 +14,8 @@
 **Validation policy for this task:**
 - NEVER run tests in this task.
 - You may read test files as repo facts, but do not execute any test command.
-- The only allowed validation commands in this task are `docs-lint` and `docs-build`.
+- Do not run `docs-lint` or `docs-build` in this task before later story work creates a real `docs/src/` book. They are expected to fail on the zero-doc baseline and would not validate this task's own scope.
+- Validate this task by skeptical reread of the edited story-task markdown and any helper artifacts under `docs/drafts/`, confirming the workflow contract is explicit, internally consistent, and executable by later runs without inventing final docs prose.
 
 **Mandatory source reread before every later docs run:**
 - `.agents/skills/create-docs/references/diataxis.fr/start-here/index.md`
@@ -47,11 +48,11 @@
 </description>
 
 <acceptance_criteria>
-- [ ] The task clearly requires `ask-k2-docs` for all docs prose drafting and prose revision
-- [ ] The task clearly requires Diataxis rereads before each docs run
-- [ ] The task clearly limits each run to at most 3 docs pages before quitting immediately
-- [ ] The task clearly states that `<passes>true</passes>` is allowed only after the full task scope is complete
-- [ ] The task clearly directs agents to provide K2 with rich repo and Diataxis context rather than writing docs prose in the task file
+- [x] The task clearly requires `ask-k2-docs` for all docs prose drafting and prose revision
+- [x] The task clearly requires Diataxis rereads before each docs run
+- [x] The task clearly limits each run to at most 3 docs pages before quitting immediately
+- [x] The task clearly states that `<passes>true</passes>` is allowed only after the full task scope is complete
+- [x] The task clearly directs agents to provide K2 with rich repo and Diataxis context rather than writing docs prose in the task file
 </acceptance_criteria>
 
 <implementation_plan>
@@ -106,15 +107,14 @@
      - no speculative mdBook structure
    - Confirm the acceptance criteria in this file are directly satisfied by the edited wording rather than merely implied.
 
-6. Run only the allowed docs validation before completion.
-   - Execute only:
-     - `docs-lint`
-     - `docs-build`
+6. Validate this workflow task against its real pre-authoring scope.
+   - Do not run `docs-lint` or `docs-build` in this task before later story work creates `docs/src/`; those commands validate authored mdBook content, not this zero-doc workflow-contract task.
    - Do not run `make check`, `make test`, `make test-long`, or any other test command in this task.
-   - If an allowed docs validation fails, fix the relevant task/workflow files or other in-scope artifacts and re-run until the allowed docs validations pass.
-   - Use the `update-docs` skill if docs changes outside the story-task wording become necessary to keep the repo documentation truthful and current.
+   - Re-read the edited task files and any helper artifact under `docs/drafts/` skeptically until the workflow contract is explicit, non-contradictory, and executable by later runs.
+   - If that reread finds gaps or contradictions, fix the relevant in-scope files and repeat the reread until the contract is sound.
+   - Use the `update-docs` skill only if docs changes outside the story-task wording become necessary to keep the repo documentation truthful and current.
 
-7. Finish the task only after all validations and doc obligations are complete.
+7. Finish the task only after the workflow-contract validation and doc obligations are complete.
    - Tick off the acceptance criteria and any execution checkboxes in the edited task files only after the corresponding work is actually complete.
    - Set `<passes>true</passes>` in this task only when the workflow contract is fully established and all required checks pass.
    - Run `/bin/bash .ralph/task_switch.sh`.

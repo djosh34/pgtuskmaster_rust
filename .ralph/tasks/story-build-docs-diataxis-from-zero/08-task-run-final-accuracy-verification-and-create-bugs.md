@@ -31,6 +31,7 @@
 
 **Verification constraints:**
 - Verify docs against code, config, tests, commands, and runnable behavior, not against earlier drafts.
+- Treat existing docs, draft prose, and prior verification notes as non-authoritative inputs until the repository confirms them.
 - Create bug tasks for inaccuracies instead of silently tolerating them.
 - Only do tiny inline doc corrections when they are safe and unavoidable to complete the verification pass.
 - Do not let verification notes or prior prose override what the repository actually shows.
