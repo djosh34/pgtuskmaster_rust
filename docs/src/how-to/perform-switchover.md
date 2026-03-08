@@ -30,7 +30,7 @@ pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover request --reques
 
 Replace `node-b` with the member ID you want recorded in the switchover request. A successful request returns:
 
-```json
+```text
 {"accepted": true}
 ```
 
@@ -79,7 +79,7 @@ pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover clear
 
 A successful clear returns:
 
-```json
+```text
 {"accepted": true}
 ```
 
