@@ -8,3 +8,13 @@
 
 - [How-To]()
     - [Check Cluster Health](how-to/check-cluster-health.md)
+
+# Explanation
+
+- [Explanation]()
+    - [Architecture](explanation/architecture.md)
+
+# Reference
+
+- [Reference]()
+    - [pgtuskmasterctl CLI](reference/pgtuskmasterctl-cli.md)
