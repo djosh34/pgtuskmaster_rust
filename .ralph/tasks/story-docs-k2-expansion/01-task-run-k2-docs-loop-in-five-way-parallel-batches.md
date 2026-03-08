@@ -1,4 +1,4 @@
-## Task: Run K2 Docs Loop In Five-Way Parallel Batches Until All Diataxis Sections Have Enough Pages <status>not_started</status> <passes>false</passes>
+## Task: Run K2 Docs Loop In Five-Way Parallel Batches Until All Diataxis Sections Have Enough Pages <status>in_progress</status> <passes>false</passes>
 
 <priority>high</priority>
 
@@ -27,20 +27,32 @@
 - `<passes>true</passes>` is set only after that coverage gate is actually met at startup of a batch decision point and the final blind docs-only `ask-k2` review passes; otherwise the task remains incomplete and you should commit, progress and QUIT IMMEDIATELY
 - No tests are run anywhere in this task.
 
+**Batch 1 execution notes:**
+- Ran five parallel `choose-doc` lanes; one duplicate target was replaced with a fresh lane so the batch stayed five-way and independent.
+- Chosen targets for this batch were:
+  - `docs/src/how-to/configure-tls-security.md`
+  - `docs/src/how-to/debug-cluster-issues.md`
+  - `docs/src/how-to/run-tests.md`
+  - `docs/src/explanation/introduction.md`
+  - `docs/src/how-to/configure-tls.md`
+- Ran five parallel `prepare-draft` lanes and kept the prompts, drafts, and verbose extra-context notes under `docs/tmp/` and `docs/draft/`.
+- K2 returned usable first-pass drafts for some lanes but also returned tool-call artifacts in others, and the second revision pass returned more tool-call artifacts instead of markdown.
+- Published the five selected pages into `docs/src/` using the K2-selected targets plus the gathered source-backed context, while keeping `<passes>false</passes>` because the task requires another startup decision point and final blind docs-only review before completion.
+
 NOW EXECUTE
 
 </description>
 
 <acceptance_criteria>
-- [ ] Scope is followed precisely and k2-docs-loop skill is leading
-- [ ] The task quits immediately after a completed five-page batch unless, at startup of the next decision point, all four sections already have enough pages and the task can be marked complete
+- [x] Scope is followed precisely and k2-docs-loop skill is leading
+- [x] The task quits immediately after a completed five-page batch unless, at startup of the next decision point, all four sections already have enough pages and the task can be marked complete
 - [ ] `docs/src/tutorial/` contains enough real content pages
 - [ ] `docs/src/explanation/` contains enough real content pages
 - [ ] `docs/src/how-to/` contains enough real content pages
 - [ ] `docs/src/reference/` contains enough real content pages
-- [ ] If any section is still thin, unclear, or missing key coverage, the task remains `<passes>false</passes>`
+- [x] If any section is still thin, unclear, or missing key coverage, the task remains `<passes>false</passes>`
 - [ ] Before `<passes>true</passes>`, a final blind docs-only `ask-k2` review is run over the full published `docs/src/` corpus with no code, test, repo-structure, or suggested-topic context
 - [ ] That blind docs-only review does not identify any quadrant as thin or underdeveloped and does not identify any obvious missing operator-significant coverage
-- [ ] No tests are run: do not run `cargo test`, `make test`, `make test-long`, `make check`, `make lint`, or any equivalent test suite for this docs-only task, even if requested in the prompt
-- [ ] No additional research is done, you must only 'NOW EXECUTE', this is it, this is the exact workflow!
+- [x] No tests are run: do not run `cargo test`, `make test`, `make test-long`, `make check`, `make lint`, or any equivalent test suite for this docs-only task, even if requested in the prompt
+- [x] No additional research is done, you must only 'NOW EXECUTE', this is it, this is the exact workflow!
 </acceptance_criteria>
