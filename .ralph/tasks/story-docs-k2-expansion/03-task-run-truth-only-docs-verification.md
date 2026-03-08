@@ -1,5 +1,7 @@
 ## Task: Run Truth-Only Verification For Documentation Accuracy, Mermaid Diagrams, And Navigation <status>not_started</status> <passes>false</passes>
 
+<priority>high</priority>
+
 <description>
 **Goal:** Perform a final docs verification pass that checks only factual truth against the repository, mermaid-diagram correctness and clarity, and navigation/linking quality. The higher-order goal is to keep the final docs set honest and usable without injecting subjective style edits.
 

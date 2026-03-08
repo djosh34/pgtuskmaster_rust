@@ -1,5 +1,7 @@
 ## Task: Write Chapter Overviews, Introductions, README, And Landing Page With Ask-K2 <status>not_started</status> <passes>false</passes>
 
+<priority>high</priority>
+
 <description>
 **Goal:** Use the `ask-k2` skill, in the same raw-prompt style used by the `k2-docs-loop` workflow, to author the docs navigation and orientation pages that tie the generated content together. The higher-order goal is to turn a set of isolated pages into a coherent documentation experience with chapter entry points, a clear first landing page, and a repository-facing README.
 

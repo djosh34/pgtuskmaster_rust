@@ -1,5 +1,7 @@
 ## Task: Run K2 Docs Loop In Five-Way Parallel Batches Until All Diataxis Sections Have Enough Pages <status>not_started</status> <passes>false</passes>
 
+<priority>high</priority>
+
 <description>
 **Goal:** Create a docs-only execution task that follows the `k2-docs-loop` skill precisely, but accelerates throughput by running five fully independent page-selection and draft-preparation lanes in parallel. 
 
