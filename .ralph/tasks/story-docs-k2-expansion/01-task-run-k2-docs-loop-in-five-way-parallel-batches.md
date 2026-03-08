@@ -1,4 +1,4 @@
-## Task: Run K2 Docs Loop In Five-Way Parallel Batches Until All Diataxis Sections Have Enough Pages <status>in_progress</status> <passes>false</passes>
+## Task: Run K2 Docs Loop In Five-Way Parallel Batches Until All Diataxis Sections Have Enough Pages <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
