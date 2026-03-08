@@ -18,3 +18,4 @@
 
 - [Reference]()
     - [pgtuskmasterctl CLI](reference/pgtuskmasterctl-cli.md)
+    - [Runtime Configuration](reference/runtime-configuration.md)
