@@ -1,6 +1,18 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 12:12:35 AM CET 2026
+Generated: Mon Mar  9 12:22:24 AM CET 2026
+
+# Task `.ralph/tasks/bugs/bug-nextest-ultra-long-profile-disables-required-parallelism.md`
+
+```
+## Bug: Nextest ultra-long profile disables required parallel execution for isolated tests <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
 
 # Task `.ralph/tasks/story-ctl-operator-experience/01-task-rename-the-operator-cli-to-pgtm-and-flatten-the-command-tree.md`
 
@@ -74,43 +86,7 @@ Generated: Mon Mar  9 12:12:35 AM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-parallel-ha-test-hardening/task-add-clone-and-rewind-failure-ha-e2e-coverage.md`
-
-```
-## Task: Add Clone And Rewind Failure HA E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>low</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-parallel-ha-test-hardening/task-add-ha-restart-and-leadership-churn-e2e-coverage.md`
-
-```
-## Task: Add HA Restart And Leadership Churn E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>low</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-parallel-ha-test-hardening/task-add-non-e2e-api-tls-hostname-and-san-coverage.md`
-
-```
-## Task: Add Non-E2E API TLS Hostname And SAN Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>low</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-parallel-ha-test-hardening/task-add-postgres-proxy-chaos-e2e-coverage.md`
+# Task `.ralph/tasks/story-parallel-ha-test-hardening/01-task-add-postgres-proxy-chaos-e2e-coverage.md`
 
 ```
 ## Task: Add PostgreSQL Proxy Chaos E2E Coverage <status>not_started</status> <passes>false</passes>
@@ -122,10 +98,34 @@ Generated: Mon Mar  9 12:12:35 AM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-parallel-ha-test-hardening/task-restore-full-nextest-parallelism-and-remove-manual-ultra-long-serialization.md`
+# Task `.ralph/tasks/story-parallel-ha-test-hardening/02-task-add-ha-restart-and-leadership-churn-e2e-coverage.md`
 
 ```
-## Task: Restore Full Nextest Parallelism And Remove Manual Ultra-Long Serialization <status>not_started</status> <passes>false</passes>
+## Task: Add HA Restart And Leadership Churn E2E Coverage <status>not_started</status> <passes>false</passes>
+
+<priority>low</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-parallel-ha-test-hardening/03-task-add-clone-and-rewind-failure-ha-e2e-coverage.md`
+
+```
+## Task: Add Clone And Rewind Failure HA E2E Coverage <status>not_started</status> <passes>false</passes>
+
+<priority>low</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-parallel-ha-test-hardening/04-task-add-non-e2e-api-tls-hostname-and-san-coverage.md`
+
+```
+## Task: Add Non-E2E API TLS Hostname And SAN Coverage <status>not_started</status> <passes>false</passes>
 
 <priority>low</priority>
 
