@@ -1,1 +1,0 @@
-<|tool_calls_section_begin|><|tool_call_begin|>functions.ReadFile:0<|tool_call_argument_begin|>{"path": "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/tmp/k2_outputs/explanation-10-cli-boundary.md"}<|tool_call_end|><|tool_calls_section_end|>

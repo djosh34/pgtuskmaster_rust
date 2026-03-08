@@ -1,9 +1,0 @@
-The daemon-versus-client split in pgtuskmaster is deliberate and non-negotiable. The pgtuskmaster binary runs the node with `--config` and delegates to `runtime::run_node_from_config_path` inside a Tokio runtime. The pgtuskmasterctl binary parses a clap CLI and delegates to `cli::run`, printing output and mapping errors to exit codes. Both binaries stay in their own processes; one is a long-running service, the other a short-lived client.
-
-pgtuskmasterctl never reaches into daemon internals. It uses `CliApiClient` to construct an HTTP client against a base URL, normalizes read and admin tokens, and exposes only `get_ha_state`, `delete_switchover`, and `post_switchover`. Read operations use a read token if configured and fall back to the admin token only when the read token is missing. Admin operations use the admin token exclusively. No other paths exist.
-
-The e2e policy enforces this separation by explicitly allowing observation and switchover requests through supported API paths and forbidding post-start internal steering. This is not an implementation detail; it is a design constraint that keeps the control surface narrow.
-
-Role-separated tokens matter because they match the supported API surface. Even though the command surface is small, the same rules apply: read and write capabilities are distinct. The CLI does not embed HA logic, does not manipulate the DCS directly, and does not bypass the HTTP API. All control goes through the same supported HTTP surfaces that any other client would use.
-
-This means automation and operational discipline must treat pgtuskmasterctl as an external tool, not an internal lever. You cannot use it to hot-patch state, inject decisions, or circumvent the daemon’s event loop. You can observe and request switchover. That is the boundary, and it is intentionally narrow.
