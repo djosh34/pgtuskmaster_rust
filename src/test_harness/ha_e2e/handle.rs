@@ -55,7 +55,11 @@ impl RuntimeNodeSet {
         Self::default()
     }
 
-    pub fn insert(&mut self, node_id: String, handle: RuntimeNodeHandle) -> Option<RuntimeNodeHandle> {
+    pub fn insert(
+        &mut self,
+        node_id: String,
+        handle: RuntimeNodeHandle,
+    ) -> Option<RuntimeNodeHandle> {
         self.nodes.insert(node_id, handle)
     }
 
@@ -138,7 +142,9 @@ impl RuntimeNodeSet {
     ) -> Result<(), WorkerError> {
         let node_id = node.id.clone();
         let mut handle = self.nodes.remove(node_id.as_str()).ok_or_else(|| {
-            WorkerError::Message(format!("missing runtime restart metadata for node: {node_id}"))
+            WorkerError::Message(format!(
+                "missing runtime restart metadata for node: {node_id}"
+            ))
         })?;
 
         handle.task.abort();

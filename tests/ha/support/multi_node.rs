@@ -685,7 +685,9 @@ impl ClusterFixture {
 
     fn proof_table_name(&self, prefix: &str) -> Result<String, WorkerError> {
         let token = unique_e2e_token()?;
-        Ok(sanitize_sql_identifier(format!("{prefix}_{token}").as_str()))
+        Ok(sanitize_sql_identifier(
+            format!("{prefix}_{token}").as_str(),
+        ))
     }
 
     fn node_ids_excluding(&self, excluded_node_id: &str) -> Vec<String> {
@@ -715,7 +717,9 @@ impl ClusterFixture {
         let node = self.node_by_id(node_id).cloned().ok_or_else(|| {
             WorkerError::Message(format!("unknown node id for runtime restart: {node_id}"))
         })?;
-        self.record(format!("runtime restart: stop requested for node={node_id}"));
+        self.record(format!(
+            "runtime restart: stop requested for node={node_id}"
+        ));
         self.runtime_nodes
             .restart_node(&node, E2E_HTTP_STEP_TIMEOUT, E2E_API_READINESS_TIMEOUT)
             .await?;
@@ -726,13 +730,21 @@ impl ClusterFixture {
         Ok(())
     }
 
-    async fn create_proof_table(&self, primary_node_id: &str, table_name: &str) -> Result<(), WorkerError> {
+    async fn create_proof_table(
+        &self,
+        primary_node_id: &str,
+        table_name: &str,
+    ) -> Result<(), WorkerError> {
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {table_name} (id BIGINT PRIMARY KEY, payload TEXT NOT NULL)"
         );
-        self.run_sql_on_node_with_retry(primary_node_id, sql.as_str(), E2E_SQL_REPLICATION_ASSERT_TIMEOUT)
-            .await
-            .map(|_| ())
+        self.run_sql_on_node_with_retry(
+            primary_node_id,
+            sql.as_str(),
+            E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn insert_proof_row(
@@ -746,9 +758,13 @@ impl ClusterFixture {
             "INSERT INTO {table_name} (id, payload) VALUES ({row_id}, {}) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
             sql_literal(payload)
         );
-        self.run_sql_on_node_with_retry(primary_node_id, sql.as_str(), E2E_POST_TRANSITION_SQL_TIMEOUT)
-            .await
-            .map(|_| ())
+        self.run_sql_on_node_with_retry(
+            primary_node_id,
+            sql.as_str(),
+            E2E_POST_TRANSITION_SQL_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn wait_for_proof_rows_on_all_nodes(
@@ -806,9 +822,7 @@ impl ClusterFixture {
                 return Ok(node_ids);
             }
 
-            let observation = format!(
-                "queryable_nodes={node_ids:?} sql_errors={sql_errors:?}"
-            );
+            let observation = format!("queryable_nodes={node_ids:?} sql_errors={sql_errors:?}");
             if tokio::time::Instant::now() >= deadline {
                 return Err(WorkerError::Message(format!(
                     "timed out waiting for at least {min_nodes} queryable nodes including {required_node_id}; last_observation={observation}"
@@ -827,11 +841,9 @@ impl ClusterFixture {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let (sql_roles, sql_errors) = self.cluster_sql_roles_best_effort().await?;
-            let observed_role = sql_roles
-                .iter()
-                .find_map(|(observed_node_id, role)| {
-                    (observed_node_id == node_id).then_some(role.as_str())
-                });
+            let observed_role = sql_roles.iter().find_map(|(observed_node_id, role)| {
+                (observed_node_id == node_id).then_some(role.as_str())
+            });
             if observed_role == Some(expected_role) {
                 return Ok(());
             }
@@ -853,11 +865,7 @@ impl ClusterFixture {
         let deadline = tokio::time::Instant::now() + window;
         loop {
             match self
-                .run_sql_on_node(
-                    node_id,
-                    "SELECT 1",
-                    E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
-                )
+                .run_sql_on_node(node_id, "SELECT 1", E2E_SQL_WORKLOAD_COMMAND_TIMEOUT)
                 .await
             {
                 Ok(output) => {
@@ -2062,8 +2070,7 @@ impl ClusterFixture {
                         )));
                     }
                     Err(CliError::Transport(err)) => {
-                        last_transport_error =
-                            format!("node={node_id} round={round} err={err}");
+                        last_transport_error = format!("node={node_id} round={round} err={err}");
                         self.record(format!(
                             "api switchover rejection transport failure: round={round}/{max_transport_rounds} node={node_id} target={target_node_id} err={err}"
                         ));
@@ -2198,8 +2205,7 @@ impl ClusterFixture {
                         match state_result {
                             Ok(state) => states.push(state),
                             Err(err) => {
-                                last_error =
-                                    format!("HA state poll failed for {node_id}: {err}");
+                                last_error = format!("HA state poll failed for {node_id}: {err}");
                             }
                         }
                     }
@@ -3683,8 +3689,8 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
     .await
 }
 
-pub async fn e2e_multi_node_clone_failure_recovers_after_fault_removed(
-) -> Result<(), WorkerError> {
+pub async fn e2e_multi_node_clone_failure_recovers_after_fault_removed() -> Result<(), WorkerError>
+{
     ha_e2e::util::run_with_local_set(async {
         let scenario_name = "ha-e2e-clone-failure-recovers-after-fix";
         let namespace = pgtuskmaster_rust::test_harness::namespace::create_namespace(
@@ -3927,8 +3933,7 @@ pub async fn e2e_multi_node_clone_failure_recovers_after_fault_removed(
     .await
 }
 
-pub async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup(
-) -> Result<(), WorkerError> {
+pub async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let scenario_name = "ha-e2e-rewind-failure-fallback";
         let namespace = pgtuskmaster_rust::test_harness::namespace::create_namespace(

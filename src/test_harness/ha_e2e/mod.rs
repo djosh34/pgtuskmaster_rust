@@ -10,8 +10,8 @@ pub use startup::start_cluster;
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::collections::BTreeMap;
+    use std::env;
     use std::time::Duration;
 
     use crate::state::WorkerError;
@@ -109,7 +109,9 @@ mod tests {
         };
 
         let result = config.validate();
-        assert!(matches!(result, Err(WorkerError::Message(message)) if message.contains("absolute path")));
+        assert!(
+            matches!(result, Err(WorkerError::Message(message)) if message.contains("absolute path"))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -136,10 +138,11 @@ mod tests {
             });
             runtime_nodes.replace_task("node-b", replacement_task)?;
 
-            let (stored_cfg, stored_log_file) = runtime_nodes
-                .metadata_for_node("node-b")
-                .ok_or_else(|| {
-                    WorkerError::Message("runtime node metadata missing after replacement".to_string())
+            let (stored_cfg, stored_log_file) =
+                runtime_nodes.metadata_for_node("node-b").ok_or_else(|| {
+                    WorkerError::Message(
+                        "runtime node metadata missing after replacement".to_string(),
+                    )
                 })?;
             assert_eq!(stored_cfg, &runtime_cfg);
             assert_eq!(stored_log_file, &postgres_log_file);

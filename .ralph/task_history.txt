@@ -169,3 +169,4 @@
 .ralph/tasks/story-parallel-ha-test-hardening/02-task-add-ha-restart-and-leadership-churn-e2e-coverage.md
 .ralph/tasks/bugs/targeted-switchover-request-can-promote-wrong-node.md
 .ralph/tasks/story-parallel-ha-test-hardening/03-task-add-clone-and-rewind-failure-ha-e2e-coverage.md
+.ralph/tasks/story-parallel-ha-test-hardening/04-task-add-non-e2e-api-tls-hostname-and-san-coverage.md

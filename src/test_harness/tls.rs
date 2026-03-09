@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 use std::{fs, path::Path};
 
@@ -104,6 +106,42 @@ impl GeneratedCert {
 }
 
 #[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TestSubjectAltName {
+    Dns(String),
+    Ip(IpAddr),
+}
+
+#[cfg(test)]
+impl TestSubjectAltName {
+    fn to_certificate_param(&self) -> String {
+        match self {
+            Self::Dns(name) => name.clone(),
+            Self::Ip(addr) => addr.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+fn localhost_server_sans() -> Vec<TestSubjectAltName> {
+    vec![TestSubjectAltName::Dns("localhost".to_string())]
+}
+
+#[cfg(test)]
+fn ipv4_loopback_server_sans() -> Vec<TestSubjectAltName> {
+    vec![TestSubjectAltName::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST))]
+}
+
+#[cfg(test)]
+fn mixed_loopback_server_sans() -> Vec<TestSubjectAltName> {
+    vec![
+        TestSubjectAltName::Dns("localhost".to_string()),
+        TestSubjectAltName::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        TestSubjectAltName::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+    ]
+}
+
+#[cfg(test)]
 #[derive(Debug)]
 pub struct GeneratedCa {
     pub cert: GeneratedCert,
@@ -123,6 +161,8 @@ pub struct AdversarialTlsFixture {
     pub valid_server_ca: GeneratedCa,
     pub wrong_server_ca: GeneratedCa,
     pub valid_server: GeneratedCert,
+    pub ipv4_loopback_server: GeneratedCert,
+    pub mixed_loopback_server: GeneratedCert,
     pub expired_server: GeneratedCert,
     pub trusted_client_ca: GeneratedCa,
     pub trusted_client: GeneratedCert,
@@ -139,28 +179,42 @@ pub fn build_adversarial_tls_fixture() -> Result<AdversarialTlsFixture, HarnessE
 
     let valid_server = generate_leaf_cert(
         "server-valid",
-        "localhost",
+        &localhost_server_sans(),
+        false,
+        valid_server_ca.issuer(),
+        false,
+    )?;
+    let ipv4_loopback_server = generate_leaf_cert(
+        "server-ipv4-loopback",
+        &ipv4_loopback_server_sans(),
+        false,
+        valid_server_ca.issuer(),
+        false,
+    )?;
+    let mixed_loopback_server = generate_leaf_cert(
+        "server-mixed-loopback",
+        &mixed_loopback_server_sans(),
         false,
         valid_server_ca.issuer(),
         false,
     )?;
     let expired_server = generate_leaf_cert(
         "server-expired",
-        "localhost",
+        &localhost_server_sans(),
         true,
         valid_server_ca.issuer(),
         false,
     )?;
     let trusted_client = generate_leaf_cert(
         "trusted-client",
-        "localhost",
+        &localhost_server_sans(),
         false,
         trusted_client_ca.issuer(),
         true,
     )?;
     let untrusted_client = generate_leaf_cert(
         "untrusted-client",
-        "localhost",
+        &localhost_server_sans(),
         false,
         untrusted_client_ca.issuer(),
         true,
@@ -170,6 +224,8 @@ pub fn build_adversarial_tls_fixture() -> Result<AdversarialTlsFixture, HarnessE
         valid_server_ca,
         wrong_server_ca,
         valid_server,
+        ipv4_loopback_server,
+        mixed_loopback_server,
         expired_server,
         trusted_client_ca,
         trusted_client,
@@ -212,12 +268,16 @@ pub fn generate_ca(common_name: &str) -> Result<GeneratedCa, HarnessError> {
 #[cfg(test)]
 pub fn generate_leaf_cert(
     common_name: &str,
-    dns_name: &str,
+    subject_alt_names: &[TestSubjectAltName],
     expired: bool,
     issuer: &Issuer<'static, KeyPair>,
     is_client_cert: bool,
 ) -> Result<GeneratedCert, HarnessError> {
-    let mut params = CertificateParams::new(vec![dns_name.to_string()])
+    let san_values = subject_alt_names
+        .iter()
+        .map(TestSubjectAltName::to_certificate_param)
+        .collect::<Vec<_>>();
+    let mut params = CertificateParams::new(san_values)
         .map_err(|err| HarnessError::InvalidInput(format!("create leaf params failed: {err}")))?;
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, common_name.to_string());
@@ -356,12 +416,58 @@ pub fn build_client_config(
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    use x509_parser::{extensions::GeneralName, parse_x509_certificate};
+
     use crate::test_harness::{namespace::NamespaceGuard, HarnessError};
 
     use super::{
         build_adversarial_tls_fixture, build_client_config, build_server_config,
-        build_server_config_with_client_auth, write_tls_material,
+        build_server_config_with_client_auth, write_tls_material, GeneratedCert,
+        TestSubjectAltName,
     };
+
+    fn certificate_subject_alt_names(
+        cert: &GeneratedCert,
+    ) -> Result<Vec<TestSubjectAltName>, HarnessError> {
+        let (_remaining, parsed) =
+            parse_x509_certificate(cert.cert_der.as_slice()).map_err(|err| {
+                HarnessError::InvalidInput(format!("parse certificate failed: {err}"))
+            })?;
+        let extension = parsed
+            .subject_alternative_name()
+            .map_err(|err| HarnessError::InvalidInput(format!("read SAN extension failed: {err}")))?
+            .ok_or_else(|| {
+                HarnessError::InvalidInput("certificate missing SAN extension".to_string())
+            })?;
+
+        extension
+            .value
+            .general_names
+            .iter()
+            .map(|name| match name {
+                GeneralName::DNSName(value) => Ok(TestSubjectAltName::Dns(value.to_string())),
+                GeneralName::IPAddress(bytes) => match bytes.len() {
+                    4 => Ok(TestSubjectAltName::Ip(IpAddr::V4(Ipv4Addr::new(
+                        bytes[0], bytes[1], bytes[2], bytes[3],
+                    )))),
+                    16 => {
+                        let octets = <[u8; 16]>::try_from(*bytes).map_err(|_| {
+                            HarnessError::InvalidInput("invalid IPv6 SAN octet length".to_string())
+                        })?;
+                        Ok(TestSubjectAltName::Ip(IpAddr::V6(Ipv6Addr::from(octets))))
+                    }
+                    len => Err(HarnessError::InvalidInput(format!(
+                        "unsupported IP SAN octet length: {len}"
+                    ))),
+                },
+                other => Err(HarnessError::InvalidInput(format!(
+                    "unsupported SAN entry in fixture certificate: {other:?}"
+                ))),
+            })
+            .collect()
+    }
 
     #[test]
     fn write_tls_material_writes_files_under_namespace() -> Result<(), HarnessError> {
@@ -392,16 +498,32 @@ mod tests {
     }
 
     #[test]
-    fn adversarial_fixture_builds_distinct_material() -> Result<(), HarnessError> {
+    fn adversarial_fixture_publishes_expected_server_san_variants() -> Result<(), HarnessError> {
         let fixture = build_adversarial_tls_fixture()?;
 
+        assert_eq!(
+            certificate_subject_alt_names(&fixture.valid_server)?,
+            vec![TestSubjectAltName::Dns("localhost".to_string())]
+        );
+        assert_eq!(
+            certificate_subject_alt_names(&fixture.ipv4_loopback_server)?,
+            vec![TestSubjectAltName::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST))]
+        );
+        assert_eq!(
+            certificate_subject_alt_names(&fixture.mixed_loopback_server)?,
+            vec![
+                TestSubjectAltName::Dns("localhost".to_string()),
+                TestSubjectAltName::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                TestSubjectAltName::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+            ]
+        );
+        assert_eq!(
+            certificate_subject_alt_names(&fixture.expired_server)?,
+            vec![TestSubjectAltName::Dns("localhost".to_string())]
+        );
         assert_ne!(
             fixture.valid_server_ca.cert.cert_pem,
             fixture.wrong_server_ca.cert.cert_pem
-        );
-        assert_ne!(
-            fixture.valid_server.cert_pem,
-            fixture.expired_server.cert_pem
         );
         assert_ne!(
             fixture.trusted_client_ca.cert.cert_pem,
@@ -422,6 +544,12 @@ mod tests {
 
         let _server_cfg =
             build_server_config(&fixture.valid_server, &fixture.valid_server_ca.cert)?;
+        let _ipv4_server_cfg =
+            build_server_config(&fixture.ipv4_loopback_server, &fixture.valid_server_ca.cert)?;
+        let _mixed_server_cfg = build_server_config(
+            &fixture.mixed_loopback_server,
+            &fixture.valid_server_ca.cert,
+        )?;
         let _mtls_server_cfg = build_server_config_with_client_auth(
             &fixture.valid_server,
             &fixture.valid_server_ca.cert,

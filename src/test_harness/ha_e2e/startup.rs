@@ -57,7 +57,11 @@ fn sql_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn binaries_for_node(config: &TestConfig, shared_binaries: &BinaryPaths, node_id: &str) -> BinaryPaths {
+fn binaries_for_node(
+    config: &TestConfig,
+    shared_binaries: &BinaryPaths,
+    node_id: &str,
+) -> BinaryPaths {
     let mut node_binaries = shared_binaries.clone();
     if let Some(overrides) = config.recovery_binary_overrides.get(node_id) {
         if let Some(pg_basebackup) = overrides.pg_basebackup.as_ref() {

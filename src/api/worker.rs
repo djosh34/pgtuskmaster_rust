@@ -2400,18 +2400,18 @@ mod tests {
             namespace,
             "required-prod-builder",
             Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
-            Some(fixture.valid_server.cert_pem.as_bytes()),
-            Some(fixture.valid_server.key_pem.as_bytes()),
+            Some(fixture.mixed_loopback_server.cert_pem.as_bytes()),
+            Some(fixture.mixed_loopback_server.key_pem.as_bytes()),
         )?;
 
         let tls_cfg = crate::config::TlsServerConfig {
             mode: ApiTlsMode::Required,
             identity: Some(crate::config::TlsServerIdentityConfig {
                 cert_chain: InlineOrPath::Inline {
-                    content: fixture.valid_server.cert_pem.clone(),
+                    content: fixture.mixed_loopback_server.cert_pem.clone(),
                 },
                 private_key: InlineOrPath::Inline {
-                    content: fixture.valid_server.key_pem.clone(),
+                    content: fixture.mixed_loopback_server.key_pem.clone(),
                 },
             }),
             client_auth: None,
@@ -2429,8 +2429,18 @@ mod tests {
         let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
         let response = send_tls_request(
             &mut ctx,
+            client_cfg.clone(),
+            "127.0.0.1",
+            format_get("/fallback/cluster", None),
+            None,
+        )
+        .await?;
+        assert_eq!(response.status_code, 200);
+
+        let response = send_tls_request(
+            &mut ctx,
             client_cfg,
-            "localhost",
+            "::1",
             format_get("/fallback/cluster", None),
             None,
         )
@@ -2524,8 +2534,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn security_tls_wrong_ca_and_hostname_and_expiry_failures() -> Result<(), WorkerError> {
-        let guard = NamespaceGuard::new("api-tls-failures")?;
+    async fn security_tls_wrong_ca_failure_rejects_handshake() -> Result<(), WorkerError> {
+        let guard = NamespaceGuard::new("api-tls-wrong-ca")?;
         let namespace = guard.namespace()?;
         let fixture = build_adversarial_tls_fixture()?;
 
@@ -2535,13 +2545,6 @@ mod tests {
             Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
             Some(fixture.valid_server.cert_pem.as_bytes()),
             Some(fixture.valid_server.key_pem.as_bytes()),
-        )?;
-        let _material_expired = write_tls_material(
-            namespace,
-            "expired-server",
-            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
-            Some(fixture.expired_server.cert_pem.as_bytes()),
-            Some(fixture.expired_server.key_pem.as_bytes()),
         )?;
 
         let (mut ctx_wrong_ca, _store) = build_ctx(None).await?;
@@ -2554,29 +2557,171 @@ mod tests {
         )?;
         let client_wrong_ca = build_client_config(&fixture.wrong_server_ca.cert, None, None)?;
         expect_tls_handshake_failure(&mut ctx_wrong_ca, client_wrong_ca, "localhost").await?;
+        Ok(())
+    }
 
-        let (mut ctx_hostname, _store) = build_ctx(None).await?;
-        ctx_hostname.configure_tls(
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_tls_wrong_hostname_failure_rejects_handshake() -> Result<(), WorkerError> {
+        let guard = NamespaceGuard::new("api-tls-wrong-hostname")?;
+        let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
+
+        let _material_valid = write_tls_material(
+            namespace,
+            "valid-server",
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
+        )?;
+
+        let (mut ctx, _store) = build_ctx(None).await?;
+        ctx.configure_tls(
             ApiTlsMode::Required,
             Some(build_server_config(
                 &fixture.valid_server,
                 &fixture.valid_server_ca.cert,
             )?),
         )?;
-        let client_hostname = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
-        expect_tls_handshake_failure(&mut ctx_hostname, client_hostname, "not-localhost").await?;
+        let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        expect_tls_handshake_failure(&mut ctx, client_cfg, "not-localhost").await?;
+        Ok(())
+    }
 
-        let (mut ctx_expired, _store) = build_ctx(None).await?;
-        ctx_expired.configure_tls(
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_tls_dns_san_rejects_ip_server_name() -> Result<(), WorkerError> {
+        let guard = NamespaceGuard::new("api-tls-dns-san-ip-server-name")?;
+        let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
+
+        let _material_valid = write_tls_material(
+            namespace,
+            "valid-server",
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.valid_server.cert_pem.as_bytes()),
+            Some(fixture.valid_server.key_pem.as_bytes()),
+        )?;
+
+        let (mut ctx, _store) = build_ctx(None).await?;
+        ctx.configure_tls(
+            ApiTlsMode::Required,
+            Some(build_server_config(
+                &fixture.valid_server,
+                &fixture.valid_server_ca.cert,
+            )?),
+        )?;
+        let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        expect_tls_handshake_failure(&mut ctx, client_cfg, "127.0.0.1").await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_tls_ip_san_rejects_dns_server_name() -> Result<(), WorkerError> {
+        let guard = NamespaceGuard::new("api-tls-ip-san-dns-server-name")?;
+        let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
+
+        let _material_ip_only = write_tls_material(
+            namespace,
+            "ipv4-loopback-server",
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.ipv4_loopback_server.cert_pem.as_bytes()),
+            Some(fixture.ipv4_loopback_server.key_pem.as_bytes()),
+        )?;
+
+        let (mut ctx, _store) = build_ctx(None).await?;
+        ctx.configure_tls(
+            ApiTlsMode::Required,
+            Some(build_server_config(
+                &fixture.ipv4_loopback_server,
+                &fixture.valid_server_ca.cert,
+            )?),
+        )?;
+        let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        expect_tls_handshake_failure(&mut ctx, client_cfg, "localhost").await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_tls_expired_server_failure_rejects_handshake() -> Result<(), WorkerError> {
+        let guard = NamespaceGuard::new("api-tls-expired-server")?;
+        let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
+
+        let _material_expired = write_tls_material(
+            namespace,
+            "expired-server",
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.expired_server.cert_pem.as_bytes()),
+            Some(fixture.expired_server.key_pem.as_bytes()),
+        )?;
+
+        let (mut ctx, _store) = build_ctx(None).await?;
+        ctx.configure_tls(
             ApiTlsMode::Required,
             Some(build_server_config(
                 &fixture.expired_server,
                 &fixture.valid_server_ca.cert,
             )?),
         )?;
-        let client_expired = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
-        expect_tls_handshake_failure(&mut ctx_expired, client_expired, "localhost").await?;
+        let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        expect_tls_handshake_failure(&mut ctx, client_cfg, "localhost").await?;
+        Ok(())
+    }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_tls_mixed_san_accepts_dns_and_loopback_ip_server_names(
+    ) -> Result<(), WorkerError> {
+        let guard = NamespaceGuard::new("api-tls-mixed-san-success")?;
+        let namespace = guard.namespace()?;
+        let fixture = build_adversarial_tls_fixture()?;
+
+        let _material = write_tls_material(
+            namespace,
+            "mixed-loopback-server",
+            Some(fixture.valid_server_ca.cert.cert_pem.as_bytes()),
+            Some(fixture.mixed_loopback_server.cert_pem.as_bytes()),
+            Some(fixture.mixed_loopback_server.key_pem.as_bytes()),
+        )?;
+
+        let (mut ctx, _store) = build_ctx(None).await?;
+        ctx.configure_tls(
+            ApiTlsMode::Required,
+            Some(build_server_config(
+                &fixture.mixed_loopback_server,
+                &fixture.valid_server_ca.cert,
+            )?),
+        )?;
+
+        let client_cfg = build_client_config(&fixture.valid_server_ca.cert, None, None)?;
+        let localhost_response = send_tls_request(
+            &mut ctx,
+            client_cfg.clone(),
+            "localhost",
+            format_get("/fallback/cluster", None),
+            None,
+        )
+        .await?;
+        assert_eq!(localhost_response.status_code, 200);
+
+        let ipv4_response = send_tls_request(
+            &mut ctx,
+            client_cfg.clone(),
+            "127.0.0.1",
+            format_get("/fallback/cluster", None),
+            None,
+        )
+        .await?;
+        assert_eq!(ipv4_response.status_code, 200);
+
+        let ipv6_response = send_tls_request(
+            &mut ctx,
+            client_cfg,
+            "::1",
+            format_get("/fallback/cluster", None),
+            None,
+        )
+        .await?;
+        assert_eq!(ipv6_response.status_code, 200);
         Ok(())
     }
 
