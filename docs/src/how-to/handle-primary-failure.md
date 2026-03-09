@@ -14,7 +14,7 @@ This guide shows how to detect, assess, and respond to a PostgreSQL primary node
 Start with the cluster-wide view:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 ```
 
 Focus on:
@@ -47,7 +47,7 @@ The Docker cluster example uses `ha.lease_ttl_ms = 10000` and `ha.loop_interval_
 If the status table is not enough, inspect the most suspicious node directly:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+pgtm -c config.toml debug verbose
 ```
 
 That gives you the current:
@@ -70,7 +70,7 @@ No manual intervention is required for most failures. The HA decision engine aut
 To monitor automated recovery, keep watching cluster status:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v --watch
+pgtm -c config.toml status -v --watch
 ```
 
 ### If automation stalls

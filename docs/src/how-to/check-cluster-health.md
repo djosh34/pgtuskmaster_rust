@@ -25,13 +25,13 @@ make docker-status-cluster
 Run the default status path:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml
+pgtm -c config.toml
 ```
 
 The explicit form is the same:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c config.toml status
 ```
 
 The command starts from one node API, reads the stable HA state payload, discovers peer API URLs from the stable member list, then samples those peers to build a cluster view.
@@ -41,25 +41,25 @@ The command starts from one node API, reads the stable HA state payload, discove
 Use the default human table when you want a fast operator read:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c config.toml status
 ```
 
 Use JSON when you want automation-friendly output:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml --json
+pgtm -c config.toml --json
 ```
 
 Use verbose mode when you want deeper per-node detail:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 ```
 
 Use watch mode when you want repeated observation:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status --watch
+pgtm -c config.toml status --watch
 ```
 
 ## Interpret the human output
@@ -140,20 +140,20 @@ For a suspected incident, look for:
 Use the status table to understand cluster health, then use the connection helpers when you actually need a PostgreSQL target:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml primary
-pgtm -c /etc/pgtuskmaster/config.toml replicas
+pgtm -c config.toml primary
+pgtm -c config.toml replicas
 ```
 
 That keeps operator scripts off the table renderer. For example, to connect to the current primary:
 
 ```bash
-psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)"
+psql "$(pgtm -c config.toml primary)"
 ```
 
 If your PostgreSQL client needs path-backed TLS flags, use:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml primary --tls
+pgtm -c config.toml primary --tls
 ```
 
 ## Troubleshoot connectivity

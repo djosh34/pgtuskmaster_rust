@@ -7,7 +7,7 @@ This guide shows how to transfer primary leadership to another cluster member wi
 Verify the cluster is healthy:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml
+pgtm -c config.toml
 ```
 
 The steady-state goal before a planned switchover is:
@@ -21,7 +21,7 @@ The steady-state goal before a planned switchover is:
 Identify the relevant member IDs:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml --json
+pgtm -c config.toml --json
 ```
 
 Use the cluster view to confirm:
@@ -36,13 +36,13 @@ Use the cluster view to confirm:
 Run the request from the shared runtime config that already names an operator-reachable API URL and auth settings:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml switchover request
+pgtm -c config.toml switchover request
 ```
 
 For a targeted switchover, add the optional member flag:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml switchover request --switchover-to node-b
+pgtm -c config.toml switchover request --switchover-to node-b
 ```
 
 The generic form records pending switchover intent and lets the runtime choose the successor automatically. The targeted form is accepted only when `node-b` is a known, eligible replica. When API role tokens are enabled, `pgtm` resolves the admin token from the shared config and any referenced secret sources.
@@ -68,13 +68,13 @@ With `--json`, the same success is:
 Use the cluster-wide status command while the switchover is in progress:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status --watch
+pgtm -c config.toml status --watch
 ```
 
 If you want structured output for automation, use:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status --watch --json
+pgtm -c config.toml status --watch --json
 ```
 
 Observe these source-backed state changes:
@@ -99,7 +99,7 @@ The transition is complete when cluster-wide status shows:
 Run one cluster-wide check instead of manually comparing raw per-node API responses:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 ```
 
 Confirm that:
@@ -113,13 +113,13 @@ Confirm that:
 If you want the concrete PostgreSQL target without scraping the status table, resolve it directly:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml primary
+pgtm -c config.toml primary
 ```
 
 That output is designed to feed straight into `psql`:
 
 ```bash
-psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)" -c "SELECT pg_is_in_recovery();"
+psql "$(pgtm -c config.toml primary)" -c "SELECT pg_is_in_recovery();"
 ```
 
 `f` means the server is acting as primary.
@@ -127,7 +127,7 @@ psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)" -c "SELECT pg_is_in_reco
 To inspect the currently sampled read targets after the switchover settles:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml replicas
+pgtm -c config.toml replicas
 ```
 
 ## Clear a pending switchover request
@@ -137,7 +137,7 @@ The former primary does not clear the switchover marker during demotion. The req
 The manual clear command is still available when you need to remove a pending switchover request:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml switchover clear
+pgtm -c config.toml switchover clear
 ```
 
 Without `--json`, a successful clear returns:
@@ -157,7 +157,7 @@ Retry the same command from another operator config whose `[pgtm].api_url` point
 Check the warnings in cluster status first:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c config.toml status
 ```
 
 The normal switchover path depends on `full_quorum` DCS trust and enough peer API reachability to form a confident cluster view. If trust has fallen to `fail_safe` or `not_trusted`, or if nodes are unreachable, resolve cluster and DCS health first.
@@ -167,7 +167,7 @@ The normal switchover path depends on `full_quorum` DCS trust and enough peer AP
 Use verbose status to see deeper per-node detail:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 ```
 
 Look for:

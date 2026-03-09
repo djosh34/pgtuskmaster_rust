@@ -24,7 +24,7 @@ Answer four questions quickly:
 Use the CLI summary before you drop into JSON:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 ```
 
 Focus on:
@@ -59,7 +59,7 @@ If trust is degraded, fix that before you expect normal promotions or switchover
 When the table is not enough, inspect the affected node directly:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+pgtm -c config.toml debug verbose
 ```
 
 The default output summarizes the high-signal sections:
@@ -74,7 +74,7 @@ The default output summarizes the high-signal sections:
 If you need the full stable payload for automation or a saved incident artifact, switch to JSON:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose > debug-node.json
+pgtm -c config.toml --json debug verbose > debug-node.json
 ```
 
 ## Step 4: Poll incrementally with `--since`
@@ -83,7 +83,7 @@ Use the retained sequence cursor when you are following an incident live:
 
 ```bash
 seq=$(jq -r '.meta.sequence' debug-node.json)
-pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose --since "${seq}" > debug-node-since.json
+pgtm -c config.toml --json debug verbose --since "${seq}" > debug-node-since.json
 ```
 
 `--since` filters only `changes` and `timeline`. The other sections still describe the current snapshot.

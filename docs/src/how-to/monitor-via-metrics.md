@@ -24,13 +24,13 @@ Track:
 Start with the cluster summary:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c config.toml status
 ```
 
 When you want structured output for a poller or incident artifact, save the JSON form:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml --json status > status.json
+pgtm -c config.toml --json status > status.json
 ```
 
 The synthesized status view includes:
@@ -45,7 +45,7 @@ The synthesized status view includes:
 When you want richer per-node investigation without leaving the CLI, use:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 ```
 
 That adds:
@@ -61,13 +61,13 @@ That adds:
 For a live operator console, use watch mode:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status --watch
+pgtm -c config.toml status --watch
 ```
 
 For a noisier but deeper view during an incident, use:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v --watch
+pgtm -c config.toml status -v --watch
 ```
 
 ## Step 3: Alert on leadership and trust anomalies
@@ -86,7 +86,7 @@ If you need machine-readable checks, read the saved `status.json` artifact rathe
 For one node, the stable rich inspection surface is:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+pgtm -c config.toml debug verbose
 ```
 
 Use it when you need more than the coarse cluster summary:
@@ -100,7 +100,7 @@ Use it when you need more than the coarse cluster summary:
 If you want the raw stable payload, save the JSON form:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose > debug.json
+pgtm -c config.toml --json debug verbose > debug.json
 ```
 
 ## Step 5: Poll incrementally with `--since`
@@ -109,7 +109,7 @@ The CLI preserves the debug endpoint's incremental history model:
 
 ```bash
 seq=$(jq -r '.meta.sequence' debug.json)
-pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose --since "${seq}" > debug-since.json
+pgtm -c config.toml --json debug verbose --since "${seq}" > debug-since.json
 ```
 
 Use these fields to manage your poller:
@@ -141,7 +141,7 @@ When an incident starts, capture the raw verbose payload for later analysis:
 
 ```bash
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose > "/var/log/pgtuskmaster/debug-${stamp}.json"
+pgtm -c config.toml --json debug verbose > "/var/log/pgtuskmaster/debug-${stamp}.json"
 ```
 
 The retained `timeline` and `changes` sections are especially useful for reconstructing:

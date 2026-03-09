@@ -330,46 +330,46 @@ Without `--json`, the response is rendered as `accepted=<bool>`.
 
 ```bash
 # Default status path
-pgtm -c /etc/pgtuskmaster/config.toml
+pgtm -c config.toml
 
 # Explicit status
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c config.toml status
 
 # Machine-readable cluster view
-pgtm -c /etc/pgtuskmaster/config.toml --json
+pgtm -c config.toml --json
 
 # Deeper operator detail
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 
 # Repeated observation
-pgtm -c /etc/pgtuskmaster/config.toml status --watch
+pgtm -c config.toml status --watch
 
 # Inspect one node's stable debug payload through the CLI
-pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+pgtm -c config.toml debug verbose
 
 # Poll only new retained debug history entries after sequence 42
-pgtm -c /etc/pgtuskmaster/config.toml debug verbose --since 42
+pgtm -c config.toml debug verbose --since 42
 
 # Export the raw stable verbose payload for automation
-pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose
+pgtm -c config.toml --json debug verbose
 
 # Local docker tutorial config with host-mapped API URL
 pgtm -c docs/examples/docker-cluster-node-a.toml status
 
 # Connect to the current primary without scraping table output
-psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)"
+psql "$(pgtm -c config.toml primary)"
 
 # Inspect currently sampled replica connection targets
-pgtm -c /etc/pgtuskmaster/config.toml replicas
+pgtm -c config.toml replicas
 
 # Export a TLS-expanded DSN contract
-pgtm -c /etc/pgtuskmaster/config.toml primary --tls
+pgtm -c config.toml primary --tls
 
 # Switchover control
-pgtm -c /etc/pgtuskmaster/config.toml switchover request
-pgtm -c /etc/pgtuskmaster/config.toml switchover request --switchover-to node-b
-pgtm -c /etc/pgtuskmaster/config.toml switchover clear
+pgtm -c config.toml switchover request
+pgtm -c config.toml switchover request --switchover-to node-b
+pgtm -c config.toml switchover clear
 
 # Explicit override for troubleshooting
-pgtm -c /etc/pgtuskmaster/config.toml --base-url http://127.0.0.1:18081 status
+pgtm -c config.toml --base-url http://127.0.0.1:18081 status
 ```

@@ -140,7 +140,7 @@ For an all-at-once rollout:
 Once API TLS is enabled, verify it through `pgtm`:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c config.toml status
 ```
 
 That confirms the CLI can reach the HTTPS API with the configured CA bundle, optional client certificates, and any configured auth tokens.
@@ -150,13 +150,13 @@ That confirms the CLI can reach the HTTPS API with the configured CA bundle, opt
 Once PostgreSQL TLS is enabled, resolve the current primary with TLS-expanded DSN output:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml primary --tls
+pgtm -c config.toml primary --tls
 ```
 
 Then verify a real PostgreSQL client can connect with those settings:
 
 ```bash
-psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary --tls)"
+psql "$(pgtm -c config.toml primary --tls)"
 ```
 
 ## Troubleshooting

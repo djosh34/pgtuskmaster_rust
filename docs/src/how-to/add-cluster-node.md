@@ -61,7 +61,7 @@ From there, the next phase depends on the observed world state.
 Seed the cluster view through the new node:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 ```
 
 Watch these fields first:
@@ -93,7 +93,7 @@ In practice that means:
 If the table is not enough, inspect the joining node directly:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+pgtm -c config.toml debug verbose
 ```
 
 ## Step 6: Verify replica behavior

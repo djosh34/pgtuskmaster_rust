@@ -203,8 +203,8 @@ The debug worker retains bounded in-memory history. The current default history 
 If you want the CLI wrapper for the same flow, use:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml debug verbose
-pgtm -c /etc/pgtuskmaster/config.toml debug verbose --since 42
+pgtm -c config.toml debug verbose
+pgtm -c config.toml debug verbose --since 42
 ```
 
 For raw HTTP clients, use `meta.sequence` or `debug.last_sequence` as your next `since` cursor:

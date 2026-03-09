@@ -99,13 +99,13 @@ If operators need TLS-expanded DSN output from `pgtm`, also configure `[pgtm.pos
 Query a read operation through the CLI:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c config.toml status
 ```
 
 Then try an admin operation:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml switchover request
+pgtm -c config.toml switchover request
 ```
 
 That verifies both layers at once:

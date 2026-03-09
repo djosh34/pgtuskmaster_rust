@@ -45,7 +45,7 @@ Examples of environment-specific actions:
 Poll cluster state from at least one surviving node:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status -v
+pgtm -c config.toml status -v
 ```
 
 Keep checking until the remaining cluster has a stable view of:
