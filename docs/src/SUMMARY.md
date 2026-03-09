@@ -41,5 +41,5 @@
     - [Debug API](reference/debug-api.md)
     - [DCS State Model](reference/dcs-state-model.md)
     - [pgtuskmaster CLI](reference/pgtuskmaster-cli.md)
-    - [pgtuskmasterctl CLI](reference/pgtuskmasterctl-cli.md)
+    - [pgtm CLI](reference/pgtm-cli.md)
     - [Runtime Configuration](reference/runtime-configuration.md)

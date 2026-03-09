@@ -38,5 +38,5 @@ The daemon CLI surface is intentionally small. Runtime behavior is configured th
 
 ## Related References
 
-- [pgtuskmasterctl CLI](pgtuskmasterctl-cli.md)
+- [pgtm CLI](pgtm-cli.md)
 - [Runtime Configuration](runtime-configuration.md)

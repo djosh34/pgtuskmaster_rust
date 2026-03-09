@@ -14,7 +14,7 @@ Determine:
 
 - access to the API listener on each node
 - `curl` and `jq`
-- optional: `pgtuskmasterctl`
+- optional: `pgtm`
 
 ## Step 1: Check trust on every node
 

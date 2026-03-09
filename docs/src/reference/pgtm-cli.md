@@ -1,16 +1,16 @@
-# pgtuskmasterctl
+# pgtm
 
 ## Name
 
-pgtuskmasterctl - HA admin CLI for PGTuskMaster API
+pgtm - HA admin CLI for PGTuskMaster API
 
 ## Synopsis
 
-`pgtuskmasterctl [OPTIONS] ha <COMMAND>`
+`pgtm [OPTIONS] <COMMAND>`
 
 ## Description
 
-`pgtuskmasterctl` is the command-line client for the PGTuskMaster HA API. It queries cluster state and submits switchover operations against a running node's HTTP API.
+`pgtm` is the command-line client for the PGTuskMaster HA API. It queries cluster state and submits switchover operations against a running node's HTTP API.
 
 ## Global Options
 
@@ -27,17 +27,16 @@ Whitespace-only token values are treated as absent. Read operations use `--read-
 ## Command Hierarchy
 
 ```text
-pgtuskmasterctl
-└── ha
-    ├── state
-    └── switchover
-        ├── clear
-        └── request
+pgtm
+├── status
+└── switchover
+    ├── clear
+    └── request
 ```
 
 ## Commands
 
-### `ha state`
+### `status`
 
 Fetches the current HA state snapshot.
 
@@ -62,7 +61,7 @@ JSON output contains these top-level fields:
 
 Text output renders the same state as newline-delimited `key=value` pairs. Missing `leader` and `switchover_to` values are rendered as `<none>`.
 
-### `ha switchover clear`
+### `switchover clear`
 
 Clears the current switchover request.
 
@@ -73,7 +72,7 @@ Clears the current switchover request.
 
 In text mode the response is rendered as `accepted=<bool>`.
 
-### `ha switchover request`
+### `switchover request`
 
 Submits a switchover request.
 
@@ -92,7 +91,7 @@ In text mode the response is rendered as `accepted=<bool>`.
 
 `text` renders:
 
-- `ha state` as fixed `key=value` lines
+- `status` as fixed `key=value` lines
 - switchover responses as `accepted=<bool>`
 
 The `ha_decision` field is rendered in text as a compact variant string such as `no_change`, `become_primary(promote=true)`, or `step_down(...)`.
@@ -110,9 +109,9 @@ The `ha_decision` field is rendered in text as a compact variant string such as 
 ## Examples
 
 ```bash
-pgtuskmasterctl ha state
-pgtuskmasterctl --base-url http://127.0.0.1:18081 --output text ha state
-pgtuskmasterctl --admin-token "$ADMIN_TOKEN" ha switchover request
-pgtuskmasterctl --admin-token "$ADMIN_TOKEN" ha switchover request --switchover-to node-b
-pgtuskmasterctl --admin-token "$ADMIN_TOKEN" ha switchover clear
+pgtm status
+pgtm --base-url http://127.0.0.1:18081 --output text status
+pgtm --admin-token "$ADMIN_TOKEN" switchover request
+pgtm --admin-token "$ADMIN_TOKEN" switchover request --switchover-to node-b
+pgtm --admin-token "$ADMIN_TOKEN" switchover clear
 ```

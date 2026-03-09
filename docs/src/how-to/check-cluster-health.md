@@ -4,7 +4,7 @@ This guide shows you how to inspect the runtime health of a PGTuskMaster cluster
 
 ## Prerequisites
 
-- The `pgtuskmasterctl` CLI is available to run.
+- The `pgtm` CLI is available to run.
 - At least one cluster node is running with an accessible API endpoint.
 - You know the base URL for the node you want to inspect. The CLI default is `http://127.0.0.1:8080`.
 
@@ -25,13 +25,13 @@ make docker-status-cluster
 Run the HA state command against a node:
 
 ```bash
-pgtuskmasterctl ha state
+pgtm status
 ```
 
 For a specific node or non-default port:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:18081 ha state
+pgtm --base-url http://127.0.0.1:18081 status
 ```
 
 ## Choose output format
@@ -44,16 +44,16 @@ The CLI supports two output formats:
 Examples:
 
 ```bash
-pgtuskmasterctl --output json ha state
+pgtm --output json status
 ```
 
 ```bash
-pgtuskmasterctl --output text ha state
+pgtm --output text status
 ```
 
 ## Interpret the output
 
-The `ha state` response includes these fields:
+The `status` response includes these fields:
 
 - `cluster_name`: cluster name from runtime configuration.
 - `scope`: DCS scope for the cluster.
@@ -70,7 +70,7 @@ The `ha state` response includes these fields:
 
 ## Check more than one node
 
-A single successful request only tells you about one node. For cluster-level checks, run `ha state` against multiple nodes and compare:
+A single successful request only tells you about one node. For cluster-level checks, run `status` against multiple nodes and compare:
 
 - whether they agree on the same `leader`
 - whether more than one node reports `ha_phase=primary`
@@ -86,7 +86,7 @@ If the CLI reports a `transport error`, verify:
 
 - the base URL is correct and reachable
 - the node API is listening on the configured port
-- network access from the host running `pgtuskmasterctl`
+- network access from the host running `pgtm`
 
 ## Text output shape
 

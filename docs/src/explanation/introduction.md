@@ -61,7 +61,7 @@ The HTTP API exposes:
 - `/switchover` and `/ha/switchover` for planned leadership changes
 - `/debug/snapshot`, `/debug/verbose`, and `/debug/ui` for deeper diagnostics
 
-The CLI client `pgtuskmasterctl` is a thin client for that API. It is for issuing requests and reading state, not for bypassing the runtime with direct DCS manipulation.
+The CLI client `pgtm` is a thin client for that API. It is for issuing requests and reading state, not for bypassing the runtime with direct DCS manipulation.
 
 ## Deployment Expectations
 

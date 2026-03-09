@@ -15,7 +15,7 @@ fn write_temp_config(label: &str, toml: &str) -> Result<std::path::PathBuf, Stri
 }
 
 fn cli_bin_path() -> Result<std::path::PathBuf, String> {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_pgtuskmasterctl") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_pgtm") {
         return Ok(std::path::PathBuf::from(path));
     }
 
@@ -24,10 +24,11 @@ fn cli_bin_path() -> Result<std::path::PathBuf, String> {
         .parent()
         .and_then(std::path::Path::parent)
         .ok_or_else(|| "failed to derive target/debug directory".to_string())?;
-    let mut candidate = debug_dir.join("pgtuskmasterctl");
-    if cfg!(windows) {
-        candidate.set_extension("exe");
-    }
+    let candidate = if cfg!(windows) {
+        debug_dir.join("pgtm.exe")
+    } else {
+        debug_dir.join("pgtm")
+    };
     if candidate.exists() {
         Ok(candidate)
     } else {
@@ -73,8 +74,8 @@ fn help_exits_success() -> Result<(), String> {
     let stdout = String::from_utf8(output.stdout)
         .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
     assert!(
-        stdout.contains("ha"),
-        "help output should include ha command"
+        stdout.contains("status"),
+        "help output should include status command"
     );
     Ok(())
 }
@@ -83,7 +84,7 @@ fn help_exits_success() -> Result<(), String> {
 fn missing_required_subcommand_arg_exits_usage_code() -> Result<(), String> {
     let bin = cli_bin_path()?;
     let output = Command::new(&bin)
-        .args(["ha", "leader", "set"])
+        .args(["switchover", "leader", "set"])
         .output()
         .map_err(|err| format!("failed to run command: {err}"))?;
 
@@ -111,8 +112,7 @@ fn state_command_maps_connection_refused_to_exit_3() -> Result<(), String> {
             &format!("http://{addr}"),
             "--timeout-ms",
             "50",
-            "ha",
-            "state",
+            "status",
         ])
         .output()
         .map_err(|err| format!("failed to run state command: {err}"))?;

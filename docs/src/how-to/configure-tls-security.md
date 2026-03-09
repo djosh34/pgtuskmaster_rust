@@ -89,10 +89,10 @@ curl --fail --silent \
 Try an admin operation with the admin token:
 
 ```bash
-pgtuskmasterctl \
+pgtm \
   --base-url https://127.0.0.1:8080 \
   --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" \
-  ha switchover request
+  switchover request
 ```
 
 That verifies both layers at once:

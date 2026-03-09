@@ -7,5 +7,5 @@ This chapter contains technical descriptions of PGTuskMaster machinery and how t
 - [Debug API](debug-api.md) - Read-only observability surface available when `debug.enabled` is true, including `/debug/verbose`, `/debug/snapshot`, and `/debug/ui`.
 - [DCS State Model](dcs-state-model.md) - DCS-backed state structures, trust evaluation rules, key layout patterns, and cache update mechanisms.
 - [pgtuskmaster CLI](pgtuskmaster-cli.md) - Daemon binary synopsis, options, exit codes, and runtime behavior.
-- [pgtuskmasterctl CLI](pgtuskmasterctl-cli.md) - HA admin client command reference, global options, output formats, and examples.
+- [pgtm CLI](pgtm-cli.md) - HA admin client command reference, global options, output formats, and examples.
 - [Runtime Configuration](runtime-configuration.md) - TOML configuration schema, validation rules, and defaulted sections.

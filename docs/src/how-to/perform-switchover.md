@@ -7,7 +7,7 @@ This guide shows how to transfer primary leadership to another cluster member wi
 Verify cluster state is healthy:
 
 ```bash
-pgtuskmasterctl ha state
+pgtm status
 ```
 
 Expected output shows `dcs_trust` as `full_quorum`. If trust is `fail_safe` or `not_trusted`, resolve DCS health before proceeding.
@@ -15,7 +15,7 @@ Expected output shows `dcs_trust` as `full_quorum`. If trust is `fail_safe` or `
 Identify the relevant member IDs:
 
 ```bash
-pgtuskmasterctl ha state
+pgtm status
 ```
 
 The API response includes `self_member_id`, `leader`, `switchover_pending`, and `switchover_to`. Use those fields to confirm the current primary, whether a switchover request is already pending, and whether the pending request is generic or targeted.
@@ -25,13 +25,13 @@ The API response includes `self_member_id`, `leader`, `switchover_pending`, and 
 Run the request against a node API endpoint that can accept admin requests:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover request
+pgtm --base-url http://127.0.0.1:18081 switchover request
 ```
 
 For a targeted switchover, add the optional member flag:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover request --switchover-to node-b
+pgtm --base-url http://127.0.0.1:18081 switchover request --switchover-to node-b
 ```
 
 The generic form records pending switchover intent and lets the runtime choose the successor automatically. The targeted form is accepted only when `node-b` is a known, eligible replica. If API role tokens are enabled in your deployment, add `--admin-token "$PGTUSKMASTER_ADMIN_TOKEN"` or set `PGTUSKMASTER_ADMIN_TOKEN` in the environment because switchover requests are admin operations. A successful request returns:
@@ -47,7 +47,7 @@ The shipped CLI sends the request to exactly the `--base-url` you provide. If th
 Poll HA state while the switchover is in progress:
 
 ```bash
-watch -n 2 'pgtuskmasterctl --base-url http://127.0.0.1:18081 ha state | jq .'
+watch -n 2 'pgtm --base-url http://127.0.0.1:18081 status | jq .'
 ```
 
 Observe these source-backed state changes:
@@ -83,7 +83,7 @@ psql -h new-primary-host -p 5432 -U postgres -d postgres -c "SELECT pg_is_in_rec
 The successful primary step-down path clears the switchover marker automatically. The manual clear command is still available when you need to remove a pending switchover request:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:18081 ha switchover clear
+pgtm --base-url http://127.0.0.1:18081 switchover clear
 ```
 
 If API role tokens are enabled, the clear operation also requires the admin token path described above.
@@ -105,7 +105,7 @@ The CLI does not retry across nodes automatically. Retry the same command with a
 Check the affected nodes with:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:18081 ha state | jq '.dcs_trust, .ha_phase'
+pgtm --base-url http://127.0.0.1:18081 status | jq '.dcs_trust, .ha_phase'
 ```
 
 The normal switchover path depends on `full_quorum` DCS trust. If trust has fallen to `fail_safe` or `not_trusted`, resolve cluster and DCS health first.

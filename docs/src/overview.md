@@ -52,7 +52,7 @@ Reference provides comprehensive technical descriptions of pgtuskmaster's machin
 - [Debug API](reference/debug-api.md) - Development and diagnostic endpoints
 - [DCS State Model](reference/dcs-state-model.md) - Distributed consensus state representations
 - [pgtuskmaster CLI](reference/pgtuskmaster-cli.md) - Command-line interface options
-- [pgtuskmasterctl CLI](reference/pgtuskmasterctl-cli.md) - Cluster control utility
+- [pgtm CLI](reference/pgtm-cli.md) - Cluster control utility
 - [Runtime Configuration](reference/runtime-configuration.md) - Configuration parameters and defaults
 
 [Reference Overview](reference/overview.md)

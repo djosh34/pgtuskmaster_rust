@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 00:46:00 CET 2026
-
-# Task `.ralph/tasks/story-ctl-operator-experience/01-task-rename-the-operator-cli-to-pgtm-and-flatten-the-command-tree.md`
-
-```
-## Task: Rename The Operator CLI To `pgtm` And Flatten The Command Tree <status>not_started</status> <passes>false</passes>
-
-<priority>medium</priority>
-
-<description>
-```
-
-==============
+Generated: Mon Mar  9 01:12:14 AM CET 2026
 
 # Task `.ralph/tasks/story-ctl-operator-experience/02-task-add-config-backed-ctl-contexts-and-auto-auth.md`
 

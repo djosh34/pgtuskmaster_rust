@@ -1317,17 +1317,16 @@ impl ClusterFixture {
             for node_index in 0..self.nodes.len() {
                 let (node_id, base_url) = self.node_api_base_url_by_index(node_index)?;
                 self.record(format!(
-                    "cli request start: round={round}/{max_transport_rounds} node={node_id} ha switchover request"
+                    "cli request start: round={round}/{max_transport_rounds} node={node_id} switchover request"
                 ));
                 let argv: Vec<String> = vec![
-                    "pgtuskmasterctl".to_string(),
+                    "pgtm".to_string(),
                     "--base-url".to_string(),
                     base_url,
                     "--timeout-ms".to_string(),
                     timeout_ms.to_string(),
                     "--output".to_string(),
                     "json".to_string(),
-                    "ha".to_string(),
                     "switchover".to_string(),
                     "request".to_string(),
                 ];
@@ -1337,7 +1336,7 @@ impl ClusterFixture {
                 match cli::run(cli).await {
                     Ok(out) => {
                         self.record(format!(
-                            "cli request success: round={round}/{max_transport_rounds} node={node_id} ha switchover request accepted=true"
+                            "cli request success: round={round}/{max_transport_rounds} node={node_id} switchover request accepted=true"
                         ));
                         output = Some(out);
                         break;

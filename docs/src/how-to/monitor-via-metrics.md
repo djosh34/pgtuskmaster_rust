@@ -18,7 +18,7 @@ Track:
 
 - access to each node's API listener
 - `curl` and `jq`
-- optional: `pgtuskmasterctl`
+- optional: `pgtm`
 - `[debug] enabled = true` on the nodes you want to poll with `/debug/verbose`
 
 ## Step 1: Poll `GET /ha/state` on every node
@@ -48,18 +48,18 @@ Focus on these signals:
 - `ha_phase`: `fail_safe`, `rewinding`, `bootstrapping`, or `fencing` are high-signal operational states
 - `ha_decision.kind`: `step_down`, `recover_replica`, `fence_node`, `release_leader_lease`, and `enter_fail_safe` all deserve attention
 
-## Step 2: Use `pgtuskmasterctl` for the same state
+## Step 2: Use `pgtm` for the same state
 
 The CLI wraps the same `GET /ha/state` API:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:8080 --output json ha state
+pgtm --base-url http://127.0.0.1:8080 --output json status
 ```
 
 Use text output when you want a compact shell-friendly view:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:8080 --output text ha state
+pgtm --base-url http://127.0.0.1:8080 --output text status
 ```
 
 ## Step 3: Collect rich state with `/debug/verbose`

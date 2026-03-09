@@ -73,7 +73,7 @@ curl --fail --silent http://127.0.0.1:8080/ha/state | jq .
 Or use the CLI:
 
 ```bash
-pgtuskmasterctl --base-url http://127.0.0.1:8080 --output json ha state
+pgtm --base-url http://127.0.0.1:8080 --output json status
 ```
 
 Watch these fields:

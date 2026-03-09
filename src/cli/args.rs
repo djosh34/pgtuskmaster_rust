@@ -7,7 +7,7 @@ pub enum OutputFormat {
 }
 
 #[derive(Clone, Debug, Parser)]
-#[command(name = "pgtuskmasterctl")]
+#[command(name = "pgtm")]
 #[command(about = "HA admin CLI for PGTuskMaster API")]
 pub struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:8080")]
@@ -26,18 +26,7 @@ pub struct Cli {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
-    Ha(HaArgs),
-}
-
-#[derive(Clone, Debug, Args)]
-pub struct HaArgs {
-    #[command(subcommand)]
-    pub command: HaCommand,
-}
-
-#[derive(Clone, Debug, Subcommand)]
-pub enum HaCommand {
-    State,
+    Status,
     Switchover(SwitchoverArgs),
 }
 
@@ -63,13 +52,11 @@ pub struct SwitchoverRequestArgs {
 mod tests {
     use clap::Parser;
 
-    use crate::cli::args::{
-        Cli, Command, HaCommand, OutputFormat, SwitchoverCommand, SwitchoverRequestArgs,
-    };
+    use crate::cli::args::{Cli, Command, OutputFormat, SwitchoverCommand, SwitchoverRequestArgs};
 
     #[test]
-    fn parse_ha_state_with_defaults() -> Result<(), String> {
-        let cli = Cli::try_parse_from(["pgtuskmasterctl", "ha", "state"])
+    fn parse_status_with_defaults() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "status"])
             .map_err(|err| format!("parse should succeed: {err}"))?;
 
         assert_eq!(cli.base_url, "http://127.0.0.1:8080");
@@ -77,24 +64,21 @@ mod tests {
         assert_eq!(cli.output, OutputFormat::Json);
 
         match cli.command {
-            Command::Ha(ha) => match ha.command {
-                HaCommand::State => Ok(()),
-                _ => Err("expected ha state command".to_string()),
-            },
+            Command::Status => Ok(()),
+            _ => Err("expected status command".to_string()),
         }
     }
 
     #[test]
     fn parse_full_switchover_write_command() -> Result<(), String> {
         let cli = Cli::try_parse_from([
-            "pgtuskmasterctl",
+            "pgtm",
             "--base-url",
             "https://cluster.example",
             "--timeout-ms",
             "1234",
             "--output",
             "text",
-            "ha",
             "switchover",
             "request",
         ])
@@ -105,41 +89,36 @@ mod tests {
         assert_eq!(cli.output, OutputFormat::Text);
 
         match cli.command {
-            Command::Ha(ha) => match ha.command {
-                HaCommand::Switchover(switchover) => match switchover.command {
-                    SwitchoverCommand::Request(SwitchoverRequestArgs { switchover_to: None }) => {
-                        Ok(())
-                    }
-                    _ => Err("expected switchover request".to_string()),
-                },
-                _ => Err("expected switchover command".to_string()),
+            Command::Switchover(switchover) => match switchover.command {
+                SwitchoverCommand::Request(SwitchoverRequestArgs { switchover_to: None }) => {
+                    Ok(())
+                }
+                _ => Err("expected switchover request".to_string()),
             },
+            _ => Err("expected switchover command".to_string()),
         }
     }
 
     #[test]
     fn parse_switchover_request() -> Result<(), String> {
-        let cli = Cli::try_parse_from(["pgtuskmasterctl", "ha", "switchover", "request"])
+        let cli = Cli::try_parse_from(["pgtm", "switchover", "request"])
             .map_err(|err| format!("parse should succeed: {err}"))?;
 
         match cli.command {
-            Command::Ha(ha) => match ha.command {
-                HaCommand::Switchover(switchover) => match switchover.command {
-                    SwitchoverCommand::Request(SwitchoverRequestArgs { switchover_to: None }) => {
-                        Ok(())
-                    }
-                    _ => Err("expected switchover request".to_string()),
-                },
-                _ => Err("expected switchover command".to_string()),
+            Command::Switchover(switchover) => match switchover.command {
+                SwitchoverCommand::Request(SwitchoverRequestArgs { switchover_to: None }) => {
+                    Ok(())
+                }
+                _ => Err("expected switchover request".to_string()),
             },
+            _ => Err("expected switchover command".to_string()),
         }
     }
 
     #[test]
     fn parse_targeted_switchover_request() -> Result<(), String> {
         let cli = Cli::try_parse_from([
-            "pgtuskmasterctl",
-            "ha",
+            "pgtm",
             "switchover",
             "request",
             "--switchover-to",
@@ -148,15 +127,13 @@ mod tests {
         .map_err(|err| format!("parse should succeed: {err}"))?;
 
         match cli.command {
-            Command::Ha(ha) => match ha.command {
-                HaCommand::Switchover(switchover) => match switchover.command {
-                    SwitchoverCommand::Request(SwitchoverRequestArgs {
-                        switchover_to: Some(member_id),
-                    }) if member_id == "node-b" => Ok(()),
-                    _ => Err("expected targeted switchover request".to_string()),
-                },
-                _ => Err("expected switchover command".to_string()),
+            Command::Switchover(switchover) => match switchover.command {
+                SwitchoverCommand::Request(SwitchoverRequestArgs {
+                    switchover_to: Some(member_id),
+                }) if member_id == "node-b" => Ok(()),
+                _ => Err("expected targeted switchover request".to_string()),
             },
+            _ => Err("expected switchover command".to_string()),
         }
     }
 
@@ -168,7 +145,7 @@ mod tests {
         std::env::set_var(read_var, "reader");
         std::env::set_var(admin_var, "admin");
 
-        let parsed = Cli::try_parse_from(["pgtuskmasterctl", "ha", "state"])
+        let parsed = Cli::try_parse_from(["pgtm", "status"])
             .map_err(|err| format!("parse should succeed: {err}"));
 
         std::env::remove_var(read_var);

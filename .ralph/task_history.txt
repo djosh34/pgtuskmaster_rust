@@ -159,3 +159,4 @@
 .ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md
 .ralph/tasks/bugs/bug-docker-helper-ignored-errors.md
 .ralph/tasks/bugs/bug-nextest-ultra-long-profile-disables-required-parallelism.md
+.ralph/tasks/story-ctl-operator-experience/01-task-rename-the-operator-cli-to-pgtm-and-flatten-the-command-tree.md

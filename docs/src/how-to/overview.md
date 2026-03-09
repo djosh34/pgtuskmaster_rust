@@ -10,7 +10,7 @@ This chapter contains goal-oriented guides that help you perform specific operat
 
 ## Health and Monitoring
 
-- [Check Cluster Health](check-cluster-health.md) - Inspect runtime health using `pgtuskmasterctl` CLI against node APIs
+- [Check Cluster Health](check-cluster-health.md) - Inspect runtime health using `pgtm` CLI against node APIs
 - [Monitor via API and CLI Signals](monitor-via-metrics.md) - Track leader changes, trust degradation, and recovery activity using JSON observation surfaces
 - [Debug Cluster Issues](debug-cluster-issues.md) - Investigate incidents using `/ha/state` and `/debug/verbose` endpoints
 
