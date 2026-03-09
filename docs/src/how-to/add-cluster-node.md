@@ -73,7 +73,7 @@ curl --fail --silent http://127.0.0.1:8080/ha/state | jq .
 Or use the CLI:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml --output json status
+pgtm -c /etc/pgtuskmaster/config.toml --json
 ```
 
 Watch these fields:

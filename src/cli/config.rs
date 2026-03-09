@@ -271,7 +271,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::resolve_operator_context;
-    use crate::cli::args::{Cli, Command, OutputFormat};
+    use crate::cli::args::{Cli, Command};
 
     fn base_cli() -> Cli {
         Cli {
@@ -280,8 +280,10 @@ mod tests {
             read_token: None,
             admin_token: None,
             timeout_ms: 5_000,
-            output: OutputFormat::Json,
-            command: Command::Status,
+            json: false,
+            verbose: false,
+            watch: false,
+            command: Some(Command::Status),
         }
     }
 
@@ -341,8 +343,10 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
             read_token: None,
             admin_token: None,
             timeout_ms: 5_000,
-            output: OutputFormat::Json,
-            command: Command::Status,
+            json: false,
+            verbose: false,
+            watch: false,
+            command: Some(Command::Status),
         };
         let err = resolve_operator_context(&cli);
         let _ = std::fs::remove_file(path);
@@ -405,8 +409,10 @@ ca_cert = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE--
             read_token: None,
             admin_token: None,
             timeout_ms: 5_000,
-            output: OutputFormat::Json,
-            command: Command::Status,
+            json: false,
+            verbose: false,
+            watch: false,
+            command: Some(Command::Status),
         };
         let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
         let _ = std::fs::remove_file(path);

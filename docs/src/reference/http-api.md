@@ -131,6 +131,8 @@ Retrieves current high-availability state.
 
 **Authorization**: Read
 
+This is the stable read surface that `pgtm status` uses for cluster discovery. The response now includes a stable member list with advertised peer API URLs so operators and automation can build a cluster-wide view without scraping debug endpoints or manually looping over nodes.
+
 **Response** (`HaStateResponse`)
 ```text
 {
@@ -141,6 +143,22 @@ Retrieves current high-availability state.
   "switchover_pending": <bool>,
   "switchover_to": "<string>" | null,
   "member_count": <number>,
+  "members": [
+    {
+      "member_id": "<string>",
+      "postgres_host": "<string>",
+      "postgres_port": <number>,
+      "api_url": "<string>" | null,
+      "role": "<member_role_variant>",
+      "sql": "<sql_status_variant>",
+      "readiness": "<readiness_variant>",
+      "timeline": <number> | null,
+      "write_lsn": <number> | null,
+      "replay_lsn": <number> | null,
+      "updated_at_ms": <number>,
+      "pg_version": <number>
+    }
+  ],
   "dcs_trust": "<trust_variant>",
   "ha_phase": "<phase_variant>",
   "ha_tick": <number>,
@@ -157,11 +175,26 @@ Retrieves current high-availability state.
 - `switchover_pending`: Whether a switchover request is currently pending
 - `switchover_to`: Requested switchover target when the pending request is explicit, otherwise `null`
 - `member_count`: Number of members in DCS cache
+- `members`: Stable cluster member discovery data. This is the machine-readable list that `pgtm status` fans out from when it builds a cluster-wide view.
 - `dcs_trust`: Trust level of DCS (see DcsTrustResponse variants)
 - `ha_phase`: Current HA phase (see HaPhaseResponse variants)
 - `ha_tick`: HA decision loop counter
 - `ha_decision`: Current HA decision (see HaDecisionResponse variants)
 - `snapshot_sequence`: Monotonic snapshot version
+
+Each `members[]` entry includes:
+
+- `member_id`: DCS member identifier
+- `postgres_host` and `postgres_port`: PostgreSQL endpoint currently published for that member
+- `api_url`: Operator-reachable node API URL published by that member, or `null` when none is available
+- `role`: Current DCS member role (`unknown`, `primary`, or `replica`)
+- `sql`: Current SQL reachability (`unknown`, `healthy`, or `unreachable`)
+- `readiness`: Current readiness state (`unknown`, `ready`, or `not_ready`)
+- `timeline`: Current PostgreSQL timeline when known
+- `write_lsn`: Current write LSN for a primary when known
+- `replay_lsn`: Current replay LSN for a replica when known
+- `updated_at_ms`: Timestamp of the published member record
+- `pg_version`: Published PostgreSQL-state version for that member
 
 When `switchover_to` is omitted, successor choice remains automatic. `POST /switchover` signals intent to switch over, and the HA engine picks the replacement primary from observed cluster state. When `switchover_to` is present, the API accepts only a known, eligible replica and the HA engine holds non-target nodes back from acquiring leadership during that switchover.
 

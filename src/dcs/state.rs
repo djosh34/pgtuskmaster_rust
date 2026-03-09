@@ -35,6 +35,7 @@ pub(crate) struct MemberRecord {
     pub(crate) member_id: MemberId,
     pub(crate) postgres_host: String,
     pub(crate) postgres_port: u16,
+    pub(crate) api_url: Option<String>,
     pub(crate) role: MemberRole,
     pub(crate) sql: SqlStatus,
     pub(crate) readiness: Readiness,
@@ -85,6 +86,7 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) poll_interval: Duration,
     pub(crate) local_postgres_host: String,
     pub(crate) local_postgres_port: u16,
+    pub(crate) local_api_url: Option<String>,
     pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
     pub(crate) publisher: StatePublisher<DcsState>,
     pub(crate) store: Box<dyn DcsStore>,
@@ -145,6 +147,7 @@ pub(crate) fn build_local_member_record(
     self_id: &MemberId,
     postgres_host: &str,
     postgres_port: u16,
+    api_url: Option<&str>,
     pg_state: &PgInfoState,
     now: UnixMillis,
     pg_version: Version,
@@ -154,6 +157,7 @@ pub(crate) fn build_local_member_record(
             member_id: self_id.clone(),
             postgres_host: postgres_host.to_string(),
             postgres_port,
+            api_url: api_url.map(ToString::to_string),
             role: MemberRole::Unknown,
             sql: common.sql.clone(),
             readiness: common.readiness.clone(),
@@ -169,6 +173,7 @@ pub(crate) fn build_local_member_record(
             member_id: self_id.clone(),
             postgres_host: postgres_host.to_string(),
             postgres_port,
+            api_url: api_url.map(ToString::to_string),
             role: MemberRole::Primary,
             sql: common.sql.clone(),
             readiness: common.readiness.clone(),
@@ -184,6 +189,7 @@ pub(crate) fn build_local_member_record(
             member_id: self_id.clone(),
             postgres_host: postgres_host.to_string(),
             postgres_port,
+            api_url: api_url.map(ToString::to_string),
             role: MemberRole::Replica,
             sql: common.sql.clone(),
             readiness: common.readiness.clone(),
@@ -249,6 +255,7 @@ mod tests {
                 member_id: self_id.clone(),
                 postgres_host: "127.0.0.1".to_string(),
                 postgres_port: 5432,
+                api_url: None,
                 role: MemberRole::Unknown,
                 sql: SqlStatus::Unknown,
                 readiness: Readiness::Unknown,
@@ -304,12 +311,17 @@ mod tests {
             &self_id,
             "10.0.0.11",
             5433,
+            Some("http://node-a:8080"),
             &unknown,
             UnixMillis(10),
             Version(11),
         );
         assert_eq!(unknown_record.postgres_host, "10.0.0.11".to_string());
         assert_eq!(unknown_record.postgres_port, 5433);
+        assert_eq!(
+            unknown_record.api_url.as_deref(),
+            Some("http://node-a:8080")
+        );
         assert_eq!(unknown_record.role, MemberRole::Unknown);
         assert_eq!(unknown_record.write_lsn, None);
         assert_eq!(unknown_record.replay_lsn, None);
@@ -325,6 +337,7 @@ mod tests {
             &self_id,
             "10.0.0.12",
             5434,
+            Some("http://node-a:8081"),
             &primary,
             UnixMillis(12),
             Version(13),
@@ -345,12 +358,14 @@ mod tests {
             &self_id,
             "10.0.0.13",
             5435,
+            None,
             &replica,
             UnixMillis(14),
             Version(15),
         );
         assert_eq!(replica_record.postgres_host, "10.0.0.13".to_string());
         assert_eq!(replica_record.postgres_port, 5435);
+        assert_eq!(replica_record.api_url, None);
         assert_eq!(replica_record.role, MemberRole::Replica);
         assert_eq!(replica_record.write_lsn, None);
         assert_eq!(replica_record.replay_lsn, Some(WalLsn(22)));

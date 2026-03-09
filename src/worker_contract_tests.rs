@@ -321,6 +321,7 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         poll_interval: CONTRACT_WORKER_POLL_INTERVAL,
         local_postgres_host: sample_runtime_config().postgres.listen_host.clone(),
         local_postgres_port: sample_runtime_config().postgres.listen_port,
+        local_api_url: Some("http://127.0.0.1:8080".to_string()),
         pg_subscriber: dcs_pg_subscriber,
         publisher: dcs_publisher,
         store: Box::new(ContractStore),

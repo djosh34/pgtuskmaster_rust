@@ -43,11 +43,29 @@ pub struct HaStateResponse {
     pub switchover_pending: bool,
     pub switchover_to: Option<String>,
     pub member_count: usize,
+    pub members: Vec<HaClusterMemberResponse>,
     pub dcs_trust: DcsTrustResponse,
     pub ha_phase: HaPhaseResponse,
     pub ha_tick: u64,
     pub ha_decision: HaDecisionResponse,
     pub snapshot_sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HaClusterMemberResponse {
+    pub member_id: String,
+    pub postgres_host: String,
+    pub postgres_port: u16,
+    pub api_url: Option<String>,
+    pub role: MemberRoleResponse,
+    pub sql: SqlStatusResponse,
+    pub readiness: ReadinessResponse,
+    pub timeline: Option<u64>,
+    pub write_lsn: Option<u64>,
+    pub replay_lsn: Option<u64>,
+    pub updated_at_ms: u64,
+    pub pg_version: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -128,6 +146,30 @@ pub enum RecoveryStrategyResponse {
 pub enum LeaseReleaseReasonResponse {
     FencingComplete,
     PostgresUnreachable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberRoleResponse {
+    Unknown,
+    Primary,
+    Replica,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SqlStatusResponse {
+    Unknown,
+    Healthy,
+    Unreachable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadinessResponse {
+    Unknown,
+    Ready,
+    NotReady,
 }
 
 impl DcsTrustResponse {
@@ -214,6 +256,36 @@ impl fmt::Display for LeaseReleaseReasonResponse {
         match self {
             Self::FencingComplete => f.write_str("fencing_complete"),
             Self::PostgresUnreachable => f.write_str("postgres_unreachable"),
+        }
+    }
+}
+
+impl fmt::Display for MemberRoleResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown => f.write_str("unknown"),
+            Self::Primary => f.write_str("primary"),
+            Self::Replica => f.write_str("replica"),
+        }
+    }
+}
+
+impl fmt::Display for SqlStatusResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown => f.write_str("unknown"),
+            Self::Healthy => f.write_str("healthy"),
+            Self::Unreachable => f.write_str("unreachable"),
+        }
+    }
+}
+
+impl fmt::Display for ReadinessResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown => f.write_str("unknown"),
+            Self::Ready => f.write_str("ready"),
+            Self::NotReady => f.write_str("not_ready"),
         }
     }
 }

@@ -4,21 +4,32 @@ This guide shows how to transfer primary leadership to another cluster member wi
 
 ## Before you begin
 
-Verify cluster state is healthy:
+Verify the cluster is healthy:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c /etc/pgtuskmaster/config.toml
 ```
 
-Expected output shows `dcs_trust` as `full_quorum`. If trust is `fail_safe` or `not_trusted`, resolve DCS health before proceeding.
+The steady-state goal before a planned switchover is:
+
+- one sampled primary
+- replicas visible as replicas
+- `health: healthy`
+- no warning lines
+- `TRUST=full_quorum` across sampled nodes
 
 Identify the relevant member IDs:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c /etc/pgtuskmaster/config.toml --json
 ```
 
-The API response includes `self_member_id`, `leader`, `switchover_pending`, and `switchover_to`. Use those fields to confirm the current primary, whether a switchover request is already pending, and whether the pending request is generic or targeted.
+Use the cluster view to confirm:
+
+- the current primary
+- the replica you want to target, if any
+- whether a switchover is already pending
+- whether any node is unreachable or not publishing a peer API URL
 
 ## Submit the switchover request
 
@@ -34,41 +45,70 @@ For a targeted switchover, add the optional member flag:
 pgtm -c /etc/pgtuskmaster/config.toml switchover request --switchover-to node-b
 ```
 
-The generic form records pending switchover intent and lets the runtime choose the successor automatically. The targeted form is accepted only when `node-b` is a known, eligible replica. When API role tokens are enabled, `pgtm` resolves the admin token from the shared config and any referenced secret sources. A successful request returns:
+The generic form records pending switchover intent and lets the runtime choose the successor automatically. The targeted form is accepted only when `node-b` is a known, eligible replica. When API role tokens are enabled, `pgtm` resolves the admin token from the shared config and any referenced secret sources.
+
+Without `--json`, a successful request returns:
 
 ```text
-{"accepted": true}
+accepted=true
+```
+
+With `--json`, the same success is:
+
+```text
+{
+  "accepted": true
+}
 ```
 
 `[pgtm].api_url` should point to a reachable node API. If you need to target another node temporarily, use `--base-url` as an explicit override for that one command.
 
 ## Monitor the transition
 
-Poll HA state while the switchover is in progress:
+Use the cluster-wide status command while the switchover is in progress:
 
 ```bash
-watch -n 2 'pgtm -c /etc/pgtuskmaster/config.toml status | jq .'
+pgtm -c /etc/pgtuskmaster/config.toml status --watch
+```
+
+If you want structured output for automation, use:
+
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml status --watch --json
 ```
 
 Observe these source-backed state changes:
 
-1. The current primary moves from `ha_phase=primary` to `ha_phase=waiting_switchover_successor`.
-2. The current primary reports a `ha_decision.kind` of `step_down` while processing the switchover path.
-3. After a different leader appears, the former primary converges back to replica behavior and follows the new leader.
-4. The new primary reports `ha_phase=primary`, and the `leader` field changes to that member ID.
+1. A `switchover: pending -> ...` line appears while the request is still in force.
+2. The current primary moves through `waiting_switchover_successor`.
+3. A different node becomes the sampled primary.
+4. The former primary converges back to replica behavior.
+5. The pending switchover marker disappears after the transition settles.
 
 Generic successor selection is automatic. The HA engine chooses the next primary from observed cluster state and healthy follow targets when no target is supplied. For a targeted switchover, the HA engine keeps non-target nodes from acquiring leadership and waits for the requested eligible replica to take over.
 
-The transition is complete when `/ha/state` shows one primary and the other nodes have converged on follower behavior.
+The transition is complete when cluster-wide status shows:
+
+- exactly one sampled primary
+- `health: healthy`
+- no warnings
+- no pending switchover line
 
 ## Verify the new primary
 
-Use `/ha/state` on more than one node and compare the results:
+Run one cluster-wide check instead of manually comparing raw per-node API responses:
 
-- confirm all nodes agree on the same `leader`
-- confirm only one node reports `ha_phase=primary`
-- confirm `switchover_pending=false` after the transition settles
-- confirm `switchover_to=null` or `switchover_to=<none>` after the transition settles
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml status -v
+```
+
+Confirm that:
+
+- the table shows exactly one sampled primary
+- replicas have converged on replica behavior
+- no node reports degraded trust
+- no warning lines remain
+- `API=ok` for the members you expect to be reachable
 
 If you also want a PostgreSQL-level confirmation, connect to the suspected new primary and run:
 
@@ -86,33 +126,46 @@ The successful primary step-down path clears the switchover marker automatically
 pgtm -c /etc/pgtuskmaster/config.toml switchover clear
 ```
 
-If API role tokens are enabled, the clear operation also uses the admin-token path described above.
-
-A successful clear returns:
+Without `--json`, a successful clear returns:
 
 ```text
-{"accepted": true}
+accepted=true
 ```
 
 ## Troubleshooting
 
 ### Request fails with a transport error
 
-The CLI does not retry across nodes automatically. Retry the same command with a different `--base-url` override that points to another reachable node API.
+Retry the same command with a different `--base-url` that points to another reachable node API.
+
+### Status stays degraded during the switchover
+
+Check the warnings in cluster status first:
+
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml status
+```
+
+The normal switchover path depends on `full_quorum` DCS trust and enough peer API reachability to form a confident cluster view. If trust has fallen to `fail_safe` or `not_trusted`, or if nodes are unreachable, resolve cluster and DCS health first.
 
 ### Transition stalls in `waiting_switchover_successor`
 
-Check the affected nodes with:
+Use verbose status to see deeper per-node detail:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml status | jq '.dcs_trust, .ha_phase'
+pgtm -c /etc/pgtuskmaster/config.toml status -v
 ```
 
-The normal switchover path depends on `full_quorum` DCS trust. If trust has fallen to `fail_safe` or `not_trusted`, resolve cluster and DCS health first.
+Look for:
 
-### Multiple primaries appear in observation
+- degraded trust
+- unreachable nodes
+- a target replica that is not healthy enough to take over
+- disagreement about who the leader is
 
-Treat that as an immediate incident. Recheck `/ha/state` across all nodes, inspect DCS connectivity, and verify PostgreSQL reachability before continuing operator actions.
+### Multiple primaries appear in status
+
+Treat that as an immediate incident. Recheck cluster-wide status, inspect DCS connectivity, and verify PostgreSQL reachability before continuing operator actions.
 
 ## State Transition Diagram
 

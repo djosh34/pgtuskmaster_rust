@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-pub(crate) use crate::api::{AcceptedResponse, HaDecisionResponse, HaStateResponse};
+pub(crate) use crate::api::{AcceptedResponse, HaStateResponse};
 use crate::cli::error::CliError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +28,17 @@ pub struct CliApiClientConfig {
     pub tls: CliTlsConfig,
 }
 
+impl CliApiClientConfig {
+    pub fn with_base_url(&self, base_url: Url) -> Self {
+        Self {
+            base_url,
+            timeout_ms: self.timeout_ms,
+            auth: self.auth.clone(),
+            tls: self.tls.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CliApiClient {
     base_url: Url,
@@ -47,6 +58,24 @@ enum AuthRole {
 struct SwitchoverRequestInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     switchover_to: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct DebugVerboseResponse {
+    pub pginfo: DebugVerbosePgInfoSection,
+    pub process: DebugVerboseProcessSection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct DebugVerbosePgInfoSection {
+    pub variant: String,
+    pub readiness: String,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct DebugVerboseProcessSection {
+    pub state: String,
 }
 
 impl CliApiClient {
@@ -89,6 +118,16 @@ impl CliApiClient {
     pub async fn get_ha_state(&self) -> Result<HaStateResponse, CliError> {
         self.send_json_no_body(Method::GET, "/ha/state", AuthRole::Read, StatusCode::OK)
             .await
+    }
+
+    pub async fn get_debug_verbose(&self) -> Result<DebugVerboseResponse, CliError> {
+        self.send_json_no_body(
+            Method::GET,
+            "/debug/verbose",
+            AuthRole::Read,
+            StatusCode::OK,
+        )
+        .await
     }
 
     pub async fn delete_switchover(&self) -> Result<AcceptedResponse, CliError> {
@@ -179,6 +218,10 @@ impl CliApiClient {
             AuthRole::Admin => self.admin_token.as_deref(),
         }
     }
+
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
 }
 
 fn apply_tls_config(
@@ -263,7 +306,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use crate::cli::client::{CliApiClient, CliError, HaDecisionResponse};
+    use crate::{
+        api::HaDecisionResponse,
+        cli::client::{CliApiClient, CliError},
+    };
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedRequest {
@@ -275,7 +321,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_uses_read_token_when_configured() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"http://node-a:8080","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}],"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(
@@ -300,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_falls_back_to_admin_token_when_read_missing() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"http://node-a:8080","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}],"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(

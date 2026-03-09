@@ -1,12 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum OutputFormat {
-    Json,
-    Text,
-}
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Clone, Debug, Parser)]
 #[command(name = "pgtm")]
@@ -22,10 +16,14 @@ pub struct Cli {
     pub admin_token: Option<String>,
     #[arg(long, default_value_t = 5_000)]
     pub timeout_ms: u64,
-    #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-    pub output: OutputFormat,
+    #[arg(long, global = true)]
+    pub json: bool,
+    #[arg(short = 'v', long, global = true)]
+    pub verbose: bool,
+    #[arg(long, global = true)]
+    pub watch: bool,
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -52,26 +50,68 @@ pub struct SwitchoverRequestArgs {
     pub switchover_to: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct StatusOptions {
+    pub json: bool,
+    pub verbose: bool,
+    pub watch: bool,
+}
+
+impl Cli {
+    pub fn status_options(&self) -> StatusOptions {
+        StatusOptions {
+            json: self.json,
+            verbose: self.verbose,
+            watch: self.watch,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use crate::cli::args::{Cli, Command, OutputFormat, SwitchoverCommand, SwitchoverRequestArgs};
+    use crate::cli::args::{Cli, Command, SwitchoverCommand, SwitchoverRequestArgs};
 
     #[test]
-    fn parse_status_with_defaults() -> Result<(), String> {
-        let cli = Cli::try_parse_from(["pgtm", "status"])
-            .map_err(|err| format!("parse should succeed: {err}"))?;
+    fn parse_bare_command_defaults_to_status_shape() -> Result<(), String> {
+        let cli =
+            Cli::try_parse_from(["pgtm"]).map_err(|err| format!("parse should succeed: {err}"))?;
 
         assert_eq!(cli.config, None);
         assert_eq!(cli.base_url, None);
         assert_eq!(cli.timeout_ms, 5_000);
-        assert_eq!(cli.output, OutputFormat::Json);
+        assert!(!cli.json);
+        assert!(!cli.verbose);
+        assert!(!cli.watch);
+        assert!(cli.command.is_none());
+        Ok(())
+    }
 
+    #[test]
+    fn parse_status_with_json_watch_and_verbose() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "status", "--json", "--watch", "-v"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        assert!(cli.json);
+        assert!(cli.verbose);
+        assert!(cli.watch);
         match cli.command {
-            Command::Status => Ok(()),
-            _ => Err("expected status command".to_string()),
+            Some(Command::Status) => Ok(()),
+            _ => Err("expected explicit status command".to_string()),
         }
+    }
+
+    #[test]
+    fn parse_status_flags_without_subcommand() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "--json", "--watch", "-v"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        assert!(cli.json);
+        assert!(cli.verbose);
+        assert!(cli.watch);
+        assert!(cli.command.is_none());
+        Ok(())
     }
 
     #[test]
@@ -84,8 +124,7 @@ mod tests {
             "https://cluster.example",
             "--timeout-ms",
             "1234",
-            "--output",
-            "text",
+            "--json",
             "switchover",
             "request",
         ])
@@ -97,10 +136,10 @@ mod tests {
         );
         assert_eq!(cli.base_url.as_deref(), Some("https://cluster.example"));
         assert_eq!(cli.timeout_ms, 1234);
-        assert_eq!(cli.output, OutputFormat::Text);
+        assert!(cli.json);
 
         match cli.command {
-            Command::Switchover(switchover) => match switchover.command {
+            Some(Command::Switchover(switchover)) => match switchover.command {
                 SwitchoverCommand::Request(SwitchoverRequestArgs {
                     switchover_to: None,
                 }) => Ok(()),
@@ -116,7 +155,7 @@ mod tests {
             .map_err(|err| format!("parse should succeed: {err}"))?;
 
         match cli.command {
-            Command::Switchover(switchover) => match switchover.command {
+            Some(Command::Switchover(switchover)) => match switchover.command {
                 SwitchoverCommand::Request(SwitchoverRequestArgs {
                     switchover_to: None,
                 }) => Ok(()),
@@ -133,7 +172,7 @@ mod tests {
                 .map_err(|err| format!("parse should succeed: {err}"))?;
 
         match cli.command {
-            Command::Switchover(switchover) => match switchover.command {
+            Some(Command::Switchover(switchover)) => match switchover.command {
                 SwitchoverCommand::Request(SwitchoverRequestArgs {
                     switchover_to: Some(member_id),
                 }) if member_id == "node-b" => Ok(()),

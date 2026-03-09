@@ -1033,6 +1033,7 @@ mod tests {
                 poll_interval: Duration::from_millis(50),
                 local_postgres_host: "127.0.0.1".to_string(),
                 local_postgres_port: 5432,
+                local_api_url: Some("http://127.0.0.1:8080".to_string()),
                 pg_subscriber,
                 publisher: dcs_publisher,
                 store: Box::new(store),
@@ -1139,6 +1140,7 @@ mod tests {
                     member_id: MemberId("node-stale".to_string()),
                     postgres_host: "10.0.0.10".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Primary,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,
@@ -1532,10 +1534,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn etcd_store_write_reports_unreachable_endpoint() -> TestResult {
         match EtcdDcsStore::connect(
-            vec![crate::config::DcsEndpoint::from_socket_addr(std::net::SocketAddr::from((
-                [127, 0, 0, 1],
-                1,
-            )))],
+            vec![crate::config::DcsEndpoint::from_socket_addr(
+                std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+            )],
             "scope-a",
         ) {
             Ok(mut store) => match store.write_path("/scope-a/member/node-a", "{}".to_string()) {

@@ -1082,6 +1082,7 @@ async fn run_workers(
         poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
         local_postgres_host: cfg.postgres.listen_host.clone(),
         local_postgres_port: cfg.postgres.listen_port,
+        local_api_url: advertised_operator_api_url(&cfg),
         pg_subscriber: pg_subscriber.clone(),
         publisher: dcs_publisher,
         store: Box::new(dcs_store),
@@ -1180,6 +1181,22 @@ async fn run_workers(
     .map_err(|err| RuntimeError::Worker(err.to_string()))?;
 
     Ok(())
+}
+
+fn advertised_operator_api_url(cfg: &RuntimeConfig) -> Option<String> {
+    if let Some(api_url) = cfg.pgtm.as_ref().and_then(|pgtm| pgtm.api_url.clone()) {
+        return Some(api_url);
+    }
+
+    if cfg.api.listen_addr.ip().is_unspecified() {
+        return None;
+    }
+
+    let scheme = match cfg.api.security.tls.mode {
+        crate::config::ApiTlsMode::Disabled => "http",
+        crate::config::ApiTlsMode::Optional | crate::config::ApiTlsMode::Required => "https",
+    };
+    Some(format!("{scheme}://{}", cfg.api.listen_addr))
 }
 
 fn local_postgres_conninfo(
@@ -1399,6 +1416,7 @@ mod tests {
                 member_id: leader_id.clone(),
                 postgres_host: "10.0.0.20".to_string(),
                 postgres_port: 5440,
+                api_url: None,
                 role: MemberRole::Primary,
                 sql: SqlStatus::Healthy,
                 readiness: Readiness::Ready,
@@ -1536,6 +1554,7 @@ mod tests {
                 member_id: leader_id.clone(),
                 postgres_host: "10.0.0.20".to_string(),
                 postgres_port: 5440,
+                api_url: None,
                 role: MemberRole::Primary,
                 sql: SqlStatus::Healthy,
                 readiness: Readiness::Ready,
@@ -1672,6 +1691,7 @@ mod tests {
                 member_id: primary_id.clone(),
                 postgres_host: "10.0.0.21".to_string(),
                 postgres_port: 5441,
+                api_url: None,
                 role: MemberRole::Primary,
                 sql: SqlStatus::Healthy,
                 readiness: Readiness::Ready,
@@ -1735,6 +1755,7 @@ mod tests {
                 member_id: MemberId("node-b".to_string()),
                 postgres_host: "10.0.0.30".to_string(),
                 postgres_port: 5442,
+                api_url: None,
                 role: MemberRole::Primary,
                 sql: SqlStatus::Healthy,
                 readiness: Readiness::Ready,

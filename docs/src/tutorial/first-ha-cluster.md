@@ -42,27 +42,27 @@ You will start a three-node PostgreSQL HA cluster on your local machine and iden
 3. **Check the current leader through node-a**
 
    ```bash
-   cargo run --bin pgtm -- -c ./node-a.toml --output text status
+   cargo run --bin pgtm -- -c ./node-a.toml status
    ```
 
    The cluster runtime configs in `docker/configs/cluster/` disable API auth, so this read command does not require `--read-token` or `--admin-token` in the local docker setup.
 
-   The command renders the `/ha/state` response as text lines. Inspect the `leader=` line to see which member currently owns leadership.
+   The command renders a cluster table. Inspect the `ROLE`, `TRUST`, `PHASE`, and `API` columns to see the current topology and whether the cluster view is healthy.
 
 4. **Verify that the cluster reports a consistent view**
 
    Run the same command against node-b and node-c:
 
    ```bash
-   cargo run --bin pgtm -- -c ./node-b.toml --output text status
-   cargo run --bin pgtm -- -c ./node-c.toml --output text status
+   cargo run --bin pgtm -- -c ./node-b.toml status
+   cargo run --bin pgtm -- -c ./node-c.toml status
    ```
 
    In a healthy three-node cluster:
 
-   - All three commands report the same `leader` member ID
-   - The cluster reports `member_count=3`
-   - Non-leader nodes report `ha_phase=replica`
+   - Each command shows one primary and two replicas
+   - The cluster stays `healthy`
+   - Non-leader nodes report `PHASE=replica`
 
 **What you have now**
 

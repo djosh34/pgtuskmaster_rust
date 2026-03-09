@@ -1,155 +1,226 @@
-use serde::Serialize;
-
 use crate::cli::{
-    args::OutputFormat,
-    client::{AcceptedResponse, HaDecisionResponse, HaStateResponse},
+    client::AcceptedResponse,
     error::CliError,
-    CommandOutput,
+    status::{ApiStatus, ClusterHealth, ClusterNodeView, ClusterStatusView},
 };
 
-pub fn render_output(
-    command_output: &CommandOutput,
-    format: OutputFormat,
-) -> Result<String, CliError> {
-    match format {
-        OutputFormat::Json => render_json(command_output),
-        OutputFormat::Text => Ok(render_text(command_output)),
+pub fn render_accepted_output(value: &AcceptedResponse, json: bool) -> Result<String, CliError> {
+    if json {
+        serde_json::to_string_pretty(value)
+            .map_err(|err| CliError::Output(format!("json encode failed: {err}")))
+    } else {
+        Ok(format!("accepted={}", value.accepted))
     }
 }
 
-fn render_json(command_output: &CommandOutput) -> Result<String, CliError> {
-    #[derive(Serialize)]
-    #[serde(untagged)]
-    enum OutputRef<'a> {
-        State(&'a HaStateResponse),
-        Accepted(&'a AcceptedResponse),
+pub fn render_status_view(view: &ClusterStatusView, json: bool) -> Result<String, CliError> {
+    if json {
+        serde_json::to_string_pretty(view)
+            .map_err(|err| CliError::Output(format!("json encode failed: {err}")))
+    } else {
+        Ok(render_status_text(view))
+    }
+}
+
+fn render_status_text(view: &ClusterStatusView) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "cluster: {}  health: {}",
+        view.cluster_name,
+        health_label(&view.health)
+    ));
+    lines.push(format!("queried via: {}", view.queried_via.member_id));
+
+    if let Some(switchover) = view.switchover.as_ref() {
+        let target = switchover.target_member_id.as_deref().unwrap_or("auto");
+        lines.push(format!("switchover: pending -> {target}"));
     }
 
-    let payload = match command_output {
-        CommandOutput::HaState(value) => OutputRef::State(value.as_ref()),
-        CommandOutput::Accepted(value) => OutputRef::Accepted(value),
+    for warning in &view.warnings {
+        lines.push(format!("warning: {}", warning.message));
+    }
+
+    if !view.warnings.is_empty() || view.switchover.is_some() {
+        lines.push(String::new());
+    }
+
+    let has_verbose = view.verbose;
+    let headers = if has_verbose {
+        vec![
+            "NODE",
+            "SELF",
+            "ROLE",
+            "TRUST",
+            "PHASE",
+            "LEADER",
+            "DECISION",
+            "PGINFO",
+            "READINESS",
+            "PROCESS",
+            "API",
+        ]
+    } else {
+        vec!["NODE", "SELF", "ROLE", "TRUST", "PHASE", "API"]
     };
 
-    serde_json::to_string_pretty(&payload)
-        .map_err(|err| CliError::Output(format!("json encode failed: {err}")))
+    let rows = view
+        .nodes
+        .iter()
+        .map(|node| render_row(node, has_verbose))
+        .collect::<Vec<_>>();
+    let mut widths = headers.iter().map(|value| value.len()).collect::<Vec<_>>();
+    for row in &rows {
+        for (index, value) in row.iter().enumerate() {
+            widths[index] = widths[index].max(value.len());
+        }
+    }
+
+    lines.push(render_table_line(headers.as_slice(), widths.as_slice()));
+    for row in rows {
+        lines.push(render_table_line(row.as_slice(), widths.as_slice()));
+    }
+
+    lines.join("\n")
 }
 
-fn render_text(command_output: &CommandOutput) -> String {
-    match command_output {
-        CommandOutput::Accepted(value) => format!("accepted={}", value.accepted),
-        CommandOutput::HaState(value) => {
-            let value = value.as_ref();
-            let leader = value.leader.as_deref().unwrap_or("<none>");
-            [
-                format!("cluster_name={}", value.cluster_name),
-                format!("scope={}", value.scope),
-                format!("self_member_id={}", value.self_member_id),
-                format!("leader={leader}"),
-                format!("switchover_pending={}", value.switchover_pending),
-                format!(
-                    "switchover_to={}",
-                    value.switchover_to.as_deref().unwrap_or("<none>")
-                ),
-                format!("member_count={}", value.member_count),
-                format!("dcs_trust={}", value.dcs_trust),
-                format!("ha_phase={}", value.ha_phase),
-                format!("ha_tick={}", value.ha_tick),
-                format!("ha_decision={}", render_decision_text(&value.ha_decision)),
-                format!("snapshot_sequence={}", value.snapshot_sequence),
-            ]
-            .join("\n")
-        }
+fn render_row(node: &ClusterNodeView, verbose: bool) -> Vec<String> {
+    let mut row = vec![
+        node.member_id.clone(),
+        if node.is_self {
+            "*".to_string()
+        } else {
+            String::new()
+        },
+        node.role.clone(),
+        node.trust.clone(),
+        node.phase.clone(),
+    ];
+    if verbose {
+        row.extend([
+            node.leader.clone().unwrap_or_else(|| "?".to_string()),
+            node.decision.clone().unwrap_or_else(|| "?".to_string()),
+            node.pginfo.clone().unwrap_or_else(|| "?".to_string()),
+            node.readiness.clone().unwrap_or_else(|| "?".to_string()),
+            node.process.clone().unwrap_or_else(|| "?".to_string()),
+        ]);
+    }
+    row.push(api_status_label(&node.api_status).to_string());
+    row
+}
+
+fn render_table_line<T: AsRef<str>>(values: &[T], widths: &[usize]) -> String {
+    values
+        .iter()
+        .zip(widths.iter())
+        .map(|(value, width)| format!("{:<width$}", value.as_ref(), width = *width))
+        .collect::<Vec<_>>()
+        .join("  ")
+        .trim_end()
+        .to_string()
+}
+
+fn health_label(value: &ClusterHealth) -> &'static str {
+    match value {
+        ClusterHealth::Healthy => "healthy",
+        ClusterHealth::Degraded => "degraded",
     }
 }
 
-fn render_decision_text(value: &HaDecisionResponse) -> String {
+fn api_status_label(value: &ApiStatus) -> &'static str {
     match value {
-        HaDecisionResponse::NoChange => "no_change".to_string(),
-        HaDecisionResponse::WaitForPostgres {
-            start_requested,
-            leader_member_id,
-        } => {
-            let leader_detail = leader_member_id.as_deref().unwrap_or("none");
-            format!(
-                "wait_for_postgres(start_requested={start_requested}, leader_member_id={leader_detail})"
-            )
-        }
-        HaDecisionResponse::WaitForDcsTrust => "wait_for_dcs_trust".to_string(),
-        HaDecisionResponse::AttemptLeadership => "attempt_leadership".to_string(),
-        HaDecisionResponse::FollowLeader { leader_member_id } => {
-            format!("follow_leader(leader_member_id={leader_member_id})")
-        }
-        HaDecisionResponse::BecomePrimary { promote } => {
-            format!("become_primary(promote={promote})")
-        }
-        HaDecisionResponse::StepDown {
-            reason,
-            release_leader_lease,
-            clear_switchover,
-            fence,
-        } => format!(
-            "step_down(reason={reason}, release_leader_lease={release_leader_lease}, clear_switchover={clear_switchover}, fence={fence})"
-        ),
-        HaDecisionResponse::RecoverReplica { strategy } => {
-            format!("recover_replica(strategy={strategy})")
-        }
-        HaDecisionResponse::FenceNode => "fence_node".to_string(),
-        HaDecisionResponse::ReleaseLeaderLease { reason } => {
-            format!("release_leader_lease(reason={reason})")
-        }
-        HaDecisionResponse::EnterFailSafe {
-            release_leader_lease,
-        } => format!("enter_fail_safe(release_leader_lease={release_leader_lease})"),
+        ApiStatus::Ok => "ok",
+        ApiStatus::Down => "down",
+        ApiStatus::Missing => "missing",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::cli::{
-        args::OutputFormat,
-        client::{AcceptedResponse, HaDecisionResponse, HaStateResponse},
-        output::render_output,
-        CommandOutput,
+        client::AcceptedResponse,
+        output::{render_accepted_output, render_status_view},
+        status::{ApiStatus, ClusterHealth, ClusterNodeView, ClusterStatusView, QueryOrigin},
     };
 
+    fn sample_status_view(verbose: bool) -> ClusterStatusView {
+        ClusterStatusView {
+            cluster_name: "cluster-a".to_string(),
+            scope: "scope-a".to_string(),
+            verbose,
+            queried_via: QueryOrigin {
+                member_id: "node-a".to_string(),
+                api_url: "http://node-a:8080".to_string(),
+            },
+            sampled_member_count: 2,
+            discovered_member_count: 2,
+            health: ClusterHealth::Healthy,
+            warnings: Vec::new(),
+            switchover: None,
+            nodes: vec![
+                ClusterNodeView {
+                    member_id: "node-a".to_string(),
+                    is_self: true,
+                    sampled: true,
+                    api_url: Some("http://node-a:8080".to_string()),
+                    api_status: ApiStatus::Ok,
+                    role: "primary".to_string(),
+                    trust: "full_quorum".to_string(),
+                    phase: "primary".to_string(),
+                    leader: verbose.then_some("node-a".to_string()),
+                    decision: verbose.then_some("no_change".to_string()),
+                    pginfo: verbose.then_some("primary wal_lsn=7".to_string()),
+                    readiness: verbose.then_some("ready".to_string()),
+                    process: verbose.then_some("idle".to_string()),
+                    observation_error: None,
+                },
+                ClusterNodeView {
+                    member_id: "node-b".to_string(),
+                    is_self: false,
+                    sampled: true,
+                    api_url: Some("http://node-b:8080".to_string()),
+                    api_status: ApiStatus::Ok,
+                    role: "replica".to_string(),
+                    trust: "full_quorum".to_string(),
+                    phase: "replica".to_string(),
+                    leader: verbose.then_some("node-a".to_string()),
+                    decision: verbose
+                        .then_some("follow_leader(leader_member_id=node-a)".to_string()),
+                    pginfo: verbose.then_some("replica replay_lsn=7".to_string()),
+                    readiness: verbose.then_some("ready".to_string()),
+                    process: verbose.then_some("idle".to_string()),
+                    observation_error: None,
+                },
+            ],
+        }
+    }
+
     #[test]
-    fn text_output_renders_state_lines() {
-        let output = render_output(
-            &CommandOutput::HaState(Box::new(HaStateResponse {
-                cluster_name: "cluster-a".to_string(),
-                scope: "scope-a".to_string(),
-                self_member_id: "node-a".to_string(),
-                leader: Some("node-a".to_string()),
-                switchover_pending: false,
-                switchover_to: None,
-                member_count: 3,
-                dcs_trust: crate::api::DcsTrustResponse::FullQuorum,
-                ha_phase: crate::api::HaPhaseResponse::Primary,
-                ha_tick: 9,
-                ha_decision: HaDecisionResponse::BecomePrimary { promote: true },
-                snapshot_sequence: 77,
-            })),
-            OutputFormat::Text,
-        );
-        assert!(output.is_ok(), "text render should succeed");
-        let rendered = output.unwrap_or_default();
-        assert!(!rendered.is_empty(), "rendered text should not be empty");
-        assert!(rendered.contains("cluster_name=cluster-a"));
-        assert!(rendered.contains("leader=node-a"));
-        assert!(rendered.contains("switchover_pending=false"));
-        assert!(rendered.contains("switchover_to=<none>"));
-        assert!(rendered.contains("ha_decision=become_primary(promote=true)"));
+    fn human_status_output_renders_compact_table() {
+        let rendered = render_status_view(&sample_status_view(false), false);
+        assert!(rendered.is_ok(), "text render should succeed");
+        let value = rendered.unwrap_or_default();
+        assert!(value.contains("cluster: cluster-a  health: healthy"));
+        assert!(value.contains("NODE"));
+        assert!(value.contains("node-a"));
+        assert!(value.contains("full_quorum"));
+        assert!(value.contains("ok"));
+    }
+
+    #[test]
+    fn verbose_status_output_extends_table_columns() {
+        let rendered = render_status_view(&sample_status_view(true), false);
+        assert!(rendered.is_ok(), "verbose text render should succeed");
+        let value = rendered.unwrap_or_default();
+        assert!(value.contains("LEADER"));
+        assert!(value.contains("PGINFO"));
+        assert!(value.contains("PROCESS"));
     }
 
     #[test]
     fn json_output_renders_accepted_payload() {
-        let output = render_output(
-            &CommandOutput::Accepted(AcceptedResponse { accepted: true }),
-            OutputFormat::Json,
-        );
+        let output = render_accepted_output(&AcceptedResponse { accepted: true }, true);
         assert!(output.is_ok(), "json render should succeed");
         let rendered = output.unwrap_or_default();
-        assert!(!rendered.is_empty(), "rendered json should not be empty");
         assert!(rendered.contains("\"accepted\": true"));
     }
 }

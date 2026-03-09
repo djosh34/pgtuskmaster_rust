@@ -62,6 +62,20 @@ security = {api_security}
     )
 }
 
+fn sample_status_json(api_url: &str) -> String {
+    format!(
+        r#"{{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":"node-a","switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"{api_url}","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}}],"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{{"kind":"become_primary","promote":true}},"snapshot_sequence":10}}"#
+    )
+}
+
+fn http_json_ok(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
 fn spawn_single_request_server(
     response: &str,
 ) -> Result<(std::net::SocketAddr, mpsc::Receiver<String>), String> {
@@ -215,6 +229,64 @@ fn state_command_maps_connection_refused_to_exit_3() -> Result<(), String> {
         stderr.contains("transport error"),
         "stderr should mention transport error"
     );
+    Ok(())
+}
+
+#[test]
+fn bare_pgtm_defaults_to_status_and_renders_human_table() -> Result<(), String> {
+    let bin = cli_bin_path()?;
+    let (addr, rx) = spawn_single_request_server(
+        http_json_ok(sample_status_json("http://127.0.0.1:8080").as_str()).as_str(),
+    )?;
+
+    let output = Command::new(&bin)
+        .args(["--base-url", &format!("http://{addr}")])
+        .output()
+        .map_err(|err| format!("failed to run bare pgtm: {err}"))?;
+
+    assert!(
+        output.status.success(),
+        "bare pgtm should succeed, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
+    assert!(stdout.contains("cluster: cluster-a  health: healthy"));
+    assert!(stdout.contains("NODE"));
+    assert!(stdout.contains("node-a"));
+    assert!(stdout.contains("primary"));
+    let request = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|err| format!("failed to receive status request: {err}"))?;
+    assert!(
+        request.starts_with("GET /ha/state HTTP/1.1"),
+        "expected /ha/state request, got: {request}"
+    );
+    Ok(())
+}
+
+#[test]
+fn status_json_output_contains_queried_via_identity() -> Result<(), String> {
+    let bin = cli_bin_path()?;
+    let api_url = "http://127.0.0.1:8080";
+    let (addr, _rx) =
+        spawn_single_request_server(http_json_ok(sample_status_json(api_url).as_str()).as_str())?;
+
+    let output = Command::new(&bin)
+        .args(["--base-url", &format!("http://{addr}"), "--json", "status"])
+        .output()
+        .map_err(|err| format!("failed to run status --json: {err}"))?;
+
+    assert!(
+        output.status.success(),
+        "status --json should succeed, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
+    assert!(stdout.contains("\"queried_via\""));
+    assert!(stdout.contains("\"member_id\": \"node-a\""));
+    assert!(stdout.contains("\"health\": \"healthy\""));
     Ok(())
 }
 

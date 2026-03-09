@@ -3,21 +3,17 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub mod output;
+pub mod status;
 
 use args::{Cli, Command, SwitchoverCommand};
-use client::{AcceptedResponse, CliApiClient, HaStateResponse};
+use client::CliApiClient;
 use config::resolve_operator_context;
 use error::CliError;
 
-pub enum CommandOutput {
-    HaState(Box<HaStateResponse>),
-    Accepted(AcceptedResponse),
-}
-
 pub async fn run(cli: Cli) -> Result<String, CliError> {
     let context = resolve_operator_context(&cli)?;
-    let output_format = cli.output;
-    let command = cli.command;
+    let status_options = cli.status_options();
+    let command = cli.command.clone().unwrap_or(Command::Status);
     if context.api_auth_enabled
         && matches!(command, Command::Switchover(_))
         && context.api_client.auth.admin_token.is_none()
@@ -26,19 +22,34 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
             "admin token is required for switchover commands when API auth is enabled".to_string(),
         ));
     }
-    let client = CliApiClient::from_config(context.api_client)?;
 
-    let command_output = match command {
-        Command::Status => CommandOutput::HaState(Box::new(client.get_ha_state().await?)),
+    match command {
+        Command::Status => status::run_status(&context, status_options).await,
         Command::Switchover(switchover) => match switchover.command {
-            SwitchoverCommand::Clear => CommandOutput::Accepted(client.delete_switchover().await?),
+            SwitchoverCommand::Clear => {
+                if status_options.watch || status_options.verbose {
+                    return Err(CliError::Config(
+                        "`--watch` and `--verbose` are only supported for `pgtm status`"
+                            .to_string(),
+                    ));
+                }
+                let client = CliApiClient::from_config(context.api_client)?;
+                let response = client.delete_switchover().await?;
+                output::render_accepted_output(&response, cli.json)
+            }
             SwitchoverCommand::Request(request) => {
-                CommandOutput::Accepted(client.post_switchover(request.switchover_to).await?)
+                if status_options.watch || status_options.verbose {
+                    return Err(CliError::Config(
+                        "`--watch` and `--verbose` are only supported for `pgtm status`"
+                            .to_string(),
+                    ));
+                }
+                let client = CliApiClient::from_config(context.api_client)?;
+                let response = client.post_switchover(request.switchover_to).await?;
+                output::render_accepted_output(&response, cli.json)
             }
         },
-    };
-
-    output::render_output(&command_output, output_format)
+    }
 }
 
 #[cfg(test)]

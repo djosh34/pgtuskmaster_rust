@@ -2,8 +2,7 @@ use std::fs;
 
 const NEXTTEST_CONFIG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/.config/nextest.toml");
 const PARALLEL_POLICY_COMMENT_START: &str = "If a scenario only passes in serial,";
-const PARALLEL_POLICY_COMMENT_END: &str =
-    "must be fixed instead of protected by serialization.";
+const PARALLEL_POLICY_COMMENT_END: &str = "must be fixed instead of protected by serialization.";
 const HA_BINARY_LAYOUT_RULE: &str = "binary(ha_*)";
 
 #[test]

@@ -45,7 +45,7 @@ Examples of environment-specific actions:
 Poll HA state from at least one surviving node:
 
 ```bash
-cargo run --bin pgtm -- -c ./node-a.toml --output json status
+cargo run --bin pgtm -- -c ./node-a.toml --json
 ```
 
 Keep checking until the remaining cluster has a stable view of:
@@ -54,7 +54,7 @@ Keep checking until the remaining cluster has a stable view of:
 - the current trust level
 - the local HA phase on the nodes you care about
 
-If you are running a multi-node cluster, also compare more than one surviving node so that you are not relying on a single view.
+The CLI result is already cluster-oriented. If it is degraded or warns about incomplete sampling, repeat the command against another reachable node with `--base-url` or another config file before you conclude the cluster has converged.
 
 ## Step 4: Understand what the DCS layer actually stores
 

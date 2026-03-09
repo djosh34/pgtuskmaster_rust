@@ -1378,8 +1378,7 @@ impl ClusterFixture {
                     config_path.display().to_string(),
                     "--timeout-ms".to_string(),
                     timeout_ms.to_string(),
-                    "--output".to_string(),
-                    "json".to_string(),
+                    "--json".to_string(),
                     "switchover".to_string(),
                     "request".to_string(),
                 ];

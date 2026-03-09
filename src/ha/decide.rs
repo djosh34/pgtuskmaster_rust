@@ -372,7 +372,8 @@ fn follow_target(facts: &DecisionFacts) -> Option<MemberId> {
 fn targeted_switchover_blocks_leadership_attempt(facts: &DecisionFacts) -> bool {
     match facts.pending_switchover_target.as_ref() {
         Some(target_member_id) => {
-            target_member_id != &facts.self_member_id || !facts.switchover_target_is_eligible(target_member_id)
+            target_member_id != &facts.self_member_id
+                || !facts.switchover_target_is_eligible(target_member_id)
         }
         None => false,
     }
@@ -976,6 +977,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.10".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Primary,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,
@@ -1013,6 +1015,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.10".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Replica,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,
@@ -1045,6 +1048,7 @@ mod tests {
                     member_id: MemberId("node-a".to_string()),
                     postgres_host: "10.0.0.11".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Replica,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,
@@ -1188,6 +1192,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.20".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Primary,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,
@@ -1246,6 +1251,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.10".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Replica,
                     sql: SqlStatus::Unreachable,
                     readiness: Readiness::NotReady,
@@ -1348,6 +1354,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.20".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Replica,
                     sql: SqlStatus::Unreachable,
                     readiness: Readiness::NotReady,
@@ -1564,6 +1571,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.20".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Primary,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,
@@ -1682,6 +1690,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.10".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Unknown,
                     sql: SqlStatus::Unreachable,
                     readiness: Readiness::NotReady,
@@ -1713,6 +1722,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.10".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Unknown,
                     sql: SqlStatus::Unreachable,
                     readiness: Readiness::NotReady,
@@ -1744,6 +1754,7 @@ mod tests {
                     member_id: MemberId("node-b".to_string()),
                     postgres_host: "10.0.0.20".to_string(),
                     postgres_port: 5432,
+                    api_url: None,
                     role: MemberRole::Primary,
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,

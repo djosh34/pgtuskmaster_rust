@@ -263,8 +263,10 @@ mod unit_tests {
         HaObserverConfig,
     };
     use pgtuskmaster_rust::api::{
-        DcsTrustResponse, HaDecisionResponse, HaPhaseResponse, HaStateResponse,
+        DcsTrustResponse, HaDecisionResponse, HaPhaseResponse, HaStateResponse, MemberRoleResponse,
+        ReadinessResponse, SqlStatusResponse,
     };
+    use std::collections::BTreeMap;
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -277,6 +279,49 @@ mod unit_tests {
             switchover_pending: false,
             switchover_to: None,
             member_count: 3,
+            members: [
+                (member_id.to_string(), phase.clone()),
+                (
+                    "node-b".to_string(),
+                    if member_id == "node-b" {
+                        phase.clone()
+                    } else {
+                        HaPhaseResponse::Replica
+                    },
+                ),
+                (
+                    "node-c".to_string(),
+                    if member_id == "node-c" {
+                        phase.clone()
+                    } else {
+                        HaPhaseResponse::Replica
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect::<BTreeMap<_, _>>()
+            .into_iter()
+            .map(|(sample_member_id, sample_phase)| {
+                pgtuskmaster_rust::api::HaClusterMemberResponse {
+                    member_id: sample_member_id,
+                    postgres_host: "127.0.0.1".to_string(),
+                    postgres_port: 5432,
+                    api_url: Some("http://127.0.0.1:8080".to_string()),
+                    role: match sample_phase {
+                        HaPhaseResponse::Primary => MemberRoleResponse::Primary,
+                        HaPhaseResponse::Replica => MemberRoleResponse::Replica,
+                        _ => MemberRoleResponse::Unknown,
+                    },
+                    sql: SqlStatusResponse::Healthy,
+                    readiness: ReadinessResponse::Ready,
+                    timeline: Some(7),
+                    write_lsn: None,
+                    replay_lsn: Some(5),
+                    updated_at_ms: 1,
+                    pg_version: 1,
+                }
+            })
+            .collect(),
             dcs_trust: DcsTrustResponse::FullQuorum,
             ha_phase: phase,
             ha_tick: 1,

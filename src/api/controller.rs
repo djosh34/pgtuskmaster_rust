@@ -2,19 +2,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{
-        AcceptedResponse, ApiError, ApiResult, DcsTrustResponse, HaDecisionResponse,
-        HaPhaseResponse, HaStateResponse, LeaseReleaseReasonResponse, RecoveryStrategyResponse,
+        AcceptedResponse, ApiError, ApiResult, DcsTrustResponse, HaClusterMemberResponse,
+        HaDecisionResponse, HaPhaseResponse, HaStateResponse, LeaseReleaseReasonResponse,
+        MemberRoleResponse, ReadinessResponse, RecoveryStrategyResponse, SqlStatusResponse,
         StepDownReasonResponse,
     },
     dcs::{
-        state::{DcsTrust, SwitchoverRequest},
+        state::{DcsTrust, MemberRecord, MemberRole, SwitchoverRequest},
         store::{DcsHaWriter, DcsStore},
     },
     debug_api::snapshot::SystemSnapshot,
     ha::{
         decision::{
-            eligible_switchover_targets,
-            HaDecision, LeaseReleaseReason, RecoveryStrategy, StepDownPlan, StepDownReason,
+            eligible_switchover_targets, HaDecision, LeaseReleaseReason, RecoveryStrategy,
+            StepDownPlan, StepDownReason,
         },
         state::HaPhase,
     },
@@ -76,8 +77,22 @@ pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateRespo
             .cache
             .switchover
             .as_ref()
-            .and_then(|request| request.switchover_to.as_ref().map(|member_id| member_id.0.clone())),
+            .and_then(|request| {
+                request
+                    .switchover_to
+                    .as_ref()
+                    .map(|member_id| member_id.0.clone())
+            }),
         member_count: snapshot.value.dcs.value.cache.members.len(),
+        members: snapshot
+            .value
+            .dcs
+            .value
+            .cache
+            .members
+            .values()
+            .map(map_member_record)
+            .collect(),
         dcs_trust: map_dcs_trust(&snapshot.value.dcs.value.trust),
         ha_phase: map_ha_phase(&snapshot.value.ha.value.phase),
         ha_tick: snapshot.value.ha.value.tick,
@@ -95,7 +110,8 @@ fn validate_switchover_request(
             switchover_to: None,
         });
     };
-    let snapshot = snapshot.ok_or_else(|| ApiError::DcsStore("snapshot unavailable".to_string()))?;
+    let snapshot =
+        snapshot.ok_or_else(|| ApiError::DcsStore("snapshot unavailable".to_string()))?;
 
     let target = raw_target.trim();
     if target.is_empty() {
@@ -152,6 +168,23 @@ fn map_dcs_trust(value: &DcsTrust) -> DcsTrustResponse {
         DcsTrust::FullQuorum => DcsTrustResponse::FullQuorum,
         DcsTrust::FailSafe => DcsTrustResponse::FailSafe,
         DcsTrust::NotTrusted => DcsTrustResponse::NotTrusted,
+    }
+}
+
+fn map_member_record(value: &MemberRecord) -> HaClusterMemberResponse {
+    HaClusterMemberResponse {
+        member_id: value.member_id.0.clone(),
+        postgres_host: value.postgres_host.clone(),
+        postgres_port: value.postgres_port,
+        api_url: value.api_url.clone(),
+        role: map_member_role(&value.role),
+        sql: map_sql_status(&value.sql),
+        readiness: map_readiness(&value.readiness),
+        timeline: value.timeline.map(|timeline| u64::from(timeline.0)),
+        write_lsn: value.write_lsn.map(|lsn| lsn.0),
+        replay_lsn: value.replay_lsn.map(|lsn| lsn.0),
+        updated_at_ms: value.updated_at.0,
+        pg_version: value.pg_version.0,
     }
 }
 
@@ -244,6 +277,30 @@ fn map_lease_release_reason(value: &LeaseReleaseReason) -> LeaseReleaseReasonRes
     }
 }
 
+fn map_member_role(value: &MemberRole) -> MemberRoleResponse {
+    match value {
+        MemberRole::Unknown => MemberRoleResponse::Unknown,
+        MemberRole::Primary => MemberRoleResponse::Primary,
+        MemberRole::Replica => MemberRoleResponse::Replica,
+    }
+}
+
+fn map_sql_status(value: &crate::pginfo::state::SqlStatus) -> SqlStatusResponse {
+    match value {
+        crate::pginfo::state::SqlStatus::Unknown => SqlStatusResponse::Unknown,
+        crate::pginfo::state::SqlStatus::Healthy => SqlStatusResponse::Healthy,
+        crate::pginfo::state::SqlStatus::Unreachable => SqlStatusResponse::Unreachable,
+    }
+}
+
+fn map_readiness(value: &crate::pginfo::state::Readiness) -> ReadinessResponse {
+    match value {
+        crate::pginfo::state::Readiness::Unknown => ReadinessResponse::Unknown,
+        crate::pginfo::state::Readiness::Ready => ReadinessResponse::Ready,
+        crate::pginfo::state::Readiness::NotReady => ReadinessResponse::NotReady,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
@@ -258,7 +315,10 @@ mod tests {
             store::{DcsStore, DcsStoreError, WatchEvent},
         },
         debug_api::snapshot::{AppLifecycle, SystemSnapshot},
-        ha::{decision::HaDecision, state::{HaPhase, HaState}},
+        ha::{
+            decision::HaDecision,
+            state::{HaPhase, HaState},
+        },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
         state::{MemberId, UnixMillis, Version, Versioned, WorkerStatus},
@@ -312,9 +372,18 @@ mod tests {
     fn sample_snapshot() -> SystemSnapshot {
         let cfg = crate::test_harness::runtime_config::sample_runtime_config();
         let members = BTreeMap::from([
-            (member_id("node-a"), member_record("node-a", MemberRole::Primary)),
-            (member_id("node-b"), member_record("node-b", MemberRole::Replica)),
-            (member_id("node-c"), member_record("node-c", MemberRole::Replica)),
+            (
+                member_id("node-a"),
+                member_record("node-a", MemberRole::Primary),
+            ),
+            (
+                member_id("node-b"),
+                member_record("node-b", MemberRole::Replica),
+            ),
+            (
+                member_id("node-c"),
+                member_record("node-c", MemberRole::Replica),
+            ),
         ]);
 
         SystemSnapshot {
@@ -347,10 +416,14 @@ mod tests {
                     last_refresh_at: Some(UnixMillis(1)),
                 },
             ),
-            process: Versioned::new(Version(1), UnixMillis(1), ProcessState::Idle {
-                worker: WorkerStatus::Running,
-                last_outcome: None,
-            }),
+            process: Versioned::new(
+                Version(1),
+                UnixMillis(1),
+                ProcessState::Idle {
+                    worker: WorkerStatus::Running,
+                    last_outcome: None,
+                },
+            ),
             ha: Versioned::new(
                 Version(1),
                 UnixMillis(1),
@@ -377,6 +450,7 @@ mod tests {
             member_id: member_id(member_name),
             postgres_host: "127.0.0.1".to_string(),
             postgres_port: 5432,
+            api_url: None,
             role,
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
@@ -454,10 +528,9 @@ mod tests {
 
     #[test]
     fn switchover_input_accepts_targeted_request() -> Result<(), crate::api::ApiError> {
-        let parsed = serde_json::from_str::<SwitchoverRequestInput>(
-            r#"{"switchover_to":"node-b"}"#,
-        )
-        .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
+        let parsed =
+            serde_json::from_str::<SwitchoverRequestInput>(r#"{"switchover_to":"node-b"}"#)
+                .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
         let snapshot = sample_snapshot();
         let mut store = RecordingStore::default();
         let result = post_switchover("scope-a", &mut store, Some(&snapshot), parsed)?;
@@ -479,9 +552,8 @@ mod tests {
 
     #[test]
     fn switchover_input_rejects_unknown_target() {
-        let parsed = serde_json::from_str::<SwitchoverRequestInput>(
-            r#"{"switchover_to":"node-z"}"#,
-        );
+        let parsed =
+            serde_json::from_str::<SwitchoverRequestInput>(r#"{"switchover_to":"node-z"}"#);
         assert!(parsed.is_ok());
 
         let snapshot = sample_snapshot();
@@ -529,6 +601,7 @@ mod tests {
                 member_id: member_id("node-z"),
                 postgres_host: "127.0.0.1".to_string(),
                 postgres_port: 5432,
+                api_url: None,
                 role: MemberRole::Unknown,
                 sql: SqlStatus::Healthy,
                 readiness: Readiness::Ready,

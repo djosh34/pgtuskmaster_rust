@@ -509,6 +509,7 @@ mod tests {
             member_id: MemberId(member_id.to_string()),
             postgres_host: host.to_string(),
             postgres_port: port,
+            api_url: None,
             role: MemberRole::Primary,
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
