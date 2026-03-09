@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 08:29:47 PM CET 2026
-
-# Task `.ralph/tasks/bugs/runtime-restart-replica-can-stall-before-replaying-post-restart-writes.md`
-
-```
-## Bug: Runtime-restart replica can stall before replaying post-restart writes <status>not_started</status> <passes>false</passes>
-
-<description>
-During `make test-long` on 2026-03-09, `e2e_multi_node_primary_runtime_restart_recovers_without_split_brain` reached a stable post-restart state with `node-2` as primary and both `node-1` and `node-3` reporting replica roles, but `node-3` never replayed the post-restart proof row within the scenario window.
-```
-
-==============
+Generated: Mon Mar  9 08:46:00 PM CET 2026
 
 # Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/02-task-add-whole-node-kill-and-partial-recovery-ha-e2e.md`
 

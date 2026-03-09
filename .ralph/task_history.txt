@@ -173,3 +173,4 @@
 .ralph/tasks/story-ha-quorum-survival-under-real-failures/01-task-fix-leader-liveness-and-majority-election-after-hard-node-loss.md
 .ralph/tasks/bugs/rapid-repeated-failovers-can-drop-intermediate-writes.md
 .ralph/tasks/bugs/preserved-replica-rejoin-stalls-after-runtime-stop-failover.md
+.ralph/tasks/bugs/runtime-restart-replica-can-stall-before-replaying-post-restart-writes.md

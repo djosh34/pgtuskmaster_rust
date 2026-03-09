@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 08:29:47 PM CET 2026
+Generated: Mon Mar  9 08:46:00 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -43,6 +43,17 @@ The degraded replica failover scenario exposed a separate recovery bug after the
 
 <description>
 The original `e2e_multi_node_repeated_leadership_changes_preserve_single_primary` scenario exposed a write-survival problem that is separate from the scenario's single-primary contract.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/runtime-restart-replica-can-stall-before-replaying-post-restart-writes.md`
+
+```
+## Bug: Runtime-restart replica can stall before replaying post-restart writes <status>completed</status> <passes>true</passes>
+
+<description>
+During `make test-long` on 2026-03-09, `e2e_multi_node_primary_runtime_restart_recovers_without_split_brain` reached a stable post-restart state with `node-2` as primary and both `node-1` and `node-3` reporting replica roles, but `node-3` never replayed the post-restart proof row within the scenario window.
 ```
 
 ==============
