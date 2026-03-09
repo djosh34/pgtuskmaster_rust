@@ -31,6 +31,8 @@ cargo install --path . --bin pgtm
 docker compose -f docker/compose.yml up -d --build
 pgtm -c docker/pgtm.toml status
 psql "$(pgtm -c docker/pgtm.toml primary)"
+docker compose -f docker/compose.yml down
+docker compose -f docker/compose.yml down -v
 ```
 
 - The quickstart guide is explicitly based on the same commands and does not branch into alternate compose files, helper scripts, or env-file preparation.
@@ -61,6 +63,7 @@ pgtm -c /etc/pgtuskmaster/config.toml primary
 - [ ] The README or primary install doc includes a correct `cargo install --path . --bin pgtm` path for the operator CLI.
 - [ ] The README or primary install doc shows the canonical local commands with `docker/compose.yml` and `docker/pgtm.toml`.
 - [ ] A dedicated quickstart guide exists and uses only the canonical one-compose local flow.
+- [ ] The quickstart guide documents both `docker compose -f docker/compose.yml down` and `docker compose -f docker/compose.yml down -v`, including that `down -v` resets local cluster state.
 - [ ] The docs contain one explicit "3 real VMs, Docker on each VM, one config file per VM" walkthrough with concrete file paths and commands.
 - [ ] The docs explain `status` versus `debug verbose` clearly and consistently across README, tutorials, and CLI reference material.
 - [ ] The docs explain the daemon-config versus minimal-operator-config split clearly and consistently across README, tutorials, and configuration reference material.
@@ -71,6 +74,7 @@ pgtm -c /etc/pgtuskmaster/config.toml primary
 - [ ] Stale beginner-facing references to env-file copying, docker helper scripts, or non-canonical cluster bring-up commands are removed.
 - [ ] The final docs make the first ten minutes with the repo possible without reading internal shell scripts.
 - [ ] The documentation work includes a judgment pass on ease of use from a clean checkout, and any hiccups found during that pass are fixed rather than merely noted.
+- [ ] The documentation work verifies that the teardown commands in the quickstart behave exactly as documented.
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly

@@ -42,6 +42,10 @@ docker/
 
 **Expected outcome:**
 - A new user can clone the repo, optionally install `pgtm`, run `docker compose -f docker/compose.yml up -d --build`, and have a healthy local 3-node cluster without creating or editing an env file first.
+- The same canonical local compose file supports the full normal lifecycle:
+- `docker compose -f docker/compose.yml up -d --build`
+- `docker compose -f docker/compose.yml down`
+- `docker compose -f docker/compose.yml down -v`
 - The shipped local cluster includes usable default secrets and full TLS for both API and PostgreSQL so the default experience reflects the real product shape.
 - The shipped local cluster uses secure defaults by default:
 - no PostgreSQL `trust` auth in the canonical shipped stack
@@ -77,6 +81,8 @@ node-c        replica  full_quorum   replica  ok
 <acceptance_criteria>
 - [ ] A canonical repo-root local cluster path exists and is documented as `docker compose -f docker/compose.yml up -d --build`.
 - [ ] `docker/compose.yml` is the only shipped operator-facing Docker Compose file used by the canonical local quickstart.
+- [ ] `docker compose -f docker/compose.yml down` works cleanly against the canonical local stack.
+- [ ] `docker compose -f docker/compose.yml down -v` works cleanly against the canonical local stack and fully resets the local data volumes.
 - [ ] The canonical local path does not require `.env.docker`, `.env.docker.example`, or any copied env file.
 - [ ] The canonical local deployment assets are flattened under a shallow `docker/` directory rather than a deep nested config tree.
 - [ ] The canonical local file layout is exactly or materially equivalent to:
@@ -101,6 +107,7 @@ node-c        replica  full_quorum   replica  ok
 - [ ] The node runtime configs remain directly usable by the daemon and may also be usable by `pgtm`, but the canonical host-side CLI example uses the smaller `docker/pgtm.toml` config.
 - [ ] The canonical quickstart no longer requires `make` or `tools/docker/*.sh`.
 - [ ] The task includes an explicit manual usability verification pass that follows the quickstart from a clean checkout and records whether the flow worked directly without hiccups, hidden prerequisites, or doc gaps.
+- [ ] The manual usability verification pass explicitly covers `up`, `down`, and `down -v`.
 - [ ] The task adds or updates automated smoke/integration coverage for the canonical one-compose secure local stack.
 - [ ] All replaced local docs and examples are updated so there is only one obvious first-run path.
 - [ ] `make check` — passes cleanly
