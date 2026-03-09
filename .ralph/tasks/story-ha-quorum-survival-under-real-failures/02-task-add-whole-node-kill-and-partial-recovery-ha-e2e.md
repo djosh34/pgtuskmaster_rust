@@ -12,13 +12,13 @@
 - `src/test_harness/ha_e2e/handle.rs`
 - `src/test_harness/ha_e2e/startup.rs`
 - other directly related harness files under `src/test_harness/ha_e2e/`
-- Add fixture support for explicit whole-node outage semantics with two variants:
-- clean whole-node stop: stop both the HA runtime process and PostgreSQL for a node in an orderly way,
-- hard whole-node kill: use a hard OS kill path for both the HA runtime process and PostgreSQL for a node,
-- stop the HA runtime process for a node,
-- stop PostgreSQL for that node,
-- keep the node down until the scenario explicitly restarts it,
-- avoid ambiguous partial-liveness states where API is down but the runtime still updates DCS, or PostgreSQL is down but the runtime is still cleaning up.
+- Add fixture support for explicit whole-node outage semantics with first-class helpers, not just ad hoc combinations of softer existing helpers.
+- clean whole-node stop helper: stop the full node-owned process set in an orderly way, at minimum the HA runtime/API process and PostgreSQL for that node
+- hard whole-node kill helper: use a hard OS kill path for the full node-owned process set, at minimum the HA runtime/API process and PostgreSQL for that node
+- if a scenario/test layout colocates etcd with the node-owned process set, the whole-node helper must be able to include that colocated etcd process as part of the same node-down operation
+- the helper must keep the node down until the scenario explicitly restarts it
+- the helper must avoid ambiguous partial-liveness states where API is down but the runtime still updates DCS, or PostgreSQL is down but the runtime is still cleaning up
+- the hard-kill helper is specifically required so future HA tests cannot claim “whole node failure” while only exercising mellow service-stop behavior
 - Add focused scenarios for the user-requested real HA behaviors:
 - take the primary node fully down and require a new leader before any heal,
 - take a replica node fully down and prove the cluster stays healthy with one primary,
@@ -30,6 +30,7 @@
 - Current failover tests call `stop_postgres_for_node(...)`, which only stops PostgreSQL and leaves the HA runtime alive.
 - That is why current tests can pass even if a real hard node death deadlocks behind stale leader metadata.
 - The current harness can restart a runtime process, but it does not yet express “this whole node is down and stays down” as a first-class test operation.
+- The current suite is at risk of weak coverage if future tests compose separate graceful service stops and call that “node death”. This task must close that gap with real node-level helpers.
 - The user explicitly wants real node-down semantics, including both clean-stop and hard-kill behavior, not only softer “service restart” semantics.
 
 **Expected outcome:**
@@ -41,6 +42,10 @@
 
 <acceptance_criteria>
 - [ ] Add first-class harness helpers for clean whole-node stop, hard whole-node kill, and whole-node restart that ensure both the HA runtime and PostgreSQL for that node are down until explicitly restarted.
+- [ ] The hard whole-node kill path must be a dedicated helper representing node death, not merely a scenario-local sequence of separate graceful stop calls.
+- [ ] The helper must target the node-owned process set as one failure unit:
+- [ ] at minimum HA runtime/API plus PostgreSQL for that node
+- [ ] plus colocated etcd too when a scenario/test layout actually runs etcd as part of that node failure unit
 - [ ] Both whole-node outage helpers must prove both services are really down before the scenario continues:
 - [ ] node API is unreachable,
 - [ ] node PostgreSQL is unreachable,
@@ -58,6 +63,7 @@
 - [ ] at least one scenario uses clean whole-node stop semantics,
 - [ ] at least one scenario uses hard whole-node kill semantics,
 - [ ] hard-kill coverage must use actual OS kill behavior for both the runtime and PostgreSQL, not only graceful stop helpers.
+- [ ] hard-kill coverage must exercise the first-class whole-node kill helper rather than manually stitching together softer stop operations inside the scenario.
 - [ ] Every new scenario uses whole-node outage semantics, not only `pg_ctl stop` on the database.
 - [ ] Every new scenario asserts no dual-primary window and verifies final SQL/data convergence on the nodes that are supposed to be online.
 - [ ] Every new scenario includes explicit pre-heal and post-heal checkpoints:
