@@ -17,10 +17,14 @@ use etcd_client::{
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::store::{
-    encode_leader_record, leader_path, DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent, WatchOp,
+    bootstrap_path, cluster_identity_path, cluster_initialized_path, encode_leader_record,
+    leader_path, DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent, WatchOp,
 };
 use crate::config::DcsEndpoint;
-use crate::state::MemberId;
+use crate::{
+    dcs::state::{BootstrapLockRecord, ClusterIdentityRecord, ClusterInitializedRecord},
+    state::MemberId,
+};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -1250,6 +1254,26 @@ impl DcsLeaderStore for EtcdDcsStore {
         )
     }
 
+    fn acquire_bootstrap_lease(
+        &mut self,
+        scope: &str,
+        member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        let path = bootstrap_path(scope);
+        let encoded = serde_json::to_string(&BootstrapLockRecord {
+            holder: member_id.clone(),
+        })
+        .map_err(|err| DcsStoreError::Decode {
+            key: path.clone(),
+            message: err.to_string(),
+        })?;
+        if self.put_path_if_absent(path.as_str(), encoded)? {
+            Ok(())
+        } else {
+            Err(DcsStoreError::AlreadyExists(path))
+        }
+    }
+
     fn release_leader_lease(
         &mut self,
         scope: &str,
@@ -1263,6 +1287,40 @@ impl DcsLeaderStore for EtcdDcsStore {
             },
             "release leader lease",
         )
+    }
+
+    fn release_bootstrap_lease(
+        &mut self,
+        scope: &str,
+        _member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        self.delete_path(bootstrap_path(scope).as_str())
+    }
+
+    fn write_cluster_initialized(
+        &mut self,
+        scope: &str,
+        record: &ClusterInitializedRecord,
+    ) -> Result<(), DcsStoreError> {
+        let path = cluster_initialized_path(scope);
+        let encoded = serde_json::to_string(record).map_err(|err| DcsStoreError::Decode {
+            key: path.clone(),
+            message: err.to_string(),
+        })?;
+        self.write_path(path.as_str(), encoded)
+    }
+
+    fn write_cluster_identity(
+        &mut self,
+        scope: &str,
+        record: &ClusterIdentityRecord,
+    ) -> Result<(), DcsStoreError> {
+        let path = cluster_identity_path(scope);
+        let encoded = serde_json::to_string(record).map_err(|err| DcsStoreError::Decode {
+            key: path.clone(),
+            message: err.to_string(),
+        })?;
+        self.write_path(path.as_str(), encoded)
     }
 
     fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError> {
@@ -1295,7 +1353,7 @@ mod tests {
         dcs::{
             etcd_store::EtcdDcsStore,
             state::{
-                evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord,
+                evaluate_trust, BootstrapLockRecord, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
                 LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{
@@ -1468,7 +1526,9 @@ mod tests {
             leader: None,
             switchover: None,
             config: sample_runtime_config(scope),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         }
     }
 
@@ -1517,6 +1577,8 @@ mod tests {
                 local_postgres_host: "127.0.0.1".to_string(),
                 local_postgres_port: 5432,
                 local_api_url: Some("http://127.0.0.1:8080".to_string()),
+                local_data_dir: PathBuf::from("/tmp/pgtm/data"),
+                local_postgres_binary: PathBuf::from("/usr/bin/postgres"),
                 pg_subscriber,
                 publisher: dcs_publisher,
                 store: Box::new(store),
@@ -1630,6 +1692,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: crate::state::Version(1),
                 },
@@ -1637,7 +1703,7 @@ mod tests {
             cache.switchover = Some(SwitchoverRequest {
                 switchover_to: None,
             });
-            cache.init_lock = Some(InitLockRecord {
+            cache.bootstrap_lock = Some(BootstrapLockRecord {
                 holder: MemberId("node-stale".to_string()),
             });
 
@@ -1721,9 +1787,9 @@ mod tests {
                     "expected switchover record to be cleared by reconnect reset",
                 ));
             }
-            if cache.init_lock.is_some() {
+            if cache.bootstrap_lock.is_some() {
                 return Err(boxed_error(
-                    "expected init lock record to be cleared by reconnect reset",
+                    "expected bootstrap lock record to be cleared by reconnect reset",
                 ));
             }
 
@@ -2028,6 +2094,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 },
@@ -2042,6 +2112,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(15_000),
                     pg_version: Version(1),
                 },
@@ -2056,6 +2130,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(15_000),
                     pg_version: Version(1),
                 },
@@ -2097,7 +2175,9 @@ mod tests {
                 leader: None,
                 switchover: None,
                 config: sample_runtime_config(&fixture.scope),
-                init_lock: None,
+                cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
             };
             let events = snapshot_store.drain_watch_events()?;
             refresh_from_etcd_watch(&fixture.scope, &mut cache, events)?;
@@ -2110,7 +2190,7 @@ mod tests {
 
             let now = UnixMillis(20_000);
             let trust = evaluate_trust(true, &cache, &MemberId("node-b".to_string()), now);
-            if trust != DcsTrust::FullQuorum {
+            if trust != DcsTrust::FreshQuorum {
                 return Err(boxed_error(format!(
                     "expected healthy majority to remain full quorum after leader expiry, got {trust:?}"
                 )));

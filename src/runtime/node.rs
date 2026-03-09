@@ -13,8 +13,9 @@ use crate::{
     config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
     dcs::{
         etcd_store::EtcdDcsStore,
+        state::{ClusterIdentityRecord, ClusterInitializedRecord},
         state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx, MemberRole},
-        store::{refresh_from_etcd_watch, DcsStore},
+        store::{refresh_from_etcd_watch, DcsLeaderStore, DcsStore},
     },
     debug_api::{
         snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx},
@@ -28,6 +29,7 @@ use crate::{
         AppEvent, AppEventHeader, SeverityText, StructuredFields, SubprocessLineRecord,
         SubprocessStream,
     },
+    local_physical::{inspect_local_physical_state, DataDirKind},
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
     process::{
@@ -47,7 +49,9 @@ const PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug)]
 enum StartupAction {
-    ClaimInitLockAndSeedConfig,
+    AcquireBootstrapLockAndSeedConfig,
+    PersistClusterBootstrapState,
+    ReleaseBootstrapLock,
     ResetDataDir,
     RunJob(Box<ProcessJobKind>),
     StartPostgres(ManagedPostgresStartIntent),
@@ -149,7 +153,11 @@ fn startup_mode_label(startup_mode: &StartupMode) -> String {
 
 fn startup_action_kind_label(action: &StartupAction) -> &'static str {
     match action {
-        StartupAction::ClaimInitLockAndSeedConfig => "claim_init_lock_and_seed_config",
+        StartupAction::AcquireBootstrapLockAndSeedConfig => {
+            "acquire_bootstrap_lock_and_seed_config"
+        }
+        StartupAction::PersistClusterBootstrapState => "persist_cluster_bootstrap_state",
+        StartupAction::ReleaseBootstrapLock => "release_bootstrap_lock",
         StartupAction::ResetDataDir => "reset_data_dir",
         StartupAction::RunJob(_) => "run_job",
         StartupAction::StartPostgres(_) => "start_postgres",
@@ -206,6 +214,7 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
 
 fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults {
     ProcessDispatchDefaults {
+        postgres_binary: cfg.process.binaries.postgres.clone(),
         postgres_host: cfg.postgres.listen_host.clone(),
         postgres_port: cfg.postgres.listen_port,
         socket_dir: cfg.postgres.socket_dir.clone(),
@@ -243,7 +252,10 @@ fn plan_startup_with_probe(
     startup_run_id: &str,
     probe: impl Fn(&RuntimeConfig) -> Result<DcsCache, RuntimeError>,
 ) -> Result<StartupMode, RuntimeError> {
-    let data_dir_state = match inspect_data_dir(&cfg.postgres.data_dir) {
+    let data_dir_state = match inspect_data_dir(
+        &cfg.postgres.data_dir,
+        &cfg.process.binaries.postgres,
+    ) {
         Ok(value) => {
             let mut event = runtime_event(
                 RuntimeEventKind::DataDirInspected,
@@ -353,45 +365,19 @@ fn plan_startup_with_probe(
     Ok(startup_mode)
 }
 
-fn inspect_data_dir(data_dir: &Path) -> Result<DataDirState, RuntimeError> {
-    match fs::metadata(data_dir) {
-        Ok(meta) => {
-            if !meta.is_dir() {
-                return Err(RuntimeError::StartupPlanning(format!(
-                    "postgres.data_dir is not a directory: {}",
-                    data_dir.display()
-                )));
-            }
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(DataDirState::Missing);
-        }
-        Err(err) => {
-            return Err(RuntimeError::StartupPlanning(format!(
-                "failed to inspect data dir {}: {err}",
+fn inspect_data_dir(data_dir: &Path, postgres_binary: &Path) -> Result<DataDirState, RuntimeError> {
+    let inspected = inspect_local_physical_state(data_dir, postgres_binary)
+        .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
+    match inspected.data_dir_kind {
+        DataDirKind::Missing => Ok(DataDirState::Missing),
+        DataDirKind::Empty => Ok(DataDirState::Empty),
+        DataDirKind::Initialized => Ok(DataDirState::Existing),
+        DataDirKind::InvalidNonEmptyWithoutPgVersion => Err(RuntimeError::StartupPlanning(
+            format!(
+                "ambiguous data dir state: `{}` is non-empty but has no PG_VERSION",
                 data_dir.display()
-            )));
-        }
-    }
-
-    if data_dir.join("PG_VERSION").exists() {
-        return Ok(DataDirState::Existing);
-    }
-
-    let mut entries = fs::read_dir(data_dir).map_err(|err| {
-        RuntimeError::StartupPlanning(format!(
-            "failed to read data dir {}: {err}",
-            data_dir.display()
-        ))
-    })?;
-
-    if entries.next().is_none() {
-        Ok(DataDirState::Empty)
-    } else {
-        Err(RuntimeError::StartupPlanning(format!(
-            "ambiguous data dir state: `{}` is non-empty but has no PG_VERSION",
-            data_dir.display()
-        )))
+            ),
+        )),
     }
 }
 
@@ -410,7 +396,9 @@ fn probe_dcs_cache(cfg: &RuntimeConfig) -> Result<DcsCache, RuntimeError> {
         leader: None,
         switchover: None,
         config: cfg.clone(),
-        init_lock: None,
+        cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
     };
 
     refresh_from_etcd_watch(&cfg.dcs.scope, &mut cache, events).map_err(|err| {
@@ -456,12 +444,15 @@ fn select_startup_mode(
             })
         }
         DataDirState::Missing | DataDirState::Empty => {
-            let init_lock_present = cache
-                .and_then(|snapshot| snapshot.init_lock.as_ref())
+            let cluster_initialized_present = cache
+                .and_then(|snapshot| snapshot.cluster_initialized.as_ref())
+                .is_some();
+            let bootstrap_lock_present = cache
+                .and_then(|snapshot| snapshot.bootstrap_lock.as_ref())
                 .is_some();
 
             let leader = leader_from_leader_key(cache, &self_member_id).or_else(|| {
-                if init_lock_present {
+                if cluster_initialized_present {
                     foreign_healthy_primary_member(cache, &self_member_id)
                 } else {
                     None
@@ -484,9 +475,14 @@ fn select_startup_mode(
                     })
                 }
                 None => {
-                    if init_lock_present {
+                    if cluster_initialized_present {
                         Err(RuntimeError::StartupPlanning(
-                            "cluster is already initialized (dcs init lock present) but no healthy primary is available for basebackup"
+                            "cluster is already initialized but no healthy primary is available for basebackup"
+                                .to_string(),
+                        ))
+                    } else if bootstrap_lock_present {
+                        Err(RuntimeError::StartupPlanning(
+                            "cluster bootstrap is already in progress but no authoritative leader is available yet"
                                 .to_string(),
                         ))
                     } else {
@@ -608,26 +604,15 @@ fn replica_start_intent_from_source(
     )
 }
 
-fn claim_dcs_init_lock_and_seed_config(cfg: &RuntimeConfig) -> Result<(), String> {
-    let init_path = format!("/{}/init", cfg.dcs.scope.trim_matches('/'));
+fn acquire_dcs_bootstrap_lock_and_seed_config(cfg: &RuntimeConfig) -> Result<(), String> {
     let config_path = format!("/{}/config", cfg.dcs.scope.trim_matches('/'));
 
     let mut store = EtcdDcsStore::connect(cfg.dcs.endpoints.clone(), &cfg.dcs.scope)
         .map_err(|err| format!("connect failed: {err}"))?;
 
-    let encoded_init = serde_json::to_string(&crate::dcs::state::InitLockRecord {
-        holder: MemberId(cfg.cluster.member_id.clone()),
-    })
-    .map_err(|err| format!("encode init lock record failed: {err}"))?;
-
-    let claimed = store
-        .put_path_if_absent(init_path.as_str(), encoded_init)
-        .map_err(|err| format!("init lock write failed at `{init_path}`: {err}"))?;
-    if !claimed {
-        return Err(format!(
-            "cluster already initialized (init lock exists at `{init_path}`)"
-        ));
-    }
+    store
+        .acquire_bootstrap_lease(&cfg.dcs.scope, &MemberId(cfg.cluster.member_id.clone()))
+        .map_err(|err| format!("bootstrap lock acquire failed: {err}"))?;
 
     if let Some(init_cfg) = cfg.dcs.init.as_ref() {
         if init_cfg.write_on_bootstrap {
@@ -638,6 +623,51 @@ fn claim_dcs_init_lock_and_seed_config(cfg: &RuntimeConfig) -> Result<(), String
     }
 
     Ok(())
+}
+
+fn persist_cluster_bootstrap_state(cfg: &RuntimeConfig) -> Result<(), String> {
+    let inspected = inspect_local_physical_state(
+        cfg.postgres.data_dir.as_path(),
+        &cfg.process.binaries.postgres,
+    )
+    .map_err(|err| format!("post-bootstrap local inspection failed: {err}"))?;
+    let system_identifier = inspected
+        .system_identifier
+        .ok_or_else(|| "post-bootstrap local inspection did not produce a system identifier".to_string())?;
+    let initialized_at = system_now_unix_millis()
+        .map_err(|err| format!("failed to capture bootstrap completion time: {err}"))?;
+
+    let mut store = EtcdDcsStore::connect(cfg.dcs.endpoints.clone(), &cfg.dcs.scope)
+        .map_err(|err| format!("connect failed: {err}"))?;
+
+    store
+        .write_cluster_identity(
+            &cfg.dcs.scope,
+            &ClusterIdentityRecord {
+                system_identifier,
+                bootstrapped_by: MemberId(cfg.cluster.member_id.clone()),
+                bootstrapped_at: initialized_at,
+            },
+        )
+        .map_err(|err| format!("cluster identity write failed: {err}"))?;
+    store
+        .write_cluster_initialized(
+            &cfg.dcs.scope,
+            &ClusterInitializedRecord {
+                initialized_by: MemberId(cfg.cluster.member_id.clone()),
+                initialized_at,
+            },
+        )
+        .map_err(|err| format!("cluster initialized write failed: {err}"))?;
+    Ok(())
+}
+
+fn release_dcs_bootstrap_lock(cfg: &RuntimeConfig) -> Result<(), String> {
+    let mut store = EtcdDcsStore::connect(cfg.dcs.endpoints.clone(), &cfg.dcs.scope)
+        .map_err(|err| format!("connect failed: {err}"))?;
+    store
+        .release_bootstrap_lease(&cfg.dcs.scope, &MemberId(cfg.cluster.member_id.clone()))
+        .map_err(|err| format!("bootstrap lock release failed: {err}"))
 }
 
 async fn execute_startup(
@@ -695,12 +725,23 @@ async fn execute_startup(
         }
 
         let result = match action {
-            StartupAction::ClaimInitLockAndSeedConfig => {
-                claim_dcs_init_lock_and_seed_config(cfg).map_err(|err| {
-                    RuntimeError::StartupExecution(format!("dcs init lock claim failed: {err}"))
+            StartupAction::AcquireBootstrapLockAndSeedConfig => {
+                acquire_dcs_bootstrap_lock_and_seed_config(cfg).map_err(|err| {
+                    RuntimeError::StartupExecution(format!(
+                        "dcs bootstrap lock claim failed: {err}"
+                    ))
                 })?;
                 Ok(())
             }
+            StartupAction::PersistClusterBootstrapState => persist_cluster_bootstrap_state(cfg)
+                .map_err(|err| {
+                    RuntimeError::StartupExecution(format!(
+                        "persist cluster bootstrap state failed: {err}"
+                    ))
+                }),
+            StartupAction::ReleaseBootstrapLock => release_dcs_bootstrap_lock(cfg).map_err(
+                |err| RuntimeError::StartupExecution(format!("release bootstrap lock failed: {err}")),
+            ),
             StartupAction::ResetDataDir => reset_data_dir(cfg.postgres.data_dir.as_path()),
             StartupAction::RunJob(job) => run_startup_job(cfg, *job, log).await,
             StartupAction::StartPostgres(start_intent) => {
@@ -773,12 +814,14 @@ fn build_startup_actions(
 ) -> Result<Vec<StartupAction>, RuntimeError> {
     match startup_mode {
         StartupMode::InitializePrimary { start_intent } => Ok(vec![
-            StartupAction::ClaimInitLockAndSeedConfig,
+            StartupAction::AcquireBootstrapLockAndSeedConfig,
             StartupAction::RunJob(Box::new(ProcessJobKind::Bootstrap(BootstrapSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
                 superuser_username: cfg.postgres.roles.superuser.username.clone(),
                 timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
             }))),
+            StartupAction::PersistClusterBootstrapState,
+            StartupAction::ReleaseBootstrapLock,
             StartupAction::StartPostgres(start_intent.clone()),
         ]),
         StartupMode::CloneReplica {
@@ -1089,7 +1132,9 @@ async fn run_workers(
             leader: None,
             switchover: None,
             config: cfg.clone(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         },
         last_refresh_at: None,
     };
@@ -1151,6 +1196,8 @@ async fn run_workers(
         local_postgres_host: cfg.postgres.listen_host.clone(),
         local_postgres_port: advertised_postgres_port(&cfg),
         local_api_url: advertised_operator_api_url(&cfg),
+        local_data_dir: cfg.postgres.data_dir.clone(),
+        local_postgres_binary: cfg.process.binaries.postgres.clone(),
         pg_subscriber: pg_subscriber.clone(),
         publisher: dcs_publisher,
         store: Box::new(dcs_store),
@@ -1160,7 +1207,9 @@ async fn run_workers(
             leader: None,
             switchover: None,
             config: cfg.clone(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         },
         last_published_pg_version: None,
         last_emitted_store_healthy: None,
@@ -1322,7 +1371,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         fs, io,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -1380,23 +1429,52 @@ mod tests {
         )
     }
 
+    fn initdb_data_dir(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = sample_runtime_config();
+        let output = std::process::Command::new(&cfg.process.binaries.initdb)
+            .arg("-D")
+            .arg(path)
+            .arg("-U")
+            .arg("postgres")
+            .arg("--auth=trust")
+            .arg("--no-sync")
+            .env("LC_ALL", "C")
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "initdb failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     #[test]
     fn inspect_data_dir_classifies_missing_empty_and_existing(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let missing = temp_path("missing");
         remove_if_exists(&missing)?;
-        assert_eq!(inspect_data_dir(&missing)?, DataDirState::Missing);
+        assert_eq!(
+            inspect_data_dir(&missing, Path::new("/usr/bin/postgres"))?,
+            DataDirState::Missing
+        );
 
         let empty = temp_path("empty");
         remove_if_exists(&empty)?;
         fs::create_dir_all(&empty)?;
-        assert_eq!(inspect_data_dir(&empty)?, DataDirState::Empty);
+        assert_eq!(
+            inspect_data_dir(&empty, Path::new("/usr/bin/postgres"))?,
+            DataDirState::Empty
+        );
 
         let existing = temp_path("existing");
         remove_if_exists(&existing)?;
-        fs::create_dir_all(&existing)?;
-        fs::write(existing.join("PG_VERSION"), b"16\n")?;
-        assert_eq!(inspect_data_dir(&existing)?, DataDirState::Existing);
+        initdb_data_dir(&existing)?;
+        assert_eq!(
+            inspect_data_dir(&existing, Path::new("/usr/bin/postgres"))?,
+            DataDirState::Existing
+        );
 
         remove_if_exists(&empty)?;
         remove_if_exists(&existing)?;
@@ -1421,7 +1499,9 @@ mod tests {
                     leader: None,
                     switchover: None,
                     config: cfg.clone(),
-                    init_lock: None,
+                    cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
                 })
             })?;
 
@@ -1470,7 +1550,7 @@ mod tests {
         fs::create_dir_all(&ambiguous)?;
         fs::write(ambiguous.join("postgresql.conf"), b"# test\n")?;
 
-        let result = inspect_data_dir(&ambiguous);
+        let result = inspect_data_dir(&ambiguous, Path::new("/usr/bin/postgres"));
         assert!(result.is_err());
 
         remove_if_exists(&ambiguous)?;
@@ -1498,6 +1578,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -1510,7 +1594,9 @@ mod tests {
             }),
             switchover: None,
             config: cfg.clone(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
 
         let data_dir = temp_path("startup-mode-clone");
@@ -1603,6 +1689,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -1615,7 +1705,9 @@ mod tests {
             }),
             switchover: None,
             config: cfg.clone(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
 
         let data_dir = temp_path("startup-mode-existing-clone");
@@ -1674,6 +1766,10 @@ mod tests {
             timeline: None,
             write_lsn: None,
             replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at: UnixMillis(1),
             pg_version: Version(1),
         };
@@ -1760,6 +1856,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -1771,7 +1871,9 @@ mod tests {
             }),
             switchover: None,
             config: runtime_config.clone(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
 
         let intent = select_resume_start_intent(&data_dir, Some(&cache), "node-a", &defaults)?;
@@ -1854,9 +1956,12 @@ mod tests {
             leader: None,
             switchover: None,
             config: cfg.clone(),
-            init_lock: Some(crate::dcs::state::InitLockRecord {
-                holder: MemberId("node-other".to_string()),
+            cluster_initialized: Some(crate::dcs::state::ClusterInitializedRecord {
+                initialized_by: MemberId("node-other".to_string()),
+                initialized_at: UnixMillis(1),
             }),
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
 
         let data_dir = temp_path("startup-mode-init-lock");
@@ -1897,6 +2002,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -1907,9 +2016,12 @@ mod tests {
             leader: None,
             switchover: None,
             config: cfg.clone(),
-            init_lock: Some(crate::dcs::state::InitLockRecord {
-                holder: MemberId("node-init".to_string()),
+            cluster_initialized: Some(crate::dcs::state::ClusterInitializedRecord {
+                initialized_by: MemberId("node-init".to_string()),
+                initialized_at: UnixMillis(1),
             }),
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
 
         let data_dir = temp_path("startup-mode-member-fallback");
@@ -1961,6 +2073,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },

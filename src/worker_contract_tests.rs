@@ -250,7 +250,9 @@ fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
             leader: None,
             switchover: None,
             config: cfg,
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         },
         last_refresh_at: None,
     }
@@ -384,6 +386,8 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         local_postgres_host: sample_runtime_config().postgres.listen_host.clone(),
         local_postgres_port: sample_runtime_config().postgres.listen_port,
         local_api_url: Some("http://127.0.0.1:8080".to_string()),
+        local_data_dir: sample_runtime_config().postgres.data_dir.clone(),
+        local_postgres_binary: sample_runtime_config().process.binaries.postgres.clone(),
         pg_subscriber: dcs_pg_subscriber,
         publisher: dcs_publisher,
         store: Box::new(ContractStore),
@@ -393,7 +397,9 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
             leader: None,
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         },
         last_published_pg_version: None,
         last_emitted_store_healthy: None,
@@ -520,7 +526,7 @@ async fn ha_state_api_stays_responsive_while_ha_attempt_leadership_blocks(
     let (_pg_publisher, pg_subscriber) =
         new_state_channel(sample_primary_pg_state(), UnixMillis(1));
     let (_dcs_publisher, dcs_subscriber) = new_state_channel(
-        sample_dcs_state_with_trust(runtime_cfg.clone(), DcsTrust::FullQuorum),
+        sample_dcs_state_with_trust(runtime_cfg.clone(), DcsTrust::FreshQuorum),
         UnixMillis(1),
     );
     let (_process_publisher, process_subscriber) =

@@ -20,7 +20,7 @@ Use it when you need to interpret the `ha_decision` field without reading the Ru
 
 The decision engine is trust-gated.
 
-- When DCS trust is not `FullQuorum`, normal phase logic is bypassed.
+- When DCS trust is not `FreshQuorum`, normal phase logic is bypassed.
 - If local PostgreSQL is primary while trust is degraded, the node enters `FailSafe` with `enter_fail_safe`.
 - If local PostgreSQL is not primary while trust is degraded, the node moves into `FailSafe` with `no_change`.
 

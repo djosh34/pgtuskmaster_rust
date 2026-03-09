@@ -434,13 +434,15 @@ mod tests {
     fn sample_dcs_state(config: RuntimeConfig) -> DcsState {
         DcsState {
             worker: WorkerStatus::Running,
-            trust: DcsTrust::FullQuorum,
+            trust: DcsTrust::FreshQuorum,
             cache: DcsCache {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config,
-                init_lock: None,
+                cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }

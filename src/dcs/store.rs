@@ -2,7 +2,10 @@ use thiserror::Error;
 
 use super::{
     keys::{key_from_path, DcsKey, DcsKeyParseError},
-    state::{DcsCache, InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest},
+    state::{
+        BootstrapLockRecord, ClusterIdentityRecord, ClusterInitializedRecord, DcsCache,
+        LeaderRecord, MemberRecord, SwitchoverRequest,
+    },
     worker::{apply_watch_update, DcsWatchUpdate},
 };
 use crate::state::MemberId;
@@ -66,16 +69,64 @@ pub(crate) trait DcsLeaderStore: Send {
         scope: &str,
         member_id: &MemberId,
     ) -> Result<(), DcsStoreError>;
+    fn acquire_bootstrap_lease(
+        &mut self,
+        _scope: &str,
+        _member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        Err(DcsStoreError::Io(
+            "bootstrap lease support is not implemented for this store".to_string(),
+        ))
+    }
     fn release_leader_lease(
         &mut self,
         scope: &str,
         member_id: &MemberId,
     ) -> Result<(), DcsStoreError>;
+    fn release_bootstrap_lease(
+        &mut self,
+        _scope: &str,
+        _member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        Err(DcsStoreError::Io(
+            "bootstrap lease release is not implemented for this store".to_string(),
+        ))
+    }
+    fn write_cluster_initialized(
+        &mut self,
+        _scope: &str,
+        _record: &ClusterInitializedRecord,
+    ) -> Result<(), DcsStoreError> {
+        Err(DcsStoreError::Io(
+            "cluster initialized writes are not implemented for this store".to_string(),
+        ))
+    }
+    fn write_cluster_identity(
+        &mut self,
+        _scope: &str,
+        _record: &ClusterIdentityRecord,
+    ) -> Result<(), DcsStoreError> {
+        Err(DcsStoreError::Io(
+            "cluster identity writes are not implemented for this store".to_string(),
+        ))
+    }
     fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError>;
 }
 
 pub(crate) fn leader_path(scope: &str) -> String {
     format!("/{}/leader", scope.trim_matches('/'))
+}
+
+pub(crate) fn bootstrap_path(scope: &str) -> String {
+    format!("/{}/bootstrap", scope.trim_matches('/'))
+}
+
+pub(crate) fn cluster_initialized_path(scope: &str) -> String {
+    format!("/{}/cluster/initialized", scope.trim_matches('/'))
+}
+
+pub(crate) fn cluster_identity_path(scope: &str) -> String {
+    format!("/{}/cluster/identity", scope.trim_matches('/'))
 }
 
 pub(crate) fn encode_leader_record(
@@ -120,7 +171,9 @@ pub(crate) fn refresh_from_etcd_watch(
             cache.members.clear();
             cache.leader = None;
             cache.switchover = None;
-            cache.init_lock = None;
+            cache.cluster_initialized = None;
+            cache.cluster_identity = None;
+            cache.bootstrap_lock = None;
             applied = applied.saturating_add(1);
             continue;
         }
@@ -183,6 +236,24 @@ fn decode_watch_value(
                 key: path.to_string(),
                 message: err.to_string(),
             }),
+        DcsKey::BootstrapLock => serde_json::from_str::<BootstrapLockRecord>(raw)
+            .map(super::worker::DcsValue::BootstrapLock)
+            .map_err(|err| DcsStoreError::Decode {
+                key: path.to_string(),
+                message: err.to_string(),
+            }),
+        DcsKey::ClusterInitialized => serde_json::from_str::<ClusterInitializedRecord>(raw)
+            .map(super::worker::DcsValue::ClusterInitialized)
+            .map_err(|err| DcsStoreError::Decode {
+                key: path.to_string(),
+                message: err.to_string(),
+            }),
+        DcsKey::ClusterIdentity => serde_json::from_str::<ClusterIdentityRecord>(raw)
+            .map(super::worker::DcsValue::ClusterIdentity)
+            .map_err(|err| DcsStoreError::Decode {
+                key: path.to_string(),
+                message: err.to_string(),
+            }),
         DcsKey::Switchover => serde_json::from_str::<SwitchoverRequest>(raw)
             .map(super::worker::DcsValue::Switchover)
             .map_err(|err| DcsStoreError::Decode {
@@ -191,12 +262,6 @@ fn decode_watch_value(
             }),
         DcsKey::Config => serde_json::from_str::<crate::config::RuntimeConfig>(raw)
             .map(|cfg| super::worker::DcsValue::Config(Box::new(cfg)))
-            .map_err(|err| DcsStoreError::Decode {
-                key: path.to_string(),
-                message: err.to_string(),
-            }),
-        DcsKey::InitLock => serde_json::from_str::<InitLockRecord>(raw)
-            .map(super::worker::DcsValue::InitLock)
             .map_err(|err| DcsStoreError::Decode {
                 key: path.to_string(),
                 message: err.to_string(),
@@ -293,12 +358,66 @@ impl DcsLeaderStore for TestDcsStore {
         }
     }
 
+    fn acquire_bootstrap_lease(
+        &mut self,
+        scope: &str,
+        member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        let path = bootstrap_path(scope);
+        let encoded = serde_json::to_string(&BootstrapLockRecord {
+            holder: member_id.clone(),
+        })
+        .map_err(|err| DcsStoreError::Decode {
+            key: path.clone(),
+            message: err.to_string(),
+        })?;
+        if self.put_path_if_absent(path.as_str(), encoded)? {
+            Ok(())
+        } else {
+            Err(DcsStoreError::AlreadyExists(path))
+        }
+    }
+
     fn release_leader_lease(
         &mut self,
         scope: &str,
         _member_id: &MemberId,
     ) -> Result<(), DcsStoreError> {
         self.delete_path(&leader_path(scope))
+    }
+
+    fn release_bootstrap_lease(
+        &mut self,
+        scope: &str,
+        _member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        self.delete_path(&bootstrap_path(scope))
+    }
+
+    fn write_cluster_initialized(
+        &mut self,
+        scope: &str,
+        record: &ClusterInitializedRecord,
+    ) -> Result<(), DcsStoreError> {
+        let path = cluster_initialized_path(scope);
+        let encoded = serde_json::to_string(record).map_err(|err| DcsStoreError::Decode {
+            key: path.clone(),
+            message: err.to_string(),
+        })?;
+        self.write_path(path.as_str(), encoded)
+    }
+
+    fn write_cluster_identity(
+        &mut self,
+        scope: &str,
+        record: &ClusterIdentityRecord,
+    ) -> Result<(), DcsStoreError> {
+        let path = cluster_identity_path(scope);
+        let encoded = serde_json::to_string(record).map_err(|err| DcsStoreError::Decode {
+            key: path.clone(),
+            message: err.to_string(),
+        })?;
+        self.write_path(path.as_str(), encoded)
     }
 
     fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError> {
@@ -335,7 +454,9 @@ mod tests {
             leader: None,
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         }
     }
 
@@ -353,6 +474,10 @@ mod tests {
             timeline: None,
             write_lsn: None,
             replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at: UnixMillis(10),
             pg_version: Version(7),
         };
@@ -378,6 +503,10 @@ mod tests {
             timeline: None,
             write_lsn: None,
             replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at: UnixMillis(10),
             pg_version: Version(1),
         })?;
@@ -473,6 +602,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                 updated_at: UnixMillis(10),
                 pg_version: Version(1),
             },
@@ -483,8 +616,9 @@ mod tests {
         cache.switchover = Some(crate::dcs::state::SwitchoverRequest {
             switchover_to: None,
         });
-        cache.init_lock = Some(crate::dcs::state::InitLockRecord {
-            holder: MemberId("node-stale".to_string()),
+        cache.cluster_initialized = Some(crate::dcs::state::ClusterInitializedRecord {
+            initialized_by: MemberId("node-stale".to_string()),
+            initialized_at: UnixMillis(10),
         });
 
         let result = refresh_from_etcd_watch(
@@ -508,7 +642,7 @@ mod tests {
         assert!(cache.members.is_empty());
         assert!(cache.leader.is_none());
         assert!(cache.switchover.is_none());
-        assert!(cache.init_lock.is_none());
+        assert!(cache.cluster_initialized.is_none());
         assert_eq!(cache.config, preserved_config);
 
         Ok(())

@@ -451,7 +451,9 @@ mod tests {
                 leader: None,
                 switchover: None,
                 config: cfg,
-                init_lock: None,
+                cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
             },
             last_refresh_at: None,
         }

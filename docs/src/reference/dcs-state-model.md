@@ -6,17 +6,17 @@ This page documents the DCS-backed state structures used by the runtime and the 
 
 `DcsTrust` has three variants:
 
-- `FullQuorum`
-- `FailSafe`
+- `FreshQuorum`
+- `NoFreshQuorum`
 - `NotTrusted`
 
 Trust evaluation follows this order:
 
 1. If the backing store is unhealthy, trust is `NotTrusted`.
-2. If the local member is missing from the cache, trust is `FailSafe`.
-3. If the local member record is stale, trust is `FailSafe`.
-4. If the observed cache has a multi-member view and fewer than two members are fresh, trust is `FailSafe`.
-5. Otherwise trust is `FullQuorum`.
+2. If the local member is missing from the cache, trust is `NoFreshQuorum`.
+3. If the local member record is stale, trust is `NoFreshQuorum`.
+4. If the observed cache has a multi-member view and fewer than two members are fresh, trust is `NoFreshQuorum`.
+5. Otherwise trust is `FreshQuorum`.
 
 Freshness is evaluated from:
 
@@ -80,7 +80,7 @@ This means a temporarily unreachable node can still contribute its last known WA
 - if the owner releases leadership explicitly, it revokes its own lease and etcd deletes the key
 - if the owner dies hard and stops renewing, etcd expires the lease and deletes the key automatically
 
-That means a missing leader member record does not itself force `FailSafe`. The authoritative signal for dead leadership is the disappearance of the lease-backed leader key from the watched DCS cache.
+That means a missing leader member record does not itself force `NoFreshQuorum`. The authoritative signal for dead leadership is the disappearance of the lease-backed leader key from the watched DCS cache.
 
 ### `SwitchoverRequest`
 
@@ -92,9 +92,24 @@ When `switchover_to` is `None`, the record means a generic switchover request is
 
 The runtime keeps this record in DCS for the full handoff window. During a targeted switchover, non-target replicas continue to treat the request as blocking leadership until the requested successor becomes the observed primary. The record is cleared only after a safe success observer, normally the new primary, confirms the switchover completed.
 
-### `InitLockRecord`
+### `ClusterInitializedRecord`
 
-`InitLockRecord` contains:
+`ClusterInitializedRecord` contains:
+
+- `initialized_by`
+- `initialized_at`
+
+### `ClusterIdentityRecord`
+
+`ClusterIdentityRecord` contains:
+
+- `system_identifier`
+- `bootstrapped_by`
+- `bootstrapped_at`
+
+### `BootstrapLockRecord`
+
+`BootstrapLockRecord` contains:
 
 - `holder`
 
@@ -106,7 +121,9 @@ The runtime keeps this record in DCS for the full handoff window. During a targe
 - `leader: Option<LeaderRecord>`
 - `switchover: Option<SwitchoverRequest>`
 - `config: RuntimeConfig`
-- `init_lock: Option<InitLockRecord>`
+- `cluster_initialized: Option<ClusterInitializedRecord>`
+- `cluster_identity: Option<ClusterIdentityRecord>`
+- `bootstrap_lock: Option<BootstrapLockRecord>`
 
 ### `DcsState`
 
@@ -125,9 +142,11 @@ All DCS keys are scoped under the configured cluster scope:
 
 ```text
 /{scope}/leader
+/{scope}/bootstrap
 /{scope}/switchover
 /{scope}/config
-/{scope}/init
+/{scope}/cluster/initialized
+/{scope}/cluster/identity
 /{scope}/member/{member_id}
 ```
 
@@ -145,7 +164,9 @@ The DCS worker applies parsed updates into the cache:
 - member puts and deletes update `cache.members`
 - leader puts and deletes update `cache.leader`
 - switchover puts and deletes update `cache.switchover`
-- init-lock puts and deletes update `cache.init_lock`
+- bootstrap-lock puts and deletes update `cache.bootstrap_lock`
+- cluster-initialized puts and deletes update `cache.cluster_initialized`
+- cluster-identity puts and deletes update `cache.cluster_identity`
 - config puts replace `cache.config`
 
 The local worker also republishes its own member record from current PostgreSQL state while the store is healthy.

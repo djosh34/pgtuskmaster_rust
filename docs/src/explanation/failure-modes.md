@@ -10,10 +10,10 @@ pgtuskmaster's behavior depends heavily on its view of cluster state, which come
 
 The system uses three discrete trust evaluations:
 
-**FullQuorum**
-The DCS is healthy and at least two members have fresh metadata. The system can safely perform leader elections, coordinate switchovers, and enforce split-brain prevention.
+**FreshQuorum**
+The DCS is healthy and at least two members have fresh metadata in multi-node views, or one fresh member in a single-node view. The system can safely perform leader elections, coordinate switchovers, and enforce split-brain prevention.
 
-**FailSafe**
+**NoFreshQuorum**
 The DCS is accessible but does not meet full consensus requirements. This occurs when the local member record is stale or fewer than two members appear fresh in a multi-member view. In this state the system limits its activity to prevent data corruption.
 
 **NotTrusted**
@@ -26,9 +26,9 @@ Trust degrades to protect against split-brain scenarios. If a node cannot verify
 Trust evaluation follows a specific sequence:
 
 1. If etcd itself reports unhealthy, trust becomes `NotTrusted`
-2. If the local member record is missing or older than `ha.lease_ttl_ms`, trust becomes `FailSafe`
-3. In clusters larger than one node, if fewer than two members have fresh records, trust becomes `FailSafe`
-4. Only when all checks pass does trust become `FullQuorum`
+2. If the local member record is missing or older than `ha.lease_ttl_ms`, trust becomes `NoFreshQuorum`
+3. In clusters larger than one node, if fewer than two members have fresh records, trust becomes `NoFreshQuorum`
+4. Only when all checks pass does trust become `FreshQuorum`
 
 This design reflects a key principle: membership metadata freshness acts as a heartbeat. A node that stops updating its record is treated as failed, even if the DCS remains healthy.
 
@@ -36,7 +36,7 @@ Leader liveness is lease-backed rather than inferred from stale metadata. The et
 
 ## PostgreSQL reachability as a distinct axis
 
-While DCS trust affects coordination safety, PostgreSQL reachability determines what local actions are possible. The system treats these as orthogonal concerns. A node can have `FullQuorum` trust while its local PostgreSQL is unreachable, or vice versa.
+While DCS trust affects coordination safety, PostgreSQL reachability determines what local actions are possible. The system treats these as orthogonal concerns. A node can have `FreshQuorum` trust while its local PostgreSQL is unreachable, or vice versa.
 
 PostgreSQL reachability is binary in decision logic: either `SqlStatus::Healthy` or not. `Unknown` and `Unreachable` states both block replication and promotion actions. This binary approach simplifies state management but has important implications for recovery behavior.
 
@@ -46,7 +46,7 @@ When failures occur, the system transitions through specific HA phases. Each pha
 
 ### Initial failure response
 
-The decision logic in `src/ha/decide.rs` prioritizes safety over availability. If DCS trust is not `FullQuorum`, the system immediately routes to `FailSafe` phase. The only exception is when the local PostgreSQL is a confirmed healthy primary, in which case it emits `EnterFailSafe` to ensure the leader lease is released.
+The decision logic in `src/ha/decide.rs` prioritizes safety over availability. If DCS trust is not `FreshQuorum`, the system immediately routes to `FailSafe` phase. The only exception is when the local PostgreSQL is a confirmed healthy primary, in which case it emits `EnterFailSafe` to ensure the leader lease is released.
 
 This behavior ensures that network partitions or DCS outages do not create split-brain scenarios. By entering `FailSafe`, nodes avoid taking coordinated actions until they can verify cluster state.
 
@@ -113,8 +113,6 @@ The observer's existence demonstrates that split-brain prevention is a first-cla
 `FailSafe` is the system's panic mode. It is not a recovery state but a holding pattern. Unlike other phases, `FailSafe` does not automatically attempt recovery. It persists until DCS trust is restored, at which point it exits to `WaitingDcsTrusted`.
 
 The rationale is that entering `FailSafe` indicates insufficient information to make safe decisions. Automated recovery would risk exacerbating an unknown failure mode. Human operators must investigate and restore trust conditions.
-
-The system may emit `SignalFailSafe` to local processes.
 
 ## Timeout behavior and missing source support
 

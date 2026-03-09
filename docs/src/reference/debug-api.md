@@ -95,7 +95,7 @@ The debug endpoints run on the same listener as the main HTTP API and inherit it
 | `version` | DCS-state channel version |
 | `updated_at_ms` | DCS-state publish time |
 | `worker` | Worker status label |
-| `trust` | Trust label: `FullQuorum`, `FailSafe`, or `NotTrusted` |
+| `trust` | Trust label: `FreshQuorum`, `NoFreshQuorum`, or `NotTrusted` |
 | `member_count` | Count of cached members |
 | `leader` | Current leader member id when present |
 | `has_switchover_request` | Whether a switchover request is currently cached |

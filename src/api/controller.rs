@@ -172,8 +172,8 @@ fn validate_switchover_request(
 
 fn map_dcs_trust(value: &DcsTrust) -> DcsTrustResponse {
     match value {
-        DcsTrust::FullQuorum => DcsTrustResponse::FullQuorum,
-        DcsTrust::FailSafe => DcsTrustResponse::FailSafe,
+        DcsTrust::FreshQuorum => DcsTrustResponse::FreshQuorum,
+        DcsTrust::NoFreshQuorum => DcsTrustResponse::NoFreshQuorum,
         DcsTrust::NotTrusted => DcsTrustResponse::NotTrusted,
     }
 }
@@ -452,7 +452,7 @@ mod tests {
                 now,
                 DcsState {
                     worker: WorkerStatus::Running,
-                    trust: DcsTrust::FullQuorum,
+                    trust: DcsTrust::FreshQuorum,
                     cache: DcsCache {
                         members,
                         leader: Some(LeaderRecord {
@@ -460,7 +460,9 @@ mod tests {
                         }),
                         switchover: None,
                         config: cfg,
-                        init_lock: None,
+                        cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
                     },
                     last_refresh_at: Some(now),
                 },
@@ -511,6 +513,10 @@ mod tests {
             timeline: Some(crate::state::TimelineId(1)),
             write_lsn,
             replay_lsn,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at: now,
             pg_version: Version(1),
         }
@@ -664,6 +670,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },

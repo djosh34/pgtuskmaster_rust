@@ -680,6 +680,10 @@ mod tests {
             timeline: Some(TimelineId(1)),
             write_lsn: None,
             replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at,
             pg_version: Version(1),
         }
@@ -776,7 +780,9 @@ mod tests {
             }),
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -799,7 +805,7 @@ mod tests {
             ),
         );
 
-        let world = sample_world(cache, DcsTrust::FullQuorum, UnixMillis(20_000));
+        let world = sample_world(cache, DcsTrust::FreshQuorum, UnixMillis(20_000));
         let eligible = eligible_switchover_targets(&world);
 
         assert!(eligible.is_empty());
@@ -814,7 +820,9 @@ mod tests {
             }),
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -831,7 +839,7 @@ mod tests {
 
         let eligible = eligible_switchover_targets(&sample_world(
             cache,
-            DcsTrust::FullQuorum,
+            DcsTrust::FreshQuorum,
             UnixMillis(100),
         ));
 
@@ -848,7 +856,9 @@ mod tests {
             }),
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -862,7 +872,7 @@ mod tests {
         );
 
         let facts =
-            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FullQuorum, UnixMillis(100)));
+            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FreshQuorum, UnixMillis(100)));
 
         assert_eq!(facts.leader_member_id, Some(MemberId("node-b".to_string())));
         assert_eq!(facts.active_leader_member_id, None);
@@ -878,7 +888,9 @@ mod tests {
             }),
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -903,7 +915,7 @@ mod tests {
 
         let facts = DecisionFacts::from_world(&sample_world(
             cache,
-            DcsTrust::FullQuorum,
+            DcsTrust::FreshQuorum,
             UnixMillis(20_000),
         ));
 
@@ -918,7 +930,9 @@ mod tests {
             leader: None,
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -930,7 +944,7 @@ mod tests {
         );
 
         let facts =
-            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FullQuorum, UnixMillis(100)));
+            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FreshQuorum, UnixMillis(100)));
 
         assert_eq!(
             facts.promotion_safety.blocker,
@@ -950,7 +964,9 @@ mod tests {
             leader: None,
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -962,7 +978,7 @@ mod tests {
         );
 
         let facts =
-            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FullQuorum, UnixMillis(100)));
+            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FreshQuorum, UnixMillis(100)));
 
         assert_eq!(
             facts.promotion_safety.blocker,
@@ -980,7 +996,9 @@ mod tests {
             leader: None,
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         let config = cache.config.clone();
         let now = UnixMillis(100);
@@ -1014,7 +1032,7 @@ mod tests {
                 now,
                 DcsState {
                     worker: WorkerStatus::Running,
-                    trust: DcsTrust::FullQuorum,
+                    trust: DcsTrust::FreshQuorum,
                     cache,
                     last_refresh_at: Some(now),
                 },
@@ -1042,7 +1060,9 @@ mod tests {
             leader: None,
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -1084,7 +1104,7 @@ mod tests {
                 now,
                 DcsState {
                     worker: WorkerStatus::Running,
-                    trust: DcsTrust::FullQuorum,
+                    trust: DcsTrust::FreshQuorum,
                     cache,
                     last_refresh_at: Some(now),
                 },
@@ -1111,7 +1131,9 @@ mod tests {
             }),
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -1134,7 +1156,7 @@ mod tests {
         cache.members.insert(MemberId("node-b".to_string()), leader);
 
         let facts =
-            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FullQuorum, UnixMillis(100)));
+            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FreshQuorum, UnixMillis(100)));
 
         assert_eq!(
             facts.active_leader_member_id,
@@ -1156,7 +1178,9 @@ mod tests {
             }),
             switchover: None,
             config: sample_runtime_config(),
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         };
         cache.members.insert(
             MemberId("node-a".to_string()),
@@ -1209,7 +1233,7 @@ mod tests {
                 now,
                 DcsState {
                     worker: WorkerStatus::Running,
-                    trust: DcsTrust::FullQuorum,
+                    trust: DcsTrust::FreshQuorum,
                     cache,
                     last_refresh_at: Some(now),
                 },

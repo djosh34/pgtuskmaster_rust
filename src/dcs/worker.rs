@@ -1,4 +1,5 @@
 use crate::{
+    local_physical::{inspect_local_physical_state, DataDirKind, SignalFileState},
     logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
     state::WorkerError,
 };
@@ -7,8 +8,9 @@ use super::{
     keys::DcsKey,
     state::{
         build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsCache,
-        DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord, MemberRecord,
-        SwitchoverRequest,
+        BootstrapLockRecord, ClusterIdentityRecord, ClusterInitializedRecord, DcsState,
+        DcsTrust, DcsWorkerCtx, LeaderRecord, MemberRecord, MemberStateClass,
+        PostgresRuntimeClass, SwitchoverRequest,
     },
     store::{refresh_from_etcd_watch, write_local_member},
 };
@@ -17,9 +19,11 @@ use super::{
 pub(crate) enum DcsValue {
     Member(MemberRecord),
     Leader(LeaderRecord),
+    BootstrapLock(BootstrapLockRecord),
+    ClusterInitialized(ClusterInitializedRecord),
+    ClusterIdentity(ClusterIdentityRecord),
     Switchover(SwitchoverRequest),
     Config(Box<crate::config::RuntimeConfig>),
-    InitLock(InitLockRecord),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,14 +84,20 @@ pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
             (DcsKey::Leader, DcsValue::Leader(record)) => {
                 cache.leader = Some(record);
             }
+            (DcsKey::BootstrapLock, DcsValue::BootstrapLock(record)) => {
+                cache.bootstrap_lock = Some(record);
+            }
+            (DcsKey::ClusterInitialized, DcsValue::ClusterInitialized(record)) => {
+                cache.cluster_initialized = Some(record);
+            }
+            (DcsKey::ClusterIdentity, DcsValue::ClusterIdentity(record)) => {
+                cache.cluster_identity = Some(record);
+            }
             (DcsKey::Switchover, DcsValue::Switchover(record)) => {
                 cache.switchover = Some(record);
             }
             (DcsKey::Config, DcsValue::Config(config)) => {
                 cache.config = *config;
-            }
-            (DcsKey::InitLock, DcsValue::InitLock(record)) => {
-                cache.init_lock = Some(record);
             }
             _ => {}
         },
@@ -98,13 +108,19 @@ pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
             DcsKey::Leader => {
                 cache.leader = None;
             }
+            DcsKey::BootstrapLock => {
+                cache.bootstrap_lock = None;
+            }
+            DcsKey::ClusterInitialized => {
+                cache.cluster_initialized = None;
+            }
+            DcsKey::ClusterIdentity => {
+                cache.cluster_identity = None;
+            }
             DcsKey::Switchover => {
                 cache.switchover = None;
             }
             DcsKey::Config => {}
-            DcsKey::InitLock => {
-                cache.init_lock = None;
-            }
         },
     }
 }
@@ -118,7 +134,7 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let mut local_member_publish_succeeded = false;
 
     if must_publish_local_member {
-        let local_member = build_local_member_record(BuildLocalMemberRecordInput {
+        let mut local_member = build_local_member_record(BuildLocalMemberRecordInput {
             self_id: &ctx.self_id,
             postgres_host: ctx.local_postgres_host.as_str(),
             postgres_port: ctx.local_postgres_port,
@@ -128,6 +144,12 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             now,
             pg_version: pg_snapshot.version,
         });
+        let local_physical_state = inspect_local_physical_state(
+            ctx.local_data_dir.as_path(),
+            ctx.local_postgres_binary.as_path(),
+        )
+        .map_err(|err| WorkerError::Message(format!("local physical inspection failed: {err}")))?;
+        apply_local_physical_state(&mut local_member, &local_physical_state);
         match write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member) {
             Ok(()) => {
                 ctx.last_published_pg_version = Some(pg_snapshot.version);
@@ -291,6 +313,40 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     Ok(())
 }
 
+fn apply_local_physical_state(
+    member: &mut MemberRecord,
+    local_physical_state: &crate::local_physical::LocalPhysicalState,
+) {
+    member.system_identifier = local_physical_state.system_identifier;
+    member.durable_end_lsn = local_physical_state.durable_end_lsn;
+    member.state_class = Some(match local_physical_state.data_dir_kind {
+        DataDirKind::Missing | DataDirKind::Empty => MemberStateClass::EmptyOrMissingDataDir,
+        DataDirKind::InvalidNonEmptyWithoutPgVersion => MemberStateClass::InvalidDataDir,
+        DataDirKind::Initialized => {
+            if matches!(
+                local_physical_state.signal_file_state,
+                SignalFileState::Standby | SignalFileState::Recovery
+            ) || local_physical_state.was_in_recovery.unwrap_or(false)
+            {
+                MemberStateClass::ReplicaOnly
+            } else {
+                MemberStateClass::Promotable
+            }
+        }
+    });
+    member.postgres_runtime_class = Some(match local_physical_state.data_dir_kind {
+        DataDirKind::Initialized => PostgresRuntimeClass::OfflineInspectable,
+        DataDirKind::Missing | DataDirKind::Empty | DataDirKind::InvalidNonEmptyWithoutPgVersion => {
+            PostgresRuntimeClass::UnsafeLocalState
+        }
+    });
+    if matches!(member.sql, crate::pginfo::state::SqlStatus::Healthy)
+        && matches!(member.readiness, crate::pginfo::state::Readiness::Ready)
+    {
+        member.postgres_runtime_class = Some(PostgresRuntimeClass::RunningHealthy);
+    }
+}
+
 fn now_unix_millis() -> Result<crate::state::UnixMillis, WorkerError> {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -312,7 +368,7 @@ mod tests {
         dcs::{
             keys::DcsKey,
             state::{
-                DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord,
+                BootstrapLockRecord, DcsCache, DcsState, DcsTrust, DcsWorkerCtx, LeaderRecord,
                 MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
@@ -491,7 +547,9 @@ mod tests {
             leader: None,
             switchover: None,
             config: cfg,
-            init_lock: None,
+            cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
         }
     }
 
@@ -514,6 +572,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })),
@@ -546,13 +608,13 @@ mod tests {
         apply_watch_update(
             &mut cache,
             DcsWatchUpdate::Put {
-                key: DcsKey::InitLock,
-                value: Box::new(DcsValue::InitLock(InitLockRecord {
+                key: DcsKey::BootstrapLock,
+                value: Box::new(DcsValue::BootstrapLock(BootstrapLockRecord {
                     holder: member_id.clone(),
                 })),
             },
         );
-        assert!(cache.init_lock.is_some());
+        assert!(cache.bootstrap_lock.is_some());
 
         apply_watch_update(
             &mut cache,
@@ -575,14 +637,14 @@ mod tests {
         apply_watch_update(
             &mut cache,
             DcsWatchUpdate::Delete {
-                key: DcsKey::InitLock,
+                key: DcsKey::BootstrapLock,
             },
         );
 
         assert!(!cache.members.contains_key(&member_id));
         assert!(cache.leader.is_none());
         assert!(cache.switchover.is_none());
-        assert!(cache.init_lock.is_none());
+        assert!(cache.bootstrap_lock.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -618,6 +680,8 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
+            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -632,7 +696,7 @@ mod tests {
         assert_eq!(stepped, Ok(()));
 
         let latest = dcs_subscriber.latest();
-        assert_eq!(latest.value.trust, DcsTrust::FullQuorum);
+        assert_eq!(latest.value.trust, DcsTrust::FreshQuorum);
         assert!(latest.value.cache.leader.is_some());
         assert!(latest
             .value
@@ -669,6 +733,8 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
+            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(FailingWriteStore::default()),
@@ -734,6 +800,8 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
+            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -779,6 +847,8 @@ mod tests {
             local_postgres_host: "127.0.0.9".to_string(),
             local_postgres_port: 6543,
             local_api_url: Some("http://127.0.0.9:6543".to_string()),
+            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
+            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -822,6 +892,8 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
+            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -864,6 +936,8 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
+            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -910,6 +984,8 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
+            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),

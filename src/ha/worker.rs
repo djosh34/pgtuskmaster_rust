@@ -478,7 +478,9 @@ mod tests {
                 leader: None,
                 switchover: None,
                 config,
-                init_lock: None,
+                cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }
@@ -544,7 +546,7 @@ mod tests {
             Self {
                 store: RecordingStore::default(),
                 poll_interval: Duration::from_millis(100),
-                dcs_trust: DcsTrust::FullQuorum,
+                dcs_trust: DcsTrust::FreshQuorum,
                 initial_phase: HaPhase::Init,
                 initial_tick: 0,
                 initial_decision: HaDecision::NoChange,
@@ -827,6 +829,8 @@ mod tests {
                 local_postgres_host: runtime_config.postgres.listen_host.clone(),
                 local_postgres_port: runtime_config.postgres.listen_port,
                 local_api_url: Some("http://127.0.0.1:8080".to_string()),
+                local_data_dir: runtime_config.postgres.data_dir.clone(),
+                local_postgres_binary: runtime_config.process.binaries.postgres.clone(),
                 pg_subscriber: pg_subscriber.clone(),
                 publisher: dcs_publisher,
                 store: Box::new(store.clone()),
@@ -836,7 +840,9 @@ mod tests {
                     leader: None,
                     switchover: None,
                     config: runtime_config.clone(),
-                    init_lock: None,
+                    cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
                 },
                 last_published_pg_version: None,
                 last_emitted_store_healthy: None,
@@ -993,6 +999,10 @@ mod tests {
             timeline: Some(crate::state::TimelineId(1)),
             write_lsn,
             replay_lsn,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at: test_now_unix_millis(),
             pg_version: Version(1),
         }
@@ -1162,7 +1172,7 @@ mod tests {
             ..
         } = HaWorkerTestBuilder::new()
             .with_phase(HaPhase::FailSafe)
-            .with_dcs_trust(DcsTrust::FullQuorum)
+            .with_dcs_trust(DcsTrust::FreshQuorum)
             .with_pg_state(sample_primary_pg_state(SqlStatus::Healthy))
             .build()?;
 
@@ -1197,7 +1207,7 @@ mod tests {
             .with_phase(HaPhase::Primary)
             .with_pg_state(sample_pg_state(SqlStatus::Unreachable))
             .build()?;
-        let mut dcs_state = sample_dcs_state(sample_runtime_config(), DcsTrust::FullQuorum);
+        let mut dcs_state = sample_dcs_state(sample_runtime_config(), DcsTrust::FreshQuorum);
         let leader_member = sample_member_record("node-b", MemberRole::Primary);
         dcs_state
             .cache
@@ -1417,7 +1427,7 @@ mod tests {
                 safety: SafetyEffect::None,
             }
         );
-        assert_eq!(fixture.latest_dcs().trust, DcsTrust::FullQuorum);
+        assert_eq!(fixture.latest_dcs().trust, DcsTrust::FreshQuorum);
 
         assert_eq!(fixture.delete_leader_event(), Ok(()));
         assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));

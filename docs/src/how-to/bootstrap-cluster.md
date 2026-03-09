@@ -15,7 +15,7 @@ You will establish a new cluster scope in your distributed coordination service 
 
 ## Configure DCS Init Payload
 
-Provide the DCS initialization payload in your runtime configuration. The schema supports `dcs.init = { payload_json, write_on_bootstrap }`, and the HA startup harness uses that payload to materialize both `/{scope}/init` and `/{scope}/config` during first-node bootstrap.
+Provide the DCS initialization payload in your runtime configuration. The schema supports `dcs.init = { payload_json, write_on_bootstrap }`, and the HA startup harness uses that payload to materialize `/{scope}/config` during first-node bootstrap.
 
 Two details matter:
 
@@ -36,7 +36,7 @@ The node enters the following state sequence:
 
 Monitor the node's API endpoint for phase progression. The node will transition to **Primary** phase when:
 
-- DCS trust evaluates to FullQuorum
+- DCS trust evaluates to FreshQuorum
 - No other active leader lease exists
 - Local PostgreSQL is healthy or can be promoted
 
@@ -46,10 +46,11 @@ The election uses create-if-absent semantics for the `/{scope}/leader` key. The 
 
 Confirm successful bootstrap by checking etcd contents:
 
-1. `/{scope}/init` exists with non-empty value
-2. `/{scope}/config` exists and matches your `payload_json` exactly
-3. `/{scope}/leader` contains your bootstrap node's member ID
-4. `/{scope}/member/{member_id}` exists for your node
+1. `/{scope}/cluster/initialized` exists with non-empty value
+2. `/{scope}/cluster/identity` exists and records the authoritative cluster `system_identifier`
+3. `/{scope}/config` exists and matches your `payload_json` exactly
+4. `/{scope}/leader` contains your bootstrap node's member ID
+5. `/{scope}/member/{member_id}` exists for your node
 
 The bootstrap node publishes its member record including PostgreSQL host, port, role, and timeline information.
 

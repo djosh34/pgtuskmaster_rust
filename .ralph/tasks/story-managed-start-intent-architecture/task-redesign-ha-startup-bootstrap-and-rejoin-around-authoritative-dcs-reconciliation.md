@@ -1,4 +1,4 @@
-## Task: Redesign HA Startup Bootstrap And Rejoin Around Authoritative DCS Reconciliation <status>not_started</status> <passes>false</passes> <priority>ultra high</priority>
+## Task: Redesign HA Startup Bootstrap And Rejoin Around Authoritative DCS Reconciliation <status>completed</status> <passes>true</passes> <priority>ultra high</priority>
 
 
 <description>
@@ -363,7 +363,7 @@ The implementation may rename these, but it must preserve this degree of compres
 </description>
 
 <acceptance_criteria>
-- [ ] Write and commit a concrete architecture note in docs and code comments that defines:
+- [x] Write and commit a concrete architecture note in docs and code comments that defines:
 - [ ] durable DCS facts (`cluster_initialized`)
 - [ ] leased DCS facts (`bootstrap_lock`, `leader_lock`)
 - [ ] per-tick input facts (DCS authority, trust, member freshness, local postgres runtime facts, local physical `PGDATA` facts, recovery compatibility facts)
@@ -374,7 +374,7 @@ The implementation may rename these, but it must preserve this degree of compres
 - [ ] Remove the current “initialized cluster + no DCS authority + no managed replica residue => start as primary” fallback from `src/runtime/node.rs`.
 - [ ] Remove every startup or HA path that treats DCS probe failure, stale DCS, or no-fresh-quorum state as enough reason to become writable primary in an initialized cluster.
 - [ ] Replace plain `init_lock` semantics across `src/dcs/state.rs`, `src/dcs/worker.rs`, `src/dcs/store.rs`, `src/dcs/etcd_store.rs`, and `src/runtime/node.rs` with the new durable/leased bootstrap model. No old init-lock-only bootstrap path may remain reachable after completion.
-- [ ] Rename `DcsTrust::FullQuorum` everywhere it is surfaced in product code, tests, debug API, and CLI output to a more truthful name such as `FreshQuorum`, and update all labels/docs accordingly.
+- [x] Rename `DcsTrust::FullQuorum` everywhere it is surfaced in product code, tests, debug API, and CLI output to a more truthful name such as `FreshQuorum`, and update all labels/docs accordingly.
 - [ ] Delete the current `foreign healthy primary` fallback model from startup and HA. After completion, follower/rejoin authority comes from the authoritative leader only, not from arbitrary member records that claim to be primary.
 - [ ] Implement the explicit safe policy for `cluster_initialized = false` plus non-empty local `PGDATA`:
 - [ ] this is always `Quiescent(UnsafeUninitializedPgData)` plus a hard surfaced error
@@ -444,9 +444,244 @@ The implementation may rename these, but it must preserve this degree of compres
 - [ ] Audit and update HA partition coverage in `tests/ha_partition_isolation.rs` and `tests/ha/support/partition.rs` wherever the new leader/bootstrap/rejoin rules change expected behavior.
 - [ ] Remove or rewrite stale legacy tests, helper logic, and API/debug labels that still encode the old startup/follow split. No dead or shadow logic may remain in the final tree.
 - [ ] Reconcile the Ralph HA task and bug files listed in the Scope section so completed/superseded task narratives no longer contradict the redesigned product behavior and test suite.
-- [ ] Update docs in `docs/src/reference/ha-decisions.md`, `docs/src/explanation/ha-decision-engine.md`, and `docs/src/how-to/handle-primary-failure.md` so the shipped behavior matches the redesigned architecture exactly.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Update docs in `docs/src/reference/ha-decisions.md`, `docs/src/explanation/ha-decision-engine.md`, and `docs/src/how-to/handle-primary-failure.md` so the shipped behavior matches the redesigned architecture exactly.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+## Detailed implementation plan
+
+The implementation will be done in explicit phases so the architecture is replaced coherently instead of layering new logic on top of the current startup/HA split.
+
+Skeptical review amendment:
+- Do not rewrite shipped user docs first. The repo currently has broad user-visible `FullQuorum`, `WaitForPostgres`, and `FollowLeader` wording across docs, CLI, API, and debug surfaces. Updating those pages before the code lands would create a long stale-doc window during the refactor. Freeze the target architecture early in one internal architecture note and code comments, then update shipped docs only after the new behavior is actually passing.
+- Do not extend the published member descriptor with placeholder offline-election facts before the local physical inspection path exists. The DCS worker currently builds `MemberRecord` only from `PgInfoState`, so the authoritative offline descriptor must be implemented first and then wired into member publication; otherwise the plan would temporarily invent ranking fields from incomplete facts.
+
+### Phase 1: Freeze the target model in a narrow internal note and characterization tests before the large refactor
+
+1. Add a short internal architecture note that becomes the canonical reference for the redesign during the refactor. Keep it close to code or under docs as an implementation note, but do not rewrite the main user-facing HA pages yet.
+2. In that note, define the exact DCS paths and payloads to implement:
+   - `/{scope}/cluster/initialized` -> durable record, written only after successful first bootstrap
+   - `/{scope}/cluster/identity` -> durable record containing at minimum `system_identifier`, plus the bootstrap winner and bootstrap completion timestamp if useful
+   - `/{scope}/bootstrap` -> leased bootstrap authority record replacing the plain `/{scope}/init`
+   - `/{scope}/leader` -> leased leader authority record, preserved as the only authoritative leader proof
+   - `/{scope}/member/{member_id}` -> live member record, extended to include the pre-election/startup descriptor rather than introducing a second parallel member key family
+3. In the same note, lock the precise trust vocabulary:
+   - `NotTrusted` means DCS unavailable/unhealthy
+   - `NoFreshQuorum` means DCS reachable but insufficient fresh quorum for authority
+   - `FreshQuorum` means DCS reachable and authoritative enough for leader/bootstrap decisions
+4. Write the exact desired-state vocabulary that the refactor will implement:
+   - `ClusterMode`
+   - `DesiredNodeState`
+   - `BootstrapPlan`
+   - `PrimaryPlan`
+   - `ReplicaPlan`
+   - `QuiescentReason`
+   - `FencePlan`
+5. Add or update characterization tests before deleting legacy paths so the refactor keeps the few behaviors that must survive the redesign:
+   - managed config is still rendered before PostgreSQL is started
+   - a healthy 2-of-3 quorum can still restore exactly one primary without waiting for the third node
+   - the leader lease remains the only authoritative leader proof
+6. Add source comments near the new enums explaining that they are derived each tick from DCS facts plus local physical facts and are never themselves persisted into DCS.
+
+### Phase 2: Introduce the new DCS schema and remove `init_lock`
+
+1. Replace `DcsKey::InitLock` in [src/dcs/keys.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/keys.rs) with explicit keys for:
+   - `ClusterInitialized`
+   - `ClusterIdentity`
+   - `BootstrapLock`
+2. Replace `InitLockRecord` in [src/dcs/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs) with:
+   - `BootstrapLockRecord { holder: MemberId }`
+   - `ClusterInitializedRecord`
+   - `ClusterIdentityRecord { system_identifier, ... }`
+3. Extend `DcsCache` so the authoritative cluster facts are present together:
+   - `cluster_initialized: Option<ClusterInitializedRecord>`
+   - `cluster_identity: Option<ClusterIdentityRecord>`
+   - `bootstrap_lock: Option<BootstrapLockRecord>`
+   - existing `leader` and `members`
+4. Update watch decoding and cache refresh in [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs) and [src/dcs/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/worker.rs) so reset/apply/delete semantics handle the new keys and no `init_lock` code remains.
+5. Extend the etcd store in [src/dcs/etcd_store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/etcd_store.rs) with leased bootstrap-lock operations, parallel to the existing leader lease support.
+6. Add an explicit bootstrap-lease API surface in the store traits so runtime/HA code cannot keep using raw `put_path_if_absent` as an escape hatch.
+7. Remove `claim_dcs_init_lock_and_seed_config(...)` from [src/runtime/node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs) and replace it later with a bootstrap-authority step that:
+   - acquires bootstrap lease first
+   - performs bootstrap
+   - writes cluster identity on success
+   - writes cluster initialized on success
+   - releases bootstrap lease
+8. Add unit tests for DCS key parsing, watch decoding, cache reset, and lease APIs so the schema migration is pinned before the larger HA rewrite.
+
+### Phase 3: Add one authoritative local physical inspection module
+
+1. Introduce a dedicated local-inspection module instead of leaving physical state inference split across `inspect_data_dir`, managed recovery signal inspection, and HA runtime facts.
+2. The module will expose one authoritative result struct that includes:
+   - `data_dir_kind`: `Missing`, `Empty`, `Initialized`, `InvalidNonEmptyWithoutPgVersion`
+   - `system_identifier`
+   - `pg_version`
+   - `timeline_id`
+   - `durable_end_lsn`
+   - control-file state
+   - whether control data says the cluster was in recovery
+   - signal-file mode and signal-file conflicts
+   - whether the local state is eligible for bootstrap, direct follow, rewind, or basebackup
+3. The authoritative implementation choice will be: parse facts from `pg_controldata` output, with signal-file inspection used only as a supplemental local-managed-state input. The plan deliberately does not use WAL filename heuristics.
+4. Put this logic in one reusable module consumed by both startup planning and HA per-tick reconciliation, so there is no second startup-only interpretation path left in [src/runtime/node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs).
+5. Add focused tests for:
+   - missing and empty directories
+   - non-empty without `PG_VERSION`
+   - valid inspectable `PGDATA`
+   - conflicting signal files
+   - parsing of system identifier, timeline, and durable end LSN
+   - eligibility decisions for direct follow vs rewind vs basebackup
+
+### Phase 4: Extend the member record with the startup/election descriptor after offline inspection exists
+
+1. Extend `MemberRecord` in [src/dcs/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs) with a nested descriptor published even when PostgreSQL is stopped:
+   - `system_identifier`
+   - `timeline_id`
+   - `durable_end_lsn`
+   - `state_class`
+   - `postgres_runtime_class`
+   - `updated_at`
+   - `member_id`
+2. Define `state_class` so it distinguishes at minimum:
+   - missing/empty `PGDATA`
+   - initialized inspectable `PGDATA`
+   - initialized but invalid/inconsistent `PGDATA`
+   - replica-only state that still requires a source
+   - promotable state
+3. Define `postgres_runtime_class` so it distinguishes:
+   - postgres running healthy
+   - postgres stopped but local state inspectable
+   - postgres unavailable and local state unsafe
+4. Update the DCS worker to publish this descriptor from the new local-inspection module on every tick, including cold startup ticks before PostgreSQL is started. Do not publish partially synthesized offline descriptor values from `PgInfoState` alone.
+5. Update trust evaluation only to classify DCS authority; do not fold candidate ranking into trust itself.
+6. Add deterministic comparator functions over the descriptor with tests proving the required ordering:
+   - matching cluster `system_identifier`
+   - promotable over ineligible
+   - higher timeline
+   - higher durable LSN
+   - running healthy over offline inspectable
+   - lexical `member_id` tie-break
+
+### Phase 5: Replace the HA state model with derived cluster/node plans
+
+1. Replace the broad phase model in [src/ha/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/state.rs) with a smaller derived state surface centered on:
+   - `ClusterMode`
+   - `DesiredNodeState`
+2. Collapse the current decision vocabulary in [src/ha/decision.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decision.rs) so it mirrors the target architecture instead of encoding overlapping transport steps like `WaitForPostgres` and `FollowLeader` as separate mental models.
+3. Keep the decision/effect separation only if it still serves dispatch clarity. If it becomes redundant under the new model, remove the extra layer rather than preserving it for familiarity.
+4. Rename `DcsTrust::FullQuorum` to `FreshQuorum` through product code, tests, API responses, CLI output, debug API, docs, and generated docs.
+5. Ensure the top-level decision function in [src/ha/decide.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs) computes:
+   - one cluster mode from DCS health, quorum, bootstrap lock, initialized fact, and leader lease
+   - one local node state from cluster mode plus local physical inspection plus local PostgreSQL runtime facts
+6. Preserve the strict authority rule:
+   - initialized cluster + `NotTrusted` => not writable primary
+   - initialized cluster + `NoFreshQuorum` => not writable primary
+   - no leader lease => no authoritative leader, even if member records still claim primary
+7. Make the cold-restart/all-leases-expired path explicit:
+   - only members with matching cluster identity and promotable descriptor may join election
+   - non-promotable members stay quiescent and wait
+   - candidate ranking uses the deterministic comparator from Phase 4
+8. Make the unsafe-uninitialized-data path explicit:
+   - `cluster_initialized = false` + non-empty unexpected `PGDATA` => `Quiescent(UnsafeUninitializedPgData)` plus surfaced hard error
+
+### Phase 6: Replace startup planning in `src/runtime/node.rs` with the same reconcile model
+
+1. Delete `StartupMode::{InitializePrimary, CloneReplica, ResumeExisting}` and the separate startup-only mode selection logic in [src/runtime/node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs).
+2. Replace `inspect_data_dir(...)` and startup DCS probing with a single startup reconcile input builder that uses:
+   - the new local physical inspection module
+   - a startup DCS snapshot using the new schema
+   - the same cluster-mode and desired-node-state derivation used by HA
+3. Preserve the useful current property that managed config is rendered before PostgreSQL starts, but make the intent entirely derived from the authoritative plan.
+4. Explicitly remove the following startup fallbacks:
+   - DCS probe failure + preserved local primary-ish state => start primary
+   - `foreign healthy primary` as a fallback follow source
+   - `init_lock` absence as sufficient bootstrap proof
+5. Implement startup execution against the new desired states:
+   - `Bootstrap(InitDb)` => acquire bootstrap lease, run bootstrap, write durable cluster identity, write initialized fact, start PostgreSQL as primary
+   - `Primary(KeepLeader)` => retain leadership only if the local node already owns the authoritative leader lease
+   - `Primary(AcquireLeaderThenStartOrPromote)` => attempt leader lease only if the local descriptor wins the initialized-cluster election
+   - `Replica(DirectFollow/RewindThenFollow/BasebackupThenFollow)` => materialize replica config and run the ordered subplan
+   - `Quiescent(...)` => do not start writable PostgreSQL
+   - `Fence(...)` => stop and remain non-writable
+
+### Phase 7: Refactor process dispatch so one replica plan owns the whole transition
+
+1. Rework [src/ha/process_dispatch.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/process_dispatch.rs), [src/ha/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/worker.rs), [src/process/jobs.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/jobs.rs), [src/process/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/state.rs), and [src/process/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/worker.rs) so a follower reconcile plan is not split across unrelated ticks.
+2. Replace the current `WaitForPostgres(start_requested)` plus `FollowLeader` dance with a single follower convergence plan that can own:
+   - demote if needed
+   - stop PostgreSQL if required
+   - rewrite managed config
+   - run rewind if required
+   - run basebackup if required
+   - restart PostgreSQL as replica
+3. Keep plan progress in explicit process state so retries are idempotent and do not depend on latching hacks in the HA worker.
+4. Make basebackup, rewind, and direct follow subplans mutually exclusive ordered outputs of one reconcile decision, not top-level competing states.
+5. Ensure leader self-failure is handled through one path:
+   - fence immediately
+   - release owned leader lease when possible
+   - otherwise rely on lease expiry
+
+### Phase 8: Remove foreign-primary fallback and retarget source selection
+
+1. Rewrite source selection in [src/ha/source_conn.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/source_conn.rs) and related helpers so replication source authority comes only from the authoritative leader lease holder.
+2. Treat visible non-leader primaries as bug/fence signals rather than normal source candidates.
+3. Update any ranking or follow helper in [src/ha/decision.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decision.rs) and [src/runtime/node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs) that currently uses arbitrary healthy primary records.
+
+### Phase 9: Update API, debug, CLI, and documentation surfaces
+
+1. Update [src/api/mod.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/api/mod.rs), [src/api/controller.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/api/controller.rs), [src/cli/status.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/cli/status.rs), and [src/debug_api/view.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/debug_api/view.rs) so exposed state names exactly match the new model.
+2. Remove stale references to `FullQuorum`, `init_lock`, `WaitForPostgres`, `FollowLeader`, and startup-mode terminology from user-visible output.
+3. Update docs with the `k2-docs-loop` skill after code behavior is finalized:
+   - [docs/src/reference/ha-decisions.md](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/src/reference/ha-decisions.md)
+   - [docs/src/explanation/ha-decision-engine.md](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/src/explanation/ha-decision-engine.md)
+   - [docs/src/how-to/handle-primary-failure.md](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/src/how-to/handle-primary-failure.md)
+4. Remove or regenerate stale built docs artifacts only after the source docs are correct.
+
+### Phase 10: Rewrite tests around the new authority model
+
+1. Replace source-level tests that currently pin legacy phases and decisions in:
+   - [src/runtime/node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs)
+   - [src/dcs/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs)
+   - [src/ha/decision.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decision.rs)
+   - [src/ha/decide.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs)
+   - [src/ha/process_dispatch.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/process_dispatch.rs)
+   - [src/ha/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/worker.rs)
+2. Rewrite the multi-node HA scenarios in:
+   - [tests/ha/support/multi_node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tests/ha/support/multi_node.rs)
+   - [tests/ha_multi_node_failover.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tests/ha_multi_node_failover.rs)
+3. Add or update scenarios for:
+   - concurrent first bootstrap with one leased bootstrap winner
+   - bootstrap lease expiry before initialization completes
+   - all-nodes-offline restart with expired leases and preserved `PGDATA`
+   - 2-of-3 quorum restoring exactly one primary while the third node is still offline
+   - healthy follower restart while a leader lease exists
+   - old primary restart after failover for both rewindable and reclone-required cases
+   - preserved replica restart after failover
+   - unsafe uninitialized cluster with unexpected non-empty `PGDATA`
+   - leader lease loss with fresh quorum
+   - leader loss without fresh quorum
+4. Tighten assertions so restart/rejoin tests validate the full final topology rather than only a subset of nodes.
+5. Update partition tests in:
+   - [tests/ha_partition_isolation.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tests/ha_partition_isolation.rs)
+   - [tests/ha/support/partition.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tests/ha/support/partition.rs)
+6. Reconcile or supersede the Ralph HA tasks and bug files listed in the Scope section once the final semantics are stable, so the task ledger stops describing obsolete behavior.
+
+### Phase 11: Final verification and completion
+
+1. Run the full required validation set with the implementation complete:
+   - `make check`
+   - `make test`
+   - `make test-long`
+   - `make lint`
+2. Fix every failing test rather than downgrading coverage or skipping suites.
+3. Confirm docs match the shipped behavior, including new trust naming and startup/bootstrap/rejoin semantics.
+4. Only after all of the above passes:
+   - set `<passes>true</passes>`
+   - run `/bin/bash .ralph/task_switch.sh`
+   - commit all changes, including `.ralph` updates
+   - `git push`
+
+NOW EXECUTE

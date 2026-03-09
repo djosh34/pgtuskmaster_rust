@@ -1383,13 +1383,15 @@ mod tests {
     fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
         DcsState {
             worker: crate::state::WorkerStatus::Running,
-            trust: DcsTrust::FullQuorum,
+            trust: DcsTrust::FreshQuorum,
             cache: DcsCache {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config: cfg,
-                init_lock: None,
+                cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }
@@ -1982,7 +1984,7 @@ mod tests {
         assert_eq!(decoded["switchover_pending"], false);
         assert_eq!(decoded["switchover_to"], serde_json::Value::Null);
         assert_eq!(decoded["member_count"], 0);
-        assert_eq!(decoded["dcs_trust"], "full_quorum");
+        assert_eq!(decoded["dcs_trust"], "fresh_quorum");
         assert_eq!(decoded["ha_phase"], "replica");
         assert_eq!(decoded["ha_tick"], 7);
         assert_eq!(decoded["ha_decision"]["kind"], "enter_fail_safe");

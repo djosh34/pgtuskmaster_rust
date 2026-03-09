@@ -112,7 +112,7 @@ node-c        unknown  unknown    unknown   ?       ?            ?        ?     
 
 debug details:
   node-a: debug=available
-    dcs: trust=FullQuorum leader=node-a
+    dcs: trust=FreshQuorum leader=node-a
     ha: phase=Primary decision=NoChange detail=steady
     pginfo: variant=Primary sql=Healthy readiness=Ready summary=primary wal_lsn=7 readiness=Ready
   node-b: debug=disabled
@@ -194,7 +194,7 @@ api url: http://127.0.0.1:8080
 sequence: 42  schema: v1
 
 pginfo: variant=Primary sql=Healthy readiness=Ready summary=primary wal_lsn=7 readiness=Ready
-dcs: trust=FullQuorum leader=node-a members=3 switchover_request=false
+dcs: trust=FreshQuorum leader=node-a members=3 switchover_request=false
 ha: phase=Primary decision=NoChange detail=steady planned_actions=0
 process: state=Idle worker=Running running_job=none last_outcome=Success(job-1)
 debug: history_changes=12 history_timeline=12 last_sequence=42

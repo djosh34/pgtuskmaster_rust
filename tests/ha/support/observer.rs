@@ -322,7 +322,7 @@ mod unit_tests {
                 }
             })
             .collect(),
-            dcs_trust: DcsTrustResponse::FullQuorum,
+            dcs_trust: DcsTrustResponse::FreshQuorum,
             ha_phase: phase,
             ha_tick: 1,
             ha_decision: HaDecisionResponse::NoChange,

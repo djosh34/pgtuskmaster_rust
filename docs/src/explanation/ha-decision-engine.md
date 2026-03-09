@@ -11,7 +11,7 @@ The HA decision engine turns a world snapshot into a single next HA phase and a 
 
 The first branch in `decide_phase(...)` is the trust gate.
 
-If trust is not `FullQuorum`:
+If trust is not `FreshQuorum`:
 
 - a local primary enters `FailSafe` with `EnterFailSafe { release_leader_lease: false }`
 - a non-primary also enters the `FailSafe` phase, but with `NoChange`
@@ -20,11 +20,11 @@ That means the engine prefers safety over recovery whenever its view of cluster 
 
 `DcsTrust` has three variants:
 
-- `FullQuorum`
-- `FailSafe`
+- `FreshQuorum`
+- `NoFreshQuorum`
 - `NotTrusted`
 
-`FullQuorum` is the only state that allows the normal phase handlers to run.
+`FreshQuorum` is the only trust state that allows the normal phase handlers to run.
 
 ## Phase-Driven Logic
 
@@ -116,7 +116,7 @@ This layer is what prevents contradictory action mixes from being dispatched as 
 
 Recovery paths only make sense once trust is good enough to rely on DCS-backed membership and leader information.
 
-Under `FullQuorum`, the engine can choose recovery behaviors such as:
+Under `FreshQuorum`, the engine can choose recovery behaviors such as:
 
 - `RecoverReplica { strategy: Rewind { ... } }`
 - `RecoverReplica { strategy: BaseBackup { ... } }`

@@ -71,8 +71,8 @@ pub struct HaClusterMemberResponse {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DcsTrustResponse {
-    FullQuorum,
-    FailSafe,
+    FreshQuorum,
+    NoFreshQuorum,
     NotTrusted,
 }
 
@@ -196,8 +196,8 @@ pub enum ReadinessResponse {
 impl DcsTrustResponse {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::FullQuorum => "full_quorum",
-            Self::FailSafe => "fail_safe",
+            Self::FreshQuorum => "fresh_quorum",
+            Self::NoFreshQuorum => "no_fresh_quorum",
             Self::NotTrusted => "not_trusted",
         }
     }

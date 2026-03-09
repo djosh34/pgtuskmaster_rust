@@ -881,7 +881,10 @@ $$;
                 )));
             }
 
-            let init_key = format!("/{}/init", config.scope.trim_matches('/'));
+            let cluster_initialized_key =
+                crate::dcs::store::cluster_initialized_path(config.scope.as_str());
+            let cluster_identity_key =
+                crate::dcs::store::cluster_identity_path(config.scope.as_str());
             let config_key = format!("/{}/config", config.scope.trim_matches('/'));
             let dcs_endpoints_for_client = dcs_endpoints_for_check
                 .iter()
@@ -894,13 +897,27 @@ $$;
                         "etcd connect for init/config check failed: {err}"
                     ))
                 })?;
-            let init_response = etcd_client
-                .get(init_key.as_str(), None)
+            let cluster_initialized_response = etcd_client
+                .get(cluster_initialized_key.as_str(), None)
                 .await
-                .map_err(|err| WorkerError::Message(format!("etcd get init key failed: {err}")))?;
-            if init_response.kvs().is_empty() {
+                .map_err(|err| {
+                    WorkerError::Message(format!("etcd get cluster initialized key failed: {err}"))
+                })?;
+            if cluster_initialized_response.kvs().is_empty() {
                 return Err(WorkerError::Message(format!(
-                    "expected init key to exist at {init_key}"
+                    "expected cluster initialized key to exist at {cluster_initialized_key}"
+                )));
+            }
+
+            let cluster_identity_response = etcd_client
+                .get(cluster_identity_key.as_str(), None)
+                .await
+                .map_err(|err| {
+                    WorkerError::Message(format!("etcd get cluster identity key failed: {err}"))
+                })?;
+            if cluster_identity_response.kvs().is_empty() {
+                return Err(WorkerError::Message(format!(
+                    "expected cluster identity key to exist at {cluster_identity_key}"
                 )));
             }
 

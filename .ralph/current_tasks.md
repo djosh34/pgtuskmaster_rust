@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 10:15:53 PM CET 2026
+Generated: Mon Mar  9 11:07:20 PM CET 2026
 
 # Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/02-task-add-whole-node-kill-and-partial-recovery-ha-e2e.md`
 
@@ -118,18 +118,6 @@ Generated: Mon Mar  9 10:15:53 PM CET 2026
 <priority>high</priority>
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-managed-start-intent-architecture/task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md`
-
-```
-## Task: Redesign HA Startup Bootstrap And Rejoin Around Authoritative DCS Reconciliation <status>not_started</status> <passes>false</passes> <priority>ultra high</priority>
-
-
-<description>
-**Goal:** Replace the current split startup/rejoin/follow-leader architecture with one authoritative reconciliation model that derives node behavior from DCS authority plus local physical facts, rather than from mixed local heuristics and phase-specific patches. The higher-order goal is to guarantee that ephemeral node restarts, cold restarts, preserved-PGDATA rejoins, and leader-loss reactions all converge through the same control rules and therefore produce the same safe behavior.
 ```
 
 ==============

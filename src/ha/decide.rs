@@ -23,7 +23,7 @@ pub(crate) fn decide(input: DecideInput) -> DecideOutput {
 }
 
 pub(crate) fn decide_phase(current: &HaState, facts: &DecisionFacts) -> PhaseOutcome {
-    if !matches!(facts.trust, DcsTrust::FullQuorum) {
+    if !matches!(facts.trust, DcsTrust::FreshQuorum) {
         if facts.postgres_primary {
             return PhaseOutcome::new(
                 HaPhase::FailSafe,
@@ -488,7 +488,7 @@ mod tests {
     impl WorldBuilder {
         fn new() -> Self {
             Self {
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 self_member_id: MemberId("node-a".to_string()),
                 leader: None,
@@ -581,7 +581,7 @@ mod tests {
             Case {
                 name: "init moves to waiting postgres",
                 current_phase: HaPhase::Init,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_unknown(SqlStatus::Unknown),
                 leader: None,
                 process: process_idle(None),
@@ -594,7 +594,7 @@ mod tests {
             Case {
                 name: "waiting postgres emits start when unreachable",
                 current_phase: HaPhase::WaitingPostgresReachable,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_unknown(SqlStatus::Unreachable),
                 leader: None,
                 process: process_idle(None),
@@ -607,7 +607,7 @@ mod tests {
             Case {
                 name: "waiting postgres enters dcs trusted when healthy",
                 current_phase: HaPhase::WaitingPostgresReachable,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(None),
@@ -617,7 +617,7 @@ mod tests {
             Case {
                 name: "waiting dcs to replica with known leader",
                 current_phase: HaPhase::WaitingDcsTrusted,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(None),
@@ -629,7 +629,7 @@ mod tests {
             Case {
                 name: "waiting dcs replica without leader stays waiting",
                 current_phase: HaPhase::WaitingDcsTrusted,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(None),
@@ -639,7 +639,7 @@ mod tests {
             Case {
                 name: "candidate becomes primary when lease self",
                 current_phase: HaPhase::CandidateLeader,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-a"),
                 process: process_idle(None),
@@ -649,7 +649,7 @@ mod tests {
             Case {
                 name: "primary split brain fences",
                 current_phase: HaPhase::Primary,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_primary(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(None),
@@ -665,7 +665,7 @@ mod tests {
             Case {
                 name: "no quorum enters fail safe",
                 current_phase: HaPhase::CandidateLeader,
-                trust: DcsTrust::FailSafe,
+                trust: DcsTrust::NoFreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(None),
@@ -675,7 +675,7 @@ mod tests {
             Case {
                 name: "rewinding success re-enters replica",
                 current_phase: HaPhase::Rewinding,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Success {
@@ -691,7 +691,7 @@ mod tests {
             Case {
                 name: "rewinding failure goes bootstrap",
                 current_phase: HaPhase::Rewinding,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Failure {
@@ -710,7 +710,7 @@ mod tests {
             Case {
                 name: "rewinding failure without active leader waits",
                 current_phase: HaPhase::Rewinding,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(Some(JobOutcome::Failure {
@@ -725,7 +725,7 @@ mod tests {
             Case {
                 name: "bootstrap failure goes fencing",
                 current_phase: HaPhase::Bootstrapping,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Timeout {
@@ -739,7 +739,7 @@ mod tests {
             Case {
                 name: "bootstrapping without active leader emits nothing",
                 current_phase: HaPhase::Bootstrapping,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: None,
                 process: process_idle(None),
@@ -749,7 +749,7 @@ mod tests {
             Case {
                 name: "fencing success returns waiting dcs",
                 current_phase: HaPhase::Fencing,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Success {
@@ -765,7 +765,7 @@ mod tests {
             Case {
                 name: "fencing failure enters fail safe",
                 current_phase: HaPhase::Fencing,
-                trust: DcsTrust::FullQuorum,
+                trust: DcsTrust::FreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 leader: Some("node-b"),
                 process: process_idle(Some(JobOutcome::Failure {
@@ -855,7 +855,7 @@ mod tests {
             world: WorldBuilder::new()
                 .with_self_member_id("node-a")
                 .with_pg(pg_primary(SqlStatus::Healthy))
-                .with_trust(DcsTrust::FullQuorum)
+                .with_trust(DcsTrust::FreshQuorum)
                 .with_leader("node-b")
                 .with_member(MemberRecord {
                     member_id: self_id.clone(),
@@ -868,6 +868,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -882,6 +886,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -904,7 +912,7 @@ mod tests {
             world: WorldBuilder::new()
                 .with_self_member_id("node-a")
                 .with_pg(pg_primary(SqlStatus::Healthy))
-                .with_trust(DcsTrust::FailSafe)
+                .with_trust(DcsTrust::NoFreshQuorum)
                 .with_leader("node-b")
                 .with_member(MemberRecord {
                     member_id: MemberId("node-a".to_string()),
@@ -917,6 +925,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -993,7 +1005,7 @@ mod tests {
 
         let recovered = decide(DecideInput {
             current: start,
-            world: WorldBuilder::new().with_trust(DcsTrust::FullQuorum).build(),
+            world: WorldBuilder::new().with_trust(DcsTrust::FreshQuorum).build(),
         });
         assert_eq!(recovered.next.phase, HaPhase::WaitingDcsTrusted);
         assert_eq!(recovered.outcome.decision, HaDecision::WaitForDcsTrust);
@@ -1029,7 +1041,7 @@ mod tests {
                 decision: HaDecision::NoChange,
             },
             world: WorldBuilder::new()
-                .with_trust(DcsTrust::FullQuorum)
+                .with_trust(DcsTrust::FreshQuorum)
                 .with_leader("node-a")
                 .with_pg(pg_unknown(SqlStatus::Unreachable))
                 .build(),
@@ -1106,6 +1118,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1151,6 +1167,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1436,6 +1456,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1531,6 +1555,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1636,6 +1664,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1864,6 +1896,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1983,6 +2019,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -2047,6 +2087,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -2133,6 +2177,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -2223,14 +2271,14 @@ mod tests {
             FailSafeCase {
                 name: "candidate leader in failsafe trust stays quiescent",
                 current_phase: HaPhase::CandidateLeader,
-                trust: DcsTrust::FailSafe,
+                trust: DcsTrust::NoFreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 expected_decision: HaDecision::NoChange,
             },
             FailSafeCase {
                 name: "already failsafe replica stays quiescent",
                 current_phase: HaPhase::FailSafe,
-                trust: DcsTrust::FailSafe,
+                trust: DcsTrust::NoFreshQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
                 expected_decision: HaDecision::NoChange,
             },
@@ -2275,7 +2323,7 @@ mod tests {
                 decision: HaDecision::NoChange,
             },
             world: WorldBuilder::new()
-                .with_trust(DcsTrust::FullQuorum)
+                .with_trust(DcsTrust::FreshQuorum)
                 .with_pg(pg_primary(SqlStatus::Healthy))
                 .build(),
         });
@@ -2507,7 +2555,9 @@ mod tests {
                         leader: leader_record,
                         switchover: switchover_request,
                         config: cfg,
-                        init_lock: None,
+                        cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
                     },
                     last_refresh_at: Some(UnixMillis(1)),
                 },
@@ -2528,6 +2578,10 @@ mod tests {
             timeline: Some(TimelineId(1)),
             write_lsn: Some(WalLsn(10)),
             replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at: UnixMillis(1),
             pg_version: Version(1),
         }
@@ -2545,6 +2599,10 @@ mod tests {
             timeline: Some(TimelineId(1)),
             write_lsn: None,
             replay_lsn: Some(WalLsn(10)),
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at: UnixMillis(1),
             pg_version: Version(1),
         }

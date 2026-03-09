@@ -454,7 +454,7 @@ fn collect_warnings(
                 if local_role_from_state(&sampled.state) == "primary" {
                     sampled_primary_members.insert(sampled.state.self_member_id.clone());
                 }
-                if sampled.state.dcs_trust != crate::api::DcsTrustResponse::FullQuorum {
+                if sampled.state.dcs_trust != crate::api::DcsTrustResponse::FreshQuorum {
                     warnings.push(ClusterWarning {
                         code: "degraded_trust".to_string(),
                         message: format!(
@@ -800,7 +800,7 @@ mod tests {
                 version: 1,
                 updated_at_ms: 1,
                 worker: "Running".to_string(),
-                trust: "FullQuorum".to_string(),
+                trust: "FreshQuorum".to_string(),
                 member_count: 1,
                 leader: Some("node-a".to_string()),
                 has_switchover_request: false,
@@ -857,7 +857,7 @@ mod tests {
         let seed_state = sample_state(
             "node-a",
             HaPhaseResponse::Primary,
-            DcsTrustResponse::FullQuorum,
+            DcsTrustResponse::FreshQuorum,
             Some("node-a"),
             members.clone(),
         );
@@ -904,14 +904,14 @@ mod tests {
         let seed_state = sample_state(
             "node-a",
             HaPhaseResponse::Primary,
-            DcsTrustResponse::FullQuorum,
+            DcsTrustResponse::FreshQuorum,
             Some("node-a"),
             members.clone(),
         );
         let other_state = sample_state(
             "node-b",
             HaPhaseResponse::Primary,
-            DcsTrustResponse::FullQuorum,
+            DcsTrustResponse::FreshQuorum,
             Some("node-b"),
             members.clone(),
         );
@@ -958,7 +958,7 @@ mod tests {
         let seed_state = sample_state(
             "node-a",
             HaPhaseResponse::Primary,
-            DcsTrustResponse::FailSafe,
+            DcsTrustResponse::NoFreshQuorum,
             Some("node-a"),
             members.clone(),
         );
@@ -989,7 +989,7 @@ mod tests {
         let seed_state = sample_state(
             "node-a",
             HaPhaseResponse::Primary,
-            DcsTrustResponse::FullQuorum,
+            DcsTrustResponse::FreshQuorum,
             Some("node-a"),
             members.clone(),
         );
@@ -1017,7 +1017,7 @@ mod tests {
         let seed_state = sample_state(
             "node-a",
             HaPhaseResponse::Primary,
-            DcsTrustResponse::FullQuorum,
+            DcsTrustResponse::FreshQuorum,
             Some("node-a"),
             members.clone(),
         );
@@ -1053,7 +1053,7 @@ mod tests {
         let seed_state = sample_state(
             "node-a",
             HaPhaseResponse::Primary,
-            DcsTrustResponse::FullQuorum,
+            DcsTrustResponse::FreshQuorum,
             Some("node-a"),
             members.clone(),
         );

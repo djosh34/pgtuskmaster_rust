@@ -6,6 +6,7 @@ use crate::{
     config::RuntimeConfig,
     dcs::state::MemberRecord,
     ha::decision::HaDecision,
+    local_physical::{inspect_local_physical_state, DataDirKind, SignalFileState},
     postgres_managed_conf::{
         managed_standby_auth_from_role_auth, render_managed_primary_conninfo,
         ManagedPostgresStartIntent, ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME,
@@ -62,7 +63,10 @@ pub(crate) fn dispatch_process_action(
         }
         HaAction::StartPostgres => {
             let leader_member_id = start_postgres_leader_member_id(ctx);
-            if postgres_data_dir_requires_basebackup(runtime_config.postgres.data_dir.as_path())? {
+            if postgres_data_dir_requires_basebackup(
+                &ctx.process_defaults.postgres_binary,
+                runtime_config.postgres.data_dir.as_path(),
+            )? {
                 if let Some(leader_member_id) = leader_member_id {
                     let source = validate_basebackup_source(ctx, action.id(), leader_member_id)?;
                     let request = ProcessJobRequest {
@@ -302,12 +306,6 @@ fn managed_start_intent_from_dcs(
     replica_leader_member_id: Option<&MemberId>,
     data_dir: &Path,
 ) -> Result<ManagedPostgresStartIntent, ProcessDispatchError> {
-    let managed_recovery_state = crate::postgres_managed::inspect_managed_recovery_state(data_dir)
-        .map_err(|err| ProcessDispatchError::ManagedConfig {
-            action: action.clone(),
-            message: err.to_string(),
-        })?;
-
     if let Some(leader_member_id) = replica_leader_member_id {
         let leader = resolve_source_member(ctx, action.clone(), leader_member_id)?;
         let source = basebackup_source_from_member(&ctx.self_id, &leader, &ctx.process_defaults)
@@ -322,7 +320,13 @@ fn managed_start_intent_from_dcs(
         ));
     }
 
-    if managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None {
+    let inspected = inspect_local_physical_state(data_dir, &ctx.process_defaults.postgres_binary)
+        .map_err(|err| ProcessDispatchError::ManagedConfig {
+            action: action.clone(),
+            message: err.to_string(),
+        })?;
+
+    if inspected.signal_file_state != SignalFileState::None {
         return Err(ProcessDispatchError::ManagedConfig {
             action,
             message:
@@ -335,32 +339,16 @@ fn managed_start_intent_from_dcs(
 }
 
 fn postgres_data_dir_requires_basebackup(
+    postgres_binary: &Path,
     data_dir: &Path,
 ) -> Result<bool, ProcessDispatchError> {
-    let metadata = match fs::metadata(data_dir) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(err) => {
-            return Err(ProcessDispatchError::Filesystem {
-                action: ActionId::StartPostgres,
-                message: format!("inspect data dir {} failed: {err}", data_dir.display()),
-            });
-        }
-    };
-    if !metadata.is_dir() {
-        return Err(ProcessDispatchError::Filesystem {
+    let inspected = inspect_local_physical_state(data_dir, postgres_binary).map_err(|err| {
+        ProcessDispatchError::Filesystem {
             action: ActionId::StartPostgres,
-            message: format!("data dir is not a directory: {}", data_dir.display()),
-        });
-    }
-    if data_dir.join("PG_VERSION").exists() {
-        return Ok(false);
-    }
-    let mut entries = fs::read_dir(data_dir).map_err(|err| ProcessDispatchError::Filesystem {
-        action: ActionId::StartPostgres,
-        message: format!("read data dir {} failed: {err}", data_dir.display()),
+            message: err.to_string(),
+        }
     })?;
-    Ok(entries.next().is_none())
+    Ok(!matches!(inspected.data_dir_kind, DataDirKind::Initialized))
 }
 
 fn follow_leader_is_already_current_or_pending(
@@ -515,7 +503,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -645,13 +633,15 @@ mod tests {
     fn sample_dcs_state(config: RuntimeConfig) -> DcsState {
         DcsState {
             worker: WorkerStatus::Running,
-            trust: DcsTrust::FullQuorum,
+            trust: DcsTrust::FreshQuorum,
             cache: DcsCache {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config,
-                init_lock: None,
+                cluster_initialized: None,
+            cluster_identity: None,
+            bootstrap_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }
@@ -725,6 +715,10 @@ mod tests {
             timeline: None,
             write_lsn: None,
             replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: None,
+            postgres_runtime_class: None,
             updated_at: UnixMillis(1),
             pg_version: crate::state::Version(1),
         }
@@ -777,6 +771,26 @@ mod tests {
         if path.exists() {
             fs::remove_dir_all(path)
                 .map_err(|err| WorkerError::Message(format!("remove temp dir failed: {err}")))?;
+        }
+        Ok(())
+    }
+
+    fn initdb_data_dir(runtime_config: &RuntimeConfig, data_dir: &Path) -> Result<(), WorkerError> {
+        let output = std::process::Command::new(&runtime_config.process.binaries.initdb)
+            .arg("-D")
+            .arg(data_dir)
+            .arg("-U")
+            .arg("postgres")
+            .arg("--auth=trust")
+            .arg("--no-sync")
+            .env("LC_ALL", "C")
+            .output()
+            .map_err(|err| WorkerError::Message(format!("initdb fixture failed: {err}")))?;
+        if !output.status.success() {
+            return Err(WorkerError::Message(format!(
+                "initdb fixture failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
         Ok(())
     }
@@ -865,12 +879,7 @@ mod tests {
         let runtime_config = sample_runtime_config(data_dir.clone());
         let (mut ctx, _pg_publisher, dcs_publisher, mut process_rx) =
             build_context(runtime_config.clone());
-        fs::create_dir_all(&data_dir).map_err(|err| {
-            WorkerError::Message(format!("create replica data dir fixture failed: {err}"))
-        })?;
-        fs::write(data_dir.join("PG_VERSION"), "16\n").map_err(|err| {
-            WorkerError::Message(format!("seed PG_VERSION fixture failed: {err}"))
-        })?;
+        initdb_data_dir(&runtime_config, &data_dir)?;
         let mut dcs = sample_dcs_state(runtime_config.clone());
         dcs.cache.members.insert(
             MemberId("node-b".to_string()),

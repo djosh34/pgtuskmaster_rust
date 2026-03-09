@@ -81,6 +81,7 @@ pub(crate) struct HaWorkerCtx {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProcessDispatchDefaults {
+    pub(crate) postgres_binary: PathBuf,
     pub(crate) postgres_host: String,
     pub(crate) postgres_port: u16,
     pub(crate) socket_dir: PathBuf,
@@ -98,6 +99,7 @@ pub(crate) struct ProcessDispatchDefaults {
 impl ProcessDispatchDefaults {
     pub(crate) fn contract_stub() -> Self {
         Self {
+            postgres_binary: PathBuf::from("/usr/bin/postgres"),
             postgres_host: "127.0.0.1".to_string(),
             postgres_port: 5432,
             socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),

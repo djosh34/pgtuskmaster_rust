@@ -422,7 +422,7 @@ mod tests {
                 version: 1,
                 updated_at_ms: 1,
                 worker: "Running".to_string(),
-                trust: "FullQuorum".to_string(),
+                trust: "FreshQuorum".to_string(),
                 member_count: 2,
                 leader: Some("node-a".to_string()),
                 has_switchover_request: false,
@@ -503,7 +503,7 @@ mod tests {
                     api_url: Some("http://node-a:8080".to_string()),
                     api_status: ApiStatus::Ok,
                     role: "primary".to_string(),
-                    trust: "full_quorum".to_string(),
+                    trust: "fresh_quorum".to_string(),
                     phase: "primary".to_string(),
                     leader: verbose.then_some("node-a".to_string()),
                     decision: verbose.then_some("no_change".to_string()),
@@ -525,7 +525,7 @@ mod tests {
                     api_url: Some("http://node-b:8080".to_string()),
                     api_status: ApiStatus::Ok,
                     role: "replica".to_string(),
-                    trust: "full_quorum".to_string(),
+                    trust: "fresh_quorum".to_string(),
                     phase: "replica".to_string(),
                     leader: verbose.then_some("node-a".to_string()),
                     decision: verbose
@@ -549,7 +549,7 @@ mod tests {
         assert!(value.contains("cluster: cluster-a  health: healthy"));
         assert!(value.contains("NODE"));
         assert!(value.contains("node-a"));
-        assert!(value.contains("full_quorum"));
+        assert!(value.contains("fresh_quorum"));
         assert!(value.contains("ok"));
     }
 

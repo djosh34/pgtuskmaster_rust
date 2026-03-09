@@ -361,8 +361,8 @@ fn readiness_label(readiness: &Readiness) -> String {
 
 fn dcs_trust_label(trust: &DcsTrust) -> String {
     match trust {
-        DcsTrust::FullQuorum => "FullQuorum".to_string(),
-        DcsTrust::FailSafe => "FailSafe".to_string(),
+        DcsTrust::FreshQuorum => "FreshQuorum".to_string(),
+        DcsTrust::NoFreshQuorum => "NoFreshQuorum".to_string(),
         DcsTrust::NotTrusted => "NotTrusted".to_string(),
     }
 }

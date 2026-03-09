@@ -174,3 +174,5 @@
 .ralph/tasks/bugs/rapid-repeated-failovers-can-drop-intermediate-writes.md
 .ralph/tasks/bugs/preserved-replica-rejoin-stalls-after-runtime-stop-failover.md
 .ralph/tasks/bugs/runtime-restart-replica-can-stall-before-replaying-post-restart-writes.md
+.ralph/tasks/story-ha-quorum-survival-under-real-failures/02-task-add-whole-node-kill-and-partial-recovery-ha-e2e.md
+.ralph/tasks/story-managed-start-intent-architecture/task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md
