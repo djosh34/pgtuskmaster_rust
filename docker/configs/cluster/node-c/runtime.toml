@@ -68,5 +68,8 @@ mode = "append"
 listen_addr = "0.0.0.0:8080"
 security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
 
+[pgtm]
+api_url = "http://127.0.0.1:18083"
+
 [debug]
 enabled = true
