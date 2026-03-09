@@ -25,8 +25,9 @@ use crate::test_harness::ports::{allocate_ha_topology_ports, PortReservation};
 use super::config::{Mode, TestConfig};
 use super::handle::{NodeHandle, RuntimeNodeHandle, RuntimeNodeSet, TestClusterHandle};
 use super::util::{
-    parse_loopback_socket, reserve_non_overlapping_ports, wait_for_bootstrap_primary,
-    wait_for_node_api_ready_or_task_exit,
+    parse_loopback_socket, reserve_non_overlapping_ports, resolve_node_binary_path,
+    spawn_runtime_node_process, wait_for_bootstrap_primary,
+    wait_for_node_api_ready_or_process_exit, write_runtime_config_file,
 };
 
 const ETCD_CLUSTER_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -85,6 +86,7 @@ struct StartupGuard {
     etcd_proxies: BTreeMap<String, TcpProxyLink>,
     api_proxies: BTreeMap<String, TcpProxyLink>,
     pg_proxies: BTreeMap<String, TcpProxyLink>,
+    node_etcd_colocation: BTreeMap<String, String>,
     timeouts: super::config::TimeoutConfig,
 }
 
@@ -92,7 +94,9 @@ impl StartupGuard {
     async fn cleanup_best_effort(&mut self) -> Result<(), WorkerError> {
         let mut failures = Vec::new();
 
-        self.runtime_nodes.shutdown_all().await;
+        if let Err(err) = self.runtime_nodes.shutdown_all().await {
+            failures.push(format!("runtime shutdown failed: {err}"));
+        }
 
         for node in &self.nodes {
             if let Err(err) = super::util::pg_ctl_stop_immediate(
@@ -165,6 +169,8 @@ impl StartupGuard {
             etcd_proxies: self.etcd_proxies,
             api_proxies: self.api_proxies,
             pg_proxies: self.pg_proxies,
+            node_etcd_colocation: self.node_etcd_colocation,
+            whole_node_outages: BTreeMap::new(),
         })
     }
 }
@@ -195,6 +201,7 @@ pub async fn start_cluster(config: TestConfig) -> Result<TestClusterHandle, Work
         etcd_proxies: BTreeMap::new(),
         api_proxies: BTreeMap::new(),
         pg_proxies: BTreeMap::new(),
+        node_etcd_colocation: config.node_etcd_colocation.clone(),
         timeouts: config.timeouts.clone(),
     };
 
@@ -218,6 +225,7 @@ async fn start_cluster_inner(
     etcd_bin: PathBuf,
     binaries: BinaryPaths,
 ) -> Result<(), WorkerError> {
+    let runtime_binary_path = resolve_node_binary_path()?;
     let namespace = guard.guard.namespace()?.clone();
     let etcd_member_count = config.etcd_members.len();
     let mut topology_reservation =
@@ -341,6 +349,8 @@ async fn start_cluster_inner(
         let data_dir = prepare_pgdata_dir(&namespace, &node_id)?;
         let socket_dir = namespace.child_dir(format!("run/{node_id}"));
         let log_file = namespace.child_dir(format!("logs/{node_id}/postgres.log"));
+        let runtime_log_file = namespace.child_dir(format!("logs/{node_id}/runtime.log"));
+        let runtime_config_path = namespace.child_dir(format!("config/{node_id}.toml"));
         if let Some(parent) = log_file.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
                 WorkerError::Message(format!(
@@ -602,6 +612,7 @@ async fn start_cluster_inner(
             .with_api_listen_addr(api_addr)
             .with_debug(DebugConfig { enabled: false })
             .build();
+        write_runtime_config_file(runtime_config_path.as_path(), &runtime_cfg)?;
 
         let runtime_superuser_username = runtime_cfg.postgres.roles.superuser.username.clone();
         let runtime_superuser_dbname = runtime_cfg.postgres.local_conn_identity.dbname.clone();
@@ -637,16 +648,11 @@ async fn start_cluster_inner(
             WorkerError::Message(format!("release api reserved port failed: {err}"))
         })?;
 
-        let task_node_id = node_id.clone();
-        let runtime_cfg_for_task = runtime_cfg.clone();
-        let runtime_task = tokio::task::spawn_local(async move {
-            match crate::runtime::run_node_from_config(runtime_cfg_for_task).await {
-                Ok(()) => Ok(()),
-                Err(err) => Err(WorkerError::Message(format!(
-                    "runtime node {task_node_id} exited with error: {err}"
-                ))),
-            }
-        });
+        let runtime_child = spawn_runtime_node_process(
+            runtime_binary_path.as_path(),
+            runtime_config_path.as_path(),
+            runtime_log_file.as_path(),
+        )?;
 
         guard.nodes.push(NodeHandle {
             id: node_id.clone(),
@@ -657,21 +663,25 @@ async fn start_cluster_inner(
             data_dir,
         });
 
-        let runtime_task = wait_for_node_api_ready_or_task_exit(
+        let runtime_child = wait_for_node_api_ready_or_process_exit(
             api_observe_addr,
             node_id.as_str(),
-            log_file.as_path(),
-            runtime_task,
+            runtime_log_file.as_path(),
+            runtime_child,
             config.timeouts.http_step_timeout,
             config.timeouts.api_readiness_timeout,
+            config.timeouts.command_kill_wait_timeout,
         )
         .await?;
         let replaced = guard.runtime_nodes.insert(
             node_id.clone(),
             RuntimeNodeHandle {
                 runtime_cfg,
+                runtime_binary_path: runtime_binary_path.clone(),
+                runtime_config_path,
                 postgres_log_file: log_file,
-                task: runtime_task,
+                runtime_log_file,
+                state: super::handle::RuntimeNodeState::Running(runtime_child),
             },
         );
         if replaced.is_some() {

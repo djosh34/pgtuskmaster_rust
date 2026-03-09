@@ -449,7 +449,7 @@ mod tests {
 
     use crate::{
         dcs::state::{
-            DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
+            DcsView, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
         },
         ha::{
             decision::{
@@ -868,10 +868,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -886,10 +886,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -925,10 +925,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1005,7 +1005,9 @@ mod tests {
 
         let recovered = decide(DecideInput {
             current: start,
-            world: WorldBuilder::new().with_trust(DcsTrust::FreshQuorum).build(),
+            world: WorldBuilder::new()
+                .with_trust(DcsTrust::FreshQuorum)
+                .build(),
         });
         assert_eq!(recovered.next.phase, HaPhase::WaitingDcsTrusted);
         assert_eq!(recovered.outcome.decision, HaDecision::WaitForDcsTrust);
@@ -1118,10 +1120,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1167,10 +1169,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1435,7 +1437,7 @@ mod tests {
     }
 
     #[test]
-    fn waiting_dcs_trusted_without_leader_follows_healthy_primary_member() {
+    fn waiting_dcs_trusted_without_leader_waits_for_authoritative_leader() {
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -1456,23 +1458,18 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
                 .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::Replica);
-        assert_eq!(
-            output.outcome.decision,
-            HaDecision::FollowLeader {
-                leader_member_id: MemberId("node-b".to_string()),
-            }
-        );
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
     }
 
     #[test]
@@ -1555,10 +1552,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1664,10 +1661,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -1896,10 +1893,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -2019,10 +2016,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -2087,10 +2084,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
@@ -2156,7 +2153,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_leader_without_leader_follows_healthy_primary_member() {
+    fn candidate_leader_without_leader_attempts_leadership_instead_of_following_member_record() {
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -2177,23 +2174,18 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
                 .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::Replica);
-        assert_eq!(
-            output.outcome.decision,
-            HaDecision::FollowLeader {
-                leader_member_id: MemberId("node-b".to_string()),
-            }
-        );
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
     }
 
     #[test]
@@ -2550,14 +2542,14 @@ mod tests {
                 DcsState {
                     worker: WorkerStatus::Running,
                     trust,
-                    cache: DcsCache {
+                    cache: DcsView {
                         members,
                         leader: leader_record,
                         switchover: switchover_request,
                         config: cfg,
                         cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+                        cluster_identity: None,
+                        bootstrap_lock: None,
                     },
                     last_refresh_at: Some(UnixMillis(1)),
                 },

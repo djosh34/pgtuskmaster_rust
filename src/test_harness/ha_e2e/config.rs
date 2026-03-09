@@ -55,6 +55,7 @@ pub struct TestConfig {
     pub node_count: usize,
     pub namespace: Option<TestNamespace>,
     pub etcd_members: Vec<String>,
+    pub node_etcd_colocation: BTreeMap<String, String>,
     pub recovery_binary_overrides: BTreeMap<String, RecoveryBinaryOverrides>,
     pub postgres_roles: Option<PostgresRoleOverrides>,
     pub mode: Mode,
@@ -138,6 +139,23 @@ impl TestConfig {
             }
             if let Some(path) = overrides.pg_rewind.as_deref() {
                 validate_recovery_binary_override_path(node_id.as_str(), "pg_rewind", path)?;
+            }
+        }
+
+        for (node_id, member_name) in &self.node_etcd_colocation {
+            validate_known_node_id(node_id.as_str(), self.node_count)?;
+            validate_non_empty_field(
+                "TestConfig.node_etcd_colocation member name",
+                member_name.as_str(),
+            )?;
+            if !self
+                .etcd_members
+                .iter()
+                .any(|candidate| candidate == member_name)
+            {
+                return Err(WorkerError::Message(format!(
+                    "TestConfig.node_etcd_colocation references unknown etcd member {member_name} for node {node_id}"
+                )));
             }
         }
 

@@ -140,10 +140,9 @@ fn decision_is_already_active(
             start_requested: true,
             ..
         } => process_state_is_running_one_of(process_state, &[ActiveJobKind::StartPostgres]),
-        crate::ha::decision::HaDecision::FollowLeader { .. } => process_state_is_running_one_of(
-            process_state,
-            &[ActiveJobKind::Demote],
-        ),
+        crate::ha::decision::HaDecision::FollowLeader { .. } => {
+            process_state_is_running_one_of(process_state, &[ActiveJobKind::Demote])
+        }
         crate::ha::decision::HaDecision::RecoverReplica { strategy } => match strategy {
             crate::ha::decision::RecoveryStrategy::Rewind { .. } => {
                 process_state_is_running_one_of(process_state, &[ActiveJobKind::PgRewind])
@@ -189,7 +188,7 @@ mod tests {
     use crate::{
         config::RuntimeConfig,
         dcs::{
-            state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
+            state::{DcsView, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
             store::{DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent, WatchOp},
         },
         ha::{
@@ -473,14 +472,14 @@ mod tests {
         DcsState {
             worker: WorkerStatus::Running,
             trust,
-            cache: DcsCache {
+            cache: DcsView {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config,
                 cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+                cluster_identity: None,
+                bootstrap_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }
@@ -835,14 +834,14 @@ mod tests {
                 publisher: dcs_publisher,
                 store: Box::new(store.clone()),
                 log: crate::logging::LogHandle::null(),
-                cache: DcsCache {
+                cache: DcsView {
                     members: BTreeMap::new(),
                     leader: None,
                     switchover: None,
                     config: runtime_config.clone(),
                     cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+                    cluster_identity: None,
+                    bootstrap_lock: None,
                 },
                 last_published_pg_version: None,
                 last_emitted_store_healthy: None,

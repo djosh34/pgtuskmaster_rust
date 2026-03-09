@@ -3,7 +3,7 @@ use thiserror::Error;
 use super::{
     keys::{key_from_path, DcsKey, DcsKeyParseError},
     state::{
-        BootstrapLockRecord, ClusterIdentityRecord, ClusterInitializedRecord, DcsCache,
+        BootstrapLockRecord, ClusterIdentityRecord, ClusterInitializedRecord, DcsView,
         LeaderRecord, MemberRecord, SwitchoverRequest,
     },
     worker::{apply_watch_update, DcsWatchUpdate},
@@ -160,7 +160,7 @@ pub(crate) fn write_local_member(
 
 pub(crate) fn refresh_from_etcd_watch(
     scope: &str,
-    cache: &mut DcsCache,
+    cache: &mut DcsView,
     events: Vec<WatchEvent>,
 ) -> Result<RefreshResult, DcsStoreError> {
     let mut applied = 0usize;
@@ -432,7 +432,7 @@ mod tests {
     use crate::{
         config::RuntimeConfig,
         dcs::{
-            state::{DcsCache, MemberRecord, MemberRole},
+            state::{DcsView, MemberRecord, MemberRole},
             worker::DcsValue,
         },
         pginfo::state::{Readiness, SqlStatus},
@@ -448,8 +448,8 @@ mod tests {
         crate::test_harness::runtime_config::sample_runtime_config()
     }
 
-    fn sample_cache() -> DcsCache {
-        DcsCache {
+    fn sample_cache() -> DcsView {
+        DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -602,10 +602,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                system_identifier: None,
+                durable_end_lsn: None,
+                state_class: None,
+                postgres_runtime_class: None,
                 updated_at: UnixMillis(10),
                 pg_version: Version(1),
             },

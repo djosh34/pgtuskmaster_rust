@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::{
     api::{HaPhaseResponse, HaStateResponse},
     config::RuntimeConfig,
-    dcs::state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx},
+    dcs::state::{DcsView, DcsState, DcsTrust, DcsWorkerCtx},
     dcs::store::{DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent},
     debug_api::{
         snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx, SystemSnapshot},
@@ -245,7 +245,7 @@ fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
     DcsState {
         worker: WorkerStatus::Starting,
         trust: DcsTrust::NotTrusted,
-        cache: DcsCache {
+        cache: DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -392,7 +392,7 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
         publisher: dcs_publisher,
         store: Box::new(ContractStore),
         log: crate::logging::LogHandle::null(),
-        cache: DcsCache {
+        cache: DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,

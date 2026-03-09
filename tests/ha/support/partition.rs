@@ -82,6 +82,7 @@ impl PartitionFixture {
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
+            node_etcd_colocation: BTreeMap::new(),
             recovery_binary_overrides: BTreeMap::new(),
             postgres_roles: None,
             mode: ha_e2e::Mode::PartitionProxy,

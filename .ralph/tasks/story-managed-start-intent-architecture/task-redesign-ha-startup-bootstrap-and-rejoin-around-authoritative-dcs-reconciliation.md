@@ -496,7 +496,7 @@ Skeptical review amendment:
    - `BootstrapLockRecord { holder: MemberId }`
    - `ClusterInitializedRecord`
    - `ClusterIdentityRecord { system_identifier, ... }`
-3. Extend `DcsCache` so the authoritative cluster facts are present together:
+3. Extend `DcsView` so the authoritative cluster facts are present together:
    - `cluster_initialized: Option<ClusterInitializedRecord>`
    - `cluster_identity: Option<ClusterIdentityRecord>`
    - `bootstrap_lock: Option<BootstrapLockRecord>`

@@ -7,6 +7,7 @@ use crate::{
     dcs::state::MemberRecord,
     ha::decision::HaDecision,
     local_physical::{inspect_local_physical_state, DataDirKind, SignalFileState},
+    pginfo::state::PgInfoState,
     postgres_managed_conf::{
         managed_standby_auth_from_role_auth, render_managed_primary_conninfo,
         ManagedPostgresStartIntent, ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME,
@@ -18,7 +19,6 @@ use crate::{
         },
         state::{ProcessJobKind, ProcessJobRequest},
     },
-    pginfo::state::PgInfoState,
     state::{JobId, MemberId},
 };
 
@@ -322,9 +322,9 @@ fn managed_start_intent_from_dcs(
 
     let inspected = inspect_local_physical_state(data_dir, &ctx.process_defaults.postgres_binary)
         .map_err(|err| ProcessDispatchError::ManagedConfig {
-            action: action.clone(),
-            message: err.to_string(),
-        })?;
+        action: action.clone(),
+        message: err.to_string(),
+    })?;
 
     if inspected.signal_file_state != SignalFileState::None {
         return Err(ProcessDispatchError::ManagedConfig {
@@ -408,7 +408,8 @@ fn managed_config_already_targets_start_intent(
     data_dir: &Path,
     start_intent: &ManagedPostgresStartIntent,
 ) -> Result<bool, ProcessDispatchError> {
-    let Some((expected_primary_conninfo, standby_auth)) = standby_start_details(start_intent) else {
+    let Some((expected_primary_conninfo, standby_auth)) = standby_start_details(start_intent)
+    else {
         return Ok(false);
     };
     let managed_conf_path = data_dir.join(MANAGED_POSTGRESQL_CONF_NAME);
@@ -426,13 +427,11 @@ fn managed_config_already_targets_start_intent(
         }
     };
     let expected_recovery_state = start_intent.recovery_signal();
-    let actual_recovery_state =
-        crate::postgres_managed::inspect_managed_recovery_state(data_dir).map_err(|err| {
-            ProcessDispatchError::ManagedConfig {
-                action: action.clone(),
-                message: err.to_string(),
-            }
-        })?;
+    let actual_recovery_state = crate::postgres_managed::inspect_managed_recovery_state(data_dir)
+        .map_err(|err| ProcessDispatchError::ManagedConfig {
+        action: action.clone(),
+        message: err.to_string(),
+    })?;
     if actual_recovery_state != expected_recovery_state {
         return Ok(false);
     }
@@ -511,7 +510,7 @@ mod tests {
     use crate::{
         config::{RoleAuthConfig, RuntimeConfig, SecretSource},
         dcs::{
-            state::{DcsCache, DcsState, DcsTrust, MemberRecord, MemberRole},
+            state::{DcsView, DcsState, DcsTrust, MemberRecord, MemberRole},
             store::{DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent},
         },
         ha::{
@@ -634,14 +633,14 @@ mod tests {
         DcsState {
             worker: WorkerStatus::Running,
             trust: DcsTrust::FreshQuorum,
-            cache: DcsCache {
+            cache: DcsView {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config,
                 cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+                cluster_identity: None,
+                bootstrap_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }
@@ -1086,9 +1085,7 @@ mod tests {
             assert_eq!(spec.data_dir, runtime_config.postgres.data_dir);
             assert_eq!(spec.mode, ctx.process_defaults.shutdown_mode);
         } else {
-            return Err(WorkerError::Message(
-                "expected demote request".to_string(),
-            ));
+            return Err(WorkerError::Message("expected demote request".to_string()));
         }
         assert!(process_rx.try_recv().is_err());
 
@@ -1226,9 +1223,7 @@ mod tests {
             assert_eq!(spec.data_dir, runtime_config.postgres.data_dir);
             assert_eq!(spec.mode, ctx.process_defaults.shutdown_mode);
         } else {
-            return Err(WorkerError::Message(
-                "expected demote request".to_string(),
-            ));
+            return Err(WorkerError::Message("expected demote request".to_string()));
         }
         assert!(process_rx.try_recv().is_err());
 

@@ -146,7 +146,9 @@ fn inspect_data_dir_kind(data_dir: &Path) -> Result<DataDirKind, LocalPhysicalSt
     match fs::metadata(data_dir) {
         Ok(meta) => {
             if !meta.is_dir() {
-                return Err(LocalPhysicalStateError::NotDirectory(data_dir.to_path_buf()));
+                return Err(LocalPhysicalStateError::NotDirectory(
+                    data_dir.to_path_buf(),
+                ));
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -164,11 +166,10 @@ fn inspect_data_dir_kind(data_dir: &Path) -> Result<DataDirKind, LocalPhysicalSt
         return Ok(DataDirKind::Initialized);
     }
 
-    let mut entries =
-        fs::read_dir(data_dir).map_err(|err| LocalPhysicalStateError::DataDirIo {
-            path: data_dir.to_path_buf(),
-            message: err.to_string(),
-        })?;
+    let mut entries = fs::read_dir(data_dir).map_err(|err| LocalPhysicalStateError::DataDirIo {
+        path: data_dir.to_path_buf(),
+        message: err.to_string(),
+    })?;
     if entries.next().is_none() {
         Ok(DataDirKind::Empty)
     } else {
@@ -205,12 +206,13 @@ fn read_pg_version(data_dir: &Path) -> Result<Version, LocalPhysicalStateError> 
         message: err.to_string(),
     })?;
     let trimmed = raw.trim();
-    let parsed = trimmed
-        .parse::<u64>()
-        .map_err(|err| LocalPhysicalStateError::InvalidPgVersion {
-            path,
-            message: err.to_string(),
-        })?;
+    let parsed =
+        trimmed
+            .parse::<u64>()
+            .map_err(|err| LocalPhysicalStateError::InvalidPgVersion {
+                path,
+                message: err.to_string(),
+            })?;
     Ok(Version(parsed))
 }
 
@@ -362,7 +364,10 @@ Minimum recovery ending location:     0/16B6D00
 Min recovery ending loc's timeline:   4
 ",
         )?;
-        assert_eq!(parsed.system_identifier, SystemIdentifier(7_374_392_058_184_458_932));
+        assert_eq!(
+            parsed.system_identifier,
+            SystemIdentifier(7_374_392_058_184_458_932)
+        );
         assert_eq!(parsed.timeline_id, Some(TimelineId(4)));
         assert_eq!(parsed.durable_end_lsn, Some(WalLsn(0x00000000_016B6D00)));
         assert!(parsed.was_in_recovery);
@@ -374,7 +379,10 @@ Min recovery ending loc's timeline:   4
         let dir = temp_dir("invalid-non-empty")?;
         fs::write(dir.join("orphan"), "data")?;
         let inspected = inspect_local_physical_state(&dir, Path::new("/usr/bin/postgres"))?;
-        assert_eq!(inspected.data_dir_kind, DataDirKind::InvalidNonEmptyWithoutPgVersion);
+        assert_eq!(
+            inspected.data_dir_kind,
+            DataDirKind::InvalidNonEmptyWithoutPgVersion
+        );
         assert_eq!(inspected.signal_file_state, SignalFileState::None);
         assert!(!inspected.eligible_for_bootstrap);
         Ok(())
@@ -390,8 +398,8 @@ Min recovery ending loc's timeline:   4
     }
 
     #[test]
-    fn detects_conflicting_signal_files_without_pg_controldata() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn detects_conflicting_signal_files_without_pg_controldata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("conflicting-signals")?;
         fs::write(dir.join("orphan"), "data")?;
         fs::write(dir.join(MANAGED_STANDBY_SIGNAL_NAME), "")?;

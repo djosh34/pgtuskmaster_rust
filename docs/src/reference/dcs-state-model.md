@@ -113,9 +113,9 @@ The runtime keeps this record in DCS for the full handoff window. During a targe
 
 - `holder`
 
-### `DcsCache`
+### `DcsView`
 
-`DcsCache` contains:
+`DcsView` contains:
 
 - `members: BTreeMap<MemberId, MemberRecord>`
 - `leader: Option<LeaderRecord>`

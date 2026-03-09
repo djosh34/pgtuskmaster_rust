@@ -308,7 +308,7 @@ mod tests {
     use crate::{
         config::{LogLevel, LoggingConfig, RuntimeConfig},
         dcs::{
-            state::{DcsCache, DcsState, DcsTrust},
+            state::{DcsView, DcsState, DcsTrust},
             store::{DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent},
         },
         ha::{
@@ -435,14 +435,14 @@ mod tests {
         DcsState {
             worker: WorkerStatus::Running,
             trust: DcsTrust::FreshQuorum,
-            cache: DcsCache {
+            cache: DcsView {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config,
                 cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+                cluster_identity: None,
+                bootstrap_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }

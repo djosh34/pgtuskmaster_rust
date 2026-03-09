@@ -1353,7 +1353,7 @@ mod tests {
         dcs::{
             etcd_store::EtcdDcsStore,
             state::{
-                evaluate_trust, BootstrapLockRecord, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
+                evaluate_trust, BootstrapLockRecord, DcsView, DcsState, DcsTrust, DcsWorkerCtx,
                 LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{
@@ -1520,8 +1520,8 @@ mod tests {
             .build()
     }
 
-    fn sample_cache(scope: &str) -> DcsCache {
-        DcsCache {
+    fn sample_cache(scope: &str) -> DcsView {
+        DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -2170,7 +2170,7 @@ mod tests {
 
             let mut snapshot_store =
                 EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
-            let mut cache = DcsCache {
+            let mut cache = DcsView {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,

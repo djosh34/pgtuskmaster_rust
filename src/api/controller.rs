@@ -353,7 +353,7 @@ mod tests {
         api::controller::{delete_switchover, post_switchover, SwitchoverRequestInput},
         dcs::{
             state::{
-                DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole,
+                DcsView, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole,
                 SwitchoverRequest,
             },
             store::{DcsStore, DcsStoreError, WatchEvent},
@@ -453,7 +453,7 @@ mod tests {
                 DcsState {
                     worker: WorkerStatus::Running,
                     trust: DcsTrust::FreshQuorum,
-                    cache: DcsCache {
+                    cache: DcsView {
                         members,
                         leader: Some(LeaderRecord {
                             member_id: member_id("node-a"),
@@ -461,8 +461,8 @@ mod tests {
                         switchover: None,
                         config: cfg,
                         cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+                        cluster_identity: None,
+                        bootstrap_lock: None,
                     },
                     last_refresh_at: Some(now),
                 },
@@ -670,10 +670,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                system_identifier: None,
+                durable_end_lsn: None,
+                state_class: None,
+                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },

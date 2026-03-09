@@ -1249,7 +1249,7 @@ mod tests {
             HTTP_REQUEST_SCRATCH_BUFFER_BYTES,
         },
         config::{ApiAuthConfig, ApiRoleTokensConfig, ApiTlsMode, InlineOrPath, RuntimeConfig},
-        dcs::state::{DcsCache, DcsState, DcsTrust},
+        dcs::state::{DcsView, DcsState, DcsTrust},
         dcs::store::{DcsStore, DcsStoreError, WatchEvent},
         debug_api::snapshot::{
             AppLifecycle, DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot,
@@ -1384,14 +1384,14 @@ mod tests {
         DcsState {
             worker: crate::state::WorkerStatus::Running,
             trust: DcsTrust::FreshQuorum,
-            cache: DcsCache {
+            cache: DcsView {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config: cfg,
                 cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+                cluster_identity: None,
+                bootstrap_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }

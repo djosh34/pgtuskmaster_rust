@@ -408,7 +408,7 @@ mod tests {
 
     use crate::{
         config::{ApiTlsMode, RuntimeConfig},
-        dcs::state::{DcsCache, DcsState, DcsTrust},
+        dcs::state::{DcsView, DcsState, DcsTrust},
         debug_api::snapshot::{AppLifecycle, DebugDomain, SystemSnapshot},
         ha::decision::HaDecision,
         ha::state::{HaPhase, HaState},
@@ -446,14 +446,14 @@ mod tests {
         DcsState {
             worker: WorkerStatus::Starting,
             trust: DcsTrust::NotTrusted,
-            cache: DcsCache {
+            cache: DcsView {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config: cfg,
                 cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+                cluster_identity: None,
+                bootstrap_lock: None,
             },
             last_refresh_at: None,
         }

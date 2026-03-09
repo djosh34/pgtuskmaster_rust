@@ -36,6 +36,8 @@ struct ClusterFixture {
     etcd: Option<pgtuskmaster_rust::test_harness::etcd3::EtcdClusterHandle>,
     nodes: Vec<ha_e2e::NodeHandle>,
     runtime_nodes: ha_e2e::RuntimeNodeSet,
+    node_etcd_colocation: BTreeMap<String, String>,
+    whole_node_outages: BTreeMap<String, ha_e2e::handle::WholeNodeOutageState>,
     timeline: Vec<String>,
 }
 
@@ -595,6 +597,7 @@ impl ClusterFixture {
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
+            node_etcd_colocation: BTreeMap::new(),
             recovery_binary_overrides: BTreeMap::new(),
             postgres_roles: None,
             mode: ha_e2e::Mode::Plain,
@@ -622,6 +625,8 @@ impl ClusterFixture {
             etcd,
             nodes,
             runtime_nodes,
+            node_etcd_colocation,
+            whole_node_outages,
             etcd_proxies: _,
             api_proxies: _,
             pg_proxies: _,
@@ -635,6 +640,8 @@ impl ClusterFixture {
             etcd,
             nodes,
             runtime_nodes,
+            node_etcd_colocation,
+            whole_node_outages,
             timeline: Vec::new(),
         })
     }
@@ -722,7 +729,12 @@ impl ClusterFixture {
             "runtime restart: stop requested for node={node_id}"
         ));
         self.runtime_nodes
-            .restart_node(&node, E2E_HTTP_STEP_TIMEOUT, E2E_API_READINESS_TIMEOUT)
+            .restart_node(
+                &node,
+                E2E_HTTP_STEP_TIMEOUT,
+                E2E_API_READINESS_TIMEOUT,
+                E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            )
             .await?;
         self.record(format!(
             "runtime restart: api loss observed and process respawned for node={node_id}"
@@ -746,6 +758,217 @@ impl ClusterFixture {
             )
             .await?;
         self.record(format!("runtime stop: api unavailable for node={node_id}"));
+        Ok(())
+    }
+
+    fn online_observer_for_target(&self, target_node_id: &str) -> Result<String, WorkerError> {
+        self.nodes
+            .iter()
+            .find(|node| {
+                node.id != target_node_id && !self.whole_node_outages.contains_key(node.id.as_str())
+            })
+            .map(|node| node.id.clone())
+            .ok_or_else(|| {
+                WorkerError::Message(format!(
+                    "no online observer node available while checking outage for {target_node_id}"
+                ))
+            })
+    }
+
+    async fn verify_whole_node_down(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        let observer_node_id = self.online_observer_for_target(node_id)?;
+        self.wait_for_member_to_be_ineligible(
+            observer_node_id.as_str(),
+            node_id,
+            E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn stop_whole_node_cleanly(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        if self.whole_node_outages.contains_key(node_id) {
+            return Err(WorkerError::Message(format!(
+                "whole-node clean stop requested for already offline node {node_id}"
+            )));
+        }
+        let node = self.node_by_id(node_id).cloned().ok_or_else(|| {
+            WorkerError::Message(format!(
+                "unknown node id for whole-node clean stop: {node_id}"
+            ))
+        })?;
+
+        self.record(format!(
+            "whole-node clean stop: requested for node={node_id}"
+        ));
+        self.runtime_nodes
+            .stop_node(
+                &node,
+                E2E_COMMAND_TIMEOUT,
+                E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                E2E_HTTP_STEP_TIMEOUT,
+                E2E_API_READINESS_TIMEOUT,
+            )
+            .await?;
+        ha_e2e::util::pg_ctl_stop_fast(
+            &self.pg_ctl_bin,
+            node.data_dir.as_path(),
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+        )
+        .await?;
+        ha_e2e::util::wait_for_postgres_unavailable(
+            &self.psql_bin,
+            node.pg_port,
+            self.superuser_username.as_str(),
+            self.superuser_dbname.as_str(),
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            E2E_API_READINESS_TIMEOUT,
+        )
+        .await?;
+
+        let etcd_member_name = self.node_etcd_colocation.get(node_id).cloned();
+        if let Some(member_name) = etcd_member_name.as_deref() {
+            let etcd = self.etcd.as_mut().ok_or_else(|| {
+                WorkerError::Message(format!(
+                    "whole-node clean stop for {node_id} requires colocated etcd member {member_name}, but etcd is not running"
+                ))
+            })?;
+            etcd.shutdown_member(member_name).await.map_err(|err| {
+                WorkerError::Message(format!(
+                    "failed to stop colocated etcd member {member_name} for node {node_id}: {err}"
+                ))
+            })?;
+        }
+
+        self.whole_node_outages.insert(
+            node_id.to_string(),
+            ha_e2e::handle::WholeNodeOutageState {
+                kind: ha_e2e::handle::WholeNodeOutageKind::CleanStop,
+                etcd_member_name,
+            },
+        );
+        self.verify_whole_node_down(node_id).await?;
+        self.record(format!(
+            "whole-node clean stop: verified offline for node={node_id}"
+        ));
+        Ok(())
+    }
+
+    async fn kill_whole_node(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        if self.whole_node_outages.contains_key(node_id) {
+            return Err(WorkerError::Message(format!(
+                "whole-node hard kill requested for already offline node {node_id}"
+            )));
+        }
+        let node = self.node_by_id(node_id).cloned().ok_or_else(|| {
+            WorkerError::Message(format!(
+                "unknown node id for whole-node hard kill: {node_id}"
+            ))
+        })?;
+
+        self.record(format!(
+            "whole-node hard kill: requested for node={node_id}"
+        ));
+        self.runtime_nodes
+            .kill_node(
+                &node,
+                E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                E2E_HTTP_STEP_TIMEOUT,
+                E2E_API_READINESS_TIMEOUT,
+            )
+            .await?;
+        ha_e2e::util::pg_ctl_stop_immediate(
+            &self.pg_ctl_bin,
+            node.data_dir.as_path(),
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+        )
+        .await?;
+        ha_e2e::util::wait_for_postgres_unavailable(
+            &self.psql_bin,
+            node.pg_port,
+            self.superuser_username.as_str(),
+            self.superuser_dbname.as_str(),
+            E2E_COMMAND_TIMEOUT,
+            E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            E2E_API_READINESS_TIMEOUT,
+        )
+        .await?;
+
+        let etcd_member_name = self.node_etcd_colocation.get(node_id).cloned();
+        if let Some(member_name) = etcd_member_name.as_deref() {
+            let etcd = self.etcd.as_mut().ok_or_else(|| {
+                WorkerError::Message(format!(
+                    "whole-node hard kill for {node_id} requires colocated etcd member {member_name}, but etcd is not running"
+                ))
+            })?;
+            etcd.shutdown_member(member_name).await.map_err(|err| {
+                WorkerError::Message(format!(
+                    "failed to stop colocated etcd member {member_name} for node {node_id}: {err}"
+                ))
+            })?;
+        }
+
+        self.whole_node_outages.insert(
+            node_id.to_string(),
+            ha_e2e::handle::WholeNodeOutageState {
+                kind: ha_e2e::handle::WholeNodeOutageKind::HardKill,
+                etcd_member_name,
+            },
+        );
+        self.verify_whole_node_down(node_id).await?;
+        self.record(format!(
+            "whole-node hard kill: verified offline for node={node_id}"
+        ));
+        Ok(())
+    }
+
+    async fn restart_whole_node(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        let outage = self.whole_node_outages.remove(node_id).ok_or_else(|| {
+            WorkerError::Message(format!(
+                "whole-node restart requested for node without active outage {node_id}"
+            ))
+        })?;
+        let node = self.node_by_id(node_id).cloned().ok_or_else(|| {
+            WorkerError::Message(format!("unknown node id for whole-node restart: {node_id}"))
+        })?;
+        self.record(format!(
+            "whole-node restart: requested for node={node_id} outage_kind={:?}",
+            outage.kind
+        ));
+
+        if let Some(member_name) = outage.etcd_member_name.clone() {
+            let etcd = self.etcd.as_mut().ok_or_else(|| {
+                WorkerError::Message(format!(
+                    "whole-node restart for {node_id} requires colocated etcd member {member_name}, but etcd is not running"
+                ))
+            })?;
+            if let Err(err) = etcd.restart_member(member_name.as_str()).await {
+                self.whole_node_outages.insert(node_id.to_string(), outage);
+                return Err(WorkerError::Message(format!(
+                    "failed to restart colocated etcd member {member_name} for node {node_id}: {err}"
+                )));
+            }
+        }
+
+        if let Err(err) = self
+            .runtime_nodes
+            .restart_node(
+                &node,
+                E2E_HTTP_STEP_TIMEOUT,
+                E2E_API_READINESS_TIMEOUT,
+                E2E_COMMAND_KILL_WAIT_TIMEOUT,
+            )
+            .await
+        {
+            self.whole_node_outages.insert(node_id.to_string(), outage);
+            return Err(err);
+        }
+
+        self.record(format!(
+            "whole-node restart: api recovered for node={node_id}"
+        ));
         Ok(())
     }
 
@@ -2438,6 +2661,36 @@ impl ClusterFixture {
         }
     }
 
+    async fn wait_for_node_ha_phase(
+        &mut self,
+        node_id: &str,
+        expected_phase: &str,
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let node_index = self.node_index_by_id(node_id).ok_or_else(|| {
+            WorkerError::Message(format!("unknown node id for HA phase wait: {node_id}"))
+        })?;
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            let state = self.fetch_node_ha_state_by_index(node_index).await?;
+            if state.ha_phase == expected_phase {
+                self.record(format!(
+                    "node phase observed: node={node_id} phase={} leader={:?}",
+                    state.ha_phase, state.leader
+                ));
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for node {node_id} to enter HA phase {expected_phase}; last_phase={} leader={:?}",
+                    state.ha_phase, state.leader
+                )));
+            }
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
+        }
+    }
+
     async fn ensure_runtime_tasks_healthy(&mut self) -> Result<(), WorkerError> {
         self.runtime_nodes.ensure_healthy().await
     }
@@ -3115,33 +3368,49 @@ impl ClusterFixture {
     }
 
     async fn shutdown(&mut self) -> Result<(), WorkerError> {
-        self.runtime_nodes.shutdown_all().await;
+        let mut failures = Vec::new();
+        if let Err(err) = self.runtime_nodes.shutdown_all().await {
+            failures.push(format!("runtime shutdown failed: {err}"));
+        }
 
-        let mut pg_stops = Vec::with_capacity(self.nodes.len());
+        let mut pg_stop_joins = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
             let pg_ctl_bin = self.pg_ctl_bin.clone();
             let data_dir = node.data_dir.clone();
-            pg_stops.push(tokio::task::spawn_local(async move {
-                let _ = ha_e2e::util::pg_ctl_stop_immediate(
+            let node_id = node.id.clone();
+            pg_stop_joins.push(tokio::task::spawn_local(async move {
+                ha_e2e::util::pg_ctl_stop_immediate(
                     &pg_ctl_bin,
                     &data_dir,
                     E2E_PG_STOP_TIMEOUT,
                     E2E_COMMAND_KILL_WAIT_TIMEOUT,
                 )
-                .await;
+                .await
+                .map_err(|err| format!("postgres stop failed for {node_id}: {err}"))
             }));
         }
-        for stop in pg_stops {
-            let _ = stop.await;
+        for join in pg_stop_joins {
+            match join.await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => failures.push(err),
+                Err(err) => failures.push(format!("postgres stop join failed: {err}")),
+            }
         }
 
         if let Some(etcd) = self.etcd.as_mut() {
-            etcd.shutdown_all()
-                .await
-                .map_err(|err| WorkerError::Message(format!("etcd shutdown failed: {err}")))?;
+            if let Err(err) = etcd.shutdown_all().await {
+                failures.push(format!("etcd shutdown failed: {err}"));
+            }
         }
         self.etcd = None;
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(WorkerError::Message(format!(
+                "cluster fixture shutdown failures: {}",
+                failures.join("; ")
+            )))
+        }
     }
 }
 
@@ -3608,6 +3877,450 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
     .await
 }
 
+pub async fn e2e_multi_node_primary_whole_node_hard_kill_failover_recovers_after_heal(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name =
+            "ha-e2e-primary-whole-node-hard-kill-failover-recovers-after-heal";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("primary whole-node hard kill bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "primary whole-node hard kill bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            let table_name = fixture.proof_table_name("ha_whole_node_primary_kill")?;
+            fixture
+                .create_proof_table(&bootstrap_primary, table_name.as_str())
+                .await?;
+            fixture
+                .insert_proof_row(
+                    &bootstrap_primary,
+                    table_name.as_str(),
+                    1,
+                    "before-primary-kill",
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    &["1:before-primary-kill".to_string()],
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            let observer_clients = fixture.observed_node_clients()?;
+            let (failover_primary, ha_stats) =
+                ClusterFixture::observe_no_dual_primary_while_clients(
+                    observer_clients,
+                    E2E_LONG_NO_DUAL_PRIMARY_WINDOW,
+                    128,
+                    async {
+                        fixture.kill_whole_node(&bootstrap_primary).await?;
+                        fixture
+                            .wait_for_stable_primary_resilient(
+                                StablePrimaryWaitPlan {
+                                    context: "primary whole-node hard kill failover stable-primary",
+                                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                                    excluded_primary: Some(&bootstrap_primary),
+                                    required_consecutive: 3,
+                                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                                    fallback_required_consecutive: 1,
+                                    min_observed_nodes: 2,
+                                },
+                                &mut phase_history,
+                            )
+                            .await
+                    },
+                )
+                .await?;
+
+            fixture
+                .assert_former_primary_demoted_or_unreachable_after_transition(
+                    &bootstrap_primary,
+                )
+                .await?;
+            fixture
+                .insert_proof_row(
+                    &failover_primary,
+                    table_name.as_str(),
+                    2,
+                    "after-primary-kill",
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_nodes(
+                    &fixture.node_ids_excluding(&bootstrap_primary),
+                    table_name.as_str(),
+                    &[
+                        "1:before-primary-kill".to_string(),
+                        "2:after-primary-kill".to_string(),
+                    ],
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "primary whole-node hard kill pre-heal success: dead_primary={bootstrap_primary} failover_primary={failover_primary} no_dual_samples={}",
+                ha_stats.sample_count
+            ));
+
+            fixture.restart_whole_node(&bootstrap_primary).await?;
+            fixture
+                .wait_for_queryable_nodes(
+                    &failover_primary,
+                    3,
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .wait_for_node_sql_role(
+                    &bootstrap_primary,
+                    "replica",
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    &[
+                        "1:before-primary-kill".to_string(),
+                        "2:after-primary-kill".to_string(),
+                    ],
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "primary whole-node hard kill healed successfully: bootstrap_primary={bootstrap_primary} failover_primary={failover_primary} phase_history={}",
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "primary whole-node hard kill scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_replica_whole_node_clean_stop_preserves_primary_writes(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name = "ha-e2e-replica-whole-node-clean-stop-preserves-primary-writes";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("replica whole-node clean stop bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "replica whole-node clean stop bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            let replica_node = fixture
+                .node_ids_excluding(&bootstrap_primary)
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    WorkerError::Message("missing replica for clean-stop scenario".to_string())
+                })?;
+            let table_name = fixture.proof_table_name("ha_whole_node_replica_stop")?;
+            fixture
+                .create_proof_table(&bootstrap_primary, table_name.as_str())
+                .await?;
+            fixture
+                .insert_proof_row(
+                    &bootstrap_primary,
+                    table_name.as_str(),
+                    1,
+                    "before-replica-stop",
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    &["1:before-replica-stop".to_string()],
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            fixture.stop_whole_node_cleanly(&replica_node).await?;
+            let surviving_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "replica whole-node clean stop surviving primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 3,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 1,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            if surviving_primary != bootstrap_primary {
+                return Err(WorkerError::Message(format!(
+                    "expected original primary {bootstrap_primary} to remain primary during replica whole-node clean stop, got {surviving_primary}"
+                )));
+            }
+            fixture
+                .assert_no_dual_primary_window(E2E_SHORT_NO_DUAL_PRIMARY_WINDOW)
+                .await?;
+            fixture
+                .insert_proof_row(
+                    &bootstrap_primary,
+                    table_name.as_str(),
+                    2,
+                    "during-replica-stop",
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_nodes(
+                    &[bootstrap_primary.clone()],
+                    table_name.as_str(),
+                    &[
+                        "1:before-replica-stop".to_string(),
+                        "2:during-replica-stop".to_string(),
+                    ],
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "replica whole-node clean stop pre-heal success: primary={bootstrap_primary} offline_replica={replica_node}"
+            ));
+
+            fixture.restart_whole_node(&replica_node).await?;
+            fixture
+                .wait_for_queryable_nodes(
+                    &bootstrap_primary,
+                    3,
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .wait_for_node_sql_role(
+                    &replica_node,
+                    "replica",
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    &[
+                        "1:before-replica-stop".to_string(),
+                        "2:during-replica-stop".to_string(),
+                    ],
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "replica whole-node clean stop healed successfully: primary={bootstrap_primary} replica={replica_node} phase_history={}",
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "replica whole-node clean stop scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_partial_recovery_restores_quorum_before_full_heal(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name = "ha-e2e-partial-recovery-restores-quorum-before-full-heal";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("partial recovery bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "partial recovery bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            let replica_nodes = fixture.node_ids_excluding(&bootstrap_primary);
+            let first_stopped_replica = replica_nodes.first().cloned().ok_or_else(|| {
+                WorkerError::Message(
+                    "missing first replica for partial recovery scenario".to_string(),
+                )
+            })?;
+            let survivor = replica_nodes.get(1).cloned().ok_or_else(|| {
+                WorkerError::Message(
+                    "missing survivor replica for partial recovery scenario".to_string(),
+                )
+            })?;
+            let table_name = fixture.proof_table_name("ha_partial_recovery")?;
+            fixture
+                .create_proof_table(&bootstrap_primary, table_name.as_str())
+                .await?;
+            fixture
+                .insert_proof_row(
+                    &bootstrap_primary,
+                    table_name.as_str(),
+                    1,
+                    "before-quorum-loss",
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    &["1:before-quorum-loss".to_string()],
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            fixture.stop_whole_node_cleanly(&first_stopped_replica).await?;
+            fixture.stop_whole_node_cleanly(&bootstrap_primary).await?;
+            fixture
+                .wait_for_node_ha_phase(
+                    &survivor,
+                    "FailSafe",
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "partial recovery quorum loss observed: survivor={survivor} entered fail-safe while {bootstrap_primary} and {first_stopped_replica} stayed offline"
+            ));
+
+            fixture.restart_whole_node(&bootstrap_primary).await?;
+            let restored_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "partial recovery quorum restored stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 3,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 1,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            fixture
+                .assert_no_dual_primary_window(E2E_SHORT_NO_DUAL_PRIMARY_WINDOW)
+                .await?;
+            fixture
+                .insert_proof_row(
+                    &restored_primary,
+                    table_name.as_str(),
+                    2,
+                    "after-partial-recovery",
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_nodes(
+                    &[bootstrap_primary.clone(), survivor.clone()],
+                    table_name.as_str(),
+                    &[
+                        "1:before-quorum-loss".to_string(),
+                        "2:after-partial-recovery".to_string(),
+                    ],
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "partial recovery pre-heal success: restored_primary={restored_primary} recovered_node={bootstrap_primary} survivor={survivor} remaining_offline={first_stopped_replica}"
+            ));
+
+            fixture.restart_whole_node(&first_stopped_replica).await?;
+            fixture
+                .wait_for_queryable_nodes(
+                    &restored_primary,
+                    3,
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .wait_for_node_sql_role(
+                    &first_stopped_replica,
+                    "replica",
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    &[
+                        "1:before-quorum-loss".to_string(),
+                        "2:after-partial-recovery".to_string(),
+                    ],
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "partial recovery healed successfully: restored_primary={restored_primary} final_rejoined={first_stopped_replica} phase_history={}",
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "partial recovery scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
+    })
+    .await
+}
+
 pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rewind(
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
@@ -3622,6 +4335,7 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
             "etcd-b".to_string(),
             "etcd-c".to_string(),
         ],
+        node_etcd_colocation: BTreeMap::new(),
         recovery_binary_overrides: BTreeMap::new(),
         postgres_roles: Some(ha_e2e::PostgresRoleOverrides {
             replicator_username: "replicator_custom".to_string(),
@@ -3868,6 +4582,7 @@ pub async fn e2e_multi_node_clone_failure_recovers_after_fault_removed() -> Resu
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
+            node_etcd_colocation: BTreeMap::new(),
             recovery_binary_overrides,
             postgres_roles: None,
             mode: ha_e2e::Mode::Plain,
@@ -4112,6 +4827,7 @@ pub async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup() -> Result<
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
+            node_etcd_colocation: BTreeMap::new(),
             recovery_binary_overrides,
             postgres_roles: None,
             mode: ha_e2e::Mode::Plain,

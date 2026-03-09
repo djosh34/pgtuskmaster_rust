@@ -1,16 +1,16 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-use tokio::task::JoinHandle;
 
 use crate::cli::client::{CliApiClient, HaStateResponse};
 use crate::cli::error::CliError;
+use crate::config::RuntimeConfig;
 use crate::state::{UnixMillis, WorkerError};
 use crate::test_harness::ports::{allocate_ports, PortReservation};
 
@@ -31,14 +31,106 @@ pub fn http_timeout_ms(timeout: Duration) -> Result<u64, WorkerError> {
         .map_err(|_| WorkerError::Message("http timeout does not fit into u64".to_string()))
 }
 
-pub async fn wait_for_node_api_ready_or_task_exit(
+pub fn resolve_node_binary_path() -> Result<PathBuf, WorkerError> {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_pgtuskmaster") {
+        return Ok(PathBuf::from(path));
+    }
+
+    let current = std::env::current_exe()
+        .map_err(|err| WorkerError::Message(format!("current_exe failed: {err}")))?;
+    let debug_dir = current.parent().and_then(Path::parent).ok_or_else(|| {
+        WorkerError::Message("failed to derive target/debug directory".to_string())
+    })?;
+    let mut candidate = debug_dir.join("pgtuskmaster");
+    if cfg!(windows) {
+        candidate.set_extension("exe");
+    }
+    if candidate.exists() {
+        Ok(candidate)
+    } else {
+        Err(WorkerError::Message(format!(
+            "node binary not found at {}",
+            candidate.display()
+        )))
+    }
+}
+
+pub fn write_runtime_config_file(path: &Path, cfg: &RuntimeConfig) -> Result<(), WorkerError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            WorkerError::Message(format!(
+                "create runtime config dir failed for {}: {err}",
+                path.display()
+            ))
+        })?;
+    }
+    let serialized = toml::to_string_pretty(cfg).map_err(|err| {
+        WorkerError::Message(format!(
+            "serialize runtime config failed for {}: {err}",
+            path.display()
+        ))
+    })?;
+    fs::write(path, serialized).map_err(|err| {
+        WorkerError::Message(format!(
+            "write runtime config failed for {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+pub fn spawn_runtime_node_process(
+    binary_path: &Path,
+    config_path: &Path,
+    runtime_log_file: &Path,
+) -> Result<Child, WorkerError> {
+    if let Some(parent) = runtime_log_file.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            WorkerError::Message(format!(
+                "create runtime log dir failed for {}: {err}",
+                runtime_log_file.display()
+            ))
+        })?;
+    }
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(runtime_log_file)
+        .map_err(|err| {
+            WorkerError::Message(format!(
+                "open runtime log file failed for {}: {err}",
+                runtime_log_file.display()
+            ))
+        })?;
+    let log_file_for_stdout = log_file.try_clone().map_err(|err| {
+        WorkerError::Message(format!(
+            "clone runtime log file failed for {}: {err}",
+            runtime_log_file.display()
+        ))
+    })?;
+
+    Command::new(binary_path)
+        .arg("--config")
+        .arg(config_path)
+        .stdout(Stdio::from(log_file_for_stdout))
+        .stderr(Stdio::from(log_file))
+        .spawn()
+        .map_err(|err| {
+            WorkerError::Message(format!(
+                "spawn runtime node process failed for config {}: {err}",
+                config_path.display()
+            ))
+        })
+}
+
+pub async fn wait_for_node_api_ready_or_process_exit(
     node_addr: SocketAddr,
     node_id: &str,
-    postgres_log_file: &Path,
-    task: JoinHandle<Result<(), WorkerError>>,
+    runtime_log_file: &Path,
+    mut child: Child,
     http_step_timeout: Duration,
     timeout: Duration,
-) -> Result<JoinHandle<Result<(), WorkerError>>, WorkerError> {
+    kill_wait_timeout: Duration,
+) -> Result<Child, WorkerError> {
     let deadline = tokio::time::Instant::now() + timeout;
     let timeout_ms = http_timeout_ms(http_step_timeout)?;
     let client = CliApiClient::new(format!("http://{node_addr}"), timeout_ms, None, None).map_err(
@@ -50,32 +142,35 @@ pub async fn wait_for_node_api_ready_or_task_exit(
     )?;
 
     loop {
-        if task.is_finished() {
-            let joined = task.await.map_err(|err| {
-                WorkerError::Message(format!("runtime task join failed for {node_id}: {err}"))
-            })?;
-            return match joined {
-                Ok(()) => Err(WorkerError::Message(format!(
-                    "runtime task exited unexpectedly for {node_id} before API became ready"
-                ))),
-                Err(err) => Err(WorkerError::Message(format!(
-                    "runtime task failed for {node_id} before API became ready: {err}; postgres_log_tail={}",
-                    read_log_tail(postgres_log_file, LOG_TAIL_LINE_LIMIT)
-                ))),
-            };
+        match child.try_wait().map_err(|err| {
+            WorkerError::Message(format!(
+                "runtime process status probe failed for {node_id}: {err}"
+            ))
+        })? {
+            Some(status) => {
+                return Err(WorkerError::Message(format!(
+                    "runtime process for {node_id} exited before API became ready with status {status}; runtime_log_tail={}",
+                    read_log_tail(runtime_log_file, LOG_TAIL_LINE_LIMIT)
+                )));
+            }
+            None => {}
         }
 
         let observation = match client.get_ha_state().await {
-            Ok(_) => return Ok(task),
+            Ok(_) => return Ok(child),
             Err(err) => err.to_string(),
         };
 
         if tokio::time::Instant::now() >= deadline {
-            task.abort();
-            let _ = task.await;
+            kill_child_forcefully(
+                &format!("runtime process startup for {node_id}"),
+                &mut child,
+                kill_wait_timeout,
+            )
+            .await?;
             return Err(WorkerError::Message(format!(
-                "timed out waiting for api readiness for {node_id} at {node_addr}; last_observation={observation}; postgres_log_tail={}",
-                read_log_tail(postgres_log_file, LOG_TAIL_LINE_LIMIT)
+                "timed out waiting for api readiness for {node_id} at {node_addr}; last_observation={observation}; runtime_log_tail={}",
+                read_log_tail(runtime_log_file, LOG_TAIL_LINE_LIMIT)
             )));
         }
         tokio::time::sleep(API_READY_POLL_INTERVAL).await;
@@ -285,9 +380,10 @@ pub fn unix_now() -> Result<UnixMillis, WorkerError> {
     Ok(UnixMillis(millis))
 }
 
-pub async fn pg_ctl_stop_immediate(
+async fn pg_ctl_stop_with_mode(
     pg_ctl: &Path,
     data_dir: &Path,
+    mode: &str,
     command_timeout: Duration,
     command_kill_wait_timeout: Duration,
 ) -> Result<(), WorkerError> {
@@ -301,11 +397,13 @@ pub async fn pg_ctl_stop_immediate(
         .arg(data_dir)
         .arg("stop")
         .arg("-m")
-        .arg("immediate")
+        .arg(mode)
         .arg("-w")
         .spawn()
-        .map_err(|err| WorkerError::Message(format!("pg_ctl stop spawn failed: {err}")))?;
-    let label = format!("pg_ctl stop for {}", data_dir.display());
+        .map_err(|err| {
+            WorkerError::Message(format!("pg_ctl stop spawn failed for mode {mode}: {err}"))
+        })?;
+    let label = format!("pg_ctl stop mode={mode} for {}", data_dir.display());
     let wait_result = wait_for_child_exit_with_timeout(
         &label,
         &mut child,
@@ -334,6 +432,38 @@ pub async fn pg_ctl_stop_immediate(
     } else {
         Ok(())
     }
+}
+
+pub async fn pg_ctl_stop_fast(
+    pg_ctl: &Path,
+    data_dir: &Path,
+    command_timeout: Duration,
+    command_kill_wait_timeout: Duration,
+) -> Result<(), WorkerError> {
+    pg_ctl_stop_with_mode(
+        pg_ctl,
+        data_dir,
+        "fast",
+        command_timeout,
+        command_kill_wait_timeout,
+    )
+    .await
+}
+
+pub async fn pg_ctl_stop_immediate(
+    pg_ctl: &Path,
+    data_dir: &Path,
+    command_timeout: Duration,
+    command_kill_wait_timeout: Duration,
+) -> Result<(), WorkerError> {
+    pg_ctl_stop_with_mode(
+        pg_ctl,
+        data_dir,
+        "immediate",
+        command_timeout,
+        command_kill_wait_timeout,
+    )
+    .await
 }
 
 fn read_postmaster_pid(pid_file: &Path) -> Result<u32, WorkerError> {
@@ -407,6 +537,53 @@ async fn force_kill_postmaster_pid(pid: u32, label: &str) -> Result<(), WorkerEr
         )))
     } else {
         Ok(())
+    }
+}
+
+pub async fn stop_child_gracefully(
+    label: &str,
+    child: &mut Child,
+    timeout: Duration,
+    kill_wait_timeout: Duration,
+) -> Result<(), WorkerError> {
+    let pid = child.id().ok_or_else(|| {
+        WorkerError::Message(format!("{label} has no process id for graceful stop"))
+    })?;
+    kill_best_effort(pid, "TERM", label).await?;
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(wait_result) => {
+            wait_result
+                .map_err(|err| WorkerError::Message(format!("{label} wait failed: {err}")))?;
+            Ok(())
+        }
+        Err(_) => {
+            kill_child_forcefully(label, child, kill_wait_timeout).await?;
+            Err(WorkerError::Message(format!(
+                "{label} did not exit after TERM within {}s",
+                timeout.as_secs()
+            )))
+        }
+    }
+}
+
+pub async fn kill_child_forcefully(
+    label: &str,
+    child: &mut Child,
+    kill_wait_timeout: Duration,
+) -> Result<(), WorkerError> {
+    child
+        .start_kill()
+        .map_err(|err| WorkerError::Message(format!("{label} kill failed: {err}")))?;
+    match tokio::time::timeout(kill_wait_timeout, child.wait()).await {
+        Ok(wait_result) => {
+            wait_result
+                .map_err(|err| WorkerError::Message(format!("{label} wait failed: {err}")))?;
+            Ok(())
+        }
+        Err(_) => Err(WorkerError::Message(format!(
+            "{label} did not exit after kill within {}s",
+            kill_wait_timeout.as_secs()
+        ))),
     }
 }
 
@@ -521,6 +698,42 @@ pub async fn run_psql_statement(
         "psql exited unsuccessfully with status {status}; stderr={}",
         stderr_text.trim()
     )))
+}
+
+pub async fn wait_for_postgres_unavailable(
+    psql: &Path,
+    port: u16,
+    user: &str,
+    dbname: &str,
+    command_timeout: Duration,
+    command_kill_wait_timeout: Duration,
+    timeout: Duration,
+) -> Result<(), WorkerError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let last_observation = match run_psql_statement(
+            psql,
+            port,
+            user,
+            dbname,
+            "SELECT 1;",
+            command_timeout,
+            command_kill_wait_timeout,
+        )
+        .await
+        {
+            Ok(output) => format!("unexpected SQL success output={}", output.trim()),
+            Err(_) => return Ok(()),
+        };
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(WorkerError::Message(format!(
+                "timed out waiting for postgres unavailability on port {port}; last_observation={last_observation}"
+            )));
+        }
+        tokio::time::sleep(API_READY_POLL_INTERVAL).await;
+    }
 }
 
 pub fn parse_psql_rows(output: &str) -> Vec<String> {

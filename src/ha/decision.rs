@@ -147,26 +147,7 @@ impl DecisionFacts {
         let active_leader_member_id = leader_member_id
             .clone()
             .filter(|leader_id| is_available_primary_leader(world, leader_id));
-        let followable_member_id = active_leader_member_id.clone().or_else(|| {
-            world
-                .dcs
-                .value
-                .cache
-                .members
-                .values()
-                .find(|member| {
-                    member.member_id != self_member_id
-                        && member_record_is_fresh(
-                            member,
-                            &world.dcs.value.cache,
-                            world.dcs.updated_at,
-                        )
-                        && member.role == MemberRole::Primary
-                        && member.sql == SqlStatus::Healthy
-                        && member.readiness == Readiness::Ready
-                })
-                .map(|member| member.member_id.clone())
-        });
+        let followable_member_id = active_leader_member_id.clone();
         let eligible_switchover_targets = eligible_switchover_targets(world);
         let i_am_leader = leader_member_id.as_ref() == Some(&self_member_id);
         let has_other_leader_record = leader_member_id
@@ -538,7 +519,7 @@ fn member_promotion_candidate(member: &MemberRecord) -> PromotionCandidate {
 
 fn member_fresh_wal_evidence(
     member: &MemberRecord,
-    cache: &crate::dcs::state::DcsCache,
+    cache: &crate::dcs::state::DcsView,
     observed_at: crate::state::UnixMillis,
 ) -> Option<FreshWalEvidence> {
     if !member_record_is_fresh(member, cache, observed_at) {
@@ -557,7 +538,7 @@ fn member_fresh_wal_evidence(
 
 fn evaluate_promotion_safety(
     candidate: &PromotionCandidate,
-    cache: &crate::dcs::state::DcsCache,
+    cache: &crate::dcs::state::DcsView,
     observed_at: crate::state::UnixMillis,
 ) -> PromotionSafety {
     if candidate.role != MemberRole::Replica
@@ -635,7 +616,7 @@ pub(crate) fn eligible_switchover_targets(world: &WorldSnapshot) -> BTreeSet<Mem
 
 pub(crate) fn switchover_target_is_eligible_member(
     member: &MemberRecord,
-    cache: &crate::dcs::state::DcsCache,
+    cache: &crate::dcs::state::DcsView,
     observed_at: crate::state::UnixMillis,
 ) -> bool {
     member_record_is_fresh(member, cache, observed_at)
@@ -649,7 +630,7 @@ mod tests {
 
     use crate::{
         config::RuntimeConfig,
-        dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
+        dcs::state::{DcsView, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
         state::{MemberId, TimelineId, UnixMillis, Version, Versioned, WalLsn, WorkerStatus},
@@ -723,7 +704,7 @@ mod tests {
         member
     }
 
-    fn sample_world(cache: DcsCache, trust: DcsTrust, now: UnixMillis) -> WorldSnapshot {
+    fn sample_world(cache: DcsView, trust: DcsTrust, now: UnixMillis) -> WorldSnapshot {
         let config = cache.config.clone();
         WorldSnapshot {
             config: Versioned::new(Version(1), now, config),
@@ -773,7 +754,7 @@ mod tests {
 
     #[test]
     fn eligible_switchover_targets_exclude_stale_replicas() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: Some(LeaderRecord {
                 member_id: MemberId("node-a".to_string()),
@@ -813,7 +794,7 @@ mod tests {
 
     #[test]
     fn eligible_switchover_targets_require_catch_up_to_primary_write_lsn() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: Some(LeaderRecord {
                 member_id: MemberId("node-a".to_string()),
@@ -849,7 +830,7 @@ mod tests {
 
     #[test]
     fn decision_facts_drop_active_leader_when_member_metadata_is_missing() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: Some(LeaderRecord {
                 member_id: MemberId("node-b".to_string()),
@@ -881,7 +862,7 @@ mod tests {
 
     #[test]
     fn decision_facts_drop_active_leader_when_member_is_stale() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: Some(LeaderRecord {
                 member_id: MemberId("node-b".to_string()),
@@ -925,7 +906,7 @@ mod tests {
 
     #[test]
     fn decision_facts_block_promotion_when_replica_lags_fresh_replica() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -959,7 +940,7 @@ mod tests {
 
     #[test]
     fn decision_facts_block_promotion_when_higher_timeline_is_fresh() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -991,7 +972,7 @@ mod tests {
 
     #[test]
     fn decision_facts_block_promotion_when_local_timeline_is_unknown() {
-        let cache = DcsCache {
+        let cache = DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -1055,7 +1036,7 @@ mod tests {
 
     #[test]
     fn decision_facts_allow_promotion_when_replica_is_caught_up() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -1124,7 +1105,7 @@ mod tests {
 
     #[test]
     fn decision_facts_do_not_require_rewind_for_replica_timeline_mismatch() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: Some(LeaderRecord {
                 member_id: MemberId("node-b".to_string()),
@@ -1171,7 +1152,7 @@ mod tests {
 
     #[test]
     fn decision_facts_require_rewind_for_primary_timeline_mismatch() {
-        let mut cache = DcsCache {
+        let mut cache = DcsView {
             members: BTreeMap::new(),
             leader: Some(LeaderRecord {
                 member_id: MemberId("node-b".to_string()),

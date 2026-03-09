@@ -10,6 +10,24 @@ async fn e2e_multi_node_unassisted_failover_sql_consistency(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_primary_whole_node_hard_kill_failover_recovers_after_heal(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_primary_whole_node_hard_kill_failover_recovers_after_heal().await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_replica_whole_node_clean_stop_preserves_primary_writes(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_replica_whole_node_clean_stop_preserves_primary_writes().await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_partial_recovery_restores_quorum_before_full_heal(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_partial_recovery_restores_quorum_before_full_heal().await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_stress_planned_switchover_concurrent_sql(
 ) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
     multi_node::e2e_multi_node_stress_planned_switchover_concurrent_sql().await

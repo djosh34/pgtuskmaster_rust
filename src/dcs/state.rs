@@ -1,5 +1,5 @@
-use std::{collections::BTreeMap, path::PathBuf};
 use std::time::Duration;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -100,7 +100,7 @@ pub(crate) struct ClusterIdentityRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DcsCache {
+pub(crate) struct DcsView {
     // These are the only durable or leased cluster facts cached from DCS.
     pub(crate) members: BTreeMap<MemberId, MemberRecord>,
     pub(crate) leader: Option<LeaderRecord>,
@@ -115,7 +115,7 @@ pub(crate) struct DcsCache {
 pub(crate) struct DcsState {
     pub(crate) worker: WorkerStatus,
     pub(crate) trust: DcsTrust,
-    pub(crate) cache: DcsCache,
+    pub(crate) cache: DcsView,
     pub(crate) last_refresh_at: Option<UnixMillis>,
 }
 
@@ -132,7 +132,7 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) publisher: StatePublisher<DcsState>,
     pub(crate) store: Box<dyn DcsStore>,
     pub(crate) log: LogHandle,
-    pub(crate) cache: DcsCache,
+    pub(crate) cache: DcsView,
     pub(crate) last_published_pg_version: Option<Version>,
     pub(crate) last_emitted_store_healthy: Option<bool>,
     pub(crate) last_emitted_trust: Option<DcsTrust>,
@@ -151,7 +151,7 @@ pub(crate) struct BuildLocalMemberRecordInput<'a> {
 
 pub(crate) fn evaluate_trust(
     etcd_healthy: bool,
-    cache: &DcsCache,
+    cache: &DcsView,
     self_id: &MemberId,
     now: UnixMillis,
 ) -> DcsTrust {
@@ -175,14 +175,14 @@ pub(crate) fn evaluate_trust(
 
 pub(crate) fn member_record_is_fresh(
     record: &MemberRecord,
-    cache: &DcsCache,
+    cache: &DcsView,
     now: UnixMillis,
 ) -> bool {
     let max_age_ms = cache.config.ha.lease_ttl_ms;
     now.0.saturating_sub(record.updated_at.0) <= max_age_ms
 }
 
-fn fresh_member_count(cache: &DcsCache, now: UnixMillis) -> usize {
+fn fresh_member_count(cache: &DcsView, now: UnixMillis) -> usize {
     cache
         .members
         .values()
@@ -190,7 +190,7 @@ fn fresh_member_count(cache: &DcsCache, now: UnixMillis) -> usize {
         .count()
 }
 
-fn has_fresh_quorum(cache: &DcsCache, now: UnixMillis) -> bool {
+fn has_fresh_quorum(cache: &DcsView, now: UnixMillis) -> bool {
     let fresh_members = fresh_member_count(cache, now);
 
     // The current runtime only knows the observed DCS member set. Until there is an explicit
@@ -295,8 +295,8 @@ mod tests {
     };
 
     use super::{
-        build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsCache,
-        DcsTrust, LeaderRecord, MemberRecord, MemberRole,
+        build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsView, DcsTrust,
+        LeaderRecord, MemberRecord, MemberRole,
     };
     use crate::{
         pginfo::state::{PgInfoState, Readiness, SqlStatus},
@@ -307,8 +307,8 @@ mod tests {
         crate::test_harness::runtime_config::sample_runtime_config()
     }
 
-    fn sample_cache() -> DcsCache {
-        DcsCache {
+    fn sample_cache() -> DcsView {
+        DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -346,10 +346,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                system_identifier: None,
+                durable_end_lsn: None,
+                state_class: None,
+                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -393,10 +393,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: fresh_time,
                     pg_version: Version(1),
                 },
@@ -415,10 +415,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                system_identifier: None,
+                durable_end_lsn: None,
+                state_class: None,
+                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -457,10 +457,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                system_identifier: None,
+                durable_end_lsn: None,
+                state_class: None,
+                postgres_runtime_class: None,
                 updated_at: UnixMillis(100),
                 pg_version: Version(1),
             },
@@ -478,10 +478,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                system_identifier: None,
+                durable_end_lsn: None,
+                state_class: None,
+                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -499,10 +499,10 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                system_identifier: None,
+                durable_end_lsn: None,
+                state_class: None,
+                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },

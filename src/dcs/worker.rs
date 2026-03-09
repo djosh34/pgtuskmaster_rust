@@ -7,9 +7,9 @@ use crate::{
 use super::{
     keys::DcsKey,
     state::{
-        build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsCache,
-        BootstrapLockRecord, ClusterIdentityRecord, ClusterInitializedRecord, DcsState,
-        DcsTrust, DcsWorkerCtx, LeaderRecord, MemberRecord, MemberStateClass,
+        build_local_member_record, evaluate_trust, BootstrapLockRecord,
+        BuildLocalMemberRecordInput, ClusterIdentityRecord, ClusterInitializedRecord, DcsView,
+        DcsState, DcsTrust, DcsWorkerCtx, LeaderRecord, MemberRecord, MemberStateClass,
         PostgresRuntimeClass, SwitchoverRequest,
     },
     store::{refresh_from_etcd_watch, write_local_member},
@@ -75,7 +75,7 @@ pub(crate) async fn run(mut ctx: DcsWorkerCtx) -> Result<(), WorkerError> {
     }
 }
 
-pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
+pub(crate) fn apply_watch_update(cache: &mut DcsView, update: DcsWatchUpdate) {
     match update {
         DcsWatchUpdate::Put { key, value } => match (key, *value) {
             (DcsKey::Member(member_id), DcsValue::Member(record)) => {
@@ -336,9 +336,9 @@ fn apply_local_physical_state(
     });
     member.postgres_runtime_class = Some(match local_physical_state.data_dir_kind {
         DataDirKind::Initialized => PostgresRuntimeClass::OfflineInspectable,
-        DataDirKind::Missing | DataDirKind::Empty | DataDirKind::InvalidNonEmptyWithoutPgVersion => {
-            PostgresRuntimeClass::UnsafeLocalState
-        }
+        DataDirKind::Missing
+        | DataDirKind::Empty
+        | DataDirKind::InvalidNonEmptyWithoutPgVersion => PostgresRuntimeClass::UnsafeLocalState,
     });
     if matches!(member.sql, crate::pginfo::state::SqlStatus::Healthy)
         && matches!(member.readiness, crate::pginfo::state::Readiness::Ready)
@@ -368,7 +368,7 @@ mod tests {
         dcs::{
             keys::DcsKey,
             state::{
-                BootstrapLockRecord, DcsCache, DcsState, DcsTrust, DcsWorkerCtx, LeaderRecord,
+                BootstrapLockRecord, DcsView, DcsState, DcsTrust, DcsWorkerCtx, LeaderRecord,
                 MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
@@ -541,8 +541,8 @@ mod tests {
         }
     }
 
-    fn sample_cache(cfg: RuntimeConfig) -> DcsCache {
-        DcsCache {
+    fn sample_cache(cfg: RuntimeConfig) -> DcsView {
+        DcsView {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
@@ -572,10 +572,10 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
+                    system_identifier: None,
+                    durable_end_lsn: None,
+                    state_class: None,
+                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })),
