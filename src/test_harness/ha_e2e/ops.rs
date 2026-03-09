@@ -6,12 +6,7 @@ impl TestClusterHandle {
     pub async fn shutdown(&mut self) -> Result<(), WorkerError> {
         let mut failures = Vec::new();
 
-        for task in &self.tasks {
-            task.abort();
-        }
-        while let Some(task) = self.tasks.pop() {
-            let _ = task.await;
-        }
+        self.runtime_nodes.shutdown_all().await;
 
         for node in &self.nodes {
             if let Err(err) = super::util::pg_ctl_stop_immediate(

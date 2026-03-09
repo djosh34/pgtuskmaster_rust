@@ -5,8 +5,6 @@ use std::{
     time::Duration,
 };
 
-use tokio::task::JoinHandle;
-
 use super::observer::{HaInvariantObserver, HaObserverConfig};
 
 use pgtuskmaster_rust::{
@@ -64,7 +62,7 @@ struct PartitionFixture {
     superuser_dbname: String,
     etcd: Option<pgtuskmaster_rust::test_harness::etcd3::EtcdClusterHandle>,
     nodes: Vec<ha_e2e::NodeHandle>,
-    tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
+    runtime_nodes: ha_e2e::RuntimeNodeSet,
     etcd_proxies: BTreeMap<String, pgtuskmaster_rust::test_harness::net_proxy::TcpProxyLink>,
     api_proxies: BTreeMap<String, pgtuskmaster_rust::test_harness::net_proxy::TcpProxyLink>,
     pg_proxies: BTreeMap<String, pgtuskmaster_rust::test_harness::net_proxy::TcpProxyLink>,
@@ -105,7 +103,7 @@ impl PartitionFixture {
             superuser_dbname,
             etcd,
             nodes,
-            tasks,
+            runtime_nodes,
             etcd_proxies,
             api_proxies,
             pg_proxies,
@@ -119,7 +117,7 @@ impl PartitionFixture {
             superuser_dbname,
             etcd,
             nodes,
-            tasks,
+            runtime_nodes,
             etcd_proxies,
             api_proxies,
             pg_proxies,
@@ -1026,47 +1024,13 @@ impl PartitionFixture {
     }
 
     async fn ensure_runtime_tasks_healthy(&mut self) -> Result<(), WorkerError> {
-        let mut index = 0usize;
-        while index < self.tasks.len() {
-            if !self.tasks[index].is_finished() {
-                index = index.saturating_add(1);
-                continue;
-            }
-
-            let node_id = self
-                .nodes
-                .get(index)
-                .map(|node| node.id.clone())
-                .unwrap_or_else(|| format!("index-{index}"));
-            let task = self.tasks.swap_remove(index);
-            let joined = task
-                .await
-                .map_err(|err| WorkerError::Message(format!("runtime task join failed: {err}")))?;
-            match joined {
-                Ok(()) => {
-                    return Err(WorkerError::Message(format!(
-                        "runtime task for {node_id} exited unexpectedly"
-                    )));
-                }
-                Err(err) => {
-                    return Err(WorkerError::Message(format!(
-                        "runtime task for {node_id} failed: {err}"
-                    )));
-                }
-            }
-        }
-        Ok(())
+        self.runtime_nodes.ensure_healthy().await
     }
 
     async fn shutdown(&mut self) -> Result<(), WorkerError> {
         let mut failures = Vec::new();
 
-        for task in &self.tasks {
-            task.abort();
-        }
-        while let Some(task) = self.tasks.pop() {
-            let _ = task.await;
-        }
+        self.runtime_nodes.shutdown_all().await;
 
         let mut pg_stops = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {

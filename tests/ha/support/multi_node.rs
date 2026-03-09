@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    future::Future,
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -14,7 +16,10 @@ use super::observer::{
 };
 
 use pgtuskmaster_rust::{
-    api::{AcceptedResponse as CliAcceptedResponse, HaStateResponse},
+    api::{
+        AcceptedResponse as CliAcceptedResponse, HaStateResponse, ReadinessResponse,
+        SqlStatusResponse,
+    },
     cli::{self, args::Cli, client::CliApiClient, error::CliError},
     state::WorkerError,
     test_harness::ha_e2e,
@@ -30,7 +35,7 @@ struct ClusterFixture {
     superuser_dbname: String,
     etcd: Option<pgtuskmaster_rust::test_harness::etcd3::EtcdClusterHandle>,
     nodes: Vec<ha_e2e::NodeHandle>,
-    tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
+    runtime_nodes: ha_e2e::RuntimeNodeSet,
     timeline: Vec<String>,
 }
 
@@ -87,6 +92,13 @@ struct StablePrimaryWaitPlan<'a> {
     min_observed_nodes: usize,
 }
 
+#[derive(Clone)]
+struct ObservedNodeClient {
+    node_id: String,
+    node_addr: SocketAddr,
+    client: CliApiClient,
+}
+
 fn unique_e2e_token() -> Result<String, WorkerError> {
     let now = ha_e2e::util::unix_now()?.0;
     let seq = E2E_UNIQUE_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -96,6 +108,10 @@ fn unique_e2e_token() -> Result<String, WorkerError> {
 fn e2e_http_timeout_ms() -> Result<u64, WorkerError> {
     u64::try_from(E2E_HTTP_STEP_TIMEOUT.as_millis())
         .map_err(|_| WorkerError::Message("e2e HTTP timeout does not fit into u64".to_string()))
+}
+
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn write_pgtm_cli_config(api_observe_addr: &std::net::SocketAddr) -> Result<PathBuf, WorkerError> {
@@ -469,7 +485,7 @@ impl ClusterFixture {
             superuser_dbname,
             etcd,
             nodes,
-            tasks,
+            runtime_nodes,
             etcd_proxies: _,
             api_proxies: _,
             pg_proxies: _,
@@ -483,7 +499,7 @@ impl ClusterFixture {
             superuser_dbname,
             etcd,
             nodes,
-            tasks,
+            runtime_nodes,
             timeline: Vec::new(),
         })
     }
@@ -494,6 +510,19 @@ impl ClusterFixture {
             Err(err) => format!("time_error:{err}"),
         };
         self.timeline.push(format!("[{stamp}] {}", message.into()));
+    }
+
+    fn proof_table_name(&self, prefix: &str) -> Result<String, WorkerError> {
+        let token = unique_e2e_token()?;
+        Ok(sanitize_sql_identifier(format!("{prefix}_{token}").as_str()))
+    }
+
+    fn node_ids_excluding(&self, excluded_node_id: &str) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|node| node.id != excluded_node_id)
+            .map(|node| node.id.clone())
+            .collect()
     }
 
     fn node_by_id(&self, id: &str) -> Option<&ha_e2e::NodeHandle> {
@@ -509,6 +538,200 @@ impl ClusterFixture {
             WorkerError::Message(format!("unknown node id for postgres port lookup: {id}"))
         })?;
         Ok(node.pg_port)
+    }
+
+    async fn restart_runtime_process_for_node(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        let node = self.node_by_id(node_id).cloned().ok_or_else(|| {
+            WorkerError::Message(format!("unknown node id for runtime restart: {node_id}"))
+        })?;
+        self.record(format!("runtime restart: stop requested for node={node_id}"));
+        self.runtime_nodes
+            .restart_node(&node, E2E_HTTP_STEP_TIMEOUT, E2E_API_READINESS_TIMEOUT)
+            .await?;
+        self.record(format!(
+            "runtime restart: api loss observed and process respawned for node={node_id}"
+        ));
+        self.record(format!("runtime restart: api recovered for node={node_id}"));
+        Ok(())
+    }
+
+    async fn create_proof_table(&self, primary_node_id: &str, table_name: &str) -> Result<(), WorkerError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {table_name} (id BIGINT PRIMARY KEY, payload TEXT NOT NULL)"
+        );
+        self.run_sql_on_node_with_retry(primary_node_id, sql.as_str(), E2E_SQL_REPLICATION_ASSERT_TIMEOUT)
+            .await
+            .map(|_| ())
+    }
+
+    async fn insert_proof_row(
+        &self,
+        primary_node_id: &str,
+        table_name: &str,
+        row_id: u64,
+        payload: &str,
+    ) -> Result<(), WorkerError> {
+        let sql = format!(
+            "INSERT INTO {table_name} (id, payload) VALUES ({row_id}, {}) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+            sql_literal(payload)
+        );
+        self.run_sql_on_node_with_retry(primary_node_id, sql.as_str(), E2E_POST_TRANSITION_SQL_TIMEOUT)
+            .await
+            .map(|_| ())
+    }
+
+    async fn wait_for_proof_rows_on_all_nodes(
+        &self,
+        table_name: &str,
+        expected_rows: &[String],
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let node_ids = self
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        self.wait_for_proof_rows_on_nodes(node_ids.as_slice(), table_name, expected_rows, timeout)
+            .await
+    }
+
+    async fn wait_for_proof_rows_on_nodes(
+        &self,
+        node_ids: &[String],
+        table_name: &str,
+        expected_rows: &[String],
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let sql = format!("SELECT id::text || ':' || payload FROM {table_name} ORDER BY id");
+        for node_id in node_ids {
+            self.wait_for_rows_on_node(node_id.as_str(), sql.as_str(), expected_rows, timeout)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn wait_for_queryable_nodes(
+        &self,
+        required_node_id: &str,
+        min_nodes: usize,
+        timeout: Duration,
+    ) -> Result<Vec<String>, WorkerError> {
+        if min_nodes == 0 {
+            return Err(WorkerError::Message(
+                "min_nodes must be greater than zero".to_string(),
+            ));
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let (sql_roles, sql_errors) = self.cluster_sql_roles_best_effort().await?;
+            let node_ids = sql_roles
+                .iter()
+                .map(|(node_id, _)| node_id.clone())
+                .collect::<Vec<_>>();
+            if node_ids.len() >= min_nodes
+                && node_ids.iter().any(|node_id| node_id == required_node_id)
+            {
+                return Ok(node_ids);
+            }
+
+            let observation = format!(
+                "queryable_nodes={node_ids:?} sql_errors={sql_errors:?}"
+            );
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for at least {min_nodes} queryable nodes including {required_node_id}; last_observation={observation}"
+                )));
+            }
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
+        }
+    }
+
+    fn observed_node_clients(&self) -> Result<Vec<ObservedNodeClient>, WorkerError> {
+        let mut clients = Vec::with_capacity(self.nodes.len());
+        for node_index in 0..self.nodes.len() {
+            let node = self.nodes.get(node_index).ok_or_else(|| {
+                WorkerError::Message(format!(
+                    "invalid node index while building observer clients: {node_index}"
+                ))
+            })?;
+            let (node_id, client) = self.cli_api_client_for_node_index(node_index)?;
+            clients.push(ObservedNodeClient {
+                node_id,
+                node_addr: node.api_addr,
+                client,
+            });
+        }
+        Ok(clients)
+    }
+
+    async fn sample_ha_states_window_from_clients(
+        clients: Vec<ObservedNodeClient>,
+        window: Duration,
+        interval: Duration,
+        ring_capacity: usize,
+    ) -> Result<HaObservationStats, WorkerError> {
+        let deadline = tokio::time::Instant::now() + window;
+        let mut observer = HaInvariantObserver::new(HaObserverConfig {
+            min_successful_samples: 1,
+            ring_capacity,
+        });
+        loop {
+            observer.record_poll_attempt();
+            let mut states = Vec::new();
+            let mut errors = Vec::new();
+            for observed in &clients {
+                match ha_e2e::util::get_ha_state_with_fallback(
+                    &observed.client,
+                    observed.node_id.as_str(),
+                    observed.node_addr,
+                    E2E_HTTP_STEP_TIMEOUT,
+                )
+                .await
+                {
+                    Ok(state) => states.push(state),
+                    Err(err) => errors.push(format!("node={} error={err}", observed.node_id)),
+                }
+            }
+
+            if states.is_empty() {
+                observer.record_observation_gap(&errors, &[]);
+            } else {
+                observer.record_api_states(&states, &errors)?;
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(observer.into_stats());
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }
+
+    async fn observe_no_dual_primary_while_clients<T, F>(
+        clients: Vec<ObservedNodeClient>,
+        window: Duration,
+        ring_capacity: usize,
+        action: F,
+    ) -> Result<(T, HaObservationStats), WorkerError>
+    where
+        F: Future<Output = Result<T, WorkerError>>,
+    {
+        let observer_task = tokio::task::spawn_local(async move {
+            ClusterFixture::sample_ha_states_window_from_clients(
+                clients,
+                window,
+                E2E_NO_DUAL_PRIMARY_SAMPLE_INTERVAL,
+                ring_capacity,
+            )
+            .await
+        });
+        let action_result = action.await;
+        let ha_stats = observer_task.await.map_err(|err| {
+            WorkerError::Message(format!("HA observer task join failed: {err}"))
+        })??;
+        assert_no_dual_primary_in_samples(&ha_stats, 1)?;
+        let result = action_result?;
+        Ok((result, ha_stats))
     }
 
     async fn run_sql_on_node(
@@ -1522,6 +1745,71 @@ impl ClusterFixture {
         Ok(())
     }
 
+    async fn request_targeted_switchover_rejected_via_api(
+        &mut self,
+        target_node_id: &str,
+        expected_error_fragment: &str,
+    ) -> Result<String, WorkerError> {
+        if self.nodes.is_empty() {
+            return Err(WorkerError::Message(
+                "no nodes available for targeted switchover rejection check".to_string(),
+            ));
+        }
+
+        let max_transport_rounds: usize = 5;
+        let mut last_transport_error = "transport error".to_string();
+
+        for round in 1..=max_transport_rounds {
+            for node_index in 0..self.nodes.len() {
+                let (node_id, client) = self.cli_api_client_for_node_index(node_index)?;
+                self.record(format!(
+                    "api switchover rejection probe: round={round}/{max_transport_rounds} node={node_id} target={target_node_id}"
+                ));
+                match client
+                    .post_switchover(Some(target_node_id.to_string()))
+                    .await
+                {
+                    Ok(_) => {
+                        return Err(WorkerError::Message(format!(
+                            "targeted switchover unexpectedly succeeded for ineligible target {target_node_id}"
+                        )));
+                    }
+                    Err(CliError::Transport(err)) => {
+                        last_transport_error =
+                            format!("node={node_id} round={round} err={err}");
+                        self.record(format!(
+                            "api switchover rejection transport failure: round={round}/{max_transport_rounds} node={node_id} target={target_node_id} err={err}"
+                        ));
+                    }
+                    Err(CliError::ApiStatus { body, .. }) => {
+                        if body.contains(expected_error_fragment) {
+                            self.record(format!(
+                                "api switchover rejection observed: node={node_id} target={target_node_id} body={body}"
+                            ));
+                            return Ok(body);
+                        }
+                        return Err(WorkerError::Message(format!(
+                            "targeted switchover rejection body for {target_node_id} did not contain `{expected_error_fragment}`: {body}"
+                        )));
+                    }
+                    Err(err) => {
+                        return Err(WorkerError::Message(format!(
+                            "targeted switchover rejection probe failed via {node_id} for target {target_node_id}: {err}"
+                        )));
+                    }
+                }
+            }
+
+            if round < max_transport_rounds {
+                tokio::time::sleep(E2E_SWITCHOVER_RETRY_BACKOFF).await;
+            }
+        }
+
+        Err(WorkerError::Message(format!(
+            "targeted switchover rejection probe failed after {max_transport_rounds} transport round(s) for target {target_node_id}: {last_transport_error}"
+        )))
+    }
+
     async fn request_switchover_until_stable_primary_changes(
         &mut self,
         previous_primary: &str,
@@ -1589,6 +1877,81 @@ impl ClusterFixture {
         Err(WorkerError::Message(format!(
             "switchover did not change primary from {previous_primary} after {max_attempts} attempt(s); last_error={last_error}"
         )))
+    }
+
+    async fn wait_for_expected_primary_best_effort(
+        &mut self,
+        expected_primary: &str,
+        timeout: Duration,
+        required_consecutive: usize,
+        min_observed_nodes: usize,
+        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+    ) -> Result<String, WorkerError> {
+        if required_consecutive == 0 {
+            return Err(WorkerError::Message(
+                "required_consecutive must be greater than zero".to_string(),
+            ));
+        }
+        if min_observed_nodes == 0 {
+            return Err(WorkerError::Message(
+                "min_observed_nodes must be greater than zero".to_string(),
+            ));
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut stable_count = 0usize;
+        let mut last_error = "none".to_string();
+
+        loop {
+            self.ensure_runtime_tasks_healthy().await?;
+            match self.poll_node_ha_states_best_effort().await {
+                Ok(polled) => {
+                    let mut states = Vec::new();
+                    for (node_id, state_result) in polled {
+                        match state_result {
+                            Ok(state) => states.push(state),
+                            Err(err) => {
+                                last_error =
+                                    format!("HA state poll failed for {node_id}: {err}");
+                            }
+                        }
+                    }
+
+                    if states.len() >= min_observed_nodes {
+                        Self::update_phase_history(phase_history, states.as_slice());
+                        let primaries = Self::primary_members(states.as_slice());
+                        if primaries.len() == 1
+                            && primaries.first().map(String::as_str) == Some(expected_primary)
+                        {
+                            stable_count = stable_count.saturating_add(1);
+                            if stable_count >= required_consecutive {
+                                return Ok(expected_primary.to_string());
+                            }
+                        } else {
+                            stable_count = 0;
+                            last_error = format!("observed primaries={primaries:?}");
+                        }
+                    } else {
+                        stable_count = 0;
+                        last_error = format!(
+                            "insufficient observed HA states: observed={} required={min_observed_nodes}",
+                            states.len()
+                        );
+                    }
+                }
+                Err(err) => {
+                    stable_count = 0;
+                    last_error = err.to_string();
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for expected stable primary {expected_primary}; last_error={last_error}"
+                )));
+            }
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
+        }
     }
 
     // /ha/state polling is the canonical post-start observation path.
@@ -1673,37 +2036,55 @@ impl ClusterFixture {
         Ok(states)
     }
 
-    async fn ensure_runtime_tasks_healthy(&mut self) -> Result<(), WorkerError> {
-        let mut index = 0usize;
-        while index < self.tasks.len() {
-            if !self.tasks[index].is_finished() {
-                index = index.saturating_add(1);
-                continue;
-            }
+    async fn wait_for_member_to_be_ineligible(
+        &mut self,
+        observer_node_id: &str,
+        target_node_id: &str,
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let observer_index = self.node_index_by_id(observer_node_id).ok_or_else(|| {
+            WorkerError::Message(format!(
+                "unknown observer node for eligibility wait: {observer_node_id}"
+            ))
+        })?;
+        let deadline = tokio::time::Instant::now() + timeout;
 
-            let node_id = self
-                .nodes
-                .get(index)
-                .map(|node| node.id.clone())
-                .unwrap_or_else(|| format!("index-{index}"));
-            let task = self.tasks.swap_remove(index);
-            let joined = task
-                .await
-                .map_err(|err| WorkerError::Message(format!("runtime task join failed: {err}")))?;
-            match joined {
-                Ok(()) => {
-                    return Err(WorkerError::Message(format!(
-                        "runtime task for {node_id} exited unexpectedly"
-                    )));
+        loop {
+            let state = self.fetch_node_ha_state_by_index(observer_index).await?;
+            let observation = match state
+                .members
+                .iter()
+                .find(|member| member.member_id == target_node_id)
+            {
+                Some(member_state)
+                    if member_state.sql != SqlStatusResponse::Healthy
+                        || member_state.readiness != ReadinessResponse::Ready =>
+                {
+                    self.record(format!(
+                        "target member became ineligible: observer={observer_node_id} target={target_node_id} sql={} readiness={}",
+                        member_state.sql, member_state.readiness
+                    ));
+                    return Ok(());
                 }
-                Err(err) => {
-                    return Err(WorkerError::Message(format!(
-                        "runtime task for {node_id} failed: {err}"
-                    )));
-                }
+                Some(member_state) => format!(
+                    "sql={} readiness={} role={}",
+                    member_state.sql, member_state.readiness, member_state.role
+                ),
+                None => "target member missing from ha state".to_string(),
+            };
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for {target_node_id} to become ineligible from observer {observer_node_id}; last_observation={}",
+                    observation
+                )));
             }
+            tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
         }
-        Ok(())
+    }
+
+    async fn ensure_runtime_tasks_healthy(&mut self) -> Result<(), WorkerError> {
+        self.runtime_nodes.ensure_healthy().await
     }
 
     fn primary_members(states: &[HaStateResponse]) -> Vec<String> {
@@ -2265,12 +2646,7 @@ impl ClusterFixture {
     }
 
     async fn shutdown(&mut self) -> Result<(), WorkerError> {
-        for task in &self.tasks {
-            task.abort();
-        }
-        while let Some(task) = self.tasks.pop() {
-            let _ = task.await;
-        }
+        self.runtime_nodes.shutdown_all().await;
 
         let mut pg_stops = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
@@ -2479,6 +2855,40 @@ fn finalize_stress_scenario_result(
         }
         (None, Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
             "stress artifact write failed: {artifact_err}"
+        ))),
+    }
+}
+
+fn finalize_timeline_scenario_result(
+    run_result: Result<(), WorkerError>,
+    artifact_path: Result<PathBuf, WorkerError>,
+    shutdown_result: Result<(), WorkerError>,
+) -> Result<(), WorkerError> {
+    match (run_result, artifact_path, shutdown_result) {
+        (Ok(()), Ok(_), Ok(())) => Ok(()),
+        (Err(run_err), Ok(path), Ok(())) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline: {}",
+            path.display()
+        ))),
+        (Err(run_err), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline write failed: {artifact_err}"
+        ))),
+        (Ok(()), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "shutdown failed: {shutdown_err}; timeline: {}",
+            path.display()
+        ))),
+        (Ok(()), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+        ))),
+        (Err(run_err), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "{run_err}; shutdown failed: {shutdown_err}; timeline: {}",
+            path.display()
+        ))),
+        (Err(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+            "{run_err}; timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+        ))),
+        (Ok(()), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+            "timeline write failed: {artifact_err}"
         ))),
     }
 }
@@ -3492,6 +3902,571 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
     let artifacts = fixture.write_stress_artifacts(scenario_name.as_str(), &summary);
     let shutdown_result = fixture.shutdown().await;
     finalize_stress_scenario_result(run_error, artifacts, shutdown_result)
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name = "ha-e2e-primary-runtime-restart-recovers-without-split-brain";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("runtime restart bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "runtime restart bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            let table_name = fixture.proof_table_name("ha_restart_proof")?;
+            let expected_pre_rows = vec!["1:before-restart".to_string()];
+
+            fixture.create_proof_table(&bootstrap_primary, table_name.as_str()).await?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, table_name.as_str(), 1, "before-restart")
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    expected_pre_rows.as_slice(),
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            let restart_observer_clients = fixture.observed_node_clients()?;
+            let (recovered_primary, ha_stats) = ClusterFixture::observe_no_dual_primary_while_clients(
+                    restart_observer_clients,
+                    E2E_LONG_NO_DUAL_PRIMARY_WINDOW,
+                    128,
+                    async {
+                        fixture
+                            .restart_runtime_process_for_node(&bootstrap_primary)
+                            .await?;
+                        fixture
+                            .wait_for_stable_primary_resilient(
+                                StablePrimaryWaitPlan {
+                                    context: "runtime restart recovery stable-primary",
+                                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                                    excluded_primary: None,
+                                    required_consecutive: 3,
+                                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                                    fallback_required_consecutive: 1,
+                                    min_observed_nodes: 2,
+                                },
+                                &mut phase_history,
+                            )
+                            .await
+                    },
+                )
+                .await?;
+
+            let sql_primary = fixture
+                .wait_for_stable_primary_via_sql(
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                    None,
+                    2,
+                    2,
+                )
+                .await?;
+            if sql_primary != recovered_primary {
+                return Err(WorkerError::Message(format!(
+                    "runtime restart primary mismatch between API and SQL convergence: api={recovered_primary} sql={sql_primary}"
+                )));
+            }
+            if recovered_primary != bootstrap_primary {
+                fixture
+                    .assert_former_primary_demoted_or_unreachable_after_transition(
+                        &bootstrap_primary,
+                    )
+                    .await?;
+            }
+
+            fixture.record(format!(
+                "runtime restart no-dual-primary stats: samples={} max_concurrent_primaries={}",
+                ha_stats.sample_count, ha_stats.max_concurrent_primaries
+            ));
+            fixture
+                .insert_proof_row(&recovered_primary, table_name.as_str(), 2, "after-restart")
+                .await?;
+            let expected_post_rows = vec![
+                "1:before-restart".to_string(),
+                "2:after-restart".to_string(),
+            ];
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    expected_post_rows.as_slice(),
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "runtime restart recovery succeeded: bootstrap_primary={bootstrap_primary} recovered_primary={recovered_primary} phase_history={}",
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "runtime restart scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name = "ha-e2e-repeated-leadership-changes-preserve-single-primary";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("leadership churn bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "leadership churn bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            let table_name = fixture.proof_table_name("ha_leadership_churn")?;
+
+            fixture.create_proof_table(&bootstrap_primary, table_name.as_str()).await?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, table_name.as_str(), 1, "bootstrap")
+                .await?;
+            let initial_rows = vec!["1:bootstrap".to_string()];
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    initial_rows.as_slice(),
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            let churn_observer_clients = fixture.observed_node_clients()?;
+            let ((first_successor, final_primary), ha_stats) = ClusterFixture::observe_no_dual_primary_while_clients(
+                    churn_observer_clients,
+                    Duration::from_secs(30),
+                    160,
+                    async {
+                        fixture.record(format!(
+                            "leadership churn first failover: stop postgres on {bootstrap_primary}"
+                        ));
+                        fixture.stop_postgres_for_node(&bootstrap_primary).await?;
+                        let first_successor = match fixture
+                            .wait_for_stable_primary_best_effort(
+                                E2E_API_READINESS_TIMEOUT,
+                                Some(&bootstrap_primary),
+                                3,
+                                1,
+                                &mut phase_history,
+                            )
+                            .await
+                        {
+                            Ok(primary) => primary,
+                            Err(wait_err) => {
+                                fixture.record(format!(
+                                    "leadership churn first failover stable-primary wait failed after forced stop: {wait_err}; retrying with relaxed primary-change detection"
+                                ));
+                                fixture
+                                    .wait_for_primary_change(
+                                        &bootstrap_primary,
+                                        E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                                    )
+                                    .await?
+                            }
+                        };
+                        fixture
+                            .assert_former_primary_demoted_or_unreachable_after_transition(
+                                &bootstrap_primary,
+                            )
+                            .await?;
+                        fixture
+                            .insert_proof_row(
+                                &first_successor,
+                                table_name.as_str(),
+                                2,
+                                "after-first-failover",
+                            )
+                            .await?;
+                        let first_transition_rows = vec![
+                            "1:bootstrap".to_string(),
+                            "2:after-first-failover".to_string(),
+                        ];
+                        let recovered_transition_nodes = fixture
+                            .wait_for_queryable_nodes(
+                                &first_successor,
+                                2,
+                                Duration::from_secs(180),
+                            )
+                            .await?;
+                        fixture
+                            .wait_for_proof_rows_on_nodes(
+                                recovered_transition_nodes.as_slice(),
+                                table_name.as_str(),
+                                first_transition_rows.as_slice(),
+                                Duration::from_secs(180),
+                            )
+                            .await?;
+
+                        fixture.record(format!(
+                            "leadership churn second failover: stop postgres on {first_successor}"
+                        ));
+                        fixture.stop_postgres_for_node(&first_successor).await?;
+                        let second_successor = match fixture
+                            .wait_for_stable_primary_best_effort(
+                                E2E_API_READINESS_TIMEOUT,
+                                Some(&first_successor),
+                                3,
+                                1,
+                                &mut phase_history,
+                            )
+                            .await
+                        {
+                            Ok(primary) => primary,
+                            Err(wait_err) => {
+                                fixture.record(format!(
+                                    "leadership churn second failover stable-primary wait failed after forced stop: {wait_err}; retrying with relaxed primary-change detection"
+                                ));
+                                fixture
+                                    .wait_for_primary_change(
+                                        &first_successor,
+                                        E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                                    )
+                                    .await?
+                            }
+                        };
+                        fixture
+                            .assert_former_primary_demoted_or_unreachable_after_transition(
+                                &first_successor,
+                            )
+                            .await?;
+                        Ok((first_successor, second_successor))
+                    },
+                )
+                .await?;
+
+            if final_primary == first_successor {
+                return Err(WorkerError::Message(format!(
+                    "expected second transition to move leadership away from {first_successor}, but final primary remained unchanged"
+                )));
+            }
+            let ordered_sequence = [
+                bootstrap_primary.clone(),
+                first_successor.clone(),
+                final_primary.clone(),
+            ];
+            fixture
+                .insert_proof_row(&final_primary, table_name.as_str(), 3, "after-second-transition")
+                .await?;
+            let expected_rows = vec![
+                "1:bootstrap".to_string(),
+                "2:after-first-failover".to_string(),
+                "3:after-second-transition".to_string(),
+            ];
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    expected_rows.as_slice(),
+                    Duration::from_secs(180),
+                )
+                .await?;
+            fixture.record(format!(
+                "leadership churn succeeded: primary_sequence={} no_dual_samples={} phase_history={}",
+                ordered_sequence.join(" -> "),
+                ha_stats.sample_count,
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "leadership churn scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_target(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name = "ha-e2e-degraded-replica-failover-promotes-only-healthy-target";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("degraded failover bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "degraded failover bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            let replica_ids = fixture.node_ids_excluding(&bootstrap_primary);
+            let degraded_replica = replica_ids.first().cloned().ok_or_else(|| {
+                WorkerError::Message("missing degraded replica candidate".to_string())
+            })?;
+            let healthy_failover_target = replica_ids
+                .iter()
+                .find(|node_id| node_id.as_str() != degraded_replica.as_str())
+                .cloned()
+                .ok_or_else(|| {
+                    WorkerError::Message("missing healthy failover target".to_string())
+                })?;
+            let table_name = fixture.proof_table_name("ha_degraded_failover")?;
+
+            fixture.create_proof_table(&bootstrap_primary, table_name.as_str()).await?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, table_name.as_str(), 1, "before-degraded-failover")
+                .await?;
+            let expected_pre_rows = vec!["1:before-degraded-failover".to_string()];
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    expected_pre_rows.as_slice(),
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            fixture.record(format!(
+                "degraded failover: stop postgres on replica={degraded_replica}"
+            ));
+            fixture.stop_postgres_for_node(&degraded_replica).await?;
+            fixture
+                .wait_for_member_to_be_ineligible(
+                    &bootstrap_primary,
+                    &degraded_replica,
+                    Duration::from_secs(30),
+                )
+                .await?;
+            let (sql_roles, _sql_errors) = fixture.cluster_sql_roles_best_effort().await?;
+            let primary_nodes = sql_roles
+                .iter()
+                .filter(|(_, role)| role == "primary")
+                .map(|(node_id, _)| node_id.clone())
+                .collect::<Vec<_>>();
+            if primary_nodes != vec![bootstrap_primary.clone()] {
+                return Err(WorkerError::Message(format!(
+                    "expected only bootstrap primary before degraded failover, observed primaries={primary_nodes:?}"
+                )));
+            }
+
+            let degraded_observer_clients = fixture.observed_node_clients()?;
+            let (promoted_primary, ha_stats) = ClusterFixture::observe_no_dual_primary_while_clients(
+                    degraded_observer_clients,
+                    E2E_LONG_NO_DUAL_PRIMARY_WINDOW,
+                    128,
+                    async {
+                        fixture.stop_postgres_for_node(&bootstrap_primary).await?;
+                        fixture
+                            .wait_for_expected_primary_best_effort(
+                                &healthy_failover_target,
+                                E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                                2,
+                                1,
+                                &mut phase_history,
+                            )
+                            .await
+                    },
+                )
+                .await?;
+            if promoted_primary != healthy_failover_target {
+                return Err(WorkerError::Message(format!(
+                    "degraded failover promoted unexpected node: expected {healthy_failover_target}, got {promoted_primary}"
+                )));
+            }
+
+            fixture.record(format!(
+                "degraded failover no-dual-primary stats: samples={} max_concurrent_primaries={}",
+                ha_stats.sample_count, ha_stats.max_concurrent_primaries
+            ));
+            fixture
+                .insert_proof_row(&promoted_primary, table_name.as_str(), 2, "after-degraded-failover")
+                .await?;
+            let expected_rows = vec![
+                "1:before-degraded-failover".to_string(),
+                "2:after-degraded-failover".to_string(),
+            ];
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    expected_rows.as_slice(),
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "degraded failover succeeded: bootstrap_primary={bootstrap_primary} degraded_replica={degraded_replica} promoted_primary={promoted_primary} phase_history={}",
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "degraded failover scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name = "ha-e2e-rejects-targeted-switchover-to-ineligible-member";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("targeted rejection bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "targeted rejection bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            let degraded_replica = fixture
+                .node_ids_excluding(&bootstrap_primary)
+                .first()
+                .cloned()
+                .ok_or_else(|| WorkerError::Message("missing degraded target replica".to_string()))?;
+            fixture.record(format!(
+                "targeted rejection: stop postgres on replica={degraded_replica}"
+            ));
+            fixture.stop_postgres_for_node(&degraded_replica).await?;
+            fixture
+                .wait_for_member_to_be_ineligible(
+                    &bootstrap_primary,
+                    &degraded_replica,
+                    Duration::from_secs(30),
+                )
+                .await?;
+
+            let rejection_observer_clients = fixture.observed_node_clients()?;
+            let (rejection_body, ha_stats) = ClusterFixture::observe_no_dual_primary_while_clients(
+                    rejection_observer_clients,
+                    E2E_SHORT_NO_DUAL_PRIMARY_WINDOW,
+                    96,
+                    async {
+                        let rejection_body = fixture
+                            .request_targeted_switchover_rejected_via_api(
+                                &degraded_replica,
+                                "not an eligible switchover target",
+                            )
+                            .await?;
+                        let stable_primary = fixture
+                            .wait_for_stable_primary_resilient(
+                                StablePrimaryWaitPlan {
+                                    context: "targeted rejection post-request stable-primary",
+                                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                                    excluded_primary: None,
+                                    required_consecutive: 3,
+                                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                                    fallback_required_consecutive: 1,
+                                    min_observed_nodes: 1,
+                                },
+                                &mut phase_history,
+                            )
+                            .await?;
+                        if stable_primary != bootstrap_primary {
+                            return Err(WorkerError::Message(format!(
+                                "targeted rejection changed primary unexpectedly: expected {bootstrap_primary}, got {stable_primary}"
+                            )));
+                        }
+                        Ok(rejection_body)
+                    },
+                )
+                .await?;
+
+            let table_name = fixture.proof_table_name("ha_targeted_rejection")?;
+            fixture.create_proof_table(&bootstrap_primary, table_name.as_str()).await?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, table_name.as_str(), 1, "post-rejection")
+                .await?;
+            let expected_rows = vec!["1:post-rejection".to_string()];
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    expected_rows.as_slice(),
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "targeted rejection succeeded: primary={bootstrap_primary} target={degraded_replica} body={rejection_body} no_dual_samples={} phase_history={}",
+                ha_stats.sample_count,
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "targeted rejection scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
     })
     .await
 }

@@ -34,6 +34,30 @@ async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_primary_runtime_restart_recovers_without_split_brain().await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_repeated_leadership_changes_preserve_single_primary().await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_target(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_degraded_replica_failover_promotes_only_healthy_target().await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_rejects_targeted_switchover_to_ineligible_member().await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn e2e_no_quorum_enters_failsafe_strict_all_nodes(
 ) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
     multi_node::e2e_no_quorum_enters_failsafe_strict_all_nodes().await

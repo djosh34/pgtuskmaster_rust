@@ -5,16 +5,18 @@ pub mod startup;
 pub mod util;
 
 pub use config::{Mode, PostgresRoleOverrides, TestConfig, TimeoutConfig};
-pub use handle::{NodeHandle, TestClusterHandle};
+pub use handle::{NodeHandle, RuntimeNodeHandle, RuntimeNodeSet, TestClusterHandle};
 pub use startup::start_cluster;
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::time::Duration;
 
     use crate::state::WorkerError;
+    use crate::test_harness::runtime_config;
 
-    use super::{start_cluster, util, Mode, TestConfig, TimeoutConfig};
+    use super::{start_cluster, util, Mode, RuntimeNodeHandle, RuntimeNodeSet, TestConfig, TimeoutConfig};
 
     #[test]
     fn test_config_validation_rejects_empty_fields() {
@@ -63,6 +65,44 @@ mod tests {
 
             let mut handle = start_cluster(config).await?;
             handle.shutdown().await?;
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_node_set_replaces_task_without_losing_metadata() -> Result<(), WorkerError> {
+        util::run_with_local_set(async {
+            let mut runtime_nodes = RuntimeNodeSet::new();
+            let runtime_cfg = runtime_config::sample_runtime_config();
+            let postgres_log_file = env::temp_dir().join("ha-e2e-runtime-node-set.log");
+            let first_task = tokio::task::spawn_local(async {
+                std::future::pending::<Result<(), WorkerError>>().await
+            });
+            let replaced = runtime_nodes.insert(
+                "node-b".to_string(),
+                RuntimeNodeHandle {
+                    runtime_cfg: runtime_cfg.clone(),
+                    postgres_log_file: postgres_log_file.clone(),
+                    task: first_task,
+                },
+            );
+            assert!(replaced.is_none());
+
+            let replacement_task = tokio::task::spawn_local(async {
+                std::future::pending::<Result<(), WorkerError>>().await
+            });
+            runtime_nodes.replace_task("node-b", replacement_task)?;
+
+            let (stored_cfg, stored_log_file) = runtime_nodes
+                .metadata_for_node("node-b")
+                .ok_or_else(|| {
+                    WorkerError::Message("runtime node metadata missing after replacement".to_string())
+                })?;
+            assert_eq!(stored_cfg, &runtime_cfg);
+            assert_eq!(stored_log_file, &postgres_log_file);
+
+            runtime_nodes.shutdown_all().await;
             Ok(())
         })
         .await

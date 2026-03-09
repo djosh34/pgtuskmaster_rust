@@ -3,8 +3,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::config::{
     BinaryPaths, DcsConfig, DcsEndpoint, DcsInitConfig, DebugConfig, HaConfig, InlineOrPath,
     LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
@@ -25,7 +23,7 @@ use crate::test_harness::pg16::prepare_pgdata_dir;
 use crate::test_harness::ports::{allocate_ha_topology_ports, PortReservation};
 
 use super::config::{Mode, TestConfig};
-use super::handle::{NodeHandle, TestClusterHandle};
+use super::handle::{NodeHandle, RuntimeNodeHandle, RuntimeNodeSet, TestClusterHandle};
 use super::util::{
     parse_loopback_socket, reserve_non_overlapping_ports, wait_for_bootstrap_primary,
     wait_for_node_api_ready_or_task_exit,
@@ -66,7 +64,7 @@ struct StartupGuard {
     superuser_dbname: Option<String>,
     etcd: Option<EtcdClusterHandle>,
     nodes: Vec<NodeHandle>,
-    tasks: Vec<JoinHandle<Result<(), WorkerError>>>,
+    runtime_nodes: RuntimeNodeSet,
     etcd_proxies: BTreeMap<String, TcpProxyLink>,
     api_proxies: BTreeMap<String, TcpProxyLink>,
     pg_proxies: BTreeMap<String, TcpProxyLink>,
@@ -77,12 +75,7 @@ impl StartupGuard {
     async fn cleanup_best_effort(&mut self) -> Result<(), WorkerError> {
         let mut failures = Vec::new();
 
-        for task in &self.tasks {
-            task.abort();
-        }
-        while let Some(task) = self.tasks.pop() {
-            let _ = task.await;
-        }
+        self.runtime_nodes.shutdown_all().await;
 
         for node in &self.nodes {
             if let Err(err) = super::util::pg_ctl_stop_immediate(
@@ -151,7 +144,7 @@ impl StartupGuard {
             superuser_dbname,
             etcd: self.etcd,
             nodes: self.nodes,
-            tasks: self.tasks,
+            runtime_nodes: self.runtime_nodes,
             etcd_proxies: self.etcd_proxies,
             api_proxies: self.api_proxies,
             pg_proxies: self.pg_proxies,
@@ -178,7 +171,7 @@ pub async fn start_cluster(config: TestConfig) -> Result<TestClusterHandle, Work
         superuser_dbname: None,
         etcd: None,
         nodes: Vec::new(),
-        tasks: Vec::new(),
+        runtime_nodes: RuntimeNodeSet::new(),
         etcd_proxies: BTreeMap::new(),
         api_proxies: BTreeMap::new(),
         pg_proxies: BTreeMap::new(),
@@ -624,8 +617,9 @@ async fn start_cluster_inner(
         })?;
 
         let task_node_id = node_id.clone();
+        let runtime_cfg_for_task = runtime_cfg.clone();
         let runtime_task = tokio::task::spawn_local(async move {
-            match crate::runtime::run_node_from_config(runtime_cfg).await {
+            match crate::runtime::run_node_from_config(runtime_cfg_for_task).await {
                 Ok(()) => Ok(()),
                 Err(err) => Err(WorkerError::Message(format!(
                     "runtime node {task_node_id} exited with error: {err}"
@@ -651,7 +645,19 @@ async fn start_cluster_inner(
             config.timeouts.api_readiness_timeout,
         )
         .await?;
-        guard.tasks.push(runtime_task);
+        let replaced = guard.runtime_nodes.insert(
+            node_id.clone(),
+            RuntimeNodeHandle {
+                runtime_cfg,
+                postgres_log_file: log_file,
+                task: runtime_task,
+            },
+        );
+        if replaced.is_some() {
+            return Err(WorkerError::Message(format!(
+                "runtime node bookkeeping duplicated node id: {node_id}"
+            )));
+        }
 
         if index == 0 {
             let expected_member_id = format!("node-{}", index.saturating_add(1));

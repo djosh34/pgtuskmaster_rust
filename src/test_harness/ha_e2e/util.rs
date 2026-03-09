@@ -241,6 +241,41 @@ pub async fn wait_for_bootstrap_primary(
     }
 }
 
+pub async fn wait_for_node_api_unavailable(
+    node_addr: SocketAddr,
+    node_id: &str,
+    http_step_timeout: Duration,
+    timeout: Duration,
+) -> Result<(), WorkerError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let timeout_ms = http_timeout_ms(http_step_timeout)?;
+    let client = CliApiClient::new(format!("http://{node_addr}"), timeout_ms, None, None).map_err(
+        |err| {
+            WorkerError::Message(format!(
+                "build CliApiClient failed for api unavailability probe on {node_id}: {err}"
+            ))
+        },
+    )?;
+
+    loop {
+        match client.get_ha_state().await {
+            Ok(state) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(WorkerError::Message(format!(
+                        "timed out waiting for api unavailability for {node_id} at {node_addr}; last_observation=member={} phase={} leader={:?}",
+                        state.self_member_id,
+                        state.ha_phase,
+                        state.leader
+                    )));
+                }
+            }
+            Err(_) => return Ok(()),
+        }
+
+        tokio::time::sleep(API_READY_POLL_INTERVAL).await;
+    }
+}
+
 pub fn unix_now() -> Result<UnixMillis, WorkerError> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
