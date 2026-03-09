@@ -90,8 +90,7 @@ Try an admin operation with the admin token:
 
 ```bash
 pgtm \
-  --base-url https://127.0.0.1:8080 \
-  --admin-token "$PGTUSKMASTER_ADMIN_TOKEN" \
+  -c /etc/pgtuskmaster/config.toml \
   switchover request
 ```
 

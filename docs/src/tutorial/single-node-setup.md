@@ -62,7 +62,7 @@ curl --fail --silent http://127.0.0.1:18080/ha/state | jq .
 Or use the CLI:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 --output text status
+cargo run --bin pgtm -- -c ./config.toml --output text status
 ```
 
 Fields worth checking:

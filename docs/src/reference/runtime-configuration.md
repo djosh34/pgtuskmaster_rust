@@ -13,6 +13,7 @@ The normalized runtime config contains exactly these blocks:
 - `process` - external binary paths and timeouts
 - `logging` - log capture, sinks, and cleanup
 - `api` - HTTP control plane
+- `pgtm` - optional operator CLI context overrides and client TLS material
 - `debug` - developer features
 
 `logging` and `debug` may be omitted; defaults are applied. All other sections are mandatory.
@@ -319,7 +320,7 @@ listen_addr = "0.0.0.0:8080"
 
 [api.security]
 tls = { mode = "disabled" }
-auth = { type = "role_tokens", read_token = "read-secret", admin_token = "admin-secret" }
+auth = { type = "role_tokens", read_token = { env = "PGTM_READ_TOKEN" }, admin_token = { path = "/run/secrets/admin-token" } }
 ```
 
 | Field | Type | Constraints | Default |
@@ -337,15 +338,64 @@ auth = { type = "role_tokens", read_token = "read-secret", admin_token = "admin-
 ### Role Token Authentication
 
 ```toml
-auth = { type = "role_tokens", read_token = "...", admin_token = "..." }
+auth = { type = "role_tokens", read_token = { content = "read-secret" }, admin_token = { env = "PGTM_ADMIN_TOKEN" } }
 ```
 
 | Subfield | Type | Constraints |
 |----------|------|-------------|
-| `read_token` | string (optional) | non-empty when configured |
-| `admin_token` | string (optional) | non-empty when configured |
+| `read_token` | secret source (optional) | non-empty when configured |
+| `admin_token` | secret source (optional) | non-empty when configured |
 
-At least one token must be configured. Empty tokens are rejected.
+At least one token must be configured. Empty inline values, blank env names, and empty path references are rejected.
+
+## `pgtm`
+
+Optional operator-context settings for the `pgtm` CLI.
+
+```toml
+[pgtm]
+api_url = "https://db-a.example.com:8443"
+
+[pgtm.api_client]
+ca_cert = { path = "/etc/pgtm/api-ca.pem" }
+client_cert = { path = "/etc/pgtm/operator.crt" }
+client_key = { env = "PGTM_API_CLIENT_KEY" }
+
+[pgtm.postgres_client]
+ca_cert = { path = "/etc/pgtm/postgres-ca.pem" }
+client_cert = { path = "/etc/pgtm/postgres.crt" }
+client_key = { path = "/run/secrets/postgres.key" }
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `api_url` | absolute URL (optional) | must use `http` or `https`; use this when `api.listen_addr` is only a bind address such as `0.0.0.0:8080` |
+| `api_client` | client TLS block (optional) | only valid for HTTPS API connections |
+| `postgres_client` | client TLS block (optional) | optional override for future PostgreSQL DSN helpers |
+
+### API target derivation
+
+`pgtm` resolves the API target like this:
+
+1. Use `--base-url` when the CLI flag is present.
+2. Otherwise use `[pgtm].api_url` when configured.
+3. Otherwise derive a URL from `api.listen_addr`.
+
+If `api.listen_addr` is an unspecified bind address such as `0.0.0.0:8080` or `[::]:8080`, `pgtm` refuses to guess and reports a config error telling you to set `[pgtm].api_url`.
+
+### Client TLS blocks
+
+Both `[pgtm.api_client]` and `[pgtm.postgres_client]` accept the same fields:
+
+| Subfield | Type | Constraints |
+|----------|------|-------------|
+| `ca_cert` | inline-or-path (optional) | non-empty when configured |
+| `client_cert` | inline-or-path (optional) | requires `client_key` |
+| `client_key` | secret source (optional) | requires `client_cert` |
+
+`[pgtm.api_client]` is used only for HTTPS API requests. If `api.security.tls.mode = "disabled"`, do not configure API client TLS material. If API client certificates are required by the server, `pgtm.api_client.client_cert` and `pgtm.api_client.client_key` must both be present.
+
+`[pgtm.postgres_client]` is optional. When it is absent, later PostgreSQL DSN helpers fall back to `[pgtm.api_client]`.
 
 ## `debug`
 
@@ -362,7 +412,7 @@ enabled = false
 
 ## Inline or Path Values
 
-Several fields (`password`, `pg_hba.source`, `pg_ident.source`, TLS identity material) accept a union type serialized as one of:
+Several fields (`pg_hba.source`, `pg_ident.source`, TLS identity material, client CA/cert material) accept a union type serialized as one of:
 
 ```toml
 # Path forms
@@ -373,7 +423,13 @@ key = { path = "/absolute/path" }
 key = { content = "inline value" }
 ```
 
-For `SecretSource` values, inline content is redacted in `Debug` output while path-backed forms are shown as paths.
+`SecretSource` fields (`password`, API role tokens, `pgtm` client private keys) accept one additional env-backed form:
+
+```toml
+key = { env = "ENV_VAR_NAME" }
+```
+
+For `SecretSource` values, inline content is redacted in `Debug` output while path-backed and env-backed forms are shown as references rather than secret contents.
 
 ## Validation and Diagnostics
 

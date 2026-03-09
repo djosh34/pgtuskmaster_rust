@@ -278,7 +278,7 @@ pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
             Err(_elapsed) => return Ok(()),
         };
 
-    match authorize_request(ctx, &cfg, &request) {
+    match authorize_request(ctx, &cfg, &request)? {
         AuthDecision::Allowed => {}
         AuthDecision::Unauthorized => {
             emit_api_auth_decision(ctx, peer, &request, "unauthorized")?;
@@ -405,7 +405,10 @@ fn route_request(
                     return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
                 }
             };
-            let snapshot = ctx.debug_snapshot_subscriber.as_ref().map(|subscriber| subscriber.latest());
+            let snapshot = ctx
+                .debug_snapshot_subscriber
+                .as_ref()
+                .map(|subscriber| subscriber.latest());
             match post_switchover(
                 &ctx.scope,
                 &mut *ctx.dcs_store,
@@ -744,27 +747,27 @@ fn authorize_request(
     ctx: &ApiWorkerCtx,
     cfg: &RuntimeConfig,
     request: &HttpRequest,
-) -> AuthDecision {
-    let tokens = resolve_role_tokens(ctx, cfg);
+) -> Result<AuthDecision, WorkerError> {
+    let tokens = resolve_role_tokens(ctx, cfg)?;
     if tokens.read_token.is_none() && tokens.admin_token.is_none() {
-        return AuthDecision::Allowed;
+        return Ok(AuthDecision::Allowed);
     }
 
     let Some(token) = extract_bearer_token(request) else {
-        return AuthDecision::Unauthorized;
+        return Ok(AuthDecision::Unauthorized);
     };
 
     if let Some(expected_admin) = tokens.admin_token.as_deref() {
         if token == expected_admin {
-            return AuthDecision::Allowed;
+            return Ok(AuthDecision::Allowed);
         }
     }
 
-    match endpoint_role(request) {
+    Ok(match endpoint_role(request) {
         EndpointRole::Read => {
             if let Some(expected_read) = tokens.read_token.as_deref() {
                 if token == expected_read {
-                    return AuthDecision::Allowed;
+                    return Ok(AuthDecision::Allowed);
                 }
             }
             AuthDecision::Unauthorized
@@ -772,28 +775,37 @@ fn authorize_request(
         EndpointRole::Admin => {
             if let Some(expected_read) = tokens.read_token.as_deref() {
                 if token == expected_read {
-                    return AuthDecision::Forbidden;
+                    return Ok(AuthDecision::Forbidden);
                 }
             }
             AuthDecision::Unauthorized
         }
-    }
+    })
 }
 
-fn resolve_role_tokens(ctx: &ApiWorkerCtx, cfg: &RuntimeConfig) -> ApiRoleTokens {
+fn resolve_role_tokens(
+    ctx: &ApiWorkerCtx,
+    cfg: &RuntimeConfig,
+) -> Result<ApiRoleTokens, WorkerError> {
     if let Some(configured) = ctx.role_tokens.as_ref() {
-        return configured.clone();
+        return Ok(configured.clone());
     }
 
     match &cfg.api.security.auth {
-        ApiAuthConfig::Disabled => ApiRoleTokens {
+        ApiAuthConfig::Disabled => Ok(ApiRoleTokens {
             read_token: None,
             admin_token: None,
-        },
-        ApiAuthConfig::RoleTokens(tokens) => ApiRoleTokens {
-            read_token: normalize_runtime_token(tokens.read_token.clone()),
-            admin_token: normalize_runtime_token(tokens.admin_token.clone()),
-        },
+        }),
+        ApiAuthConfig::RoleTokens(tokens) => Ok(ApiRoleTokens {
+            read_token: resolve_runtime_token(
+                "api.security.auth.role_tokens.read_token",
+                tokens.read_token.as_ref(),
+            )?,
+            admin_token: resolve_runtime_token(
+                "api.security.auth.role_tokens.admin_token",
+                tokens.admin_token.as_ref(),
+            )?,
+        }),
     }
 }
 
@@ -823,17 +835,20 @@ fn normalize_optional_token(raw: Option<String>) -> Result<Option<String>, Worke
     }
 }
 
-fn normalize_runtime_token(raw: Option<String>) -> Option<String> {
-    match raw {
-        Some(value) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        None => None,
+fn resolve_runtime_token(
+    field: &str,
+    raw: Option<&crate::config::SecretSource>,
+) -> Result<Option<String>, WorkerError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let value = crate::config::resolve_secret_string(field, raw)
+        .map_err(|err| WorkerError::Message(err.to_string()))?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
     }
 }
 
@@ -1332,8 +1347,10 @@ mod tests {
     fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
         let auth = match auth_token {
             Some(token) => ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                read_token: Some(token.clone()),
-                admin_token: Some(token),
+                read_token: Some(crate::config::SecretSource::Inline {
+                    content: token.clone(),
+                }),
+                admin_token: Some(crate::config::SecretSource::Inline { content: token }),
             }),
             None => ApiAuthConfig::Disabled,
         };
@@ -2091,8 +2108,12 @@ mod tests {
         let _guard = NamespaceGuard::new("api-ha-authz-api-precedence")?;
         let mut cfg = sample_runtime_config(Some("legacy-token".to_string()));
         cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-            read_token: Some("read-token".to_string()),
-            admin_token: Some("admin-token".to_string()),
+            read_token: Some(crate::config::SecretSource::Inline {
+                content: "read-token".to_string(),
+            }),
+            admin_token: Some(crate::config::SecretSource::Inline {
+                content: "admin-token".to_string(),
+            }),
         });
         let (mut ctx, _store) = build_ctx_with_config(cfg).await?;
         let snapshot = sample_debug_snapshot(None);

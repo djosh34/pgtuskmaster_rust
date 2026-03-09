@@ -45,7 +45,7 @@ Examples of environment-specific actions:
 Poll HA state from at least one surviving node:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --output json status
+cargo run --bin pgtm -- -c ./node-a.toml --output json status
 ```
 
 Keep checking until the remaining cluster has a stable view of:

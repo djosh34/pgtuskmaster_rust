@@ -42,7 +42,7 @@ You will start a three-node PostgreSQL HA cluster on your local machine and iden
 3. **Check the current leader through node-a**
 
    ```bash
-   cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --output text status
+   cargo run --bin pgtm -- -c ./node-a.toml --output text status
    ```
 
    The cluster runtime configs in `docker/configs/cluster/` disable API auth, so this read command does not require `--read-token` or `--admin-token` in the local docker setup.
@@ -54,8 +54,8 @@ You will start a three-node PostgreSQL HA cluster on your local machine and iden
    Run the same command against node-b and node-c:
 
    ```bash
-   cargo run --bin pgtm -- --base-url http://127.0.0.1:18082 --output text status
-   cargo run --bin pgtm -- --base-url http://127.0.0.1:18083 --output text status
+   cargo run --bin pgtm -- -c ./node-b.toml --output text status
+   cargo run --bin pgtm -- -c ./node-c.toml --output text status
    ```
 
    In a healthy three-node cluster:

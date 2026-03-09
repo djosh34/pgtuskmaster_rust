@@ -7,7 +7,10 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    config::{ApiTlsMode, InlineOrPath, RoleAuthConfig, RuntimeConfig, SecretSource},
+    config::{
+        resolve_inline_or_path_bytes, resolve_inline_or_path_string, resolve_secret_string,
+        ApiTlsMode, RoleAuthConfig, RuntimeConfig, SecretSource,
+    },
     postgres_managed_conf::{
         managed_standby_passfile_path, render_managed_postgres_conf, ManagedPostgresConf,
         ManagedPostgresConfError, ManagedPostgresStartIntent, ManagedPostgresTlsConfig,
@@ -301,15 +304,9 @@ fn resolve_secret_source_string(
     key: &str,
     secret: &SecretSource,
 ) -> Result<String, ManagedPostgresError> {
-    let value = match &secret.0 {
-        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => fs::read_to_string(path)
-            .map_err(|err| ManagedPostgresError::Io {
-                message: format!("failed to read `{key}` from {}: {err}", path.display()),
-            })?,
-        InlineOrPath::Inline { content } => content.clone(),
-    };
-
-    Ok(value.trim_end_matches(['\n', '\r']).to_string())
+    resolve_secret_string(key, secret).map_err(|err| ManagedPostgresError::Io {
+        message: err.to_string(),
+    })
 }
 
 fn render_libpq_passfile_entry(
@@ -396,29 +393,20 @@ fn existing_recovery_signal(
 
 fn load_inline_or_path_string(
     field: &str,
-    source: &InlineOrPath,
+    source: &crate::config::InlineOrPath,
 ) -> Result<String, ManagedPostgresError> {
-    match source {
-        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => fs::read_to_string(path)
-            .map_err(|err| ManagedPostgresError::Io {
-                message: format!("failed to read `{field}` from {}: {err}", path.display()),
-            }),
-        InlineOrPath::Inline { content } => Ok(content.clone()),
-    }
+    resolve_inline_or_path_string(field, source).map_err(|err| ManagedPostgresError::Io {
+        message: err.to_string(),
+    })
 }
 
 fn load_inline_or_path_bytes(
     field: &str,
-    source: &InlineOrPath,
+    source: &crate::config::InlineOrPath,
 ) -> Result<Vec<u8>, ManagedPostgresError> {
-    match source {
-        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => {
-            fs::read(path).map_err(|err| ManagedPostgresError::Io {
-                message: format!("failed to read `{field}` from {}: {err}", path.display()),
-            })
-        }
-        InlineOrPath::Inline { content } => Ok(content.as_bytes().to_vec()),
-    }
+    resolve_inline_or_path_bytes(field, source).map_err(|err| ManagedPostgresError::Io {
+        message: err.to_string(),
+    })
 }
 
 fn absolutize_path(path: &Path) -> Result<PathBuf, ManagedPostgresError> {

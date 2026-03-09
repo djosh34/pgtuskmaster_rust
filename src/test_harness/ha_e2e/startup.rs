@@ -44,9 +44,9 @@ const HARNESS_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
 const HARNESS_LOGGING_PROTECT_RECENT_SECONDS: u64 = 300;
 
 fn inline_secret(content: &str) -> SecretSource {
-    SecretSource(InlineOrPath::Inline {
+    SecretSource::Inline {
         content: content.to_string(),
-    })
+    }
 }
 
 fn password_auth(content: &str) -> RoleAuthConfig {
@@ -859,14 +859,13 @@ $$;
                 .iter()
                 .map(DcsEndpoint::to_client_string)
                 .collect::<Vec<_>>();
-            let mut etcd_client =
-                etcd_client::Client::connect(dcs_endpoints_for_client, None)
-                    .await
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "etcd connect for init/config check failed: {err}"
-                        ))
-                    })?;
+            let mut etcd_client = etcd_client::Client::connect(dcs_endpoints_for_client, None)
+                .await
+                .map_err(|err| {
+                    WorkerError::Message(format!(
+                        "etcd connect for init/config check failed: {err}"
+                    ))
+                })?;
             let init_response = etcd_client
                 .get(init_key.as_str(), None)
                 .await
@@ -928,7 +927,7 @@ async fn spawn_partition_etcd_proxies(
     proxy_ports: &[u16],
     cursor: &mut usize,
     proxy_reservation: &mut PortReservation,
-    ) -> Result<BTreeMap<String, Vec<DcsEndpoint>>, WorkerError> {
+) -> Result<BTreeMap<String, Vec<DcsEndpoint>>, WorkerError> {
     let member_names = guard
         .etcd
         .as_ref()
@@ -972,13 +971,13 @@ async fn spawn_partition_etcd_proxies(
         let endpoint = endpoints.get(endpoint_index).ok_or_else(|| {
             WorkerError::Message(format!("missing etcd endpoint for index {endpoint_index}"))
         })?;
-        let target_addr = parse_runtime_dcs_endpoint(endpoint.as_str())?.socket_addr().map_err(
-            |err| {
+        let target_addr = parse_runtime_dcs_endpoint(endpoint.as_str())?
+            .socket_addr()
+            .map_err(|err| {
                 WorkerError::Message(format!(
                     "derive loopback proxy target failed for endpoint {endpoint}: {err}"
                 ))
-            },
-        )?;
+            })?;
         let link_name = format!("{node_id}-to-{member_name}-etcd");
         let listener = next_listener(proxy_ports, cursor, proxy_reservation)?;
         let link = TcpProxyLink::spawn_with_listener(link_name.clone(), listener, target_addr)
@@ -1006,6 +1005,8 @@ fn parse_runtime_dcs_endpoints(endpoints: &[String]) -> Result<Vec<DcsEndpoint>,
 
 fn parse_runtime_dcs_endpoint(endpoint: &str) -> Result<DcsEndpoint, WorkerError> {
     DcsEndpoint::parse(endpoint).map_err(|err| {
-        WorkerError::Message(format!("parse runtime DCS endpoint failed for {endpoint}: {err}"))
+        WorkerError::Message(format!(
+            "parse runtime DCS endpoint failed for {endpoint}: {err}"
+        ))
     })
 }

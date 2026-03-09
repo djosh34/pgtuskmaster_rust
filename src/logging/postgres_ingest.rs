@@ -1241,7 +1241,7 @@ mod tests {
         use tokio::sync::mpsc;
         use tokio::time::Instant;
 
-        use crate::config::{InlineOrPath, RoleAuthConfig, SecretSource};
+        use crate::config::{RoleAuthConfig, SecretSource};
         use crate::logging::LogRecord;
         use crate::process::jobs::{
             BaseBackupSpec, BootstrapSpec, DemoteSpec, ShutdownMode, StartPostgresSpec,
@@ -1863,9 +1863,9 @@ mod tests {
                             options: None,
                         },
                         auth: RoleAuthConfig::Password {
-                            password: SecretSource(InlineOrPath::Inline {
+                            password: SecretSource::Inline {
                                 content: "secret-password".to_string(),
-                            }),
+                            },
                         },
                     },
                     timeout_ms: Some(5_000),

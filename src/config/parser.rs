@@ -9,9 +9,10 @@ use super::defaults::{
 use super::endpoint::DcsEndpoint;
 use super::schema::{
     ApiConfig, ApiSecurityConfig, DcsConfig, DcsConfigInput, InlineOrPath, PgHbaConfig,
-    PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresRoleConfig,
-    PostgresRolesConfig, RoleAuthConfig, RoleAuthConfigInput, RuntimeConfig, RuntimeConfigInput,
-    SecretSource, TlsServerConfig, TlsServerIdentityConfig,
+    PgIdentConfig, PgtmApiClientConfig, PgtmConfig, PgtmConfigInput, PgtmPostgresClientConfig,
+    PostgresConfig, PostgresConnIdentityConfig, PostgresRoleConfig, PostgresRolesConfig,
+    RoleAuthConfig, RoleAuthConfigInput, RuntimeConfig, RuntimeConfigInput, SecretSource,
+    TlsServerConfig, TlsServerIdentityConfig,
 };
 use crate::postgres_managed_conf::{validate_extra_guc_entry, ManagedPostgresConfError};
 
@@ -61,6 +62,7 @@ fn normalize_runtime_config(input: RuntimeConfigInput) -> Result<RuntimeConfig, 
     let process = normalize_process_config(input.process)?;
     let logging = input.logging.unwrap_or_else(default_logging_config);
     let api = normalize_api_config(input.api)?;
+    let pgtm = input.pgtm.map(normalize_pgtm_config).transpose()?;
     let debug = input.debug.unwrap_or_else(default_debug_config);
 
     Ok(RuntimeConfig {
@@ -71,6 +73,7 @@ fn normalize_runtime_config(input: RuntimeConfigInput) -> Result<RuntimeConfig, 
         process,
         logging,
         api,
+        pgtm,
         debug,
     })
 }
@@ -284,7 +287,8 @@ fn normalize_pg_ident(
 fn normalize_api_config(input: super::schema::ApiConfigInput) -> Result<ApiConfig, ConfigError> {
     let listen_addr = normalize_api_listen_addr(
         "api.listen_addr",
-        input.listen_addr
+        input
+            .listen_addr
             .unwrap_or_else(default_api_listen_addr)
             .as_str(),
     )?;
@@ -320,14 +324,63 @@ fn normalize_dcs_config(input: DcsConfigInput) -> Result<DcsConfig, ConfigError>
     })
 }
 
+fn normalize_pgtm_config(input: PgtmConfigInput) -> Result<PgtmConfig, ConfigError> {
+    Ok(PgtmConfig {
+        api_url: normalize_optional_string("pgtm.api_url", input.api_url)?,
+        api_client: input
+            .api_client
+            .map(normalize_pgtm_api_client_config)
+            .transpose()?,
+        postgres_client: input
+            .postgres_client
+            .map(normalize_pgtm_postgres_client_config)
+            .transpose()?,
+    })
+}
+
+fn normalize_pgtm_api_client_config(
+    input: super::schema::PgtmApiClientConfigInput,
+) -> Result<PgtmApiClientConfig, ConfigError> {
+    Ok(PgtmApiClientConfig {
+        ca_cert: input.ca_cert,
+        client_cert: input.client_cert,
+        client_key: input.client_key,
+    })
+}
+
+fn normalize_pgtm_postgres_client_config(
+    input: super::schema::PgtmPostgresClientConfigInput,
+) -> Result<PgtmPostgresClientConfig, ConfigError> {
+    Ok(PgtmPostgresClientConfig {
+        ca_cert: input.ca_cert,
+        client_cert: input.client_cert,
+        client_key: input.client_key,
+    })
+}
+
+fn normalize_optional_string(
+    field: &'static str,
+    value: Option<String>,
+) -> Result<Option<String>, ConfigError> {
+    match value {
+        Some(value) => {
+            validate_non_empty(field, value.as_str())?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
 fn normalize_api_listen_addr(
     field: &'static str,
     value: &str,
 ) -> Result<std::net::SocketAddr, ConfigError> {
-    value.parse::<std::net::SocketAddr>().map_err(|err| ConfigError::Validation {
-        field,
-        message: format!("must be a valid socket address: {err}"),
-    })
+    value
+        .parse::<std::net::SocketAddr>()
+        .map_err(|err| ConfigError::Validation {
+            field,
+            message: format!("must be a valid socket address: {err}"),
+        })
 }
 
 fn normalize_dcs_endpoint(field: &'static str, value: &str) -> Result<DcsEndpoint, ConfigError> {
@@ -491,16 +544,19 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_role_auth(
         "postgres.roles.superuser.auth.password.path",
         "postgres.roles.superuser.auth.password.content",
+        "postgres.roles.superuser.auth.password.env",
         &cfg.postgres.roles.superuser.auth,
     )?;
     validate_role_auth(
         "postgres.roles.replicator.auth.password.path",
         "postgres.roles.replicator.auth.password.content",
+        "postgres.roles.replicator.auth.password.env",
         &cfg.postgres.roles.replicator.auth,
     )?;
     validate_role_auth(
         "postgres.roles.rewinder.auth.password.path",
         "postgres.roles.rewinder.auth.password.content",
+        "postgres.roles.rewinder.auth.password.env",
         &cfg.postgres.roles.rewinder.auth,
     )?;
 
@@ -658,13 +714,17 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     match &cfg.api.security.auth {
         crate::config::ApiAuthConfig::Disabled => {}
         crate::config::ApiAuthConfig::RoleTokens(tokens) => {
-            validate_optional_non_empty(
-                "api.security.auth.role_tokens.read_token",
-                tokens.read_token.as_deref(),
+            validate_optional_secret_source_non_empty(
+                "api.security.auth.role_tokens.read_token.path",
+                "api.security.auth.role_tokens.read_token.content",
+                "api.security.auth.role_tokens.read_token.env",
+                tokens.read_token.as_ref(),
             )?;
-            validate_optional_non_empty(
-                "api.security.auth.role_tokens.admin_token",
-                tokens.admin_token.as_deref(),
+            validate_optional_secret_source_non_empty(
+                "api.security.auth.role_tokens.admin_token.path",
+                "api.security.auth.role_tokens.admin_token.content",
+                "api.security.auth.role_tokens.admin_token.env",
+                tokens.admin_token.as_ref(),
             )?;
             if tokens.read_token.is_none() && tokens.admin_token.is_none() {
                 return Err(ConfigError::Validation {
@@ -687,6 +747,7 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         "api.security.tls.client_auth.client_ca",
         &cfg.api.security.tls,
     )?;
+    validate_pgtm_config(cfg)?;
 
     validate_dcs_init_config(cfg)?;
 
@@ -802,17 +863,14 @@ fn validate_non_empty(field: &'static str, value: &str) -> Result<(), ConfigErro
     Ok(())
 }
 
-fn validate_optional_non_empty(
-    field: &'static str,
-    value: Option<&str>,
+fn validate_optional_secret_source_non_empty(
+    path_field: &'static str,
+    content_field: &'static str,
+    env_field: &'static str,
+    value: Option<&SecretSource>,
 ) -> Result<(), ConfigError> {
-    if let Some(raw) = value {
-        if raw.trim().is_empty() {
-            return Err(ConfigError::Validation {
-                field,
-                message: "must not be empty when configured".to_string(),
-            });
-        }
+    if let Some(secret) = value {
+        validate_secret_source_non_empty(path_field, content_field, env_field, secret)?;
     }
     Ok(())
 }
@@ -820,13 +878,17 @@ fn validate_optional_non_empty(
 fn validate_role_auth(
     password_path_field: &'static str,
     password_content_field: &'static str,
+    password_env_field: &'static str,
     auth: &RoleAuthConfig,
 ) -> Result<(), ConfigError> {
     match auth {
         RoleAuthConfig::Tls => Ok(()),
-        RoleAuthConfig::Password { password } => {
-            validate_secret_source_non_empty(password_path_field, password_content_field, password)
-        }
+        RoleAuthConfig::Password { password } => validate_secret_source_non_empty(
+            password_path_field,
+            password_content_field,
+            password_env_field,
+            password,
+        ),
     }
 }
 
@@ -970,23 +1032,205 @@ fn validate_dcs_init_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_pgtm_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    let Some(pgtm) = cfg.pgtm.as_ref() else {
+        return Ok(());
+    };
+
+    if let Some(api_url) = pgtm.api_url.as_deref() {
+        validate_pgtm_api_url(api_url, cfg.api.security.tls.mode)?;
+    }
+
+    if let Some(api_client) = pgtm.api_client.as_ref() {
+        validate_pgtm_client_material(
+            PgtmClientMaterialFields {
+                ca_cert: "pgtm.api_client.ca_cert",
+                client_cert: "pgtm.api_client.client_cert",
+                client_key_path: "pgtm.api_client.client_key.path",
+                client_key_content: "pgtm.api_client.client_key.content",
+                client_key_env: "pgtm.api_client.client_key.env",
+            },
+            api_client.ca_cert.as_ref(),
+            api_client.client_cert.as_ref(),
+            api_client.client_key.as_ref(),
+        )?;
+
+        if matches!(
+            cfg.api.security.tls.mode,
+            crate::config::ApiTlsMode::Disabled
+        ) {
+            return Err(ConfigError::Validation {
+                field: "pgtm.api_client",
+                message: "must not be configured when api.security.tls.mode is disabled"
+                    .to_string(),
+            });
+        }
+    }
+
+    if let Some(postgres_client) = pgtm.postgres_client.as_ref() {
+        validate_pgtm_client_material(
+            PgtmClientMaterialFields {
+                ca_cert: "pgtm.postgres_client.ca_cert",
+                client_cert: "pgtm.postgres_client.client_cert",
+                client_key_path: "pgtm.postgres_client.client_key.path",
+                client_key_content: "pgtm.postgres_client.client_key.content",
+                client_key_env: "pgtm.postgres_client.client_key.env",
+            },
+            postgres_client.ca_cert.as_ref(),
+            postgres_client.client_cert.as_ref(),
+            postgres_client.client_key.as_ref(),
+        )?;
+    }
+
+    if matches!(
+        cfg.api.security.tls.mode,
+        crate::config::ApiTlsMode::Required
+    ) {
+        if let Some(api_url) = pgtm.api_url.as_deref() {
+            let parsed = reqwest::Url::parse(api_url).map_err(|err| ConfigError::Validation {
+                field: "pgtm.api_url",
+                message: format!("must be a valid absolute http or https URL: {err}"),
+            })?;
+            if parsed.scheme() != "https" {
+                return Err(ConfigError::Validation {
+                    field: "pgtm.api_url",
+                    message: "must use https when api.security.tls.mode is required".to_string(),
+                });
+            }
+        }
+        if cfg
+            .api
+            .security
+            .tls
+            .client_auth
+            .as_ref()
+            .is_some_and(|auth| auth.require_client_cert)
+        {
+            let has_client_cert = pgtm
+                .api_client
+                .as_ref()
+                .and_then(|client| client.client_cert.as_ref())
+                .is_some();
+            let has_client_key = pgtm
+                .api_client
+                .as_ref()
+                .and_then(|client| client.client_key.as_ref())
+                .is_some();
+            if !has_client_cert || !has_client_key {
+                return Err(ConfigError::Validation {
+                    field: "pgtm.api_client",
+                    message:
+                        "must provide client_cert and client_key when api.security.tls.client_auth.require_client_cert is true"
+                            .to_string(),
+                });
+            }
+        }
+    }
+
+    if let Some(api_url) = pgtm.api_url.as_deref() {
+        let parsed = reqwest::Url::parse(api_url).map_err(|err| ConfigError::Validation {
+            field: "pgtm.api_url",
+            message: format!("must be a valid absolute http or https URL: {err}"),
+        })?;
+        if parsed.scheme() == "http" && pgtm.api_client.is_some() {
+            return Err(ConfigError::Validation {
+                field: "pgtm.api_client",
+                message: "must not be configured when pgtm.api_url uses http".to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_pgtm_api_url(
+    api_url: &str,
+    tls_mode: crate::config::ApiTlsMode,
+) -> Result<(), ConfigError> {
+    let parsed = reqwest::Url::parse(api_url).map_err(|err| ConfigError::Validation {
+        field: "pgtm.api_url",
+        message: format!("must be a valid absolute http or https URL: {err}"),
+    })?;
+    match parsed.scheme() {
+        "http" => {
+            if matches!(tls_mode, crate::config::ApiTlsMode::Disabled) {
+                return Ok(());
+            }
+            Ok(())
+        }
+        "https" => {
+            if matches!(tls_mode, crate::config::ApiTlsMode::Disabled) {
+                return Err(ConfigError::Validation {
+                    field: "pgtm.api_url",
+                    message: "must not use https when api.security.tls.mode is disabled"
+                        .to_string(),
+                });
+            }
+            Ok(())
+        }
+        _ => Err(ConfigError::Validation {
+            field: "pgtm.api_url",
+            message: "must use http or https".to_string(),
+        }),
+    }
+}
+
+struct PgtmClientMaterialFields {
+    ca_cert: &'static str,
+    client_cert: &'static str,
+    client_key_path: &'static str,
+    client_key_content: &'static str,
+    client_key_env: &'static str,
+}
+
+fn validate_pgtm_client_material(
+    fields: PgtmClientMaterialFields,
+    ca_cert: Option<&InlineOrPath>,
+    client_cert: Option<&InlineOrPath>,
+    client_key: Option<&SecretSource>,
+) -> Result<(), ConfigError> {
+    if let Some(ca_cert) = ca_cert {
+        validate_inline_or_path_non_empty(fields.ca_cert, ca_cert, false)?;
+    }
+    if let Some(client_cert) = client_cert {
+        validate_inline_or_path_non_empty(fields.client_cert, client_cert, false)?;
+    }
+    if let Some(client_key) = client_key {
+        validate_secret_source_non_empty(
+            fields.client_key_path,
+            fields.client_key_content,
+            fields.client_key_env,
+            client_key,
+        )?;
+    }
+
+    if client_cert.is_some() && client_key.is_none() {
+        return Err(ConfigError::Validation {
+            field: fields.client_key_path,
+            message: "must be configured when client_cert is set".to_string(),
+        });
+    }
+    if client_key.is_some() && client_cert.is_none() {
+        return Err(ConfigError::Validation {
+            field: fields.client_cert,
+            message: "must be configured when client_key is set".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 fn validate_secret_source_non_empty(
     path_field: &'static str,
     content_field: &'static str,
+    env_field: &'static str,
     secret: &SecretSource,
 ) -> Result<(), ConfigError> {
-    validate_inline_or_path_non_empty_for_secret(path_field, content_field, &secret.0)
-}
-
-fn validate_inline_or_path_non_empty_for_secret(
-    path_field: &'static str,
-    content_field: &'static str,
-    value: &InlineOrPath,
-) -> Result<(), ConfigError> {
-    match value {
-        InlineOrPath::Path(path) => validate_non_empty_path(path_field, path),
-        InlineOrPath::PathConfig { path } => validate_non_empty_path(path_field, path),
-        InlineOrPath::Inline { content } => validate_non_empty(content_field, content.as_str()),
+    match secret {
+        SecretSource::Path(path) => validate_non_empty_path(path_field, path),
+        SecretSource::PathConfig { path } => validate_non_empty_path(path_field, path),
+        SecretSource::Inline { content } => validate_non_empty(content_field, content.as_str()),
+        SecretSource::Env { env } => validate_non_empty(env_field, env.as_str()),
     }
 }
 
@@ -1025,9 +1269,9 @@ mod tests {
 
     fn sample_password_auth() -> RoleAuthConfig {
         RoleAuthConfig::Password {
-            password: crate::config::SecretSource(crate::config::InlineOrPath::Inline {
+            password: crate::config::SecretSource::Inline {
                 content: "secret-password".to_string(),
-            }),
+            },
         }
     }
 
@@ -1169,6 +1413,7 @@ mod tests {
                     auth: ApiAuthConfig::Disabled,
                 },
             },
+            pgtm: None,
             debug: DebugConfig { enabled: false },
         }
     }
@@ -1332,7 +1577,9 @@ mod tests {
     fn validate_runtime_config_rejects_blank_api_tokens() {
         let mut cfg = base_runtime_config();
         cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-            read_token: Some(" ".to_string()),
+            read_token: Some(crate::config::SecretSource::Inline {
+                content: " ".to_string(),
+            }),
             admin_token: None,
         });
 
@@ -1340,7 +1587,7 @@ mod tests {
         assert!(matches!(
             err,
             Err(ConfigError::Validation {
-                field: "api.security.auth.role_tokens.read_token",
+                field: "api.security.auth.role_tokens.read_token.content",
                 ..
             })
         ));
@@ -1348,14 +1595,92 @@ mod tests {
         let mut cfg = base_runtime_config();
         cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
             read_token: None,
-            admin_token: Some("\t".to_string()),
+            admin_token: Some(crate::config::SecretSource::Inline {
+                content: "\t".to_string(),
+            }),
         });
 
         let err = validate_runtime_config(&cfg);
         assert!(matches!(
             err,
             Err(ConfigError::Validation {
-                field: "api.security.auth.role_tokens.admin_token",
+                field: "api.security.auth.role_tokens.admin_token.content",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_blank_env_secret_name() {
+        let mut cfg = base_runtime_config();
+        cfg.api.security.auth = ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+            read_token: Some(crate::config::SecretSource::Env {
+                env: "   ".to_string(),
+            }),
+            admin_token: None,
+        });
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "api.security.auth.role_tokens.read_token.env",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_https_pgtm_api_url_when_api_tls_disabled() {
+        let mut cfg = base_runtime_config();
+        cfg.pgtm = Some(crate::config::PgtmConfig {
+            api_url: Some("https://cluster.example:8443".to_string()),
+            api_client: None,
+            postgres_client: None,
+        });
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "pgtm.api_url",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_runtime_config_requires_pgtm_client_key_when_client_cert_present() {
+        let mut cfg = base_runtime_config();
+        cfg.api.security.tls.mode = ApiTlsMode::Required;
+        cfg.api.security.tls.identity = Some(crate::config::TlsServerIdentityConfig {
+            cert_chain: InlineOrPath::Inline {
+                content: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+                    .to_string(),
+            },
+            private_key: InlineOrPath::Inline {
+                content: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n"
+                    .to_string(),
+            },
+        });
+        cfg.pgtm = Some(crate::config::PgtmConfig {
+            api_url: Some("https://cluster.example:8443".to_string()),
+            api_client: Some(crate::config::PgtmApiClientConfig {
+                ca_cert: None,
+                client_cert: Some(InlineOrPath::Inline {
+                    content: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+                        .to_string(),
+                }),
+                client_key: None,
+            }),
+            postgres_client: None,
+        });
+
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "pgtm.api_client.client_key.path",
                 ..
             })
         ));
@@ -1495,8 +1820,7 @@ member_id = "member-a"
     }
 
     #[test]
-    fn load_runtime_config_rejects_unknown_fields() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn load_runtime_config_rejects_unknown_fields() -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
@@ -1602,7 +1926,10 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         assert_eq!(cfg.process.pg_rewind_timeout_ms, 120_000);
         assert_eq!(cfg.process.bootstrap_timeout_ms, 300_000);
         assert_eq!(cfg.process.fencing_timeout_ms, 30_000);
-        assert_eq!(cfg.api.listen_addr, std::net::SocketAddr::from(([127, 0, 0, 1], 8080)));
+        assert_eq!(
+            cfg.api.listen_addr,
+            std::net::SocketAddr::from(([127, 0, 0, 1], 8080))
+        );
         assert!(!cfg.debug.enabled);
 
         std::fs::remove_file(&path)?;
@@ -1790,8 +2117,7 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("runtime-config-missing-roles-{unique}.toml"));
+        let path = std::env::temp_dir().join(format!("runtime-config-missing-roles-{unique}.toml"));
 
         // Intentionally omit `postgres.roles`.
         let toml = r#"

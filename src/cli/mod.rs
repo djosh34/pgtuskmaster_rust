@@ -1,10 +1,12 @@
 pub mod args;
 pub mod client;
+pub mod config;
 pub mod error;
 pub mod output;
 
 use args::{Cli, Command, SwitchoverCommand};
 use client::{AcceptedResponse, CliApiClient, HaStateResponse};
+use config::resolve_operator_context;
 use error::CliError;
 
 pub enum CommandOutput {
@@ -13,14 +15,18 @@ pub enum CommandOutput {
 }
 
 pub async fn run(cli: Cli) -> Result<String, CliError> {
+    let context = resolve_operator_context(&cli)?;
     let output_format = cli.output;
     let command = cli.command;
-    let client = CliApiClient::new(
-        cli.base_url,
-        cli.timeout_ms,
-        cli.read_token,
-        cli.admin_token,
-    )?;
+    if context.api_auth_enabled
+        && matches!(command, Command::Switchover(_))
+        && context.api_client.auth.admin_token.is_none()
+    {
+        return Err(CliError::Config(
+            "admin token is required for switchover commands when API auth is enabled".to_string(),
+        ));
+    }
+    let client = CliApiClient::from_config(context.api_client)?;
 
     let command_output = match command {
         Command::Status => CommandOutput::HaState(Box::new(client.get_ha_state().await?)),
@@ -41,6 +47,7 @@ mod tests {
 
     #[test]
     fn exit_code_mapping_is_stable() {
+        assert_eq!(CliError::Config("x".to_string()).exit_code(), 6.into());
         assert_eq!(CliError::Transport("x".to_string()).exit_code(), 3.into());
         assert_eq!(
             CliError::ApiStatus {

@@ -7,6 +7,27 @@ use serde::Serialize;
 pub(crate) use crate::api::{AcceptedResponse, HaDecisionResponse, HaStateResponse};
 use crate::cli::error::CliError;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliAuthConfig {
+    pub read_token: Option<String>,
+    pub admin_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CliTlsConfig {
+    pub ca_cert_pem: Option<Vec<u8>>,
+    pub client_cert_pem: Option<Vec<u8>>,
+    pub client_key_pem: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliApiClientConfig {
+    pub base_url: Url,
+    pub timeout_ms: u64,
+    pub auth: CliAuthConfig,
+    pub tls: CliTlsConfig,
+}
+
 #[derive(Clone, Debug)]
 pub struct CliApiClient {
     base_url: Url,
@@ -37,17 +58,31 @@ impl CliApiClient {
     ) -> Result<Self, CliError> {
         let base_url = Url::parse(base_url.trim())
             .map_err(|err| CliError::RequestBuild(format!("invalid --base-url value: {err}")))?;
+        Self::from_config(CliApiClientConfig {
+            base_url,
+            timeout_ms,
+            auth: CliAuthConfig {
+                read_token,
+                admin_token,
+            },
+            tls: CliTlsConfig::default(),
+        })
+    }
+
+    pub fn from_config(config: CliApiClientConfig) -> Result<Self, CliError> {
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .pool_max_idle_per_host(0)
+            .timeout(Duration::from_millis(config.timeout_ms))
+            .pool_max_idle_per_host(0);
+        let http = apply_tls_config(http, &config.tls)?;
+        let http = http
             .build()
             .map_err(|err| CliError::RequestBuild(format!("build http client failed: {err}")))?;
 
         Ok(Self {
-            base_url,
+            base_url: config.base_url,
             http,
-            read_token: normalize_token(read_token),
-            admin_token: normalize_token(admin_token),
+            read_token: normalize_token(config.auth.read_token),
+            admin_token: normalize_token(config.auth.admin_token),
         })
     }
 
@@ -144,6 +179,42 @@ impl CliApiClient {
             AuthRole::Admin => self.admin_token.as_deref(),
         }
     }
+}
+
+fn apply_tls_config(
+    builder: reqwest::ClientBuilder,
+    config: &CliTlsConfig,
+) -> Result<reqwest::ClientBuilder, CliError> {
+    let builder = if let Some(ca_cert_pem) = config.ca_cert_pem.as_ref() {
+        let certificate = reqwest::Certificate::from_pem(ca_cert_pem)
+            .map_err(|err| CliError::RequestBuild(format!("parse CA certificate failed: {err}")))?;
+        builder.add_root_certificate(certificate)
+    } else {
+        builder
+    };
+
+    if config.client_cert_pem.is_none() && config.client_key_pem.is_none() {
+        return Ok(builder);
+    }
+
+    let client_cert_pem = config
+        .client_cert_pem
+        .as_ref()
+        .ok_or_else(|| CliError::RequestBuild("client certificate missing".to_string()))?;
+    let client_key_pem = config
+        .client_key_pem
+        .as_ref()
+        .ok_or_else(|| CliError::RequestBuild("client key missing".to_string()))?;
+
+    let mut identity_pem = Vec::with_capacity(client_cert_pem.len() + client_key_pem.len() + 1);
+    identity_pem.extend_from_slice(client_cert_pem.as_slice());
+    if !identity_pem.ends_with(b"\n") {
+        identity_pem.push(b'\n');
+    }
+    identity_pem.extend_from_slice(client_key_pem.as_slice());
+    let identity = reqwest::Identity::from_pem(identity_pem.as_slice())
+        .map_err(|err| CliError::RequestBuild(format!("parse client identity failed: {err}")))?;
+    Ok(builder.identity(identity))
 }
 
 async fn read_json_response<T>(

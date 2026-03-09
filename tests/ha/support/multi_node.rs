@@ -98,6 +98,58 @@ fn e2e_http_timeout_ms() -> Result<u64, WorkerError> {
         .map_err(|_| WorkerError::Message("e2e HTTP timeout does not fit into u64".to_string()))
 }
 
+fn write_pgtm_cli_config(api_observe_addr: &std::net::SocketAddr) -> Result<PathBuf, WorkerError> {
+    let token = unique_e2e_token()?;
+    let data_dir = std::env::temp_dir().join(format!("pgtm-cli-data-{token}"));
+    let path = std::env::temp_dir().join(format!("pgtm-cli-config-{token}.toml"));
+    let contents = format!(
+        r##"
+[cluster]
+name = "cluster-a"
+member_id = "node-a"
+
+[postgres]
+data_dir = "{data_dir}"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtm/socket"
+log_file = "/tmp/pgtm/postgres.log"
+local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "prefer" }}
+rewind_conn_identity = {{ user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }}
+tls = {{ mode = "disabled" }}
+roles = {{ superuser = {{ username = "postgres", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, replicator = {{ username = "replicator", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, rewinder = {{ username = "rewinder", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }} }}
+pg_hba = {{ source = {{ content = "local all all trust" }} }}
+pg_ident = {{ source = {{ content = "# empty" }} }}
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 1000
+bootstrap_timeout_ms = 1000
+fencing_timeout_ms = 1000
+binaries = {{ postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }}
+
+[api]
+listen_addr = "{api_observe_addr}"
+security = {{ tls = {{ mode = "disabled" }}, auth = {{ type = "disabled" }} }}
+
+[pgtm]
+api_url = "http://{api_observe_addr}"
+"##,
+        data_dir = data_dir.display(),
+        api_observe_addr = api_observe_addr
+    );
+    fs::write(&path, contents)
+        .map_err(|err| WorkerError::Message(format!("write pgtm cli config failed: {err}")))?;
+    Ok(path)
+}
+
 #[derive(Clone)]
 struct SqlWorkloadSpec {
     scenario_name: String,
@@ -1316,13 +1368,14 @@ impl ClusterFixture {
         for round in 1..=max_transport_rounds {
             for node_index in 0..self.nodes.len() {
                 let (node_id, base_url) = self.node_api_base_url_by_index(node_index)?;
+                let config_path = write_pgtm_cli_config(&self.nodes[node_index].api_observe_addr)?;
                 self.record(format!(
                     "cli request start: round={round}/{max_transport_rounds} node={node_id} switchover request"
                 ));
                 let argv: Vec<String> = vec![
                     "pgtm".to_string(),
-                    "--base-url".to_string(),
-                    base_url,
+                    "-c".to_string(),
+                    config_path.display().to_string(),
                     "--timeout-ms".to_string(),
                     timeout_ms.to_string(),
                     "--output".to_string(),
@@ -1333,7 +1386,9 @@ impl ClusterFixture {
                 let cli = Cli::try_parse_from(argv).map_err(|err| {
                     WorkerError::Message(format!("parse switchover CLI args failed: {err}"))
                 })?;
-                match cli::run(cli).await {
+                let result = cli::run(cli).await;
+                let _ = fs::remove_file(&config_path);
+                match result {
                     Ok(out) => {
                         self.record(format!(
                             "cli request success: round={round}/{max_transport_rounds} node={node_id} switchover request accepted=true"
@@ -1352,7 +1407,7 @@ impl ClusterFixture {
                         }
                         _ => {
                             return Err(WorkerError::Message(format!(
-                                "run switchover CLI command failed via {node_id}: {err}"
+                                "run switchover CLI command failed via {node_id} ({base_url}): {err}"
                             )));
                         }
                     },

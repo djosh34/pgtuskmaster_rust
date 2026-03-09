@@ -25,13 +25,13 @@ make docker-status-cluster
 Run the HA state command against a node:
 
 ```bash
-pgtm status
+pgtm -c /etc/pgtuskmaster/config.toml status
 ```
 
 For a specific node or non-default port:
 
 ```bash
-pgtm --base-url http://127.0.0.1:18081 status
+pgtm -c /etc/pgtuskmaster/config.toml status
 ```
 
 ## Choose output format

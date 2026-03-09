@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 01:12:14 AM CET 2026
-
-# Task `.ralph/tasks/story-ctl-operator-experience/02-task-add-config-backed-ctl-contexts-and-auto-auth.md`
-
-```
-## Task: Add Config-Backed `pgtm` Configuration And Automatic Auth/TLS Discovery <status>not_started</status> <passes>false</passes>
-
-<priority>medium</priority>
-
-<description>
-```
-
-==============
+Generated: Mon Mar  9 01:51:01 AM CET 2026
 
 # Task `.ralph/tasks/story-ctl-operator-experience/03-task-add-cluster-wide-status-topology-and-table-output.md`
 

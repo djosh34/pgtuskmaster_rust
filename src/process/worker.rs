@@ -1522,7 +1522,7 @@ mod tests {
     };
 
     use crate::{
-        config::{BinaryPaths, InlineOrPath, ProcessConfig, RoleAuthConfig, SecretSource},
+        config::{BinaryPaths, ProcessConfig, RoleAuthConfig, SecretSource},
         logging::{decode_app_event, LogHandle, LogSink, SeverityText, TestSink},
         pginfo::state::{PgConnInfo, PgSslMode},
         postgres_managed_conf::{
@@ -1660,9 +1660,9 @@ mod tests {
 
     fn sample_password_auth(secret: &str) -> RoleAuthConfig {
         RoleAuthConfig::Password {
-            password: SecretSource(InlineOrPath::Inline {
+            password: SecretSource::Inline {
                 content: secret.to_string(),
-            }),
+            },
         }
     }
 
@@ -1735,9 +1735,9 @@ mod tests {
                         options: None,
                     },
                     auth: RoleAuthConfig::Password {
-                        password: SecretSource(InlineOrPath::Inline {
+                        password: SecretSource::Inline {
                             content: "secret\n".to_string(),
-                        }),
+                        },
                     },
                 },
                 timeout_ms: Some(30_000),
@@ -1756,8 +1756,8 @@ mod tests {
             ));
         }
         match &spec.env[0].value {
-            ProcessEnvValue::Secret(secret) => match &secret.0 {
-                InlineOrPath::Inline { content } => {
+            ProcessEnvValue::Secret(secret) => match secret {
+                SecretSource::Inline { content } => {
                     if content.as_str() != "secret\n" {
                         return Err(format!("unexpected inline secret content: {content:?}"));
                     }
@@ -1848,9 +1848,9 @@ mod tests {
                         options: None,
                     },
                     auth: RoleAuthConfig::Password {
-                        password: SecretSource(InlineOrPath::Inline {
+                        password: SecretSource::Inline {
                             content: "rewindpass".to_string(),
-                        }),
+                        },
                     },
                 },
                 timeout_ms: Some(30_000),

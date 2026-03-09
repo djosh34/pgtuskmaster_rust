@@ -337,7 +337,7 @@ mod tests {
     };
 
     use crate::{
-        config::{InlineOrPath, RoleAuthConfig, RuntimeConfig, SecretSource},
+        config::{RoleAuthConfig, RuntimeConfig, SecretSource},
         dcs::{
             state::{DcsCache, DcsState, DcsTrust, MemberRecord, MemberRole},
             store::{DcsStore, DcsStoreError, WatchEvent},
@@ -393,9 +393,9 @@ mod tests {
 
     fn sample_password_auth() -> RoleAuthConfig {
         RoleAuthConfig::Password {
-            password: SecretSource(InlineOrPath::Inline {
+            password: SecretSource::Inline {
                 content: "secret-password".to_string(),
-            }),
+            },
         }
     }
 

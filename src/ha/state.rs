@@ -116,9 +116,9 @@ impl ProcessDispatchDefaults {
 
 fn contract_stub_password_auth() -> RoleAuthConfig {
     RoleAuthConfig::Password {
-        password: crate::config::SecretSource(crate::config::InlineOrPath::Inline {
+        password: crate::config::SecretSource::Inline {
             content: "secret-password".to_string(),
-        }),
+        },
     }
 }
 

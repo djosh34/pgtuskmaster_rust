@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use pgtuskmaster_rust::{
     api::worker::ApiWorkerCtx,
-    config::{ApiAuthConfig, ApiRoleTokensConfig, RuntimeConfig},
+    config::{ApiAuthConfig, ApiRoleTokensConfig, RuntimeConfig, SecretSource},
     dcs::store::{DcsStore, DcsStoreError, WatchEvent},
     state::{new_state_channel, UnixMillis, WorkerError},
 };
@@ -106,8 +106,10 @@ impl DcsStore for RecordingStore {
 fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
     let auth = match auth_token {
         Some(token) => ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-            read_token: Some(token.clone()),
-            admin_token: Some(token),
+            read_token: Some(SecretSource::Inline {
+                content: token.clone(),
+            }),
+            admin_token: Some(SecretSource::Inline { content: token }),
         }),
         None => ApiAuthConfig::Disabled,
     };

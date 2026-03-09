@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -10,11 +12,13 @@ pub enum OutputFormat {
 #[command(name = "pgtm")]
 #[command(about = "HA admin CLI for PGTuskMaster API")]
 pub struct Cli {
-    #[arg(long, default_value = "http://127.0.0.1:8080")]
-    pub base_url: String,
-    #[arg(long, env = "PGTUSKMASTER_READ_TOKEN")]
+    #[arg(short = 'c', long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+    #[arg(long)]
+    pub base_url: Option<String>,
+    #[arg(long)]
     pub read_token: Option<String>,
-    #[arg(long, env = "PGTUSKMASTER_ADMIN_TOKEN")]
+    #[arg(long)]
     pub admin_token: Option<String>,
     #[arg(long, default_value_t = 5_000)]
     pub timeout_ms: u64,
@@ -59,7 +63,8 @@ mod tests {
         let cli = Cli::try_parse_from(["pgtm", "status"])
             .map_err(|err| format!("parse should succeed: {err}"))?;
 
-        assert_eq!(cli.base_url, "http://127.0.0.1:8080");
+        assert_eq!(cli.config, None);
+        assert_eq!(cli.base_url, None);
         assert_eq!(cli.timeout_ms, 5_000);
         assert_eq!(cli.output, OutputFormat::Json);
 
@@ -73,6 +78,8 @@ mod tests {
     fn parse_full_switchover_write_command() -> Result<(), String> {
         let cli = Cli::try_parse_from([
             "pgtm",
+            "-c",
+            "/tmp/pgtm.toml",
             "--base-url",
             "https://cluster.example",
             "--timeout-ms",
@@ -84,15 +91,19 @@ mod tests {
         ])
         .map_err(|err| format!("parse should succeed: {err}"))?;
 
-        assert_eq!(cli.base_url, "https://cluster.example");
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/pgtm.toml"))
+        );
+        assert_eq!(cli.base_url.as_deref(), Some("https://cluster.example"));
         assert_eq!(cli.timeout_ms, 1234);
         assert_eq!(cli.output, OutputFormat::Text);
 
         match cli.command {
             Command::Switchover(switchover) => match switchover.command {
-                SwitchoverCommand::Request(SwitchoverRequestArgs { switchover_to: None }) => {
-                    Ok(())
-                }
+                SwitchoverCommand::Request(SwitchoverRequestArgs {
+                    switchover_to: None,
+                }) => Ok(()),
                 _ => Err("expected switchover request".to_string()),
             },
             _ => Err("expected switchover command".to_string()),
@@ -106,9 +117,9 @@ mod tests {
 
         match cli.command {
             Command::Switchover(switchover) => match switchover.command {
-                SwitchoverCommand::Request(SwitchoverRequestArgs { switchover_to: None }) => {
-                    Ok(())
-                }
+                SwitchoverCommand::Request(SwitchoverRequestArgs {
+                    switchover_to: None,
+                }) => Ok(()),
                 _ => Err("expected switchover request".to_string()),
             },
             _ => Err("expected switchover command".to_string()),
@@ -117,14 +128,9 @@ mod tests {
 
     #[test]
     fn parse_targeted_switchover_request() -> Result<(), String> {
-        let cli = Cli::try_parse_from([
-            "pgtm",
-            "switchover",
-            "request",
-            "--switchover-to",
-            "node-b",
-        ])
-        .map_err(|err| format!("parse should succeed: {err}"))?;
+        let cli =
+            Cli::try_parse_from(["pgtm", "switchover", "request", "--switchover-to", "node-b"])
+                .map_err(|err| format!("parse should succeed: {err}"))?;
 
         match cli.command {
             Command::Switchover(switchover) => match switchover.command {
@@ -139,21 +145,15 @@ mod tests {
 
     #[test]
     fn parse_env_token_fallbacks() -> Result<(), String> {
-        let read_var = "PGTUSKMASTER_READ_TOKEN";
-        let admin_var = "PGTUSKMASTER_ADMIN_TOKEN";
-
-        std::env::set_var(read_var, "reader");
-        std::env::set_var(admin_var, "admin");
-
-        let parsed = Cli::try_parse_from(["pgtm", "status"])
-            .map_err(|err| format!("parse should succeed: {err}"));
-
-        std::env::remove_var(read_var);
-        std::env::remove_var(admin_var);
-
-        let cli = parsed?;
-        assert_eq!(cli.read_token.as_deref(), Some("reader"));
-        assert_eq!(cli.admin_token.as_deref(), Some("admin"));
+        let cli = Cli::try_parse_from(["pgtm", "-c", "/tmp/pgtm.toml", "status"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/pgtm.toml"))
+        );
+        assert_eq!(cli.base_url, None);
+        assert_eq!(cli.read_token, None);
+        assert_eq!(cli.admin_token, None);
         Ok(())
     }
 }

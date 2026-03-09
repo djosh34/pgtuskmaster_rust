@@ -13,22 +13,32 @@ pub enum InlineOrPath {
 }
 
 #[derive(Clone, PartialEq, Eq, Deserialize)]
-pub struct SecretSource(pub InlineOrPath);
+#[serde(untagged)]
+pub enum SecretSource {
+    Path(PathBuf),
+    PathConfig { path: PathBuf },
+    Inline { content: String },
+    Env { env: String },
+}
 
 impl fmt::Debug for SecretSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.0 {
-            InlineOrPath::Path(path) => f
+        match self {
+            Self::Path(path) => f
                 .debug_tuple("SecretSource")
                 .field(&format_args!("path({})", path.display()))
                 .finish(),
-            InlineOrPath::PathConfig { path } => f
+            Self::PathConfig { path } => f
                 .debug_tuple("SecretSource")
                 .field(&format_args!("path({})", path.display()))
                 .finish(),
-            InlineOrPath::Inline { .. } => f
+            Self::Inline { .. } => f
                 .debug_tuple("SecretSource")
                 .field(&"<inline redacted>")
+                .finish(),
+            Self::Env { env } => f
+                .debug_tuple("SecretSource")
+                .field(&format_args!("env({env})"))
                 .finish(),
         }
     }
@@ -75,6 +85,7 @@ pub struct RuntimeConfig {
     pub process: ProcessConfig,
     pub logging: LoggingConfig,
     pub api: ApiConfig,
+    pub pgtm: Option<PgtmConfig>,
     pub debug: DebugConfig,
 }
 
@@ -291,8 +302,32 @@ pub enum ApiAuthConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiRoleTokensConfig {
-    pub read_token: Option<String>,
-    pub admin_token: Option<String>,
+    pub read_token: Option<SecretSource>,
+    pub admin_token: Option<SecretSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgtmConfig {
+    pub api_url: Option<String>,
+    pub api_client: Option<PgtmApiClientConfig>,
+    pub postgres_client: Option<PgtmPostgresClientConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgtmApiClientConfig {
+    pub ca_cert: Option<InlineOrPath>,
+    pub client_cert: Option<InlineOrPath>,
+    pub client_key: Option<SecretSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgtmPostgresClientConfig {
+    pub ca_cert: Option<InlineOrPath>,
+    pub client_cert: Option<InlineOrPath>,
+    pub client_key: Option<SecretSource>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -311,6 +346,7 @@ pub struct RuntimeConfigInput {
     pub process: ProcessConfigInput,
     pub logging: Option<LoggingConfig>,
     pub api: ApiConfigInput,
+    pub pgtm: Option<PgtmConfigInput>,
     pub debug: Option<DebugConfig>,
 }
 
@@ -346,6 +382,30 @@ pub struct ApiConfigInput {
 pub struct ApiSecurityConfigInput {
     pub tls: Option<TlsServerConfigInput>,
     pub auth: Option<ApiAuthConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgtmConfigInput {
+    pub api_url: Option<String>,
+    pub api_client: Option<PgtmApiClientConfigInput>,
+    pub postgres_client: Option<PgtmPostgresClientConfigInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgtmApiClientConfigInput {
+    pub ca_cert: Option<InlineOrPath>,
+    pub client_cert: Option<InlineOrPath>,
+    pub client_key: Option<SecretSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgtmPostgresClientConfigInput {
+    pub ca_cert: Option<InlineOrPath>,
+    pub client_cert: Option<InlineOrPath>,
+    pub client_key: Option<SecretSource>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 use crate::{
     config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
-        DcsConfig, DcsEndpoint, DcsInitConfig, DebugConfig, FileSinkConfig, FileSinkMode,
-        HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig,
-        PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
+        DcsConfig, DcsEndpoint, DcsInitConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
+        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
+        PgIdentConfig, PgtmConfig, PostgresConfig, PostgresConnIdentityConfig,
         PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
         RoleAuthConfig, RuntimeConfig, SecretSource, StderrSinkConfig, TlsClientAuthConfig,
         TlsServerConfig, TlsServerIdentityConfig,
@@ -66,9 +66,9 @@ pub fn sample_rewind_conn_identity() -> PostgresConnIdentityConfig {
 }
 
 pub fn sample_password_secret() -> SecretSource {
-    SecretSource(InlineOrPath::Inline {
+    SecretSource::Inline {
         content: "secret-password".to_string(),
-    })
+    }
 }
 
 pub fn sample_postgres_roles_config() -> PostgresRolesConfig {
@@ -267,6 +267,7 @@ impl RuntimeConfigBuilder {
                 process: sample_process_config(),
                 logging: sample_logging_config(),
                 api: sample_api_config(),
+                pgtm: None,
                 debug: sample_debug_config(),
             },
         }
@@ -306,6 +307,10 @@ impl RuntimeConfigBuilder {
         self.transform_api(move |api| ApiConfig { listen_addr, ..api })
     }
 
+    pub fn with_api_config(self, api: ApiConfig) -> Self {
+        self.transform(move |config| RuntimeConfig { api, ..config })
+    }
+
     pub fn with_api_auth(self, auth: ApiAuthConfig) -> Self {
         self.transform_api(|api| ApiConfig {
             security: ApiSecurityConfig {
@@ -318,6 +323,10 @@ impl RuntimeConfigBuilder {
 
     pub fn with_api_security(self, security: ApiSecurityConfig) -> Self {
         self.transform_api(move |api| ApiConfig { security, ..api })
+    }
+
+    pub fn with_pgtm_config(self, pgtm: Option<PgtmConfig>) -> Self {
+        self.transform(move |config| RuntimeConfig { pgtm, ..config })
     }
 
     pub fn with_postgres_data_dir(self, data_dir: impl Into<PathBuf>) -> Self {
@@ -418,6 +427,16 @@ impl RuntimeConfigBuilder {
 
     pub fn with_debug(self, debug: DebugConfig) -> Self {
         self.transform_debug(move |_| debug)
+    }
+
+    pub fn transform<F>(self, transform: F) -> Self
+    where
+        F: FnOnce(RuntimeConfig) -> RuntimeConfig,
+    {
+        let RuntimeConfigBuilder { config } = self;
+        Self {
+            config: transform(config),
+        }
     }
 
     pub fn transform_cluster<F>(self, transform: F) -> Self
@@ -667,8 +686,12 @@ mod tests {
         let cfg = RuntimeConfigBuilder::new()
             .with_api_auth(crate::config::ApiAuthConfig::RoleTokens(
                 crate::config::ApiRoleTokensConfig {
-                    read_token: Some("read-token".to_string()),
-                    admin_token: Some("admin-token".to_string()),
+                    read_token: Some(crate::config::SecretSource::Inline {
+                        content: "read-token".to_string(),
+                    }),
+                    admin_token: Some(crate::config::SecretSource::Inline {
+                        content: "admin-token".to_string(),
+                    }),
                 },
             ))
             .with_dcs_init(Some(crate::config::DcsInitConfig {
@@ -680,8 +703,12 @@ mod tests {
         assert_eq!(
             cfg.api.security.auth,
             crate::config::ApiAuthConfig::RoleTokens(crate::config::ApiRoleTokensConfig {
-                read_token: Some("read-token".to_string()),
-                admin_token: Some("admin-token".to_string()),
+                read_token: Some(crate::config::SecretSource::Inline {
+                    content: "read-token".to_string(),
+                }),
+                admin_token: Some(crate::config::SecretSource::Inline {
+                    content: "admin-token".to_string(),
+                }),
             })
         );
         assert_eq!(

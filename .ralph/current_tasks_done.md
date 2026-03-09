@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 01:12:14 AM CET 2026
+Generated: Mon Mar  9 01:51:01 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -41,6 +41,18 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 
 ```
 ## Task: Rename The Operator CLI To `pgtm` And Flatten The Command Tree <status>completed</status> <passes>true</passes>
+
+<priority>medium</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ctl-operator-experience/02-task-add-config-backed-ctl-contexts-and-auto-auth.md`
+
+```
+## Task: Add Config-Backed `pgtm` Configuration And Automatic Auth/TLS Discovery <status>done</status> <passes>true</passes>
 
 <priority>medium</priority>
 

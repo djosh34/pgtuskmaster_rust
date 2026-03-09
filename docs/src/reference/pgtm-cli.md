@@ -10,19 +10,27 @@ pgtm - HA admin CLI for PGTuskMaster API
 
 ## Description
 
-`pgtm` is the command-line client for the PGTuskMaster HA API. It queries cluster state and submits switchover operations against a running node's HTTP API.
+`pgtm` is the operator-facing command-line client for the PGTuskMaster HA API. The normal workflow is to point it at the shared runtime config with `-c config.toml`, then let the CLI resolve the API URL, auth tokens, and API-client TLS settings from that config.
 
 ## Global Options
 
 | Option | Type | Default | Environment | Notes |
 | --- | --- | --- | --- | --- |
-| `--base-url` | string | `http://127.0.0.1:8080` | none | Parsed after trimming whitespace |
-| `--read-token` | string | unset | `PGTUSKMASTER_READ_TOKEN` | Used for read operations when present |
-| `--admin-token` | string | unset | `PGTUSKMASTER_ADMIN_TOKEN` | Required for admin operations |
+| `-c`, `--config` | path | unset | none | Shared runtime config path for config-backed operator context |
+| `--base-url` | string | unset | none | Explicit API URL override; takes precedence over config-derived target |
+| `--read-token` | string | unset | none | Explicit read token override; otherwise `pgtm` resolves config-backed auth |
+| `--admin-token` | string | unset | none | Explicit admin token override; otherwise `pgtm` resolves config-backed auth |
 | `--timeout-ms` | u64 | `5000` | none | HTTP client timeout in milliseconds |
 | `--output` | `json` or `text` | `json` | none | Output renderer |
 
-Whitespace-only token values are treated as absent. Read operations use `--read-token` first and fall back to `--admin-token` when the read token is missing.
+`pgtm` resolves operator context with this precedence:
+
+1. `--base-url`, `--read-token`, and `--admin-token` override everything else when provided.
+2. `[pgtm].api_url` overrides the API target derived from `api.listen_addr`.
+3. Auth tokens come from `api.security.auth` secret sources in the shared config.
+4. API-client TLS material comes from `[pgtm.api_client]`.
+
+Read operations use the read token first and fall back to the admin token when no read token is configured. Switchover commands require an admin token when API auth is enabled.
 
 ## Command Hierarchy
 
@@ -105,13 +113,17 @@ The `ha_decision` field is rendered in text as a compact variant string such as 
 | `3` | Transport or request-build error |
 | `4` | API response status did not match the expected success status |
 | `5` | Response decode or output serialization error |
+| `6` | Config resolution failure (`-c` content, derived API target, env-backed secret, or incompatible auth/TLS settings) |
 
 ## Examples
 
 ```bash
-pgtm status
-pgtm --base-url http://127.0.0.1:18081 --output text status
-pgtm --admin-token "$ADMIN_TOKEN" switchover request
-pgtm --admin-token "$ADMIN_TOKEN" switchover request --switchover-to node-b
-pgtm --admin-token "$ADMIN_TOKEN" switchover clear
+pgtm -c /etc/pgtuskmaster/config.toml status
+pgtm -c /etc/pgtuskmaster/config.toml --output text status
+pgtm -c /etc/pgtuskmaster/config.toml switchover request
+pgtm -c /etc/pgtuskmaster/config.toml switchover request --switchover-to node-b
+pgtm -c /etc/pgtuskmaster/config.toml switchover clear
+
+# Explicit override for troubleshooting
+pgtm -c /etc/pgtuskmaster/config.toml --base-url http://127.0.0.1:18081 status
 ```

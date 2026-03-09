@@ -7,7 +7,7 @@ This guide shows how to transfer primary leadership to another cluster member wi
 Verify cluster state is healthy:
 
 ```bash
-pgtm status
+pgtm -c /etc/pgtuskmaster/config.toml status
 ```
 
 Expected output shows `dcs_trust` as `full_quorum`. If trust is `fail_safe` or `not_trusted`, resolve DCS health before proceeding.
@@ -15,39 +15,39 @@ Expected output shows `dcs_trust` as `full_quorum`. If trust is `fail_safe` or `
 Identify the relevant member IDs:
 
 ```bash
-pgtm status
+pgtm -c /etc/pgtuskmaster/config.toml status
 ```
 
 The API response includes `self_member_id`, `leader`, `switchover_pending`, and `switchover_to`. Use those fields to confirm the current primary, whether a switchover request is already pending, and whether the pending request is generic or targeted.
 
 ## Submit the switchover request
 
-Run the request against a node API endpoint that can accept admin requests:
+Run the request from the shared runtime config that already names an operator-reachable API URL and auth settings:
 
 ```bash
-pgtm --base-url http://127.0.0.1:18081 switchover request
+pgtm -c /etc/pgtuskmaster/config.toml switchover request
 ```
 
 For a targeted switchover, add the optional member flag:
 
 ```bash
-pgtm --base-url http://127.0.0.1:18081 switchover request --switchover-to node-b
+pgtm -c /etc/pgtuskmaster/config.toml switchover request --switchover-to node-b
 ```
 
-The generic form records pending switchover intent and lets the runtime choose the successor automatically. The targeted form is accepted only when `node-b` is a known, eligible replica. If API role tokens are enabled in your deployment, add `--admin-token "$PGTUSKMASTER_ADMIN_TOKEN"` or set `PGTUSKMASTER_ADMIN_TOKEN` in the environment because switchover requests are admin operations. A successful request returns:
+The generic form records pending switchover intent and lets the runtime choose the successor automatically. The targeted form is accepted only when `node-b` is a known, eligible replica. When API role tokens are enabled, `pgtm` resolves the admin token from the shared config and any referenced secret sources. A successful request returns:
 
 ```text
 {"accepted": true}
 ```
 
-The shipped CLI sends the request to exactly the `--base-url` you provide. If the request fails against one node, target another node manually.
+`[pgtm].api_url` should point to a reachable node API. If you need to target another node temporarily, use `--base-url` as an explicit override for that one command.
 
 ## Monitor the transition
 
 Poll HA state while the switchover is in progress:
 
 ```bash
-watch -n 2 'pgtm --base-url http://127.0.0.1:18081 status | jq .'
+watch -n 2 'pgtm -c /etc/pgtuskmaster/config.toml status | jq .'
 ```
 
 Observe these source-backed state changes:
@@ -83,10 +83,10 @@ psql -h new-primary-host -p 5432 -U postgres -d postgres -c "SELECT pg_is_in_rec
 The successful primary step-down path clears the switchover marker automatically. The manual clear command is still available when you need to remove a pending switchover request:
 
 ```bash
-pgtm --base-url http://127.0.0.1:18081 switchover clear
+pgtm -c /etc/pgtuskmaster/config.toml switchover clear
 ```
 
-If API role tokens are enabled, the clear operation also requires the admin token path described above.
+If API role tokens are enabled, the clear operation also uses the admin-token path described above.
 
 A successful clear returns:
 
@@ -98,14 +98,14 @@ A successful clear returns:
 
 ### Request fails with a transport error
 
-The CLI does not retry across nodes automatically. Retry the same command with a different `--base-url` that points to another reachable node API.
+The CLI does not retry across nodes automatically. Retry the same command with a different `--base-url` override that points to another reachable node API.
 
 ### Transition stalls in `waiting_switchover_successor`
 
 Check the affected nodes with:
 
 ```bash
-pgtm --base-url http://127.0.0.1:18081 status | jq '.dcs_trust, .ha_phase'
+pgtm -c /etc/pgtuskmaster/config.toml status | jq '.dcs_trust, .ha_phase'
 ```
 
 The normal switchover path depends on `full_quorum` DCS trust. If trust has fallen to `fail_safe` or `not_trusted`, resolve cluster and DCS health first.

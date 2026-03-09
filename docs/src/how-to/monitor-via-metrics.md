@@ -53,13 +53,13 @@ Focus on these signals:
 The CLI wraps the same `GET /ha/state` API:
 
 ```bash
-pgtm --base-url http://127.0.0.1:8080 --output json status
+pgtm -c /etc/pgtuskmaster/config.toml --output json status
 ```
 
 Use text output when you want a compact shell-friendly view:
 
 ```bash
-pgtm --base-url http://127.0.0.1:8080 --output text status
+pgtm -c /etc/pgtuskmaster/config.toml --output text status
 ```
 
 ## Step 3: Collect rich state with `/debug/verbose`
