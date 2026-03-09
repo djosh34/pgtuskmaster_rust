@@ -1,6 +1,7 @@
 pub mod args;
 pub mod client;
 pub mod config;
+pub mod connect;
 pub mod error;
 pub mod output;
 pub mod status;
@@ -8,6 +9,7 @@ pub mod status;
 use args::{Cli, Command, SwitchoverCommand};
 use client::CliApiClient;
 use config::resolve_operator_context;
+use connect::{run_primary, run_replicas};
 use error::CliError;
 
 pub async fn run(cli: Cli) -> Result<String, CliError> {
@@ -25,6 +27,22 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
 
     match command {
         Command::Status => status::run_status(&context, status_options).await,
+        Command::Primary(connection_args) => {
+            if status_options.watch || status_options.verbose {
+                return Err(CliError::Config(
+                    "`--watch` and `--verbose` are only supported for `pgtm status`".to_string(),
+                ));
+            }
+            run_primary(&context, cli.connection_options(&connection_args)).await
+        }
+        Command::Replicas(connection_args) => {
+            if status_options.watch || status_options.verbose {
+                return Err(CliError::Config(
+                    "`--watch` and `--verbose` are only supported for `pgtm status`".to_string(),
+                ));
+            }
+            run_replicas(&context, cli.connection_options(&connection_args)).await
+        }
         Command::Switchover(switchover) => match switchover.command {
             SwitchoverCommand::Clear => {
                 if status_options.watch || status_options.verbose {
@@ -60,6 +78,7 @@ mod tests {
     fn exit_code_mapping_is_stable() {
         assert_eq!(CliError::Config("x".to_string()).exit_code(), 6.into());
         assert_eq!(CliError::Transport("x".to_string()).exit_code(), 3.into());
+        assert_eq!(CliError::Resolution("x".to_string()).exit_code(), 4.into());
         assert_eq!(
             CliError::ApiStatus {
                 status: 500,

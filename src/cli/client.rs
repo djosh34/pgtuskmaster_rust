@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
@@ -18,6 +18,9 @@ pub struct CliTlsConfig {
     pub ca_cert_pem: Option<Vec<u8>>,
     pub client_cert_pem: Option<Vec<u8>>,
     pub client_key_pem: Option<Vec<u8>>,
+    pub ca_cert_path: Option<PathBuf>,
+    pub client_cert_path: Option<PathBuf>,
+    pub client_key_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -110,13 +110,25 @@ Confirm that:
 - no warning lines remain
 - `API=ok` for the members you expect to be reachable
 
-If you also want a PostgreSQL-level confirmation, connect to the suspected new primary and run:
+If you want the concrete PostgreSQL target without scraping the status table, resolve it directly:
 
 ```bash
-psql -h new-primary-host -p 5432 -U postgres -d postgres -c "SELECT pg_is_in_recovery();"
+pgtm -c /etc/pgtuskmaster/config.toml primary
+```
+
+That output is designed to feed straight into `psql`:
+
+```bash
+psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)" -c "SELECT pg_is_in_recovery();"
 ```
 
 `f` means the server is acting as primary.
+
+To inspect the currently sampled read targets after the switchover settles:
+
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml replicas
+```
 
 ## Clear a pending switchover request
 

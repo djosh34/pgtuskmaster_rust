@@ -10,6 +10,10 @@ pgtm - operator CLI for the PGTuskMaster HA API
 
 `pgtm [OPTIONS] status [--json] [-v|--verbose] [--watch]`
 
+`pgtm [OPTIONS] primary [--json] [--tls]`
+
+`pgtm [OPTIONS] replicas [--json] [--tls]`
+
 `pgtm [OPTIONS] switchover request [--switchover-to <member_id>]`
 
 `pgtm [OPTIONS] switchover clear`
@@ -26,6 +30,8 @@ The default operator entry point is cluster status:
 - `--json` switches to the machine-readable cluster view
 - `-v` expands the table with deeper node detail
 - `--watch` repeats the same cluster sampling loop on an interval
+
+`pgtm` also exposes shell-oriented connection helpers that resolve the current primary or currently sampled replicas into libpq keyword/value DSNs. These helpers are the supported way to feed the cluster view into `psql`, scripts, or automation without scraping the status table.
 
 ## Global Options
 
@@ -53,6 +59,8 @@ Read operations use the read token first and fall back to the admin token when n
 
 ```text
 pgtm (= status)
+├── primary
+├── replicas
 └── switchover
     ├── clear
     └── request
@@ -137,6 +145,80 @@ Each `nodes[]` entry includes:
 
 `pginfo`, `readiness`, and `process` are populated only when `-v --json` is used and debug detail is available from the sampled node.
 
+### `primary`
+
+Resolves the current primary from the sampled cluster view and prints one libpq keyword/value DSN.
+
+- Sampling path: same cluster-wide peer discovery and sampling flow as `status`
+- Auth role: read, with fallback to admin
+- Default output contract: exactly one DSN line with no headers or commentary
+
+Example default output:
+
+```text
+host=node-a.db.example.com port=5432 user=postgres dbname=postgres
+```
+
+`pgtm primary` is intentionally strict. It fails closed when the CLI cannot form an authoritative write-target answer, including:
+
+- no sampled primary
+- multiple sampled primaries
+- incomplete peer sampling
+- leader or membership disagreement across sampled nodes
+- missing PostgreSQL host or port metadata
+
+### `primary --json`
+
+Emits a structured connection view instead of a single text line.
+
+The top-level JSON shape includes:
+
+- `cluster_name`
+- `scope`
+- `kind`
+- `tls`
+- `sampled_member_count`
+- `discovered_member_count`
+- `warnings`
+- `targets`
+
+Each `targets[]` entry includes:
+
+- `member_id`
+- `postgres_host`
+- `postgres_port`
+- `dsn`
+
+### `primary --tls`
+
+Expands the DSN with PostgreSQL client TLS fields.
+
+- always adds `sslmode=verify-full`
+- adds `sslrootcert`, `sslcert`, and `sslkey` only when the effective config resolves to path-backed client material
+- uses `[pgtm.postgres_client]` first and falls back to `[pgtm.api_client]` when the PostgreSQL client block is absent
+- fails instead of printing misleading partial TLS flags when the effective certificate or key came from inline or env-backed content that has no safe filesystem path to emit
+
+Example:
+
+```text
+host=node-a.db.example.com port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert=/etc/pgtm/postgres-ca.pem sslcert=/etc/pgtm/postgres.crt sslkey=/run/secrets/postgres.key
+```
+
+### `replicas`
+
+Resolves currently sampled replicas from the same cluster-wide sampling path and prints one DSN per line.
+
+Example default output:
+
+```text
+host=node-b.db.example.com port=5432 user=postgres dbname=postgres
+host=node-c.db.example.com port=5432 user=postgres dbname=postgres
+```
+
+`replicas` is less strict than `primary`: it does not require every discovered member to be reachable before returning results. It returns the currently sampled replica targets and omits unsampled or non-replica members. Contradictory sampled views, such as leader or membership disagreement, still fail the command.
+
+`replicas --json` and `replicas --tls` follow the same contracts as `primary --json` and `primary --tls`.
+
 ### `switchover clear`
 
 Clears the current switchover request.
@@ -168,7 +250,7 @@ Without `--json`, the response is rendered as `accepted=<bool>`.
 | `0` | Success |
 | `2` | Clap usage failure before command execution |
 | `3` | Transport or request-build error |
-| `4` | API response status did not match the expected success status |
+| `4` | API response status or connection-resolution failure (for example no authoritative primary or no sampled replicas) |
 | `5` | Response decode or output serialization error |
 | `6` | Config resolution failure (`-c` content, derived API target, env-backed secret, or incompatible auth/TLS settings) |
 
@@ -189,6 +271,15 @@ pgtm -c /etc/pgtuskmaster/config.toml status -v
 
 # Repeated observation
 pgtm -c /etc/pgtuskmaster/config.toml status --watch
+
+# Connect to the current primary without scraping table output
+psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)"
+
+# Inspect currently sampled replica connection targets
+pgtm -c /etc/pgtuskmaster/config.toml replicas
+
+# Export a TLS-expanded DSN contract
+pgtm -c /etc/pgtuskmaster/config.toml primary --tls
 
 # Switchover control
 pgtm -c /etc/pgtuskmaster/config.toml switchover request

@@ -135,6 +135,27 @@ For a suspected incident, look for:
 - `TRUST=fail_safe` or `TRUST=not_trusted`
 - members stuck in transition phases such as `candidate_leader`, `rewinding`, `bootstrapping`, `fencing`, or `waiting_switchover_successor`
 
+## Resolve connection targets without scraping status output
+
+Use the status table to understand cluster health, then use the connection helpers when you actually need a PostgreSQL target:
+
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml primary
+pgtm -c /etc/pgtuskmaster/config.toml replicas
+```
+
+That keeps operator scripts off the table renderer. For example, to connect to the current primary:
+
+```bash
+psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)"
+```
+
+If your PostgreSQL client needs path-backed TLS flags, use:
+
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml primary --tls
+```
+
 ## Troubleshoot connectivity
 
 If the CLI reports a `transport error`, verify:

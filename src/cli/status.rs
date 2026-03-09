@@ -85,15 +85,37 @@ pub struct ClusterStatusView {
 }
 
 #[derive(Clone, Debug)]
-struct SampledNodeState {
-    state: HaStateResponse,
-    verbose: Option<DebugVerboseResponse>,
+pub(crate) struct SampledNodeState {
+    pub(crate) state: HaStateResponse,
+    pub(crate) verbose: Option<DebugVerboseResponse>,
 }
 
 #[derive(Clone, Debug)]
-struct PeerObservation {
-    member_id: String,
-    sampled: Result<SampledNodeState, String>,
+pub(crate) struct PeerObservation {
+    pub(crate) member_id: String,
+    pub(crate) sampled: Result<SampledNodeState, String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SampledClusterSnapshot {
+    pub(crate) seed_state: HaStateResponse,
+    pub(crate) discovered_members: Vec<HaClusterMemberResponse>,
+    pub(crate) queried_via: QueryOrigin,
+    pub(crate) observations: BTreeMap<String, PeerObservation>,
+    pub(crate) warnings: Vec<ClusterWarning>,
+}
+
+impl SampledClusterSnapshot {
+    pub(crate) fn sampled_member_count(&self) -> usize {
+        self.observations
+            .values()
+            .filter(|value| value.sampled.is_ok())
+            .count()
+    }
+
+    pub(crate) fn discovered_member_count(&self) -> usize {
+        self.discovered_members.len()
+    }
 }
 
 pub(crate) async fn run_status(
@@ -112,30 +134,34 @@ pub(crate) async fn build_cluster_status_view(
     context: &OperatorContext,
     options: StatusOptions,
 ) -> Result<ClusterStatusView, CliError> {
+    let snapshot = build_sampled_cluster_snapshot(context, options.verbose).await?;
+    Ok(assemble_cluster_view(&snapshot, options.verbose))
+}
+
+pub(crate) async fn build_sampled_cluster_snapshot(
+    context: &OperatorContext,
+    verbose: bool,
+) -> Result<SampledClusterSnapshot, CliError> {
     let seed_client = CliApiClient::from_config(context.api_client.clone())?;
     let seed_state = seed_client.get_ha_state().await?;
-    let seed_verbose = fetch_optional_debug(&seed_client, options.verbose).await;
+    let seed_verbose = fetch_optional_debug(&seed_client, verbose).await;
     let discovered_members = seed_state.members.clone();
     let queried_via = QueryOrigin {
         member_id: seed_state.self_member_id.clone(),
         api_url: seed_client.base_url().to_string(),
     };
 
-    let peer_observations = sample_peer_states(
-        &context.api_client,
-        &seed_state,
-        seed_verbose,
-        options.verbose,
-    )
-    .await;
+    let peer_observations =
+        sample_peer_states(&context.api_client, &seed_state, seed_verbose, verbose).await;
+    let warnings = collect_warnings(&seed_state, &discovered_members, &peer_observations);
 
-    Ok(assemble_cluster_view(
+    Ok(SampledClusterSnapshot {
         seed_state,
         discovered_members,
-        options.verbose,
         queried_via,
-        peer_observations,
-    ))
+        observations: peer_observations,
+        warnings,
+    })
 }
 
 async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<String, CliError> {
@@ -274,48 +300,39 @@ async fn fetch_optional_debug(
     }
 }
 
-fn assemble_cluster_view(
-    seed_state: HaStateResponse,
-    discovered_members: Vec<HaClusterMemberResponse>,
-    verbose: bool,
-    queried_via: QueryOrigin,
-    observations: BTreeMap<String, PeerObservation>,
-) -> ClusterStatusView {
-    let warnings = collect_warnings(&seed_state, &discovered_members, &observations);
-    let sampled_member_count = observations
-        .values()
-        .filter(|value| value.sampled.is_ok())
-        .count();
-    let mut nodes = discovered_members
+fn assemble_cluster_view(snapshot: &SampledClusterSnapshot, verbose: bool) -> ClusterStatusView {
+    let mut nodes = snapshot
+        .discovered_members
         .iter()
         .map(|member| {
             build_node_row(
                 member,
-                queried_via.member_id.as_str(),
-                observations.get(&member.member_id),
+                snapshot.queried_via.member_id.as_str(),
+                snapshot.observations.get(&member.member_id),
             )
         })
         .collect::<Vec<_>>();
     nodes.sort_by(node_sort_key);
 
     ClusterStatusView {
-        cluster_name: seed_state.cluster_name,
-        scope: seed_state.scope,
+        cluster_name: snapshot.seed_state.cluster_name.clone(),
+        scope: snapshot.seed_state.scope.clone(),
         verbose,
-        queried_via,
-        sampled_member_count,
-        discovered_member_count: discovered_members.len(),
-        health: if warnings.is_empty() {
+        queried_via: snapshot.queried_via.clone(),
+        sampled_member_count: snapshot.sampled_member_count(),
+        discovered_member_count: snapshot.discovered_member_count(),
+        health: if snapshot.warnings.is_empty() {
             ClusterHealth::Healthy
         } else {
             ClusterHealth::Degraded
         },
-        warnings,
-        switchover: seed_state
+        warnings: snapshot.warnings.clone(),
+        switchover: snapshot
+            .seed_state
             .switchover_pending
             .then_some(ClusterSwitchoverView {
                 pending: true,
-                target_member_id: seed_state.switchover_to,
+                target_member_id: snapshot.seed_state.switchover_to.clone(),
             }),
         nodes,
     }
@@ -525,7 +542,7 @@ fn role_rank(role: &str) -> u8 {
     }
 }
 
-fn local_role_from_state(state: &HaStateResponse) -> &'static str {
+pub(crate) fn local_role_from_state(state: &HaStateResponse) -> &'static str {
     match state.ha_phase {
         crate::api::HaPhaseResponse::Primary => "primary",
         crate::api::HaPhaseResponse::Replica => "replica",
@@ -583,7 +600,7 @@ mod tests {
             DcsTrustResponse, HaClusterMemberResponse, HaDecisionResponse, HaPhaseResponse,
             HaStateResponse, MemberRoleResponse, ReadinessResponse, SqlStatusResponse,
         },
-        cli::status::{assemble_cluster_view, ApiStatus, QueryOrigin},
+        cli::status::{assemble_cluster_view, ApiStatus, QueryOrigin, SampledClusterSnapshot},
     };
 
     fn sample_member(member_id: &str, api_url: Option<&str>) -> HaClusterMemberResponse {
@@ -627,6 +644,24 @@ mod tests {
         }
     }
 
+    fn sample_snapshot(
+        seed_state: HaStateResponse,
+        discovered_members: Vec<HaClusterMemberResponse>,
+        observations: BTreeMap<String, super::PeerObservation>,
+    ) -> SampledClusterSnapshot {
+        let warnings = super::collect_warnings(&seed_state, &discovered_members, &observations);
+        SampledClusterSnapshot {
+            seed_state,
+            discovered_members,
+            queried_via: QueryOrigin {
+                member_id: "node-a".to_string(),
+                api_url: "http://node-a:8080".to_string(),
+            },
+            observations,
+            warnings,
+        }
+    }
+
     #[test]
     fn assemble_cluster_view_marks_missing_api_targets_as_degraded() {
         let members = vec![
@@ -660,16 +695,8 @@ mod tests {
             ),
         ]);
 
-        let view = assemble_cluster_view(
-            seed_state,
-            members,
-            false,
-            QueryOrigin {
-                member_id: "node-a".to_string(),
-                api_url: "http://node-a:8080".to_string(),
-            },
-            observations,
-        );
+        let snapshot = sample_snapshot(seed_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, false);
 
         assert_eq!(view.health, super::ClusterHealth::Degraded);
         assert!(view
@@ -725,16 +752,8 @@ mod tests {
             ),
         ]);
 
-        let view = assemble_cluster_view(
-            seed_state,
-            members,
-            false,
-            QueryOrigin {
-                member_id: "node-a".to_string(),
-                api_url: "http://node-a:8080".to_string(),
-            },
-            observations,
-        );
+        let snapshot = sample_snapshot(seed_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, false);
 
         assert_eq!(view.health, super::ClusterHealth::Degraded);
         assert!(view
@@ -768,16 +787,8 @@ mod tests {
             },
         )]);
 
-        let view = assemble_cluster_view(
-            seed_state,
-            members,
-            false,
-            QueryOrigin {
-                member_id: "node-a".to_string(),
-                api_url: "http://node-a:8080".to_string(),
-            },
-            observations,
-        );
+        let snapshot = sample_snapshot(seed_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, false);
 
         assert_eq!(view.health, super::ClusterHealth::Degraded);
         assert!(view
@@ -807,16 +818,8 @@ mod tests {
             },
         )]);
 
-        let view = assemble_cluster_view(
-            seed_state,
-            members,
-            true,
-            QueryOrigin {
-                member_id: "node-a".to_string(),
-                api_url: "http://node-a:8080".to_string(),
-            },
-            observations,
-        );
+        let snapshot = sample_snapshot(seed_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, true);
 
         assert!(view.verbose);
         assert_eq!(view.nodes[0].pginfo, None);

@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::{net::IpAddr, path::PathBuf};
 
 use reqwest::Url;
 
@@ -10,7 +10,7 @@ use crate::{
     },
     config::{
         load_runtime_config, resolve_inline_or_path_bytes, resolve_secret_string, ApiAuthConfig,
-        ApiTlsMode, RuntimeConfig,
+        ApiTlsMode, InlineOrPath, RuntimeConfig, SecretSource,
     },
 };
 
@@ -187,6 +187,15 @@ fn resolve_api_client_tls(
             .transpose()
             .map(|result| result.map(String::into_bytes))
             .map_err(|err| CliError::Config(err.to_string()))?,
+        ca_cert_path: api_client
+            .ca_cert
+            .as_ref()
+            .and_then(inline_or_path_to_path_buf),
+        client_cert_path: api_client
+            .client_cert
+            .as_ref()
+            .and_then(inline_or_path_to_path_buf),
+        client_key_path: api_client.client_key.as_ref().and_then(secret_to_path_buf),
     })
 }
 
@@ -241,7 +250,24 @@ fn resolve_postgres_client_tls(
             .transpose()
             .map(|result| result.map(String::into_bytes))
             .map_err(|err| CliError::Config(err.to_string()))?,
+        ca_cert_path: ca_cert.and_then(inline_or_path_to_path_buf),
+        client_cert_path: client_cert.and_then(inline_or_path_to_path_buf),
+        client_key_path: client_key.and_then(secret_to_path_buf),
     })
+}
+
+fn inline_or_path_to_path_buf(source: &InlineOrPath) -> Option<PathBuf> {
+    match source {
+        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => Some(path.clone()),
+        InlineOrPath::Inline { .. } => None,
+    }
+}
+
+fn secret_to_path_buf(source: &SecretSource) -> Option<PathBuf> {
+    match source {
+        SecretSource::Path(path) | SecretSource::PathConfig { path } => Some(path.clone()),
+        SecretSource::Inline { .. } | SecretSource::Env { .. } => None,
+    }
 }
 
 fn resolve_optional_secret(
@@ -424,6 +450,200 @@ ca_cert = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE--
         }
         if ctx.api_client.tls.ca_cert_pem.is_none() {
             return Err("ca cert did not resolve".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_context_preserves_postgres_tls_paths() -> Result<(), String> {
+        let ca_path = std::env::temp_dir().join(format!(
+            "pgtm-postgres-ca-{}-{}.pem",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| format!("system time error: {err}"))?
+                .as_nanos()
+        ));
+        let cert_path = std::env::temp_dir().join(format!(
+            "pgtm-postgres-cert-{}-{}.pem",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| format!("system time error: {err}"))?
+                .as_nanos()
+        ));
+        let key_path = std::env::temp_dir().join(format!(
+            "pgtm-postgres-key-{}-{}.pem",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| format!("system time error: {err}"))?
+                .as_nanos()
+        ));
+        std::fs::write(&ca_path, "ca").map_err(|err| format!("write ca failed: {err}"))?;
+        std::fs::write(&cert_path, "cert").map_err(|err| format!("write cert failed: {err}"))?;
+        std::fs::write(&key_path, "key").map_err(|err| format!("write key failed: {err}"))?;
+
+        let path = write_temp_config(
+            format!(
+                r##"
+[cluster]
+name = "cluster-a"
+member_id = "node-a"
+
+[postgres]
+data_dir = "/tmp/pgdata"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtm/socket"
+log_file = "/tmp/pgtm/postgres.log"
+local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "prefer" }}
+rewind_conn_identity = {{ user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }}
+tls = {{ mode = "disabled" }}
+roles = {{ superuser = {{ username = "postgres", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, replicator = {{ username = "replicator", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, rewinder = {{ username = "rewinder", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }} }}
+pg_hba = {{ source = {{ content = "local all all trust" }} }}
+pg_ident = {{ source = {{ content = "# empty" }} }}
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 1000
+bootstrap_timeout_ms = 1000
+fencing_timeout_ms = 1000
+binaries = {{ postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }}
+
+[api]
+listen_addr = "127.0.0.1:8080"
+security = {{ tls = {{ mode = "disabled" }}, auth = {{ type = "disabled" }} }}
+
+[pgtm]
+api_url = "http://127.0.0.1:8080"
+
+[pgtm.postgres_client]
+ca_cert = {{ path = "{}" }}
+client_cert = {{ path = "{}" }}
+client_key = {{ path = "{}" }}
+"##,
+                ca_path.display(),
+                cert_path.display(),
+                key_path.display()
+            )
+            .as_str(),
+        )?;
+        let cli = Cli {
+            config: Some(path.clone()),
+            base_url: None,
+            read_token: None,
+            admin_token: None,
+            timeout_ms: 5_000,
+            json: false,
+            verbose: false,
+            watch: false,
+            command: Some(Command::Status),
+        };
+        let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(ca_path.clone());
+        let _ = std::fs::remove_file(cert_path.clone());
+        let _ = std::fs::remove_file(key_path.clone());
+
+        if ctx.postgres_client_tls.ca_cert_path != Some(ca_path) {
+            return Err("postgres client CA path did not resolve".to_string());
+        }
+        if ctx.postgres_client_tls.client_cert_path != Some(cert_path) {
+            return Err("postgres client cert path did not resolve".to_string());
+        }
+        if ctx.postgres_client_tls.client_key_path != Some(key_path) {
+            return Err("postgres client key path did not resolve".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_context_falls_back_to_api_client_tls_paths() -> Result<(), String> {
+        let ca_path = std::env::temp_dir().join(format!(
+            "pgtm-api-ca-{}-{}.pem",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| format!("system time error: {err}"))?
+                .as_nanos()
+        ));
+        std::fs::write(&ca_path, "ca").map_err(|err| format!("write ca failed: {err}"))?;
+
+        let path = write_temp_config(
+            format!(
+                r##"
+[cluster]
+name = "cluster-a"
+member_id = "node-a"
+
+[postgres]
+data_dir = "/tmp/pgdata"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtm/socket"
+log_file = "/tmp/pgtm/postgres.log"
+local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "prefer" }}
+rewind_conn_identity = {{ user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }}
+tls = {{ mode = "disabled" }}
+roles = {{ superuser = {{ username = "postgres", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, replicator = {{ username = "replicator", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, rewinder = {{ username = "rewinder", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }} }}
+pg_hba = {{ source = {{ content = "local all all trust" }} }}
+pg_ident = {{ source = {{ content = "# empty" }} }}
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 1000
+bootstrap_timeout_ms = 1000
+fencing_timeout_ms = 1000
+binaries = {{ postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }}
+
+[api]
+listen_addr = "127.0.0.1:8443"
+security = {{ tls = {{ mode = "required", identity = {{ cert_chain = {{ content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }}, private_key = {{ content = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n" }} }} }}, auth = {{ type = "disabled" }} }}
+
+[pgtm]
+api_url = "https://127.0.0.1:8443"
+
+[pgtm.api_client]
+ca_cert = {{ path = "{}" }}
+"##,
+                ca_path.display()
+            )
+            .as_str(),
+        )?;
+        let cli = Cli {
+            config: Some(path.clone()),
+            base_url: None,
+            read_token: None,
+            admin_token: None,
+            timeout_ms: 5_000,
+            json: false,
+            verbose: false,
+            watch: false,
+            command: Some(Command::Status),
+        };
+        let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(ca_path.clone());
+
+        if ctx.postgres_client_tls.ca_cert_path != Some(ca_path) {
+            return Err("postgres TLS fallback to api_client did not preserve path".to_string());
         }
         Ok(())
     }

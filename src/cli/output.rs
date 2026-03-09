@@ -1,5 +1,6 @@
 use crate::cli::{
     client::AcceptedResponse,
+    connect::ConnectionView,
     error::CliError,
     status::{ApiStatus, ClusterHealth, ClusterNodeView, ClusterStatusView},
 };
@@ -19,6 +20,15 @@ pub fn render_status_view(view: &ClusterStatusView, json: bool) -> Result<String
             .map_err(|err| CliError::Output(format!("json encode failed: {err}")))
     } else {
         Ok(render_status_text(view))
+    }
+}
+
+pub fn render_connection_view(view: &ConnectionView, json: bool) -> Result<String, CliError> {
+    if json {
+        serde_json::to_string_pretty(view)
+            .map_err(|err| CliError::Output(format!("json encode failed: {err}")))
+    } else {
+        render_connection_text(view)
     }
 }
 
@@ -83,6 +93,22 @@ fn render_status_text(view: &ClusterStatusView) -> String {
     lines.join("\n")
 }
 
+fn render_connection_text(view: &ConnectionView) -> Result<String, CliError> {
+    match view.targets.as_slice() {
+        [] => Err(CliError::Output(
+            "connection output requires at least one target".to_string(),
+        )),
+        [target] if view.kind == crate::cli::connect::ConnectionCommandKind::Primary => {
+            Ok(target.dsn.clone())
+        }
+        targets => Ok(targets
+            .iter()
+            .map(|target| target.dsn.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")),
+    }
+}
+
 fn render_row(node: &ClusterNodeView, verbose: bool) -> Vec<String> {
     let mut row = vec![
         node.member_id.clone(),
@@ -138,7 +164,8 @@ fn api_status_label(value: &ApiStatus) -> &'static str {
 mod tests {
     use crate::cli::{
         client::AcceptedResponse,
-        output::{render_accepted_output, render_status_view},
+        connect::{ConnectionCommandKind, ConnectionTarget, ConnectionView},
+        output::{render_accepted_output, render_connection_view, render_status_view},
         status::{ApiStatus, ClusterHealth, ClusterNodeView, ClusterStatusView, QueryOrigin},
     };
 
@@ -222,5 +249,68 @@ mod tests {
         assert!(output.is_ok(), "json render should succeed");
         let rendered = output.unwrap_or_default();
         assert!(rendered.contains("\"accepted\": true"));
+    }
+
+    #[test]
+    fn text_primary_output_renders_single_dsn_line() {
+        let view = ConnectionView {
+            cluster_name: "cluster-a".to_string(),
+            scope: "scope-a".to_string(),
+            kind: ConnectionCommandKind::Primary,
+            tls: false,
+            sampled_member_count: 1,
+            discovered_member_count: 1,
+            warnings: Vec::new(),
+            targets: vec![ConnectionTarget {
+                member_id: "node-a".to_string(),
+                postgres_host: "node-a.db.example.com".to_string(),
+                postgres_port: 5432,
+                dsn: "host=node-a.db.example.com port=5432 user=postgres dbname=postgres"
+                    .to_string(),
+            }],
+        };
+
+        let rendered = render_connection_view(&view, false);
+        assert!(rendered.is_ok(), "text render should succeed");
+        assert_eq!(
+            rendered.unwrap_or_default(),
+            "host=node-a.db.example.com port=5432 user=postgres dbname=postgres"
+        );
+    }
+
+    #[test]
+    fn text_replicas_output_renders_multiple_lines() {
+        let view = ConnectionView {
+            cluster_name: "cluster-a".to_string(),
+            scope: "scope-a".to_string(),
+            kind: ConnectionCommandKind::Replicas,
+            tls: false,
+            sampled_member_count: 2,
+            discovered_member_count: 3,
+            warnings: Vec::new(),
+            targets: vec![
+                ConnectionTarget {
+                    member_id: "node-b".to_string(),
+                    postgres_host: "node-b.db.example.com".to_string(),
+                    postgres_port: 5432,
+                    dsn: "host=node-b.db.example.com port=5432 user=postgres dbname=postgres"
+                        .to_string(),
+                },
+                ConnectionTarget {
+                    member_id: "node-c".to_string(),
+                    postgres_host: "node-c.db.example.com".to_string(),
+                    postgres_port: 5432,
+                    dsn: "host=node-c.db.example.com port=5432 user=postgres dbname=postgres"
+                        .to_string(),
+                },
+            ],
+        };
+
+        let rendered = render_connection_view(&view, false);
+        assert!(rendered.is_ok(), "text render should succeed");
+        assert_eq!(
+            rendered.unwrap_or_default(),
+            "host=node-b.db.example.com port=5432 user=postgres dbname=postgres\nhost=node-c.db.example.com port=5432 user=postgres dbname=postgres"
+        );
     }
 }

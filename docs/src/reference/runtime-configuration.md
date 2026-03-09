@@ -371,7 +371,7 @@ client_key = { path = "/run/secrets/postgres.key" }
 |-------|------|-------------|
 | `api_url` | absolute URL (optional) | must use `http` or `https`; use this when `api.listen_addr` is only a bind address such as `0.0.0.0:8080` |
 | `api_client` | client TLS block (optional) | only valid for HTTPS API connections |
-| `postgres_client` | client TLS block (optional) | optional override for future PostgreSQL DSN helpers |
+| `postgres_client` | client TLS block (optional) | optional override for `pgtm primary --tls` and `pgtm replicas --tls` |
 
 ### API target derivation
 
@@ -395,7 +395,15 @@ Both `[pgtm.api_client]` and `[pgtm.postgres_client]` accept the same fields:
 
 `[pgtm.api_client]` is used only for HTTPS API requests. If `api.security.tls.mode = "disabled"`, do not configure API client TLS material. If API client certificates are required by the server, `pgtm.api_client.client_cert` and `pgtm.api_client.client_key` must both be present.
 
-`[pgtm.postgres_client]` is optional. When it is absent, later PostgreSQL DSN helpers fall back to `[pgtm.api_client]`.
+`[pgtm.postgres_client]` is optional. When it is absent, `pgtm primary --tls` and `pgtm replicas --tls` fall back to `[pgtm.api_client]`.
+
+The connection-helper commands only print DSN fields that can be represented as filesystem paths:
+
+- path-backed `ca_cert` becomes `sslrootcert=...`
+- path-backed `client_cert` becomes `sslcert=...`
+- path-backed `client_key` becomes `sslkey=...`
+
+If the effective PostgreSQL client material comes from inline content or an env-backed private key, the TLS-expanded DSN commands fail rather than printing a misleading partial DSN. `pgtm` does not materialize inline secrets to temp files for operator convenience.
 
 ## `debug`
 

@@ -68,6 +68,32 @@ fn sample_status_json(api_url: &str) -> String {
     )
 }
 
+fn sample_member_json(
+    member_id: &str,
+    postgres_host: &str,
+    postgres_port: u16,
+    api_url: &str,
+    role: &str,
+) -> String {
+    format!(
+        r#"{{"member_id":"{member_id}","postgres_host":"{postgres_host}","postgres_port":{postgres_port},"api_url":"{api_url}","role":"{role}","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":9,"updated_at_ms":1,"pg_version":1}}"#
+    )
+}
+
+fn sample_cluster_state_json(
+    self_member_id: &str,
+    leader: &str,
+    phase: &str,
+    decision: &str,
+    members: &[String],
+) -> String {
+    format!(
+        r#"{{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"{self_member_id}","leader":"{leader}","switchover_pending":false,"switchover_to":null,"member_count":{member_count},"members":[{members}],"dcs_trust":"full_quorum","ha_phase":"{phase}","ha_tick":1,"ha_decision":{decision},"snapshot_sequence":10}}"#,
+        member_count = members.len(),
+        members = members.join(",")
+    )
+}
+
 fn http_json_ok(body: &str) -> String {
     format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
@@ -172,6 +198,10 @@ fn help_exits_success() -> Result<(), String> {
     assert!(
         stdout.contains("status"),
         "help output should include status command"
+    );
+    assert!(
+        stdout.contains("primary") && stdout.contains("replicas"),
+        "help output should include connection helper commands"
     );
     assert!(
         stdout.contains("--config") && stdout.contains("-c"),
@@ -287,6 +317,222 @@ fn status_json_output_contains_queried_via_identity() -> Result<(), String> {
     assert!(stdout.contains("\"queried_via\""));
     assert!(stdout.contains("\"member_id\": \"node-a\""));
     assert!(stdout.contains("\"health\": \"healthy\""));
+    Ok(())
+}
+
+#[test]
+fn primary_command_renders_single_dsn_line() -> Result<(), String> {
+    let bin = cli_bin_path()?;
+    let seed_state = sample_cluster_state_json(
+        "node-a",
+        "node-a",
+        "primary",
+        r#"{"kind":"become_primary","promote":true}"#,
+        &[sample_member_json(
+            "node-a",
+            "node-a.db.example.com",
+            5432,
+            "http://127.0.0.1:8080",
+            "primary",
+        )],
+    );
+    let (addr, rx) = spawn_single_request_server(http_json_ok(seed_state.as_str()).as_str())?;
+
+    let output = Command::new(&bin)
+        .args(["--base-url", &format!("http://{addr}"), "primary"])
+        .output()
+        .map_err(|err| format!("failed to run primary command: {err}"))?;
+
+    assert!(
+        output.status.success(),
+        "primary command should succeed, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
+    assert_eq!(
+        stdout.trim_end(),
+        "host=node-a.db.example.com port=5432 user=postgres dbname=postgres"
+    );
+    let request = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|err| format!("failed to receive primary request: {err}"))?;
+    assert!(request.starts_with("GET /ha/state HTTP/1.1"));
+    Ok(())
+}
+
+#[test]
+fn primary_command_tls_json_uses_path_backed_fields() -> Result<(), String> {
+    let bin = cli_bin_path()?;
+    let (addr, _rx) = spawn_single_request_server(
+        http_json_ok(sample_status_json("http://127.0.0.1:8080").as_str()).as_str(),
+    )?;
+    let ca_path = std::env::temp_dir().join(format!(
+        "pgtm-cli-ca-{}-{}.pem",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|err| format!("system time error: {err}"))?
+            .as_nanos()
+    ));
+    let cert_path = std::env::temp_dir().join(format!(
+        "pgtm-cli-cert-{}-{}.pem",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|err| format!("system time error: {err}"))?
+            .as_nanos()
+    ));
+    let key_path = std::env::temp_dir().join(format!(
+        "pgtm-cli-key-{}-{}.pem",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|err| format!("system time error: {err}"))?
+            .as_nanos()
+    ));
+    std::fs::write(&ca_path, "ca").map_err(|err| format!("write ca file failed: {err}"))?;
+    std::fs::write(&cert_path, "cert").map_err(|err| format!("write cert file failed: {err}"))?;
+    std::fs::write(&key_path, "key").map_err(|err| format!("write key file failed: {err}"))?;
+
+    let path = write_temp_config(
+        "pgtm-primary-tls-json",
+        pgtm_config_toml(
+            &addr.to_string(),
+            r#"{ tls = { mode = "disabled" }, auth = { type = "disabled" } }"#,
+            &format!(
+                "[pgtm]\napi_url = \"http://{addr}\"\n\n[pgtm.postgres_client]\nca_cert = {{ path = \"{}\" }}\nclient_cert = {{ path = \"{}\" }}\nclient_key = {{ path = \"{}\" }}\n",
+                ca_path.display(),
+                cert_path.display(),
+                key_path.display()
+            ),
+        )
+        .as_str(),
+    )?;
+
+    let output = Command::new(&bin)
+        .args([
+            "-c",
+            path.to_string_lossy().as_ref(),
+            "--json",
+            "primary",
+            "--tls",
+        ])
+        .output()
+        .map_err(|err| format!("failed to run primary --tls --json: {err}"))?;
+
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(ca_path);
+    let _ = std::fs::remove_file(cert_path);
+    let _ = std::fs::remove_file(key_path);
+
+    assert!(
+        output.status.success(),
+        "primary --tls --json should succeed, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
+    assert!(stdout.contains("\"kind\": \"primary\""));
+    assert!(stdout.contains("\"tls\": true"));
+    assert!(stdout.contains("sslmode=verify-full"));
+    assert!(stdout.contains("sslrootcert="));
+    assert!(stdout.contains("sslcert="));
+    assert!(stdout.contains("sslkey="));
+    Ok(())
+}
+
+#[test]
+fn replicas_command_renders_one_dsn_per_line() -> Result<(), String> {
+    let bin = cli_bin_path()?;
+    let replica_state = sample_cluster_state_json(
+        "node-b",
+        "node-a",
+        "replica",
+        r#"{"kind":"follow_leader","leader_member_id":"node-a"}"#,
+        &[
+            sample_member_json(
+                "node-a",
+                "node-a.db.example.com",
+                5432,
+                "http://seed.invalid",
+                "primary",
+            ),
+            sample_member_json(
+                "node-b",
+                "node-b.db.example.com",
+                5432,
+                "http://replica.invalid",
+                "replica",
+            ),
+        ],
+    );
+    let (replica_addr, replica_rx) =
+        spawn_single_request_server(http_json_ok(replica_state.as_str()).as_str())?;
+    let seed_state = sample_cluster_state_json(
+        "node-a",
+        "node-a",
+        "primary",
+        r#"{"kind":"become_primary","promote":true}"#,
+        &[
+            sample_member_json(
+                "node-a",
+                "node-a.db.example.com",
+                5432,
+                &format!("http://{addr}", addr = "127.0.0.1:1"),
+                "primary",
+            ),
+            sample_member_json(
+                "node-b",
+                "node-b.db.example.com",
+                5432,
+                &format!("http://{replica_addr}"),
+                "replica",
+            ),
+        ],
+    );
+    let (seed_addr, seed_rx) =
+        spawn_single_request_server(http_json_ok(seed_state.as_str()).as_str())?;
+
+    let output = Command::new(&bin)
+        .args(["--base-url", &format!("http://{seed_addr}"), "replicas"])
+        .output()
+        .map_err(|err| format!("failed to run replicas command: {err}"))?;
+
+    assert!(
+        output.status.success(),
+        "replicas command should succeed, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
+    assert_eq!(
+        stdout.trim_end(),
+        "host=node-b.db.example.com port=5432 user=postgres dbname=postgres"
+    );
+    let seed_request = seed_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|err| format!("failed to receive seed request: {err}"))?;
+    assert!(seed_request.starts_with("GET /ha/state HTTP/1.1"));
+    let replica_request = replica_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|err| format!("failed to receive replica request: {err}"))?;
+    assert!(replica_request.starts_with("GET /ha/state HTTP/1.1"));
+    Ok(())
+}
+
+#[test]
+fn primary_command_rejects_watch_flag() -> Result<(), String> {
+    let bin = cli_bin_path()?;
+    let output = Command::new(&bin)
+        .args(["--base-url", "http://127.0.0.1:9", "--watch", "primary"])
+        .output()
+        .map_err(|err| format!("failed to run invalid primary command: {err}"))?;
+
+    assert_eq!(output.status.code(), Some(6));
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
+    assert!(stderr.contains("only supported for `pgtm status`"));
     Ok(())
 }
 

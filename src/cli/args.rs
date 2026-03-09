@@ -29,7 +29,15 @@ pub struct Cli {
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     Status,
+    Primary(ConnectionArgs),
+    Replicas(ConnectionArgs),
     Switchover(SwitchoverArgs),
+}
+
+#[derive(Clone, Debug, Args, PartialEq, Eq)]
+pub struct ConnectionArgs {
+    #[arg(long)]
+    pub tls: bool,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -57,6 +65,12 @@ pub struct StatusOptions {
     pub watch: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ConnectionOptions {
+    pub json: bool,
+    pub tls: bool,
+}
+
 impl Cli {
     pub fn status_options(&self) -> StatusOptions {
         StatusOptions {
@@ -65,13 +79,22 @@ impl Cli {
             watch: self.watch,
         }
     }
+
+    pub fn connection_options(&self, args: &ConnectionArgs) -> ConnectionOptions {
+        ConnectionOptions {
+            json: self.json,
+            tls: args.tls,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use crate::cli::args::{Cli, Command, SwitchoverCommand, SwitchoverRequestArgs};
+    use crate::cli::args::{
+        Cli, Command, ConnectionArgs, SwitchoverCommand, SwitchoverRequestArgs,
+    };
 
     #[test]
     fn parse_bare_command_defaults_to_status_shape() -> Result<(), String> {
@@ -194,5 +217,50 @@ mod tests {
         assert_eq!(cli.read_token, None);
         assert_eq!(cli.admin_token, None);
         Ok(())
+    }
+
+    #[test]
+    fn parse_primary_command() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "primary"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        match cli.command {
+            Some(Command::Primary(ConnectionArgs { tls: false })) => Ok(()),
+            _ => Err("expected primary command".to_string()),
+        }
+    }
+
+    #[test]
+    fn parse_primary_tls_and_json_command() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "--json", "primary", "--tls"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        assert!(cli.json);
+        match cli.command {
+            Some(Command::Primary(ConnectionArgs { tls: true })) => Ok(()),
+            _ => Err("expected tls primary command".to_string()),
+        }
+    }
+
+    #[test]
+    fn parse_replicas_command() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "replicas"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        match cli.command {
+            Some(Command::Replicas(ConnectionArgs { tls: false })) => Ok(()),
+            _ => Err("expected replicas command".to_string()),
+        }
+    }
+
+    #[test]
+    fn parse_replicas_tls_command() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "replicas", "--tls"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        match cli.command {
+            Some(Command::Replicas(ConnectionArgs { tls: true })) => Ok(()),
+            _ => Err("expected tls replicas command".to_string()),
+        }
     }
 }

@@ -14,6 +14,8 @@ pub enum CliError {
     Decode(String),
     #[error("request build failed: {0}")]
     RequestBuild(String),
+    #[error("resolution error: {0}")]
+    Resolution(String),
     #[error("output serialization failed: {0}")]
     Output(String),
 }
@@ -23,7 +25,7 @@ impl CliError {
         match self {
             Self::Config(_) => ExitCode::from(6),
             Self::Transport(_) | Self::RequestBuild(_) => ExitCode::from(3),
-            Self::ApiStatus { .. } => ExitCode::from(4),
+            Self::ApiStatus { .. } | Self::Resolution(_) => ExitCode::from(4),
             Self::Decode(_) | Self::Output(_) => ExitCode::from(5),
         }
     }

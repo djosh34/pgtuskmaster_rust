@@ -1349,6 +1349,80 @@ impl ClusterFixture {
         Ok((node_id, client))
     }
 
+    async fn run_observe_cli_command_via_node(
+        &mut self,
+        node_id: &str,
+        command_args: &[&str],
+        json: bool,
+    ) -> Result<String, WorkerError> {
+        let node_index = self.node_index_by_id(node_id).ok_or_else(|| {
+            WorkerError::Message(format!(
+                "unknown node id for CLI observe command: {node_id}"
+            ))
+        })?;
+        let timeout_ms = e2e_http_timeout_ms()?;
+        let config_path = write_pgtm_cli_config(&self.nodes[node_index].api_observe_addr)?;
+        let command_label = command_args.join(" ");
+        self.record(format!(
+            "cli observe start: node={node_id} command={command_label}"
+        ));
+
+        let mut argv = vec![
+            "pgtm".to_string(),
+            "-c".to_string(),
+            config_path.display().to_string(),
+            "--timeout-ms".to_string(),
+            timeout_ms.to_string(),
+        ];
+        if json {
+            argv.push("--json".to_string());
+        }
+        argv.extend(command_args.iter().map(|arg| (*arg).to_string()));
+
+        let cli = Cli::try_parse_from(argv)
+            .map_err(|err| WorkerError::Message(format!("parse observe CLI args failed: {err}")))?;
+        let result = cli::run(cli).await;
+        let _ = fs::remove_file(&config_path);
+        match result {
+            Ok(output) => {
+                self.record(format!(
+                    "cli observe success: node={node_id} command={command_label}"
+                ));
+                Ok(output)
+            }
+            Err(err) => Err(WorkerError::Message(format!(
+                "run observe CLI command failed via {node_id}: {err}"
+            ))),
+        }
+    }
+
+    async fn run_observe_cli_command_via_node_with_retry(
+        &mut self,
+        node_id: &str,
+        command_args: &[&str],
+        json: bool,
+        timeout: Duration,
+    ) -> Result<String, WorkerError> {
+        let started = tokio::time::Instant::now();
+        let command_label = command_args.join(" ");
+        let timeout_error = loop {
+            match self
+                .run_observe_cli_command_via_node(node_id, command_args, json)
+                .await
+            {
+                Ok(output) => return Ok(output),
+                Err(err) if started.elapsed() >= timeout => break err.to_string(),
+                Err(_) => {
+                    tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
+                }
+            }
+        };
+
+        Err(WorkerError::Message(format!(
+            "timed out waiting for CLI observe command `{command_label}` via {node_id}: {timeout_error}"
+        )))
+    }
+
     async fn request_switchover_via_cli(&mut self) -> Result<(), WorkerError> {
         if self.nodes.is_empty() {
             return Err(WorkerError::Message(
@@ -2861,6 +2935,217 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
             "timeline write failed: {artifact_err}"
         ))),
     }
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_cli_primary_and_replicas_follow_switchover() -> Result<(), WorkerError>
+{
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("cli connect bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "cli connect bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            fixture.record(format!(
+                "cli connect bootstrap success: primary={bootstrap_primary}"
+            ));
+
+            let bootstrap_primary_output = fixture
+                .run_observe_cli_command_via_node(&bootstrap_primary, &["primary"], false)
+                .await?;
+            let expected_bootstrap_primary = format!(
+                "host=127.0.0.1 port={} user=postgres dbname=postgres",
+                fixture.postgres_port_by_id(&bootstrap_primary)?
+            );
+            if bootstrap_primary_output.trim() != expected_bootstrap_primary {
+                return Err(WorkerError::Message(format!(
+                    "bootstrap primary CLI output mismatch: expected `{expected_bootstrap_primary}`, got `{}`",
+                    bootstrap_primary_output.trim()
+                )));
+            }
+
+            let bootstrap_replicas_output = fixture
+                .run_observe_cli_command_via_node_with_retry(
+                    &bootstrap_primary,
+                    &["replicas"],
+                    false,
+                    E2E_API_READINESS_TIMEOUT,
+                )
+                .await?;
+            let mut expected_bootstrap_replicas = fixture
+                .nodes
+                .iter()
+                .filter(|node| node.id != bootstrap_primary)
+                .map(|node| {
+                    format!(
+                        "host=127.0.0.1 port={} user=postgres dbname=postgres",
+                        node.pg_port
+                    )
+                })
+                .collect::<Vec<_>>();
+            expected_bootstrap_replicas.sort();
+            let mut actual_bootstrap_replicas = bootstrap_replicas_output
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>();
+            actual_bootstrap_replicas.sort();
+            if actual_bootstrap_replicas != expected_bootstrap_replicas {
+                return Err(WorkerError::Message(format!(
+                    "bootstrap replicas CLI output mismatch: expected {:?}, got {:?}",
+                    expected_bootstrap_replicas, actual_bootstrap_replicas
+                )));
+            }
+
+            fixture.record("cli connect switchover: request planned switchover via CLI");
+            fixture.request_switchover_via_cli().await?;
+            let switchover_primary = match fixture
+                .wait_for_stable_primary_best_effort(
+                    E2E_API_READINESS_TIMEOUT,
+                    Some(&bootstrap_primary),
+                    3,
+                    1,
+                    &mut phase_history,
+                )
+                .await
+            {
+                Ok(primary) => primary,
+                Err(wait_err) => {
+                    fixture.record(format!(
+                        "cli connect stable-primary wait failed after switchover: {wait_err}; retrying with relaxed primary-change detection"
+                    ));
+                    fixture
+                        .wait_for_primary_change(
+                            &bootstrap_primary,
+                            E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        )
+                        .await?
+                }
+            };
+            fixture.record(format!(
+                "cli connect switchover success: new_primary={switchover_primary}"
+            ));
+
+            let switchover_primary_output = fixture
+                .run_observe_cli_command_via_node(&switchover_primary, &["primary"], false)
+                .await?;
+            let expected_switchover_primary = format!(
+                "host=127.0.0.1 port={} user=postgres dbname=postgres",
+                fixture.postgres_port_by_id(&switchover_primary)?
+            );
+            if switchover_primary_output.trim() != expected_switchover_primary {
+                return Err(WorkerError::Message(format!(
+                    "switchover primary CLI output mismatch: expected `{expected_switchover_primary}`, got `{}`",
+                    switchover_primary_output.trim()
+                )));
+            }
+
+            let switchover_replicas_output = fixture
+                .run_observe_cli_command_via_node_with_retry(
+                    &switchover_primary,
+                    &["replicas"],
+                    false,
+                    E2E_API_READINESS_TIMEOUT,
+                )
+                .await?;
+            let expected_switchover_replicas = fixture
+                .nodes
+                .iter()
+                .filter(|node| node.id != switchover_primary)
+                .map(|node| {
+                    format!(
+                        "host=127.0.0.1 port={} user=postgres dbname=postgres",
+                        node.pg_port
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut actual_switchover_replicas = switchover_replicas_output
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>();
+            actual_switchover_replicas.sort();
+            if actual_switchover_replicas.is_empty() {
+                return Err(WorkerError::Message(format!(
+                    "switchover replicas CLI output was empty; expected at least one sampled replica from {:?}",
+                    expected_switchover_replicas
+                )));
+            }
+            if actual_switchover_replicas
+                .iter()
+                .any(|line| !expected_switchover_replicas.contains(line))
+            {
+                return Err(WorkerError::Message(format!(
+                    "switchover replicas CLI output contained unexpected targets: expected subset of {:?}, got {:?}",
+                    expected_switchover_replicas, actual_switchover_replicas
+                )));
+            }
+
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => {
+                fixture.record(format!(
+                    "cli connect scenario timed out after {}s",
+                    E2E_SCENARIO_TIMEOUT.as_secs()
+                ));
+                Err(WorkerError::Message(format!(
+                    "cli connect scenario timed out after {}s",
+                    E2E_SCENARIO_TIMEOUT.as_secs()
+                )))
+            }
+        };
+
+        let artifact_path =
+            fixture.write_timeline_artifact("ha-e2e-cli-primary-and-replicas-follow-switchover");
+        let shutdown_result = fixture.shutdown().await;
+
+        match (run_result, artifact_path, shutdown_result) {
+            (Ok(()), Ok(_), Ok(())) => Ok(()),
+            (Err(run_err), Ok(path), Ok(())) => Err(WorkerError::Message(format!(
+                "{run_err}; timeline: {}",
+                path.display()
+            ))),
+            (Err(run_err), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+                "{run_err}; timeline write failed: {artifact_err}"
+            ))),
+            (Ok(()), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "shutdown failed: {shutdown_err}; timeline: {}",
+                path.display()
+            ))),
+            (Ok(()), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+            ))),
+            (Err(run_err), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "{run_err}; shutdown failed: {shutdown_err}; timeline: {}",
+                path.display()
+            ))),
+            (Err(run_err), Err(artifact_err), Err(shutdown_err)) => {
+                Err(WorkerError::Message(format!(
+                    "{run_err}; timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+                )))
+            }
+            (Ok(()), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+                "timeline write failed: {artifact_err}"
+            ))),
+        }
     })
     .await
 }

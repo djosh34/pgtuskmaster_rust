@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 02:49:43 AM CET 2026
-
-# Task `.ralph/tasks/story-ctl-operator-experience/04-task-add-primary-resolution-and-shell-friendly-connection-helpers.md`
-
-```
-## Task: Add Primary Resolution And Shell-Friendly Connection Helpers To `pgtm` <status>not_started</status> <passes>false</passes>
-
-<priority>medium</priority>
-
-<description>
-```
-
-==============
+Generated: Mon Mar  9 03:37:02 AM CET 2026
 
 # Task `.ralph/tasks/story-ctl-operator-experience/05-task-add-debug-reporting-and-incident-surfaces-to-ctl.md`
 
