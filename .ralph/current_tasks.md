@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 01:41:08 PM CET 2026
+Generated: Mon Mar  9 01:43:47 PM CET 2026
 
 # Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/01-task-fix-leader-liveness-and-majority-election-after-hard-node-loss.md`
 
@@ -186,6 +186,18 @@ Generated: Mon Mar  9 01:41:08 PM CET 2026
 
 ```
 ## Task: Remove Single-Node As A Shipped Product Path <status>not_started</status> <passes>false</passes>
+
+<priority>low</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-operator-ergonomics-reset/06-task-flatten-the-shipped-repo-layout-under-docker-and-delete-deep-config-nesting.md`
+
+```
+## Task: Flatten The Shipped Repo Layout Under `docker/` And Delete Deep Config Nesting <status>not_started</status> <passes>false</passes>
 
 <priority>low</priority>
 

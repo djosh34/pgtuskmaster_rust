@@ -8,6 +8,7 @@
 **Scope:**
 - Audit all current operator-facing shell entrypoints under `tools/docker/` and all operator-facing Make targets.
 - Delete shell wrappers that exist only to smuggle env files, hidden defaults, or status printing around otherwise normal `docker compose` usage.
+- Delete path-depth churn that exists only because scripts grew around the current layout. The public runnable asset tree should be shallow enough that commands naturally look like `docker compose -f docker/compose.yml ...` and `pgtm -c docker/pgtm.toml ...`.
 - Keep a shell script only when it has a narrow, defensible purpose that cannot be expressed cleanly through compose files, Rust code, or simple documented commands.
 - Audit installer scripts under `tools/install-*.sh`.
 - Delete installer scripts that no longer provide meaningful value after the onboarding reset.
@@ -26,6 +27,12 @@
 - `cargo install ...`
 - `docker compose ...`
 - `pgtm ...`
+- The public repo paths are small and obvious too:
+- `docker/compose.yml`
+- `docker/node-a.toml`
+- `docker/node-b.toml`
+- `docker/node-c.toml`
+- `docker/pgtm.toml`
 - Remaining shell scripts are either test harness/support tooling or narrowly justified installers, not the normal operator path.
 - The Makefile reads like a quality-gates entry point, not a second product CLI.
 
@@ -35,6 +42,7 @@
 - [ ] Every operator-facing shell wrapper under `tools/docker/` is either deleted or justified in-code and in docs as non-canonical support tooling.
 - [ ] The canonical README and tutorial flows do not require `tools/docker/*.sh`.
 - [ ] The canonical README and tutorial flows do not require `make` for operator workflows.
+- [ ] The canonical README and tutorial flows use shallow public paths under `docker/` rather than deep nested runtime-config directories.
 - [ ] The Makefile is reduced to quality gates plus a small, documented alias surface; it no longer acts as the main operator UX.
 - [ ] Installer scripts are audited one by one, with each script either deleted or explicitly justified in docs/comments.
 - [ ] The repo no longer requires env-file plumbing shell wrappers to achieve the canonical local Docker experience.

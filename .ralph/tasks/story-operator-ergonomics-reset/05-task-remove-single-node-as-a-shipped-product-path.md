@@ -6,7 +6,7 @@
 **Goal:** Stop teaching and shipping single-node mode as if it were a first-class product path. The higher-order goal is to align the repo with its actual value proposition: three-node HA operation, not a one-node pseudo-cluster that adds conceptual noise to onboarding, config, docs, and compose assets.
 
 **Scope:**
-- Remove single-node Docker compose assets, single-node quickstart/tutorial material, and single-node README positioning from the normal operator journey.
+- Remove single-node Docker compose assets, alternate local compose variants, single-node quickstart/tutorial material, and single-node README positioning from the normal operator journey.
 - Remove single-node-specific public examples and commands that keep the docs split between "toy one-node mode" and "real HA mode".
 - Audit whether single-node-specific runtime or trust behavior remains in public product documentation or tests.
 - If code still contains true single-node product support that materially complicates the user-facing model, remove it as part of this task or create tightly scoped follow-on tasks for any deeper internal deletion that cannot be completed safely in one pass.
@@ -28,6 +28,7 @@
 <acceptance_criteria>
 - [ ] The README no longer presents single-node mode as a primary quickstart or prerequisite to the real HA flow.
 - [ ] The shipped single-node Docker compose asset and single-node tutorial are deleted or explicitly demoted out of the normal docs navigation with a written justification.
+- [ ] The canonical local product path exposes exactly one operator-facing Docker Compose file.
 - [ ] Public examples, local configs, and onboarding material converge on the three-node HA path.
 - [ ] Any remaining single-node-specific code or docs that complicate the public product model are removed or captured in narrowly scoped follow-on tasks.
 - [ ] The resulting public operator experience answers "how do I run PGTuskMaster?" with one default topology: a 3-node HA cluster.

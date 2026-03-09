@@ -8,9 +8,13 @@
 **Scope:**
 - Rewrite the README quickstart and the leading docs/tutorial pages around a single canonical first-time flow.
 - Make `cargo install` for `pgtm` explicit, simple, and correct for the current package layout.
+- Add a dedicated quickstart guide that uses only the canonical one-compose local flow and gets the operator from zero to a healthy cluster with no detours.
 - Document the difference between `pgtm status` and `pgtm debug verbose` as a product decision, not a side note.
 - Add one explicit local-Docker journey and one explicit 3-real-VM Docker journey.
 - Ensure both journeys use one config file per node and file-based secrets/TLS.
+- Explain path conventions explicitly:
+- shallow `docker/` paths are for repo-shipped runnable assets and local onboarding
+- `/etc/pgtuskmaster/config.toml` is for installed Linux VM/service layouts only
 - Remove stale docs that tell the reader to reverse-engineer helper scripts or maintain separate operator-only overlay configs for the canonical flows.
 
 **Context from research:**
@@ -24,16 +28,18 @@
 
 ```bash
 cargo install --path . --bin pgtm
-docker compose up -d --build
-pgtm -c docker/configs/local/node-a/config.toml status
-psql "$(pgtm -c docker/configs/local/node-a/config.toml primary)"
+docker compose -f docker/compose.yml up -d --build
+pgtm -c docker/pgtm.toml status
+psql "$(pgtm -c docker/pgtm.toml primary)"
 ```
+
+- The quickstart guide is explicitly based on the same commands and does not branch into alternate compose files, helper scripts, or env-file preparation.
 
 - The first-time 3-real-VM journey is equally explicit:
 
 ```bash
 # on each VM
-docker compose up -d
+docker compose -f /opt/pgtuskmaster/docker/compose.yml up -d
 
 # from any VM with its local node config
 pgtm -c /etc/pgtuskmaster/config.toml status
@@ -43,6 +49,9 @@ pgtm -c /etc/pgtuskmaster/config.toml primary
 - The docs explain the command split with exact wording direction:
 - `pgtm status` answers "what is the cluster doing right now?"
 - `pgtm debug verbose` answers "why does this one node think that?"
+- The docs explain the config split with exact wording direction:
+- daemon runtime config: full file because the daemon needs cluster, postgres, DCS, process, logging, API, and debug settings
+- operator config: small file because `pgtm` only needs API target, auth, and TLS/client connection context
 - New users do not need to understand internal helper scripts, env files, or raw HTTP before they get value.
 
 </description>
@@ -50,12 +59,18 @@ pgtm -c /etc/pgtuskmaster/config.toml primary
 <acceptance_criteria>
 - [ ] The README quickstart is rewritten around the canonical 3-node local path, not around `make`, env files, or helper scripts.
 - [ ] The README or primary install doc includes a correct `cargo install --path . --bin pgtm` path for the operator CLI.
+- [ ] The README or primary install doc shows the canonical local commands with `docker/compose.yml` and `docker/pgtm.toml`.
+- [ ] A dedicated quickstart guide exists and uses only the canonical one-compose local flow.
 - [ ] The docs contain one explicit "3 real VMs, Docker on each VM, one config file per VM" walkthrough with concrete file paths and commands.
 - [ ] The docs explain `status` versus `debug verbose` clearly and consistently across README, tutorials, and CLI reference material.
+- [ ] The docs explain the daemon-config versus minimal-operator-config split clearly and consistently across README, tutorials, and configuration reference material.
+- [ ] The docs explain that `/etc/pgtuskmaster/config.toml` is an installation convention for deployed VMs, while the repo itself uses shallow `docker/` paths for shipped runnable assets.
+- [ ] The docs explain the shipped secure-default local posture explicitly: strict `pg_hba`/`pg_ident`, no `trust`, API TLS/auth on, PostgreSQL TLS on, and the chosen local verification mode rationale.
 - [ ] The main onboarding path teaches `pgtm` and `psql "$(pgtm ... primary)"` instead of curl loops or manual DSN assembly.
 - [ ] Local Docker examples use the same canonical config files as the shipped deployment assets rather than separate docs-only operator overlays.
 - [ ] Stale beginner-facing references to env-file copying, docker helper scripts, or non-canonical cluster bring-up commands are removed.
 - [ ] The final docs make the first ten minutes with the repo possible without reading internal shell scripts.
+- [ ] The documentation work includes a judgment pass on ease of use from a clean checkout, and any hiccups found during that pass are fixed rather than merely noted.
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
