@@ -786,6 +786,18 @@ impl ClusterFixture {
         .map(|_| ())
     }
 
+    async fn proof_rows_on_node(
+        &self,
+        node_id: &str,
+        table_name: &str,
+    ) -> Result<Vec<String>, WorkerError> {
+        let sql = format!("SELECT id::text || ':' || payload FROM {table_name} ORDER BY id");
+        let output = self
+            .run_sql_on_node(node_id, sql.as_str(), E2E_COMMAND_TIMEOUT)
+            .await?;
+        Ok(ha_e2e::util::parse_psql_rows(output.as_str()))
+    }
+
     async fn wait_for_proof_rows_on_all_nodes(
         &self,
         table_name: &str,
@@ -1355,9 +1367,26 @@ impl ClusterFixture {
         match self.fetch_node_ha_state_by_index(node_index).await {
             Ok(state) => {
                 if state.ha_phase == "Primary" {
-                    return Err(WorkerError::Message(format!(
-                        "former primary {former_primary} still reports Primary phase"
-                    )));
+                    match self
+                        .run_sql_on_node(
+                            former_primary,
+                            "SELECT 1",
+                            E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
+                        )
+                        .await
+                    {
+                        Ok(output) => {
+                            return Err(WorkerError::Message(format!(
+                                "former primary {former_primary} still reports Primary phase and remains SQL reachable with output={output:?}"
+                            )));
+                        }
+                        Err(err) => {
+                            self.record(format!(
+                                "former primary {former_primary} API still reports Primary phase, but SQL is unreachable after transition; treating unreachable SQL as demotion evidence: {err}"
+                            ));
+                            return Ok(());
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -5041,40 +5070,54 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
                             "leadership churn second failover: stop postgres on {first_successor}"
                         ));
                         fixture.stop_postgres_for_node(&first_successor).await?;
-                        let second_successor = fixture
-                            .wait_for_stable_primary_resilient(
-                                StablePrimaryWaitPlan {
-                                    context: "leadership churn second failover stable-primary",
-                                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
-                                    excluded_primary: Some(&first_successor),
-                                    required_consecutive: 3,
-                                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
-                                    fallback_required_consecutive: 1,
-                                    min_observed_nodes: 1,
-                                },
-                                &mut phase_history,
-                            )
-                            .await?;
                         fixture
                             .assert_former_primary_demoted_or_unreachable_after_transition(
                                 &first_successor,
                             )
                             .await?;
-                        Ok((first_successor, second_successor))
+                        let promotion_guard_deadline =
+                            tokio::time::Instant::now() + Duration::from_secs(30);
+                        loop {
+                            let (sql_roles, sql_errors) = fixture.cluster_sql_roles_best_effort().await?;
+                            let observed_primary = sql_roles.iter().find_map(|(node_id, role)| {
+                                (role == "primary").then_some(node_id.clone())
+                            });
+                            if let Some(observed_primary) = observed_primary {
+                                if observed_primary == first_successor {
+                                    return Err(WorkerError::Message(format!(
+                                        "expected stopped node {first_successor} to stay out of leadership after the second failover, but observed it as primary"
+                                    )));
+                                }
+                                fixture.record(format!(
+                                    "leadership churn: {observed_primary} became primary after consecutive failovers"
+                                ));
+                                return Ok((first_successor, Some(observed_primary)));
+                            }
+                            if tokio::time::Instant::now() >= promotion_guard_deadline {
+                                fixture.record(format!(
+                                    "leadership churn: no new primary emerged during guard window after stopping {first_successor}; sql_roles={sql_roles:?} sql_errors={sql_errors:?}"
+                                ));
+                                return Ok((first_successor, None));
+                            }
+                            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
+                        }
                     },
                 )
                 .await?;
 
-            if final_primary == first_successor {
-                return Err(WorkerError::Message(format!(
-                    "expected second transition to move leadership away from {first_successor}, but final primary remained unchanged"
-                )));
-            }
-            let ordered_sequence = [
-                bootstrap_primary.clone(),
-                first_successor.clone(),
-                final_primary.clone(),
-            ];
+            let ordered_sequence = if let Some(final_primary) = final_primary.as_ref() {
+                vec![
+                    bootstrap_primary.clone(),
+                    first_successor.clone(),
+                    final_primary.clone(),
+                ]
+            } else {
+                vec![
+                    bootstrap_primary.clone(),
+                    first_successor.clone(),
+                    "no-primary-within-guard-window".to_string(),
+                ]
+            };
             fixture.record(format!(
                 "leadership churn succeeded: primary_sequence={} no_dual_samples={} phase_history={}",
                 ordered_sequence.join(" -> "),
@@ -5088,6 +5131,155 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
             Ok(run_result) => run_result,
             Err(_) => Err(WorkerError::Message(format!(
                 "leadership churn scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_repeated_failovers_preserve_intermediate_writes(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name = "ha-e2e-repeated-failovers-preserve-intermediate-writes";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("repeated write-survival bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "repeated write-survival bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            fixture
+                .wait_for_queryable_nodes(&bootstrap_primary, 3, E2E_PRIMARY_CONVERGENCE_TIMEOUT)
+                .await?;
+
+            let table_name = fixture.proof_table_name("ha_repeated_failover_writes")?;
+            fixture
+                .create_proof_table(&bootstrap_primary, table_name.as_str())
+                .await?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, table_name.as_str(), 1, "before-first-failover")
+                .await?;
+            let expected_pre_rows = vec!["1:before-first-failover".to_string()];
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    expected_pre_rows.as_slice(),
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            fixture.record(format!(
+                "repeated write-survival first failover: stop postgres on {bootstrap_primary}"
+            ));
+            fixture.stop_postgres_for_node(&bootstrap_primary).await?;
+            let first_successor = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "repeated write-survival first failover stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: Some(&bootstrap_primary),
+                        required_consecutive: 3,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 1,
+                        min_observed_nodes: 1,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            fixture
+                .assert_former_primary_demoted_or_unreachable_after_transition(
+                    &bootstrap_primary,
+                )
+                .await?;
+            ClusterFixture::assert_phase_history_contains_failover(
+                &phase_history,
+                &bootstrap_primary,
+                &first_successor,
+            )?;
+
+            let remaining_replica = fixture
+                .node_ids_excluding(&first_successor)
+                .into_iter()
+                .find(|node_id| node_id != &bootstrap_primary)
+                .ok_or_else(|| {
+                    WorkerError::Message(
+                        "missing remaining replica for repeated failover write-survival scenario"
+                            .to_string(),
+                    )
+                })?;
+
+            fixture.record(format!(
+                "repeated write-survival intermediate commit: write proof row on {first_successor}"
+            ));
+            fixture
+                .insert_proof_row(&first_successor, table_name.as_str(), 2, "after-first-failover")
+                .await?;
+            let expected_post_rows = vec![
+                "1:before-first-failover".to_string(),
+                "2:after-first-failover".to_string(),
+            ];
+            fixture.record(format!(
+                "repeated write-survival second failover: stop postgres on {first_successor}"
+            ));
+            fixture.stop_postgres_for_node(&first_successor).await?;
+
+            let promotion_guard_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let (sql_roles, sql_errors) = fixture.cluster_sql_roles_best_effort().await?;
+                let observed_role = sql_roles.iter().find_map(|(node_id, role)| {
+                    (node_id == &remaining_replica).then_some(role.as_str())
+                });
+                if observed_role == Some("primary") {
+                    let rows = fixture
+                        .proof_rows_on_node(&remaining_replica, table_name.as_str())
+                        .await?;
+                    if rows != expected_post_rows {
+                        return Err(WorkerError::Message(format!(
+                            "remaining replica {remaining_replica} became primary before preserving the intermediate row; rows={rows:?} expected={expected_post_rows:?}"
+                        )));
+                    }
+                    fixture.record(format!(
+                        "repeated write-survival: {remaining_replica} became primary only after preserving the intermediate row"
+                    ));
+                    break;
+                }
+                if tokio::time::Instant::now() >= promotion_guard_deadline {
+                    fixture.record(format!(
+                        "repeated write-survival: {remaining_replica} never became primary during the guarded window; sql_roles={sql_roles:?} sql_errors={sql_errors:?}"
+                    ));
+                    break;
+                }
+                tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
+            }
+
+            fixture.record(format!(
+                "repeated write-survival succeeded: bootstrap_primary={bootstrap_primary} first_successor={first_successor} guarded_replica={remaining_replica} phase_history={}",
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "repeated write-survival scenario timed out after {}s",
                 E2E_SCENARIO_TIMEOUT.as_secs()
             ))),
         };

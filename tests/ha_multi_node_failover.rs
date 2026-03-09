@@ -58,6 +58,12 @@ async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_repeated_failovers_preserve_intermediate_writes(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_repeated_failovers_preserve_intermediate_writes().await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_target(
 ) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
     multi_node::e2e_multi_node_degraded_replica_failover_promotes_only_healthy_target().await

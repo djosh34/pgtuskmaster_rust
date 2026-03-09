@@ -9,7 +9,7 @@ use crate::{
         jobs::ActiveJobKind,
         state::{JobOutcome, ProcessState},
     },
-    state::{MemberId, TimelineId},
+    state::{MemberId, TimelineId, WalLsn},
 };
 
 use super::state::{HaPhase, WorldSnapshot};
@@ -30,7 +30,31 @@ pub(crate) struct DecisionFacts {
     pub(crate) has_other_leader_record: bool,
     pub(crate) has_available_other_leader: bool,
     pub(crate) rewind_required: bool,
+    pub(crate) promotion_safety: PromotionSafety,
     pub(crate) process_state: ProcessState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PromotionSafety {
+    pub(crate) blocker: Option<PromotionSafetyBlocker>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PromotionSafetyBlocker {
+    NotHealthyReplica,
+    MissingLocalTimeline,
+    MissingLocalReplayLsn,
+    HigherFreshTimeline {
+        required_timeline: TimelineId,
+        source_member_id: MemberId,
+    },
+    LaggingFreshWal {
+        timeline: TimelineId,
+        required_lsn: WalLsn,
+        local_replay_lsn: WalLsn,
+        source_member_id: MemberId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +81,9 @@ pub(crate) enum HaDecision {
         leader_member_id: Option<MemberId>,
     },
     WaitForDcsTrust,
+    WaitForPromotionSafety {
+        blocker: PromotionSafetyBlocker,
+    },
     AttemptLeadership,
     FollowLeader {
         leader_member_id: MemberId,
@@ -150,6 +177,11 @@ impl DecisionFacts {
             .as_ref()
             .map(|leader_id| leader_id != &self_member_id)
             .unwrap_or(false);
+        let promotion_safety = evaluate_promotion_safety(
+            &local_promotion_candidate(world, &self_member_id),
+            &world.dcs.value.cache,
+            world.dcs.updated_at,
+        );
 
         Self {
             self_member_id,
@@ -175,8 +207,25 @@ impl DecisionFacts {
                 .as_ref()
                 .map(|leader_id| should_rewind_from_leader(world, leader_id))
                 .unwrap_or(false),
+            promotion_safety,
             process_state: world.process.value.clone(),
         }
+    }
+}
+
+impl PromotionSafety {
+    fn safe() -> Self {
+        Self { blocker: None }
+    }
+
+    fn blocked(blocker: PromotionSafetyBlocker) -> Self {
+        Self {
+            blocker: Some(blocker),
+        }
+    }
+
+    pub(crate) fn allows_promotion(&self) -> bool {
+        self.blocker.is_none()
     }
 }
 
@@ -258,6 +307,7 @@ impl HaDecision {
             Self::NoChange => "no_change",
             Self::WaitForPostgres { .. } => "wait_for_postgres",
             Self::WaitForDcsTrust => "wait_for_dcs_trust",
+            Self::WaitForPromotionSafety { .. } => "wait_for_promotion_safety",
             Self::AttemptLeadership => "attempt_leadership",
             Self::FollowLeader { .. } => "follow_leader",
             Self::BecomePrimary { .. } => "become_primary",
@@ -287,6 +337,7 @@ impl HaDecision {
                     "start_requested={start_requested}, leader_member_id={leader_detail}"
                 ))
             }
+            Self::WaitForPromotionSafety { blocker } => Some(blocker.detail()),
             Self::FollowLeader { leader_member_id } => Some(leader_member_id.0.clone()),
             Self::BecomePrimary { promote } => Some(format!("promote={promote}")),
             Self::CompleteSwitchover => None,
@@ -333,6 +384,32 @@ impl LeaseReleaseReason {
         match self {
             Self::FencingComplete => "fencing_complete".to_string(),
             Self::PostgresUnreachable => "postgres_unreachable".to_string(),
+        }
+    }
+}
+
+impl PromotionSafetyBlocker {
+    fn detail(&self) -> String {
+        match self {
+            Self::NotHealthyReplica => "not_healthy_replica".to_string(),
+            Self::MissingLocalTimeline => "missing_local_timeline".to_string(),
+            Self::MissingLocalReplayLsn => "missing_local_replay_lsn".to_string(),
+            Self::HigherFreshTimeline {
+                required_timeline,
+                source_member_id,
+            } => format!(
+                "higher_fresh_timeline(required_timeline={}, source_member_id={})",
+                required_timeline.0, source_member_id.0
+            ),
+            Self::LaggingFreshWal {
+                timeline,
+                required_lsn,
+                local_replay_lsn,
+                source_member_id,
+            } => format!(
+                "lagging_fresh_wal(timeline={}, required_lsn={}, local_replay_lsn={}, source_member_id={})",
+                timeline.0, required_lsn.0, local_replay_lsn.0, source_member_id.0
+            ),
         }
     }
 }
@@ -397,6 +474,147 @@ fn is_available_primary_leader(world: &WorldSnapshot, leader_member_id: &MemberI
         && matches!(member.readiness, Readiness::Ready)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PromotionCandidate {
+    member_id: MemberId,
+    role: MemberRole,
+    sql: SqlStatus,
+    readiness: Readiness,
+    timeline: Option<TimelineId>,
+    replay_lsn: Option<WalLsn>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FreshWalEvidence {
+    member_id: MemberId,
+    timeline: TimelineId,
+    wal_lsn: WalLsn,
+}
+
+fn local_promotion_candidate(
+    world: &WorldSnapshot,
+    self_member_id: &MemberId,
+) -> PromotionCandidate {
+    match &world.pg.value {
+        PgInfoState::Unknown { common } => PromotionCandidate {
+            member_id: self_member_id.clone(),
+            role: MemberRole::Unknown,
+            sql: common.sql.clone(),
+            readiness: common.readiness.clone(),
+            timeline: common.timeline,
+            replay_lsn: None,
+        },
+        PgInfoState::Primary { common, .. } => PromotionCandidate {
+            member_id: self_member_id.clone(),
+            role: MemberRole::Primary,
+            sql: common.sql.clone(),
+            readiness: common.readiness.clone(),
+            timeline: common.timeline,
+            replay_lsn: None,
+        },
+        PgInfoState::Replica {
+            common, replay_lsn, ..
+        } => PromotionCandidate {
+            member_id: self_member_id.clone(),
+            role: MemberRole::Replica,
+            sql: common.sql.clone(),
+            readiness: common.readiness.clone(),
+            timeline: common.timeline,
+            replay_lsn: Some(*replay_lsn),
+        },
+    }
+}
+
+fn member_promotion_candidate(member: &MemberRecord) -> PromotionCandidate {
+    PromotionCandidate {
+        member_id: member.member_id.clone(),
+        role: member.role.clone(),
+        sql: member.sql.clone(),
+        readiness: member.readiness.clone(),
+        timeline: member.timeline,
+        replay_lsn: member.replay_lsn,
+    }
+}
+
+fn member_fresh_wal_evidence(
+    member: &MemberRecord,
+    cache: &crate::dcs::state::DcsCache,
+    observed_at: crate::state::UnixMillis,
+) -> Option<FreshWalEvidence> {
+    if !member_record_is_fresh(member, cache, observed_at) {
+        return None;
+    }
+
+    let timeline = member.timeline?;
+    let wal_lsn = member.write_lsn.or(member.replay_lsn)?;
+
+    Some(FreshWalEvidence {
+        member_id: member.member_id.clone(),
+        timeline,
+        wal_lsn,
+    })
+}
+
+fn evaluate_promotion_safety(
+    candidate: &PromotionCandidate,
+    cache: &crate::dcs::state::DcsCache,
+    observed_at: crate::state::UnixMillis,
+) -> PromotionSafety {
+    if candidate.role != MemberRole::Replica
+        || candidate.sql != SqlStatus::Healthy
+        || candidate.readiness != Readiness::Ready
+    {
+        return PromotionSafety::blocked(PromotionSafetyBlocker::NotHealthyReplica);
+    }
+
+    let Some(local_timeline) = candidate.timeline else {
+        return PromotionSafety::blocked(PromotionSafetyBlocker::MissingLocalTimeline);
+    };
+    let Some(local_replay_lsn) = candidate.replay_lsn else {
+        return PromotionSafety::blocked(PromotionSafetyBlocker::MissingLocalReplayLsn);
+    };
+
+    let highest_timeline = cache
+        .members
+        .values()
+        .filter(|member| member_record_is_fresh(member, cache, observed_at))
+        .filter_map(|member| {
+            member
+                .timeline
+                .map(|timeline| (timeline, member.member_id.clone()))
+        })
+        .max_by_key(|(timeline, _)| *timeline);
+
+    if let Some((required_timeline, source_member_id)) = highest_timeline {
+        if local_timeline < required_timeline {
+            return PromotionSafety::blocked(PromotionSafetyBlocker::HigherFreshTimeline {
+                required_timeline,
+                source_member_id,
+            });
+        }
+    }
+
+    let highest_wal = cache
+        .members
+        .values()
+        .filter_map(|member| member_fresh_wal_evidence(member, cache, observed_at))
+        .filter(|evidence| evidence.timeline == local_timeline)
+        .max_by_key(|evidence| evidence.wal_lsn);
+
+    if let Some(required) = highest_wal {
+        if local_replay_lsn < required.wal_lsn {
+            return PromotionSafety::blocked(PromotionSafetyBlocker::LaggingFreshWal {
+                timeline: local_timeline,
+                required_lsn: required.wal_lsn,
+                local_replay_lsn,
+                source_member_id: required.member_id,
+            });
+        }
+    }
+
+    PromotionSafety::safe()
+}
+
 pub(crate) fn eligible_switchover_targets(world: &WorldSnapshot) -> BTreeSet<MemberId> {
     world
         .dcs
@@ -421,9 +639,8 @@ pub(crate) fn switchover_target_is_eligible_member(
     observed_at: crate::state::UnixMillis,
 ) -> bool {
     member_record_is_fresh(member, cache, observed_at)
-        && member.role == MemberRole::Replica
-        && member.sql == SqlStatus::Healthy
-        && member.readiness == Readiness::Ready
+        && evaluate_promotion_safety(&member_promotion_candidate(member), cache, observed_at)
+            .allows_promotion()
 }
 
 #[cfg(test)]
@@ -435,10 +652,10 @@ mod tests {
         dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
-        state::{MemberId, TimelineId, UnixMillis, Version, Versioned, WorkerStatus},
+        state::{MemberId, TimelineId, UnixMillis, Version, Versioned, WalLsn, WorkerStatus},
     };
 
-    use super::{eligible_switchover_targets, DecisionFacts};
+    use super::{eligible_switchover_targets, DecisionFacts, PromotionSafetyBlocker};
     use crate::ha::state::WorldSnapshot;
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -466,6 +683,40 @@ mod tests {
             updated_at,
             pg_version: Version(1),
         }
+    }
+
+    fn replica_member_with_replay_lsn(
+        member_id: &str,
+        timeline: TimelineId,
+        replay_lsn: u64,
+    ) -> MemberRecord {
+        let mut member = sample_member(
+            member_id,
+            MemberRole::Replica,
+            SqlStatus::Healthy,
+            Readiness::Ready,
+            UnixMillis(100),
+        );
+        member.timeline = Some(timeline);
+        member.replay_lsn = Some(WalLsn(replay_lsn));
+        member
+    }
+
+    fn primary_member_with_write_lsn(
+        member_id: &str,
+        timeline: TimelineId,
+        write_lsn: u64,
+    ) -> MemberRecord {
+        let mut member = sample_member(
+            member_id,
+            MemberRole::Primary,
+            SqlStatus::Healthy,
+            Readiness::Ready,
+            UnixMillis(100),
+        );
+        member.timeline = Some(timeline);
+        member.write_lsn = Some(WalLsn(write_lsn));
+        member
     }
 
     fn sample_world(cache: DcsCache, trust: DcsTrust, now: UnixMillis) -> WorldSnapshot {
@@ -555,6 +806,40 @@ mod tests {
     }
 
     #[test]
+    fn eligible_switchover_targets_require_catch_up_to_primary_write_lsn() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: MemberId("node-a".to_string()),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            primary_member_with_write_lsn("node-a", TimelineId(1), 25),
+        );
+        cache.members.insert(
+            MemberId("node-b".to_string()),
+            replica_member_with_replay_lsn("node-b", TimelineId(1), 10),
+        );
+        cache.members.insert(
+            MemberId("node-c".to_string()),
+            replica_member_with_replay_lsn("node-c", TimelineId(1), 25),
+        );
+
+        let eligible = eligible_switchover_targets(&sample_world(
+            cache,
+            DcsTrust::FullQuorum,
+            UnixMillis(100),
+        ));
+
+        assert!(!eligible.contains(&MemberId("node-b".to_string())));
+        assert!(eligible.contains(&MemberId("node-c".to_string())));
+    }
+
+    #[test]
     fn decision_facts_drop_active_leader_when_member_metadata_is_missing() {
         let mut cache = DcsCache {
             members: BTreeMap::new(),
@@ -624,6 +909,197 @@ mod tests {
 
         assert_eq!(facts.active_leader_member_id, None);
         assert_eq!(facts.followable_member_id, None);
+    }
+
+    #[test]
+    fn decision_facts_block_promotion_when_replica_lags_fresh_replica() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            replica_member_with_replay_lsn("node-a", TimelineId(1), 10),
+        );
+        cache.members.insert(
+            MemberId("node-b".to_string()),
+            replica_member_with_replay_lsn("node-b", TimelineId(1), 20),
+        );
+
+        let facts =
+            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FullQuorum, UnixMillis(100)));
+
+        assert_eq!(
+            facts.promotion_safety.blocker,
+            Some(PromotionSafetyBlocker::LaggingFreshWal {
+                timeline: TimelineId(1),
+                required_lsn: WalLsn(20),
+                local_replay_lsn: WalLsn(10),
+                source_member_id: MemberId("node-b".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn decision_facts_block_promotion_when_higher_timeline_is_fresh() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            replica_member_with_replay_lsn("node-a", TimelineId(1), 20),
+        );
+        cache.members.insert(
+            MemberId("node-b".to_string()),
+            replica_member_with_replay_lsn("node-b", TimelineId(2), 1),
+        );
+
+        let facts =
+            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FullQuorum, UnixMillis(100)));
+
+        assert_eq!(
+            facts.promotion_safety.blocker,
+            Some(PromotionSafetyBlocker::HigherFreshTimeline {
+                required_timeline: TimelineId(2),
+                source_member_id: MemberId("node-b".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn decision_facts_block_promotion_when_local_timeline_is_unknown() {
+        let cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        let config = cache.config.clone();
+        let now = UnixMillis(100);
+        let facts = DecisionFacts::from_world(&WorldSnapshot {
+            config: Versioned::new(Version(1), now, config.clone()),
+            pg: Versioned::new(
+                Version(1),
+                now,
+                PgInfoState::Replica {
+                    common: PgInfoCommon {
+                        worker: WorkerStatus::Running,
+                        sql: SqlStatus::Healthy,
+                        readiness: Readiness::Ready,
+                        timeline: None,
+                        pg_config: PgConfig {
+                            port: None,
+                            hot_standby: None,
+                            primary_conninfo: None,
+                            primary_slot_name: None,
+                            extra: BTreeMap::new(),
+                        },
+                        last_refresh_at: Some(now),
+                    },
+                    replay_lsn: WalLsn(10),
+                    follow_lsn: None,
+                    upstream: None,
+                },
+            ),
+            dcs: Versioned::new(
+                Version(1),
+                now,
+                DcsState {
+                    worker: WorkerStatus::Running,
+                    trust: DcsTrust::FullQuorum,
+                    cache,
+                    last_refresh_at: Some(now),
+                },
+            ),
+            process: Versioned::new(
+                Version(1),
+                now,
+                ProcessState::Idle {
+                    worker: WorkerStatus::Running,
+                    last_outcome: None,
+                },
+            ),
+        });
+
+        assert_eq!(
+            facts.promotion_safety.blocker,
+            Some(PromotionSafetyBlocker::MissingLocalTimeline)
+        );
+    }
+
+    #[test]
+    fn decision_facts_allow_promotion_when_replica_is_caught_up() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            replica_member_with_replay_lsn("node-a", TimelineId(1), 20),
+        );
+        cache.members.insert(
+            MemberId("node-b".to_string()),
+            primary_member_with_write_lsn("node-b", TimelineId(1), 20),
+        );
+        let config = cache.config.clone();
+        let now = UnixMillis(100);
+        let facts = DecisionFacts::from_world(&WorldSnapshot {
+            config: Versioned::new(Version(1), now, config.clone()),
+            pg: Versioned::new(
+                Version(1),
+                now,
+                PgInfoState::Replica {
+                    common: PgInfoCommon {
+                        worker: WorkerStatus::Running,
+                        sql: SqlStatus::Healthy,
+                        readiness: Readiness::Ready,
+                        timeline: Some(TimelineId(1)),
+                        pg_config: PgConfig {
+                            port: None,
+                            hot_standby: None,
+                            primary_conninfo: None,
+                            primary_slot_name: None,
+                            extra: BTreeMap::new(),
+                        },
+                        last_refresh_at: Some(now),
+                    },
+                    replay_lsn: WalLsn(20),
+                    follow_lsn: None,
+                    upstream: None,
+                },
+            ),
+            dcs: Versioned::new(
+                Version(1),
+                now,
+                DcsState {
+                    worker: WorkerStatus::Running,
+                    trust: DcsTrust::FullQuorum,
+                    cache,
+                    last_refresh_at: Some(now),
+                },
+            ),
+            process: Versioned::new(
+                Version(1),
+                now,
+                ProcessState::Idle {
+                    worker: WorkerStatus::Running,
+                    last_outcome: None,
+                },
+            ),
+        });
+
+        assert!(facts.promotion_safety.allows_promotion());
     }
 
     #[test]

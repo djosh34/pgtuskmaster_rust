@@ -4,8 +4,8 @@ use crate::{
     api::{
         AcceptedResponse, ApiError, ApiResult, DcsTrustResponse, HaClusterMemberResponse,
         HaDecisionResponse, HaPhaseResponse, HaStateResponse, LeaseReleaseReasonResponse,
-        MemberRoleResponse, ReadinessResponse, RecoveryStrategyResponse, SqlStatusResponse,
-        StepDownReasonResponse,
+        MemberRoleResponse, PromotionSafetyBlockerResponse, ReadinessResponse,
+        RecoveryStrategyResponse, SqlStatusResponse, StepDownReasonResponse,
     },
     dcs::{
         state::{member_record_is_fresh, DcsTrust, MemberRecord, MemberRole, SwitchoverRequest},
@@ -14,8 +14,8 @@ use crate::{
     debug_api::snapshot::SystemSnapshot,
     ha::{
         decision::{
-            eligible_switchover_targets, HaDecision, LeaseReleaseReason, RecoveryStrategy,
-            StepDownPlan, StepDownReason,
+            eligible_switchover_targets, HaDecision, LeaseReleaseReason, PromotionSafetyBlocker,
+            RecoveryStrategy, StepDownPlan, StepDownReason,
         },
         state::HaPhase,
     },
@@ -222,6 +222,11 @@ fn map_ha_decision(value: &HaDecision) -> HaDecisionResponse {
             leader_member_id: leader_member_id.as_ref().map(|leader| leader.0.clone()),
         },
         HaDecision::WaitForDcsTrust => HaDecisionResponse::WaitForDcsTrust,
+        HaDecision::WaitForPromotionSafety { blocker } => {
+            HaDecisionResponse::WaitForPromotionSafety {
+                blocker: map_promotion_safety_blocker(blocker),
+            }
+        }
         HaDecision::AttemptLeadership => HaDecisionResponse::AttemptLeadership,
         HaDecision::FollowLeader { leader_member_id } => HaDecisionResponse::FollowLeader {
             leader_member_id: leader_member_id.0.clone(),
@@ -281,6 +286,38 @@ fn map_lease_release_reason(value: &LeaseReleaseReason) -> LeaseReleaseReasonRes
     match value {
         LeaseReleaseReason::FencingComplete => LeaseReleaseReasonResponse::FencingComplete,
         LeaseReleaseReason::PostgresUnreachable => LeaseReleaseReasonResponse::PostgresUnreachable,
+    }
+}
+
+fn map_promotion_safety_blocker(value: &PromotionSafetyBlocker) -> PromotionSafetyBlockerResponse {
+    match value {
+        PromotionSafetyBlocker::NotHealthyReplica => {
+            PromotionSafetyBlockerResponse::NotHealthyReplica
+        }
+        PromotionSafetyBlocker::MissingLocalTimeline => {
+            PromotionSafetyBlockerResponse::MissingLocalTimeline
+        }
+        PromotionSafetyBlocker::MissingLocalReplayLsn => {
+            PromotionSafetyBlockerResponse::MissingLocalReplayLsn
+        }
+        PromotionSafetyBlocker::HigherFreshTimeline {
+            required_timeline,
+            source_member_id,
+        } => PromotionSafetyBlockerResponse::HigherFreshTimeline {
+            required_timeline: u64::from(required_timeline.0),
+            source_member_id: source_member_id.0.clone(),
+        },
+        PromotionSafetyBlocker::LaggingFreshWal {
+            timeline,
+            required_lsn,
+            local_replay_lsn,
+            source_member_id,
+        } => PromotionSafetyBlockerResponse::LaggingFreshWal {
+            timeline: u64::from(timeline.0),
+            required_lsn: required_lsn.0,
+            local_replay_lsn: local_replay_lsn.0,
+            source_member_id: source_member_id.0.clone(),
+        },
     }
 }
 
@@ -458,6 +495,11 @@ mod tests {
     }
 
     fn member_record(member_name: &str, role: MemberRole, now: UnixMillis) -> MemberRecord {
+        let (write_lsn, replay_lsn) = match role {
+            MemberRole::Primary => (Some(crate::state::WalLsn(10)), None),
+            MemberRole::Replica => (None, Some(crate::state::WalLsn(10))),
+            MemberRole::Unknown => (None, None),
+        };
         MemberRecord {
             member_id: member_id(member_name),
             postgres_host: "127.0.0.1".to_string(),
@@ -466,9 +508,9 @@ mod tests {
             role,
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
-            timeline: None,
-            write_lsn: None,
-            replay_lsn: None,
+            timeline: Some(crate::state::TimelineId(1)),
+            write_lsn,
+            replay_lsn,
             updated_at: now,
             pg_version: Version(1),
         }
@@ -479,7 +521,7 @@ mod tests {
             worker: WorkerStatus::Running,
             sql,
             readiness: Readiness::Ready,
-            timeline: None,
+            timeline: Some(crate::state::TimelineId(1)),
             pg_config: PgConfig {
                 port: None,
                 hot_standby: None,

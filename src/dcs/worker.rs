@@ -6,8 +6,9 @@ use crate::{
 use super::{
     keys::DcsKey,
     state::{
-        build_local_member_record, evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
-        InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest,
+        build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsCache,
+        DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord, MemberRecord,
+        SwitchoverRequest,
     },
     store::{refresh_from_etcd_watch, write_local_member},
 };
@@ -117,15 +118,16 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let mut local_member_publish_succeeded = false;
 
     if must_publish_local_member {
-        let local_member = build_local_member_record(
-            &ctx.self_id,
-            ctx.local_postgres_host.as_str(),
-            ctx.local_postgres_port,
-            ctx.local_api_url.as_deref(),
-            &pg_snapshot.value,
+        let local_member = build_local_member_record(BuildLocalMemberRecordInput {
+            self_id: &ctx.self_id,
+            postgres_host: ctx.local_postgres_host.as_str(),
+            postgres_port: ctx.local_postgres_port,
+            api_url: ctx.local_api_url.as_deref(),
+            pg_state: &pg_snapshot.value,
+            previous_record: ctx.cache.members.get(&ctx.self_id),
             now,
-            pg_snapshot.version,
-        );
+            pg_version: pg_snapshot.version,
+        });
         match write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member) {
             Ok(()) => {
                 ctx.last_published_pg_version = Some(pg_snapshot.version);

@@ -175,6 +175,9 @@ fn decide_replica(facts: &DecisionFacts) -> PhaseOutcome {
         None if targeted_switchover_blocks_leadership_attempt(facts) => {
             PhaseOutcome::new(HaPhase::Replica, HaDecision::WaitForDcsTrust)
         }
+        None if !facts.postgres_primary && !facts.promotion_safety.allows_promotion() => {
+            PhaseOutcome::new(HaPhase::Replica, wait_for_promotion_safety(facts))
+        }
         None => PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership),
     }
 }
@@ -202,6 +205,10 @@ fn decide_candidate_leader(facts: &DecisionFacts) -> PhaseOutcome {
 
     if targeted_switchover_blocks_leadership_attempt(facts) {
         return PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::WaitForDcsTrust);
+    }
+
+    if !facts.postgres_primary && !facts.promotion_safety.allows_promotion() {
+        return PhaseOutcome::new(HaPhase::CandidateLeader, wait_for_promotion_safety(facts));
     }
 
     PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership)
@@ -260,6 +267,15 @@ fn decide_primary(current: &HaState, facts: &DecisionFacts) -> PhaseOutcome {
             }
         }
     }
+}
+
+fn wait_for_promotion_safety(facts: &DecisionFacts) -> HaDecision {
+    facts
+        .promotion_safety
+        .blocker
+        .clone()
+        .map(|blocker| HaDecision::WaitForPromotionSafety { blocker })
+        .unwrap_or(HaDecision::WaitForDcsTrust)
 }
 
 fn decide_rewinding(facts: &DecisionFacts) -> PhaseOutcome {
@@ -437,7 +453,8 @@ mod tests {
         },
         ha::{
             decision::{
-                HaDecision, LeaseReleaseReason, RecoveryStrategy, StepDownPlan, StepDownReason,
+                HaDecision, LeaseReleaseReason, PromotionSafetyBlocker, RecoveryStrategy,
+                StepDownPlan, StepDownReason,
             },
             lower::{
                 lower_decision, HaEffectPlan, LeaseEffect, PostgresEffect, ReplicationEffect,
@@ -450,7 +467,9 @@ mod tests {
             jobs::{ActiveJob, ActiveJobKind},
             state::{JobOutcome, ProcessState},
         },
-        state::{JobId, MemberId, UnixMillis, Version, Versioned, WorkerStatus},
+        state::{
+            JobId, MemberId, TimelineId, UnixMillis, Version, Versioned, WalLsn, WorkerStatus,
+        },
     };
 
     use super::decide;
@@ -1191,20 +1210,7 @@ mod tests {
             world: WorldBuilder::new()
                 .with_pg(pg_replica(SqlStatus::Healthy))
                 .with_leader("node-b")
-                .with_member(MemberRecord {
-                    member_id: MemberId("node-b".to_string()),
-                    postgres_host: "10.0.0.10".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Primary,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-                    updated_at: UnixMillis(1),
-                    pg_version: Version(1),
-                })
+                .with_member(healthy_primary_member("node-b"))
                 .build(),
         });
 
@@ -1232,18 +1238,8 @@ mod tests {
                 .with_pg(pg_replica(SqlStatus::Healthy))
                 .with_targeted_switchover_request("node-b")
                 .with_member(MemberRecord {
-                    member_id: MemberId("node-b".to_string()),
-                    postgres_host: "10.0.0.10".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Replica,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
                     updated_at: now,
-                    pg_version: Version(1),
+                    ..healthy_replica_member("node-b")
                 })
                 .build(),
         });
@@ -1268,18 +1264,8 @@ mod tests {
                 .with_pg(pg_replica(SqlStatus::Healthy))
                 .with_targeted_switchover_request("node-a")
                 .with_member(MemberRecord {
-                    member_id: MemberId("node-a".to_string()),
-                    postgres_host: "10.0.0.11".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Replica,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
                     updated_at: now,
-                    pg_version: Version(1),
+                    ..healthy_replica_member("node-a")
                 })
                 .build(),
         });
@@ -2008,6 +1994,38 @@ mod tests {
     }
 
     #[test]
+    fn replica_waits_for_promotion_safety_when_fresh_replica_is_ahead() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Replica,
+                tick: 11,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_replica_with_position(Some(TimelineId(1)), 10))
+                .with_member(MemberRecord {
+                    replay_lsn: Some(WalLsn(20)),
+                    ..healthy_replica_member("node-b")
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPromotionSafety {
+                blocker: PromotionSafetyBlocker::LaggingFreshWal {
+                    timeline: TimelineId(1),
+                    required_lsn: WalLsn(20),
+                    local_replay_lsn: WalLsn(10),
+                    source_member_id: MemberId("node-b".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
     fn candidate_leader_with_unhealthy_foreign_leader_keeps_attempting() {
         let output = decide(DecideInput {
             current: HaState {
@@ -2031,6 +2049,60 @@ mod tests {
                     replay_lsn: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+    }
+
+    #[test]
+    fn candidate_leader_waits_for_promotion_safety_when_fresh_replica_is_ahead() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::CandidateLeader,
+                tick: 12,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_replica_with_position(Some(TimelineId(1)), 10))
+                .with_member(MemberRecord {
+                    replay_lsn: Some(WalLsn(20)),
+                    ..healthy_replica_member("node-b")
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPromotionSafety {
+                blocker: PromotionSafetyBlocker::LaggingFreshWal {
+                    timeline: TimelineId(1),
+                    required_lsn: WalLsn(20),
+                    local_replay_lsn: WalLsn(10),
+                    source_member_id: MemberId("node-b".to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn candidate_leader_attempts_when_replica_is_caught_up() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::CandidateLeader,
+                tick: 12,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_replica_with_position(Some(TimelineId(1)), 20))
+                .with_member(MemberRecord {
+                    replay_lsn: Some(WalLsn(20)),
+                    ..healthy_replica_member("node-b")
                 })
                 .build(),
         });
@@ -2365,7 +2437,7 @@ mod tests {
     fn pg_primary(sql: SqlStatus) -> PgInfoState {
         PgInfoState::Primary {
             common: pg_common(sql),
-            wal_lsn: crate::state::WalLsn(10),
+            wal_lsn: WalLsn(10),
             slots: vec![],
         }
     }
@@ -2373,7 +2445,18 @@ mod tests {
     fn pg_replica(sql: SqlStatus) -> PgInfoState {
         PgInfoState::Replica {
             common: pg_common(sql),
-            replay_lsn: crate::state::WalLsn(10),
+            replay_lsn: WalLsn(10),
+            follow_lsn: None,
+            upstream: None,
+        }
+    }
+
+    fn pg_replica_with_position(timeline: Option<TimelineId>, replay_lsn: u64) -> PgInfoState {
+        let mut common = pg_common(SqlStatus::Healthy);
+        common.timeline = timeline;
+        PgInfoState::Replica {
+            common,
+            replay_lsn: WalLsn(replay_lsn),
             follow_lsn: None,
             upstream: None,
         }
@@ -2384,7 +2467,7 @@ mod tests {
             worker: WorkerStatus::Running,
             sql,
             readiness: Readiness::Ready,
-            timeline: None,
+            timeline: Some(TimelineId(1)),
             pg_config: PgConfig {
                 port: None,
                 hot_standby: None,
@@ -2442,9 +2525,26 @@ mod tests {
             role: MemberRole::Primary,
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
-            timeline: None,
-            write_lsn: None,
+            timeline: Some(TimelineId(1)),
+            write_lsn: Some(WalLsn(10)),
             replay_lsn: None,
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        }
+    }
+
+    fn healthy_replica_member(member_id: &str) -> MemberRecord {
+        MemberRecord {
+            member_id: MemberId(member_id.to_string()),
+            postgres_host: "127.0.0.1".to_string(),
+            postgres_port: 5432,
+            api_url: None,
+            role: MemberRole::Replica,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: Some(TimelineId(1)),
+            write_lsn: None,
+            replay_lsn: Some(WalLsn(10)),
             updated_at: UnixMillis(1),
             pg_version: Version(1),
         }

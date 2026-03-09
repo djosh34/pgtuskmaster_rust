@@ -97,6 +97,17 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) last_emitted_trust: Option<DcsTrust>,
 }
 
+pub(crate) struct BuildLocalMemberRecordInput<'a> {
+    pub(crate) self_id: &'a MemberId,
+    pub(crate) postgres_host: &'a str,
+    pub(crate) postgres_port: u16,
+    pub(crate) api_url: Option<&'a str>,
+    pub(crate) pg_state: &'a PgInfoState,
+    pub(crate) previous_record: Option<&'a MemberRecord>,
+    pub(crate) now: UnixMillis,
+    pub(crate) pg_version: Version,
+}
+
 pub(crate) fn evaluate_trust(
     etcd_healthy: bool,
     cache: &DcsCache,
@@ -152,15 +163,17 @@ fn has_fresh_quorum(cache: &DcsCache, now: UnixMillis) -> bool {
     }
 }
 
-pub(crate) fn build_local_member_record(
-    self_id: &MemberId,
-    postgres_host: &str,
-    postgres_port: u16,
-    api_url: Option<&str>,
-    pg_state: &PgInfoState,
-    now: UnixMillis,
-    pg_version: Version,
-) -> MemberRecord {
+pub(crate) fn build_local_member_record(input: BuildLocalMemberRecordInput<'_>) -> MemberRecord {
+    let BuildLocalMemberRecordInput {
+        self_id,
+        postgres_host,
+        postgres_port,
+        api_url,
+        pg_state,
+        previous_record,
+        now,
+        pg_version,
+    } = input;
     match pg_state {
         PgInfoState::Unknown { common } => MemberRecord {
             member_id: self_id.clone(),
@@ -170,9 +183,11 @@ pub(crate) fn build_local_member_record(
             role: MemberRole::Unknown,
             sql: common.sql.clone(),
             readiness: common.readiness.clone(),
-            timeline: common.timeline,
-            write_lsn: None,
-            replay_lsn: None,
+            timeline: common
+                .timeline
+                .or(previous_record.and_then(|record| record.timeline)),
+            write_lsn: previous_record.and_then(|record| record.write_lsn),
+            replay_lsn: previous_record.and_then(|record| record.replay_lsn),
             updated_at: now,
             pg_version,
         },
@@ -222,8 +237,8 @@ mod tests {
     };
 
     use super::{
-        build_local_member_record, evaluate_trust, DcsCache, DcsTrust, LeaderRecord, MemberRecord,
-        MemberRole,
+        build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsCache,
+        DcsTrust, LeaderRecord, MemberRecord, MemberRole,
     };
     use crate::{
         pginfo::state::{PgInfoState, Readiness, SqlStatus},
@@ -441,15 +456,16 @@ mod tests {
         let unknown = PgInfoState::Unknown {
             common: common(SqlStatus::Unknown, Readiness::Unknown),
         };
-        let unknown_record = build_local_member_record(
-            &self_id,
-            "10.0.0.11",
-            5433,
-            Some("http://node-a:8080"),
-            &unknown,
-            UnixMillis(10),
-            Version(11),
-        );
+        let unknown_record = build_local_member_record(BuildLocalMemberRecordInput {
+            self_id: &self_id,
+            postgres_host: "10.0.0.11",
+            postgres_port: 5433,
+            api_url: Some("http://node-a:8080"),
+            pg_state: &unknown,
+            previous_record: None,
+            now: UnixMillis(10),
+            pg_version: Version(11),
+        });
         assert_eq!(unknown_record.postgres_host, "10.0.0.11".to_string());
         assert_eq!(unknown_record.postgres_port, 5433);
         assert_eq!(
@@ -467,15 +483,16 @@ mod tests {
                 name: "slot-a".to_string(),
             }],
         };
-        let primary_record = build_local_member_record(
-            &self_id,
-            "10.0.0.12",
-            5434,
-            Some("http://node-a:8081"),
-            &primary,
-            UnixMillis(12),
-            Version(13),
-        );
+        let primary_record = build_local_member_record(BuildLocalMemberRecordInput {
+            self_id: &self_id,
+            postgres_host: "10.0.0.12",
+            postgres_port: 5434,
+            api_url: Some("http://node-a:8081"),
+            pg_state: &primary,
+            previous_record: None,
+            now: UnixMillis(12),
+            pg_version: Version(13),
+        });
         assert_eq!(primary_record.postgres_host, "10.0.0.12".to_string());
         assert_eq!(primary_record.postgres_port, 5434);
         assert_eq!(primary_record.role, MemberRole::Primary);
@@ -488,20 +505,59 @@ mod tests {
             follow_lsn: Some(WalLsn(23)),
             upstream: None,
         };
-        let replica_record = build_local_member_record(
-            &self_id,
-            "10.0.0.13",
-            5435,
-            None,
-            &replica,
-            UnixMillis(14),
-            Version(15),
-        );
+        let replica_record = build_local_member_record(BuildLocalMemberRecordInput {
+            self_id: &self_id,
+            postgres_host: "10.0.0.13",
+            postgres_port: 5435,
+            api_url: None,
+            pg_state: &replica,
+            previous_record: None,
+            now: UnixMillis(14),
+            pg_version: Version(15),
+        });
         assert_eq!(replica_record.postgres_host, "10.0.0.13".to_string());
         assert_eq!(replica_record.postgres_port, 5435);
         assert_eq!(replica_record.api_url, None);
         assert_eq!(replica_record.role, MemberRole::Replica);
         assert_eq!(replica_record.write_lsn, None);
         assert_eq!(replica_record.replay_lsn, Some(WalLsn(22)));
+    }
+
+    #[test]
+    fn build_local_member_record_retains_last_known_wal_evidence_for_unknown_pg_state() {
+        let self_id = MemberId("node-a".to_string());
+        let previous = MemberRecord {
+            member_id: self_id.clone(),
+            postgres_host: "10.0.0.10".to_string(),
+            postgres_port: 5432,
+            api_url: None,
+            role: MemberRole::Primary,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: Some(TimelineId(4)),
+            write_lsn: Some(WalLsn(99)),
+            replay_lsn: None,
+            updated_at: UnixMillis(8),
+            pg_version: Version(9),
+        };
+        let unknown = PgInfoState::Unknown {
+            common: common(SqlStatus::Unreachable, Readiness::NotReady),
+        };
+
+        let unknown_record = build_local_member_record(BuildLocalMemberRecordInput {
+            self_id: &self_id,
+            postgres_host: "10.0.0.11",
+            postgres_port: 5433,
+            api_url: None,
+            pg_state: &unknown,
+            previous_record: Some(&previous),
+            now: UnixMillis(10),
+            pg_version: Version(11),
+        });
+
+        assert_eq!(unknown_record.role, MemberRole::Unknown);
+        assert_eq!(unknown_record.timeline, Some(TimelineId(4)));
+        assert_eq!(unknown_record.write_lsn, Some(WalLsn(99)));
+        assert_eq!(unknown_record.replay_lsn, None);
     }
 }

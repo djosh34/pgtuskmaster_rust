@@ -655,6 +655,9 @@ fn render_decision_text(value: &HaDecisionResponse) -> String {
             )
         }
         HaDecisionResponse::WaitForDcsTrust => "wait_for_dcs_trust".to_string(),
+        HaDecisionResponse::WaitForPromotionSafety { blocker } => {
+            format!("wait_for_promotion_safety(blocker={blocker})")
+        }
         HaDecisionResponse::AttemptLeadership => "attempt_leadership".to_string(),
         HaDecisionResponse::FollowLeader { leader_member_id } => {
             format!("follow_leader(leader_member_id={leader_member_id})")

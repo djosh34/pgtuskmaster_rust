@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 05:34:09 PM CET 2026
+Generated: Mon Mar  9 06:35:17 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -21,6 +21,17 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 <priority>high</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/rapid-repeated-failovers-can-drop-intermediate-writes.md`
+
+```
+## Bug: Rapid Repeated Failovers Can Drop Intermediate Writes <status>done</status> <passes>true</passes>
+
+<description>
+The original `e2e_multi_node_repeated_leadership_changes_preserve_single_primary` scenario exposed a write-survival problem that is separate from the scenario's single-primary contract.
 ```
 
 ==============

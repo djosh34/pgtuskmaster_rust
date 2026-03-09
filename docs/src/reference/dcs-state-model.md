@@ -60,6 +60,14 @@ The worker builds member records from the latest PostgreSQL state:
 - primary PostgreSQL state publishes `role = Primary` and `write_lsn`
 - replica PostgreSQL state publishes `role = Replica` and `replay_lsn`
 
+When PostgreSQL state is unknown, member publication stays intentionally conservative:
+
+- `timeline` is kept from current PostgreSQL state when available, otherwise from the previously published member record
+- the previously published `write_lsn` is retained
+- the previously published `replay_lsn` is retained
+
+This means a temporarily unreachable node can still contribute its last known WAL evidence to promotion-safety checks while its member record remains fresh.
+
 ### `LeaderRecord`
 
 `LeaderRecord` contains:

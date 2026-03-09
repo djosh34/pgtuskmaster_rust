@@ -65,6 +65,42 @@ This decision is used when PostgreSQL is not yet reachable enough for the next H
 
 PostgreSQL is reachable enough to continue, but the node is still waiting for trusted DCS state.
 
+### `wait_for_promotion_safety`
+
+```text
+{
+  "kind": "wait_for_promotion_safety",
+  "blocker": {
+    "kind": "lagging_fresh_wal",
+    "timeline": 3,
+    "required_lsn": 123456,
+    "local_replay_lsn": 123400,
+    "source_member_id": "node-b"
+  }
+}
+```
+
+Field:
+
+- `blocker`: the structured reason promotion is being held back
+
+This decision appears when there is no leader to follow, the local node is not already primary, and promotion is not yet safe.
+
+Promotion safety is evaluated against the freshest DCS evidence visible to the node:
+
+- the highest fresh timeline seen in member records
+- the highest fresh WAL position seen on that timeline
+
+The node waits instead of attempting leadership until it can prove it is caught up enough to promote safely.
+
+`blocker.kind` can be:
+
+- `not_healthy_replica`
+- `missing_local_timeline`
+- `missing_local_replay_lsn`
+- `higher_fresh_timeline`
+- `lagging_fresh_wal`
+
 ### `attempt_leadership`
 
 ```text
@@ -219,6 +255,7 @@ The decision and phase move together, but they are not the same thing:
 
 The HA layer lowers decisions into effect plans. At a high level:
 
+- `wait_for_promotion_safety` intentionally lowers to no side effects; it is a safety hold, not a work request
 - `attempt_leadership` drives lease acquisition
 - `follow_leader` drives replica-follow behavior
 - `become_primary` drives primary behavior and promotion
@@ -233,6 +270,7 @@ Common operator interpretations:
 
 - `wait_for_postgres`: local PostgreSQL is not ready for the next HA step
 - `wait_for_dcs_trust`: the node is waiting for a trustworthy cluster view
+- `wait_for_promotion_safety`: the node sees fresher WAL or a higher timeline elsewhere, or lacks enough local replay evidence to prove promotion is safe
 - `attempt_leadership`: no healthy leader is being followed and this node is trying to lead
 - `follow_leader`: the node has a leader and intends to remain a replica
 - `complete_switchover`: the new primary has taken over and is clearing the now-satisfied switchover request

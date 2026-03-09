@@ -101,6 +101,9 @@ pub enum HaDecisionResponse {
         leader_member_id: Option<String>,
     },
     WaitForDcsTrust,
+    WaitForPromotionSafety {
+        blocker: PromotionSafetyBlockerResponse,
+    },
     AttemptLeadership,
     FollowLeader {
         leader_member_id: String,
@@ -146,6 +149,24 @@ pub enum RecoveryStrategyResponse {
 pub enum LeaseReleaseReasonResponse {
     FencingComplete,
     PostgresUnreachable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PromotionSafetyBlockerResponse {
+    NotHealthyReplica,
+    MissingLocalTimeline,
+    MissingLocalReplayLsn,
+    HigherFreshTimeline {
+        required_timeline: u64,
+        source_member_id: String,
+    },
+    LaggingFreshWal {
+        timeline: u64,
+        required_lsn: u64,
+        local_replay_lsn: u64,
+        source_member_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -256,6 +277,32 @@ impl fmt::Display for LeaseReleaseReasonResponse {
         match self {
             Self::FencingComplete => f.write_str("fencing_complete"),
             Self::PostgresUnreachable => f.write_str("postgres_unreachable"),
+        }
+    }
+}
+
+impl fmt::Display for PromotionSafetyBlockerResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotHealthyReplica => f.write_str("not_healthy_replica"),
+            Self::MissingLocalTimeline => f.write_str("missing_local_timeline"),
+            Self::MissingLocalReplayLsn => f.write_str("missing_local_replay_lsn"),
+            Self::HigherFreshTimeline {
+                required_timeline,
+                source_member_id,
+            } => write!(
+                f,
+                "higher_fresh_timeline(required_timeline={required_timeline}, source_member_id={source_member_id})"
+            ),
+            Self::LaggingFreshWal {
+                timeline,
+                required_lsn,
+                local_replay_lsn,
+                source_member_id,
+            } => write!(
+                f,
+                "lagging_fresh_wal(timeline={timeline}, required_lsn={required_lsn}, local_replay_lsn={local_replay_lsn}, source_member_id={source_member_id})"
+            ),
         }
     }
 }

@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 05:34:09 PM CET 2026
+Generated: Mon Mar  9 06:35:17 PM CET 2026
 
 # Task `.ralph/tasks/bugs/preserved-replica-rejoin-stalls-after-runtime-stop-failover.md`
 
@@ -9,17 +9,6 @@ Generated: Mon Mar  9 05:34:09 PM CET 2026
 
 <description>
 The degraded replica failover scenario exposed a separate recovery bug after the harness stop path was corrected to explicitly stop postgres.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/rapid-repeated-failovers-can-drop-intermediate-writes.md`
-
-```
-## Bug: Rapid Repeated Failovers Can Drop Intermediate Writes <status>not_started</status> <passes>false</passes>
-
-<description>
-The original `e2e_multi_node_repeated_leadership_changes_preserve_single_primary` scenario exposed a write-survival problem that is separate from the scenario's single-primary contract.
 ```
 
 ==============

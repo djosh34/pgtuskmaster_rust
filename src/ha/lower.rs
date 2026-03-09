@@ -65,7 +65,9 @@ pub(crate) enum SafetyEffect {
 impl HaDecision {
     pub(crate) fn lower(&self) -> HaEffectPlan {
         match self {
-            Self::NoChange | Self::WaitForDcsTrust => HaEffectPlan::default(),
+            Self::NoChange | Self::WaitForDcsTrust | Self::WaitForPromotionSafety { .. } => {
+                HaEffectPlan::default()
+            }
             Self::WaitForPostgres {
                 start_requested, ..
             } => HaEffectPlan {

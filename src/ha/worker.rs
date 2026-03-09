@@ -117,7 +117,18 @@ fn should_skip_redundant_process_dispatch(
 ) -> bool {
     current.phase == next.phase
         && current.decision == next.decision
-        && decision_is_already_active(&next.decision, process_state)
+        && (decision_is_already_active(&next.decision, process_state)
+            || decision_dispatch_is_latched(&next.decision))
+}
+
+fn decision_dispatch_is_latched(decision: &crate::ha::decision::HaDecision) -> bool {
+    matches!(
+        decision,
+        crate::ha::decision::HaDecision::WaitForPostgres {
+            start_requested: true,
+            ..
+        }
+    )
 }
 
 fn decision_is_already_active(
@@ -419,7 +430,7 @@ mod tests {
             worker: WorkerStatus::Running,
             sql,
             readiness: Readiness::Ready,
-            timeline: None,
+            timeline: Some(crate::state::TimelineId(1)),
             pg_config: PgConfig {
                 port: None,
                 hot_standby: None,
@@ -442,6 +453,15 @@ mod tests {
             common: sample_pg_common(sql),
             wal_lsn: crate::state::WalLsn(1),
             slots: Vec::new(),
+        }
+    }
+
+    fn sample_replica_pg_state(sql: SqlStatus) -> PgInfoState {
+        PgInfoState::Replica {
+            common: sample_pg_common(sql),
+            replay_lsn: crate::state::WalLsn(1),
+            follow_lsn: None,
+            upstream: None,
         }
     }
 
@@ -953,6 +973,11 @@ mod tests {
     }
 
     fn sample_member_record(member_id: &str, role: MemberRole) -> MemberRecord {
+        let (write_lsn, replay_lsn) = match role {
+            MemberRole::Primary => (Some(crate::state::WalLsn(1)), None),
+            MemberRole::Replica => (None, Some(crate::state::WalLsn(1))),
+            MemberRole::Unknown => (None, None),
+        };
         MemberRecord {
             member_id: MemberId(member_id.to_string()),
             postgres_host: "10.0.0.10".to_string(),
@@ -961,9 +986,9 @@ mod tests {
             role,
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
-            timeline: None,
-            write_lsn: None,
-            replay_lsn: None,
+            timeline: Some(crate::state::TimelineId(1)),
+            write_lsn,
+            replay_lsn,
             updated_at: test_now_unix_millis(),
             pg_version: Version(1),
         }
@@ -1363,7 +1388,10 @@ mod tests {
     async fn integration_transitions_replica_candidate_primary_and_failsafe() {
         let mut fixture = IntegrationFixture::new(HaPhase::WaitingDcsTrusted);
 
-        assert_eq!(fixture.publish_pg_sql(SqlStatus::Healthy, 10), Ok(()));
+        assert_eq!(
+            fixture.publish_pg_sql_state(sample_replica_pg_state(SqlStatus::Healthy), 10),
+            Ok(())
+        );
         assert_eq!(
             fixture.push_member_event("node-b", MemberRole::Primary),
             Ok(())
