@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 06:32:55 CET 2026
+Generated: Mon Mar  9 06:33:47 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -171,6 +171,18 @@ The codebase carries API and DCS endpoint addresses as raw `String` values deep 
 
 ```
 ## Task: Add PostgreSQL Proxy Chaos E2E Coverage <status>done</status> <passes>true</passes>
+
+<priority>low</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-parallel-ha-test-hardening/02-task-add-ha-restart-and-leadership-churn-e2e-coverage.md`
+
+```
+## Task: Add HA Restart And Leadership Churn E2E Coverage <status>completed</status> <passes>true</passes>
 
 <priority>low</priority>
 
