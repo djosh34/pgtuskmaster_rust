@@ -34,7 +34,7 @@ The explicit form is the same:
 pgtm -c /etc/pgtuskmaster/config.toml status
 ```
 
-The command starts from one node API, reads the stable `/ha/state` payload, discovers peer API URLs from the stable member list, then samples those peers to build a cluster view.
+The command starts from one node API, reads the stable HA state payload, discovers peer API URLs from the stable member list, then samples those peers to build a cluster view.
 
 ## Choose the presentation
 
@@ -96,7 +96,7 @@ Warnings appear only when the cluster view is degraded. Typical warning causes a
 
 ## Interpret the JSON output
 
-`pgtm --json` emits the aggregated cluster view. It is not just the seed node's raw `/ha/state` payload.
+`pgtm --json` emits the aggregated cluster view. It is not just the seed node's raw HA state payload.
 
 The top-level fields you will usually care about first are:
 
@@ -160,9 +160,9 @@ pgtm -c /etc/pgtuskmaster/config.toml primary --tls
 
 If the CLI reports a `transport error`, verify:
 
-- the seed `--base-url` or `[pgtm].api_url` is correct and reachable
+- the seed operator config or `[pgtm].api_url` is correct and reachable
 - the node APIs are listening on the expected ports
 - network access from the host running `pgtm`
-- peer nodes are publishing usable `api_url` values in `/ha/state`
+- peer nodes are publishing usable `api_url` values in cluster discovery data
 
 If a node shows `API=missing`, the cluster discovered that member in stable DCS state but did not have an operator-reachable peer API URL to sample. Fix the node's published API target before treating the cluster view as fully healthy.

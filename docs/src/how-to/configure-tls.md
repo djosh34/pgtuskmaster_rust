@@ -1,17 +1,17 @@
 # Configure TLS
 
-This guide shows how to turn the runtime's TLS knobs into an actual deployment procedure.
+This guide shows how to turn the runtime's TLS knobs into an actual deployment procedure while keeping `pgtm` truthful as the normal operator client.
 
-The important starting point is that the shipped Docker cluster configs currently keep both `postgres.tls.mode` and `api.security.tls.mode` set to `disabled`. This guide therefore describes how to adapt a deployment for TLS; it is not a claim that the checked-in cluster example already runs with TLS enabled.
+The shipped Docker cluster configs still keep both `postgres.tls.mode` and `api.security.tls.mode` set to `disabled`. This guide therefore describes how to adapt a deployment for TLS; it is not a claim that the checked-in cluster example already runs with TLS enabled.
 
 ## Goal
 
 Enable TLS for one or both of these server surfaces:
 
-- the pgtuskmaster HTTP API
+- the `pgtuskmaster` HTTP API
 - the managed PostgreSQL server
 
-## What The Schema Supports
+## What the schema supports
 
 The runtime schema defines the same TLS shape for both servers:
 
@@ -33,7 +33,7 @@ If `client_auth` is configured, it also expects:
 
 If those values are missing, the TLS loader rejects the config during startup.
 
-## Choose The Rollout Shape
+## Choose the rollout shape
 
 Use `mode = "optional"` when you need a staged rollout and still have clients that connect without TLS.
 
@@ -57,6 +57,22 @@ listen_addr = "0.0.0.0:8080"
 security = { tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, require_client_cert = true } }, auth = { type = "disabled" } }
 ```
 
+## Add operator client settings for `pgtm`
+
+If the daemon binds an unspecified address such as `0.0.0.0:8080`, add an operator-facing `[pgtm]` section so the CLI resolves the reachable HTTPS URL and any client TLS material correctly:
+
+```toml
+[pgtm]
+api_url = "https://db-a.example.com:8443"
+
+[pgtm.api_client]
+ca_cert = { path = "/etc/pgtm/api-ca.pem" }
+client_cert = { path = "/etc/pgtm/operator.crt" }
+client_key = { path = "/etc/pgtm/operator.key" }
+```
+
+Use `client_cert` and `client_key` only when the API server requires client certificates. If the API uses bearer tokens, keep those in `api.security.auth` so `pgtm` can resolve them from the same config.
+
 ## Enable PostgreSQL TLS
 
 Update the PostgreSQL block:
@@ -77,10 +93,19 @@ pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
 
 Two details matter here:
 
-- `local_conn_identity.ssl_mode` and `rewind_conn_identity.ssl_mode` must match the fact that the server now expects TLS-capable connections.
-- If `postgres.tls.mode` stays `disabled`, the runtime rejects TLS-required client modes such as `require`, `verify_ca`, or `verify_full`.
+- `local_conn_identity.ssl_mode` and `rewind_conn_identity.ssl_mode` must match the fact that the server now expects TLS-capable connections
+- if `postgres.tls.mode` stays `disabled`, the runtime rejects TLS-required client modes such as `require`, `verify_ca`, or `verify_full`
 
-## Put The Certificate Material In Place
+If you want `pgtm primary --tls` and `pgtm replicas --tls` to emit PostgreSQL client certificate paths, also configure:
+
+```toml
+[pgtm.postgres_client]
+ca_cert = { path = "/etc/pgtm/postgres-ca.pem" }
+client_cert = { path = "/etc/pgtm/postgres.crt" }
+client_key = { path = "/etc/pgtm/postgres.key" }
+```
+
+## Put the certificate material in place
 
 The repository does not currently ship a dedicated certificate-generation workflow or checked-in certificate assets. Treat certificate generation and secret distribution as deployment-specific work.
 
@@ -89,8 +114,9 @@ Before restarting nodes, make sure every configured path exists on disk and is r
 - API server cert chain and private key
 - PostgreSQL server cert chain and private key
 - optional client CA bundle for mutual TLS
+- any `pgtm` client CA/cert/key material you configured
 
-## Roll Out The Config
+## Roll out the config
 
 Apply the updated runtime config and TLS files to each node, then restart the runtime in a controlled sequence.
 
@@ -111,25 +137,27 @@ For an all-at-once rollout:
 
 ## Verify API TLS
 
-Once API TLS is enabled, query an endpoint over HTTPS:
+Once API TLS is enabled, verify it through `pgtm`:
 
 ```bash
-curl --fail --silent https://127.0.0.1:8080/ha/state
+pgtm -c /etc/pgtuskmaster/config.toml status
 ```
 
-If the certificate is not yet trusted by your local client environment, add the appropriate CA configuration for your environment rather than assuming insecure verification is acceptable as a steady state.
-
-If API bearer tokens are enabled, include the required header as usual. TLS and bearer-token auth are separate controls.
+That confirms the CLI can reach the HTTPS API with the configured CA bundle, optional client certificates, and any configured auth tokens.
 
 ## Verify PostgreSQL TLS
 
-Once PostgreSQL TLS is enabled, connect with a client mode that requires TLS:
+Once PostgreSQL TLS is enabled, resolve the current primary with TLS-expanded DSN output:
 
 ```bash
-psql "host=node-a port=5432 user=postgres dbname=postgres sslmode=require"
+pgtm -c /etc/pgtuskmaster/config.toml primary --tls
 ```
 
-The exact client certificate flags depend on your deployment and are not prescribed by the repository, but the important validation point is that plaintext connections should no longer be the only successful path once you have switched clients over.
+Then verify a real PostgreSQL client can connect with those settings:
+
+```bash
+psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary --tls)"
+```
 
 ## Troubleshooting
 
@@ -137,9 +165,13 @@ The exact client certificate flags depend on your deployment and are not prescri
 
 Check the configured paths first. The TLS loader fails startup if `mode` requires TLS but `identity` is missing or unreadable, or if the PEM files cannot be parsed.
 
-### API still serves plaintext traffic
+### `pgtm` cannot reach the API after the change
 
-Check whether you left `api.security.tls.mode = "optional"`. Optional mode is useful for migration, but it is not an enforcement mode.
+Check:
+
+- `[pgtm].api_url` points at the reachable HTTPS URL
+- `[pgtm.api_client]` has the right CA bundle and, when needed, client cert/key
+- the configured auth tokens still match the server
 
 ### PostgreSQL clients fail after the change
 

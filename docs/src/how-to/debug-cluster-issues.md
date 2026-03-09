@@ -1,6 +1,6 @@
 # Debug Cluster Issues
 
-This guide shows how to investigate cluster incidents with the operator CLI first and the raw debug API second. Use it when the cluster is unhealthy, a node is stuck in the wrong phase, or you need to understand why HA decisions changed.
+This guide shows how to investigate cluster incidents with the operator CLI first and the raw debug API only when you are validating the protocol itself.
 
 ## Goal
 
@@ -15,14 +15,16 @@ Answer four questions quickly:
 
 - the affected nodes expose the API listener
 - you can run `pgtm`
+- `jq` if you want to extract `meta.sequence` from saved JSON exactly as shown below
+- the operator config you use either sets `[pgtm].api_url` or derives an operator-reachable URL from `api.listen_addr`
 - `[debug] enabled = true` on the nodes where you want richer debug detail
 
 ## Step 1: Start with `pgtm status -v`
 
-Use the CLI summary before you drop into raw JSON:
+Use the CLI summary before you drop into JSON:
 
 ```bash
-pgtm --base-url http://node-a:8080 -v status
+pgtm -c /etc/pgtuskmaster/config.toml status -v
 ```
 
 Focus on:
@@ -34,15 +36,7 @@ Focus on:
 - `DEBUG`
 - warning lines above the table
 
-That one command tells you whether the cluster sample is healthy, whether peers agree on one leader, and whether `/debug/verbose` was available on the sampled nodes.
-
-The `DEBUG` column is intentionally explicit:
-
-- `available`: the CLI fetched `/debug/verbose`
-- `disabled`: the node returned `404`, which usually means `debug.enabled = false`
-- `auth_failed`: the node rejected the debug read with `401` or `403`
-- `not_ready`: the node returned `503`
-- `transport_failed`, `decode_failed`, or `api_status_failed`: the seed status read worked, but the debug read failed for the specific reason shown in the detail block
+That one command tells you whether the cluster sample is healthy, whether peers agree on one leader, and whether verbose debug data was available on the sampled nodes.
 
 ## Step 2: Interpret trust first
 
@@ -65,7 +59,7 @@ If trust is degraded, fix that before you expect normal promotions or switchover
 When the table is not enough, inspect the affected node directly:
 
 ```bash
-pgtm --base-url http://node-a:8080 debug verbose
+pgtm -c /etc/pgtuskmaster/config.toml debug verbose
 ```
 
 The default output summarizes the high-signal sections:
@@ -77,17 +71,10 @@ The default output summarizes the high-signal sections:
 - recent `changes`
 - recent `timeline`
 
-Use it to answer:
-
-- whether PostgreSQL is reachable and ready
-- which leader the node currently believes in
-- which HA decision is active
-- whether the process worker is still running a job or has already failed one
-
 If you need the full stable payload for automation or a saved incident artifact, switch to JSON:
 
 ```bash
-pgtm --base-url http://node-a:8080 --json debug verbose > debug-node-a.json
+pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose > debug-node.json
 ```
 
 ## Step 4: Poll incrementally with `--since`
@@ -95,26 +82,15 @@ pgtm --base-url http://node-a:8080 --json debug verbose > debug-node-a.json
 Use the retained sequence cursor when you are following an incident live:
 
 ```bash
-seq=$(pgtm --base-url http://node-a:8080 --json debug verbose | jq '.meta.sequence')
-pgtm --base-url http://node-a:8080 --json debug verbose --since "${seq}" | jq '{
-  sequence: .meta.sequence,
-  changes: .changes,
-  timeline: .timeline
-}'
+seq=$(jq -r '.meta.sequence' debug-node.json)
+pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose --since "${seq}" > debug-node-since.json
 ```
 
 `--since` filters only `changes` and `timeline`. The other sections still describe the current snapshot.
 
-## Step 5: Fall back to raw HTTP only when you need protocol-level debugging
+## Step 5: Fall back to raw HTTP only for protocol-level debugging
 
-The CLI reads the same stable debug endpoint that you can read directly:
-
-```bash
-curl --fail --silent http://node-a:8080/debug/verbose | jq .
-curl --fail --silent "http://node-a:8080/debug/verbose?since=42" | jq .
-```
-
-Use the raw endpoint when you are debugging the HTTP contract itself, reproducing auth/TLS behavior with another client, or comparing CLI output to the underlying payload.
+Routine operator work should stay in `pgtm`. If you need to compare the CLI against the underlying endpoint contract, use the [Debug API reference](../reference/debug-api.md).
 
 ## Common Investigation Patterns
 
@@ -142,7 +118,7 @@ Check:
 
 ### You suspect a split-brain or dual-primary window
 
-Run `pgtm status -v` from more than one seed node and compare the answers. Treat any sustained view with more than one sampled primary as critical.
+Run `pgtm status -v` from more than one seed config and compare the answers. Treat any sustained view with more than one sampled primary as critical.
 
 At the same time, inspect `timeline` and `changes` on the most suspicious node to see whether the cluster was stepping down, fencing, or recovering around the same moment.
 
@@ -159,7 +135,7 @@ Check:
 
 If `switchover_pending=true` but trust is degraded, fix trust first. The runtime will not complete the switchover path safely until it has a healthy cluster view.
 
-## Next Step
+## Next step
 
 Once you understand the immediate failure mode, move to the relevant operator action:
 

@@ -383,6 +383,8 @@ client_key = { path = "/run/secrets/postgres.key" }
 
 If `api.listen_addr` is an unspecified bind address such as `0.0.0.0:8080` or `[::]:8080`, `pgtm` refuses to guess and reports a config error telling you to set `[pgtm].api_url`.
 
+The local docker tutorials in this repository follow that rule by keeping the daemon runtime configs container-truthful and shipping separate operator-facing examples under `docs/examples/` that add `[pgtm].api_url` for the host-mapped API ports.
+
 ### Client TLS blocks
 
 Both `[pgtm.api_client]` and `[pgtm.postgres_client]` accept the same fields:

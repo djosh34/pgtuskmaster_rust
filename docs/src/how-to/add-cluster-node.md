@@ -1,6 +1,6 @@
 # Add a Cluster Node
 
-This guide shows how to add a new node to an existing cluster and verify that it joins safely.
+This guide shows how to add a new node to an existing cluster and verify that it joins safely with `pgtm` as the primary operator interface.
 
 ## Goal
 
@@ -17,12 +17,13 @@ Bring up a new node that:
 - valid runtime-config paths for PostgreSQL data, socket, and logs
 - network reachability to the cluster's DCS endpoints
 - network reachability to the relevant PostgreSQL endpoints in the cluster
+- an operator-facing config for the new node that either sets `[pgtm].api_url` or derives an operator-reachable URL from `api.listen_addr`
 
 ## Step 1: Prepare a runtime config for the new node
 
 Use an existing runtime config as your starting point and change the node-specific identity and addresses.
 
-The docker example at `docker/configs/cluster/node-a/runtime.toml` shows the full shape.
+The docker example at `docker/configs/cluster/node-a/runtime.toml` shows the full daemon config shape. If that daemon config binds an unspecified address such as `0.0.0.0:8080`, add a docs- or ops-owned `[pgtm].api_url` for the operator-reachable API URL before you use it with `pgtm`.
 
 Fields that must be correct for the new node:
 
@@ -35,24 +36,17 @@ Fields that must be correct for the new node:
 - `process.binaries.*`
 - `api.listen_addr`
 
-The new node must use:
-
-- the same `cluster.name` as the rest of the cluster
-- a unique `cluster.member_id`
-- the same DCS scope and endpoints as the rest of the cluster
-
 ## Step 2: Check connectivity before you start it
 
 Before starting the new node, verify:
 
 - it can reach the configured DCS endpoints
 - the relevant PostgreSQL listen address and port are reachable in your environment
-
-The DCS member model includes `postgres_host` and `postgres_port`, so PostgreSQL network reachability is part of normal follow and recovery behavior.
+- the operator config points `pgtm` at the node's reachable API URL
 
 ## Step 3: Start the node with the prepared config
 
-Start pgtuskmaster using your normal service method for this environment.
+Start `pgtuskmaster` using your normal service method for this environment.
 
 The node starts from the HA phase machine defined in the runtime:
 
@@ -62,28 +56,22 @@ The node starts from the HA phase machine defined in the runtime:
 
 From there, the next phase depends on the observed world state.
 
-## Step 4: Watch the node's HA state
+## Step 4: Watch the new node through `pgtm`
 
-Poll the new node directly:
-
-```bash
-curl --fail --silent http://127.0.0.1:8080/ha/state | jq .
-```
-
-Or use the CLI:
+Seed the cluster view through the new node:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml --json
+pgtm -c /etc/pgtuskmaster/config.toml status -v
 ```
 
-Watch these fields:
+Watch these fields first:
 
-- `self_member_id`
-- `leader`
-- `member_count`
-- `dcs_trust`
-- `ha_phase`
-- `ha_decision`
+- `ROLE`
+- `TRUST`
+- `PHASE`
+- `DECISION`
+- `LEADER`
+- `DEBUG`
 
 When a healthy primary already exists, the usual steady-state goal is replica behavior rather than leadership.
 
@@ -97,23 +85,18 @@ For a normal join into a healthy cluster, look for:
 
 In practice that means:
 
-- `dcs_trust` reaches `full_quorum`
-- `leader` is populated and agrees with the rest of the cluster
-- `ha_phase` stops moving through startup transitions
-- `ha_decision` stops showing startup or recovery churn
+- `TRUST=full_quorum`
+- `LEADER` agrees with the rest of the cluster
+- `PHASE` stops moving through startup transitions
+- `DECISION` stops showing startup or recovery churn
 
-If you also inspect DCS directly with your environment's store tooling, look for the new node's member record under the cluster scope. The internal member record model includes:
+If the table is not enough, inspect the joining node directly:
 
-- `member_id`
-- `postgres_host`
-- `postgres_port`
-- `role`
-- `sql`
-- `readiness`
-- `timeline`
-- WAL position fields
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+```
 
-## Step 6: Verify the node behaves like a replica
+## Step 6: Verify replica behavior
 
 Use PostgreSQL-level checks that fit your environment to confirm the new node is following the current primary.
 
@@ -123,17 +106,9 @@ The exact SQL and access path depend on your deployment, but the goal is:
 - the new node can follow the current leader
 - fresh writes on the primary become visible after replication catches up
 
-## Step 7: Compare more than one node before you declare success
+## Step 7: Compare more than one seed before you declare success
 
-Sample `GET /ha/state` on multiple nodes:
-
-```bash
-for node in node-a node-b node-c; do
-  curl --fail --silent "http://${node}:8080/ha/state" | jq -r '"\(.self_member_id) leader=\(.leader // "none") trust=\(.dcs_trust) phase=\(.ha_phase) decision=\(.ha_decision.kind)"'
-done
-```
-
-You want:
+Repeat `pgtm status -v` from at least one surviving node's operator config. You want:
 
 - agreement on the same leader
 - no sustained dual-primary evidence
@@ -165,19 +140,3 @@ Check:
 - whether the existing primary is still visible and healthy
 - whether the cluster is suffering a trust or freshness problem
 - whether the new node was started against the correct scope and endpoints
-
-## Diagram
-
-```mermaid
-flowchart TD
-    cfg[Prepare runtime config]
-    start[Start node]
-    pg[waiting_postgres_reachable]
-    dcs[waiting_dcs_trusted]
-    replica[replica-oriented steady state]
-
-    cfg --> start
-    start --> pg
-    pg --> dcs
-    dcs --> replica
-```

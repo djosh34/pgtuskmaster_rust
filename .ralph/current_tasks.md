@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 04:23:38 AM CET 2026
-
-# Task `.ralph/tasks/story-ctl-operator-experience/06-task-rewrite-operator-docs-to-prefer-ctl-over-raw-curl.md`
-
-```
-## Task: Rewrite Operator Docs To Use `pgtm` Instead Of Raw `curl` <status>not_started</status> <passes>false</passes>
-
-<priority>medium</priority>
-
-<description>
-```
-
-==============
+Generated: Mon Mar  9 04:48:54 AM CET 2026
 
 # Task `.ralph/tasks/story-parallel-ha-test-hardening/01-task-add-postgres-proxy-chaos-e2e-coverage.md`
 

@@ -1,12 +1,15 @@
 # Single-Node Setup
 
-This tutorial walks through the smallest shipped deployment in the repository: one `pgtuskmaster` node and one `etcd` service. The runtime still uses the normal DCS and HA machinery, but the topology is easier to inspect than the three-node cluster.
+This tutorial walks through the smallest shipped deployment in the repository: one `pgtuskmaster` node and one `etcd` service. You will use `pgtm` as the normal operator entry point throughout.
 
 ## Prerequisites
 
 - Docker and Docker Compose installed
 - a checkout of this repository
 - a shell in the repository root
+- the `pgtm` binary available in your shell
+
+The tutorial uses [`docs/examples/docker-single-node-a.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-single-node-a.toml). That file mirrors the shipped single-node runtime config and adds `[pgtm].api_url = "http://127.0.0.1:18080"` so host-side operator commands stay truthful even though the daemon binds `0.0.0.0:8080` inside the container.
 
 ## Step 1: Start the single-node stack
 
@@ -16,31 +19,17 @@ Run the shipped compose file with the example environment:
 docker compose --env-file .env.docker.example -f docker/compose/docker-compose.single.yml up -d --build
 ```
 
-This stack starts:
-
-- one `etcd` service
-- one `node-a` service built from the repository image
-
 With `.env.docker.example`, the compose file publishes:
 
 - the HTTP API on `127.0.0.1:18080`
 - PostgreSQL on `127.0.0.1:15432`
 
-Internally, the runtime config keeps:
+## Step 2: Wait for the operator view to become reachable
 
-- `cluster.name = "docker-single"`
-- `cluster.member_id = "node-a"`
-- `dcs.scope = "docker-single"`
-- `dcs.endpoints = ["http://etcd:2379"]`
-- `api.listen_addr = "0.0.0.0:8080"`
-- `debug.enabled = true`
-
-## Step 2: Wait for the API to become reachable
-
-Poll the HA state until the node responds:
+Poll `pgtm` until the single-node view is reachable:
 
 ```bash
-until curl -sf http://127.0.0.1:18080/ha/state >/dev/null; do
+until pgtm -c docs/examples/docker-single-node-a.toml --json status >/dev/null 2>&1; do
   sleep 1
 done
 ```
@@ -53,26 +42,19 @@ docker compose --env-file .env.docker.example -f docker/compose/docker-compose.s
 
 ## Step 3: Read the single-node HA state
 
-Query the HA API directly:
+Start with the cluster-oriented CLI view:
 
 ```bash
-curl --fail --silent http://127.0.0.1:18080/ha/state | jq .
+pgtm -c docs/examples/docker-single-node-a.toml status -v
 ```
 
-Or use the CLI:
+Focus on:
 
-```bash
-cargo run --bin pgtm -- -c ./config.toml
-```
-
-Fields worth checking:
-
-- `self_member_id`
-- `leader`
-- `member_count`
-- `dcs_trust`
-- `ha_phase`
-- `ha_decision`
+- `ROLE`
+- `TRUST`
+- `PHASE`
+- `DECISION`
+- `DEBUG`
 
 In this topology, the node can still reach trusted state because trust evaluation accepts a one-member cluster when:
 
@@ -80,55 +62,43 @@ In this topology, the node can still reach trusted state because trust evaluatio
 - the local member record is present
 - the local member record is fresh
 
-## Step 4: Inspect the debug snapshot through `pgtm`
+## Step 4: Inspect the retained debug state
 
-The single-node sample enables the debug surface, so you can inspect it immediately with the CLI:
-
-```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 -v status
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 debug verbose
-```
-
-Focus on:
-
-- `meta.sequence`
-- `dcs.trust`
-- `dcs.member_count`
-- `dcs.leader`
-- `ha.phase`
-- `ha.decision`
-
-If you want the raw stable payload, switch to JSON:
+The single-node sample enables the debug surface, so you can inspect it immediately through `pgtm`:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 --json debug verbose | jq '{meta: .meta, dcs: .dcs, ha: .ha}'
+pgtm -c docs/examples/docker-single-node-a.toml debug verbose
 ```
 
-Because the debug worker retains recent history, you can also poll incrementally:
+That summary is usually enough to answer:
+
+- which member currently leads
+- whether DCS trust is healthy
+- which HA phase and decision are active
+- whether recent `changes` or `timeline` entries show churn
+
+If you want the exact stable payload for automation or later review, save the JSON form:
 
 ```bash
-seq=$(cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 --json debug verbose | jq '.meta.sequence')
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 --json debug verbose --since "${seq}" | jq '{changes: .changes, timeline: .timeline}'
+pgtm -c docs/examples/docker-single-node-a.toml --json debug verbose > single-node-debug.json
 ```
 
-If nothing changed between the two requests, the `changes` and `timeline` arrays will be empty.
+## Step 5: Compare the sample to the full cluster tutorial
 
-## Step 5: Compare the single-node sample to the full cluster tutorial
+The single-node sample is simpler to run, but it still uses the normal runtime model:
 
-The single-node sample is simpler to run, but it does not disable the normal runtime model. The shipped runtime config still includes:
+- DCS-backed trust
+- the HA phase machine
+- the same PostgreSQL role credentials
+- the same daemon configuration shape as the multi-node examples
 
-- `[dcs]`
-- `[ha]`
-- PostgreSQL role credentials for `superuser`, `replicator`, and `rewinder`
-- PostgreSQL 16 binary paths under `/usr/lib/postgresql/16/bin/...`
-
-That means this tutorial is best read as "the same system in a smaller topology," not as a separate standalone mode.
+That makes this tutorial a smaller topology, not a separate product mode.
 
 ## What you learned
 
 You now have:
 
 - the repository's smallest shipped deployment running locally
-- a reachable HA API on `127.0.0.1:18080`
-- a reachable debug API on the same listener
-- a concrete example of how a one-member cluster still uses DCS-backed trust and HA state
+- a truthful operator config for the local mapped API port
+- a repeatable `pgtm status -v` path for HA state
+- a repeatable `pgtm debug verbose` path for retained debug state

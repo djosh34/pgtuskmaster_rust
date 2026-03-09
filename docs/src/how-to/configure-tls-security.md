@@ -15,10 +15,10 @@ Harden a node so that:
 
 - the API is served over TLS
 - PostgreSQL traffic can be protected with TLS
-- API callers are authenticated with the right bearer token
+- `pgtm` authenticates with the right role token
 - optional client certificate verification is enabled only when you have the required CA material
 
-## Decide What You Are Protecting
+## Decide what you are protecting
 
 The runtime exposes two very different surfaces:
 
@@ -27,10 +27,10 @@ The runtime exposes two very different surfaces:
 
 Think about them separately during rollout:
 
-- API TLS protects operator traffic such as `/ha/state`, `/switchover`, and debug endpoints.
-- PostgreSQL TLS protects database client and replication traffic.
+- API TLS protects operator traffic such as status, switchover, and debug reads
+- PostgreSQL TLS protects database client and replication traffic
 
-## Harden The API Surface
+## Harden the API surface
 
 Start from an API security block that enables TLS and authorization together:
 
@@ -42,12 +42,28 @@ security = { tls = { mode = "required", identity = { cert_chain = { path = "/etc
 
 The role split matters operationally:
 
-- `read_token` is enough for observation endpoints such as `/ha/state`
-- `admin_token` is required for write operations such as `POST /switchover` and `DELETE /ha/switchover`
+- `read_token` is enough for observation commands such as `status` and `debug verbose`
+- `admin_token` is required for write operations such as `switchover request` and `switchover clear`
 
 If `read_token` is absent but `admin_token` is present, the admin token still authorizes reads.
 
-## Decide Whether To Require Client Certificates
+## Add the matching `pgtm` client context
+
+Keep the operator client configuration in the same shared config:
+
+```toml
+[pgtm]
+api_url = "https://db-a.example.com:8443"
+
+[pgtm.api_client]
+ca_cert = { path = "/etc/pgtm/api-ca.pem" }
+client_cert = { path = "/etc/pgtm/operator.crt" }
+client_key = { path = "/etc/pgtm/operator.key" }
+```
+
+Use `client_cert` and `client_key` only when the API requires client certificates. Leave them out when TLS is server-authenticated only.
+
+## Decide whether to require client certificates
 
 The TLS schema supports optional client certificate verification:
 
@@ -59,7 +75,7 @@ Use `require_client_cert = true` only when every intended client has a certifica
 
 Use `require_client_cert = false` if you want the server to validate presented client certificates without making them mandatory for every caller.
 
-## Harden PostgreSQL Transport
+## Harden PostgreSQL transport
 
 For PostgreSQL, the runtime schema supports the same TLS shape:
 
@@ -76,22 +92,20 @@ Security-sensitive points to verify:
 - connection identities use a TLS-capable `ssl_mode`
 - replication and rewind paths are updated alongside ordinary SQL clients
 
-## Verify Authorization After Enabling TLS
+If operators need TLS-expanded DSN output from `pgtm`, also configure `[pgtm.postgres_client]`.
 
-Query a read endpoint with the read token:
+## Verify authorization after enabling TLS
+
+Query a read operation through the CLI:
 
 ```bash
-curl --fail --silent \
-  -H "Authorization: Bearer $PGTUSKMASTER_READ_TOKEN" \
-  https://127.0.0.1:8080/ha/state
+pgtm -c /etc/pgtuskmaster/config.toml status
 ```
 
-Try an admin operation with the admin token:
+Then try an admin operation:
 
 ```bash
-pgtm \
-  -c /etc/pgtuskmaster/config.toml \
-  switchover request
+pgtm -c /etc/pgtuskmaster/config.toml switchover request
 ```
 
 That verifies both layers at once:
@@ -99,26 +113,26 @@ That verifies both layers at once:
 - the transport accepts HTTPS
 - the API enforces admin-vs-read privileges correctly
 
-## Keep The Layers Mentally Separate
+## Keep the layers mentally separate
 
 When a request fails, ask which layer failed:
 
 - TLS handshake problem: certs, keys, CA bundle, or TLS mode
-- HTTP `401 Unauthorized`: missing or invalid bearer token
+- HTTP `401 Unauthorized`: missing or invalid configured role token
 - HTTP `403 Forbidden`: valid token for the wrong role
 - application-level `503` or other runtime errors: the request reached the application, but the underlying operation failed
 
-This distinction matters because bearer-token failures are not evidence that TLS is misconfigured, and TLS handshake failures are not evidence that role-token auth is broken.
+This distinction matters because role-token failures are not evidence that TLS is misconfigured, and TLS handshake failures are not evidence that auth is broken.
 
 ## Troubleshooting
 
-### API starts, but every request is rejected
+### API starts, but every CLI request is rejected
 
-Check the `Authorization: Bearer ...` header first. If role tokens are enabled, the API rejects unauthenticated requests even when TLS itself is working.
+Check the configured `read_token` and `admin_token` first. If role tokens are enabled, `pgtm` still needs valid credentials even when TLS itself is working.
 
 ### HTTPS works, but admin operations fail
 
-Confirm you are using the admin token, not a read-only token. Read-role access is not enough for switchover endpoints.
+Confirm you are using the admin token, not a read-only token. Read-role access is not enough for switchover commands.
 
 ### Enabling client certificate verification locks out clients
 

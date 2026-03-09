@@ -1,6 +1,6 @@
-# Monitor via API and CLI Signals
+# Monitor via CLI Signals
 
-This guide shows how to monitor a running cluster with the stable CLI outputs and the same JSON payloads that sit underneath them. In this repository, the observability surfaces are API and CLI JSON rather than a dedicated Prometheus or StatsD exporter.
+This guide shows how to monitor a running cluster with `pgtm` as the primary observability surface. The CLI already exposes the operator signals you normally need: cluster health, trust, leadership, debug availability, and retained debug history.
 
 ## Goal
 
@@ -16,38 +16,36 @@ Track:
 
 - access to each node's API listener
 - `pgtm`
-- `jq` if you want to filter CLI JSON
+- `jq` if you want to extract `meta.sequence` from saved JSON exactly as shown below
 - `[debug] enabled = true` on the nodes where you want richer debug history
 
 ## Step 1: Poll `pgtm status`
 
-Use the cluster summary first.
-
-Human output:
+Start with the cluster summary:
 
 ```bash
 pgtm -c /etc/pgtuskmaster/config.toml status
 ```
 
-Machine-readable output:
+When you want structured output for a poller or incident artifact, save the JSON form:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml --json status
+pgtm -c /etc/pgtuskmaster/config.toml --json status > status.json
 ```
 
 The synthesized status view includes:
 
 - `leader`
-- `dcs_trust`
-- `ha_phase`
+- `trust`
+- `phase`
 - `decision`
 - peer-sampling warnings
 - the seed node recorded in `queried_via`
 
-When you want the richer per-node investigation surface without leaving the CLI, use:
+When you want richer per-node investigation without leaving the CLI, use:
 
 ```bash
-pgtm -c /etc/pgtuskmaster/config.toml -v status
+pgtm -c /etc/pgtuskmaster/config.toml status -v
 ```
 
 That adds:
@@ -58,62 +56,37 @@ That adds:
 - explicit `DEBUG` availability
 - per-node debug detail blocks
 
-## Step 2: Alert on leader and trust anomalies
+## Step 2: Watch the cluster continuously
 
-Sample all nodes repeatedly and compare them.
-
-### Leader disagreement
+For a live operator console, use watch mode:
 
 ```bash
-for node in node-a node-b node-c; do
-  pgtm --base-url "http://${node}:8080" --json status | jq -r '
-    .queried_via.member_id as $seed
-    | .nodes[]
-    | select(.is_self)
-    | "\($seed) leader=\(.leader // "none") phase=\(.phase)"'
-done
+pgtm -c /etc/pgtuskmaster/config.toml status --watch
 ```
 
-Alert if nodes disagree for more than a brief transition window.
-
-### Dual-primary evidence
+For a noisier but deeper view during an incident, use:
 
 ```bash
-primary_count=0
-for node in node-a node-b node-c; do
-  phase=$(pgtm --base-url "http://${node}:8080" --json status | jq -r '.nodes[] | select(.is_self) | .phase')
-  if [ "${phase}" = "primary" ]; then
-    primary_count=$((primary_count + 1))
-  fi
-done
-printf 'primary_count=%s\n' "${primary_count}"
+pgtm -c /etc/pgtuskmaster/config.toml status -v --watch
 ```
 
-Treat any sustained value greater than `1` as critical.
+## Step 3: Alert on leadership and trust anomalies
 
-### Trust degradation
+The fastest high-signal checks are:
 
-```bash
-for node in node-a node-b node-c; do
-  pgtm --base-url "http://${node}:8080" --json status | jq -r '
-    .queried_via.member_id as $seed
-    | .nodes[]
-    | select(.is_self)
-    | "\($seed) trust=\(.trust)"'
-done
-```
+- `health: degraded`
+- warning lines about peer sampling failures or disagreement
+- more than one sampled `ROLE=primary`
+- any sampled `TRUST=fail_safe` or `TRUST=not_trusted`
 
-Alert when any node reports:
+If you need machine-readable checks, read the saved `status.json` artifact rather than scraping the table output.
 
-- `fail_safe`
-- `not_trusted`
+## Step 4: Collect rich state with `pgtm debug verbose`
 
-## Step 3: Collect rich state with `pgtm debug verbose`
-
-For a single node, the stable rich inspection surface is:
+For one node, the stable rich inspection surface is:
 
 ```bash
-pgtm --base-url http://127.0.0.1:8080 debug verbose
+pgtm -c /etc/pgtuskmaster/config.toml debug verbose
 ```
 
 Use it when you need more than the coarse cluster summary:
@@ -124,19 +97,19 @@ Use it when you need more than the coarse cluster summary:
 - decision detail and planned action count via `ha`
 - recent history via `changes` and `timeline`
 
-If you want the raw stable payload, use JSON:
+If you want the raw stable payload, save the JSON form:
 
 ```bash
-pgtm --base-url http://127.0.0.1:8080 --json debug verbose | jq .
+pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose > debug.json
 ```
 
-## Step 4: Poll incrementally with `--since`
+## Step 5: Poll incrementally with `--since`
 
 The CLI preserves the debug endpoint's incremental history model:
 
 ```bash
-last_seq=$(pgtm --base-url http://127.0.0.1:8080 --json debug verbose | jq '.meta.sequence')
-pgtm --base-url http://127.0.0.1:8080 --json debug verbose --since "${last_seq}" | jq .
+seq=$(jq -r '.meta.sequence' debug.json)
+pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose --since "${seq}" > debug-since.json
 ```
 
 Use these fields to manage your poller:
@@ -148,7 +121,7 @@ Use these fields to manage your poller:
 
 The current in-memory retention limit is `300` entries for `changes` and `timeline`, so incremental polling is the safest way to keep event history without missing rollovers.
 
-## Step 5: Watch decision kinds, not only phases
+## Step 6: Watch decision kinds, not only phases
 
 `phase` tells you where the node is. `decision` tells you what it wants to do next.
 
@@ -160,24 +133,20 @@ Useful decision kinds to alert on:
 - `step_down`
 - `recover_replica`
 
-```bash
-pgtm --base-url http://127.0.0.1:8080 --json debug verbose | jq '.ha'
-```
+`pgtm debug verbose` surfaces those decisions directly in human output and preserves the full payload in `debug.json` when you need to inspect the exact field values.
 
-## Step 6: Archive recent history during incidents
+## Step 7: Archive recent history during incidents
 
-When an incident starts, capture the raw verbose payload for later analysis.
+When an incident starts, capture the raw verbose payload for later analysis:
 
 ```bash
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-pgtm --base-url http://127.0.0.1:8080 --json debug verbose > "/var/log/pgtuskmaster/debug-${stamp}.json"
+pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose > "/var/log/pgtuskmaster/debug-${stamp}.json"
 ```
 
-The `timeline` and `changes` sections are especially useful for reconstructing:
+The retained `timeline` and `changes` sections are especially useful for reconstructing:
 
 - when trust degraded
 - when leadership changed
 - when recovery started
 - when fencing or fail-safe behavior appeared
-
-If `status -v` reports `debug=disabled`, `auth_failed`, or `transport_failed`, alert on that separately. Missing debug data is different from "no history happened."

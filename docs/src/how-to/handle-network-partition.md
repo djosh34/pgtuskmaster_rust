@@ -14,16 +14,17 @@ Determine:
 
 - access to the API listener on each node
 - `pgtm`
-- `jq` if you want to script against CLI JSON output
+- `jq` if you want to extract `meta.sequence` from saved JSON exactly as shown below
+- an operator config for each seed node you want to sample
 
-## Step 1: Check trust and leader agreement on every node
+## Step 1: Check trust and leader agreement from each seed
 
 Start with the same verbose cluster summary from each seed node:
 
 ```bash
-for node in node-a node-b node-c; do
-  pgtm --base-url "http://${node}:8080" -v status
-done
+pgtm -c /etc/pgtuskmaster/node-a.toml status -v
+pgtm -c /etc/pgtuskmaster/node-b.toml status -v
+pgtm -c /etc/pgtuskmaster/node-c.toml status -v
 ```
 
 Focus on:
@@ -34,18 +35,6 @@ Focus on:
 - `DECISION`
 - `DEBUG`
 - warning lines about peer sampling failures
-
-If you want a script-friendly summary, use JSON:
-
-```bash
-for node in node-a node-b node-c; do
-  pgtm --base-url "http://${node}:8080" --json status | jq -r '
-    .queried_via.member_id as $seed
-    | .nodes[]
-    | select(.is_self)
-    | "\($seed) trust=\(.trust) leader=\(.leader // "none") phase=\(.phase)"'
-done
-```
 
 Trust values are:
 
@@ -103,7 +92,7 @@ flowchart TD
 When the cluster table is not enough, inspect the specific node that looks partitioned:
 
 ```bash
-pgtm --base-url http://node-a:8080 debug verbose
+pgtm -c /etc/pgtuskmaster/node-a.toml debug verbose
 ```
 
 Focus on:
@@ -116,27 +105,20 @@ Focus on:
 - recent `changes`
 - recent `timeline`
 
-For repeated polling during the incident, use the retained sequence cursor:
+If you need a machine-readable incident artifact, save the JSON form and then poll incrementally from the stored sequence:
 
 ```bash
-last_seq=$(pgtm --base-url http://node-a:8080 --json debug verbose | jq '.meta.sequence')
-pgtm --base-url http://node-a:8080 --json debug verbose --since "${last_seq}" | jq '{
-  sequence: .meta.sequence,
-  changes: .changes,
-  timeline: .timeline
-}'
+pgtm -c /etc/pgtuskmaster/node-a.toml --json debug verbose > partition-node-a.json
+seq=$(jq -r '.meta.sequence' partition-node-a.json)
+pgtm -c /etc/pgtuskmaster/node-a.toml --json debug verbose --since "${seq}" > partition-node-a-since.json
 ```
-
-If the CLI reports `debug=disabled`, `auth_failed`, or `transport_failed` in `status -v`, fix that access problem before you assume the node has no interesting history.
 
 ## Step 4: Interpret fail-safe behavior carefully
 
-When trust is not `FullQuorum`, the node routes into `FailSafe`.
+When trust is not `full_quorum`, the node routes into `fail_safe`.
 
 - If local PostgreSQL is primary at that moment, the decision becomes `enter_fail_safe`
 - If local PostgreSQL is not primary, the node enters `fail_safe` with `no_change`
-
-The lowered effect plan for `enter_fail_safe` includes the safety effect for fencing, and may also release the leader lease when `release_leader_lease` is true.
 
 Do not assume that a partitioned node should be forced back into service manually while trust is degraded. The system is intentionally conservative here.
 
@@ -148,33 +130,25 @@ Restore the failed network path:
 - remove proxy, firewall, or routing blocks
 - restore the node-to-node paths your environment requires
 
-The partition tests in this repo exercise several distinct cases:
+The repo's long partition tests exercise several distinct cases:
 
 - a node isolated from etcd
 - the primary isolated from etcd
 - API-path isolation
 - mixed network faults followed by healing
 
-That distinction matters operationally. Diagnose which path failed before assuming the cluster needs the same recovery steps every time.
+Diagnose which path failed before assuming the cluster needs the same recovery steps every time.
 
 ## Step 6: Wait for convergence after healing
 
-After the fault is removed, keep polling all nodes until:
+After the fault is removed, keep polling all seed configs until:
 
 - trust returns to `full_quorum`
 - the nodes agree on a single leader
 - replicas settle back into expected follower behavior
 - no node remains stuck in `fail_safe`
 
-```bash
-for node in node-a node-b node-c; do
-  pgtm --base-url "http://${node}:8080" --json status | jq -r '
-    .queried_via.member_id as $seed
-    | .nodes[]
-    | select(.is_self)
-    | "\($seed) trust=\(.trust) leader=\(.leader // "none") phase=\(.phase) decision=\(.decision // "unknown")"'
-done
-```
+Use the same `pgtm ... status -v` commands from Step 1 until the warnings disappear and the tables agree again.
 
 ## Step 7: Verify replication again
 
@@ -188,8 +162,8 @@ This guide cannot prescribe one exact SQL verification command for every deploym
 
 ## Quick checklist
 
-- `dcs_trust` is back to `full_quorum` on every node
-- every node reports the same `leader`
-- only one node reports `ha_phase = "primary"`
+- `TRUST=full_quorum` on every node
+- every node reports the same `LEADER`
+- only one node reports `PHASE=primary`
 - replicas are no longer stuck in `fail_safe`
 - `changes` and `timeline` no longer show ongoing trust churn

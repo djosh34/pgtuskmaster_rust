@@ -1,6 +1,6 @@
 # Remove a Cluster Node
 
-This guide describes the most conservative operator-facing removal flow supported by the current codebase: move leadership away first when needed, stop the node externally, then verify the remaining cluster converges. The repository does not currently expose a dedicated "remove node" command.
+This guide describes the most conservative operator-facing removal flow supported by the current codebase: move leadership away first when needed, stop the node externally, then verify the remaining cluster converges through `pgtm`.
 
 ## Goal
 
@@ -16,8 +16,8 @@ The requested source files establish these limits:
 
 The normal supported control surfaces are:
 
-- observe state through `GET /ha/state`
-- request a switchover through the switchover API or CLI
+- observe state through `pgtm status`
+- request a switchover through the switchover CLI
 - stop the node or its PostgreSQL process externally in the environment you run
 
 ## Step 1: If the node is primary, move leadership first
@@ -26,8 +26,8 @@ Do not begin by deleting DCS state. If the node you want to remove is currently 
 
 After the switchover, confirm from a surviving node that:
 
-- `leader` points at the new primary
-- `dcs_trust` is healthy
+- `LEADER` points at the new primary
+- `TRUST` is healthy
 - the node you are removing is no longer the active leader
 
 ## Step 2: Stop the node externally
@@ -42,10 +42,10 @@ Examples of environment-specific actions:
 
 ## Step 3: Watch the surviving cluster converge
 
-Poll HA state from at least one surviving node:
+Poll cluster state from at least one surviving node:
 
 ```bash
-cargo run --bin pgtm -- -c ./node-a.toml --json
+pgtm -c /etc/pgtuskmaster/config.toml status -v
 ```
 
 Keep checking until the remaining cluster has a stable view of:
@@ -54,7 +54,7 @@ Keep checking until the remaining cluster has a stable view of:
 - the current trust level
 - the local HA phase on the nodes you care about
 
-The CLI result is already cluster-oriented. If it is degraded or warns about incomplete sampling, repeat the command against another reachable node with `--base-url` or another config file before you conclude the cluster has converged.
+If the cluster view is degraded or warns about incomplete sampling, repeat the same command from another surviving node's operator config before you conclude the cluster has converged.
 
 ## Step 4: Understand what the DCS layer actually stores
 
@@ -103,5 +103,3 @@ This page does not claim that:
 - a dedicated remove-node command exists
 - stale member keys are always harmless
 - manual etcd key deletion is the preferred operator path
-
-Those guarantees are not established by the requested source files.

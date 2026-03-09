@@ -1,50 +1,45 @@
 # Debug API Usage
 
-This tutorial shows how to inspect the stable verbose debug payload as an operator-facing observation surface. The goal is not to change cluster state, but to learn how to inspect the current snapshot and how to poll incrementally with `since`.
+This tutorial shows how to inspect the stable verbose debug payload through `pgtm`. The focus is observation: learn the human summary first, then switch to JSON only when you need the full stable payload or incremental polling.
 
 ## Prerequisites
 
 Complete [First HA Cluster](first-ha-cluster.md) and keep the cluster running.
 
-The shipped cluster runtime config enables the debug API, so node-a exposes it on the same HTTP listener as the normal API.
+If you want to extract `meta.sequence` from saved JSON exactly as shown below, install `jq`.
 
-## Step 1: Start with the CLI wrapper
+The examples below use [`docs/examples/docker-cluster-node-a.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-a.toml), which mirrors the shipped docker runtime config and adds an operator-facing `[pgtm].api_url` for the host-mapped API port.
+
+## Step 1: Start with the human summary
 
 The normal operator entry point is:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 debug verbose
+pgtm -c docs/examples/docker-cluster-node-a.toml debug verbose
 ```
 
-That summary already tells you:
+That one command summarizes:
 
 - the current sequence
 - PostgreSQL role and readiness
 - DCS trust and leader
 - HA phase and decision
-- recent `changes` and `timeline`
+- recent `changes`
+- recent `timeline`
 
-## Step 2: Read the raw stable payload through the CLI
+## Step 2: Save the raw stable payload only when you need it
 
 When you want the full machine-readable document, keep the CLI but switch to JSON:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose | jq '{
-  sequence: .meta.sequence,
-  trust: .dcs.trust,
-  member_count: .dcs.member_count,
-  leader: .dcs.leader,
-  phase: .ha.phase,
-  decision: .ha.decision
-}'
+pgtm -c docs/examples/docker-cluster-node-a.toml --json debug verbose > debug-node-a.json
 ```
 
-Those values let you answer:
+The saved file is the same stable payload the API serves. Use it when you need:
 
-- whether the cluster is trusted
-- which member currently leads
-- which HA phase the local node is in
-- which HA decision the node currently wants
+- a durable incident artifact
+- automation against exact field names
+- the full retained `changes` and `timeline` arrays
 
 ## Step 3: Learn the `since` polling model
 
@@ -52,75 +47,51 @@ The debug worker keeps bounded in-memory history for `changes` and `timeline`. T
 
 The `since` cursor does not remove the current snapshot. It only filters the retained history arrays so that they include entries with `sequence > since`.
 
-Capture the current sequence:
+Extract the current sequence from the saved JSON, then ask for only newer events:
 
 ```bash
-seq=$(cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose | jq '.meta.sequence')
-echo "$seq"
+seq=$(jq -r '.meta.sequence' debug-node-a.json)
+pgtm -c docs/examples/docker-cluster-node-a.toml --json debug verbose --since "${seq}" > debug-node-a-since.json
 ```
 
-Then ask for only newer events:
+If nothing changed, the new snapshot still reports the latest `meta.sequence`, but `changes` and `timeline` may both be empty.
 
-```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose --since "${seq}" | jq '{
-  sequence: .meta.sequence,
-  changes: .changes,
-  timeline: .timeline
-}'
-```
+## Step 4: Watch the HA and DCS signals
 
-If nothing changed, the snapshot still reports the latest `meta.sequence`, but `changes` and `timeline` may both be empty.
+You usually do not need every field on every poll. A practical operator loop is:
 
-## Step 4: Watch only the HA and DCS signals
+1. Start with `pgtm ... debug verbose` for the current summary.
+2. Save `--json debug verbose` only when you need an artifact.
+3. Re-run `--json debug verbose --since <sequence>` while you are following an incident.
 
-You usually do not need the full payload on every poll. This view narrows the response to the parts most relevant during cluster movement:
-
-```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose --since 0 | jq '{
-  trust: .dcs.trust,
-  leader: .dcs.leader,
-  phase: .ha.phase,
-  decision: .ha.decision,
-  changes: [.changes[] | select(.domain == "dcs" or .domain == "ha")],
-  timeline: [.timeline[] | select(.category == "dcs" or .category == "ha")]
-}'
-```
-
-That is a practical pattern for:
+That is enough to reconstruct:
 
 - leader transitions
 - trust degradation
 - fail-safe entry
 - recovery progress
 
-## Step 5: Fall back to raw HTTP only when you need the protocol directly
+## Step 5: Drop to raw HTTP only for protocol work
 
-The CLI reads the same stable payload you can read directly:
+Routine operator inspection should stay in `pgtm`. If you need the underlying endpoint contract itself, use the [Debug API reference](../reference/debug-api.md).
 
-```bash
-curl --fail --silent http://127.0.0.1:18081/debug/verbose | jq .
-curl --fail --silent "http://127.0.0.1:18081/debug/verbose?since=${seq}" | jq .
-```
-
-Use the raw HTTP form when you are testing the protocol itself, another client implementation, or auth/TLS behavior outside `pgtm`.
-
-## Step 6: Understand the availability rules
+## Step 6: Understand availability rules
 
 The debug endpoints live on the normal API listener and follow its auth and TLS posture.
 
 That means:
 
-- if `debug.enabled` is `false`, the CLI will surface `debug=disabled` from `status -v`, and direct `/debug/verbose` reads return `404`
-- if API auth is disabled, the debug endpoints are reachable without bearer tokens
-- if role tokens are configured, debug routes are read endpoints and require read access
+- if `debug.enabled` is `false`, `status -v` reports `debug=disabled`
+- if API auth is disabled, the debug endpoints are reachable without tokens
+- if role tokens are configured, debug reads need read access
 
-The shipped docker cluster config disables API auth, so the local tutorial commands do not require tokens.
+The shipped docker cluster config disables API auth, so the local tutorial commands do not require separate token flags.
 
 ## What you learned
 
 You now know how to:
 
 - use `pgtm debug verbose` as the normal operator entry point
-- read the raw stable payload with `--json`
+- save the raw stable payload with `--json`
 - use `meta.sequence` as an incremental polling cursor
 - treat `since` as a history filter rather than a delta-only snapshot format

@@ -1,119 +1,132 @@
 # Handle Primary Failure
 
-This guide shows you how to detect, assess, and respond to a PostgreSQL primary node failure in a pgtuskmaster cluster.
+This guide shows how to detect, assess, and respond to a PostgreSQL primary node failure with `pgtm` as the primary operator interface.
 
 ## Prerequisites
 
-- A running pgtuskmaster cluster with more than one node
-- Access to the HTTP API
-- Access to PostgreSQL on the cluster nodes
+- a running pgtuskmaster cluster with more than one node
+- access to at least one reachable node API
+- access to PostgreSQL on the cluster nodes
+- an operator-facing config that either sets `[pgtm].api_url` or derives an operator-reachable URL from `api.listen_addr`
 
-## Detect Primary Failure
+## Detect primary failure
 
-Monitor primary health through `/ha/state`.
+Start with the cluster-wide view:
 
-Parse these fields from the response:
-
-- `ha_phase`: Current operational phase (string)
-- `dcs_trust`: Trust level state (`full_quorum`, `fail_safe`, or `not_trusted`)
-- `leader`: Member ID of the current leader (optional string)
-
-A primary failure can surface through HA phase and trust changes such as:
-
-```text
-{
-  "ha_phase": "rewinding",
-  "dcs_trust": "fail_safe",
-  "leader": null
-}
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml status -v
 ```
 
-If etcd is unreachable, `dcs_trust` becomes `not_trusted`. If member records are stale, it becomes `fail_safe`. These states are part of the safety model that prevents split-brain.
+Focus on:
 
-## Assess Cluster State
+- `ROLE`
+- `TRUST`
+- `PHASE`
+- `LEADER`
+- `DECISION`
+- warning lines about unreachable peers or disagreement
 
-Query all reachable nodes to build a complete picture.
+A primary failure usually surfaces as:
+
+- no stable primary in the sampled view
+- trust degrading to `fail_safe` or `not_trusted`
+- one or more nodes moving through `candidate_leader`, `rewinding`, or other recovery-related phases
+
+If the cluster view is degraded, repeat the same command from another seed config before you conclude the failure scope.
+
+## Assess cluster state
 
 Look for:
 
-- **Exactly one** node in `primary` phase (or `rewinding` if recently failed)
-- **All other** nodes in `replica`, `candidate_leader`, or `rewinding`
-- `dcs_trust: "full_quorum"` on the majority of nodes
-
-Use the observer pattern from test tooling to programmatically assert no split-brain:
-
-- Collect `/ha/state` responses from all nodes
-- Fail if more than one node reports `ha_phase: "primary"` at any sample
-- The observer requires a minimum sample count to assert safety
+- exactly one node in `ROLE=primary` once the cluster settles
+- all other nodes in replica-oriented behavior
+- `TRUST=full_quorum` on the healthy view
 
 The Docker cluster example uses `ha.lease_ttl_ms = 10000` and `ha.loop_interval_ms = 1000`. Those values bound freshness checks and influence when stale member or leader state is treated as unsafe.
 
-## Respond to Primary Failure
+If the status table is not enough, inspect the most suspicious node directly:
+
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+```
+
+That gives you the current:
+
+- PostgreSQL state
+- DCS trust and leader cache
+- HA phase and decision
+- retained `changes` and `timeline`
+
+## Respond to primary failure
 
 No manual intervention is required for most failures. The HA decision engine automatically:
 
-1. Detects PostgreSQL unreachability
-2. Releases the leader lease if held by the failed node
-3. Transitions to `rewinding` phase
-4. Selects a recovery target from healthy members
-5. Executes `pg_rewind` or base backup to rejoin the cluster
+1. Detects PostgreSQL unreachability.
+2. Releases the leader lease if held by the failed node.
+3. Moves through recovery and election logic.
+4. Selects a recovery target from healthy members.
+5. Executes rewind or base-backup recovery so the failed node can rejoin safely.
 
-To monitor automated recovery, keep sampling `/ha/state` across the cluster and compare leader identity, trust state, phase, and decision.
+To monitor automated recovery, keep watching cluster status:
+
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml status -v --watch
+```
 
 ### If automation stalls
 
 If decisions remain unchanged and trust stays at `fail_safe` or `not_trusted`, resolve the underlying etcd, network, or PostgreSQL problem before expecting promotion to proceed.
 
-## Verify Recovery
+## Verify recovery
 
-Once a new primary is visible in HA state, verify data consistency:
+Once a new primary is visible in cluster status, verify data consistency:
 
 1. Confirm exactly one primary via SQL:
 
-```bash
-for node in node-a node-b node-c; do
-  psql -h ${node} -U postgres -c "SELECT pg_is_in_recovery();"
-done
-```
+   ```bash
+   for node in node-a node-b node-c; do
+     psql -h "${node}" -U postgres -c "SELECT pg_is_in_recovery();"
+   done
+   ```
 
-Exactly one node should return `false`.
+   Exactly one node should return `false`.
 
 2. Check replication lag on replicas:
 
-```bash
-psql -h <replica-ip> -U postgres -c "SELECT now() - pg_last_xact_replay_timestamp();"
-```
+   ```bash
+   psql -h <replica-ip> -U postgres -c "SELECT now() - pg_last_xact_replay_timestamp();"
+   ```
 
-3. Validate DCS trust restoration through the `dcs_trust` field in `/ha/state`.
+3. Confirm `pgtm status -v` has returned to one primary, healthy trust, and no warning lines.
 
-## Troubleshoot Common Scenarios
+## Troubleshoot common scenarios
 
-### All Nodes in `fail_safe` Phase
+### All nodes show `TRUST=fail_safe`
 
-**Cause**: etcd unreachable or most member records stale.  
-**Action**: Restore etcd cluster health first.
+Cause: etcd unreachable or most member records stale.  
+Action: restore etcd cluster health first.
 
-### New Primary Elected but Replicas Stuck in `rewinding`
+### New primary elected but replicas stay in recovery work
 
-**Cause**: `pg_rewind` fails due to timeline divergence or WAL gaps.  
-**Action**: The node can escalate from rewind-related recovery to bootstrap or base-backup paths automatically.
+Cause: rewind or catch-up still running, or recovery escalated because WAL continuity was not sufficient.  
+Action: keep watching `status -v` and inspect `debug verbose` on the affected replica.
 
-### Split-Brain Detected
+### You suspect split-brain
 
-**Cause**: Network partition created multiple primaries. The observer flags this when samples show `max_concurrent_primaries > 1`.  
-**Action**: pgtuskmaster can enter fencing when a foreign leader is detected.
+Cause: network partition or stale observations.  
+Action: run `pgtm status -v` from more than one seed config and treat any sustained multi-primary view as critical.
 
-### Leader Lease Release Stalls
+### Leader lease release stalls
 
-**Cause**: The previous primary cannot reach etcd to release its lease.  
+Cause: the previous primary cannot reach etcd to release its lease.  
 `ha.lease_ttl_ms` bounds member-record freshness and therefore affects how stale leader or member state is treated.
 
-## Verification Checklist
+## Verification checklist
 
-- [ ] Exactly one node in `primary` phase
-- [ ] All other nodes in `replica` phase
-- [ ] `dcs_trust: "full_quorum"` on majority
+- [ ] Exactly one node reports `ROLE=primary`
+- [ ] All other nodes report replica-oriented behavior
+- [ ] `TRUST=full_quorum` on the healthy view
 - [ ] `pg_is_in_recovery()` returns `false` on one node only
 - [ ] Replication lag on replicas is acceptable
-- [ ] No split-brain warnings in observer logs
+- [ ] No sustained split-brain evidence appears in repeated status samples
 - [ ] Application traffic can write to the new primary

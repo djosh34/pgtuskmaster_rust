@@ -1,23 +1,25 @@
 # Observing a Failover Event
 
-In this tutorial, you will watch a real high-availability failover unfold in a three-node cluster. The focus is observation: start with the cluster-wide CLI view, then inspect a single node more deeply when you need the retained history.
+In this tutorial, you will watch a real failover unfold in a three-node cluster. Start with the cluster-wide `pgtm` view, then inspect one node more deeply only when you need the retained history.
 
 ## Prerequisites
 
-Complete the [First HA Cluster](first-ha-cluster.md) tutorial and keep the cluster running. You will need:
+Complete the [First HA Cluster](first-ha-cluster.md) tutorial and keep the cluster running.
 
-- Docker and docker-compose
-- the cluster from the previous tutorial
-- `cargo` so you can run `pgtm` from the repo checkout
+Use these docs-owned operator configs while you follow the event:
+
+- [`docs/examples/docker-cluster-node-a.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-a.toml)
+- [`docs/examples/docker-cluster-node-b.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-b.toml)
+- [`docs/examples/docker-cluster-node-c.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-c.toml)
+
+Each file mirrors the shipped docker runtime config and adds `[pgtm].api_url` for the corresponding host-mapped API port.
 
 ## Step 1: Check initial cluster health
 
-Start from the topology defined by `docker/compose/docker-compose.cluster.yml`: one `etcd` service and three pgtuskmaster nodes. Each node exposes an API port and a PostgreSQL port, and each node has its own data and log volumes.
-
-Use the CLI summary from one node:
+Start from one seed node:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 -v status
+pgtm -c docs/examples/docker-cluster-node-a.toml status -v
 ```
 
 Initially:
@@ -29,40 +31,30 @@ Initially:
 
 ## Step 2: Capture a deeper baseline on the current leader
 
-Pick the current leader from the status output and inspect its stable verbose snapshot:
+Pick the current leader from the status output. Then inspect that node directly by using the matching docs example config:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 debug verbose
+pgtm -c docs/examples/docker-cluster-node-a.toml debug verbose
 ```
 
-Focus on:
+If another node is leader, swap in `docker-cluster-node-b.toml` or `docker-cluster-node-c.toml`.
 
-- `dcs.trust`
-- `dcs.leader`
-- `ha.phase`
-- `ha.decision`
-- recent `changes`
-- recent `timeline`
-
-If you want to archive the exact payload before the fault, use:
+If you want to archive the exact payload before the fault, save the JSON form:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose > before-failover.json
+pgtm -c docs/examples/docker-cluster-node-a.toml --json debug verbose > before-failover.json
 ```
 
 ## Step 3: Introduce a primary outage
 
-Create a failure in the current primary using the fault method available in your environment. The source-backed test harness uses two families of faults:
-
-- immediate PostgreSQL stop helpers
-- connectivity faults created through TCP proxy links in front of etcd, API, and PostgreSQL endpoints
+Create a failure in the current primary using the fault method available in your environment. The source-backed test harness exercises both immediate PostgreSQL stops and network faults created through proxy links.
 
 ## Step 4: Watch trust and leadership move
 
-Run the verbose status command repeatedly after the fault:
+Use repeated cluster-wide status while the fault is active:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 -v status
+pgtm -c docs/examples/docker-cluster-node-a.toml status -v --watch
 ```
 
 Watch for:
@@ -72,26 +64,20 @@ Watch for:
 - one node moving toward candidacy or primary behavior
 - `DECISION` changing from wait states into leadership actions
 
-Trust evaluation follows these rules:
-
-- `not_trusted` if etcd is unhealthy
-- `fail_safe` if self or leader freshness is not good enough
-- `full_quorum` otherwise
-
 ## Step 5: Inspect the election on the winning node
 
 Once a likely winner appears, inspect that node directly:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18082 debug verbose
+pgtm -c docs/examples/docker-cluster-node-b.toml debug verbose
 ```
 
 During the election window, you should see the decision evolve roughly like this:
 
-1. `wait_for_dcs_trust` while the system stabilizes
-2. `attempt_leadership` as a replica tries to acquire leadership
-3. `become_primary` for the winning node
-4. `no_change` once promotion is complete
+1. `wait_for_dcs_trust`
+2. `attempt_leadership`
+3. `become_primary`
+4. `no_change`
 
 The retained `changes` and `timeline` sections are the fastest way to reconstruct the order of those transitions.
 
@@ -100,7 +86,7 @@ The retained `changes` and `timeline` sections are the fastest way to reconstruc
 After promotion completes, run the cluster view again:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 -v status
+pgtm -c docs/examples/docker-cluster-node-a.toml status -v
 ```
 
 At this point you should see:
@@ -119,7 +105,7 @@ Restore the failed node using the inverse of the fault you introduced.
 Keep watching the cluster summary and, when needed, inspect the recovering node:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18083 debug verbose
+pgtm -c docs/examples/docker-cluster-node-c.toml debug verbose
 ```
 
 The recovering node may temporarily show `recover_replica` behavior. Once caught up, it should return to replica behavior with healthy SQL state.
@@ -129,7 +115,7 @@ The recovering node may temporarily show `recover_replica` behavior. Once caught
 Run one final cluster summary:
 
 ```bash
-cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 -v status
+pgtm -c docs/examples/docker-cluster-node-a.toml status -v
 ```
 
 Confirm:
@@ -139,8 +125,6 @@ Confirm:
 - trust is back to `full_quorum`
 - the cluster has returned to steady-state decisions
 
-You have now observed a complete failover cycle: detection, election, promotion, and recovery.
-
 ## What you learned
 
-Through direct observation, you saw how pgtuskmaster evaluates DCS trust, makes HA decisions, and orchestrates failover automatically. `pgtm status -v` gives the cluster-wide picture, and `pgtm debug verbose` gives the single-node retained history behind it.
+You have now observed a complete failover cycle: detection, election, promotion, and recovery. `pgtm status -v` gives the cluster-wide picture, and `pgtm debug verbose` gives the single-node retained history behind it.

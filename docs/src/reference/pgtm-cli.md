@@ -24,6 +24,8 @@ pgtm - operator CLI for the PGTuskMaster HA API
 
 `pgtm` is the operator-facing command-line client for the PGTuskMaster HA API. The normal workflow is to point it at the shared runtime config with `-c config.toml`, then let the CLI resolve the API URL, auth tokens, and API-client TLS settings from that config.
 
+When a daemon config binds an unspecified address such as `0.0.0.0:8080`, keep that daemon config truthful and add an operator-facing `[pgtm].api_url` in the config you hand to `pgtm`. The local docker tutorials in this repository demonstrate that pattern with docs-owned example configs under `docs/examples/`.
+
 The default operator entry point is cluster status:
 
 - `pgtm` behaves the same as `pgtm status`
@@ -350,6 +352,9 @@ pgtm -c /etc/pgtuskmaster/config.toml debug verbose --since 42
 
 # Export the raw stable verbose payload for automation
 pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose
+
+# Local docker tutorial config with host-mapped API URL
+pgtm -c docs/examples/docker-cluster-node-a.toml status
 
 # Connect to the current primary without scraping table output
 psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)"
