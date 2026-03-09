@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 07:02:47 AM CET 2026
+Generated: Mon Mar  9 08:10:30 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -194,6 +194,18 @@ The codebase carries API and DCS endpoint addresses as raw `String` values deep 
 
 ```
 ## Task: Add HA Restart And Leadership Churn E2E Coverage <status>completed</status> <passes>true</passes>
+
+<priority>low</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-parallel-ha-test-hardening/03-task-add-clone-and-rewind-failure-ha-e2e-coverage.md`
+
+```
+## Task: Add Clone And Rewind Failure HA E2E Coverage <status>completed</status> <passes>true</passes>
 
 <priority>low</priority>
 

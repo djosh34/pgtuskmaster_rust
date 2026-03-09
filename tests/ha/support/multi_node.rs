@@ -99,6 +99,28 @@ struct ObservedNodeClient {
     client: CliApiClient,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RecoveryBinaryKind {
+    PgBasebackup,
+    PgRewind,
+}
+
+impl RecoveryBinaryKind {
+    fn binary_name(self) -> &'static str {
+        match self {
+            Self::PgBasebackup => "pg_basebackup",
+            Self::PgRewind => "pg_rewind",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FailureWrapper {
+    wrapper_path: PathBuf,
+    fail_enabled_marker: PathBuf,
+    invoked_marker: PathBuf,
+}
+
 fn unique_e2e_token() -> Result<String, WorkerError> {
     let now = ha_e2e::util::unix_now()?.0;
     let seq = E2E_UNIQUE_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -112,6 +134,117 @@ fn e2e_http_timeout_ms() -> Result<u64, WorkerError> {
 
 fn sql_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn shell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn failure_wrapper_dir_for_namespace(
+    namespace_root_dir: &Path,
+    scenario_name: &str,
+) -> Result<PathBuf, WorkerError> {
+    let token = unique_e2e_token()?;
+    let dir = namespace_root_dir.join("fault-injection").join(format!(
+        "{}-{}",
+        sanitize_component(scenario_name),
+        token
+    ));
+    fs::create_dir_all(&dir).map_err(|err| {
+        WorkerError::Message(format!(
+            "create failure wrapper dir failed for {scenario_name}: {err}"
+        ))
+    })?;
+    Ok(dir)
+}
+
+fn create_failure_wrapper_for_namespace(
+    namespace_root_dir: &Path,
+    scenario_name: &str,
+    node_id: &str,
+    binary_kind: RecoveryBinaryKind,
+    real_binary: &Path,
+) -> Result<FailureWrapper, WorkerError> {
+    let wrapper_dir = failure_wrapper_dir_for_namespace(namespace_root_dir, scenario_name)?;
+    let wrapper_path = wrapper_dir.join(format!(
+        "{}-{}",
+        sanitize_component(node_id),
+        binary_kind.binary_name()
+    ));
+    let fail_enabled_marker = wrapper_dir.join("fail-enabled");
+    let invoked_marker = wrapper_dir.join("invoked.log");
+    let script = format!(
+        concat!(
+            "#!/bin/bash\n",
+            "set -euo pipefail\n",
+            "invoked_marker={invoked_marker}\n",
+            "fail_enabled_marker={fail_enabled_marker}\n",
+            "real_binary={real_binary}\n",
+            "printf '%s %s\\n' \"$(date +%s)\" \"$*\" >> \"$invoked_marker\"\n",
+            "if [[ -e \"$fail_enabled_marker\" ]]; then\n",
+            "  exit 97\n",
+            "fi\n",
+            "exec \"$real_binary\" \"$@\"\n"
+        ),
+        invoked_marker = shell_literal(invoked_marker.to_string_lossy().as_ref()),
+        fail_enabled_marker = shell_literal(fail_enabled_marker.to_string_lossy().as_ref()),
+        real_binary = shell_literal(real_binary.to_string_lossy().as_ref()),
+    );
+    fs::write(&wrapper_path, script).map_err(|err| {
+        WorkerError::Message(format!(
+            "write failure wrapper script failed for {scenario_name} {node_id} {}: {err}",
+            binary_kind.binary_name()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&wrapper_path)
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "read failure wrapper metadata failed for {}: {err}",
+                    wrapper_path.display()
+                ))
+            })?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&wrapper_path, permissions).map_err(|err| {
+            WorkerError::Message(format!(
+                "set failure wrapper executable bit failed for {}: {err}",
+                wrapper_path.display()
+            ))
+        })?;
+    }
+
+    Ok(FailureWrapper {
+        wrapper_path,
+        fail_enabled_marker,
+        invoked_marker,
+    })
+}
+
+fn set_failure_wrapper_enabled(wrapper: &FailureWrapper, enabled: bool) -> Result<(), WorkerError> {
+    if enabled {
+        fs::write(&wrapper.fail_enabled_marker, b"enabled\n").map_err(|err| {
+            WorkerError::Message(format!(
+                "enable failure wrapper marker failed at {}: {err}",
+                wrapper.fail_enabled_marker.display()
+            ))
+        })?;
+    } else {
+        match fs::remove_file(&wrapper.fail_enabled_marker) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(WorkerError::Message(format!(
+                    "disable failure wrapper marker failed at {}: {err}",
+                    wrapper.fail_enabled_marker.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn write_pgtm_cli_config(api_observe_addr: &std::net::SocketAddr) -> Result<PathBuf, WorkerError> {
@@ -455,11 +588,13 @@ impl ClusterFixture {
             cluster_name: "cluster-e2e".to_string(),
             scope: "scope-ha-e2e".to_string(),
             node_count,
+            namespace: None,
             etcd_members: vec![
                 "etcd-a".to_string(),
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
+            recovery_binary_overrides: BTreeMap::new(),
             postgres_roles: None,
             mode: ha_e2e::Mode::Plain,
             timeouts: ha_e2e::TimeoutConfig {
@@ -490,7 +625,6 @@ impl ClusterFixture {
             api_proxies: _,
             pg_proxies: _,
         } = handle;
-
         Ok(Self {
             _guard: guard,
             pg_ctl_bin: binaries.pg_ctl.clone(),
@@ -510,6 +644,43 @@ impl ClusterFixture {
             Err(err) => format!("time_error:{err}"),
         };
         self.timeline.push(format!("[{stamp}] {}", message.into()));
+    }
+
+    fn disable_failure_wrapper(
+        &mut self,
+        scenario_name: &str,
+        wrapper: &FailureWrapper,
+    ) -> Result<(), WorkerError> {
+        set_failure_wrapper_enabled(wrapper, false)?;
+        self.record(format!(
+            "{scenario_name}: disabled failure wrapper {}",
+            wrapper.wrapper_path.display()
+        ));
+        Ok(())
+    }
+
+    fn assert_failure_wrapper_invoked(
+        &mut self,
+        scenario_name: &str,
+        wrapper: &FailureWrapper,
+    ) -> Result<(), WorkerError> {
+        let contents = fs::read_to_string(&wrapper.invoked_marker).map_err(|err| {
+            WorkerError::Message(format!(
+                "{scenario_name}: failure wrapper was not invoked at {}: {err}",
+                wrapper.invoked_marker.display()
+            ))
+        })?;
+        if contents.trim().is_empty() {
+            return Err(WorkerError::Message(format!(
+                "{scenario_name}: failure wrapper invocation log is empty at {}",
+                wrapper.invoked_marker.display()
+            )));
+        }
+        self.record(format!(
+            "{scenario_name}: observed failure wrapper invocation {}",
+            wrapper.wrapper_path.display()
+        ));
+        Ok(())
     }
 
     fn proof_table_name(&self, prefix: &str) -> Result<String, WorkerError> {
@@ -642,6 +813,66 @@ impl ClusterFixture {
                 return Err(WorkerError::Message(format!(
                     "timed out waiting for at least {min_nodes} queryable nodes including {required_node_id}; last_observation={observation}"
                 )));
+            }
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
+        }
+    }
+
+    async fn wait_for_node_sql_role(
+        &self,
+        node_id: &str,
+        expected_role: &str,
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let (sql_roles, sql_errors) = self.cluster_sql_roles_best_effort().await?;
+            let observed_role = sql_roles
+                .iter()
+                .find_map(|(observed_node_id, role)| {
+                    (observed_node_id == node_id).then_some(role.as_str())
+                });
+            if observed_role == Some(expected_role) {
+                return Ok(());
+            }
+            let observation = format!("roles={sql_roles:?} sql_errors={sql_errors:?}");
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for {node_id} to report SQL role {expected_role}; last_observation={observation}"
+                )));
+            }
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
+        }
+    }
+
+    async fn assert_node_not_queryable_for_window(
+        &mut self,
+        node_id: &str,
+        window: Duration,
+    ) -> Result<(), WorkerError> {
+        let deadline = tokio::time::Instant::now() + window;
+        loop {
+            match self
+                .run_sql_on_node(
+                    node_id,
+                    "SELECT 1",
+                    E2E_SQL_WORKLOAD_COMMAND_TIMEOUT,
+                )
+                .await
+            {
+                Ok(output) => {
+                    return Err(WorkerError::Message(format!(
+                        "expected {node_id} to remain non-queryable during failure window, but SQL succeeded with output={output:?}"
+                    )));
+                }
+                Err(err) => {
+                    self.record(format!(
+                        "expected non-queryable node {node_id} still failing SQL during observation window: {err}"
+                    ));
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(());
             }
             tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
         }
@@ -2613,6 +2844,51 @@ impl ClusterFixture {
         .await
     }
 
+    fn wipe_node_data_dir(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        let Some(node) = self.node_by_id(node_id) else {
+            return Err(WorkerError::Message(format!(
+                "unknown node for data-dir wipe: {node_id}"
+            )));
+        };
+        if node.data_dir.as_os_str().is_empty() {
+            return Err(WorkerError::Message(format!(
+                "cannot wipe empty data dir for {node_id}"
+            )));
+        }
+        if node.data_dir.exists() {
+            fs::remove_dir_all(&node.data_dir).map_err(|err| {
+                WorkerError::Message(format!(
+                    "remove data dir failed for {node_id} at {}: {err}",
+                    node.data_dir.display()
+                ))
+            })?;
+        }
+        fs::create_dir_all(&node.data_dir).map_err(|err| {
+            WorkerError::Message(format!(
+                "recreate data dir failed for {node_id} at {}: {err}",
+                node.data_dir.display()
+            ))
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&node.data_dir, fs::Permissions::from_mode(0o700)).map_err(
+                |err| {
+                    WorkerError::Message(format!(
+                        "set data dir permissions failed for {node_id} at {}: {err}",
+                        node.data_dir.display()
+                    ))
+                },
+            )?;
+        }
+        self.record(format!(
+            "wiped postgres data dir for {node_id} at {}",
+            node.data_dir.display()
+        ));
+        Ok(())
+    }
+
     // This fixture-level etcd shutdown models external quorum loss; it is not direct DCS key steering.
     async fn stop_etcd_majority(&mut self, stop_count: usize) -> Result<Vec<String>, WorkerError> {
         let Some(etcd_cluster) = self.etcd.as_mut() else {
@@ -3203,11 +3479,13 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
         cluster_name: "cluster-e2e-custom-postgres-roles".to_string(),
         scope: "scope-ha-e2e-custom-postgres-roles".to_string(),
         node_count: 3,
+        namespace: None,
         etcd_members: vec![
             "etcd-a".to_string(),
             "etcd-b".to_string(),
             "etcd-c".to_string(),
         ],
+        recovery_binary_overrides: BTreeMap::new(),
         postgres_roles: Some(ha_e2e::PostgresRoleOverrides {
             replicator_username: "replicator_custom".to_string(),
             replicator_password: "replicator-secret".to_string(),
@@ -3401,6 +3679,484 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
             "timeline write failed: {artifact_err}"
         ))),
     }
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_clone_failure_recovers_after_fault_removed(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let scenario_name = "ha-e2e-clone-failure-recovers-after-fix";
+        let namespace = pgtuskmaster_rust::test_harness::namespace::create_namespace(
+            scenario_name,
+        )
+        .map_err(|err| {
+            WorkerError::Message(format!(
+                "create namespace failed for {scenario_name}: {err}"
+            ))
+        })?;
+        let real_binaries =
+            pgtuskmaster_rust::test_harness::binaries::require_pg16_process_binaries_for_real_tests(
+            )
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "load real postgres binaries failed for {scenario_name}: {err}"
+                ))
+            })?;
+        let basebackup_wrapper = create_failure_wrapper_for_namespace(
+            &namespace.root_dir,
+            scenario_name,
+            "node-3",
+            RecoveryBinaryKind::PgBasebackup,
+            real_binaries.pg_basebackup.as_path(),
+        )?;
+        set_failure_wrapper_enabled(&basebackup_wrapper, false)?;
+
+        let mut recovery_binary_overrides = BTreeMap::new();
+        recovery_binary_overrides.insert(
+            "node-3".to_string(),
+            ha_e2e::RecoveryBinaryOverrides {
+                pg_basebackup: Some(basebackup_wrapper.wrapper_path.clone()),
+                pg_rewind: None,
+            },
+        );
+        let mut fixture = ClusterFixture::start_with_config(ha_e2e::TestConfig {
+            test_name: scenario_name.to_string(),
+            cluster_name: "cluster-e2e-clone-failure".to_string(),
+            scope: "scope-ha-e2e-clone-failure".to_string(),
+            node_count: 3,
+            namespace: Some(namespace),
+            etcd_members: vec![
+                "etcd-a".to_string(),
+                "etcd-b".to_string(),
+                "etcd-c".to_string(),
+            ],
+            recovery_binary_overrides,
+            postgres_roles: None,
+            mode: ha_e2e::Mode::Plain,
+            timeouts: ha_e2e::TimeoutConfig {
+                command_timeout: E2E_COMMAND_TIMEOUT,
+                command_kill_wait_timeout: E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                http_step_timeout: E2E_HTTP_STEP_TIMEOUT,
+                api_readiness_timeout: E2E_API_READINESS_TIMEOUT,
+                bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
+                scenario_timeout: E2E_SCENARIO_TIMEOUT,
+            },
+        })
+        .await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record(format!(
+                "{scenario_name}: basebackup wrapper ready at {}",
+                basebackup_wrapper.wrapper_path.display()
+            ));
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "clone-failure bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 3,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            fixture.record(format!(
+                "{scenario_name}: bootstrap primary={bootstrap_primary}"
+            ));
+            fixture
+                .wait_for_queryable_nodes(&bootstrap_primary, 3, E2E_PRIMARY_CONVERGENCE_TIMEOUT)
+                .await?;
+            fixture
+                .wait_for_node_sql_role("node-3", "replica", E2E_PRIMARY_CONVERGENCE_TIMEOUT)
+                .await?;
+            fixture
+                .assert_no_dual_primary_window(E2E_SHORT_NO_DUAL_PRIMARY_WINDOW)
+                .await?;
+
+            let healthy_replica = fixture
+                .nodes
+                .iter()
+                .find_map(|node| {
+                    (node.id.as_str() != bootstrap_primary.as_str() && node.id.as_str() != "node-3")
+                        .then_some(node.id.clone())
+                })
+                .ok_or_else(|| {
+                    WorkerError::Message(format!(
+                        "{scenario_name}: expected a non-failing healthy replica"
+                    ))
+                })?;
+            fixture.record(format!(
+                "{scenario_name}: healthy replica before failure={healthy_replica}"
+            ));
+
+            let table_name = fixture.proof_table_name("ha_clone_failure_proof")?;
+            fixture.create_proof_table(&bootstrap_primary, &table_name).await?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, &table_name, 1, "before-failure")
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    &table_name,
+                    &["1:before-failure".to_string()],
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+            set_failure_wrapper_enabled(&basebackup_wrapper, true)?;
+            fixture.record(format!(
+                "{scenario_name}: enabled failure wrapper {}",
+                basebackup_wrapper.wrapper_path.display()
+            ));
+            fixture.record(format!(
+                "{scenario_name}: forcing node-3 into a fresh clone attempt"
+            ));
+            fixture.stop_postgres_for_node("node-3").await?;
+            fixture.wipe_node_data_dir("node-3")?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, &table_name, 2, "during-failure")
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_nodes(
+                    &[bootstrap_primary.clone(), healthy_replica.clone()],
+                    &table_name,
+                    &[
+                        "1:before-failure".to_string(),
+                        "2:during-failure".to_string(),
+                    ],
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .assert_node_not_queryable_for_window("node-3", Duration::from_secs(5))
+                .await?;
+            fixture
+                .assert_no_dual_primary_window(E2E_LONG_NO_DUAL_PRIMARY_WINDOW)
+                .await?;
+            fixture.assert_failure_wrapper_invoked(
+                scenario_name,
+                &basebackup_wrapper,
+            )?;
+
+            fixture.disable_failure_wrapper(scenario_name, &basebackup_wrapper)?;
+            fixture.record(format!(
+                "{scenario_name}: restarting node-3 runtime so startup re-enters clone after removing the pg_basebackup blocker"
+            ));
+            fixture.stop_postgres_for_node("node-3").await?;
+            fixture.wipe_node_data_dir("node-3")?;
+            fixture.restart_runtime_process_for_node("node-3").await?;
+            let recovered_nodes = fixture
+                .wait_for_queryable_nodes("node-3", 3, Duration::from_secs(120))
+                .await?;
+            if recovered_nodes.len() < 3 {
+                return Err(WorkerError::Message(format!(
+                    "{scenario_name}: expected all three nodes queryable after recovery, got {recovered_nodes:?}"
+                )));
+            }
+            fixture
+                .wait_for_node_sql_role("node-3", "replica", Duration::from_secs(120))
+                .await?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, &table_name, 3, "after-recovery")
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    &table_name,
+                    &[
+                        "1:before-failure".to_string(),
+                        "2:during-failure".to_string(),
+                        "3:after-recovery".to_string(),
+                    ],
+                    Duration::from_secs(120),
+                )
+                .await?;
+            fixture.record(format!(
+                "{scenario_name}: node-3 rejoined cleanly after removing the pg_basebackup blocker"
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => {
+                fixture.record(format!(
+                    "{scenario_name}: timed out after {}s",
+                    E2E_SCENARIO_TIMEOUT.as_secs()
+                ));
+                Err(WorkerError::Message(format!(
+                    "{scenario_name}: timed out after {}s",
+                    E2E_SCENARIO_TIMEOUT.as_secs()
+                )))
+            }
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+
+        match (run_result, artifact_path, shutdown_result) {
+            (Ok(()), Ok(_), Ok(())) => Ok(()),
+            (Err(run_err), Ok(path), Ok(())) => Err(WorkerError::Message(format!(
+                "{run_err}; timeline: {}",
+                path.display()
+            ))),
+            (Err(run_err), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+                "{run_err}; timeline write failed: {artifact_err}"
+            ))),
+            (Ok(()), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "shutdown failed: {shutdown_err}; timeline: {}",
+                path.display()
+            ))),
+            (Ok(()), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+            ))),
+            (Err(run_err), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "{run_err}; shutdown failed: {shutdown_err}; timeline: {}",
+                path.display()
+            ))),
+            (Err(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(
+                format!("{run_err}; timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"),
+            )),
+            (Ok(()), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+                "timeline write failed: {artifact_err}"
+            ))),
+        }
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let scenario_name = "ha-e2e-rewind-failure-fallback";
+        let namespace = pgtuskmaster_rust::test_harness::namespace::create_namespace(
+            scenario_name,
+        )
+        .map_err(|err| {
+            WorkerError::Message(format!(
+                "create namespace failed for {scenario_name}: {err}"
+            ))
+        })?;
+        let real_binaries =
+            pgtuskmaster_rust::test_harness::binaries::require_pg16_process_binaries_for_real_tests(
+            )
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "load real postgres binaries failed for {scenario_name}: {err}"
+                ))
+            })?;
+        let rewind_wrapper = create_failure_wrapper_for_namespace(
+            &namespace.root_dir,
+            scenario_name,
+            "node-1",
+            RecoveryBinaryKind::PgRewind,
+            real_binaries.pg_rewind.as_path(),
+        )?;
+        set_failure_wrapper_enabled(&rewind_wrapper, true)?;
+
+        let mut recovery_binary_overrides = BTreeMap::new();
+        recovery_binary_overrides.insert(
+            "node-1".to_string(),
+            ha_e2e::RecoveryBinaryOverrides {
+                pg_basebackup: None,
+                pg_rewind: Some(rewind_wrapper.wrapper_path.clone()),
+            },
+        );
+        let mut fixture = ClusterFixture::start_with_config(ha_e2e::TestConfig {
+            test_name: scenario_name.to_string(),
+            cluster_name: "cluster-e2e-rewind-failure".to_string(),
+            scope: "scope-ha-e2e-rewind-failure".to_string(),
+            node_count: 3,
+            namespace: Some(namespace),
+            etcd_members: vec![
+                "etcd-a".to_string(),
+                "etcd-b".to_string(),
+                "etcd-c".to_string(),
+            ],
+            recovery_binary_overrides,
+            postgres_roles: None,
+            mode: ha_e2e::Mode::Plain,
+            timeouts: ha_e2e::TimeoutConfig {
+                command_timeout: E2E_COMMAND_TIMEOUT,
+                command_kill_wait_timeout: E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                http_step_timeout: E2E_HTTP_STEP_TIMEOUT,
+                api_readiness_timeout: E2E_API_READINESS_TIMEOUT,
+                bootstrap_primary_timeout: E2E_BOOTSTRAP_PRIMARY_TIMEOUT,
+                scenario_timeout: E2E_SCENARIO_TIMEOUT,
+            },
+        })
+        .await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record(format!(
+                "{scenario_name}: rewind wrapper active at {}",
+                rewind_wrapper.wrapper_path.display()
+            ));
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "rewind-failure bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 3,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            if bootstrap_primary != "node-1" {
+                return Err(WorkerError::Message(format!(
+                    "{scenario_name}: expected node-1 to bootstrap as primary, observed {bootstrap_primary}"
+                )));
+            }
+            fixture
+                .wait_for_queryable_nodes(&bootstrap_primary, 3, E2E_PRIMARY_CONVERGENCE_TIMEOUT)
+                .await?;
+            fixture
+                .assert_no_dual_primary_window(E2E_SHORT_NO_DUAL_PRIMARY_WINDOW)
+                .await?;
+
+            let table_name = fixture.proof_table_name("ha_rewind_failure_proof")?;
+            fixture.create_proof_table(&bootstrap_primary, &table_name).await?;
+            fixture
+                .insert_proof_row(&bootstrap_primary, &table_name, 1, "before-failover")
+                .await?;
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    &table_name,
+                    &["1:before-failover".to_string()],
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            fixture.record(format!(
+                "{scenario_name}: forcing failover by stopping postgres on {bootstrap_primary}"
+            ));
+            fixture.stop_postgres_for_node(&bootstrap_primary).await?;
+            let failover_primary = match fixture
+                .wait_for_stable_primary_best_effort(
+                    E2E_API_READINESS_TIMEOUT,
+                    Some(&bootstrap_primary),
+                    3,
+                    1,
+                    &mut phase_history,
+                )
+                .await
+            {
+                Ok(primary) => primary,
+                Err(wait_err) => {
+                    fixture.record(format!(
+                        "{scenario_name}: primary wait failed after forced stop: {wait_err}; retrying via primary-change helper"
+                    ));
+                    fixture
+                        .wait_for_primary_change(
+                            &bootstrap_primary,
+                            E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        )
+                        .await?
+                }
+            };
+            fixture
+                .assert_no_dual_primary_window(E2E_LONG_NO_DUAL_PRIMARY_WINDOW)
+                .await?;
+            fixture
+                .assert_former_primary_demoted_or_unreachable_after_transition(
+                    &bootstrap_primary,
+                )
+                .await?;
+            ClusterFixture::assert_phase_history_contains_failover(
+                &phase_history,
+                &bootstrap_primary,
+                &failover_primary,
+            )?;
+            fixture.assert_failure_wrapper_invoked(
+                scenario_name,
+                &rewind_wrapper,
+            )?;
+
+            fixture
+                .insert_proof_row(&failover_primary, &table_name, 2, "after-failover")
+                .await?;
+            fixture.record(format!(
+                "{scenario_name}: waiting for former primary to rejoin while rewind failure remains enabled"
+            ));
+            fixture
+                .wait_for_rows_on_node(
+                    &bootstrap_primary,
+                    format!(
+                        "SELECT id::text || ':' || payload FROM {table_name} ORDER BY id"
+                    )
+                    .as_str(),
+                    &[
+                        "1:before-failover".to_string(),
+                        "2:after-failover".to_string(),
+                    ],
+                    Duration::from_secs(120),
+                )
+                .await?;
+            fixture
+                .wait_for_node_sql_role(&bootstrap_primary, "replica", Duration::from_secs(120))
+                .await?;
+            if !rewind_wrapper.fail_enabled_marker.exists() {
+                return Err(WorkerError::Message(format!(
+                    "{scenario_name}: rewind failure marker unexpectedly disappeared before recovery completed"
+                )));
+            }
+            fixture.record(format!(
+                "{scenario_name}: former primary rejoined as replica after a failed pg_rewind attempt"
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => {
+                fixture.record(format!(
+                    "{scenario_name}: timed out after {}s",
+                    E2E_SCENARIO_TIMEOUT.as_secs()
+                ));
+                Err(WorkerError::Message(format!(
+                    "{scenario_name}: timed out after {}s",
+                    E2E_SCENARIO_TIMEOUT.as_secs()
+                )))
+            }
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+
+        match (run_result, artifact_path, shutdown_result) {
+            (Ok(()), Ok(_), Ok(())) => Ok(()),
+            (Err(run_err), Ok(path), Ok(())) => Err(WorkerError::Message(format!(
+                "{run_err}; timeline: {}",
+                path.display()
+            ))),
+            (Err(run_err), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+                "{run_err}; timeline write failed: {artifact_err}"
+            ))),
+            (Ok(()), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "shutdown failed: {shutdown_err}; timeline: {}",
+                path.display()
+            ))),
+            (Ok(()), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"
+            ))),
+            (Err(run_err), Ok(path), Err(shutdown_err)) => Err(WorkerError::Message(format!(
+                "{run_err}; shutdown failed: {shutdown_err}; timeline: {}",
+                path.display()
+            ))),
+            (Err(run_err), Err(artifact_err), Err(shutdown_err)) => Err(WorkerError::Message(
+                format!("{run_err}; timeline write failed: {artifact_err}; shutdown failed: {shutdown_err}"),
+            )),
+            (Ok(()), Err(artifact_err), Ok(())) => Err(WorkerError::Message(format!(
+                "timeline write failed: {artifact_err}"
+            ))),
+        }
     })
     .await
 }

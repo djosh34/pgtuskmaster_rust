@@ -22,6 +22,18 @@ async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rewind(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_clone_failure_recovers_after_fault_removed(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_clone_failure_recovers_after_fault_removed().await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_rewind_failure_falls_back_to_basebackup().await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn e2e_multi_node_cli_primary_and_replicas_follow_switchover(
 ) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
     multi_node::e2e_multi_node_cli_primary_and_replicas_follow_switchover().await

@@ -76,11 +76,13 @@ impl PartitionFixture {
             cluster_name: "cluster-e2e-partition".to_string(),
             scope: "scope-ha-e2e-partition".to_string(),
             node_count,
+            namespace: None,
             etcd_members: vec![
                 "etcd-a".to_string(),
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
+            recovery_binary_overrides: BTreeMap::new(),
             postgres_roles: None,
             mode: ha_e2e::Mode::PartitionProxy,
             timeouts: ha_e2e::TimeoutConfig {

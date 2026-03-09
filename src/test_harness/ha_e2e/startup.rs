@@ -57,6 +57,19 @@ fn sql_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+fn binaries_for_node(config: &TestConfig, shared_binaries: &BinaryPaths, node_id: &str) -> BinaryPaths {
+    let mut node_binaries = shared_binaries.clone();
+    if let Some(overrides) = config.recovery_binary_overrides.get(node_id) {
+        if let Some(pg_basebackup) = overrides.pg_basebackup.as_ref() {
+            node_binaries.pg_basebackup = pg_basebackup.clone();
+        }
+        if let Some(pg_rewind) = overrides.pg_rewind.as_ref() {
+            node_binaries.pg_rewind = pg_rewind.clone();
+        }
+    }
+    node_binaries
+}
+
 struct StartupGuard {
     guard: NamespaceGuard,
     binaries: BinaryPaths,
@@ -156,7 +169,10 @@ pub async fn start_cluster(config: TestConfig) -> Result<TestClusterHandle, Work
     let mut config = config;
     config.validate()?;
 
-    let namespace_guard = NamespaceGuard::new(config.test_name.as_str())?;
+    let namespace_guard = match config.namespace.clone() {
+        Some(namespace) => NamespaceGuard::from_namespace(namespace),
+        None => NamespaceGuard::new(config.test_name.as_str())?,
+    };
     let namespace_id = namespace_guard.namespace()?.id.clone();
     config.scope = format!("{}-{}", config.scope, namespace_id);
     config.cluster_name = format!("{}-{}", config.cluster_name, namespace_id);
@@ -317,6 +333,7 @@ async fn start_cluster_inner(
 
     for (index, (pg_port, api_port)) in node_ports.iter().copied().zip(api_ports).enumerate() {
         let node_id = format!("node-{}", index.saturating_add(1));
+        let node_binaries = binaries_for_node(&config, &binaries, node_id.as_str());
         let data_dir = prepare_pgdata_dir(&namespace, &node_id)?;
         let socket_dir = namespace.child_dir(format!("run/{node_id}"));
         let log_file = namespace.child_dir(format!("logs/{node_id}/postgres.log"));
@@ -449,12 +466,12 @@ async fn start_cluster_inner(
                 "bootstrap_timeout_ms": HARNESS_BOOTSTRAP_TIMEOUT_MS,
                 "fencing_timeout_ms": HARNESS_FENCING_TIMEOUT_MS,
                 "binaries": {
-                    "postgres": binaries.postgres.display().to_string(),
-                    "pg_ctl": binaries.pg_ctl.display().to_string(),
-                    "pg_rewind": binaries.pg_rewind.display().to_string(),
-                    "initdb": binaries.initdb.display().to_string(),
-                    "pg_basebackup": binaries.pg_basebackup.display().to_string(),
-                    "psql": binaries.psql.display().to_string(),
+                    "postgres": node_binaries.postgres.display().to_string(),
+                    "pg_ctl": node_binaries.pg_ctl.display().to_string(),
+                    "pg_rewind": node_binaries.pg_rewind.display().to_string(),
+                    "initdb": node_binaries.initdb.display().to_string(),
+                    "pg_basebackup": node_binaries.pg_basebackup.display().to_string(),
+                    "psql": node_binaries.psql.display().to_string(),
                 },
             },
             "logging": {
@@ -552,7 +569,7 @@ async fn start_cluster_inner(
                 pg_rewind_timeout_ms: HARNESS_PG_REWIND_TIMEOUT_MS,
                 bootstrap_timeout_ms: HARNESS_BOOTSTRAP_TIMEOUT_MS,
                 fencing_timeout_ms: HARNESS_FENCING_TIMEOUT_MS,
-                binaries: binaries.clone(),
+                binaries: node_binaries.clone(),
             })
             .with_logging(LoggingConfig {
                 level: LogLevel::Info,

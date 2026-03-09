@@ -74,7 +74,7 @@ The `ultra-long` nextest profile selects the `tests/ha_*.rs` integration-test bi
 
 That long HA bucket now includes PostgreSQL data-plane chaos coverage in addition to etcd and API-path partitions. The `ha_partition_isolation` binary exercises a case where the primary's advertised PostgreSQL endpoint is blocked through the harness pg proxy, replicas prove that streaming was interrupted, and the cluster must heal back to one converged primary afterward.
 
-The `ha_multi_node_failover` binary also covers restart and churn paths that are easy to miss in single-transition tests: primary HA-runtime restarts, repeated leadership changes in one scenario, failover with one replica already degraded, and safe rejection of targeted switchovers to ineligible members.
+The `ha_multi_node_failover` binary also covers restart and churn paths that are easy to miss in single-transition tests: primary HA-runtime restarts, repeated leadership changes in one scenario, failover with one replica already degraded, safe rejection of targeted switchovers to ineligible members, explicit `pg_basebackup` clone failure with recovery after the blocker is removed, and explicit `pg_rewind` failure where the former primary must fall back to basebackup before it can rejoin.
 
 Use it when your change can affect HA behavior, Docker packaging, or longer-running operational scenarios.
 

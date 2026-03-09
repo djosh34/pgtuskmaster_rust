@@ -32,6 +32,12 @@ impl NamespaceGuard {
         })
     }
 
+    pub fn from_namespace(namespace: TestNamespace) -> Self {
+        Self {
+            namespace: Some(namespace),
+        }
+    }
+
     pub fn namespace(&self) -> Result<&TestNamespace, HarnessError> {
         self.namespace.as_ref().ok_or_else(|| {
             HarnessError::InvalidInput("namespace guard no longer owns namespace".to_string())

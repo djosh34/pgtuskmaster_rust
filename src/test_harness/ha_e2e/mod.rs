@@ -4,19 +4,23 @@ pub mod ops;
 pub mod startup;
 pub mod util;
 
-pub use config::{Mode, PostgresRoleOverrides, TestConfig, TimeoutConfig};
+pub use config::{Mode, PostgresRoleOverrides, RecoveryBinaryOverrides, TestConfig, TimeoutConfig};
 pub use handle::{NodeHandle, RuntimeNodeHandle, RuntimeNodeSet, TestClusterHandle};
 pub use startup::start_cluster;
 
 #[cfg(test)]
 mod tests {
     use std::env;
+    use std::collections::BTreeMap;
     use std::time::Duration;
 
     use crate::state::WorkerError;
     use crate::test_harness::runtime_config;
 
-    use super::{start_cluster, util, Mode, RuntimeNodeHandle, RuntimeNodeSet, TestConfig, TimeoutConfig};
+    use super::{
+        start_cluster, util, Mode, RecoveryBinaryOverrides, RuntimeNodeHandle, RuntimeNodeSet,
+        TestConfig, TimeoutConfig,
+    };
 
     #[test]
     fn test_config_validation_rejects_empty_fields() {
@@ -25,7 +29,9 @@ mod tests {
             cluster_name: "".to_string(),
             scope: " ".to_string(),
             node_count: 0,
+            namespace: None,
             etcd_members: Vec::new(),
+            recovery_binary_overrides: BTreeMap::new(),
             postgres_roles: None,
             mode: Mode::Plain,
             timeouts: TimeoutConfig {
@@ -50,7 +56,9 @@ mod tests {
                 cluster_name: "cluster-e2e-harness-smoke".to_string(),
                 scope: "scope-ha-e2e-harness-smoke".to_string(),
                 node_count: 1,
+                namespace: None,
                 etcd_members: vec!["etcd-a".to_string()],
+                recovery_binary_overrides: BTreeMap::new(),
                 postgres_roles: None,
                 mode: Mode::Plain,
                 timeouts: TimeoutConfig {
@@ -68,6 +76,40 @@ mod tests {
             Ok(())
         })
         .await
+    }
+
+    #[test]
+    fn test_config_validation_rejects_relative_recovery_override_path() {
+        let mut recovery_binary_overrides = BTreeMap::new();
+        recovery_binary_overrides.insert(
+            "node-1".to_string(),
+            RecoveryBinaryOverrides {
+                pg_basebackup: Some(std::path::PathBuf::from("relative/pg_basebackup")),
+                pg_rewind: None,
+            },
+        );
+        let config = TestConfig {
+            test_name: "ha-e2e-invalid-recovery-binary".to_string(),
+            cluster_name: "cluster-e2e-invalid-recovery-binary".to_string(),
+            scope: "scope-ha-e2e-invalid-recovery-binary".to_string(),
+            node_count: 1,
+            namespace: None,
+            etcd_members: vec!["etcd-a".to_string()],
+            recovery_binary_overrides,
+            postgres_roles: None,
+            mode: Mode::Plain,
+            timeouts: TimeoutConfig {
+                command_timeout: Duration::from_secs(1),
+                command_kill_wait_timeout: Duration::from_secs(1),
+                http_step_timeout: Duration::from_secs(1),
+                api_readiness_timeout: Duration::from_secs(1),
+                bootstrap_primary_timeout: Duration::from_secs(1),
+                scenario_timeout: Duration::from_secs(1),
+            },
+        };
+
+        let result = config.validate();
+        assert!(matches!(result, Err(WorkerError::Message(message)) if message.contains("absolute path")));
     }
 
     #[tokio::test(flavor = "current_thread")]
