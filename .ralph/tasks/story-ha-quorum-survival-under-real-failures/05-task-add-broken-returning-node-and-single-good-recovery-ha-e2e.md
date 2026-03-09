@@ -5,6 +5,10 @@
 <description>
 **Goal:** Cover the case where two nodes are down, quorum is lost, and then only one node returns successfully while another remains broken and cannot start PostgreSQL. The higher-order goal is to prove the cluster can recover to one primary as soon as quorum is restored by one good returning node, without requiring every failed node to recover cleanly.
 
+**Whole-node outage semantics for this task:**
+- Reuse the explicit outage modes introduced in task 02.
+- This task does not need to cover both clean-stop and hard-kill variants by itself, but it must use true whole-node outage semantics for whichever variant it chooses, not only database stop semantics.
+
 **Scope:**
 - Extend multi-node HA E2E coverage in:
 - `tests/ha/support/multi_node.rs`
@@ -33,7 +37,7 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Add one new scenario where two whole nodes are taken down, the lone survivor enters fail-safe, and exactly one returning healthy node restores quorum and primary election before the third node is healed.
+- [ ] Add one new scenario where two whole nodes are taken down, using one of the explicit whole-node outage variants from task 02, the lone survivor enters fail-safe, and exactly one returning healthy node restores quorum and primary election before the third node is healed.
 - [ ] In that scenario, keep the third node stopped or broken so its PostgreSQL cannot come online, and prove that this does not block recovery of one primary on the healthy quorum pair.
 - [ ] Reuse or extend deterministic node-breakage helpers so the broken node failure mode is explicit and reproducible.
 - [ ] The scenario asserts exactly one primary after quorum restoration, no dual-primary window, and successful post-recovery writes on the elected primary.

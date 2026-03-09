@@ -14,7 +14,7 @@ The system uses three discrete trust evaluations:
 The DCS is healthy and at least two members have fresh metadata. The system can safely perform leader elections, coordinate switchovers, and enforce split-brain prevention.
 
 **FailSafe**
-The DCS is accessible but does not meet full consensus requirements. This occurs when the local member record is stale, the recorded leader is stale, or fewer than two members appear fresh. In this state the system limits its activity to prevent data corruption.
+The DCS is accessible but does not meet full consensus requirements. This occurs when the local member record is stale or fewer than two members appear fresh in a multi-member view. In this state the system limits its activity to prevent data corruption.
 
 **NotTrusted**
 The DCS is unreachable or otherwise unhealthy. All trust-dependent operations are suspended.
@@ -27,11 +27,12 @@ Trust evaluation follows a specific sequence:
 
 1. If etcd itself reports unhealthy, trust becomes `NotTrusted`
 2. If the local member record is missing or older than `ha.lease_ttl_ms`, trust becomes `FailSafe`
-3. If a recorded leader points to a member with missing or stale metadata, trust becomes `FailSafe`
-4. In clusters larger than one node, if fewer than two members have fresh records, trust becomes `FailSafe`
-5. Only when all checks pass does trust become `FullQuorum`
+3. In clusters larger than one node, if fewer than two members have fresh records, trust becomes `FailSafe`
+4. Only when all checks pass does trust become `FullQuorum`
 
 This design reflects a key principle: membership metadata freshness acts as a heartbeat. A node that stops updating its record is treated as failed, even if the DCS remains healthy.
+
+Leader liveness is lease-backed rather than inferred from stale metadata. The etcd store attaches `/{scope}/leader` to an etcd lease derived from `ha.lease_ttl_ms`. If the owner releases leadership, it revokes its own lease. If the owner dies hard, keepalive stops and etcd deletes the leader key automatically when the lease expires. The watch-fed DCS cache then removes the leader record, allowing a healthy majority to continue election without manual DCS cleanup.
 
 ## PostgreSQL reachability as a distinct axis
 
@@ -54,10 +55,10 @@ This behavior ensures that network partitions or DCS outages do not create split
 When a primary node fails, the recovery sequence depends on whether the failure is detected internally (postgres stops) or externally (DCS marks it stale).
 
 **Internal detection (postgres becomes unreachable):**
-If the node holds the leader lease, it releases the lease with reason `PostgresUnreachable` and transitions to `Rewinding`. This signals other nodes that the primary is stepping down intentionally.
+If the node holds the leader lease, it releases its lease with reason `PostgresUnreachable` and transitions to `Rewinding`. This signals other nodes that the primary is stepping down intentionally.
 
 **External detection (other nodes observe failure):**
-When replicas detect the primary is unreachable via DCS, they follow standard leader election. A replica transitions from `Replica` to `CandidateLeader`, attempts to acquire the leader lease, and promotes to primary if successful.
+When replicas observe that the old leader lease has expired and no active leader remains in DCS, they follow standard leader election. A replica transitions from `Replica` to `CandidateLeader`, attempts to acquire the leader lease, and promotes to primary if successful.
 
 The `Rewinding` phase is intentional: it provides a dedicated state where the node reconciles its potentially diverged state before rejoining as a replica. This prevents a former primary from immediately following a new leader without first rewinding or re-cloning.
 
@@ -93,7 +94,7 @@ The system prevents split-brain through a combination of leader leases, fencing,
 
 A leader lease is a DCS entry that a primary must hold to be considered authoritative. Acquiring the lease requires a DCS write that succeeds only if no other node holds it. Releasing the lease is a deliberate action that triggers specific downstream behaviors.
 
-When a primary detects it should step down (switchover or external leader detection), it releases the lease before demoting. This ensures that no two nodes can simultaneously believe they hold the lease.
+In the etcd-backed store, the leader key is attached to an etcd lease. When a primary detects it should step down (switchover or external leader detection), it revokes its own lease before demoting. If the process dies hard, the missing keepalive causes etcd to expire the lease and delete the key automatically. This ensures that no node can rely on a blind delete of another node's leader key.
 
 ### Fencing
 

@@ -1121,8 +1121,12 @@ async fn run_workers(
         now: Box::new(system_now_unix_millis),
     };
 
-    let ha_store = EtcdDcsStore::connect(cfg.dcs.endpoints.clone(), &scope)
-        .map_err(|err| RuntimeError::Worker(format!("ha store connect failed: {err}")))?;
+    let ha_store = EtcdDcsStore::connect_with_leader_lease(
+        cfg.dcs.endpoints.clone(),
+        &scope,
+        cfg.ha.lease_ttl_ms,
+    )
+    .map_err(|err| RuntimeError::Worker(format!("ha store connect failed: {err}")))?;
     let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
         publisher: ha_publisher,
         config_subscriber: cfg_subscriber.clone(),

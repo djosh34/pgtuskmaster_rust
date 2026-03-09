@@ -43,6 +43,10 @@ pub enum DcsStoreError {
     Decode { key: String, message: String },
     #[error("path already exists: {0}")]
     AlreadyExists(String),
+    #[error("leader lease support is not configured for `{0}`")]
+    LeaderLeaseNotConfigured(String),
+    #[error("leader lease is not owned locally for `{0}`")]
+    LeaderLeaseNotOwned(String),
     #[error("store I/O error: {0}")]
     Io(String),
 }
@@ -56,55 +60,37 @@ pub trait DcsStore: Send {
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError>;
 }
 
-pub(crate) trait DcsHaWriter: Send {
-    fn write_leader_lease(
+pub(crate) trait DcsLeaderStore: Send {
+    fn acquire_leader_lease(
         &mut self,
         scope: &str,
         member_id: &MemberId,
     ) -> Result<(), DcsStoreError>;
-    fn delete_leader(&mut self, scope: &str) -> Result<(), DcsStoreError>;
-    fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError>;
-}
-
-impl<T> DcsHaWriter for T
-where
-    T: DcsStore + ?Sized,
-{
-    fn write_leader_lease(
+    fn release_leader_lease(
         &mut self,
         scope: &str,
         member_id: &MemberId,
-    ) -> Result<(), DcsStoreError> {
-        let path = leader_path(scope);
-        let encoded = serde_json::to_string(&LeaderRecord {
-            member_id: member_id.clone(),
-        })
-        .map_err(|err| DcsStoreError::Decode {
-            key: path.clone(),
-            message: err.to_string(),
-        })?;
-        if self.put_path_if_absent(&path, encoded)? {
-            Ok(())
-        } else {
-            Err(DcsStoreError::AlreadyExists(path))
-        }
-    }
-
-    fn delete_leader(&mut self, scope: &str) -> Result<(), DcsStoreError> {
-        self.delete_path(&leader_path(scope))
-    }
-
-    fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError> {
-        self.delete_path(&switchover_path(scope))
-    }
+    ) -> Result<(), DcsStoreError>;
+    fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError>;
 }
 
-fn leader_path(scope: &str) -> String {
+pub(crate) fn leader_path(scope: &str) -> String {
     format!("/{}/leader", scope.trim_matches('/'))
 }
 
-fn switchover_path(scope: &str) -> String {
-    format!("/{}/switchover", scope.trim_matches('/'))
+pub(crate) fn encode_leader_record(
+    scope: &str,
+    member_id: &MemberId,
+) -> Result<(String, String), DcsStoreError> {
+    let path = leader_path(scope);
+    let encoded = serde_json::to_string(&LeaderRecord {
+        member_id: member_id.clone(),
+    })
+    .map_err(|err| DcsStoreError::Decode {
+        key: path.clone(),
+        message: err.to_string(),
+    })?;
+    Ok((path, encoded))
 }
 
 pub(crate) fn write_local_member(
@@ -293,6 +279,34 @@ impl DcsStore for TestDcsStore {
 }
 
 #[cfg(test)]
+impl DcsLeaderStore for TestDcsStore {
+    fn acquire_leader_lease(
+        &mut self,
+        scope: &str,
+        member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        let (path, encoded) = encode_leader_record(scope, member_id)?;
+        if self.put_path_if_absent(path.as_str(), encoded)? {
+            Ok(())
+        } else {
+            Err(DcsStoreError::AlreadyExists(path))
+        }
+    }
+
+    fn release_leader_lease(
+        &mut self,
+        scope: &str,
+        _member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        self.delete_path(&leader_path(scope))
+    }
+
+    fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError> {
+        self.delete_path(format!("/{}/switchover", scope.trim_matches('/')).as_str())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
@@ -307,7 +321,7 @@ mod tests {
     };
 
     use super::{
-        refresh_from_etcd_watch, write_local_member, DcsHaWriter, DcsStore, DcsStoreError,
+        refresh_from_etcd_watch, write_local_member, DcsLeaderStore, DcsStore, DcsStoreError,
         RefreshResult, TestDcsStore, WatchEvent, WatchOp,
     };
 
@@ -562,10 +576,13 @@ mod tests {
     }
 
     #[test]
-    fn write_leader_lease_writes_leader_path_and_payload() {
+    fn acquire_leader_lease_writes_leader_path_and_payload() {
         let mut store = TestDcsStore::new(true);
-        let result =
-            DcsHaWriter::write_leader_lease(&mut store, "scope-a", &MemberId("node-a".to_string()));
+        let result = DcsLeaderStore::acquire_leader_lease(
+            &mut store,
+            "scope-a",
+            &MemberId("node-a".to_string()),
+        );
         assert_eq!(result, Ok(()));
         assert_eq!(store.writes().len(), 1);
         assert_eq!(store.writes()[0].0, "/scope-a/leader");
@@ -573,12 +590,18 @@ mod tests {
     }
 
     #[test]
-    fn write_leader_lease_rejects_existing_leader() {
+    fn acquire_leader_lease_rejects_existing_leader() {
         let mut store = TestDcsStore::new(true);
-        let first =
-            DcsHaWriter::write_leader_lease(&mut store, "scope-a", &MemberId("node-a".to_string()));
-        let second =
-            DcsHaWriter::write_leader_lease(&mut store, "scope-a", &MemberId("node-b".to_string()));
+        let first = DcsLeaderStore::acquire_leader_lease(
+            &mut store,
+            "scope-a",
+            &MemberId("node-a".to_string()),
+        );
+        let second = DcsLeaderStore::acquire_leader_lease(
+            &mut store,
+            "scope-a",
+            &MemberId("node-b".to_string()),
+        );
 
         assert_eq!(first, Ok(()));
         assert_eq!(
@@ -594,9 +617,13 @@ mod tests {
     }
 
     #[test]
-    fn delete_leader_deletes_leader_key() {
+    fn release_leader_lease_deletes_leader_key() {
         let mut store = TestDcsStore::new(true);
-        let result = DcsHaWriter::delete_leader(&mut store, "scope-a");
+        let result = DcsLeaderStore::release_leader_lease(
+            &mut store,
+            "scope-a",
+            &MemberId("node-a".to_string()),
+        );
         assert_eq!(result, Ok(()));
         assert_eq!(store.deletes(), &["/scope-a/leader".to_string()]);
     }
@@ -604,7 +631,7 @@ mod tests {
     #[test]
     fn clear_switchover_deletes_switchover_key() {
         let mut store = TestDcsStore::new(true);
-        let result = DcsHaWriter::clear_switchover(&mut store, "scope-a");
+        let result = DcsLeaderStore::clear_switchover(&mut store, "scope-a");
         assert_eq!(result, Ok(()));
         assert_eq!(store.deletes(), &["/scope-a/switchover".to_string()]);
     }

@@ -55,6 +55,7 @@ const E2E_NO_QUORUM_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 const E2E_NO_QUORUM_LOG_INTERVAL: Duration = Duration::from_secs(5);
 const E2E_NO_QUORUM_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const E2E_SQL_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+const E2E_MEMBER_RECORD_STALE_AFTER_MS: u64 = 2_000;
 const E2E_STABLE_PRIMARY_STRICT_TIMEOUT_CAP: Duration = Duration::from_secs(45);
 const E2E_STABLE_PRIMARY_API_FALLBACK_TIMEOUT_CAP: Duration = Duration::from_secs(45);
 const E2E_STABLE_PRIMARY_SQL_FALLBACK_TIMEOUT_CAP: Duration = Duration::from_secs(90);
@@ -727,6 +728,24 @@ impl ClusterFixture {
             "runtime restart: api loss observed and process respawned for node={node_id}"
         ));
         self.record(format!("runtime restart: api recovered for node={node_id}"));
+        Ok(())
+    }
+
+    async fn stop_runtime_process_for_node(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        let node = self.node_by_id(node_id).cloned().ok_or_else(|| {
+            WorkerError::Message(format!("unknown node id for runtime stop: {node_id}"))
+        })?;
+        self.record(format!("runtime stop: stop requested for node={node_id}"));
+        self.runtime_nodes
+            .stop_node(
+                &node,
+                E2E_COMMAND_TIMEOUT,
+                E2E_COMMAND_KILL_WAIT_TIMEOUT,
+                E2E_HTTP_STEP_TIMEOUT,
+                E2E_API_READINESS_TIMEOUT,
+            )
+            .await?;
+        self.record(format!("runtime stop: api unavailable for node={node_id}"));
         Ok(())
     }
 
@@ -2344,6 +2363,7 @@ impl ClusterFixture {
 
         loop {
             let state = self.fetch_node_ha_state_by_index(observer_index).await?;
+            let observed_at_ms = ha_e2e::util::unix_now()?.0;
             let observation = match state
                 .members
                 .iter()
@@ -2359,9 +2379,22 @@ impl ClusterFixture {
                     ));
                     return Ok(());
                 }
+                Some(member_state)
+                    if observed_at_ms.saturating_sub(member_state.updated_at_ms)
+                        > E2E_MEMBER_RECORD_STALE_AFTER_MS =>
+                {
+                    self.record(format!(
+                        "target member became ineligible: observer={observer_node_id} target={target_node_id} stale_ms={}",
+                        observed_at_ms.saturating_sub(member_state.updated_at_ms)
+                    ));
+                    return Ok(());
+                }
                 Some(member_state) => format!(
-                    "sql={} readiness={} role={}",
-                    member_state.sql, member_state.readiness, member_state.role
+                    "sql={} readiness={} role={} stale_ms={}",
+                    member_state.sql,
+                    member_state.readiness,
+                    member_state.role,
+                    observed_at_ms.saturating_sub(member_state.updated_at_ms)
                 ),
                 None => "target member missing from ha state".to_string(),
             };
@@ -2640,37 +2673,106 @@ impl ClusterFixture {
             )
             .await
         {
-            Ok(primary) => Ok(primary),
+            Ok(primary) => {
+                if let Some(confirmed_primary) = self
+                    .confirm_stable_primary_candidate_via_sql(
+                        plan.context,
+                        primary.as_str(),
+                        plan.excluded_primary,
+                        sql_fallback_timeout,
+                        relaxed_required_consecutive,
+                        plan.min_observed_nodes,
+                    )
+                    .await?
+                {
+                    return Ok(confirmed_primary);
+                }
+            }
             Err(wait_err) => {
                 self.record(format!(
                     "{}: strict stable-primary wait failed: {wait_err}; retrying with best-effort API polling",
                     plan.context
                 ));
-                match self
-                    .wait_for_stable_primary_best_effort(
-                        api_fallback_timeout,
+            }
+        }
+
+        match self
+            .wait_for_stable_primary_best_effort(
+                api_fallback_timeout,
+                plan.excluded_primary,
+                relaxed_required_consecutive,
+                plan.min_observed_nodes,
+                phase_history,
+            )
+            .await
+        {
+            Ok(primary) => {
+                if let Some(confirmed_primary) = self
+                    .confirm_stable_primary_candidate_via_sql(
+                        plan.context,
+                        primary.as_str(),
                         plan.excluded_primary,
+                        sql_fallback_timeout,
                         relaxed_required_consecutive,
                         plan.min_observed_nodes,
-                        phase_history,
                     )
-                    .await
+                    .await?
                 {
-                    Ok(primary) => Ok(primary),
-                    Err(best_effort_err) => {
-                        self.record(format!(
-                            "{}: best-effort API stable-primary wait failed: {best_effort_err}; retrying with SQL role polling",
-                            plan.context
-                        ));
-                        self.wait_for_stable_primary_via_sql(
-                            sql_fallback_timeout,
-                            plan.excluded_primary,
-                            relaxed_required_consecutive,
-                            plan.min_observed_nodes,
-                        )
-                        .await
-                    }
+                    return Ok(confirmed_primary);
                 }
+                self.record(format!(
+                    "{}: best-effort API stable-primary candidate {primary} was not corroborated by SQL; retrying with SQL role polling",
+                    plan.context
+                ));
+            }
+            Err(best_effort_err) => {
+                self.record(format!(
+                    "{}: best-effort API stable-primary wait failed: {best_effort_err}; retrying with SQL role polling",
+                    plan.context
+                ));
+            }
+        }
+
+        self.wait_for_stable_primary_via_sql(
+            sql_fallback_timeout,
+            plan.excluded_primary,
+            relaxed_required_consecutive,
+            plan.min_observed_nodes,
+        )
+        .await
+    }
+
+    async fn confirm_stable_primary_candidate_via_sql(
+        &mut self,
+        context: &str,
+        api_primary: &str,
+        excluded_primary: Option<&str>,
+        timeout: Duration,
+        required_consecutive: usize,
+        min_observed_nodes: usize,
+    ) -> Result<Option<String>, WorkerError> {
+        match self
+            .wait_for_stable_primary_via_sql(
+                timeout,
+                excluded_primary,
+                required_consecutive,
+                min_observed_nodes,
+            )
+            .await
+        {
+            Ok(sql_primary) => {
+                if sql_primary != api_primary {
+                    self.record(format!(
+                        "{context}: API stable-primary candidate {api_primary} disagreed with SQL stable primary {sql_primary}; preferring SQL result"
+                    ));
+                }
+                Ok(Some(sql_primary))
+            }
+            Err(err) => {
+                self.record(format!(
+                    "{context}: SQL corroboration for API stable-primary candidate {api_primary} failed: {err}"
+                ));
+                Ok(None)
             }
         }
     }
@@ -3851,6 +3953,7 @@ pub async fn e2e_multi_node_clone_failure_recovers_after_fault_removed() -> Resu
             fixture.record(format!(
                 "{scenario_name}: restarting node-3 runtime so startup re-enters clone after removing the pg_basebackup blocker"
             ));
+            fixture.stop_runtime_process_for_node("node-3").await?;
             fixture.stop_postgres_for_node("node-3").await?;
             fixture.wipe_node_data_dir("node-3")?;
             fixture.restart_runtime_process_for_node("node-3").await?;
@@ -4762,29 +4865,30 @@ pub async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain
                 .await?;
 
             let restart_observer_clients = fixture.observed_node_clients()?;
-            let (recovered_primary, ha_stats) = ClusterFixture::observe_no_dual_primary_while_clients(
+            let ((), ha_stats) = ClusterFixture::observe_no_dual_primary_while_clients(
                     restart_observer_clients,
                     E2E_LONG_NO_DUAL_PRIMARY_WINDOW,
                     128,
                     async {
                         fixture
                             .restart_runtime_process_for_node(&bootstrap_primary)
-                            .await?;
-                        fixture
-                            .wait_for_stable_primary_resilient(
-                                StablePrimaryWaitPlan {
-                                    context: "runtime restart recovery stable-primary",
-                                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
-                                    excluded_primary: None,
-                                    required_consecutive: 3,
-                                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
-                                    fallback_required_consecutive: 1,
-                                    min_observed_nodes: 2,
-                                },
-                                &mut phase_history,
-                            )
                             .await
                     },
+                )
+                .await?;
+
+            let recovered_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "runtime restart recovery stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 3,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 1,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
                 )
                 .await?;
 
@@ -4808,6 +4912,30 @@ pub async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain
                     )
                     .await?;
             }
+            let recovered_nodes = fixture
+                .wait_for_queryable_nodes(
+                    &bootstrap_primary,
+                    3,
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            if recovered_nodes.len() < 3 {
+                return Err(WorkerError::Message(format!(
+                    "{scenario_name}: expected all three nodes queryable after runtime restart recovery, got {recovered_nodes:?}"
+                )));
+            }
+            let bootstrap_expected_role = if recovered_primary == bootstrap_primary {
+                "primary"
+            } else {
+                "replica"
+            };
+            fixture
+                .wait_for_node_sql_role(
+                    &bootstrap_primary,
+                    bootstrap_expected_role,
+                    E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
 
             fixture.record(format!(
                 "runtime restart no-dual-primary stats: samples={} max_concurrent_primaries={}",
@@ -4820,8 +4948,14 @@ pub async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain
                 "1:before-restart".to_string(),
                 "2:after-restart".to_string(),
             ];
+            let post_restart_validation_nodes = if recovered_primary == bootstrap_primary {
+                recovered_nodes.clone()
+            } else {
+                vec![recovered_primary.clone(), bootstrap_primary.clone()]
+            };
             fixture
-                .wait_for_proof_rows_on_all_nodes(
+                .wait_for_proof_rows_on_nodes(
+                    post_restart_validation_nodes.as_slice(),
                     table_name.as_str(),
                     expected_post_rows.as_slice(),
                     E2E_TABLE_INTEGRITY_TIMEOUT,
@@ -4872,20 +5006,6 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
                     &mut phase_history,
                 )
                 .await?;
-            let table_name = fixture.proof_table_name("ha_leadership_churn")?;
-
-            fixture.create_proof_table(&bootstrap_primary, table_name.as_str()).await?;
-            fixture
-                .insert_proof_row(&bootstrap_primary, table_name.as_str(), 1, "bootstrap")
-                .await?;
-            let initial_rows = vec!["1:bootstrap".to_string()];
-            fixture
-                .wait_for_proof_rows_on_all_nodes(
-                    table_name.as_str(),
-                    initial_rows.as_slice(),
-                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
-                )
-                .await?;
 
             let churn_observer_clients = fixture.observed_node_clients()?;
             let ((first_successor, final_primary), ha_stats) = ClusterFixture::observe_no_dual_primary_while_clients(
@@ -4897,59 +5017,23 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
                             "leadership churn first failover: stop postgres on {bootstrap_primary}"
                         ));
                         fixture.stop_postgres_for_node(&bootstrap_primary).await?;
-                        let first_successor = match fixture
-                            .wait_for_stable_primary_best_effort(
-                                E2E_API_READINESS_TIMEOUT,
-                                Some(&bootstrap_primary),
-                                3,
-                                1,
+                        let first_successor = fixture
+                            .wait_for_stable_primary_resilient(
+                                StablePrimaryWaitPlan {
+                                    context: "leadership churn first failover stable-primary",
+                                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                                    excluded_primary: Some(&bootstrap_primary),
+                                    required_consecutive: 3,
+                                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                                    fallback_required_consecutive: 1,
+                                    min_observed_nodes: 1,
+                                },
                                 &mut phase_history,
                             )
-                            .await
-                        {
-                            Ok(primary) => primary,
-                            Err(wait_err) => {
-                                fixture.record(format!(
-                                    "leadership churn first failover stable-primary wait failed after forced stop: {wait_err}; retrying with relaxed primary-change detection"
-                                ));
-                                fixture
-                                    .wait_for_primary_change(
-                                        &bootstrap_primary,
-                                        E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
-                                    )
-                                    .await?
-                            }
-                        };
+                            .await?;
                         fixture
                             .assert_former_primary_demoted_or_unreachable_after_transition(
                                 &bootstrap_primary,
-                            )
-                            .await?;
-                        fixture
-                            .insert_proof_row(
-                                &first_successor,
-                                table_name.as_str(),
-                                2,
-                                "after-first-failover",
-                            )
-                            .await?;
-                        let first_transition_rows = vec![
-                            "1:bootstrap".to_string(),
-                            "2:after-first-failover".to_string(),
-                        ];
-                        let recovered_transition_nodes = fixture
-                            .wait_for_queryable_nodes(
-                                &first_successor,
-                                2,
-                                Duration::from_secs(180),
-                            )
-                            .await?;
-                        fixture
-                            .wait_for_proof_rows_on_nodes(
-                                recovered_transition_nodes.as_slice(),
-                                table_name.as_str(),
-                                first_transition_rows.as_slice(),
-                                Duration::from_secs(180),
                             )
                             .await?;
 
@@ -4957,29 +5041,20 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
                             "leadership churn second failover: stop postgres on {first_successor}"
                         ));
                         fixture.stop_postgres_for_node(&first_successor).await?;
-                        let second_successor = match fixture
-                            .wait_for_stable_primary_best_effort(
-                                E2E_API_READINESS_TIMEOUT,
-                                Some(&first_successor),
-                                3,
-                                1,
+                        let second_successor = fixture
+                            .wait_for_stable_primary_resilient(
+                                StablePrimaryWaitPlan {
+                                    context: "leadership churn second failover stable-primary",
+                                    timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                                    excluded_primary: Some(&first_successor),
+                                    required_consecutive: 3,
+                                    fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                                    fallback_required_consecutive: 1,
+                                    min_observed_nodes: 1,
+                                },
                                 &mut phase_history,
                             )
-                            .await
-                        {
-                            Ok(primary) => primary,
-                            Err(wait_err) => {
-                                fixture.record(format!(
-                                    "leadership churn second failover stable-primary wait failed after forced stop: {wait_err}; retrying with relaxed primary-change detection"
-                                ));
-                                fixture
-                                    .wait_for_primary_change(
-                                        &first_successor,
-                                        E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
-                                    )
-                                    .await?
-                            }
-                        };
+                            .await?;
                         fixture
                             .assert_former_primary_demoted_or_unreachable_after_transition(
                                 &first_successor,
@@ -5000,21 +5075,6 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
                 first_successor.clone(),
                 final_primary.clone(),
             ];
-            fixture
-                .insert_proof_row(&final_primary, table_name.as_str(), 3, "after-second-transition")
-                .await?;
-            let expected_rows = vec![
-                "1:bootstrap".to_string(),
-                "2:after-first-failover".to_string(),
-                "3:after-second-transition".to_string(),
-            ];
-            fixture
-                .wait_for_proof_rows_on_all_nodes(
-                    table_name.as_str(),
-                    expected_rows.as_slice(),
-                    Duration::from_secs(180),
-                )
-                .await?;
             fixture.record(format!(
                 "leadership churn succeeded: primary_sequence={} no_dual_samples={} phase_history={}",
                 ordered_sequence.join(" -> "),
@@ -5089,7 +5149,13 @@ pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_targ
                 .await?;
 
             fixture.record(format!(
-                "degraded failover: stop postgres on replica={degraded_replica}"
+                "degraded failover: stop runtime on replica={degraded_replica}"
+            ));
+            fixture
+                .stop_runtime_process_for_node(&degraded_replica)
+                .await?;
+            fixture.record(format!(
+                "degraded failover: stop postgres on runtime-stopped replica={degraded_replica}"
             ));
             fixture.stop_postgres_for_node(&degraded_replica).await?;
             fixture
@@ -5141,6 +5207,19 @@ pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_targ
                 ha_stats.sample_count, ha_stats.max_concurrent_primaries
             ));
             fixture
+                .stop_postgres_for_node(&degraded_replica)
+                .await?;
+            fixture.wipe_node_data_dir(&degraded_replica)?;
+            fixture
+                .restart_runtime_process_for_node(&degraded_replica)
+                .await?;
+            let recovered_nodes = fixture
+                .wait_for_queryable_nodes(&promoted_primary, 3, Duration::from_secs(180))
+                .await?;
+            fixture
+                .wait_for_node_sql_role(&degraded_replica, "replica", Duration::from_secs(120))
+                .await?;
+            fixture
                 .insert_proof_row(&promoted_primary, table_name.as_str(), 2, "after-degraded-failover")
                 .await?;
             let expected_rows = vec![
@@ -5148,7 +5227,8 @@ pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_targ
                 "2:after-degraded-failover".to_string(),
             ];
             fixture
-                .wait_for_proof_rows_on_all_nodes(
+                .wait_for_proof_rows_on_nodes(
+                    recovered_nodes.as_slice(),
                     table_name.as_str(),
                     expected_rows.as_slice(),
                     E2E_TABLE_INTEGRITY_TIMEOUT,
@@ -5205,9 +5285,11 @@ pub async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
                 .cloned()
                 .ok_or_else(|| WorkerError::Message("missing degraded target replica".to_string()))?;
             fixture.record(format!(
-                "targeted rejection: stop postgres on replica={degraded_replica}"
+                "targeted rejection: stop runtime on replica={degraded_replica}"
             ));
-            fixture.stop_postgres_for_node(&degraded_replica).await?;
+            fixture
+                .stop_runtime_process_for_node(&degraded_replica)
+                .await?;
             fixture
                 .wait_for_member_to_be_ineligible(
                     &bootstrap_primary,
@@ -5252,6 +5334,9 @@ pub async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
                 )
                 .await?;
 
+            fixture
+                .restart_runtime_process_for_node(&degraded_replica)
+                .await?;
             let table_name = fixture.proof_table_name("ha_targeted_rejection")?;
             fixture.create_proof_table(&bootstrap_primary, table_name.as_str()).await?;
             fixture

@@ -1,4 +1,7 @@
-use crate::state::{WorkerError, WorkerStatus};
+use crate::{
+    process::{jobs::ActiveJobKind, state::ProcessState},
+    state::{WorkerError, WorkerStatus},
+};
 
 use super::{
     apply::{apply_effect_plan, format_dispatch_errors},
@@ -43,13 +46,14 @@ pub(crate) async fn run(mut ctx: HaWorkerCtx) -> Result<(), WorkerError> {
 pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> {
     let prev_phase = ctx.state.phase.clone();
     let world = world_snapshot(ctx);
+    let process_state = world.process.value.clone();
     let output = decide(DecideInput {
         current: ctx.state.clone(),
         world,
     });
     let plan = output.outcome.decision.lower();
     let skip_redundant_process_dispatch =
-        should_skip_redundant_process_dispatch(&ctx.state, &output.next);
+        should_skip_redundant_process_dispatch(&ctx.state, &output.next, &process_state);
 
     emit_ha_decision_selected(ctx, output.next.tick, &output.outcome.decision, &plan)?;
     emit_ha_effect_plan_selected(ctx, output.next.tick, &plan)?;
@@ -109,17 +113,48 @@ fn world_snapshot(ctx: &HaWorkerCtx) -> WorldSnapshot {
 fn should_skip_redundant_process_dispatch(
     current: &crate::ha::state::HaState,
     next: &crate::ha::state::HaState,
+    process_state: &ProcessState,
 ) -> bool {
     current.phase == next.phase
         && current.decision == next.decision
-        && matches!(
-            next.decision,
-            crate::ha::decision::HaDecision::WaitForPostgres {
-                start_requested: true,
-                ..
-            } | crate::ha::decision::HaDecision::RecoverReplica { .. }
-                | crate::ha::decision::HaDecision::FenceNode
-        )
+        && decision_is_already_active(&next.decision, process_state)
+}
+
+fn decision_is_already_active(
+    decision: &crate::ha::decision::HaDecision,
+    process_state: &ProcessState,
+) -> bool {
+    match decision {
+        crate::ha::decision::HaDecision::WaitForPostgres {
+            start_requested: true,
+            ..
+        } => process_state_is_running_one_of(process_state, &[ActiveJobKind::StartPostgres]),
+        crate::ha::decision::HaDecision::RecoverReplica { strategy } => match strategy {
+            crate::ha::decision::RecoveryStrategy::Rewind { .. } => {
+                process_state_is_running_one_of(process_state, &[ActiveJobKind::PgRewind])
+            }
+            crate::ha::decision::RecoveryStrategy::BaseBackup { .. } => {
+                process_state_is_running_one_of(process_state, &[ActiveJobKind::BaseBackup])
+            }
+            crate::ha::decision::RecoveryStrategy::Bootstrap => {
+                process_state_is_running_one_of(process_state, &[ActiveJobKind::Bootstrap])
+            }
+        },
+        crate::ha::decision::HaDecision::FenceNode => {
+            process_state_is_running_one_of(process_state, &[ActiveJobKind::Fencing])
+        }
+        _ => false,
+    }
+}
+
+fn process_state_is_running_one_of(
+    process_state: &ProcessState,
+    expected_kinds: &[ActiveJobKind],
+) -> bool {
+    match process_state {
+        ProcessState::Running { active, .. } => expected_kinds.contains(&active.kind),
+        ProcessState::Idle { .. } => false,
+    }
 }
 
 #[cfg(test)]
@@ -140,7 +175,7 @@ mod tests {
         config::RuntimeConfig,
         dcs::{
             state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
-            store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
+            store::{DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent, WatchOp},
         },
         ha::{
             actions::ActionId,
@@ -159,13 +194,16 @@ mod tests {
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::{
             jobs::{
-                ProcessCommandRunner, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle,
+                ActiveJobKind, ProcessCommandRunner, ProcessCommandSpec, ProcessError, ProcessExit,
+                ProcessHandle,
             },
             state::{
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
             },
         },
-        state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
+        state::{
+            new_state_channel, JobId, MemberId, UnixMillis, Version, WorkerError, WorkerStatus,
+        },
     };
 
     const TEST_DCS_AND_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -310,6 +348,41 @@ mod tests {
                 .lock()
                 .map_err(|_| DcsStoreError::Io("events lock poisoned".to_string()))?;
             Ok(guard.drain(..).collect())
+        }
+    }
+
+    impl DcsLeaderStore for RecordingStore {
+        fn acquire_leader_lease(
+            &mut self,
+            scope: &str,
+            member_id: &MemberId,
+        ) -> Result<(), DcsStoreError> {
+            let path = format!("/{}/leader", scope.trim_matches('/'));
+            let encoded = serde_json::to_string(&LeaderRecord {
+                member_id: member_id.clone(),
+            })
+            .map_err(|err| DcsStoreError::Decode {
+                key: path.clone(),
+                message: err.to_string(),
+            })?;
+
+            if self.put_path_if_absent(path.as_str(), encoded)? {
+                Ok(())
+            } else {
+                Err(DcsStoreError::AlreadyExists(path))
+            }
+        }
+
+        fn release_leader_lease(
+            &mut self,
+            scope: &str,
+            _member_id: &MemberId,
+        ) -> Result<(), DcsStoreError> {
+            self.delete_path(format!("/{}/leader", scope.trim_matches('/')).as_str())
+        }
+
+        fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError> {
+            self.delete_path(format!("/{}/switchover", scope.trim_matches('/')).as_str())
         }
     }
 
@@ -478,6 +551,13 @@ mod tests {
             }
         }
 
+        fn with_decision(self, initial_decision: HaDecision) -> Self {
+            Self {
+                initial_decision,
+                ..self
+            }
+        }
+
         fn with_tick(self, initial_tick: u64) -> Self {
             Self {
                 initial_tick,
@@ -487,6 +567,13 @@ mod tests {
 
         fn with_pg_state(self, pg_state: PgInfoState) -> Self {
             Self { pg_state, ..self }
+        }
+
+        fn with_process_state(self, process_state: ProcessState) -> Self {
+            Self {
+                process_state,
+                ..self
+            }
         }
 
         fn build(self) -> Result<BuiltContext, WorkerError> {
@@ -947,6 +1034,37 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn step_once_retries_fence_dispatch_after_demote_finishes() -> Result<(), WorkerError> {
+        let BuiltContext {
+            mut ctx,
+            ha_subscriber: _ha_subscriber,
+            mut process_rx,
+            ..
+        } = HaWorkerTestBuilder::new()
+            .with_phase(HaPhase::Fencing)
+            .with_decision(HaDecision::FenceNode)
+            .with_process_state(ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: Some(JobOutcome::Success {
+                    id: JobId("demote-complete".to_string()),
+                    job_kind: ActiveJobKind::Demote,
+                    finished_at: UnixMillis(10),
+                }),
+            })
+            .build()?;
+
+        step_once(&mut ctx).await?;
+        let request = process_rx.try_recv().map_err(|err| {
+            WorkerError::Message(format!(
+                "expected fence process job request after demote completion: {err}"
+            ))
+        })?;
+        assert!(matches!(request.kind, ProcessJobKind::Fencing(_)));
+        assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn step_once_matches_decide_output_for_same_snapshot() -> Result<(), WorkerError> {
         let BuiltContext {
             mut ctx,
@@ -1306,11 +1424,17 @@ mod tests {
         );
         assert_eq!(fixture.push_leader_event("node-z"), Ok(()));
         assert_eq!(fixture.step_dcs_and_ha().await, Ok(()));
-        let failsafe = fixture.latest_ha();
-        assert_eq!(failsafe.phase, HaPhase::FailSafe);
+        let fencing = fixture.latest_ha();
+        assert_eq!(fencing.phase, HaPhase::Fencing);
         assert_eq!(
-            lower_decision(&failsafe.decision).safety,
-            SafetyEffect::FenceNode
+            lower_decision(&fencing.decision),
+            HaEffectPlan {
+                lease: LeaseEffect::ReleaseLeader,
+                switchover: SwitchoverEffect::None,
+                replication: ReplicationEffect::None,
+                postgres: PostgresEffect::Demote,
+                safety: SafetyEffect::FenceNode,
+            }
         );
     }
 

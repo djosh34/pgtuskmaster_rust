@@ -11,17 +11,36 @@ use std::{
 };
 
 use etcd_client::{
-    Client, Compare, CompareOp, EventType, GetOptions, Txn, TxnOp, WatchOptions, WatchResponse,
-    WatchStream, Watcher,
+    Client, Compare, CompareOp, EventType, GetOptions, PutOptions, Txn, TxnOp, WatchOptions,
+    WatchResponse, WatchStream, Watcher,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
-use super::store::{DcsStore, DcsStoreError, WatchEvent, WatchOp};
+use super::store::{
+    encode_leader_record, leader_path, DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent, WatchOp,
+};
 use crate::config::DcsEndpoint;
+use crate::state::MemberId;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
 const WATCH_IDLE_INTERVAL: Duration = Duration::from_millis(100);
+const MIN_LEADER_LEASE_TTL_SECONDS: u64 = 1;
+
+#[derive(Clone, Copy, Debug)]
+struct LeaderLeaseConfig {
+    ttl_seconds: i64,
+}
+
+#[derive(Debug)]
+struct OwnedLeaderLease {
+    lease_id: i64,
+    leader_path: String,
+    member_id: MemberId,
+    stop_tx: mpsc::Sender<()>,
+    failure_rx: mpsc::Receiver<DcsStoreError>,
+    keepalive_handle: JoinHandle<()>,
+}
 
 enum WorkerCommand {
     Read {
@@ -42,6 +61,16 @@ enum WorkerCommand {
         path: String,
         response_tx: mpsc::Sender<Result<(), DcsStoreError>>,
     },
+    AcquireLeaderLease {
+        scope: String,
+        member_id: MemberId,
+        response_tx: mpsc::Sender<Result<(), DcsStoreError>>,
+    },
+    ReleaseLeaderLease {
+        scope: String,
+        member_id: MemberId,
+        response_tx: mpsc::Sender<Result<(), DcsStoreError>>,
+    },
     Shutdown,
 }
 
@@ -54,13 +83,32 @@ pub(crate) struct EtcdDcsStore {
 
 impl EtcdDcsStore {
     pub(crate) fn connect(endpoints: Vec<DcsEndpoint>, scope: &str) -> Result<Self, DcsStoreError> {
-        Self::connect_with_worker_bootstrap_timeout(endpoints, scope, WORKER_BOOTSTRAP_TIMEOUT)
+        Self::connect_with_options(endpoints, scope, WORKER_BOOTSTRAP_TIMEOUT, None)
     }
 
+    pub(crate) fn connect_with_leader_lease(
+        endpoints: Vec<DcsEndpoint>,
+        scope: &str,
+        lease_ttl_ms: u64,
+    ) -> Result<Self, DcsStoreError> {
+        let leader_lease = Some(leader_lease_config_from_ttl_ms(lease_ttl_ms)?);
+        Self::connect_with_options(endpoints, scope, WORKER_BOOTSTRAP_TIMEOUT, leader_lease)
+    }
+
+    #[cfg(test)]
     fn connect_with_worker_bootstrap_timeout(
         endpoints: Vec<DcsEndpoint>,
         scope: &str,
         worker_bootstrap_timeout: Duration,
+    ) -> Result<Self, DcsStoreError> {
+        Self::connect_with_options(endpoints, scope, worker_bootstrap_timeout, None)
+    }
+
+    fn connect_with_options(
+        endpoints: Vec<DcsEndpoint>,
+        scope: &str,
+        worker_bootstrap_timeout: Duration,
+        leader_lease_config: Option<LeaderLeaseConfig>,
     ) -> Result<Self, DcsStoreError> {
         if endpoints.is_empty() {
             return Err(DcsStoreError::Io(
@@ -85,6 +133,7 @@ impl EtcdDcsStore {
                 run_worker_loop(
                     worker_endpoints,
                     worker_scope,
+                    leader_lease_config,
                     worker_healthy,
                     worker_events,
                     command_rx,
@@ -157,11 +206,52 @@ impl EtcdDcsStore {
     fn mark_unhealthy(&self) {
         self.healthy.store(false, Ordering::SeqCst);
     }
+
+    fn request_unit_command(
+        &mut self,
+        command: WorkerCommand,
+        operation: &str,
+    ) -> Result<(), DcsStoreError> {
+        let (response_tx, response_rx) = mpsc::channel::<Result<(), DcsStoreError>>();
+        let command = match command {
+            WorkerCommand::AcquireLeaderLease {
+                scope, member_id, ..
+            } => WorkerCommand::AcquireLeaderLease {
+                scope,
+                member_id,
+                response_tx,
+            },
+            WorkerCommand::ReleaseLeaderLease {
+                scope, member_id, ..
+            } => WorkerCommand::ReleaseLeaderLease {
+                scope,
+                member_id,
+                response_tx,
+            },
+            other => {
+                return Err(DcsStoreError::Io(format!(
+                    "unexpected worker command for unit request: {other_label}",
+                    other_label = worker_command_label(&other)
+                )));
+            }
+        };
+
+        self.command_tx.send(command).map_err(|err| {
+            self.mark_unhealthy();
+            DcsStoreError::Io(format!("send {operation} command failed: {err}"))
+        })?;
+
+        response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
+            self.mark_unhealthy();
+            DcsStoreError::Io(format!("timed out waiting for {operation} command: {err}"))
+        })?
+    }
 }
 
 fn run_worker_loop(
     endpoints: Vec<DcsEndpoint>,
     scope_prefix: String,
+    leader_lease_config: Option<LeaderLeaseConfig>,
     healthy: Arc<AtomicBool>,
     events: Arc<Mutex<VecDeque<WatchEvent>>>,
     mut command_rx: tokio_mpsc::UnboundedReceiver<WorkerCommand>,
@@ -180,6 +270,7 @@ fn run_worker_loop(
 
     runtime.block_on(async move {
         let mut had_successful_session = false;
+        let mut owned_leader = None;
 
         let (mut client, mut _watcher, mut watch_stream): (
             Option<Client>,
@@ -207,21 +298,29 @@ fn run_worker_loop(
         };
 
         loop {
+            if poll_owned_leader(&healthy, &mut owned_leader).is_err() {
+                let _ = stop_owned_leader(&mut owned_leader);
+            }
+
             if client.is_none() || watch_stream.is_none() {
                 tokio::select! {
                     maybe_command = command_rx.recv() => {
                         let Some(command) = maybe_command else {
+                            let _ = stop_owned_leader(&mut owned_leader);
                             return;
                         };
-                        if !handle_worker_command(
-                            command,
-                            &endpoints,
-                            &healthy,
-                            &events,
-                            &mut client,
-                            &mut _watcher,
-                            &mut watch_stream,
-                        ).await {
+                        let mut command_ctx = WorkerCommandCtx {
+                            endpoints: &endpoints,
+                            leader_lease_config: &leader_lease_config,
+                            healthy: &healthy,
+                            events: &events,
+                            client: &mut client,
+                            watcher: &mut _watcher,
+                            watch_stream: &mut watch_stream,
+                            owned_leader: &mut owned_leader,
+                        };
+                        if !command_ctx.handle(command).await {
+                            let _ = stop_owned_leader(&mut owned_leader);
                             return;
                         }
                     }
@@ -258,17 +357,21 @@ fn run_worker_loop(
             tokio::select! {
                 maybe_command = command_rx.recv() => {
                     let Some(command) = maybe_command else {
+                        let _ = stop_owned_leader(&mut owned_leader);
                         return;
                     };
-                    if !handle_worker_command(
-                        command,
-                        &endpoints,
-                        &healthy,
-                        &events,
-                        &mut client,
-                        &mut _watcher,
-                        &mut watch_stream,
-                    ).await {
+                    let mut command_ctx = WorkerCommandCtx {
+                        endpoints: &endpoints,
+                        leader_lease_config: &leader_lease_config,
+                        healthy: &healthy,
+                        events: &events,
+                        client: &mut client,
+                        watcher: &mut _watcher,
+                        watch_stream: &mut watch_stream,
+                        owned_leader: &mut owned_leader,
+                    };
+                    if !command_ctx.handle(command).await {
+                        let _ = stop_owned_leader(&mut owned_leader);
                         return;
                     }
                 }
@@ -312,65 +415,176 @@ fn run_worker_loop(
     });
 }
 
-async fn handle_worker_command(
-    command: WorkerCommand,
-    endpoints: &[DcsEndpoint],
+struct WorkerCommandCtx<'a> {
+    endpoints: &'a [DcsEndpoint],
+    leader_lease_config: &'a Option<LeaderLeaseConfig>,
+    healthy: &'a Arc<AtomicBool>,
+    events: &'a Arc<Mutex<VecDeque<WatchEvent>>>,
+    client: &'a mut Option<Client>,
+    watcher: &'a mut Option<Watcher>,
+    watch_stream: &'a mut Option<WatchStream>,
+    owned_leader: &'a mut Option<OwnedLeaderLease>,
+}
+
+impl WorkerCommandCtx<'_> {
+    async fn handle(&mut self, command: WorkerCommand) -> bool {
+        match command {
+            WorkerCommand::Write {
+                path,
+                value,
+                response_tx,
+            } => {
+                let result =
+                    execute_write(self.endpoints, self.client, self.healthy, &path, value).await;
+                let invalidate_result = if should_invalidate_on_error(&result) {
+                    invalidate_watch_session(
+                        self.healthy,
+                        self.events,
+                        self.client,
+                        self.watcher,
+                        self.watch_stream,
+                    )
+                } else {
+                    Ok(())
+                };
+                let _ = response_tx.send(result);
+                invalidate_result.is_ok()
+            }
+            WorkerCommand::Read { path, response_tx } => {
+                let result = execute_read(self.endpoints, self.client, self.healthy, &path).await;
+                let invalidate_result = if should_invalidate_on_error(&result) {
+                    invalidate_watch_session(
+                        self.healthy,
+                        self.events,
+                        self.client,
+                        self.watcher,
+                        self.watch_stream,
+                    )
+                } else {
+                    Ok(())
+                };
+                let _ = response_tx.send(result);
+                invalidate_result.is_ok()
+            }
+            WorkerCommand::PutIfAbsent {
+                path,
+                value,
+                response_tx,
+            } => {
+                let result =
+                    execute_put_if_absent(self.endpoints, self.client, self.healthy, &path, value)
+                        .await;
+                let invalidate_result = if should_invalidate_on_error(&result) {
+                    invalidate_watch_session(
+                        self.healthy,
+                        self.events,
+                        self.client,
+                        self.watcher,
+                        self.watch_stream,
+                    )
+                } else {
+                    Ok(())
+                };
+                let _ = response_tx.send(result);
+                invalidate_result.is_ok()
+            }
+            WorkerCommand::Delete { path, response_tx } => {
+                let result = execute_delete(self.endpoints, self.client, self.healthy, &path).await;
+                let invalidate_result = if should_invalidate_on_error(&result) {
+                    invalidate_watch_session(
+                        self.healthy,
+                        self.events,
+                        self.client,
+                        self.watcher,
+                        self.watch_stream,
+                    )
+                } else {
+                    Ok(())
+                };
+                let _ = response_tx.send(result);
+                invalidate_result.is_ok()
+            }
+            WorkerCommand::AcquireLeaderLease {
+                scope,
+                member_id,
+                response_tx,
+            } => {
+                let result = execute_acquire_leader_lease(
+                    self.endpoints,
+                    self.leader_lease_config,
+                    self.healthy,
+                    &scope,
+                    &member_id,
+                    self.owned_leader,
+                )
+                .await;
+                let _ = response_tx.send(result);
+                true
+            }
+            WorkerCommand::ReleaseLeaderLease {
+                scope,
+                member_id,
+                response_tx,
+            } => {
+                let result = execute_release_leader_lease(
+                    self.endpoints,
+                    self.healthy,
+                    &scope,
+                    &member_id,
+                    self.owned_leader,
+                )
+                .await;
+                let _ = response_tx.send(result);
+                true
+            }
+            WorkerCommand::Shutdown => {
+                let _ = stop_owned_leader(self.owned_leader);
+                false
+            }
+        }
+    }
+}
+
+fn should_invalidate_on_error<T>(result: &Result<T, DcsStoreError>) -> bool {
+    matches!(result, Err(DcsStoreError::Io(_)))
+}
+
+fn poll_owned_leader(
     healthy: &Arc<AtomicBool>,
-    events: &Arc<Mutex<VecDeque<WatchEvent>>>,
-    client: &mut Option<Client>,
-    watcher: &mut Option<Watcher>,
-    watch_stream: &mut Option<WatchStream>,
-) -> bool {
-    match command {
-        WorkerCommand::Write {
-            path,
-            value,
-            response_tx,
-        } => {
-            let result = execute_write(endpoints, client, healthy, &path, value).await;
-            let invalidate_result = if result.is_err() {
-                invalidate_watch_session(healthy, events, client, watcher, watch_stream)
-            } else {
-                Ok(())
-            };
-            let _ = response_tx.send(result);
-            invalidate_result.is_ok()
-        }
-        WorkerCommand::Read { path, response_tx } => {
-            let result = execute_read(endpoints, client, healthy, &path).await;
-            let invalidate_result = if result.is_err() {
-                invalidate_watch_session(healthy, events, client, watcher, watch_stream)
-            } else {
-                Ok(())
-            };
-            let _ = response_tx.send(result);
-            invalidate_result.is_ok()
-        }
-        WorkerCommand::PutIfAbsent {
-            path,
-            value,
-            response_tx,
-        } => {
-            let result = execute_put_if_absent(endpoints, client, healthy, &path, value).await;
-            let invalidate_result = if result.is_err() {
-                invalidate_watch_session(healthy, events, client, watcher, watch_stream)
-            } else {
-                Ok(())
-            };
-            let _ = response_tx.send(result);
-            invalidate_result.is_ok()
-        }
-        WorkerCommand::Delete { path, response_tx } => {
-            let result = execute_delete(endpoints, client, healthy, &path).await;
-            let invalidate_result = if result.is_err() {
-                invalidate_watch_session(healthy, events, client, watcher, watch_stream)
-            } else {
-                Ok(())
-            };
-            let _ = response_tx.send(result);
-            invalidate_result.is_ok()
-        }
-        WorkerCommand::Shutdown => false,
+    owned_leader: &mut Option<OwnedLeaderLease>,
+) -> Result<(), DcsStoreError> {
+    let failure = match owned_leader.as_mut() {
+        Some(state) => match state.failure_rx.try_recv() {
+            Ok(err) => Some(err),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(DcsStoreError::Io(format!(
+                "leader lease keepalive stopped unexpectedly for `{}`",
+                state.leader_path
+            ))),
+        },
+        None => None,
+    };
+
+    if let Some(err) = failure {
+        healthy.store(false, Ordering::SeqCst);
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+fn stop_owned_leader(owned_leader: &mut Option<OwnedLeaderLease>) -> Result<(), DcsStoreError> {
+    let Some(state) = owned_leader.take() else {
+        return Ok(());
+    };
+
+    let _ = state.stop_tx.send(());
+    match state.keepalive_handle.join() {
+        Ok(()) => Ok(()),
+        Err(_) => Err(DcsStoreError::Io(format!(
+            "leader lease keepalive thread panicked for `{}`",
+            state.leader_path
+        ))),
     }
 }
 
@@ -412,6 +626,218 @@ async fn connect_client(endpoints: &[DcsEndpoint]) -> Result<Client, DcsStoreErr
         .map(DcsEndpoint::to_client_string)
         .collect::<Vec<_>>();
     timeout_etcd("etcd connect", Client::connect(client_endpoints, None)).await
+}
+
+fn leader_lease_config_from_ttl_ms(lease_ttl_ms: u64) -> Result<LeaderLeaseConfig, DcsStoreError> {
+    let rounded_seconds = lease_ttl_ms.saturating_add(999) / 1000;
+    let clamped_seconds = rounded_seconds.max(MIN_LEADER_LEASE_TTL_SECONDS);
+    let ttl_seconds = i64::try_from(clamped_seconds).map_err(|_| {
+        DcsStoreError::Io(format!(
+            "leader lease ttl `{lease_ttl_ms}`ms is too large to convert to etcd seconds"
+        ))
+    })?;
+
+    Ok(LeaderLeaseConfig { ttl_seconds })
+}
+
+fn leader_keepalive_interval(ttl_seconds: i64) -> Duration {
+    if ttl_seconds <= 1 {
+        return Duration::from_millis(500);
+    }
+
+    let ttl_seconds = ttl_seconds as u64;
+    Duration::from_secs(std::cmp::max(1, ttl_seconds / 3))
+}
+
+fn spawn_leader_keepalive(
+    endpoints: &[DcsEndpoint],
+    lease_id: i64,
+    leader_path_value: &str,
+    member_id: &MemberId,
+    ttl_seconds: i64,
+) -> Result<OwnedLeaderLease, DcsStoreError> {
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let (failure_tx, failure_rx) = mpsc::channel::<DcsStoreError>();
+    let keepalive_interval = leader_keepalive_interval(ttl_seconds);
+    let keepalive_endpoints = endpoints.to_vec();
+    let keepalive_handle = thread::Builder::new()
+        .name("etcd-leader-keepalive".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+
+            let result = match runtime {
+                Ok(runtime) => run_leader_keepalive(
+                    &runtime,
+                    &keepalive_endpoints,
+                    lease_id,
+                    keepalive_interval,
+                    stop_rx,
+                ),
+                Err(err) => Err(DcsStoreError::Io(format!(
+                    "failed to build leader keepalive runtime: {err}"
+                ))),
+            };
+
+            if let Err(err) = result {
+                let _ = failure_tx.send(err);
+            }
+        })
+        .map_err(|err| DcsStoreError::Io(format!("spawn leader keepalive failed: {err}")))?;
+
+    Ok(OwnedLeaderLease {
+        lease_id,
+        leader_path: leader_path_value.to_string(),
+        member_id: member_id.clone(),
+        stop_tx,
+        failure_rx,
+        keepalive_handle,
+    })
+}
+
+fn run_leader_keepalive(
+    runtime: &tokio::runtime::Runtime,
+    endpoints: &[DcsEndpoint],
+    lease_id: i64,
+    keepalive_interval: Duration,
+    stop_rx: mpsc::Receiver<()>,
+) -> Result<(), DcsStoreError> {
+    let mut client = runtime.block_on(connect_client(endpoints))?;
+    let (mut keeper, mut stream) = runtime.block_on(timeout_etcd(
+        "etcd lease keepalive create",
+        client.lease_keep_alive(lease_id),
+    ))?;
+
+    loop {
+        match stop_rx.recv_timeout(keepalive_interval) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                runtime.block_on(timeout_etcd(
+                    "etcd lease keepalive send",
+                    keeper.keep_alive(),
+                ))?;
+                let response = runtime.block_on(timeout_etcd(
+                    "etcd lease keepalive receive",
+                    stream.message(),
+                ))?;
+                match response {
+                    Some(message) if message.ttl() > 0 => {}
+                    Some(_) => {
+                        return Err(DcsStoreError::Io(format!(
+                            "leader lease keepalive reported expired lease `{lease_id}`"
+                        )));
+                    }
+                    None => {
+                        return Err(DcsStoreError::Io(format!(
+                            "leader lease keepalive stream closed for lease `{lease_id}`"
+                        )));
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+    }
+}
+
+async fn execute_acquire_leader_lease(
+    endpoints: &[DcsEndpoint],
+    leader_lease_config: &Option<LeaderLeaseConfig>,
+    healthy: &Arc<AtomicBool>,
+    scope: &str,
+    member_id: &MemberId,
+    owned_leader: &mut Option<OwnedLeaderLease>,
+) -> Result<(), DcsStoreError> {
+    let (path, encoded) = encode_leader_record(scope, member_id)?;
+
+    if owned_leader
+        .as_ref()
+        .map(|state| state.leader_path == path && state.member_id == *member_id)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    let Some(lease_config) = leader_lease_config else {
+        return Err(DcsStoreError::LeaderLeaseNotConfigured(path));
+    };
+
+    let mut client = connect_client(endpoints).await?;
+    let lease_response = timeout_etcd(
+        "etcd lease grant",
+        client.lease_grant(lease_config.ttl_seconds, None),
+    )
+    .await?;
+    let lease_id = lease_response.id();
+    let compare = Compare::version(path.as_str(), CompareOp::Equal, 0);
+    let put = TxnOp::put(
+        path.as_str(),
+        encoded,
+        Some(PutOptions::new().with_lease(lease_id)),
+    );
+    let txn = Txn::new().when(vec![compare]).and_then(vec![put]);
+    let txn_result = timeout_etcd("etcd leader lease txn", client.txn(txn)).await;
+
+    match txn_result {
+        Ok(response) if response.succeeded() => {
+            stop_owned_leader(owned_leader)?;
+            let owned = spawn_leader_keepalive(
+                endpoints,
+                lease_id,
+                path.as_str(),
+                member_id,
+                lease_config.ttl_seconds,
+            )?;
+            *owned_leader = Some(owned);
+            healthy.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        Ok(_) => {
+            let _ = timeout_etcd("etcd lease revoke", client.lease_revoke(lease_id)).await;
+            Err(DcsStoreError::AlreadyExists(path))
+        }
+        Err(err) => {
+            let _ = timeout_etcd("etcd lease revoke", client.lease_revoke(lease_id)).await;
+            healthy.store(false, Ordering::SeqCst);
+            Err(err)
+        }
+    }
+}
+
+async fn execute_release_leader_lease(
+    endpoints: &[DcsEndpoint],
+    healthy: &Arc<AtomicBool>,
+    scope: &str,
+    member_id: &MemberId,
+    owned_leader: &mut Option<OwnedLeaderLease>,
+) -> Result<(), DcsStoreError> {
+    let path = leader_path(scope);
+    let should_release = owned_leader
+        .as_ref()
+        .map(|state| state.leader_path == path && state.member_id == *member_id)
+        .unwrap_or(false);
+
+    if !should_release {
+        return Ok(());
+    }
+
+    let lease_id = owned_leader
+        .as_ref()
+        .map(|state| state.lease_id)
+        .unwrap_or_default();
+    stop_owned_leader(owned_leader)?;
+
+    let mut client = connect_client(endpoints).await?;
+    match timeout_etcd("etcd lease revoke", client.lease_revoke(lease_id)).await {
+        Ok(_) => {
+            healthy.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        Err(err) => {
+            healthy.store(false, Ordering::SeqCst);
+            Err(err)
+        }
+    }
 }
 
 async fn execute_write(
@@ -723,6 +1149,18 @@ async fn execute_read(
     }
 }
 
+fn worker_command_label(command: &WorkerCommand) -> &'static str {
+    match command {
+        WorkerCommand::Read { .. } => "read",
+        WorkerCommand::Write { .. } => "write",
+        WorkerCommand::PutIfAbsent { .. } => "put_if_absent",
+        WorkerCommand::Delete { .. } => "delete",
+        WorkerCommand::AcquireLeaderLease { .. } => "acquire_leader_lease",
+        WorkerCommand::ReleaseLeaderLease { .. } => "release_leader_lease",
+        WorkerCommand::Shutdown => "shutdown",
+    }
+}
+
 impl DcsStore for EtcdDcsStore {
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::SeqCst)
@@ -796,6 +1234,42 @@ impl DcsStore for EtcdDcsStore {
     }
 }
 
+impl DcsLeaderStore for EtcdDcsStore {
+    fn acquire_leader_lease(
+        &mut self,
+        scope: &str,
+        member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        self.request_unit_command(
+            WorkerCommand::AcquireLeaderLease {
+                scope: scope.to_string(),
+                member_id: member_id.clone(),
+                response_tx: mpsc::channel::<Result<(), DcsStoreError>>().0,
+            },
+            "acquire leader lease",
+        )
+    }
+
+    fn release_leader_lease(
+        &mut self,
+        scope: &str,
+        member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        self.request_unit_command(
+            WorkerCommand::ReleaseLeaderLease {
+                scope: scope.to_string(),
+                member_id: member_id.clone(),
+                response_tx: mpsc::channel::<Result<(), DcsStoreError>>().0,
+            },
+            "release leader lease",
+        )
+    }
+
+    fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError> {
+        self.delete_path(format!("/{}/switchover", scope.trim_matches('/')).as_str())
+    }
+}
+
 impl Drop for EtcdDcsStore {
     fn drop(&mut self) {
         let _ = self.command_tx.send(WorkerCommand::Shutdown);
@@ -821,14 +1295,23 @@ mod tests {
         dcs::{
             etcd_store::EtcdDcsStore,
             state::{
-                DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord,
-                MemberRecord, MemberRole, SwitchoverRequest,
+                evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord,
+                LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
             },
-            store::{refresh_from_etcd_watch, DcsStore, DcsStoreError, WatchEvent, WatchOp},
+            store::{
+                refresh_from_etcd_watch, DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent,
+                WatchOp,
+            },
             worker::step_once,
         },
+        ha::{
+            decide::decide,
+            decision::HaDecision,
+            state::{DecideInput, HaPhase, HaState, WorldSnapshot},
+        },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        state::{new_state_channel, MemberId, UnixMillis, WorkerError, WorkerStatus},
+        process::state::ProcessState,
+        state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
         test_harness::{
             binaries::require_etcd_bin_for_real_tests,
             etcd3::{prepare_etcd_data_dir, spawn_etcd3, EtcdHandle, EtcdInstanceSpec},
@@ -1395,6 +1878,310 @@ mod tests {
             if value != "config-a" {
                 return Err(boxed_error(format!(
                     "expected config to remain 'config-a', got: {value:?}"
+                )));
+            }
+
+            Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn etcd_store_leader_lease_expires_after_owner_stops_renewing() -> TestResult {
+        let fixture =
+            RealEtcdFixture::spawn("dcs-etcd-store-leader-lease-expiry", "scope-lease-expiry")
+                .await?;
+
+        let fixture = fixture;
+        let result: TestResult = async {
+            let leader_key = format!("/{}/leader", fixture.scope);
+            let owner_member = MemberId("node-a".to_string());
+            let mut observer =
+                EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
+
+            {
+                let mut owner = EtcdDcsStore::connect_with_leader_lease(
+                    vec![fixture.endpoint_model()?],
+                    &fixture.scope,
+                    1_000,
+                )?;
+                owner.acquire_leader_lease(&fixture.scope, &owner_member)?;
+                wait_for_event(
+                    &mut observer,
+                    WatchOp::Put,
+                    leader_key.as_str(),
+                    Duration::from_secs(5),
+                )?;
+            }
+
+            wait_for_event(
+                &mut observer,
+                WatchOp::Delete,
+                leader_key.as_str(),
+                Duration::from_secs(5),
+            )?;
+
+            let mut client = Client::connect(vec![fixture.endpoint.clone()], None)
+                .await
+                .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
+            let response = client
+                .get(leader_key.as_str(), None)
+                .await
+                .map_err(|err| boxed_error(format!("etcd get leader failed: {err}")))?;
+            if !response.kvs().is_empty() {
+                return Err(boxed_error(
+                    "expected leader key to expire after keepalive stopped",
+                ));
+            }
+
+            Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn etcd_store_releases_only_locally_owned_leader_lease() -> TestResult {
+        let fixture = RealEtcdFixture::spawn(
+            "dcs-etcd-store-owner-only-leader-release",
+            "scope-owner-release",
+        )
+        .await?;
+
+        let fixture = fixture;
+        let result: TestResult = async {
+            let leader_key = format!("/{}/leader", fixture.scope);
+            let owner_member = MemberId("node-a".to_string());
+            let other_member = MemberId("node-b".to_string());
+            let mut observer =
+                EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
+            let mut owner = EtcdDcsStore::connect_with_leader_lease(
+                vec![fixture.endpoint_model()?],
+                &fixture.scope,
+                3_000,
+            )?;
+            let mut other = EtcdDcsStore::connect_with_leader_lease(
+                vec![fixture.endpoint_model()?],
+                &fixture.scope,
+                3_000,
+            )?;
+
+            owner.acquire_leader_lease(&fixture.scope, &owner_member)?;
+            wait_for_event(
+                &mut observer,
+                WatchOp::Put,
+                leader_key.as_str(),
+                Duration::from_secs(5),
+            )?;
+
+            other.release_leader_lease(&fixture.scope, &other_member)?;
+
+            let leader_after_foreign_release = other.read_path(leader_key.as_str())?;
+            if leader_after_foreign_release.is_none() {
+                return Err(boxed_error(
+                    "expected foreign release attempt to leave owner leader key intact",
+                ));
+            }
+
+            owner.release_leader_lease(&fixture.scope, &owner_member)?;
+            wait_for_event(
+                &mut observer,
+                WatchOp::Delete,
+                leader_key.as_str(),
+                Duration::from_secs(5),
+            )?;
+
+            Ok(())
+        }
+        .await;
+
+        shutdown_with_result(fixture, result).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leader_expiry_flows_through_watch_cache_trust_and_ha_decision() -> TestResult {
+        let fixture = RealEtcdFixture::spawn(
+            "dcs-etcd-store-leader-expiry-ha-chain",
+            "scope-leader-expiry-ha-chain",
+        )
+        .await?;
+
+        let fixture = fixture;
+        let result: TestResult = async {
+            let leader_key = format!("/{}/leader", fixture.scope);
+            let owner_member = MemberId("node-a".to_string());
+            let mut observer = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
+            let mut writer = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
+
+            for record in [
+                MemberRecord {
+                    member_id: MemberId("node-a".to_string()),
+                    postgres_host: "127.0.0.1".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                },
+                MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "127.0.0.2".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(15_000),
+                    pg_version: Version(1),
+                },
+                MemberRecord {
+                    member_id: MemberId("node-c".to_string()),
+                    postgres_host: "127.0.0.3".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Replica,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(15_000),
+                    pg_version: Version(1),
+                },
+            ] {
+                let encoded = serde_json::to_string(&record)
+                    .map_err(|err| boxed_error(format!("encode member record failed: {err}")))?;
+                writer.write_path(
+                    format!("/{}/member/{}", fixture.scope, record.member_id.0).as_str(),
+                    encoded,
+                )?;
+            }
+
+            {
+                let mut owner = EtcdDcsStore::connect_with_leader_lease(
+                    vec![fixture.endpoint_model()?],
+                    &fixture.scope,
+                    1_000,
+                )?;
+                owner.acquire_leader_lease(&fixture.scope, &owner_member)?;
+                wait_for_event(
+                    &mut observer,
+                    WatchOp::Put,
+                    leader_key.as_str(),
+                    Duration::from_secs(5),
+                )?;
+            }
+
+            wait_for_event(
+                &mut observer,
+                WatchOp::Delete,
+                leader_key.as_str(),
+                Duration::from_secs(5),
+            )?;
+
+            let mut snapshot_store =
+                EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
+            let mut cache = DcsCache {
+                members: BTreeMap::new(),
+                leader: None,
+                switchover: None,
+                config: sample_runtime_config(&fixture.scope),
+                init_lock: None,
+            };
+            let events = snapshot_store.drain_watch_events()?;
+            refresh_from_etcd_watch(&fixture.scope, &mut cache, events)?;
+
+            if cache.leader.is_some() {
+                return Err(boxed_error(
+                    "expected DCS-visible cache to drop leader record after lease expiry",
+                ));
+            }
+
+            let now = UnixMillis(20_000);
+            let trust = evaluate_trust(true, &cache, &MemberId("node-b".to_string()), now);
+            if trust != DcsTrust::FullQuorum {
+                return Err(boxed_error(format!(
+                    "expected healthy majority to remain full quorum after leader expiry, got {trust:?}"
+                )));
+            }
+
+            let mut world_config = cache.config.clone();
+            world_config.cluster.member_id = "node-b".to_string();
+            let world = WorldSnapshot {
+                config: crate::state::Versioned::new(Version(1), now, world_config.clone()),
+                pg: crate::state::Versioned::new(
+                    Version(1),
+                    now,
+                    PgInfoState::Primary {
+                        common: PgInfoCommon {
+                            worker: WorkerStatus::Running,
+                            sql: SqlStatus::Healthy,
+                            readiness: Readiness::Ready,
+                            timeline: None,
+                            pg_config: PgConfig {
+                                port: None,
+                                hot_standby: None,
+                                primary_conninfo: None,
+                                primary_slot_name: None,
+                                extra: BTreeMap::new(),
+                            },
+                            last_refresh_at: Some(now),
+                        },
+                        wal_lsn: crate::state::WalLsn(10),
+                        slots: Vec::new(),
+                    },
+                ),
+                dcs: crate::state::Versioned::new(
+                    Version(1),
+                    now,
+                    DcsState {
+                        worker: WorkerStatus::Running,
+                        trust,
+                        cache,
+                        last_refresh_at: Some(now),
+                    },
+                ),
+                process: crate::state::Versioned::new(
+                    Version(1),
+                    now,
+                    ProcessState::Idle {
+                        worker: WorkerStatus::Running,
+                        last_outcome: None,
+                    },
+                ),
+            };
+
+            let decision = decide(DecideInput {
+                current: HaState {
+                    worker: WorkerStatus::Running,
+                    phase: HaPhase::WaitingDcsTrusted,
+                    tick: 3,
+                    decision: HaDecision::WaitForDcsTrust,
+                },
+                world,
+            });
+
+            if decision.next.phase != HaPhase::CandidateLeader {
+                return Err(boxed_error(format!(
+                    "expected lease-expiry chain to advance into candidate leader, got {:?}",
+                    decision.next.phase
+                )));
+            }
+            if decision.outcome.decision != HaDecision::AttemptLeadership {
+                return Err(boxed_error(format!(
+                    "expected lease-expiry chain to attempt leadership, got {:?}",
+                    decision.outcome.decision
                 )));
             }
 

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::future::pending;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -202,6 +203,62 @@ impl RuntimeNodeSet {
         self.nodes.insert(node_id, handle);
         Ok(())
     }
+
+    pub async fn stop_node(
+        &mut self,
+        node: &NodeHandle,
+        command_timeout: Duration,
+        command_kill_wait_timeout: Duration,
+        http_step_timeout: Duration,
+        api_readiness_timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let node_id = node.id.clone();
+        let mut handle = self.nodes.remove(node_id.as_str()).ok_or_else(|| {
+            WorkerError::Message(format!("missing runtime stop metadata for node: {node_id}"))
+        })?;
+
+        handle.task.abort();
+        match handle.task.await {
+            Ok(Ok(())) => {
+                return Err(WorkerError::Message(format!(
+                    "runtime task for {node_id} exited cleanly before stop, expected a running node"
+                )));
+            }
+            Ok(Err(err)) => {
+                return Err(WorkerError::Message(format!(
+                    "runtime task for {node_id} failed before stop: {err}"
+                )));
+            }
+            Err(err) => {
+                if !err.is_cancelled() {
+                    return Err(WorkerError::Message(format!(
+                        "runtime task join failed for {node_id} during stop: {err}"
+                    )));
+                }
+            }
+        }
+
+        wait_for_node_api_unavailable(
+            node.api_observe_addr,
+            node_id.as_str(),
+            http_step_timeout,
+            api_readiness_timeout,
+        )
+        .await?;
+
+        super::util::pg_ctl_stop_immediate(
+            &handle.runtime_cfg.process.binaries.pg_ctl,
+            &node.data_dir,
+            command_timeout,
+            command_kill_wait_timeout,
+        )
+        .await?;
+
+        // Preserve restart metadata while marking the runtime intentionally stopped.
+        handle.task = tokio::task::spawn_local(pending::<Result<(), WorkerError>>());
+        self.nodes.insert(node_id, handle);
+        Ok(())
+    }
 }
 
 impl TestClusterHandle {
@@ -221,6 +278,26 @@ impl TestClusterHandle {
         self.runtime_nodes
             .restart_node(
                 &node,
+                self.timeouts.http_step_timeout,
+                self.timeouts.api_readiness_timeout,
+            )
+            .await
+    }
+
+    pub async fn stop_runtime_node(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        let node = self
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == node_id)
+            .cloned()
+            .ok_or_else(|| {
+                WorkerError::Message(format!("unknown node id for runtime stop: {node_id}"))
+            })?;
+        self.runtime_nodes
+            .stop_node(
+                &node,
+                self.timeouts.command_timeout,
+                self.timeouts.command_kill_wait_timeout,
                 self.timeouts.http_step_timeout,
                 self.timeouts.api_readiness_timeout,
             )

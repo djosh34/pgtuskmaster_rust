@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    dcs::state::{DcsTrust, MemberRecord, MemberRole},
+    dcs::state::{member_record_is_fresh, DcsTrust, MemberRecord, MemberRole},
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     process::{
         jobs::ActiveJobKind,
@@ -129,12 +129,18 @@ impl DecisionFacts {
                 .values()
                 .find(|member| {
                     member.member_id != self_member_id
+                        && member_record_is_fresh(
+                            member,
+                            &world.dcs.value.cache,
+                            world.dcs.updated_at,
+                        )
                         && member.role == MemberRole::Primary
                         && member.sql == SqlStatus::Healthy
+                        && member.readiness == Readiness::Ready
                 })
                 .map(|member| member.member_id.clone())
         });
-        let eligible_switchover_targets = eligible_switchover_targets(world, &self_member_id);
+        let eligible_switchover_targets = eligible_switchover_targets(world);
         let i_am_leader = leader_member_id.as_ref() == Some(&self_member_id);
         let has_other_leader_record = leader_member_id
             .as_ref()
@@ -351,6 +357,10 @@ fn is_local_primary(state: &PgInfoState) -> bool {
 }
 
 fn should_rewind_from_leader(world: &WorldSnapshot, leader_member_id: &MemberId) -> bool {
+    if !is_local_primary(&world.pg.value) {
+        return false;
+    }
+
     let Some(local_timeline) = pg_timeline(&world.pg.value) else {
         return false;
     };
@@ -377,37 +387,375 @@ fn pg_timeline(state: &PgInfoState) -> Option<TimelineId> {
 }
 
 fn is_available_primary_leader(world: &WorldSnapshot, leader_member_id: &MemberId) -> bool {
-    let leader_record = world.dcs.value.cache.members.get(leader_member_id);
-
-    let Some(member) = leader_record else {
-        // Preserve current behavior when leader member metadata is not yet observed.
-        return true;
+    let Some(member) = world.dcs.value.cache.members.get(leader_member_id) else {
+        return false;
     };
 
-    matches!(member.role, crate::dcs::state::MemberRole::Primary)
+    member_record_is_fresh(member, &world.dcs.value.cache, world.dcs.updated_at)
+        && matches!(member.role, crate::dcs::state::MemberRole::Primary)
         && matches!(member.sql, SqlStatus::Healthy)
+        && matches!(member.readiness, Readiness::Ready)
 }
 
-pub(crate) fn eligible_switchover_targets(
-    world: &WorldSnapshot,
-    self_member_id: &MemberId,
-) -> BTreeSet<MemberId> {
+pub(crate) fn eligible_switchover_targets(world: &WorldSnapshot) -> BTreeSet<MemberId> {
     world
         .dcs
         .value
         .cache
         .members
         .values()
-        .filter(|member| switchover_target_is_eligible_member(member, self_member_id))
+        .filter(|member| {
+            switchover_target_is_eligible_member(
+                member,
+                &world.dcs.value.cache,
+                world.dcs.updated_at,
+            )
+        })
         .map(|member| member.member_id.clone())
         .collect()
 }
 
 pub(crate) fn switchover_target_is_eligible_member(
     member: &MemberRecord,
-    _self_member_id: &MemberId,
+    cache: &crate::dcs::state::DcsCache,
+    observed_at: crate::state::UnixMillis,
 ) -> bool {
-    member.role == MemberRole::Replica
+    member_record_is_fresh(member, cache, observed_at)
+        && member.role == MemberRole::Replica
         && member.sql == SqlStatus::Healthy
         && member.readiness == Readiness::Ready
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        config::RuntimeConfig,
+        dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        process::state::ProcessState,
+        state::{MemberId, TimelineId, UnixMillis, Version, Versioned, WorkerStatus},
+    };
+
+    use super::{eligible_switchover_targets, DecisionFacts};
+    use crate::ha::state::WorldSnapshot;
+
+    fn sample_runtime_config() -> RuntimeConfig {
+        crate::test_harness::runtime_config::sample_runtime_config()
+    }
+
+    fn sample_member(
+        member_id: &str,
+        role: MemberRole,
+        sql: SqlStatus,
+        readiness: Readiness,
+        updated_at: UnixMillis,
+    ) -> MemberRecord {
+        MemberRecord {
+            member_id: MemberId(member_id.to_string()),
+            postgres_host: "127.0.0.1".to_string(),
+            postgres_port: 5432,
+            api_url: None,
+            role,
+            sql,
+            readiness,
+            timeline: Some(TimelineId(1)),
+            write_lsn: None,
+            replay_lsn: None,
+            updated_at,
+            pg_version: Version(1),
+        }
+    }
+
+    fn sample_world(cache: DcsCache, trust: DcsTrust, now: UnixMillis) -> WorldSnapshot {
+        let config = cache.config.clone();
+        WorldSnapshot {
+            config: Versioned::new(Version(1), now, config),
+            pg: Versioned::new(
+                Version(1),
+                now,
+                PgInfoState::Replica {
+                    common: PgInfoCommon {
+                        worker: WorkerStatus::Running,
+                        sql: SqlStatus::Healthy,
+                        readiness: Readiness::Ready,
+                        timeline: Some(TimelineId(1)),
+                        pg_config: PgConfig {
+                            port: None,
+                            hot_standby: None,
+                            primary_conninfo: None,
+                            primary_slot_name: None,
+                            extra: BTreeMap::new(),
+                        },
+                        last_refresh_at: Some(now),
+                    },
+                    replay_lsn: crate::state::WalLsn(10),
+                    follow_lsn: None,
+                    upstream: None,
+                },
+            ),
+            dcs: Versioned::new(
+                Version(1),
+                now,
+                DcsState {
+                    worker: WorkerStatus::Running,
+                    trust,
+                    cache,
+                    last_refresh_at: Some(now),
+                },
+            ),
+            process: Versioned::new(
+                Version(1),
+                now,
+                ProcessState::Idle {
+                    worker: WorkerStatus::Running,
+                    last_outcome: None,
+                },
+            ),
+        }
+    }
+
+    #[test]
+    fn eligible_switchover_targets_exclude_stale_replicas() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: MemberId("node-a".to_string()),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            sample_member(
+                "node-a",
+                MemberRole::Primary,
+                SqlStatus::Healthy,
+                Readiness::Ready,
+                UnixMillis(100),
+            ),
+        );
+        cache.members.insert(
+            MemberId("node-b".to_string()),
+            sample_member(
+                "node-b",
+                MemberRole::Replica,
+                SqlStatus::Healthy,
+                Readiness::Ready,
+                UnixMillis(1),
+            ),
+        );
+
+        let world = sample_world(cache, DcsTrust::FullQuorum, UnixMillis(20_000));
+        let eligible = eligible_switchover_targets(&world);
+
+        assert!(eligible.is_empty());
+    }
+
+    #[test]
+    fn decision_facts_drop_active_leader_when_member_metadata_is_missing() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: MemberId("node-b".to_string()),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            sample_member(
+                "node-a",
+                MemberRole::Replica,
+                SqlStatus::Healthy,
+                Readiness::Ready,
+                UnixMillis(100),
+            ),
+        );
+
+        let facts =
+            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FullQuorum, UnixMillis(100)));
+
+        assert_eq!(facts.leader_member_id, Some(MemberId("node-b".to_string())));
+        assert_eq!(facts.active_leader_member_id, None);
+        assert!(!facts.has_available_other_leader);
+    }
+
+    #[test]
+    fn decision_facts_drop_active_leader_when_member_is_stale() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: MemberId("node-b".to_string()),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            sample_member(
+                "node-a",
+                MemberRole::Replica,
+                SqlStatus::Healthy,
+                Readiness::Ready,
+                UnixMillis(100),
+            ),
+        );
+        cache.members.insert(
+            MemberId("node-b".to_string()),
+            sample_member(
+                "node-b",
+                MemberRole::Primary,
+                SqlStatus::Healthy,
+                Readiness::Ready,
+                UnixMillis(1),
+            ),
+        );
+
+        let facts = DecisionFacts::from_world(&sample_world(
+            cache,
+            DcsTrust::FullQuorum,
+            UnixMillis(20_000),
+        ));
+
+        assert_eq!(facts.active_leader_member_id, None);
+        assert_eq!(facts.followable_member_id, None);
+    }
+
+    #[test]
+    fn decision_facts_do_not_require_rewind_for_replica_timeline_mismatch() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: MemberId("node-b".to_string()),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            sample_member(
+                "node-a",
+                MemberRole::Replica,
+                SqlStatus::Healthy,
+                Readiness::Ready,
+                UnixMillis(100),
+            ),
+        );
+        let mut leader = sample_member(
+            "node-b",
+            MemberRole::Primary,
+            SqlStatus::Healthy,
+            Readiness::Ready,
+            UnixMillis(100),
+        );
+        leader.timeline = Some(TimelineId(2));
+        cache.members.insert(MemberId("node-b".to_string()), leader);
+
+        let facts =
+            DecisionFacts::from_world(&sample_world(cache, DcsTrust::FullQuorum, UnixMillis(100)));
+
+        assert_eq!(
+            facts.active_leader_member_id,
+            Some(MemberId("node-b".to_string()))
+        );
+        assert_eq!(
+            facts.followable_member_id,
+            Some(MemberId("node-b".to_string()))
+        );
+        assert!(!facts.rewind_required);
+    }
+
+    #[test]
+    fn decision_facts_require_rewind_for_primary_timeline_mismatch() {
+        let mut cache = DcsCache {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: MemberId("node-b".to_string()),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            init_lock: None,
+        };
+        cache.members.insert(
+            MemberId("node-a".to_string()),
+            sample_member(
+                "node-a",
+                MemberRole::Primary,
+                SqlStatus::Healthy,
+                Readiness::Ready,
+                UnixMillis(100),
+            ),
+        );
+        let mut leader = sample_member(
+            "node-b",
+            MemberRole::Primary,
+            SqlStatus::Healthy,
+            Readiness::Ready,
+            UnixMillis(100),
+        );
+        leader.timeline = Some(TimelineId(2));
+        cache.members.insert(MemberId("node-b".to_string()), leader);
+
+        let config = cache.config.clone();
+        let now = UnixMillis(100);
+        let facts = DecisionFacts::from_world(&WorldSnapshot {
+            config: Versioned::new(Version(1), now, config.clone()),
+            pg: Versioned::new(
+                Version(1),
+                now,
+                PgInfoState::Primary {
+                    common: PgInfoCommon {
+                        worker: WorkerStatus::Running,
+                        sql: SqlStatus::Healthy,
+                        readiness: Readiness::Ready,
+                        timeline: Some(TimelineId(1)),
+                        pg_config: PgConfig {
+                            port: None,
+                            hot_standby: None,
+                            primary_conninfo: None,
+                            primary_slot_name: None,
+                            extra: BTreeMap::new(),
+                        },
+                        last_refresh_at: Some(now),
+                    },
+                    wal_lsn: crate::state::WalLsn(10),
+                    slots: vec![],
+                },
+            ),
+            dcs: Versioned::new(
+                Version(1),
+                now,
+                DcsState {
+                    worker: WorkerStatus::Running,
+                    trust: DcsTrust::FullQuorum,
+                    cache,
+                    last_refresh_at: Some(now),
+                },
+            ),
+            process: Versioned::new(
+                Version(1),
+                now,
+                ProcessState::Idle {
+                    worker: WorkerStatus::Running,
+                    last_outcome: None,
+                },
+            ),
+        });
+
+        assert_eq!(
+            facts.active_leader_member_id,
+            Some(MemberId("node-b".to_string()))
+        );
+        assert_eq!(
+            facts.followable_member_id,
+            Some(MemberId("node-b".to_string()))
+        );
+        assert!(facts.rewind_required);
+    }
 }

@@ -12,7 +12,7 @@ use crate::{
     api::{HaPhaseResponse, HaStateResponse},
     config::RuntimeConfig,
     dcs::state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx},
-    dcs::store::{DcsStore, DcsStoreError, WatchEvent},
+    dcs::store::{DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent},
     debug_api::{
         snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx, SystemSnapshot},
         worker::{DebugApiContractStubInputs, DebugApiCtx},
@@ -64,6 +64,28 @@ impl DcsStore for ContractStore {
 
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
         Ok(Vec::new())
+    }
+}
+
+impl DcsLeaderStore for ContractStore {
+    fn acquire_leader_lease(
+        &mut self,
+        _scope: &str,
+        _member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        Ok(())
+    }
+
+    fn release_leader_lease(
+        &mut self,
+        _scope: &str,
+        _member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        Ok(())
+    }
+
+    fn clear_switchover(&mut self, _scope: &str) -> Result<(), DcsStoreError> {
+        Ok(())
     }
 }
 
@@ -132,6 +154,46 @@ impl DcsStore for BlockingAcquireStore {
 
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
         Ok(Vec::new())
+    }
+}
+
+impl DcsLeaderStore for BlockingAcquireStore {
+    fn acquire_leader_lease(
+        &mut self,
+        scope: &str,
+        member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        let encoded = serde_json::to_string(&crate::dcs::state::LeaderRecord {
+            member_id: member_id.clone(),
+        })
+        .map_err(|err| DcsStoreError::Decode {
+            key: format!("/{}/leader", scope.trim_matches('/')),
+            message: err.to_string(),
+        })?;
+
+        if self.put_path_if_absent(
+            format!("/{}/leader", scope.trim_matches('/')).as_str(),
+            encoded,
+        )? {
+            Ok(())
+        } else {
+            Err(DcsStoreError::AlreadyExists(format!(
+                "/{}/leader",
+                scope.trim_matches('/')
+            )))
+        }
+    }
+
+    fn release_leader_lease(
+        &mut self,
+        _scope: &str,
+        _member_id: &MemberId,
+    ) -> Result<(), DcsStoreError> {
+        Ok(())
+    }
+
+    fn clear_switchover(&mut self, _scope: &str) -> Result<(), DcsStoreError> {
+        Ok(())
     }
 }
 

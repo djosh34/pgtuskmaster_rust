@@ -12,6 +12,7 @@
 - relevant harness stop/restart helpers
 - Add a scenario where one non-critical node repeatedly flaps while a healthy majority remains available.
 - Prefer starting with a replica flap rather than a leader flap so the expected stable outcome is unambiguous.
+- Reuse the explicit whole-node outage semantics from task 02. This task does not need to cover both clean-stop and hard-kill flap variants by itself, but whichever flap style it uses must be a real whole-node outage and restart path, not only PostgreSQL stop/start.
 - The scenario must verify the cluster remains at exactly one primary, does not trigger unnecessary leadership churn, and continues to accept writes.
 
 **Context from research:**
@@ -25,7 +26,7 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Add at least one scenario where one replica repeatedly goes fully down and comes back while the other two nodes remain online.
+- [ ] Add at least one scenario where one replica repeatedly goes fully down and comes back while the other two nodes remain online, using one of the explicit whole-node outage variants from task 02.
 - [ ] The scenario must prove the primary does not change during the flap window unless an explicitly justified failure forces it.
 - [ ] The scenario must include proof writes during the flap window and verify they continue succeeding on the stable primary.
 - [ ] The scenario must assert no dual-primary window and final proof-row convergence after the flapping node stabilizes.

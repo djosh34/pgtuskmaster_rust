@@ -243,7 +243,7 @@ fn decide_primary(current: &HaState, facts: &DecisionFacts) -> PhaseOutcome {
         };
     }
 
-    match other_active_leader(facts) {
+    match other_leader_record(facts) {
         Some(leader_member_id) => PhaseOutcome::new(
             HaPhase::Fencing,
             HaDecision::StepDown(StepDownPlan {
@@ -342,12 +342,16 @@ fn decide_fail_safe(current: &HaState, facts: &DecisionFacts) -> PhaseOutcome {
 }
 
 fn wait_for_postgres(facts: &DecisionFacts) -> PhaseOutcome {
+    let recovery_leader_member_id = recovery_leader_member_id(facts);
+    let has_unvalidated_foreign_leader =
+        recovery_leader_member_id.is_none() && other_leader_record(facts).is_some();
+
     PhaseOutcome::new(
         HaPhase::WaitingPostgresReachable,
         HaDecision::WaitForPostgres {
-            start_requested: facts.start_postgres_can_be_requested(),
-            leader_member_id: recovery_leader_member_id(facts)
-                .or_else(|| other_leader_record(facts)),
+            start_requested: facts.start_postgres_can_be_requested()
+                && !has_unvalidated_foreign_leader,
+            leader_member_id: recovery_leader_member_id.or_else(|| other_leader_record(facts)),
         },
     )
 }
@@ -398,13 +402,6 @@ fn switchover_completion_observed(current: &HaState, facts: &DecisionFacts) -> b
 fn other_leader_record(facts: &DecisionFacts) -> Option<MemberId> {
     facts
         .leader_member_id
-        .clone()
-        .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
-}
-
-fn other_active_leader(facts: &DecisionFacts) -> Option<MemberId> {
-    facts
-        .active_leader_member_id
         .clone()
         .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
 }
@@ -766,6 +763,36 @@ mod tests {
         ];
 
         for case in cases {
+            let builder = WorldBuilder::new()
+                .with_trust(case.trust)
+                .with_pg(case.pg.clone())
+                .with_process(process_clone(&case.process));
+            let builder = match (&case.expected_decision, case.leader) {
+                (HaDecision::FollowLeader { .. }, Some(leader_member_id))
+                | (
+                    HaDecision::RecoverReplica {
+                        strategy:
+                            RecoveryStrategy::Rewind {
+                                leader_member_id: _,
+                            }
+                            | RecoveryStrategy::BaseBackup {
+                                leader_member_id: _,
+                            },
+                    },
+                    Some(leader_member_id),
+                )
+                | (
+                    HaDecision::StepDown(StepDownPlan {
+                        reason: StepDownReason::ForeignLeaderDetected { .. },
+                        ..
+                    }),
+                    Some(leader_member_id),
+                ) => builder
+                    .with_leader(leader_member_id)
+                    .with_member(healthy_primary_member(leader_member_id)),
+                (_, Some(leader_member_id)) => builder.with_leader(leader_member_id),
+                (_, None) => builder,
+            };
             let input = DecideInput {
                 current: HaState {
                     worker: WorkerStatus::Running,
@@ -773,11 +800,7 @@ mod tests {
                     tick: 41,
                     decision: HaDecision::NoChange,
                 },
-                world: WorldBuilder::new()
-                    .with_trust(case.trust)
-                    .with_pg(case.pg.clone())
-                    .with_process(process_clone(&case.process))
-                    .build_with_optional_leader(case.leader),
+                world: builder.build(),
             };
 
             let output = decide(input);
@@ -798,6 +821,96 @@ mod tests {
             );
             assert_eq!(output.next.tick, 42, "case: {}", case.name);
         }
+    }
+
+    #[test]
+    fn waiting_dcs_trusted_with_stale_dead_leader_and_healthy_majority_attempts_leadership() {
+        let self_id = MemberId("node-a".to_string());
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 7,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new()
+                .with_self_member_id("node-a")
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .with_trust(DcsTrust::FullQuorum)
+                .with_leader("node-b")
+                .with_member(MemberRecord {
+                    member_id: self_id.clone(),
+                    postgres_host: "127.0.0.1".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-c".to_string()),
+                    postgres_host: "127.0.0.3".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Replica,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::CandidateLeader);
+        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+    }
+
+    #[test]
+    fn waiting_dcs_trusted_with_dead_leader_but_no_quorum_stays_fail_safe() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 7,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new()
+                .with_self_member_id("node-a")
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .with_trust(DcsTrust::FailSafe)
+                .with_leader("node-b")
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-a".to_string()),
+                    postgres_host: "127.0.0.1".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::FailSafe);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            }
+        );
     }
 
     #[test]
@@ -1105,7 +1218,9 @@ mod tests {
     }
 
     #[test]
-    fn candidate_leader_with_targeted_switchover_waits_when_not_target() {
+    fn candidate_leader_with_targeted_switchover_waits_when_not_target(
+    ) -> Result<(), crate::state::WorkerError> {
+        let now = crate::process::worker::system_now_unix_millis()?;
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -1127,7 +1242,7 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    updated_at: UnixMillis(1),
+                    updated_at: now,
                     pg_version: Version(1),
                 })
                 .build(),
@@ -1135,10 +1250,13 @@ mod tests {
 
         assert_eq!(output.next.phase, HaPhase::CandidateLeader);
         assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+        Ok(())
     }
 
     #[test]
-    fn candidate_leader_with_targeted_switchover_attempts_when_self_is_target() {
+    fn candidate_leader_with_targeted_switchover_attempts_when_self_is_target(
+    ) -> Result<(), crate::state::WorkerError> {
+        let now = crate::process::worker::system_now_unix_millis()?;
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -1160,7 +1278,7 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    updated_at: UnixMillis(1),
+                    updated_at: now,
                     pg_version: Version(1),
                 })
                 .build(),
@@ -1168,6 +1286,7 @@ mod tests {
 
         assert_eq!(output.next.phase, HaPhase::CandidateLeader);
         assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+        Ok(())
     }
 
     #[test]
@@ -1235,6 +1354,7 @@ mod tests {
             world: WorldBuilder::new()
                 .with_pg(pg_unknown(SqlStatus::Unreachable))
                 .with_leader("node-b")
+                .with_member(healthy_primary_member("node-b"))
                 .build(),
         });
 
@@ -1264,6 +1384,7 @@ mod tests {
             world: WorldBuilder::new()
                 .with_pg(pg_unknown(SqlStatus::Unreachable))
                 .with_leader("node-b")
+                .with_member(healthy_primary_member("node-b"))
                 .with_process(process_idle(Some(JobOutcome::Success {
                     id: JobId("job-basebackup".to_string()),
                     job_kind: ActiveJobKind::BaseBackup,
@@ -1277,6 +1398,31 @@ mod tests {
             output.outcome.decision,
             HaDecision::WaitForPostgres {
                 start_requested: true,
+                leader_member_id: Some(MemberId("node-b".to_string())),
+            }
+        );
+    }
+
+    #[test]
+    fn waiting_dcs_trusted_with_only_leader_record_waits_for_followable_primary_before_restart() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 35,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_leader("node-b")
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: false,
                 leader_member_id: Some(MemberId("node-b".to_string())),
             }
         );
@@ -1307,6 +1453,42 @@ mod tests {
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Replica);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::FollowLeader {
+                leader_member_id: MemberId("node-b".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn replica_with_promoted_leader_timeline_change_keeps_following() {
+        let mut promoted_leader = healthy_primary_member("node-b");
+        promoted_leader.timeline = Some(crate::state::TimelineId(2));
+
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Replica,
+                tick: 36,
+                decision: HaDecision::NoChange,
+            },
+            world: WorldBuilder::new()
+                .with_pg(PgInfoState::Replica {
+                    common: PgInfoCommon {
+                        timeline: Some(crate::state::TimelineId(1)),
+                        ..pg_common(SqlStatus::Healthy)
+                    },
+                    replay_lsn: crate::state::WalLsn(10),
+                    follow_lsn: None,
+                    upstream: None,
+                })
+                .with_leader("node-b")
+                .with_member(promoted_leader)
                 .build(),
         });
 
@@ -1366,7 +1548,8 @@ mod tests {
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
-                .build_with_optional_leader(Some("node-b")),
+                .with_leader("node-b")
+                .build(),
         });
 
         assert_eq!(output.next.phase, HaPhase::Bootstrapping);
@@ -1413,6 +1596,7 @@ mod tests {
             },
             world: WorldBuilder::new()
                 .with_leader("node-a")
+                .with_member(healthy_primary_member("node-a"))
                 .with_switchover_request()
                 .build(),
         });
@@ -1445,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_ignores_unavailable_foreign_leader_record_and_reacquires_lease() {
+    fn primary_steps_down_on_foreign_leader_record_before_member_metadata_catches_up() {
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -1469,11 +1653,21 @@ mod tests {
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })
-                .build_with_optional_leader(Some("node-b")),
+                .with_leader("node-b")
+                .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::Primary);
-        assert_eq!(output.outcome.decision, HaDecision::AttemptLeadership);
+        assert_eq!(output.next.phase, HaPhase::Fencing);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::StepDown(StepDownPlan {
+                reason: StepDownReason::ForeignLeaderDetected {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
+                release_leader_lease: true,
+                fence: true,
+            })
+        );
     }
 
     #[test]
@@ -1557,6 +1751,7 @@ mod tests {
             },
             world: WorldBuilder::new()
                 .with_leader("node-b")
+                .with_member(healthy_primary_member("node-b"))
                 .with_process(process_idle(Some(JobOutcome::Failure {
                     id: JobId("job-start".to_string()),
                     job_kind: ActiveJobKind::StartPostgres,
@@ -2093,15 +2288,6 @@ mod tests {
         }
     }
 
-    impl WorldBuilder {
-        fn build_with_optional_leader(self, leader: Option<&str>) -> WorldSnapshot {
-            match leader {
-                Some(leader_member_id) => self.with_leader(leader_member_id).build(),
-                None => self.build(),
-            }
-        }
-    }
-
     fn assert_plan_has_no_contradictions(plan: &HaEffectPlan) -> Result<(), String> {
         if matches!(plan.replication, ReplicationEffect::FollowLeader { .. })
             && matches!(plan.postgres, PostgresEffect::Promote)
@@ -2244,6 +2430,23 @@ mod tests {
                 },
             ),
             process: Versioned::new(Version(1), UnixMillis(1), process),
+        }
+    }
+
+    fn healthy_primary_member(member_id: &str) -> MemberRecord {
+        MemberRecord {
+            member_id: MemberId(member_id.to_string()),
+            postgres_host: "127.0.0.1".to_string(),
+            postgres_port: 5432,
+            api_url: None,
+            role: MemberRole::Primary,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            write_lsn: None,
+            replay_lsn: None,
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
         }
     }
 }

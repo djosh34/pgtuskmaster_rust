@@ -1,15 +1,36 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 02:16:27 PM CET 2026
+Generated: Mon Mar  9 05:34:09 PM CET 2026
 
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/01-task-fix-leader-liveness-and-majority-election-after-hard-node-loss.md`
+# Task `.ralph/tasks/bugs/preserved-replica-rejoin-stalls-after-runtime-stop-failover.md`
 
 ```
-## Task: Fix Leader Liveness And Majority Election After Hard Node Loss <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
+## Bug: Preserved Replica Rejoin Stalls After Runtime Stop Failover <status>not_started</status> <passes>false</passes>
 
 <description>
+The degraded replica failover scenario exposed a separate recovery bug after the harness stop path was corrected to explicitly stop postgres.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/rapid-repeated-failovers-can-drop-intermediate-writes.md`
+
+```
+## Bug: Rapid Repeated Failovers Can Drop Intermediate Writes <status>not_started</status> <passes>false</passes>
+
+<description>
+The original `e2e_multi_node_repeated_leadership_changes_preserve_single_primary` scenario exposed a write-survival problem that is separate from the scenario's single-primary contract.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/runtime-restart-replica-can-stall-before-replaying-post-restart-writes.md`
+
+```
+## Bug: Runtime-restart replica can stall before replaying post-restart writes <status>not_started</status> <passes>false</passes>
+
+<description>
+During `make test-long` on 2026-03-09, `e2e_multi_node_primary_runtime_restart_recovers_without_split_brain` reached a stable post-restart state with `node-2` as primary and both `node-1` and `node-3` reporting replica roles, but `node-3` never replayed the post-restart proof row within the scenario window.
 ```
 
 ==============

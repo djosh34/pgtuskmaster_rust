@@ -2,7 +2,7 @@ use std::{path::PathBuf, time::Duration};
 
 use crate::{
     config::{RoleAuthConfig, RuntimeConfig},
-    dcs::{state::DcsState, store::DcsStore},
+    dcs::{state::DcsState, store::DcsLeaderStore},
     logging::LogHandle,
     pginfo::state::{PgInfoState, PgSslMode},
     process::{
@@ -71,7 +71,7 @@ pub(crate) struct HaWorkerCtx {
     pub(crate) dcs_subscriber: StateSubscriber<DcsState>,
     pub(crate) process_subscriber: StateSubscriber<ProcessState>,
     pub(crate) process_inbox: UnboundedSender<ProcessJobRequest>,
-    pub(crate) dcs_store: Box<dyn DcsStore>,
+    pub(crate) dcs_store: Box<dyn DcsLeaderStore>,
     pub(crate) scope: String,
     pub(crate) self_id: MemberId,
     pub(crate) process_defaults: ProcessDispatchDefaults,
@@ -129,7 +129,7 @@ pub(crate) struct HaWorkerContractStubInputs {
     pub(crate) dcs_subscriber: StateSubscriber<DcsState>,
     pub(crate) process_subscriber: StateSubscriber<ProcessState>,
     pub(crate) process_inbox: UnboundedSender<ProcessJobRequest>,
-    pub(crate) dcs_store: Box<dyn DcsStore>,
+    pub(crate) dcs_store: Box<dyn DcsLeaderStore>,
     pub(crate) scope: String,
     pub(crate) self_id: MemberId,
 }

@@ -3,7 +3,7 @@
 <priority>high</priority>
 
 <description>
-**Goal:** Add a realistic scenario where the old primary is isolated or killed, the majority elects a new primary, and the old primary later returns but is only allowed to rejoin as a replica. The higher-order goal is to prove that a recovered former leader never reclaims leadership automatically after the cluster has already moved on.
+**Goal:** Add a realistic scenario where the old primary is isolated or taken down as a whole node, the majority elects a new primary, and the old primary later returns but is only allowed to rejoin as a replica. The higher-order goal is to prove that a recovered former leader never reclaims leadership automatically after the cluster has already moved on.
 
 **Scope:**
 - Extend HA E2E coverage in:
@@ -12,6 +12,7 @@
 - `tests/ha_multi_node_failover.rs`
 - or `tests/ha_partition_isolation.rs`, whichever gives the cleanest deterministic setup
 - Use a majority-failover trigger that forces leadership away from the old primary before it returns.
+- If the trigger is a whole-node outage rather than a network partition, reuse the explicit clean-stop or hard-kill semantics from task 02 rather than inventing a softer node-stop meaning here.
 - Then bring the old primary back and require:
 - it does not become primary on return,
 - it rejoins as replica only,

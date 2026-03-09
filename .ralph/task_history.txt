@@ -170,3 +170,4 @@
 .ralph/tasks/bugs/targeted-switchover-request-can-promote-wrong-node.md
 .ralph/tasks/story-parallel-ha-test-hardening/03-task-add-clone-and-rewind-failure-ha-e2e-coverage.md
 .ralph/tasks/story-parallel-ha-test-hardening/04-task-add-non-e2e-api-tls-hostname-and-san-coverage.md
+.ralph/tasks/story-ha-quorum-survival-under-real-failures/01-task-fix-leader-liveness-and-majority-election-after-hard-node-loss.md

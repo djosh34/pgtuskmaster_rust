@@ -15,9 +15,8 @@ Trust evaluation follows this order:
 1. If the backing store is unhealthy, trust is `NotTrusted`.
 2. If the local member is missing from the cache, trust is `FailSafe`.
 3. If the local member record is stale, trust is `FailSafe`.
-4. If a leader record exists but that member record is missing or stale, trust is `FailSafe`.
-5. If the cache contains more than one member and fewer than two members are fresh, trust is `FailSafe`.
-6. Otherwise trust is `FullQuorum`.
+4. If the observed cache has a multi-member view and fewer than two members are fresh, trust is `FailSafe`.
+5. Otherwise trust is `FullQuorum`.
 
 Freshness is evaluated from:
 
@@ -66,6 +65,14 @@ The worker builds member records from the latest PostgreSQL state:
 `LeaderRecord` contains:
 
 - `member_id`
+
+`/{scope}/leader` is not a plain persistent key. In the etcd-backed store it is attached to an etcd lease whose TTL is derived from `ha.lease_ttl_ms`.
+
+- while the owner keeps renewing the lease, the key stays present
+- if the owner releases leadership explicitly, it revokes its own lease and etcd deletes the key
+- if the owner dies hard and stops renewing, etcd expires the lease and deletes the key automatically
+
+That means a missing leader member record does not itself force `FailSafe`. The authoritative signal for dead leadership is the disappearance of the lease-backed leader key from the watched DCS cache.
 
 ### `SwitchoverRequest`
 
@@ -135,13 +142,15 @@ The DCS worker applies parsed updates into the cache:
 
 The local worker also republishes its own member record from current PostgreSQL state while the store is healthy.
 
+For the etcd-backed implementation, lease expiry is visible through the normal watch path. When etcd deletes `/{scope}/leader` because the lease expired or was revoked, the watch-fed cache removes `cache.leader` and the HA loop sees that update through normal DCS state publication.
+
 ## Runtime Fields That Affect DCS Meaning
 
 The DCS state model is not independent of runtime config. In particular:
 
 - `dcs.endpoints` choose the coordination backend endpoints
 - `dcs.scope` determines the prefix for all keys
-- `ha.lease_ttl_ms` determines freshness and therefore trust
+- `ha.lease_ttl_ms` determines member freshness and the etcd leader-lease TTL
 
 In the shipped docker cluster config, `ha.lease_ttl_ms` is `10000`.
 

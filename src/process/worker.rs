@@ -452,6 +452,49 @@ fn pid_exists(pid: u32) -> Result<bool, ProcessError> {
     }
 }
 
+fn pid_matches_data_dir(pid: u32, data_dir: &Path) -> Result<bool, ProcessError> {
+    if !pid_exists(pid)? {
+        return Ok(false);
+    }
+
+    #[cfg(unix)]
+    {
+        let cmdline_path = std::path::PathBuf::from(format!("/proc/{pid}/cmdline"));
+        let cmdline = match fs::read(&cmdline_path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => {
+                return Err(ProcessError::InvalidSpec(format!(
+                    "read {} failed: {err}",
+                    cmdline_path.display()
+                )));
+            }
+        };
+        let data_dir_text = data_dir.display().to_string();
+        let cmdline_args = cmdline
+            .split(|byte| *byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .map(|arg| String::from_utf8_lossy(arg))
+            .collect::<Vec<_>>();
+        let has_data_dir = cmdline_args
+            .iter()
+            .any(|arg| arg.contains(data_dir_text.as_str()));
+        let has_postgres_argv = cmdline_args.iter().any(|arg| {
+            std::path::Path::new(arg.as_ref())
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| matches!(name, "postgres" | "postmaster"))
+                .unwrap_or(false)
+        });
+        Ok(has_data_dir && has_postgres_argv)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = data_dir;
+        Ok(true)
+    }
+}
+
 fn remove_file_best_effort(path: &Path) -> Result<(), ProcessError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -470,7 +513,7 @@ fn fencing_preflight_is_already_stopped(data_dir: &Path) -> Result<bool, Process
     }
 
     let pid = parse_postmaster_pid(&pid_file)?;
-    if pid_exists(pid)? {
+    if pid_matches_data_dir(pid, data_dir)? {
         return Ok(false);
     }
 
@@ -488,7 +531,7 @@ fn start_postgres_preflight_is_already_running(data_dir: &Path) -> Result<bool, 
     }
 
     let pid = parse_postmaster_pid(&pid_file)?;
-    if pid_exists(pid)? {
+    if pid_matches_data_dir(pid, data_dir)? {
         return Ok(true);
     }
 
@@ -1513,7 +1556,7 @@ fn escape_pg_ctl_option_token(token: &str) -> Result<String, ProcessError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, fs, path::PathBuf, time::Duration};
+    use std::{collections::VecDeque, fs, path::Path, path::PathBuf, time::Duration};
 
     use tokio::{
         process::Command,
@@ -1553,6 +1596,34 @@ mod tests {
 
     const TEST_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
     const REAL_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+    struct TestProcessGuard {
+        child: std::process::Child,
+    }
+
+    impl Drop for TestProcessGuard {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    fn spawn_fake_postmaster_for_data_dir(
+        data_dir: &Path,
+    ) -> Result<TestProcessGuard, WorkerError> {
+        let data_dir_text = data_dir.display().to_string();
+        let child = std::process::Command::new("bash")
+            .arg("-c")
+            .arg("exec -a postgres bash -c 'while true; do sleep 60; done' postgres \"$1\"")
+            .arg("_")
+            .arg(data_dir_text)
+            .spawn()
+            .map_err(|err| {
+                WorkerError::Message(format!("spawn fake postmaster process failed: {err}"))
+            })?;
+        std::thread::sleep(Duration::from_millis(50));
+        Ok(TestProcessGuard { child })
+    }
 
     fn test_log_handle() -> (LogHandle, std::sync::Arc<TestSink>) {
         let sink = std::sync::Arc::new(TestSink::default());
@@ -2045,8 +2116,9 @@ mod tests {
         ));
         fs::create_dir_all(&data_dir)
             .map_err(|err| WorkerError::Message(format!("create data dir failed: {err}")))?;
+        let fake_postmaster = spawn_fake_postmaster_for_data_dir(data_dir.as_path())?;
         let pid_file = data_dir.join("postmaster.pid");
-        fs::write(&pid_file, format!("{}\n", std::process::id()))
+        fs::write(&pid_file, format!("{}\n", fake_postmaster.child.id()))
             .map_err(|err| WorkerError::Message(format!("write pid file failed: {err}")))?;
 
         let send_result = tx.send(ProcessJobRequest {
@@ -2076,6 +2148,50 @@ mod tests {
                 ..
             }
         ));
+
+        drop(fake_postmaster);
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("remove data dir failed: {err}")))?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn start_job_start_postgres_ignores_reused_foreign_pid_and_starts(
+    ) -> Result<(), WorkerError> {
+        let runner = FakeRunner {
+            spawn_results: VecDeque::from(vec![Ok(FakeHandle {
+                polls: VecDeque::from(vec![Ok(None)]),
+                cancel_result: Ok(()),
+            })]),
+        };
+        let (mut ctx, tx, subscriber) = test_ctx(Box::new(runner), queued_clock(vec![20, 21]));
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0u128, |duration| duration.as_nanos());
+        let data_dir = std::env::temp_dir().join(format!(
+            "pgtuskmaster-start-reused-pid-{}-{unique}",
+            std::process::id(),
+        ));
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("create data dir failed: {err}")))?;
+        let pid_file = data_dir.join("postmaster.pid");
+        fs::write(&pid_file, format!("{}\n", std::process::id()))
+            .map_err(|err| WorkerError::Message(format!("write pid file failed: {err}")))?;
+
+        tx.send(ProcessJobRequest {
+            id: JobId("job-reused-pid".to_string()),
+            kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                data_dir: data_dir.clone(),
+                ..sample_start_spec()
+            }),
+        })
+        .map_err(|err| WorkerError::Message(format!("send request failed: {err}")))?;
+
+        step_once(&mut ctx).await?;
+
+        assert!(matches!(&ctx.state, ProcessState::Running { .. }));
+        let published = subscriber.latest();
+        assert!(matches!(published.value, ProcessState::Running { .. }));
 
         fs::remove_dir_all(&data_dir)
             .map_err(|err| WorkerError::Message(format!("remove data dir failed: {err}")))?;

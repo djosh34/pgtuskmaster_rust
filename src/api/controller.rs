@@ -8,8 +8,8 @@ use crate::{
         StepDownReasonResponse,
     },
     dcs::{
-        state::{DcsTrust, MemberRecord, MemberRole, SwitchoverRequest},
-        store::{DcsHaWriter, DcsStore},
+        state::{member_record_is_fresh, DcsTrust, MemberRecord, MemberRole, SwitchoverRequest},
+        store::DcsStore,
     },
     debug_api::snapshot::SystemSnapshot,
     ha::{
@@ -51,7 +51,8 @@ pub(crate) fn delete_switchover(
     scope: &str,
     store: &mut dyn DcsStore,
 ) -> ApiResult<AcceptedResponse> {
-    DcsHaWriter::clear_switchover(store, scope)
+    store
+        .delete_path(format!("/{}/switchover", scope.trim_matches('/')).as_str())
         .map_err(|err| ApiError::DcsStore(err.to_string()))?;
     Ok(AcceptedResponse { accepted: true })
 }
@@ -122,7 +123,10 @@ fn validate_switchover_request(
 
     let target_member_id = crate::state::MemberId(target.to_string());
     let members = &snapshot.dcs.value.cache.members;
-    if !members.contains_key(&target_member_id) {
+    let target_member = members
+        .get(&target_member_id)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown switchover_to member `{target}`")))?;
+    if target_member.member_id != target_member_id {
         return Err(ApiError::bad_request(format!(
             "unknown switchover_to member `{target}`"
         )));
@@ -142,16 +146,19 @@ fn validate_switchover_request(
         )));
     }
 
-    let self_member_id = crate::state::MemberId(snapshot.config.value.cluster.member_id.clone());
-    let eligible_targets = eligible_switchover_targets(
-        &crate::ha::state::WorldSnapshot {
-            config: snapshot.config.clone(),
-            pg: snapshot.pg.clone(),
-            dcs: snapshot.dcs.clone(),
-            process: snapshot.process.clone(),
-        },
-        &self_member_id,
-    );
+    let now = crate::process::worker::system_now_unix_millis()
+        .map_err(|err| ApiError::internal(format!("switchover current-time read failed: {err}")))?;
+    if !member_record_is_fresh(target_member, &snapshot.dcs.value.cache, now) {
+        return Err(ApiError::bad_request(format!(
+            "switchover_to member `{target}` is not an eligible switchover target"
+        )));
+    }
+    let eligible_targets = eligible_switchover_targets(&crate::ha::state::WorldSnapshot {
+        config: snapshot.config.clone(),
+        pg: snapshot.pg.clone(),
+        dcs: snapshot.dcs.clone(),
+        process: snapshot.process.clone(),
+    });
     if !eligible_targets.contains(&target_member_id) {
         return Err(ApiError::bad_request(format!(
             "switchover_to member `{target}` is not an eligible switchover target"
@@ -369,38 +376,43 @@ mod tests {
         }
     }
 
-    fn sample_snapshot() -> SystemSnapshot {
+    fn sample_snapshot() -> Result<SystemSnapshot, crate::api::ApiError> {
+        let now = crate::process::worker::system_now_unix_millis().map_err(|err| {
+            crate::api::ApiError::internal(format!(
+                "controller test current-time read failed: {err}"
+            ))
+        })?;
         let cfg = crate::test_harness::runtime_config::sample_runtime_config();
         let members = BTreeMap::from([
             (
                 member_id("node-a"),
-                member_record("node-a", MemberRole::Primary),
+                member_record("node-a", MemberRole::Primary, now),
             ),
             (
                 member_id("node-b"),
-                member_record("node-b", MemberRole::Replica),
+                member_record("node-b", MemberRole::Replica, now),
             ),
             (
                 member_id("node-c"),
-                member_record("node-c", MemberRole::Replica),
+                member_record("node-c", MemberRole::Replica, now),
             ),
         ]);
 
-        SystemSnapshot {
+        Ok(SystemSnapshot {
             app: AppLifecycle::Running,
-            config: Versioned::new(Version(1), UnixMillis(1), cfg.clone()),
+            config: Versioned::new(Version(1), now, cfg.clone()),
             pg: Versioned::new(
                 Version(1),
-                UnixMillis(1),
+                now,
                 PgInfoState::Primary {
-                    common: pg_common(SqlStatus::Healthy),
+                    common: pg_common(SqlStatus::Healthy, now),
                     wal_lsn: crate::state::WalLsn(10),
                     slots: Vec::new(),
                 },
             ),
             dcs: Versioned::new(
                 Version(1),
-                UnixMillis(1),
+                now,
                 DcsState {
                     worker: WorkerStatus::Running,
                     trust: DcsTrust::FullQuorum,
@@ -413,12 +425,12 @@ mod tests {
                         config: cfg,
                         init_lock: None,
                     },
-                    last_refresh_at: Some(UnixMillis(1)),
+                    last_refresh_at: Some(now),
                 },
             ),
             process: Versioned::new(
                 Version(1),
-                UnixMillis(1),
+                now,
                 ProcessState::Idle {
                     worker: WorkerStatus::Running,
                     last_outcome: None,
@@ -426,7 +438,7 @@ mod tests {
             ),
             ha: Versioned::new(
                 Version(1),
-                UnixMillis(1),
+                now,
                 HaState {
                     worker: WorkerStatus::Running,
                     phase: HaPhase::Primary,
@@ -434,18 +446,18 @@ mod tests {
                     decision: HaDecision::NoChange,
                 },
             ),
-            generated_at: UnixMillis(1),
+            generated_at: now,
             sequence: 1,
             changes: Vec::new(),
             timeline: Vec::new(),
-        }
+        })
     }
 
     fn member_id(value: &str) -> MemberId {
         MemberId(value.to_string())
     }
 
-    fn member_record(member_name: &str, role: MemberRole) -> MemberRecord {
+    fn member_record(member_name: &str, role: MemberRole, now: UnixMillis) -> MemberRecord {
         MemberRecord {
             member_id: member_id(member_name),
             postgres_host: "127.0.0.1".to_string(),
@@ -457,12 +469,12 @@ mod tests {
             timeline: None,
             write_lsn: None,
             replay_lsn: None,
-            updated_at: UnixMillis(1),
+            updated_at: now,
             pg_version: Version(1),
         }
     }
 
-    fn pg_common(sql: SqlStatus) -> PgInfoCommon {
+    fn pg_common(sql: SqlStatus, now: UnixMillis) -> PgInfoCommon {
         PgInfoCommon {
             worker: WorkerStatus::Running,
             sql,
@@ -475,7 +487,7 @@ mod tests {
                 primary_slot_name: None,
                 extra: BTreeMap::new(),
             },
-            last_refresh_at: Some(UnixMillis(1)),
+            last_refresh_at: Some(now),
         }
     }
 
@@ -489,7 +501,7 @@ mod tests {
     #[test]
     fn post_switchover_writes_typed_record_to_expected_key() -> Result<(), crate::api::ApiError> {
         let mut store = RecordingStore::default();
-        let snapshot = sample_snapshot();
+        let snapshot = sample_snapshot()?;
         let response = post_switchover(
             "scope-a",
             &mut store,
@@ -520,7 +532,7 @@ mod tests {
         let parsed = serde_json::from_str::<SwitchoverRequestInput>("{}")
             .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
         let mut store = RecordingStore::default();
-        let snapshot = sample_snapshot();
+        let snapshot = sample_snapshot()?;
         let result = post_switchover("scope-a", &mut store, Some(&snapshot), parsed)?;
         assert!(result.accepted);
         Ok(())
@@ -531,7 +543,7 @@ mod tests {
         let parsed =
             serde_json::from_str::<SwitchoverRequestInput>(r#"{"switchover_to":"node-b"}"#)
                 .map_err(|err| crate::api::ApiError::internal(format!("decode failed: {err}")))?;
-        let snapshot = sample_snapshot();
+        let snapshot = sample_snapshot()?;
         let mut store = RecordingStore::default();
         let result = post_switchover("scope-a", &mut store, Some(&snapshot), parsed)?;
         assert!(result.accepted);
@@ -551,12 +563,12 @@ mod tests {
     }
 
     #[test]
-    fn switchover_input_rejects_unknown_target() {
+    fn switchover_input_rejects_unknown_target() -> Result<(), crate::api::ApiError> {
         let parsed =
             serde_json::from_str::<SwitchoverRequestInput>(r#"{"switchover_to":"node-z"}"#);
         assert!(parsed.is_ok());
 
-        let snapshot = sample_snapshot();
+        let snapshot = sample_snapshot()?;
         let mut store = RecordingStore::default();
         let result = post_switchover(
             "scope-a",
@@ -571,11 +583,12 @@ mod tests {
             Err(crate::api::ApiError::BadRequest(message))
                 if message.contains("unknown switchover_to member")
         ));
+        Ok(())
     }
 
     #[test]
-    fn switchover_input_rejects_empty_target() {
-        let snapshot = sample_snapshot();
+    fn switchover_input_rejects_empty_target() -> Result<(), crate::api::ApiError> {
+        let snapshot = sample_snapshot()?;
         let mut store = RecordingStore::default();
         let result = post_switchover(
             "scope-a",
@@ -590,11 +603,12 @@ mod tests {
             Err(crate::api::ApiError::BadRequest(message))
                 if message.contains("must not be empty")
         ));
+        Ok(())
     }
 
     #[test]
-    fn switchover_input_rejects_ineligible_target() {
-        let mut snapshot = sample_snapshot();
+    fn switchover_input_rejects_ineligible_target() -> Result<(), crate::api::ApiError> {
+        let mut snapshot = sample_snapshot()?;
         snapshot.dcs.value.cache.members.insert(
             member_id("node-z"),
             MemberRecord {
@@ -626,6 +640,37 @@ mod tests {
             Err(crate::api::ApiError::BadRequest(message))
                 if message.contains("not an eligible switchover target")
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn switchover_input_rejects_stale_replica_target() -> Result<(), crate::api::ApiError> {
+        let mut snapshot = sample_snapshot()?;
+        snapshot.dcs.updated_at = UnixMillis(20_000);
+        if let Some(member) = snapshot
+            .dcs
+            .value
+            .cache
+            .members
+            .get_mut(&member_id("node-b"))
+        {
+            member.updated_at = UnixMillis(1);
+        }
+        let mut store = RecordingStore::default();
+        let result = post_switchover(
+            "scope-a",
+            &mut store,
+            Some(&snapshot),
+            SwitchoverRequestInput {
+                switchover_to: Some("node-b".to_string()),
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(crate::api::ApiError::BadRequest(message))
+                if message.contains("not an eligible switchover target")
+        ));
+        Ok(())
     }
 
     #[test]

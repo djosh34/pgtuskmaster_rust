@@ -114,23 +114,18 @@ pub(crate) fn evaluate_trust(
         return DcsTrust::FailSafe;
     }
 
-    if let Some(leader) = &cache.leader {
-        let Some(leader_member) = cache.members.get(&leader.member_id) else {
-            return DcsTrust::FailSafe;
-        };
-        if !member_record_is_fresh(leader_member, cache, now) {
-            return DcsTrust::FailSafe;
-        }
-    }
-
-    if cache.members.len() > 1 && fresh_member_count(cache, now) < 2 {
+    if !has_fresh_quorum(cache, now) {
         return DcsTrust::FailSafe;
     }
 
     DcsTrust::FullQuorum
 }
 
-fn member_record_is_fresh(record: &MemberRecord, cache: &DcsCache, now: UnixMillis) -> bool {
+pub(crate) fn member_record_is_fresh(
+    record: &MemberRecord,
+    cache: &DcsCache,
+    now: UnixMillis,
+) -> bool {
     let max_age_ms = cache.config.ha.lease_ttl_ms;
     now.0.saturating_sub(record.updated_at.0) <= max_age_ms
 }
@@ -141,6 +136,20 @@ fn fresh_member_count(cache: &DcsCache, now: UnixMillis) -> usize {
         .values()
         .filter(|record| member_record_is_fresh(record, cache, now))
         .count()
+}
+
+fn has_fresh_quorum(cache: &DcsCache, now: UnixMillis) -> bool {
+    let fresh_members = fresh_member_count(cache, now);
+
+    // The current runtime only knows the observed DCS member set. Until there is an explicit
+    // configured membership source, multi-member quorum stays conservative: one fresh member is
+    // only trusted in a single-member view, and any larger observed view requires at least two
+    // fresh members.
+    if cache.members.len() <= 1 {
+        fresh_members == 1
+    } else {
+        fresh_members >= 2
+    }
 }
 
 pub(crate) fn build_local_member_record(
@@ -280,6 +289,131 @@ mod tests {
         });
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
+            DcsTrust::FullQuorum
+        );
+    }
+
+    #[test]
+    fn evaluate_trust_keeps_healthy_majority_when_leader_metadata_is_missing_or_stale() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = sample_cache();
+        let fresh_time = UnixMillis(100);
+
+        for member_id in ["node-a", "node-c"] {
+            let member_id = MemberId(member_id.to_string());
+            cache.members.insert(
+                member_id.clone(),
+                MemberRecord {
+                    member_id,
+                    postgres_host: "127.0.0.1".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Replica,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: fresh_time,
+                    pg_version: Version(1),
+                },
+            );
+        }
+        cache.members.insert(
+            MemberId("node-b".to_string()),
+            MemberRecord {
+                member_id: MemberId("node-b".to_string()),
+                postgres_host: "127.0.0.2".to_string(),
+                postgres_port: 5432,
+                api_url: None,
+                role: MemberRole::Primary,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+        cache.leader = Some(LeaderRecord {
+            member_id: MemberId("node-b".to_string()),
+        });
+
+        assert_eq!(
+            evaluate_trust(true, &cache, &self_id, UnixMillis(5_000)),
+            DcsTrust::FullQuorum
+        );
+
+        cache.members.remove(&MemberId("node-b".to_string()));
+        assert_eq!(
+            evaluate_trust(true, &cache, &self_id, UnixMillis(5_000)),
+            DcsTrust::FullQuorum
+        );
+    }
+
+    #[test]
+    fn evaluate_trust_stays_fail_safe_without_fresh_quorum() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = sample_cache();
+
+        cache.members.insert(
+            self_id.clone(),
+            MemberRecord {
+                member_id: self_id.clone(),
+                postgres_host: "127.0.0.1".to_string(),
+                postgres_port: 5432,
+                api_url: None,
+                role: MemberRole::Replica,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(100),
+                pg_version: Version(1),
+            },
+        );
+        cache.members.insert(
+            MemberId("node-b".to_string()),
+            MemberRecord {
+                member_id: MemberId("node-b".to_string()),
+                postgres_host: "127.0.0.2".to_string(),
+                postgres_port: 5432,
+                api_url: None,
+                role: MemberRole::Primary,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+        cache.members.insert(
+            MemberId("node-c".to_string()),
+            MemberRecord {
+                member_id: MemberId("node-c".to_string()),
+                postgres_host: "127.0.0.3".to_string(),
+                postgres_port: 5432,
+                api_url: None,
+                role: MemberRole::Replica,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+        cache.leader = Some(LeaderRecord {
+            member_id: MemberId("node-b".to_string()),
+        });
+
+        assert_eq!(
+            evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
             DcsTrust::FailSafe
         );
     }

@@ -1,4 +1,4 @@
-## Task: Fix Leader Liveness And Majority Election After Hard Node Loss <status>not_started</status> <passes>false</passes>
+## Task: Fix Leader Liveness And Majority Election After Hard Node Loss <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -129,38 +129,85 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Update [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs) so the leader-ownership API is no longer plain-key semantics. The API must clearly express acquire and release of expiring leadership rather than generic put/delete of `/leader`.
-- [ ] Update [src/dcs/etcd_store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/etcd_store.rs) to implement leader ownership with a real etcd lease using the existing configured HA TTL.
-- [ ] The etcd store implementation must keep the leader lease alive while owned and let it expire automatically on hard death. This must be source-backed and tested, not left as an implied future improvement.
-- [ ] The etcd store implementation must not allow arbitrary foreign-leader deletion as the normal release path; release must correspond to the local owner’s lease/session.
-- [ ] The etcd store implementation must wire the lease TTL from the existing runtime config field `ha.lease_ttl_ms`. This must be explicit in code; do not hide a duplicate timeout constant inside the etcd layer.
-- [ ] The etcd store must continue to present current visible etcd state to the DCS worker by snapshot plus watch updates. If etcd deletes `/scope/leader` due to lease expiry, the watched DCS cache must drop that leader record and the HA loop must see that removal through normal DCS state publication.
-- [ ] The assignee must verify, in tests, that reconnect/resnapshot behavior still replaces stale cached state after this refactor. Lease-backed leadership must not regress the existing reset/snapshot correctness guarantees.
-- [ ] Update [src/dcs/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs) so trust evaluation no longer deadlocks a healthy majority behind a stale dead-leader record.
-- [ ] `evaluate_trust(...)` must remain strict about local-self freshness and quorum freshness.
-- [ ] `evaluate_trust(...)` must stop treating stale or missing leader metadata as an automatic `FailSafe` trigger when a healthy quorum view still exists.
-- [ ] If quorum math is changed, it must be changed explicitly and tested explicitly rather than left as an accidental side effect.
-- [ ] Update [src/ha/decision.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decision.rs) so stale, missing, unhealthy, or non-primary leader metadata yields “no active leader” instead of preserving a phantom available leader.
-- [ ] In particular, `is_available_primary_leader(...)` must no longer treat missing leader member metadata as available.
-- [ ] Keep [src/ha/decide.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs) as the pure HA decision engine. The fix must not move etcd lease mechanics into the decision loop.
-- [ ] Update [src/ha/apply.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/apply.rs) so HA lease actions call the new acquire/release semantics cleanly.
-- [ ] Update any required runtime wiring in [src/runtime/node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs) so the HA store receives the configured TTL and the new store interface cleanly.
-- [ ] Add or update focused unit and integration tests in the source tree, not only E2E tests. At minimum:
-- [ ] store-level tests for lease-backed leader acquisition and expiry in `src/dcs/etcd_store.rs`,
-- [ ] store-level tests for “only the owner can release its leader lease/session” behavior in `src/dcs/etcd_store.rs`,
-- [ ] store/watch tests proving `/scope/leader` disappears from the cache after actual etcd lease expiry and after reconnect/resnapshot,
-- [ ] DCS trust tests in `src/dcs/state.rs`,
-- [ ] leader-availability fact tests in `src/ha/decision.rs`,
-- [ ] HA decision tests in `src/ha/decide.rs`,
-- [ ] any worker/apply contract tests needed because the store API changed.
-- [ ] Add at least one source-level test that models this exact sequence: leader disappears without releasing leadership, the configured TTL elapses, two healthy members still retain quorum, `/scope/leader` disappears from the DCS-visible state, and one healthy member can become the only primary without manual DCS cleanup.
-- [ ] Add at least one negative source-level test that models the minority case under the same dead-leader conditions and proves 1-of-3 still cannot elect itself primary.
-- [ ] Add at least one source-level test that proves `FailSafe` still happens for no-quorum or minority conditions after this refactor, so the fix does not erase safety mode entirely.
-- [ ] Add at least one source-level test that proves a stale/missing leader member record now becomes “no active leader” instead of “leader still available”.
-- [ ] Make the final model explicit in code comments where necessary and in docs: what data is live in DCS state, what invalidates dead leadership, when `FailSafe` still applies, and why the new behavior does not open a split-brain path.
-- [ ] Update the relevant docs pages in `docs/src/reference/`, `docs/src/explanation/`, and [docs/src/how-to/handle-primary-failure.md](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/src/how-to/handle-primary-failure.md) so the fail-safe and primary-failure descriptions match the implemented model exactly.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Update [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs) so the leader-ownership API is no longer plain-key semantics. The API must clearly express acquire and release of expiring leadership rather than generic put/delete of `/leader`.
+- [x] Update [src/dcs/etcd_store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/etcd_store.rs) to implement leader ownership with a real etcd lease using the existing configured HA TTL.
+- [x] The etcd store implementation must keep the leader lease alive while owned and let it expire automatically on hard death. This must be source-backed and tested, not left as an implied future improvement.
+- [x] The etcd store implementation must not allow arbitrary foreign-leader deletion as the normal release path; release must correspond to the local owner’s lease/session.
+- [x] The etcd store implementation must wire the lease TTL from the existing runtime config field `ha.lease_ttl_ms`. This must be explicit in code; do not hide a duplicate timeout constant inside the etcd layer.
+- [x] The etcd store must continue to present current visible etcd state to the DCS worker by snapshot plus watch updates. If etcd deletes `/scope/leader` due to lease expiry, the watched DCS cache must drop that leader record and the HA loop must see that removal through normal DCS state publication.
+- [x] The assignee must verify, in tests, that reconnect/resnapshot behavior still replaces stale cached state after this refactor. Lease-backed leadership must not regress the existing reset/snapshot correctness guarantees.
+- [x] Update [src/dcs/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs) so trust evaluation no longer deadlocks a healthy majority behind a stale dead-leader record.
+- [x] `evaluate_trust(...)` must remain strict about local-self freshness and quorum freshness.
+- [x] `evaluate_trust(...)` must stop treating stale or missing leader metadata as an automatic `FailSafe` trigger when a healthy quorum view still exists.
+- [x] If quorum math is changed, it must be changed explicitly and tested explicitly rather than left as an accidental side effect.
+- [x] Update [src/ha/decision.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decision.rs) so stale, missing, unhealthy, or non-primary leader metadata yields “no active leader” instead of preserving a phantom available leader.
+- [x] In particular, `is_available_primary_leader(...)` must no longer treat missing leader member metadata as available.
+- [x] Keep [src/ha/decide.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs) as the pure HA decision engine. The fix must not move etcd lease mechanics into the decision loop.
+- [x] Update [src/ha/apply.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/apply.rs) so HA lease actions call the new acquire/release semantics cleanly.
+- [x] Update any required runtime wiring in [src/runtime/node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs) so the HA store receives the configured TTL and the new store interface cleanly.
+- [x] Add or update focused unit and integration tests in the source tree, not only E2E tests. At minimum:
+- [x] store-level tests for lease-backed leader acquisition and expiry in `src/dcs/etcd_store.rs`,
+- [x] store-level tests for “only the owner can release its leader lease/session” behavior in `src/dcs/etcd_store.rs`,
+- [x] store/watch tests proving `/scope/leader` disappears from the cache after actual etcd lease expiry and after reconnect/resnapshot,
+- [x] DCS trust tests in `src/dcs/state.rs`,
+- [x] leader-availability fact tests in `src/ha/decision.rs`,
+- [x] HA decision tests in `src/ha/decide.rs`,
+- [x] any worker/apply contract tests needed because the store API changed.
+- [x] Add at least one source-level test that models this exact sequence: leader disappears without releasing leadership, the configured TTL elapses, two healthy members still retain quorum, `/scope/leader` disappears from the DCS-visible state, and one healthy member can become the only primary without manual DCS cleanup.
+- [x] Add at least one negative source-level test that models the minority case under the same dead-leader conditions and proves 1-of-3 still cannot elect itself primary.
+- [x] Add at least one source-level test that proves `FailSafe` still happens for no-quorum or minority conditions after this refactor, so the fix does not erase safety mode entirely.
+- [x] Add at least one source-level test that proves a stale/missing leader member record now becomes “no active leader” instead of “leader still available”.
+- [x] Make the final model explicit in code comments where necessary and in docs: what data is live in DCS state, what invalidates dead leadership, when `FailSafe` still applies, and why the new behavior does not open a split-brain path.
+- [x] Update the relevant docs pages in `docs/src/reference/`, `docs/src/explanation/`, and [docs/src/how-to/handle-primary-failure.md](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/src/how-to/handle-primary-failure.md) so the fail-safe and primary-failure descriptions match the implemented model exactly.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<implementation_plan>
+
+## Execution Plan
+
+1. Refactor the leader-ownership API in [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs) so the HA-facing trait no longer exposes misleading plain-key semantics for leadership.
+   Replace `write_leader_lease(...)` and `delete_leader(...)` with explicit acquire/release methods whose names communicate lease-backed ownership and local-owner-only release. Keep the generic `write_path`, `put_path_if_absent`, and `delete_path` operations for member/config/init/switchover keys, but make the HA path call the new ownership methods only. Update the trait default implementation tests in this file so they validate the renamed API surface and the encoded leader payload shape.
+
+2. Introduce explicit etcd leader-lease configuration only on the HA writer path, sourced from the existing HA TTL.
+   Skeptical review change: the earlier plan pushed `ha.lease_ttl_ms` through every `EtcdDcsStore` construction site, but the current runtime has several non-HA store instances that never acquire or release leadership (`probe_dcs_cache`, the DCS watcher store, and the API store used for generic key mutations such as switchover writes). Do not force those read/write/watch-only paths to carry unused ownership state. Instead, split the etcd store construction/API so the HA-owned instance gets explicit leader-lease config while non-HA instances remain generic. Whichever shape is chosen (`connect_with_ha_lease(...)`, a separate HA-capable wrapper, or explicit optional lease config), convert `ha.lease_ttl_ms` once at the etcd boundary, round milliseconds up to seconds, enforce etcd's minimum usable TTL, and error cleanly on invalid conversion. Update [src/runtime/node.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs) so only the HA store wiring opts into this leader-lease configuration unless a concrete source-backed call site truly needs it.
+
+3. Rework the etcd worker command layer so leader acquisition/release is first-class rather than a thin wrapper around `put-if-absent` and `delete`.
+   Add dedicated worker commands for leader acquire and leader release alongside the existing read/write/delete/init commands. The acquire command must create an etcd lease, attempt a compare-and-put of `/{scope}/leader` attached to that lease, and return `AlreadyExists` when the leader key is already present. The release command must revoke only the lease currently owned by this store instance; it must not issue a blind delete against `/{scope}/leader`.
+
+4. Add internal owner-state tracking inside the etcd store implementation and keep it encapsulated there.
+   Introduce a private owned-leader state structure in [src/dcs/etcd_store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/etcd_store.rs) that holds at least the owned lease ID, the leader path, the owning member ID, and the keepalive task/control handle. Do not leak lease IDs or keepalive concerns into [src/ha/decide.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs), [src/ha/apply.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/apply.rs), or the DCS worker state types. If release is requested when the store does not own a leader lease, return a proper handled error or an explicit no-op result, but do not silently delete a foreign leader key.
+
+5. Implement background keepalive for the owned leader lease and define the failure behavior explicitly.
+   Once leader acquisition succeeds, start a background keepalive loop tied to the etcd store worker/runtime. On normal release, stop keepalive and revoke the owned lease. On hard process death, keepalive naturally stops and etcd should expire the key. On transport failure or keepalive failure while the process is still alive, the store must mark itself unhealthy and drop its local ownership handle so the system waits for the lease to expire and then re-observes truth through snapshot/watch; do not try to preserve leadership with ambiguous ownership after keepalive failure.
+
+6. Preserve the current snapshot-plus-watch cache model and extend it to prove lease expiry rather than bypassing it.
+   Do not add synchronous “read leader directly from etcd” shortcuts in the HA path. Continue to let [src/dcs/worker.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/worker.rs) consume [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs)`::refresh_from_etcd_watch(...)` results. Reuse the existing reconnect/reset model in [src/dcs/etcd_store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/etcd_store.rs), and extend it with lease-specific tests that prove: lease expiry produces a watched delete for `/{scope}/leader`, queued stale events are cleared before reconnect reset, and a fresh snapshot after reconnect replaces stale leader cache state.
+
+7. Fix DCS trust so it answers quorum trust, not stale-leader existence.
+   In [src/dcs/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs), remove the rule that immediately forces `FailSafe` when a leader record exists but the leader member record is missing or stale. Keep the strict checks for store health, local self-presence, and local freshness. Then audit the quorum freshness rule: if there is an authoritative expected-member source available in the current runtime/DCS model, convert the current “at least two fresh members” shortcut to an explicit majority helper; if there is not, keep the current observed-member heuristic but make that rule explicit in code and tests so it is no longer accidental. In either case, the final trust code must let a healthy 2-of-3 quorum remain `FullQuorum` even when the old leader metadata is stale or absent.
+
+8. Fix leader-availability facts so stale or missing metadata means “no active leader”, but keep freshness semantics centralized rather than inventing a second expiry clock in HA.
+   Skeptical review change: do not add a new `last_refresh_at + lease_ttl_ms` timer in [src/ha/decision.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decision.rs). That would duplicate liveness rules outside the DCS model and risks disagreeing with the lease-backed truth that the store/watch path is supposed to provide. Change `is_available_primary_leader(...)` so it returns `false` when the leader member record is missing, and also reject leader records that point to non-primary, unhealthy, or DCS-stale members using the same member-freshness semantics already grounded in DCS data/config rather than a new HA-only timer. If a reusable freshness helper is needed, put it in the DCS/shared state layer and consume it from HA facts instead of embedding a second liveness model in `decision.rs`.
+
+9. Keep the phase machine pure and update only the apply/wiring seams that changed.
+   [src/ha/decide.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs) should remain the pure decision engine. The planned code change here is to let existing transitions work with corrected DCS semantics, not to redesign the state machine around explicit expiry timers. [src/ha/apply.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/apply.rs) should be updated only enough to call the renamed acquire/release API and to preserve accurate action/error reporting for DCS ownership failures.
+
+10. Expand source-level tests before any end-to-end verification.
+   In [src/dcs/store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/store.rs), update the unit tests that currently validate `write_leader_lease` and `delete_leader`. In [src/dcs/etcd_store.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/etcd_store.rs), add real-etcd tests for: successful lease-backed leader acquisition, automatic leader-key deletion after keepalive stops and TTL elapses, owner-only release semantics across two store instances, and reconnect/resnapshot correctness after lease expiry. In [src/dcs/state.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs), add trust tests showing healthy quorum survives stale/missing leader metadata while minority/no-quorum still yields `FailSafe`. In [src/ha/decision.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decision.rs), add fact tests proving missing leader metadata no longer yields an active leader. In [src/ha/decide.rs](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs), add scenario tests for healthy-majority promotion after dead-leader disappearance and minority refusal to promote. Update any worker/apply contract tests that compile against the old trait names or old error behavior.
+
+11. Add one explicit source-level sequence test that models the real failure chain end to end without relying on the broader HA E2E suite.
+   Build a focused source/integration test that exercises: leader acquired by node A, node A stops renewing without explicit release, the configured TTL elapses, the watched DCS cache drops `/{scope}/leader`, nodes B and C still have a fresh quorum view, and exactly one of them becomes eligible to lead while a 1-of-3 minority does not. This test should use the real etcd-backed store plus the existing DCS/HA helpers where possible so it proves the exact chain required by the task instead of only isolated helper behavior.
+
+12. Update the docs to match the repaired model exactly and remove stale operator claims.
+   Revise [docs/src/reference/dcs-state-model.md](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/src/reference/dcs-state-model.md) so trust is described in terms of store health, self freshness, quorum freshness, and lease-backed leader visibility rather than “leader missing or stale means fail safe”. Revise [docs/src/how-to/handle-primary-failure.md](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/src/how-to/handle-primary-failure.md) so abrupt leader death is explained as lease expiry followed by healthy-majority election, while minority/no-quorum remains fail-safe. Audit the matching explanation/reference pages already named in the task so architecture and decision-engine docs no longer imply blind delete semantics or stale-leader deadlock behavior.
+
+13. Only after the source changes and docs are complete, run the full required verification set and record any failures back into the task.
+   Run `make check`, `make test`, `make test-long`, and `make lint` from the repo root. Do not treat any test as optional; if an environment dependency blocks a required real-binary test, fix the environment rather than skipping it. Once all commands pass, update the task checkboxes, set `<passes>true</passes>`, run `/bin/bash .ralph/task_switch.sh`, commit all tracked changes including `.ralph` state, and push.
+
+</implementation_plan>
+
+NOW EXECUTE

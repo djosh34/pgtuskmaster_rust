@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 02:16:27 PM CET 2026
+Generated: Mon Mar  9 05:34:09 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -148,6 +148,18 @@ An accepted targeted switchover request is not reliably honored in the HA multi-
 
 ```
 ## Task: Run Truth-Only Verification For Documentation Accuracy, Mermaid Diagrams, And Navigation <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/01-task-fix-leader-liveness-and-majority-election-after-hard-node-loss.md`
+
+```
+## Task: Fix Leader Liveness And Majority Election After Hard Node Loss <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 

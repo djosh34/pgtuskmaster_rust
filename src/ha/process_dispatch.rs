@@ -340,7 +340,7 @@ mod tests {
         config::{RoleAuthConfig, RuntimeConfig, SecretSource},
         dcs::{
             state::{DcsCache, DcsState, DcsTrust, MemberRecord, MemberRole},
-            store::{DcsStore, DcsStoreError, WatchEvent},
+            store::{DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent},
         },
         ha::{
             actions::HaAction,
@@ -386,6 +386,28 @@ mod tests {
 
         fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
             Ok(Vec::new())
+        }
+    }
+
+    impl DcsLeaderStore for NoopStore {
+        fn acquire_leader_lease(
+            &mut self,
+            _scope: &str,
+            _member_id: &MemberId,
+        ) -> Result<(), DcsStoreError> {
+            Ok(())
+        }
+
+        fn release_leader_lease(
+            &mut self,
+            _scope: &str,
+            _member_id: &MemberId,
+        ) -> Result<(), DcsStoreError> {
+            Ok(())
+        }
+
+        fn clear_switchover(&mut self, _scope: &str) -> Result<(), DcsStoreError> {
+            Ok(())
         }
     }
 

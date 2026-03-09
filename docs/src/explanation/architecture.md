@@ -102,10 +102,12 @@ The exact next state still depends on the current facts. For example, `Primary` 
 
 Trust evaluation in [`src/dcs/state.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs) is one of the key architectural constraints:
 - `NotTrusted` is used when the backing store is unhealthy
-- `FailSafe` is used when the store is healthy but the local or leader records are missing or stale, or when a multi-member view lacks enough fresh members
+- `FailSafe` is used when the store is healthy but the local member is missing or stale, or when a multi-member view lacks enough fresh members
 - `FullQuorum` is used only when the store is healthy and the cache is fresh enough to support normal HA behavior
 
 Freshness is checked against `ha.lease_ttl_ms`, using each member record's `updated_at` timestamp. In multi-member caches, the code requires at least two fresh members before returning `FullQuorum`.
+
+Leader liveness is handled separately from trust. The etcd-backed store writes `/{scope}/leader` under an etcd lease whose TTL is also derived from `ha.lease_ttl_ms`. When the owning node dies hard and keepalive stops, etcd expires the lease and the watch-fed DCS cache drops the leader record automatically. That keeps leader expiry in the DCS/store layer instead of duplicating a second expiry clock inside the HA phase machine.
 
 The HA decision logic uses that trust result immediately. At the top of `decide_phase`, if trust is not `FullQuorum`, the node enters `FailSafe`; if it is still primary at that moment, the decision carries `EnterFailSafe { release_leader_lease: false }`.
 
@@ -114,8 +116,6 @@ flowchart TD
     EtcdHealthy{Store healthy?}
     SelfPresent{Self member present?}
     SelfFresh{Self member fresh?}
-    LeaderPresent{Leader record present?}
-    LeaderFresh{Leader member fresh?}
     EnoughFresh{At least two fresh members when cluster has multiple members?}
     NotTrusted[NotTrusted]
     FailSafe[FailSafe]
@@ -126,11 +126,7 @@ flowchart TD
     SelfPresent -- no --> FailSafe
     SelfPresent -- yes --> SelfFresh
     SelfFresh -- no --> FailSafe
-    SelfFresh -- yes --> LeaderPresent
-    LeaderPresent -- no --> EnoughFresh
-    LeaderPresent -- yes --> LeaderFresh
-    LeaderFresh -- no --> FailSafe
-    LeaderFresh -- yes --> EnoughFresh
+    SelfFresh -- yes --> EnoughFresh
     EnoughFresh -- no --> FailSafe
     EnoughFresh -- yes --> FullQuorum
 ```

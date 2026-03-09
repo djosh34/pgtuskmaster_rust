@@ -1,9 +1,6 @@
 use thiserror::Error;
 
-use crate::{
-    dcs::store::{DcsHaWriter, DcsStoreError},
-    state::WorkerError,
-};
+use crate::{dcs::store::DcsStoreError, state::WorkerError};
 
 use super::{
     actions::{ActionId, HaAction},
@@ -463,11 +460,11 @@ fn process_dispatch_result(
 }
 
 fn acquire_leader_lease(ctx: &mut HaWorkerCtx) -> Result<(), DcsStoreError> {
-    ctx.dcs_store.write_leader_lease(&ctx.scope, &ctx.self_id)
+    ctx.dcs_store.acquire_leader_lease(&ctx.scope, &ctx.self_id)
 }
 
 fn release_leader_lease(ctx: &mut HaWorkerCtx) -> Result<(), DcsStoreError> {
-    ctx.dcs_store.delete_leader(&ctx.scope)
+    ctx.dcs_store.release_leader_lease(&ctx.scope, &ctx.self_id)
 }
 
 fn clear_switchover_request(ctx: &mut HaWorkerCtx) -> Result<(), DcsStoreError> {
