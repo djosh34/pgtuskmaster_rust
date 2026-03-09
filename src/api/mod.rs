@@ -108,10 +108,10 @@ pub enum HaDecisionResponse {
     BecomePrimary {
         promote: bool,
     },
+    CompleteSwitchover,
     StepDown {
         reason: StepDownReasonResponse,
         release_leader_lease: bool,
-        clear_switchover: bool,
         fence: bool,
     },
     RecoverReplica {

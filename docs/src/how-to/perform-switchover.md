@@ -83,7 +83,7 @@ Observe these source-backed state changes:
 2. The current primary moves through `waiting_switchover_successor`.
 3. A different node becomes the sampled primary.
 4. The former primary converges back to replica behavior.
-5. The pending switchover marker disappears after the transition settles.
+5. The pending switchover marker disappears only after the new primary has taken over and observed the switchover as complete.
 
 Generic successor selection is automatic. The HA engine chooses the next primary from observed cluster state and healthy follow targets when no target is supplied. For a targeted switchover, the HA engine keeps non-target nodes from acquiring leadership and waits for the requested eligible replica to take over.
 
@@ -132,7 +132,9 @@ pgtm -c /etc/pgtuskmaster/config.toml replicas
 
 ## Clear a pending switchover request
 
-The successful primary step-down path clears the switchover marker automatically. The manual clear command is still available when you need to remove a pending switchover request:
+The former primary does not clear the switchover marker during demotion. The request stays present while leadership is in flight so non-target replicas remain blocked during a targeted switchover. The new primary clears the marker only after it can observe that the handoff succeeded.
+
+The manual clear command is still available when you need to remove a pending switchover request:
 
 ```bash
 pgtm -c /etc/pgtuskmaster/config.toml switchover clear
@@ -174,6 +176,8 @@ Look for:
 - unreachable nodes
 - a target replica that is not healthy enough to take over
 - disagreement about who the leader is
+
+If a targeted switchover remains pending, expect untargeted replicas to keep waiting instead of racing for leadership. That is deliberate: the request stays in DCS until the requested successor becomes the observed primary or the operator clears the request.
 
 ### Multiple primaries appear in status
 

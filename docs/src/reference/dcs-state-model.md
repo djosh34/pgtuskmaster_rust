@@ -75,6 +75,8 @@ The worker builds member records from the latest PostgreSQL state:
 
 When `switchover_to` is `None`, the record means a generic switchover request is pending. When it is set, the record captures the requested target member for a targeted switchover.
 
+The runtime keeps this record in DCS for the full handoff window. During a targeted switchover, non-target replicas continue to treat the request as blocking leadership until the requested successor becomes the observed primary. The record is cleared only after a safe success observer, normally the new primary, confirms the switchover completed.
+
 ### `InitLockRecord`
 
 `InitLockRecord` contains:

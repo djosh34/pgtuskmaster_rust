@@ -58,6 +58,12 @@ async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn e2e_multi_node_targeted_switchover_promotes_requested_replica(
+) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
+    multi_node::e2e_multi_node_targeted_switchover_promotes_requested_replica().await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn e2e_no_quorum_enters_failsafe_strict_all_nodes(
 ) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
     multi_node::e2e_no_quorum_enters_failsafe_strict_all_nodes().await

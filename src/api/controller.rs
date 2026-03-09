@@ -222,6 +222,7 @@ fn map_ha_decision(value: &HaDecision) -> HaDecisionResponse {
         HaDecision::BecomePrimary { promote } => {
             HaDecisionResponse::BecomePrimary { promote: *promote }
         }
+        HaDecision::CompleteSwitchover => HaDecisionResponse::CompleteSwitchover,
         HaDecision::StepDown(plan) => map_step_down_plan(plan),
         HaDecision::RecoverReplica { strategy } => HaDecisionResponse::RecoverReplica {
             strategy: map_recovery_strategy(strategy),
@@ -242,7 +243,6 @@ fn map_step_down_plan(value: &StepDownPlan) -> HaDecisionResponse {
     HaDecisionResponse::StepDown {
         reason: map_step_down_reason(&value.reason),
         release_leader_lease: value.release_leader_lease,
-        clear_switchover: value.clear_switchover,
         fence: value.fence,
     }
 }

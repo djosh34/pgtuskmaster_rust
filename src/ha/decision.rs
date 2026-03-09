@@ -64,6 +64,7 @@ pub(crate) enum HaDecision {
     BecomePrimary {
         promote: bool,
     },
+    CompleteSwitchover,
     StepDown(StepDownPlan),
     RecoverReplica {
         strategy: RecoveryStrategy,
@@ -81,7 +82,6 @@ pub(crate) enum HaDecision {
 pub(crate) struct StepDownPlan {
     pub(crate) reason: StepDownReason,
     pub(crate) release_leader_lease: bool,
-    pub(crate) clear_switchover: bool,
     pub(crate) fence: bool,
 }
 
@@ -255,6 +255,7 @@ impl HaDecision {
             Self::AttemptLeadership => "attempt_leadership",
             Self::FollowLeader { .. } => "follow_leader",
             Self::BecomePrimary { .. } => "become_primary",
+            Self::CompleteSwitchover => "complete_switchover",
             Self::StepDown(_) => "step_down",
             Self::RecoverReplica { .. } => "recover_replica",
             Self::FenceNode => "fence_node",
@@ -282,11 +283,11 @@ impl HaDecision {
             }
             Self::FollowLeader { leader_member_id } => Some(leader_member_id.0.clone()),
             Self::BecomePrimary { promote } => Some(format!("promote={promote}")),
+            Self::CompleteSwitchover => None,
             Self::StepDown(plan) => Some(format!(
-                "reason={}, release_leader_lease={}, clear_switchover={}, fence={}",
+                "reason={}, release_leader_lease={}, fence={}",
                 plan.reason.label(),
                 plan.release_leader_lease,
-                plan.clear_switchover,
                 plan.fence
             )),
             Self::RecoverReplica { strategy } => Some(strategy.label()),

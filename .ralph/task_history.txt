@@ -167,3 +167,4 @@
 .ralph/tasks/story-ctl-operator-experience/06-task-rewrite-operator-docs-to-prefer-ctl-over-raw-curl.md
 .ralph/tasks/story-parallel-ha-test-hardening/01-task-add-postgres-proxy-chaos-e2e-coverage.md
 .ralph/tasks/story-parallel-ha-test-hardening/02-task-add-ha-restart-and-leadership-churn-e2e-coverage.md
+.ralph/tasks/bugs/targeted-switchover-request-can-promote-wrong-node.md

@@ -662,13 +662,13 @@ fn render_decision_text(value: &HaDecisionResponse) -> String {
         HaDecisionResponse::BecomePrimary { promote } => {
             format!("become_primary(promote={promote})")
         }
+        HaDecisionResponse::CompleteSwitchover => "complete_switchover".to_string(),
         HaDecisionResponse::StepDown {
             reason,
             release_leader_lease,
-            clear_switchover,
             fence,
         } => format!(
-            "step_down(reason={reason}, release_leader_lease={release_leader_lease}, clear_switchover={clear_switchover}, fence={fence})"
+            "step_down(reason={reason}, release_leader_lease={release_leader_lease}, fence={fence})"
         ),
         HaDecisionResponse::RecoverReplica { strategy } => {
             format!("recover_replica(strategy={strategy})")

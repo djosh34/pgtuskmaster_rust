@@ -48,11 +48,11 @@ pub(crate) fn decide_phase(current: &HaState, facts: &DecisionFacts) -> PhaseOut
         HaPhase::WaitingSwitchoverSuccessor => decide_waiting_switchover_successor(facts),
         HaPhase::Replica => decide_replica(facts),
         HaPhase::CandidateLeader => decide_candidate_leader(facts),
-        HaPhase::Primary => decide_primary(facts),
+        HaPhase::Primary => decide_primary(current, facts),
         HaPhase::Rewinding => decide_rewinding(facts),
         HaPhase::Bootstrapping => decide_bootstrapping(facts),
         HaPhase::Fencing => decide_fencing(facts),
-        HaPhase::FailSafe => decide_fail_safe(facts),
+        HaPhase::FailSafe => decide_fail_safe(current, facts),
     }
 }
 
@@ -207,14 +207,17 @@ fn decide_candidate_leader(facts: &DecisionFacts) -> PhaseOutcome {
     PhaseOutcome::new(HaPhase::CandidateLeader, HaDecision::AttemptLeadership)
 }
 
-fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
+fn decide_primary(current: &HaState, facts: &DecisionFacts) -> PhaseOutcome {
+    if switchover_completion_observed(current, facts) {
+        return PhaseOutcome::new(HaPhase::Primary, HaDecision::CompleteSwitchover);
+    }
+
     if facts.switchover_pending && facts.i_am_leader {
         return PhaseOutcome::new(
             HaPhase::WaitingSwitchoverSuccessor,
             HaDecision::StepDown(StepDownPlan {
                 reason: StepDownReason::Switchover,
                 release_leader_lease: true,
-                clear_switchover: true,
                 fence: false,
             }),
         );
@@ -246,7 +249,6 @@ fn decide_primary(facts: &DecisionFacts) -> PhaseOutcome {
             HaDecision::StepDown(StepDownPlan {
                 reason: StepDownReason::ForeignLeaderDetected { leader_member_id },
                 release_leader_lease: true,
-                clear_switchover: false,
                 fence: true,
             }),
         ),
@@ -325,10 +327,10 @@ fn decide_fencing(facts: &DecisionFacts) -> PhaseOutcome {
     }
 }
 
-fn decide_fail_safe(facts: &DecisionFacts) -> PhaseOutcome {
+fn decide_fail_safe(current: &HaState, facts: &DecisionFacts) -> PhaseOutcome {
     match facts.fencing_activity() {
         ProcessActivity::Running => PhaseOutcome::new(HaPhase::FailSafe, HaDecision::NoChange),
-        _ if facts.postgres_primary => decide_primary(facts),
+        _ if facts.postgres_primary => decide_primary(current, facts),
         _ if facts.i_am_leader => PhaseOutcome::new(
             HaPhase::FailSafe,
             HaDecision::ReleaseLeaderLease {
@@ -376,6 +378,20 @@ fn targeted_switchover_blocks_leadership_attempt(facts: &DecisionFacts) -> bool 
                 || !facts.switchover_target_is_eligible(target_member_id)
         }
         None => false,
+    }
+}
+
+fn switchover_completion_observed(current: &HaState, facts: &DecisionFacts) -> bool {
+    if !facts.switchover_pending || !facts.i_am_leader {
+        return false;
+    }
+
+    match facts.pending_switchover_target.as_ref() {
+        Some(target_member_id) => target_member_id == &facts.self_member_id,
+        None => matches!(
+            current.decision,
+            HaDecision::BecomePrimary { .. } | HaDecision::CompleteSwitchover
+        ),
     }
 }
 
@@ -446,6 +462,7 @@ mod tests {
     struct WorldBuilder {
         trust: DcsTrust,
         pg: PgInfoState,
+        self_member_id: MemberId,
         leader: Option<MemberId>,
         process: ProcessState,
         members: BTreeMap<MemberId, MemberRecord>,
@@ -457,6 +474,7 @@ mod tests {
             Self {
                 trust: DcsTrust::FullQuorum,
                 pg: pg_replica(SqlStatus::Healthy),
+                self_member_id: MemberId("node-a".to_string()),
                 leader: None,
                 process: process_idle(None),
                 members: BTreeMap::new(),
@@ -470,6 +488,13 @@ mod tests {
 
         fn with_pg(self, pg: PgInfoState) -> Self {
             Self { pg, ..self }
+        }
+
+        fn with_self_member_id(self, member_id: &str) -> Self {
+            Self {
+                self_member_id: MemberId(member_id.to_string()),
+                ..self
+            }
         }
 
         fn with_process(self, process: ProcessState) -> Self {
@@ -514,6 +539,7 @@ mod tests {
             world(
                 self.trust,
                 self.pg,
+                self.self_member_id,
                 self.leader,
                 self.process,
                 self.members,
@@ -617,7 +643,6 @@ mod tests {
                         leader_member_id: MemberId("node-b".to_string()),
                     },
                     release_leader_lease: true,
-                    clear_switchover: false,
                     fence: true,
                 }),
             },
@@ -896,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_with_switchover_demotes_releases_and_clears_request() {
+    fn primary_with_switchover_demotes_and_releases_without_clearing_request() {
         let output = decide(DecideInput {
             current: HaState {
                 worker: WorkerStatus::Running,
@@ -916,12 +941,92 @@ mod tests {
             lower_decision(&output.outcome.decision),
             HaEffectPlan {
                 lease: LeaseEffect::ReleaseLeader,
-                switchover: SwitchoverEffect::ClearRequest,
+                switchover: SwitchoverEffect::None,
                 replication: ReplicationEffect::None,
                 postgres: PostgresEffect::Demote,
                 safety: SafetyEffect::None,
             }
         );
+    }
+
+    #[test]
+    fn targeted_switchover_completes_only_after_requested_successor_becomes_primary() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Primary,
+                tick: 11,
+                decision: HaDecision::BecomePrimary { promote: true },
+            },
+            world: WorldBuilder::new()
+                .with_self_member_id("node-b")
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .with_leader("node-b")
+                .with_targeted_switchover_request("node-b")
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Primary);
+        assert_eq!(output.outcome.decision, HaDecision::CompleteSwitchover);
+        assert_eq!(
+            lower_decision(&output.outcome.decision),
+            HaEffectPlan {
+                lease: LeaseEffect::None,
+                switchover: SwitchoverEffect::ClearRequest,
+                replication: ReplicationEffect::None,
+                postgres: PostgresEffect::None,
+                safety: SafetyEffect::None,
+            }
+        );
+    }
+
+    #[test]
+    fn untargeted_switchover_completes_only_after_new_primary_observes_success() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::Primary,
+                tick: 12,
+                decision: HaDecision::BecomePrimary { promote: true },
+            },
+            world: WorldBuilder::new()
+                .with_self_member_id("node-b")
+                .with_pg(pg_primary(SqlStatus::Healthy))
+                .with_leader("node-b")
+                .with_switchover_request()
+                .with_member(MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "10.0.0.10".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                })
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::Primary);
+        assert_eq!(output.outcome.decision, HaDecision::CompleteSwitchover);
     }
 
     #[test]
@@ -1942,7 +2047,6 @@ mod tests {
             HaDecision::StepDown(StepDownPlan {
                 reason: StepDownReason::Switchover,
                 release_leader_lease: true,
-                clear_switchover: true,
                 fence: false,
             }),
             HaDecision::StepDown(StepDownPlan {
@@ -1950,9 +2054,9 @@ mod tests {
                     leader_member_id: MemberId("node-c".to_string()),
                 },
                 release_leader_lease: true,
-                clear_switchover: false,
                 fence: true,
             }),
+            HaDecision::CompleteSwitchover,
             HaDecision::RecoverReplica {
                 strategy: RecoveryStrategy::Rewind {
                     leader_member_id: MemberId("node-b".to_string()),
@@ -2109,12 +2213,14 @@ mod tests {
     fn world(
         trust: DcsTrust,
         pg: PgInfoState,
+        self_member_id: MemberId,
         leader: Option<MemberId>,
         process: ProcessState,
         members: BTreeMap<MemberId, MemberRecord>,
         switchover_request: Option<SwitchoverRequest>,
     ) -> WorldSnapshot {
-        let cfg = crate::test_harness::runtime_config::sample_runtime_config();
+        let mut cfg = crate::test_harness::runtime_config::sample_runtime_config();
+        cfg.cluster.member_id = self_member_id.0.clone();
 
         let leader_record = leader.map(|member_id| LeaderRecord { member_id });
 

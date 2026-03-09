@@ -101,6 +101,16 @@ Field:
 
 - `promote`: whether the node should run promotion work instead of simply remaining primary
 
+### `complete_switchover`
+
+```text
+{
+  "kind": "complete_switchover"
+}
+```
+
+This decision clears the DCS switchover request after the new primary can safely observe that leadership has already moved away from the old primary.
+
 ### `step_down`
 
 ```text
@@ -110,7 +120,6 @@ Field:
     "kind": "switchover"
   },
   "release_leader_lease": true,
-  "clear_switchover": true,
   "fence": false
 }
 ```
@@ -119,7 +128,6 @@ Fields:
 
 - `reason`
 - `release_leader_lease`
-- `clear_switchover`
 - `fence`
 
 `step_down` is a structured plan, not just a label.
@@ -128,6 +136,8 @@ Fields:
 
 - `{"kind":"switchover"}`
 - `{"kind":"foreign_leader_detected","leader_member_id":"node-b"}`
+
+For switchovers, `step_down` demotes the current primary and releases leadership, but it does not clear the switchover request. Cleanup happens later through `complete_switchover`.
 
 ### `recover_replica`
 
@@ -212,6 +222,7 @@ The HA layer lowers decisions into effect plans. At a high level:
 - `attempt_leadership` drives lease acquisition
 - `follow_leader` drives replica-follow behavior
 - `become_primary` drives primary behavior and promotion
+- `complete_switchover` clears a completed switchover request from DCS
 - `recover_replica` drives rewind, base-backup, or bootstrap recovery
 - `step_down`, `release_leader_lease`, and `enter_fail_safe` drive safety and lease changes
 - `fence_node` drives fencing
@@ -224,6 +235,7 @@ Common operator interpretations:
 - `wait_for_dcs_trust`: the node is waiting for a trustworthy cluster view
 - `attempt_leadership`: no healthy leader is being followed and this node is trying to lead
 - `follow_leader`: the node has a leader and intends to remain a replica
+- `complete_switchover`: the new primary has taken over and is clearing the now-satisfied switchover request
 - `recover_replica`: replica rejoin or divergence handling is in progress
 - `step_down` or `release_leader_lease`: leadership is being given up deliberately
 - `enter_fail_safe` or `fence_node`: safety behavior is taking precedence over availability

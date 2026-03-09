@@ -1745,6 +1745,62 @@ impl ClusterFixture {
         Ok(())
     }
 
+    async fn request_targeted_switchover_via_api(
+        &mut self,
+        target_node_id: &str,
+    ) -> Result<(), WorkerError> {
+        if self.nodes.is_empty() {
+            return Err(WorkerError::Message(
+                "no nodes available for targeted switchover request".to_string(),
+            ));
+        }
+
+        let max_transport_rounds: usize = 5;
+        let mut last_transport_error = "transport error".to_string();
+
+        for round in 1..=max_transport_rounds {
+            for node_index in 0..self.nodes.len() {
+                let (node_id, client) = self.cli_api_client_for_node_index(node_index)?;
+                self.record(format!(
+                    "api targeted switchover request: round={round}/{max_transport_rounds} node={node_id} target={target_node_id}"
+                ));
+                match client
+                    .post_switchover(Some(target_node_id.to_string()))
+                    .await
+                {
+                    Ok(_) => {
+                        self.record(format!(
+                            "api targeted switchover accepted: round={round}/{max_transport_rounds} node={node_id} target={target_node_id}"
+                        ));
+                        return Ok(());
+                    }
+                    Err(CliError::Transport(err)) => {
+                        last_transport_error = format!(
+                            "node={node_id} round={round} target={target_node_id} err={err}"
+                        );
+                        self.record(format!(
+                            "api targeted switchover transport failure: round={round}/{max_transport_rounds} node={node_id} target={target_node_id} err={err}"
+                        ));
+                    }
+                    Err(err) => {
+                        return Err(WorkerError::Message(format!(
+                            "targeted switchover request failed via {node_id} for target {target_node_id}: {err}"
+                        )));
+                    }
+                }
+            }
+
+            if round < max_transport_rounds {
+                let backoff_ms = 200_u64.saturating_mul(round as u64);
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            }
+        }
+
+        Err(WorkerError::Message(format!(
+            "targeted switchover request transport failed after {max_transport_rounds} round(s) for target {target_node_id}: {last_transport_error}"
+        )))
+    }
+
     async fn request_targeted_switchover_rejected_via_api(
         &mut self,
         target_node_id: &str,
@@ -4460,6 +4516,144 @@ pub async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
             Ok(run_result) => run_result,
             Err(_) => Err(WorkerError::Message(format!(
                 "targeted rejection scenario timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        let artifact_path = fixture.write_timeline_artifact(scenario_name);
+        let shutdown_result = fixture.shutdown().await;
+        finalize_timeline_scenario_result(run_result, artifact_path, shutdown_result)
+    })
+    .await
+}
+
+pub async fn e2e_multi_node_targeted_switchover_promotes_requested_replica(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = ClusterFixture::start(3).await?;
+        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let scenario_name = "ha-e2e-targeted-switchover-promotes-requested-replica";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("targeted switchover bootstrap: wait for stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(
+                    StablePrimaryWaitPlan {
+                        context: "targeted switchover bootstrap stable-primary",
+                        timeout: E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                        excluded_primary: None,
+                        required_consecutive: 5,
+                        fallback_timeout: E2E_PRIMARY_CONVERGENCE_FALLBACK_TIMEOUT,
+                        fallback_required_consecutive: 2,
+                        min_observed_nodes: 2,
+                    },
+                    &mut phase_history,
+                )
+                .await?;
+            let replica_ids = fixture.node_ids_excluding(&bootstrap_primary);
+            let requested_successor = replica_ids.first().cloned().ok_or_else(|| {
+                WorkerError::Message("missing requested switchover successor".to_string())
+            })?;
+            let disallowed_alternate = replica_ids.get(1).cloned().ok_or_else(|| {
+                WorkerError::Message("missing alternate healthy replica".to_string())
+            })?;
+
+            let table_name = fixture.proof_table_name("ha_targeted_switchover")?;
+            fixture
+                .create_proof_table(&bootstrap_primary, table_name.as_str())
+                .await?;
+            fixture
+                .insert_proof_row(
+                    &bootstrap_primary,
+                    table_name.as_str(),
+                    1,
+                    "before-targeted-switchover",
+                )
+                .await?;
+            let bootstrap_rows = vec!["1:before-targeted-switchover".to_string()];
+            fixture
+                .wait_for_proof_rows_on_all_nodes(
+                    table_name.as_str(),
+                    bootstrap_rows.as_slice(),
+                    E2E_SQL_REPLICATION_ASSERT_TIMEOUT,
+                )
+                .await?;
+
+            let targeted_observer_clients = fixture.observed_node_clients()?;
+            let (promoted_primary, ha_stats) = ClusterFixture::observe_no_dual_primary_while_clients(
+                    targeted_observer_clients,
+                    E2E_LONG_NO_DUAL_PRIMARY_WINDOW,
+                    128,
+                    async {
+                        fixture.record(format!(
+                            "targeted switchover request accepted path: old_primary={bootstrap_primary} requested_successor={requested_successor} disallowed_alternate={disallowed_alternate}"
+                        ));
+                        fixture
+                            .request_targeted_switchover_via_api(&requested_successor)
+                            .await?;
+                        fixture
+                            .wait_for_expected_primary_best_effort(
+                                &requested_successor,
+                                E2E_PRIMARY_CONVERGENCE_TIMEOUT,
+                                2,
+                                1,
+                                &mut phase_history,
+                            )
+                            .await
+                    },
+                )
+                .await?;
+            if promoted_primary != requested_successor {
+                return Err(WorkerError::Message(format!(
+                    "targeted switchover promoted unexpected node: expected {requested_successor}, got {promoted_primary}"
+                )));
+            }
+            if promoted_primary == disallowed_alternate {
+                return Err(WorkerError::Message(format!(
+                    "targeted switchover incorrectly promoted alternate healthy replica {disallowed_alternate} instead of requested successor {requested_successor}"
+                )));
+            }
+
+            fixture.record(format!(
+                "targeted switchover no-dual-primary stats: samples={} max_concurrent_primaries={}",
+                ha_stats.sample_count, ha_stats.max_concurrent_primaries
+            ));
+            fixture
+                .assert_former_primary_demoted_or_unreachable_after_transition(&bootstrap_primary)
+                .await?;
+            fixture
+                .insert_proof_row(
+                    &promoted_primary,
+                    table_name.as_str(),
+                    2,
+                    "after-targeted-switchover",
+                )
+                .await?;
+            let expected_rows = vec![
+                "1:before-targeted-switchover".to_string(),
+                "2:after-targeted-switchover".to_string(),
+            ];
+            let expected_queryable_nodes =
+                vec![promoted_primary.clone(), disallowed_alternate.clone()];
+            fixture
+                .wait_for_proof_rows_on_nodes(
+                    expected_queryable_nodes.as_slice(),
+                    table_name.as_str(),
+                    expected_rows.as_slice(),
+                    E2E_TABLE_INTEGRITY_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "targeted switchover succeeded: bootstrap_primary={bootstrap_primary} requested_successor={requested_successor} disallowed_alternate={disallowed_alternate} promoted_primary={promoted_primary} phase_history={}",
+                ClusterFixture::format_phase_history(&phase_history)
+            ));
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "targeted switchover scenario timed out after {}s",
                 E2E_SCENARIO_TIMEOUT.as_secs()
             ))),
         };

@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 06:33:47 AM CET 2026
+Generated: Mon Mar  9 07:02:47 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -21,6 +21,17 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 <priority>high</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/targeted-switchover-request-can-promote-wrong-node.md`
+
+```
+## Bug: Targeted Switchover Request Can Promote Wrong Node <status>done</status> <passes>true</passes>
+
+<description>
+An accepted targeted switchover request is not reliably honored in the HA multi-node E2E environment. During work on repeated leadership-churn coverage, a request targeted at `node-2` was accepted through `POST /switchover`, but the cluster later stabilized on `node-3` as primary instead. The failure was reproduced in `e2e_multi_node_repeated_targeted_switchovers_preserve_single_primary`, which observed `node-3` as the only stable promoted primary after the targeted request to `node-2`.
 ```
 
 ==============

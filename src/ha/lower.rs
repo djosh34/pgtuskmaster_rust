@@ -94,6 +94,10 @@ impl HaDecision {
                 },
                 ..HaEffectPlan::default()
             },
+            Self::CompleteSwitchover => HaEffectPlan {
+                switchover: SwitchoverEffect::ClearRequest,
+                ..HaEffectPlan::default()
+            },
             Self::StepDown(plan) => lower_step_down(plan),
             Self::RecoverReplica { strategy } => HaEffectPlan {
                 replication: ReplicationEffect::RecoverReplica {
@@ -149,11 +153,7 @@ fn lower_step_down(plan: &StepDownPlan) -> HaEffectPlan {
         } else {
             LeaseEffect::None
         },
-        switchover: if plan.clear_switchover {
-            SwitchoverEffect::ClearRequest
-        } else {
-            SwitchoverEffect::None
-        },
+        switchover: SwitchoverEffect::None,
         replication: ReplicationEffect::None,
         postgres: PostgresEffect::Demote,
         safety: if plan.fence {
@@ -220,7 +220,6 @@ mod tests {
         let decision = HaDecision::StepDown(StepDownPlan {
             reason: StepDownReason::Switchover,
             release_leader_lease: true,
-            clear_switchover: true,
             fence: false,
         });
 
@@ -228,9 +227,25 @@ mod tests {
             decision.lower(),
             HaEffectPlan {
                 lease: LeaseEffect::ReleaseLeader,
-                switchover: SwitchoverEffect::ClearRequest,
+                switchover: SwitchoverEffect::None,
                 replication: ReplicationEffect::None,
                 postgres: PostgresEffect::Demote,
+                safety: SafetyEffect::None,
+            }
+        );
+    }
+
+    #[test]
+    fn lowers_complete_switchover_into_clear_request_plan() {
+        let decision = HaDecision::CompleteSwitchover;
+
+        assert_eq!(
+            decision.lower(),
+            HaEffectPlan {
+                lease: LeaseEffect::None,
+                switchover: SwitchoverEffect::ClearRequest,
+                replication: ReplicationEffect::None,
+                postgres: PostgresEffect::None,
                 safety: SafetyEffect::None,
             }
         );
