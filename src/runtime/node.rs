@@ -218,6 +218,12 @@ fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults 
     }
 }
 
+fn advertised_postgres_port(cfg: &RuntimeConfig) -> u16 {
+    cfg.postgres
+        .advertise_port
+        .unwrap_or(cfg.postgres.listen_port)
+}
+
 fn plan_startup(
     cfg: &RuntimeConfig,
     process_defaults: &ProcessDispatchDefaults,
@@ -1081,7 +1087,7 @@ async fn run_workers(
         scope: scope.clone(),
         poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
         local_postgres_host: cfg.postgres.listen_host.clone(),
-        local_postgres_port: cfg.postgres.listen_port,
+        local_postgres_port: advertised_postgres_port(&cfg),
         local_api_url: advertised_operator_api_url(&cfg),
         pg_subscriber: pg_subscriber.clone(),
         publisher: dcs_publisher,
@@ -1265,8 +1271,9 @@ mod tests {
     };
 
     use super::{
-        inspect_data_dir, plan_startup_with_probe, process_defaults_from_config,
-        select_resume_start_intent, select_startup_mode, DataDirState, StartupMode,
+        advertised_postgres_port, inspect_data_dir, plan_startup_with_probe,
+        process_defaults_from_config, select_resume_start_intent, select_startup_mode,
+        DataDirState, StartupMode,
     };
     use crate::postgres_managed_conf::{
         managed_standby_auth_from_role_auth, ManagedPostgresStartIntent,
@@ -1769,5 +1776,19 @@ mod tests {
         )?;
         assert_eq!(leader_source.conninfo.user, "repl_user");
         Ok(())
+    }
+
+    #[test]
+    fn advertised_postgres_port_defaults_to_listen_port() {
+        let cfg = sample_runtime_config();
+        assert_eq!(advertised_postgres_port(&cfg), cfg.postgres.listen_port);
+    }
+
+    #[test]
+    fn advertised_postgres_port_prefers_explicit_override() {
+        let cfg = crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
+            .with_postgres_advertise_port(Some(6543))
+            .build();
+        assert_eq!(advertised_postgres_port(&cfg), 6543);
     }
 }

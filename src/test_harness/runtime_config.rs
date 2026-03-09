@@ -229,6 +229,7 @@ pub fn sample_postgres_config() -> PostgresConfig {
         connect_timeout_s: SAMPLE_POSTGRES_CONNECT_TIMEOUT_S,
         listen_host: SAMPLE_POSTGRES_LISTEN_HOST.to_string(),
         listen_port: SAMPLE_POSTGRES_LISTEN_PORT,
+        advertise_port: None,
         socket_dir: "/tmp/pgtuskmaster/socket".into(),
         log_file: "/tmp/pgtuskmaster/postgres.log".into(),
         local_conn_identity: sample_local_conn_identity(),
@@ -355,6 +356,13 @@ impl RuntimeConfigBuilder {
     pub fn with_postgres_listen_port(self, listen_port: u16) -> Self {
         self.transform_postgres(move |postgres| PostgresConfig {
             listen_port,
+            ..postgres
+        })
+    }
+
+    pub fn with_postgres_advertise_port(self, advertise_port: Option<u16>) -> Self {
+        self.transform_postgres(move |postgres| PostgresConfig {
+            advertise_port,
             ..postgres
         })
     }
@@ -617,11 +625,13 @@ mod tests {
         let baseline = sample_runtime_config();
         let updated = RuntimeConfigBuilder::new()
             .with_postgres_listen_port(6543)
+            .with_postgres_advertise_port(Some(6544))
             .with_api_listen_addr(sample_override_api_listen_addr())
             .with_dcs_scope("scope-b")
             .build();
 
         assert_eq!(updated.postgres.listen_port, 6543);
+        assert_eq!(updated.postgres.advertise_port, Some(6544));
         assert_eq!(updated.api.listen_addr, sample_override_api_listen_addr());
         assert_eq!(updated.dcs.scope, "scope-b");
         assert_eq!(updated.cluster, baseline.cluster);

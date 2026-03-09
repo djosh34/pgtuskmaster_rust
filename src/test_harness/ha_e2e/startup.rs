@@ -510,6 +510,7 @@ async fn start_cluster_inner(
                 data_dir: data_dir.clone(),
                 connect_timeout_s: HARNESS_POSTGRES_CONNECT_TIMEOUT_S,
                 listen_port: pg_port,
+                advertise_port: matches!(config.mode, Mode::PartitionProxy).then_some(sql_port),
                 socket_dir,
                 log_file: log_file.clone(),
                 rewind_conn_identity: PostgresConnIdentityConfig {

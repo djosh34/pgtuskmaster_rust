@@ -104,6 +104,7 @@ fn normalize_postgres_config(
         connect_timeout_s,
         listen_host: input.listen_host,
         listen_port: input.listen_port,
+        advertise_port: input.advertise_port,
         socket_dir: input.socket_dir,
         log_file: input.log_file,
         local_conn_identity,
@@ -487,6 +488,9 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_non_empty_path("postgres.data_dir", &cfg.postgres.data_dir)?;
     validate_non_empty("postgres.listen_host", cfg.postgres.listen_host.as_str())?;
     validate_port("postgres.listen_port", cfg.postgres.listen_port)?;
+    if let Some(advertise_port) = cfg.postgres.advertise_port {
+        validate_port("postgres.advertise_port", advertise_port)?;
+    }
     validate_non_empty_path("postgres.socket_dir", &cfg.postgres.socket_dir)?;
     validate_non_empty_path("postgres.log_file", &cfg.postgres.log_file)?;
 
@@ -1311,6 +1315,7 @@ mod tests {
                 connect_timeout_s: 5,
                 listen_host: "127.0.0.1".to_string(),
                 listen_port: 5432,
+                advertise_port: None,
                 socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
                 log_file: PathBuf::from("/tmp/pgtuskmaster/postgres.log"),
                 local_conn_identity: PostgresConnIdentityConfig {
@@ -1541,6 +1546,17 @@ mod tests {
             err,
             Err(ConfigError::Validation {
                 field: "postgres.listen_port",
+                ..
+            })
+        ));
+
+        let mut cfg = base_runtime_config();
+        cfg.postgres.advertise_port = Some(0);
+        let err = validate_runtime_config(&cfg);
+        assert!(matches!(
+            err,
+            Err(ConfigError::Validation {
+                field: "postgres.advertise_port",
                 ..
             })
         ));

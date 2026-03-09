@@ -72,6 +72,8 @@ This target is intentionally heavier than `make test`. It runs:
 
 The `ultra-long` nextest profile selects the `tests/ha_*.rs` integration-test binaries and still runs them through normal nextest parallel scheduling. Those HA scenarios use isolated ports, namespaces, and working directories, so serial-only behavior is treated as a bug in the tests rather than as an accepted workaround in the gate config.
 
+That long HA bucket now includes PostgreSQL data-plane chaos coverage in addition to etcd and API-path partitions. The `ha_partition_isolation` binary exercises a case where the primary's advertised PostgreSQL endpoint is blocked through the harness pg proxy, replicas prove that streaming was interrupted, and the cluster must heal back to one converged primary afterward.
+
 Use it when your change can affect HA behavior, Docker packaging, or longer-running operational scenarios.
 
 ## Lint And Docs Validation
@@ -95,7 +97,9 @@ The requested source files give a good picture of the suite layout:
 
 - `tests/bdd_api_http.rs`: HTTP API behavior and auth-path tests
 - `tests/ha_multi_node_failover.rs`: multi-node HA scenario entrypoints
+- `tests/ha_partition_isolation.rs`: long-running partition and PostgreSQL-path chaos scenarios
 - `tests/ha/support/multi_node.rs`: scenario orchestration, convergence, stress, and switchover flows
+- `tests/ha/support/partition.rs`: partition orchestration, pg-proxy fault injection, and convergence assertions
 - `tests/ha/support/observer.rs`: split-brain and HA observation checks
 - `src/worker_contract_tests.rs`: contract-style runtime and debug API expectations
 

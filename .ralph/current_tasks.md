@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 04:48:54 AM CET 2026
-
-# Task `.ralph/tasks/story-parallel-ha-test-hardening/01-task-add-postgres-proxy-chaos-e2e-coverage.md`
-
-```
-## Task: Add PostgreSQL Proxy Chaos E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>low</priority>
-
-<description>
-```
-
-==============
+Generated: Mon Mar  9 05:24:57 AM CET 2026
 
 # Task `.ralph/tasks/story-parallel-ha-test-hardening/02-task-add-ha-restart-and-leadership-churn-e2e-coverage.md`
 

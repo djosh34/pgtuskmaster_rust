@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 04:48:54 AM CET 2026
+Generated: Mon Mar  9 05:24:57 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -163,6 +163,18 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 
 <description>
 The codebase carries API and DCS endpoint addresses as raw `String` values deep into runtime and harness paths, then parses or binds them at scattered call sites. This was detected during a representation-integrity scan looking for cases where subsystem boundaries retain ad-hoc primitive encodings instead of canonical typed models.
+```
+
+==============
+
+# Task `.ralph/tasks/story-parallel-ha-test-hardening/01-task-add-postgres-proxy-chaos-e2e-coverage.md`
+
+```
+## Task: Add PostgreSQL Proxy Chaos E2E Coverage <status>done</status> <passes>true</passes>
+
+<priority>low</priority>
+
+<description>
 ```
 
 ==============

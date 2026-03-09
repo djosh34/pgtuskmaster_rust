@@ -38,6 +38,7 @@ const E2E_PARTITION_RECOVERY_TIMEOUT: Duration = Duration::from_secs(120);
 const E2E_PARTITION_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_PARTITION_POST_HEAL_WRITE_TIMEOUT: Duration = Duration::from_secs(45);
 const E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(90);
+const E2E_PARTITION_REPLICATION_PATH_TIMEOUT: Duration = Duration::from_secs(30);
 const E2E_PARTITION_HEAL_SETTLE_WAIT: Duration = Duration::from_secs(4);
 const E2E_PARTITION_SHORT_NO_DUAL_PRIMARY_WINDOW: Duration = Duration::from_secs(5);
 const E2E_PARTITION_MEDIUM_NO_DUAL_PRIMARY_WINDOW: Duration = Duration::from_secs(8);
@@ -194,6 +195,26 @@ impl PartitionFixture {
         link.set_mode(ProxyMode::Blocked)
             .await
             .map_err(|err| WorkerError::Message(format!("set api proxy mode failed: {err}")))
+    }
+
+    async fn set_pg_mode_for_node(
+        &self,
+        node_id: &str,
+        mode: ProxyMode,
+    ) -> Result<(), WorkerError> {
+        let link = self.pg_proxies.get(node_id).ok_or_else(|| {
+            WorkerError::Message(format!("missing postgres proxy for node: {node_id}"))
+        })?;
+        link.set_mode(mode)
+            .await
+            .map_err(|err| WorkerError::Message(format!("set postgres proxy mode failed: {err}")))
+    }
+
+    async fn isolate_postgres_path(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        self.record(format!(
+            "network fault: block advertised postgres data path via pg proxy node={node_id}"
+        ));
+        self.set_pg_mode_for_node(node_id, ProxyMode::Blocked).await
     }
 
     async fn heal_all_network_faults(&mut self) -> Result<(), WorkerError> {
@@ -607,6 +628,13 @@ impl PartitionFixture {
             .collect()
     }
 
+    fn replica_node_ids(&self, primary_id: &str) -> Vec<String> {
+        self.node_ids()
+            .into_iter()
+            .filter(|node_id| node_id != primary_id)
+            .collect()
+    }
+
     async fn assert_no_dual_primary_window(&mut self, window: Duration) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + window;
         let mut observer = HaInvariantObserver::new(HaObserverConfig {
@@ -660,13 +688,10 @@ impl PartitionFixture {
         }
     }
 
-    async fn run_sql_on_node(&self, node_id: &str, sql: &str) -> Result<String, WorkerError> {
-        let node = self
-            .node_by_id(node_id)
-            .ok_or_else(|| WorkerError::Message(format!("unknown node for SQL: {node_id}")))?;
+    async fn run_sql_on_port(&self, port: u16, sql: &str) -> Result<String, WorkerError> {
         ha_e2e::util::run_psql_statement(
             self.psql_bin.as_path(),
-            node.sql_port,
+            port,
             self.superuser_username.as_str(),
             self.superuser_dbname.as_str(),
             sql,
@@ -674,6 +699,24 @@ impl PartitionFixture {
             E2E_COMMAND_KILL_WAIT_TIMEOUT,
         )
         .await
+    }
+
+    async fn run_sql_on_node(&self, node_id: &str, sql: &str) -> Result<String, WorkerError> {
+        let node = self
+            .node_by_id(node_id)
+            .ok_or_else(|| WorkerError::Message(format!("unknown node for SQL: {node_id}")))?;
+        self.run_sql_on_port(node.sql_port, sql).await
+    }
+
+    async fn run_sql_on_node_direct_postgres(
+        &self,
+        node_id: &str,
+        sql: &str,
+    ) -> Result<String, WorkerError> {
+        let node = self.node_by_id(node_id).ok_or_else(|| {
+            WorkerError::Message(format!("unknown node for direct postgres SQL: {node_id}"))
+        })?;
+        self.run_sql_on_port(node.pg_port, sql).await
     }
 
     async fn cluster_sql_roles_best_effort(
@@ -724,6 +767,146 @@ impl PartitionFixture {
                     tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
                 }
             }
+        }
+    }
+
+    async fn wait_for_replication_sender_port_on_replicas(
+        &mut self,
+        primary_id: &str,
+        expected_sender_port: u16,
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let replica_ids = self.replica_node_ids(primary_id);
+        if replica_ids.is_empty() {
+            return Err(WorkerError::Message(format!(
+                "no replicas available to validate replication sender port for primary {primary_id}"
+            )));
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let observation_sql = "SELECT COALESCE(string_agg(status || '@' || sender_host || ':' || sender_port::text, ',' ORDER BY sender_host, sender_port, status), 'no-wal-receiver') FROM pg_stat_wal_receiver";
+        let expected_port_fragment = format!(":{expected_sender_port}");
+
+        loop {
+            let mut observations = Vec::new();
+            let mut all_match = true;
+            for replica_id in &replica_ids {
+                let output = match self
+                    .run_sql_on_node(replica_id.as_str(), observation_sql)
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(err) => {
+                        all_match = false;
+                        observations.push(format!("{replica_id}=error:{err}"));
+                        continue;
+                    }
+                };
+                let summary = ha_e2e::util::parse_psql_rows(output.as_str())
+                    .first()
+                    .cloned()
+                    .unwrap_or_default();
+                if !(summary.contains("streaming@")
+                    && summary.contains(expected_port_fragment.as_str()))
+                {
+                    all_match = false;
+                }
+                observations.push(format!("{replica_id}={summary}"));
+            }
+            let last_observation = observations.join(", ");
+            if all_match {
+                self.record(format!(
+                    "replication baseline: replicas stream from primary node={primary_id} advertised_postgres_port={expected_sender_port}; observations=[{last_observation}]"
+                ));
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for replicas to stream from advertised postgres port {expected_sender_port} for primary {primary_id}; last_observation=[{last_observation}]"
+                )));
+            }
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
+        }
+    }
+
+    async fn wait_for_replication_path_interruption(
+        &mut self,
+        primary_id: &str,
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let replica_ids = self.replica_node_ids(primary_id);
+        if replica_ids.is_empty() {
+            return Err(WorkerError::Message(format!(
+                "no replicas available to validate replication-path interruption for primary {primary_id}"
+            )));
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let observation_sql = "SELECT COALESCE(string_agg(status || '@' || sender_host || ':' || sender_port::text, ',' ORDER BY sender_host, sender_port, status), 'no-wal-receiver') FROM pg_stat_wal_receiver";
+
+        loop {
+            let mut observations = Vec::new();
+            let mut all_interrupted = true;
+            for replica_id in &replica_ids {
+                let output = match self
+                    .run_sql_on_node(replica_id.as_str(), observation_sql)
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(err) => {
+                        all_interrupted = false;
+                        observations.push(format!("{replica_id}=error:{err}"));
+                        continue;
+                    }
+                };
+                let summary = ha_e2e::util::parse_psql_rows(output.as_str())
+                    .first()
+                    .cloned()
+                    .unwrap_or_default();
+                if summary.contains("streaming@") {
+                    all_interrupted = false;
+                }
+                observations.push(format!("{replica_id}={summary}"));
+            }
+            let last_observation = observations.join(", ");
+            if all_interrupted {
+                self.record(format!(
+                    "replication interruption observed after blocking advertised postgres path for primary node={primary_id}; observations=[{last_observation}]"
+                ));
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for replica wal receivers to leave streaming state for primary {primary_id}; last_observation=[{last_observation}]"
+                )));
+            }
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
+        }
+    }
+
+    async fn assert_query_rows_stay_equal_on_nodes(
+        &self,
+        node_ids: &[String],
+        sql: &str,
+        expected_rows: &[String],
+        window: Duration,
+        context: &str,
+    ) -> Result<(), WorkerError> {
+        let deadline = tokio::time::Instant::now() + window;
+        loop {
+            for node_id in node_ids {
+                let output = self.run_sql_on_node(node_id.as_str(), sql).await?;
+                let rows = ha_e2e::util::parse_psql_rows(output.as_str());
+                if rows != expected_rows {
+                    return Err(WorkerError::Message(format!(
+                        "{context}: unexpected rows on {node_id}; expected={expected_rows:?} observed={rows:?}"
+                    )));
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(());
+            }
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
         }
     }
 
@@ -1327,6 +1510,183 @@ pub async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), 
     .await
 }
 
+pub async fn e2e_partition_primary_postgres_path_blocked_replicas_catch_up_after_heal(
+) -> Result<(), WorkerError> {
+    ha_e2e::util::run_with_local_set(async {
+        let mut fixture = PartitionFixture::start(3).await?;
+        let scenario_name = "ha-e2e-partition-primary-postgres-path-blocked";
+
+        let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
+            fixture.record("postgres-path isolation: wait for initial stable primary");
+            let bootstrap_primary = fixture
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "postgres-path isolation: initial stable primary",
+                    timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: E2E_PARTITION_PRIMARY_TIMEOUT,
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
+                .await?;
+            fixture.record(format!(
+                "postgres-path isolation: initial primary={bootstrap_primary}"
+            ));
+
+            let primary_node = fixture
+                .node_by_id(bootstrap_primary.as_str())
+                .cloned()
+                .ok_or_else(|| {
+                    WorkerError::Message(format!(
+                        "missing node handle for primary {bootstrap_primary}"
+                    ))
+                })?;
+            let replica_ids = fixture.replica_node_ids(bootstrap_primary.as_str());
+            if replica_ids.is_empty() {
+                return Err(WorkerError::Message(
+                    "no replicas found for postgres-path isolation scenario".to_string(),
+                ));
+            }
+
+            fixture
+                .run_sql_on_node_with_retry(
+                    bootstrap_primary.as_str(),
+                    "CREATE TABLE IF NOT EXISTS ha_partition_pg_path_primary (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
+                    E2E_PARTITION_WRITE_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .run_sql_on_node_with_retry(
+                    bootstrap_primary.as_str(),
+                    "INSERT INTO ha_partition_pg_path_primary (id, payload) VALUES (1, 'before-pg-path-fault') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+                    E2E_PARTITION_WRITE_TIMEOUT,
+                )
+                .await?;
+
+            let baseline_rows = vec!["1:before-pg-path-fault".to_string()];
+            for node_id in fixture.node_ids() {
+                fixture
+                    .wait_for_rows_on_node(
+                        node_id.as_str(),
+                        "SELECT id::text || ':' || payload FROM ha_partition_pg_path_primary ORDER BY id",
+                        baseline_rows.as_slice(),
+                        E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
+                    )
+                    .await?;
+            }
+
+            fixture
+                .wait_for_replication_sender_port_on_replicas(
+                    bootstrap_primary.as_str(),
+                    primary_node.sql_port,
+                    E2E_PARTITION_REPLICATION_PATH_TIMEOUT,
+                )
+                .await?;
+
+            fixture
+                .isolate_postgres_path(bootstrap_primary.as_str())
+                .await?;
+            fixture
+                .wait_for_replication_path_interruption(
+                    bootstrap_primary.as_str(),
+                    E2E_PARTITION_REPLICATION_PATH_TIMEOUT,
+                )
+                .await?;
+            fixture
+                .assert_no_dual_primary_window(E2E_PARTITION_MEDIUM_NO_DUAL_PRIMARY_WINDOW)
+                .await?;
+
+            fixture.record(format!(
+                "postgres-path isolation: write second row via raw postgres port node={} raw_port={} advertised_port={}",
+                bootstrap_primary, primary_node.pg_port, primary_node.sql_port
+            ));
+            // This direct write proves the primary stays locally writable even while the
+            // advertised postgres endpoint used by replicas is blocked by the pg proxy.
+            fixture
+                .run_sql_on_node_direct_postgres(
+                    bootstrap_primary.as_str(),
+                    "INSERT INTO ha_partition_pg_path_primary (id, payload) VALUES (2, 'during-pg-path-fault') ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+                )
+                .await?;
+
+            fixture
+                .assert_query_rows_stay_equal_on_nodes(
+                    replica_ids.as_slice(),
+                    "SELECT COUNT(*)::bigint FROM ha_partition_pg_path_primary WHERE id = 2",
+                    &["0".to_string()],
+                    E2E_PARTITION_SHORT_NO_DUAL_PRIMARY_WINDOW,
+                    "postgres-path isolation: row written during fault should stay absent on replicas",
+                )
+                .await?;
+            fixture.record(format!(
+                "postgres-path isolation: replicas kept row id=2 absent during fault window nodes={replica_ids:?}"
+            ));
+
+            fixture.heal_all_network_faults().await?;
+            let healed_primary = fixture
+                .wait_for_stable_primary_resilient(StablePrimaryWaitPlan {
+                    context: "postgres-path isolation: healed stable primary",
+                    timeout: E2E_PARTITION_RECOVERY_TIMEOUT,
+                    excluded_primary: None,
+                    required_consecutive: 5,
+                    fallback_timeout: E2E_PARTITION_RECOVERY_TIMEOUT,
+                    fallback_required_consecutive: 3,
+                    min_observed_nodes: 2,
+                })
+                .await?;
+            fixture.record(format!(
+                "postgres-path isolation: healed primary={healed_primary}"
+            ));
+            if healed_primary != bootstrap_primary {
+                return Err(WorkerError::Message(format!(
+                    "postgres-path isolation should not rotate primary; expected={bootstrap_primary} observed={healed_primary}"
+                )));
+            }
+
+            let expected_rows = vec![
+                "1:before-pg-path-fault".to_string(),
+                "2:during-pg-path-fault".to_string(),
+            ];
+            for node_id in fixture.node_ids() {
+                fixture
+                    .wait_for_rows_on_node(
+                        node_id.as_str(),
+                        "SELECT id::text || ':' || payload FROM ha_partition_pg_path_primary ORDER BY id",
+                        expected_rows.as_slice(),
+                        E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
+                    )
+                    .await?;
+            }
+            let digests = fixture
+                .wait_for_table_digest_convergence(
+                    "ha_partition_pg_path_primary",
+                    fixture.node_ids().as_slice(),
+                    2,
+                    E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
+            fixture.record(format!(
+                "postgres-path isolation: digest convergence observed after heal digests={digests:?}"
+            ));
+            fixture
+                .assert_no_dual_primary_window(E2E_PARTITION_SHORT_NO_DUAL_PRIMARY_WINDOW)
+                .await?;
+            Ok(())
+        })
+        .await
+        {
+            Ok(run_result) => run_result,
+            Err(_) => Err(WorkerError::Message(format!(
+                "{scenario_name} timed out after {}s",
+                E2E_SCENARIO_TIMEOUT.as_secs()
+            ))),
+        };
+
+        finalize_partition_scenario(&mut fixture, scenario_name, run_result).await
+    })
+    .await
+}
+
 pub async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = PartitionFixture::start(3).await?;
@@ -1470,6 +1830,8 @@ mod unit_tests {
         let _ = PartitionFixture::partition_node_from_etcd;
         let _ = PartitionFixture::partition_primary_from_etcd;
         let _ = PartitionFixture::isolate_api_path;
+        let _ = PartitionFixture::set_pg_mode_for_node;
+        let _ = PartitionFixture::isolate_postgres_path;
         let _ = PartitionFixture::heal_all_network_faults;
         let _ = PartitionFixture::fetch_node_ha_state;
         let _ = PartitionFixture::cluster_ha_states_best_effort;
@@ -1479,11 +1841,17 @@ mod unit_tests {
         let _ = PartitionFixture::wait_for_stable_primary_via_sql;
         let _ = PartitionFixture::wait_for_stable_primary_resilient;
         let _ = PartitionFixture::primary_members;
+        let _ = PartitionFixture::replica_node_ids;
         let _ = PartitionFixture::assert_no_dual_primary_window;
         let _ = PartitionFixture::wait_for_node_phase;
+        let _ = PartitionFixture::run_sql_on_port;
         let _ = PartitionFixture::run_sql_on_node;
+        let _ = PartitionFixture::run_sql_on_node_direct_postgres;
         let _ = PartitionFixture::cluster_sql_roles_best_effort;
         let _ = PartitionFixture::run_sql_on_node_with_retry;
+        let _ = PartitionFixture::wait_for_replication_sender_port_on_replicas;
+        let _ = PartitionFixture::wait_for_replication_path_interruption;
+        let _ = PartitionFixture::assert_query_rows_stay_equal_on_nodes;
         let _ = PartitionFixture::wait_for_rows_on_node;
         let _ = PartitionFixture::wait_for_table_digest_convergence;
         let _ = PartitionFixture::write_timeline_artifact;
@@ -1494,6 +1862,7 @@ mod unit_tests {
         let _ = e2e_partition_minority_isolation_no_split_brain_rejoin;
         let _ = e2e_partition_primary_isolation_failover_no_split_brain;
         let _ = e2e_partition_api_path_isolation_preserves_primary;
+        let _ = e2e_partition_primary_postgres_path_blocked_replicas_catch_up_after_heal;
         let _ = e2e_partition_mixed_faults_heal_converges;
     }
 }

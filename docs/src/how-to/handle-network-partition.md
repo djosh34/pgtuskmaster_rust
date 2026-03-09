@@ -134,6 +134,7 @@ The repo's long partition tests exercise several distinct cases:
 
 - a node isolated from etcd
 - the primary isolated from etcd
+- the primary's advertised PostgreSQL path blocked through the HA pg proxy while local PostgreSQL stays up
 - API-path isolation
 - mixed network faults followed by healing
 
@@ -159,6 +160,8 @@ This guide cannot prescribe one exact SQL verification command for every deploym
 - confirm there is one stable primary
 - confirm replicas are back in replica behavior
 - confirm recent writes from the primary are visible after replication catches up
+
+In the repository's PostgreSQL-path chaos scenario, the harness blocks only the advertised pg-proxy listener for the primary. That means the primary can still accept local writes on its raw PostgreSQL port while replicas temporarily lose their streaming path. Treat that distinction carefully during incident review: a writable primary does not imply that replicas are still receiving WAL.
 
 ## Quick checklist
 
