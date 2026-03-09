@@ -145,7 +145,9 @@ It turns lowered HA actions into jobs such as:
 At the same time, the dispatcher explicitly does not treat every HA effect as a process job:
 
 - lease and switchover actions are not process actions there
-- `FollowLeader` and `SignalFailSafe` are skipped at the process-dispatch layer
+- `SignalFailSafe` is skipped at the process-dispatch layer
+
+`FollowLeader` has a steady-state fast path and an invasive correction path. If the local replica already reports the authoritative upstream, dispatch skips the action. If the replica is still pointed at an old leader, dispatch rewrites managed recovery config for the authoritative leader and queues a demote so the ordinary wait/start or recovery path can bring PostgreSQL back following the corrected primary.
 
 That separation is important: the decision engine describes intent, the lowerer organizes effects, and only part of that plan becomes spawned process work.
 

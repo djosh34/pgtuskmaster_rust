@@ -172,3 +172,4 @@
 .ralph/tasks/story-parallel-ha-test-hardening/04-task-add-non-e2e-api-tls-hostname-and-san-coverage.md
 .ralph/tasks/story-ha-quorum-survival-under-real-failures/01-task-fix-leader-liveness-and-majority-election-after-hard-node-loss.md
 .ralph/tasks/bugs/rapid-repeated-failovers-can-drop-intermediate-writes.md
+.ralph/tasks/bugs/preserved-replica-rejoin-stalls-after-runtime-stop-failover.md

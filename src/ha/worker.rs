@@ -140,6 +140,10 @@ fn decision_is_already_active(
             start_requested: true,
             ..
         } => process_state_is_running_one_of(process_state, &[ActiveJobKind::StartPostgres]),
+        crate::ha::decision::HaDecision::FollowLeader { .. } => process_state_is_running_one_of(
+            process_state,
+            &[ActiveJobKind::Demote],
+        ),
         crate::ha::decision::HaDecision::RecoverReplica { strategy } => match strategy {
             crate::ha::decision::RecoveryStrategy::Rewind { .. } => {
                 process_state_is_running_one_of(process_state, &[ActiveJobKind::PgRewind])

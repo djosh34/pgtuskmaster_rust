@@ -48,6 +48,7 @@ const PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[derive(Clone, Debug)]
 enum StartupAction {
     ClaimInitLockAndSeedConfig,
+    ResetDataDir,
     RunJob(Box<ProcessJobKind>),
     StartPostgres(ManagedPostgresStartIntent),
 }
@@ -80,6 +81,7 @@ enum StartupMode {
         leader_member_id: MemberId,
         source: ReplicatorSourceConn,
         start_intent: ManagedPostgresStartIntent,
+        reset_data_dir: bool,
     },
     ResumeExisting {
         start_intent: ManagedPostgresStartIntent,
@@ -148,6 +150,7 @@ fn startup_mode_label(startup_mode: &StartupMode) -> String {
 fn startup_action_kind_label(action: &StartupAction) -> &'static str {
     match action {
         StartupAction::ClaimInitLockAndSeedConfig => "claim_init_lock_and_seed_config",
+        StartupAction::ResetDataDir => "reset_data_dir",
         StartupAction::RunJob(_) => "run_job",
         StartupAction::StartPostgres(_) => "start_postgres",
     }
@@ -424,20 +427,38 @@ fn select_startup_mode(
     self_member_id: &str,
     process_defaults: &ProcessDispatchDefaults,
 ) -> Result<StartupMode, RuntimeError> {
+    let self_member_id = MemberId(self_member_id.to_string());
     match data_dir_state {
-        DataDirState::Existing => Ok(StartupMode::ResumeExisting {
-            start_intent: select_resume_start_intent(
-                data_dir,
-                cache,
-                self_member_id,
-                process_defaults,
-            )?,
-        }),
+        DataDirState::Existing => {
+            if let Some(leader_member) = leader_from_leader_key(cache, &self_member_id)
+                .or_else(|| foreign_healthy_primary_member(cache, &self_member_id))
+            {
+                let source = basebackup_source_from_member(
+                    &self_member_id,
+                    &leader_member,
+                    process_defaults,
+                )
+                .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
+                return Ok(StartupMode::CloneReplica {
+                    leader_member_id: leader_member.member_id.clone(),
+                    start_intent: replica_start_intent_from_source(&source, data_dir),
+                    source,
+                    reset_data_dir: true,
+                });
+            }
+            Ok(StartupMode::ResumeExisting {
+                start_intent: select_resume_start_intent(
+                    data_dir,
+                    cache,
+                    self_member_id.0.as_str(),
+                    process_defaults,
+                )?,
+            })
+        }
         DataDirState::Missing | DataDirState::Empty => {
             let init_lock_present = cache
                 .and_then(|snapshot| snapshot.init_lock.as_ref())
                 .is_some();
-            let self_member_id = MemberId(self_member_id.to_string());
 
             let leader = leader_from_leader_key(cache, &self_member_id).or_else(|| {
                 if init_lock_present {
@@ -459,6 +480,7 @@ fn select_startup_mode(
                         leader_member_id: leader_member.member_id.clone(),
                         start_intent: replica_start_intent_from_source(&source, data_dir),
                         source,
+                        reset_data_dir: false,
                     })
                 }
                 None => {
@@ -679,6 +701,7 @@ async fn execute_startup(
                 })?;
                 Ok(())
             }
+            StartupAction::ResetDataDir => reset_data_dir(cfg.postgres.data_dir.as_path()),
             StartupAction::RunJob(job) => run_startup_job(cfg, *job, log).await,
             StartupAction::StartPostgres(start_intent) => {
                 run_start_job(cfg, process_defaults, &start_intent, log).await
@@ -761,15 +784,23 @@ fn build_startup_actions(
         StartupMode::CloneReplica {
             source,
             start_intent,
+            reset_data_dir,
             ..
-        } => Ok(vec![
-            StartupAction::RunJob(Box::new(ProcessJobKind::BaseBackup(BaseBackupSpec {
-                data_dir: cfg.postgres.data_dir.clone(),
-                source: source.clone(),
-                timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
-            }))),
-            StartupAction::StartPostgres(start_intent.clone()),
-        ]),
+        } => {
+            let mut actions = Vec::new();
+            if *reset_data_dir {
+                actions.push(StartupAction::ResetDataDir);
+            }
+            actions.push(StartupAction::RunJob(Box::new(ProcessJobKind::BaseBackup(
+                BaseBackupSpec {
+                    data_dir: cfg.postgres.data_dir.clone(),
+                    source: source.clone(),
+                    timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
+                },
+            ))));
+            actions.push(StartupAction::StartPostgres(start_intent.clone()));
+            Ok(actions)
+        }
         StartupMode::ResumeExisting { start_intent } => {
             if has_postmaster_pid(&cfg.postgres.data_dir) {
                 Ok(Vec::new())
@@ -833,6 +864,37 @@ fn ensure_start_paths(
 
 fn has_postmaster_pid(data_dir: &Path) -> bool {
     data_dir.join("postmaster.pid").exists()
+}
+
+fn reset_data_dir(data_dir: &Path) -> Result<(), RuntimeError> {
+    if data_dir.exists() {
+        fs::remove_dir_all(data_dir).map_err(|err| {
+            RuntimeError::StartupExecution(format!(
+                "failed to remove postgres data dir `{}` before basebackup: {err}",
+                data_dir.display()
+            ))
+        })?;
+    }
+    fs::create_dir_all(data_dir).map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "failed to recreate postgres data dir `{}` before basebackup: {err}",
+            data_dir.display()
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            RuntimeError::StartupExecution(format!(
+                "failed to set postgres data dir permissions on `{}` before basebackup: {err}",
+                data_dir.display()
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 async fn run_start_job(
@@ -1275,13 +1337,15 @@ mod tests {
     };
 
     use super::{
-        advertised_postgres_port, inspect_data_dir, plan_startup_with_probe,
-        process_defaults_from_config, select_resume_start_intent, select_startup_mode,
-        DataDirState, StartupMode,
+        advertised_postgres_port, build_startup_actions, inspect_data_dir, plan_startup_with_probe,
+        process_defaults_from_config, replica_start_intent_from_source,
+        select_resume_start_intent, select_startup_mode, DataDirState, StartupAction,
+        StartupMode,
     };
     use crate::postgres_managed_conf::{
         managed_standby_auth_from_role_auth, ManagedPostgresStartIntent,
     };
+    use crate::process::state::ProcessJobKind;
 
     fn sample_runtime_config() -> RuntimeConfig {
         crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
@@ -1463,10 +1527,12 @@ mod tests {
         if let StartupMode::CloneReplica {
             leader_member_id,
             source,
+            reset_data_dir,
             ..
         } = mode
         {
             assert_eq!(leader_member_id, leader_id);
+            assert!(!reset_data_dir);
             assert_eq!(
                 source,
                 crate::ha::source_conn::basebackup_source_from_member(
@@ -1513,6 +1579,128 @@ mod tests {
                 start_intent: ManagedPostgresStartIntent::primary(),
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn select_startup_mode_rebuilds_existing_replica_from_foreign_healthy_leader(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = sample_runtime_config();
+        let defaults = crate::ha::state::ProcessDispatchDefaults::contract_stub();
+
+        let leader_id = MemberId("node-b".to_string());
+        let mut members = BTreeMap::new();
+        members.insert(
+            leader_id.clone(),
+            MemberRecord {
+                member_id: leader_id.clone(),
+                postgres_host: "10.0.0.20".to_string(),
+                postgres_port: 5440,
+                api_url: None,
+                role: MemberRole::Primary,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+
+        let cache = DcsCache {
+            members,
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: cfg.clone(),
+            init_lock: None,
+        };
+
+        let data_dir = temp_path("startup-mode-existing-clone");
+        remove_if_exists(&data_dir)?;
+        fs::create_dir_all(&data_dir)?;
+        fs::write(data_dir.join("PG_VERSION"), b"16\n")?;
+
+        let mode = select_startup_mode(
+            DataDirState::Existing,
+            &data_dir,
+            Some(&cache),
+            "node-a",
+            &defaults,
+        )?;
+
+        assert!(matches!(mode, StartupMode::CloneReplica { .. }));
+        if let StartupMode::CloneReplica {
+            leader_member_id,
+            source,
+            reset_data_dir,
+            ..
+        } = mode
+        {
+            assert_eq!(leader_member_id, leader_id);
+            assert!(reset_data_dir);
+            assert_eq!(
+                source,
+                crate::ha::source_conn::basebackup_source_from_member(
+                    &MemberId("node-a".to_string()),
+                    cache.members.get(&leader_id).ok_or_else(|| {
+                        io::Error::other("leader member missing from startup test cache")
+                    })?,
+                    &defaults,
+                )?
+            );
+        }
+
+        remove_if_exists(&data_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn actions_for_startup_reset_existing_data_dir_before_clone_basebackup(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = sample_runtime_config();
+        let defaults = process_defaults_from_config(&cfg);
+        let leader_id = MemberId("node-b".to_string());
+        let leader = MemberRecord {
+            member_id: leader_id.clone(),
+            postgres_host: "10.0.0.20".to_string(),
+            postgres_port: 5440,
+            api_url: None,
+            role: MemberRole::Primary,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            write_lsn: None,
+            replay_lsn: None,
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        };
+        let source = crate::ha::source_conn::basebackup_source_from_member(
+            &MemberId("node-a".to_string()),
+            &leader,
+            &defaults,
+        )?;
+        let mode = StartupMode::CloneReplica {
+            leader_member_id: leader_id,
+            source: source.clone(),
+            start_intent: replica_start_intent_from_source(&source, cfg.postgres.data_dir.as_path()),
+            reset_data_dir: true,
+        };
+
+        let actions = build_startup_actions(&cfg, &mode)?;
+        assert!(matches!(actions.first(), Some(StartupAction::ResetDataDir)));
+        assert!(matches!(
+            actions.get(1),
+            Some(StartupAction::RunJob(job))
+                if matches!(job.as_ref(), ProcessJobKind::BaseBackup(_))
+        ));
+        assert!(matches!(
+            actions.get(2),
+            Some(StartupAction::StartPostgres(_))
+        ));
+
         Ok(())
     }
 

@@ -124,6 +124,10 @@ Field:
 
 - `leader_member_id`: the member to follow as a replica
 
+`follow_leader` is not a passive observation.
+
+When the local node is already running as a replica but its observed upstream does not match the authoritative leader, the process layer rewrites managed PostgreSQL recovery config for that leader and demotes PostgreSQL if it is still running. The later wait/start or recovery path then brings the replica back against the corrected follow target. A replica becoming queryable again is not sufficient evidence that it is following the right primary; the leader-target rewrite must converge too.
+
 ### `become_primary`
 
 ```text
@@ -272,7 +276,7 @@ Common operator interpretations:
 - `wait_for_dcs_trust`: the node is waiting for a trustworthy cluster view
 - `wait_for_promotion_safety`: the node sees fresher WAL or a higher timeline elsewhere, or lacks enough local replay evidence to prove promotion is safe
 - `attempt_leadership`: no healthy leader is being followed and this node is trying to lead
-- `follow_leader`: the node has a leader and intends to remain a replica
+- `follow_leader`: the node has a leader and intends to remain a replica, including authoritative retarget-and-restart work when the local replica is still pointed at an old leader
 - `complete_switchover`: the new primary has taken over and is clearing the now-satisfied switchover request
 - `recover_replica`: replica rejoin or divergence handling is in progress
 - `step_down` or `release_leader_lease`: leadership is being given up deliberately

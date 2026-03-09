@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 06:35:17 PM CET 2026
-
-# Task `.ralph/tasks/bugs/preserved-replica-rejoin-stalls-after-runtime-stop-failover.md`
-
-```
-## Bug: Preserved Replica Rejoin Stalls After Runtime Stop Failover <status>not_started</status> <passes>false</passes>
-
-<description>
-The degraded replica failover scenario exposed a separate recovery bug after the harness stop path was corrected to explicitly stop postgres.
-```
-
-==============
+Generated: Mon Mar  9 08:29:47 PM CET 2026
 
 # Task `.ralph/tasks/bugs/runtime-restart-replica-can-stall-before-replaying-post-restart-writes.md`
 

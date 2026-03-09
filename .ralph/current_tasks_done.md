@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 06:35:17 PM CET 2026
+Generated: Mon Mar  9 08:29:47 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -21,6 +21,17 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 <priority>high</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/preserved-replica-rejoin-stalls-after-runtime-stop-failover.md`
+
+```
+## Bug: Preserved Replica Rejoin Stalls After Runtime Stop Failover <status>completed</status> <passes>true</passes>
+
+<description>
+The degraded replica failover scenario exposed a separate recovery bug after the harness stop path was corrected to explicitly stop postgres.
 ```
 
 ==============

@@ -67,6 +67,7 @@ No manual intervention is required for most failures. The HA decision engine aut
 4. Moves through recovery and election logic on the surviving majority.
 5. Selects a recovery target from healthy members.
 6. Executes rewind or base-backup recovery so the failed node can rejoin safely.
+7. If a preserved replica comes back queryable while still pointed at the old primary, rewrites managed recovery config toward the authoritative leader and demotes PostgreSQL on that replica so the normal wait/start or recovery path can reconnect it.
 
 To monitor automated recovery, keep watching cluster status:
 
@@ -112,6 +113,11 @@ Action: restore etcd cluster health first.
 Cause: rewind or catch-up still running, or recovery escalated because WAL continuity was not sufficient.  
 Action: keep watching `status -v` and inspect `debug verbose` on the affected replica.
 
+### Replica is queryable but still missing new rows after failover
+
+Cause: the replica came back online with preserved PGDATA but had not yet converged on the authoritative follow target. Queryability alone does not prove it is following the new primary.
+Action: check `DECISION=follow_leader` and confirm the replica's `primary_conninfo` now references the promoted primary. pgtuskmaster corrects this by rewriting managed recovery config and demoting PostgreSQL so the normal wait/start or recovery path reconnects the replica; if that does not converge, inspect `debug verbose` and the PostgreSQL logs on that node.
+
 ### You suspect split-brain
 
 Cause: network partition or stale observations.  
@@ -129,5 +135,6 @@ Action: wait for lease expiry on the etcd side, then verify that `LEADER` clears
 - [ ] `TRUST=full_quorum` on the healthy view
 - [ ] `pg_is_in_recovery()` returns `false` on one node only
 - [ ] Replication lag on replicas is acceptable
+- [ ] Each replica's `primary_conninfo` points at the current primary rather than a failed predecessor
 - [ ] No sustained split-brain evidence appears in repeated status samples
 - [ ] Application traffic can write to the new primary

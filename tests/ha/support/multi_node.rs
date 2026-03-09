@@ -5401,7 +5401,6 @@ pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_targ
             fixture
                 .stop_postgres_for_node(&degraded_replica)
                 .await?;
-            fixture.wipe_node_data_dir(&degraded_replica)?;
             fixture
                 .restart_runtime_process_for_node(&degraded_replica)
                 .await?;
