@@ -80,12 +80,13 @@ In this topology, the node can still reach trusted state because trust evaluatio
 - the local member record is present
 - the local member record is fresh
 
-## Step 4: Inspect the debug snapshot
+## Step 4: Inspect the debug snapshot through `pgtm`
 
-The single-node sample enables the debug surface, so you can inspect the full runtime snapshot immediately:
+The single-node sample enables the debug surface, so you can inspect it immediately with the CLI:
 
 ```bash
-curl --fail --silent http://127.0.0.1:18080/debug/verbose | jq '{meta: .meta, dcs: .dcs, ha: .ha}'
+cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 -v status
+cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 debug verbose
 ```
 
 Focus on:
@@ -97,11 +98,17 @@ Focus on:
 - `ha.phase`
 - `ha.decision`
 
+If you want the raw stable payload, switch to JSON:
+
+```bash
+cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 --json debug verbose | jq '{meta: .meta, dcs: .dcs, ha: .ha}'
+```
+
 Because the debug worker retains recent history, you can also poll incrementally:
 
 ```bash
-seq=$(curl --fail --silent http://127.0.0.1:18080/debug/verbose | jq '.meta.sequence')
-curl --fail --silent "http://127.0.0.1:18080/debug/verbose?since=${seq}" | jq '{changes: .changes, timeline: .timeline}'
+seq=$(cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 --json debug verbose | jq '.meta.sequence')
+cargo run --bin pgtm -- --base-url http://127.0.0.1:18080 --json debug verbose --since "${seq}" | jq '{changes: .changes, timeline: .timeline}'
 ```
 
 If nothing changed between the two requests, the `changes` and `timeline` arrays will be empty.

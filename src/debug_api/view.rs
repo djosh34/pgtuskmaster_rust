@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::RuntimeConfig,
@@ -10,8 +10,8 @@ use crate::{
     state::{Versioned, WorkerStatus},
 };
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DebugVerbosePayload {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DebugVerbosePayload {
     pub(crate) meta: DebugMeta,
     pub(crate) config: ConfigSection,
     pub(crate) pginfo: PgInfoSection,
@@ -24,9 +24,9 @@ pub(crate) struct DebugVerbosePayload {
     pub(crate) timeline: Vec<DebugTimelineView>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DebugMeta {
-    pub(crate) schema_version: &'static str,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DebugMeta {
+    pub(crate) schema_version: String,
     pub(crate) generated_at_ms: u64,
     pub(crate) channel_updated_at_ms: u64,
     pub(crate) channel_version: u64,
@@ -34,8 +34,8 @@ pub(crate) struct DebugMeta {
     pub(crate) sequence: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ConfigSection {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigSection {
     pub(crate) version: u64,
     pub(crate) updated_at_ms: u64,
     pub(crate) cluster_name: String,
@@ -45,11 +45,11 @@ pub(crate) struct ConfigSection {
     pub(crate) tls_enabled: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct PgInfoSection {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PgInfoSection {
     pub(crate) version: u64,
     pub(crate) updated_at_ms: u64,
-    pub(crate) variant: &'static str,
+    pub(crate) variant: String,
     pub(crate) worker: String,
     pub(crate) sql: String,
     pub(crate) readiness: String,
@@ -57,8 +57,8 @@ pub(crate) struct PgInfoSection {
     pub(crate) summary: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DcsSection {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DcsSection {
     pub(crate) version: u64,
     pub(crate) updated_at_ms: u64,
     pub(crate) worker: String,
@@ -68,18 +68,18 @@ pub(crate) struct DcsSection {
     pub(crate) has_switchover_request: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ProcessSection {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessSection {
     pub(crate) version: u64,
     pub(crate) updated_at_ms: u64,
     pub(crate) worker: String,
-    pub(crate) state: &'static str,
+    pub(crate) state: String,
     pub(crate) running_job_id: Option<String>,
     pub(crate) last_outcome: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct HaSection {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HaSection {
     pub(crate) version: u64,
     pub(crate) updated_at_ms: u64,
     pub(crate) worker: String,
@@ -90,20 +90,20 @@ pub(crate) struct HaSection {
     pub(crate) planned_actions: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ApiSection {
-    pub(crate) endpoints: Vec<&'static str>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiSection {
+    pub(crate) endpoints: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DebugSection {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DebugSection {
     pub(crate) history_changes: usize,
     pub(crate) history_timeline: usize,
     pub(crate) last_sequence: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DebugChangeView {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DebugChangeView {
     pub(crate) sequence: u64,
     pub(crate) at_ms: u64,
     pub(crate) domain: String,
@@ -112,8 +112,8 @@ pub(crate) struct DebugChangeView {
     pub(crate) summary: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DebugTimelineView {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DebugTimelineView {
     pub(crate) sequence: u64,
     pub(crate) at_ms: u64,
     pub(crate) category: String,
@@ -148,7 +148,7 @@ pub(crate) fn build_verbose_payload(
 
     DebugVerbosePayload {
         meta: DebugMeta {
-            schema_version: "v1",
+            schema_version: "v1".to_string(),
             generated_at_ms: snapshot.value.generated_at.0,
             channel_updated_at_ms: snapshot.updated_at.0,
             channel_version: snapshot.version.0,
@@ -162,13 +162,13 @@ pub(crate) fn build_verbose_payload(
         ha: to_ha_section(ha),
         api: ApiSection {
             endpoints: vec![
-                "/debug/snapshot",
-                "/debug/verbose",
-                "/debug/ui",
-                "/fallback/cluster",
-                "/switchover",
-                "/ha/state",
-                "/ha/switchover",
+                "/debug/snapshot".to_string(),
+                "/debug/verbose".to_string(),
+                "/debug/ui".to_string(),
+                "/fallback/cluster".to_string(),
+                "/switchover".to_string(),
+                "/ha/state".to_string(),
+                "/ha/switchover".to_string(),
             ],
         },
         debug: DebugSection {
@@ -198,7 +198,7 @@ fn to_pg_section(pg: &Versioned<PgInfoState>) -> PgInfoSection {
         PgInfoState::Unknown { common } => PgInfoSection {
             version: pg.version.0,
             updated_at_ms: pg.updated_at.0,
-            variant: "Unknown",
+            variant: "Unknown".to_string(),
             worker: worker_status_label(&common.worker),
             sql: sql_label(&common.sql),
             readiness: readiness_label(&common.readiness),
@@ -217,7 +217,7 @@ fn to_pg_section(pg: &Versioned<PgInfoState>) -> PgInfoSection {
         } => PgInfoSection {
             version: pg.version.0,
             updated_at_ms: pg.updated_at.0,
-            variant: "Primary",
+            variant: "Primary".to_string(),
             worker: worker_status_label(&common.worker),
             sql: sql_label(&common.sql),
             readiness: readiness_label(&common.readiness),
@@ -237,7 +237,7 @@ fn to_pg_section(pg: &Versioned<PgInfoState>) -> PgInfoSection {
         } => PgInfoSection {
             version: pg.version.0,
             updated_at_ms: pg.updated_at.0,
-            variant: "Replica",
+            variant: "Replica".to_string(),
             worker: worker_status_label(&common.worker),
             sql: sql_label(&common.sql),
             readiness: readiness_label(&common.readiness),
@@ -283,7 +283,7 @@ fn to_process_section(process: &Versioned<ProcessState>) -> ProcessSection {
             version: process.version.0,
             updated_at_ms: process.updated_at.0,
             worker: worker_status_label(worker),
-            state: "Idle",
+            state: "Idle".to_string(),
             running_job_id: None,
             last_outcome: last_outcome.as_ref().map(job_outcome_label),
         },
@@ -291,7 +291,7 @@ fn to_process_section(process: &Versioned<ProcessState>) -> ProcessSection {
             version: process.version.0,
             updated_at_ms: process.updated_at.0,
             worker: worker_status_label(worker),
-            state: "Running",
+            state: "Running".to_string(),
             running_job_id: Some(active.id.0.clone()),
             last_outcome: None,
         },

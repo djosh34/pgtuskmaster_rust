@@ -434,7 +434,7 @@ mod tests {
                     member_id: "node-a".to_string(),
                     sampled: Ok(crate::cli::status::SampledNodeState {
                         state: seed_state.clone(),
-                        verbose: None,
+                        debug: None,
                     }),
                 },
             ),
@@ -444,7 +444,7 @@ mod tests {
                     member_id: "node-b".to_string(),
                     sampled: Ok(crate::cli::status::SampledNodeState {
                         state: replica_state,
-                        verbose: None,
+                        debug: None,
                     }),
                 },
             ),
@@ -484,7 +484,7 @@ mod tests {
                     member_id: "node-a".to_string(),
                     sampled: Ok(crate::cli::status::SampledNodeState {
                         state: seed_state.clone(),
-                        verbose: None,
+                        debug: None,
                     }),
                 },
             ),
@@ -541,7 +541,7 @@ mod tests {
                     member_id: "node-a".to_string(),
                     sampled: Ok(crate::cli::status::SampledNodeState {
                         state: seed_state.clone(),
-                        verbose: None,
+                        debug: None,
                     }),
                 },
             ),
@@ -551,7 +551,7 @@ mod tests {
                     member_id: "node-b".to_string(),
                     sampled: Ok(crate::cli::status::SampledNodeState {
                         state: replica_state,
-                        verbose: None,
+                        debug: None,
                     }),
                 },
             ),
@@ -604,7 +604,7 @@ mod tests {
                 member_id: "node-a".to_string(),
                 sampled: Ok(crate::cli::status::SampledNodeState {
                     state: seed_state.clone(),
-                    verbose: None,
+                    debug: None,
                 }),
             },
         )]);
@@ -636,7 +636,7 @@ mod tests {
                 member_id: "node-a".to_string(),
                 sampled: Ok(crate::cli::status::SampledNodeState {
                     state: seed_state.clone(),
-                    verbose: None,
+                    debug: None,
                 }),
             },
         )]);

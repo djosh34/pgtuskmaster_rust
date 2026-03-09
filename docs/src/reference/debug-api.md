@@ -2,6 +2,13 @@
 
 The debug API is a built-in read-only observability surface. It is available only when `debug.enabled` is true in the runtime configuration.
 
+For day-to-day investigation, operators usually start with the CLI:
+
+- `pgtm status -v` for the cluster-wide table, explicit debug availability, and per-node detail block
+- `pgtm debug verbose` for a single node's stable verbose payload
+
+This page stays focused on the underlying HTTP contract that those CLI commands read.
+
 ## Availability
 
 The debug endpoints run on the same listener as the main HTTP API and inherit its TLS and bearer-token settings.
@@ -193,7 +200,14 @@ Each timeline row contains:
 
 The debug worker retains bounded in-memory history. The current default history limit is `300` entries for `changes` and `timeline`.
 
-Use `meta.sequence` or `debug.last_sequence` as your next `since` cursor:
+If you want the CLI wrapper for the same flow, use:
+
+```bash
+pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+pgtm -c /etc/pgtuskmaster/config.toml debug verbose --since 42
+```
+
+For raw HTTP clients, use `meta.sequence` or `debug.last_sequence` as your next `since` cursor:
 
 ```bash
 last_seq=$(curl --fail --silent http://127.0.0.1:8080/debug/verbose | jq '.meta.sequence')

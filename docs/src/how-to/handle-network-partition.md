@@ -1,6 +1,6 @@
 # Handle a Network Partition
 
-This guide shows how to detect, monitor, and recover from a network partition using the runtime surfaces that pgtuskmaster already exposes.
+This guide shows how to detect, monitor, and recover from a network partition with `pgtm` first and raw HTTP only when you need to inspect the protocol directly.
 
 ## Goal
 
@@ -13,16 +13,37 @@ Determine:
 ## Prerequisites
 
 - access to the API listener on each node
-- `curl` and `jq`
-- optional: `pgtm`
+- `pgtm`
+- `jq` if you want to script against CLI JSON output
 
-## Step 1: Check trust on every node
+## Step 1: Check trust and leader agreement on every node
 
-Start with `GET /ha/state`.
+Start with the same verbose cluster summary from each seed node:
 
 ```bash
 for node in node-a node-b node-c; do
-  curl --fail --silent "http://${node}:8080/ha/state" | jq -r '"\(.self_member_id) trust=\(.dcs_trust) phase=\(.ha_phase)"'
+  pgtm --base-url "http://${node}:8080" -v status
+done
+```
+
+Focus on:
+
+- `TRUST`
+- `LEADER`
+- `PHASE`
+- `DECISION`
+- `DEBUG`
+- warning lines about peer sampling failures
+
+If you want a script-friendly summary, use JSON:
+
+```bash
+for node in node-a node-b node-c; do
+  pgtm --base-url "http://${node}:8080" --json status | jq -r '
+    .queried_via.member_id as $seed
+    | .nodes[]
+    | select(.is_self)
+    | "\($seed) trust=\(.trust) leader=\(.leader // "none") phase=\(.phase)"'
 done
 ```
 
@@ -38,36 +59,9 @@ Operationally:
 - `fail_safe` means the store is reachable but freshness or coverage is not good enough for normal coordination
 - `not_trusted` means the store itself is unhealthy or unreachable from that node
 
-## Step 2: Check whether the nodes still agree on one leader
+Treat any sustained disagreement about `leader` or any sustained view with more than one sampled primary as critical.
 
-```bash
-for node in node-a node-b node-c; do
-  curl --fail --silent "http://${node}:8080/ha/state" | jq -r '"\(.self_member_id) leader=\(.leader // "none") phase=\(.ha_phase)"'
-done
-```
-
-Look for:
-
-- disagreement about `leader`
-- more than one node reporting `ha_phase = "primary"`
-- nodes stuck in `fail_safe`
-
-To count sampled primaries:
-
-```bash
-primary_count=0
-for node in node-a node-b node-c; do
-  phase=$(curl --fail --silent "http://${node}:8080/ha/state" | jq -r '.ha_phase')
-  if [ "${phase}" = "primary" ]; then
-    primary_count=$((primary_count + 1))
-  fi
-done
-printf 'primary_count=%s\n' "${primary_count}"
-```
-
-Treat any sustained value greater than `1` as critical. The HA observer used in tests treats multiple sampled primaries as a split-brain condition.
-
-## Step 3: Understand what the trust gate is doing
+## Step 2: Understand what the trust gate is doing
 
 Trust evaluation is based on:
 
@@ -104,12 +98,12 @@ flowchart TD
     quorum -- yes --> fq
 ```
 
-## Step 4: Inspect the current decision and recent history
+## Step 3: Inspect the affected node with `pgtm debug verbose`
 
-If the summary state is not enough, poll `/debug/verbose` on the affected node.
+When the cluster table is not enough, inspect the specific node that looks partitioned:
 
 ```bash
-curl --fail --silent http://127.0.0.1:8080/debug/verbose | jq '{dcs,ha,process,changes,timeline}'
+pgtm --base-url http://node-a:8080 debug verbose
 ```
 
 Focus on:
@@ -122,14 +116,20 @@ Focus on:
 - recent `changes`
 - recent `timeline`
 
-Use `?since=` for repeated polling during the incident:
+For repeated polling during the incident, use the retained sequence cursor:
 
 ```bash
-last_seq=$(curl --fail --silent http://127.0.0.1:8080/debug/verbose | jq '.meta.sequence')
-curl --fail --silent "http://127.0.0.1:8080/debug/verbose?since=${last_seq}" | jq .
+last_seq=$(pgtm --base-url http://node-a:8080 --json debug verbose | jq '.meta.sequence')
+pgtm --base-url http://node-a:8080 --json debug verbose --since "${last_seq}" | jq '{
+  sequence: .meta.sequence,
+  changes: .changes,
+  timeline: .timeline
+}'
 ```
 
-## Step 5: Interpret fail-safe behavior carefully
+If the CLI reports `debug=disabled`, `auth_failed`, or `transport_failed` in `status -v`, fix that access problem before you assume the node has no interesting history.
+
+## Step 4: Interpret fail-safe behavior carefully
 
 When trust is not `FullQuorum`, the node routes into `FailSafe`.
 
@@ -140,7 +140,7 @@ The lowered effect plan for `enter_fail_safe` includes the safety effect for fen
 
 Do not assume that a partitioned node should be forced back into service manually while trust is degraded. The system is intentionally conservative here.
 
-## Step 6: Heal the fault
+## Step 5: Heal the fault
 
 Restore the failed network path:
 
@@ -157,7 +157,7 @@ The partition tests in this repo exercise several distinct cases:
 
 That distinction matters operationally. Diagnose which path failed before assuming the cluster needs the same recovery steps every time.
 
-## Step 7: Wait for convergence after healing
+## Step 6: Wait for convergence after healing
 
 After the fault is removed, keep polling all nodes until:
 
@@ -166,15 +166,17 @@ After the fault is removed, keep polling all nodes until:
 - replicas settle back into expected follower behavior
 - no node remains stuck in `fail_safe`
 
-Example loop:
-
 ```bash
 for node in node-a node-b node-c; do
-  curl --fail --silent "http://${node}:8080/ha/state" | jq -r '"\(.self_member_id) trust=\(.dcs_trust) leader=\(.leader // "none") phase=\(.ha_phase) decision=\(.ha_decision.kind)"'
+  pgtm --base-url "http://${node}:8080" --json status | jq -r '
+    .queried_via.member_id as $seed
+    | .nodes[]
+    | select(.is_self)
+    | "\($seed) trust=\(.trust) leader=\(.leader // "none") phase=\(.phase) decision=\(.decision // "unknown")"'
 done
 ```
 
-## Step 8: Verify replication again
+## Step 7: Verify replication again
 
 Once HA state looks stable, verify that replicas have actually converged.
 
@@ -191,21 +193,3 @@ This guide cannot prescribe one exact SQL verification command for every deploym
 - only one node reports `ha_phase = "primary"`
 - replicas are no longer stuck in `fail_safe`
 - `changes` and `timeline` no longer show ongoing trust churn
-
-## Diagram
-
-```mermaid
-flowchart LR
-    fault[Partition begins]
-    trust[Trust degrades]
-    fs[Node enters fail_safe]
-    heal[Network healed]
-    recover[Trust recovers]
-    converge[Leader and replicas converge]
-
-    fault --> trust
-    trust --> fs
-    fs --> heal
-    heal --> recover
-    recover --> converge
-```

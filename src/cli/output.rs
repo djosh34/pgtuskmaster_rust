@@ -1,8 +1,11 @@
 use crate::cli::{
     client::AcceptedResponse,
     connect::ConnectionView,
+    debug::DebugVerboseView,
     error::CliError,
-    status::{ApiStatus, ClusterHealth, ClusterNodeView, ClusterStatusView},
+    status::{
+        ApiStatus, ClusterHealth, ClusterNodeView, ClusterStatusView, DebugObservationStatus,
+    },
 };
 
 pub fn render_accepted_output(value: &AcceptedResponse, json: bool) -> Result<String, CliError> {
@@ -29,6 +32,18 @@ pub fn render_connection_view(view: &ConnectionView, json: bool) -> Result<Strin
             .map_err(|err| CliError::Output(format!("json encode failed: {err}")))
     } else {
         render_connection_text(view)
+    }
+}
+
+pub(crate) fn render_debug_verbose_view(
+    view: &DebugVerboseView,
+    json: bool,
+) -> Result<String, CliError> {
+    if json {
+        serde_json::to_string_pretty(&view.payload)
+            .map_err(|err| CliError::Output(format!("json encode failed: {err}")))
+    } else {
+        Ok(render_debug_verbose_text(view))
     }
 }
 
@@ -67,6 +82,7 @@ fn render_status_text(view: &ClusterStatusView) -> String {
             "PGINFO",
             "READINESS",
             "PROCESS",
+            "DEBUG",
             "API",
         ]
     } else {
@@ -90,6 +106,95 @@ fn render_status_text(view: &ClusterStatusView) -> String {
         lines.push(render_table_line(row.as_slice(), widths.as_slice()));
     }
 
+    if has_verbose {
+        let debug_details = render_status_debug_details(view);
+        if !debug_details.is_empty() {
+            lines.push(String::new());
+            lines.extend(debug_details);
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn render_debug_verbose_text(view: &DebugVerboseView) -> String {
+    let payload = &view.payload;
+    let mut lines = vec![
+        format!(
+            "member: {}  cluster: {}  scope: {}",
+            payload.config.member_id, payload.config.cluster_name, payload.config.scope
+        ),
+        format!("api url: {}", view.api_url),
+        format!(
+            "sequence: {}  schema: {}",
+            payload.meta.sequence, payload.meta.schema_version
+        ),
+    ];
+
+    if let Some(since) = view.since {
+        lines.push(format!("since: {since}"));
+    }
+
+    lines.push(String::new());
+    lines.push(format!(
+        "pginfo: variant={} sql={} readiness={} summary={}",
+        payload.pginfo.variant,
+        payload.pginfo.sql,
+        payload.pginfo.readiness,
+        payload.pginfo.summary
+    ));
+    lines.push(format!(
+        "dcs: trust={} leader={} members={} switchover_request={}",
+        payload.dcs.trust,
+        payload.dcs.leader.as_deref().unwrap_or("none"),
+        payload.dcs.member_count,
+        payload.dcs.has_switchover_request
+    ));
+    lines.push(format!(
+        "ha: phase={} decision={} detail={} planned_actions={}",
+        payload.ha.phase,
+        payload.ha.decision,
+        payload.ha.decision_detail.as_deref().unwrap_or("none"),
+        payload.ha.planned_actions
+    ));
+    lines.push(format!(
+        "process: state={} worker={} running_job={} last_outcome={}",
+        payload.process.state,
+        payload.process.worker,
+        payload.process.running_job_id.as_deref().unwrap_or("none"),
+        payload.process.last_outcome.as_deref().unwrap_or("none")
+    ));
+    lines.push(format!(
+        "debug: history_changes={} history_timeline={} last_sequence={}",
+        payload.debug.history_changes, payload.debug.history_timeline, payload.debug.last_sequence
+    ));
+    lines.push(String::new());
+    lines.push("recent changes:".to_string());
+    lines.extend(render_recent_changes(
+        payload
+            .changes
+            .iter()
+            .rev()
+            .take(3)
+            .map(|entry| format!("  - #{} {} {}", entry.sequence, entry.domain, entry.summary))
+            .collect::<Vec<_>>(),
+    ));
+    lines.push("recent timeline:".to_string());
+    lines.extend(render_recent_changes(
+        payload
+            .timeline
+            .iter()
+            .rev()
+            .take(3)
+            .map(|entry| {
+                format!(
+                    "  - #{} {} {}",
+                    entry.sequence, entry.category, entry.message
+                )
+            })
+            .collect::<Vec<_>>(),
+    ));
+
     lines.join("\n")
 }
 
@@ -106,6 +211,94 @@ fn render_connection_text(view: &ConnectionView) -> Result<String, CliError> {
             .map(|target| target.dsn.as_str())
             .collect::<Vec<_>>()
             .join("\n")),
+    }
+}
+
+fn render_status_debug_details(view: &ClusterStatusView) -> Vec<String> {
+    let mut lines = vec!["debug details:".to_string()];
+
+    for node in &view.nodes {
+        let Some(debug) = node.debug.as_ref() else {
+            lines.push(format!("  {}: debug not requested", node.member_id));
+            continue;
+        };
+
+        lines.push(format!(
+            "  {}: debug={}",
+            node.member_id,
+            debug_observation_label(&debug.status)
+        ));
+
+        if let Some(detail) = debug.detail.as_deref() {
+            lines.push(format!("    detail: {detail}"));
+        }
+
+        match debug.payload.as_ref() {
+            Some(payload) => {
+                lines.push(format!(
+                    "    dcs: trust={} leader={}",
+                    payload.dcs.trust,
+                    payload.dcs.leader.as_deref().unwrap_or("none")
+                ));
+                lines.push(format!(
+                    "    ha: phase={} decision={} detail={}",
+                    payload.ha.phase,
+                    payload.ha.decision,
+                    payload.ha.decision_detail.as_deref().unwrap_or("none")
+                ));
+                lines.push(format!(
+                    "    pginfo: variant={} sql={} readiness={} summary={}",
+                    payload.pginfo.variant,
+                    payload.pginfo.sql,
+                    payload.pginfo.readiness,
+                    payload.pginfo.summary
+                ));
+                lines.push(format!(
+                    "    process: state={} worker={} running_job={} last_outcome={}",
+                    payload.process.state,
+                    payload.process.worker,
+                    payload.process.running_job_id.as_deref().unwrap_or("none"),
+                    payload.process.last_outcome.as_deref().unwrap_or("none")
+                ));
+                let recent_change_lines = payload
+                    .changes
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .map(|entry| {
+                        format!(
+                            "    change #{} {} {}",
+                            entry.sequence, entry.domain, entry.summary
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                lines.extend(render_recent_changes(recent_change_lines));
+                let recent_timeline_lines = payload
+                    .timeline
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .map(|entry| {
+                        format!(
+                            "    timeline #{} {} {}",
+                            entry.sequence, entry.category, entry.message
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                lines.extend(render_recent_changes(recent_timeline_lines));
+            }
+            None => lines.push("    no debug payload".to_string()),
+        }
+    }
+
+    lines
+}
+
+fn render_recent_changes(lines: Vec<String>) -> Vec<String> {
+    if lines.is_empty() {
+        vec!["  - none".to_string()]
+    } else {
+        lines
     }
 }
 
@@ -128,6 +321,10 @@ fn render_row(node: &ClusterNodeView, verbose: bool) -> Vec<String> {
             node.pginfo.clone().unwrap_or_else(|| "?".to_string()),
             node.readiness.clone().unwrap_or_else(|| "?".to_string()),
             node.process.clone().unwrap_or_else(|| "?".to_string()),
+            node.debug
+                .as_ref()
+                .map(|debug| debug_observation_label(&debug.status).to_string())
+                .unwrap_or_else(|| "?".to_string()),
         ]);
     }
     row.push(api_status_label(&node.api_status).to_string());
@@ -160,14 +357,129 @@ fn api_status_label(value: &ApiStatus) -> &'static str {
     }
 }
 
+fn debug_observation_label(value: &DebugObservationStatus) -> &'static str {
+    match value {
+        DebugObservationStatus::Available => "available",
+        DebugObservationStatus::Disabled => "disabled",
+        DebugObservationStatus::AuthFailed => "auth_failed",
+        DebugObservationStatus::NotReady => "not_ready",
+        DebugObservationStatus::TransportFailed => "transport_failed",
+        DebugObservationStatus::DecodeFailed => "decode_failed",
+        DebugObservationStatus::ApiStatusFailed => "api_status_failed",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::cli::{
         client::AcceptedResponse,
         connect::{ConnectionCommandKind, ConnectionTarget, ConnectionView},
-        output::{render_accepted_output, render_connection_view, render_status_view},
-        status::{ApiStatus, ClusterHealth, ClusterNodeView, ClusterStatusView, QueryOrigin},
+        debug::DebugVerboseView,
+        output::{
+            render_accepted_output, render_connection_view, render_debug_verbose_view,
+            render_status_view,
+        },
+        status::{
+            ApiStatus, ClusterHealth, ClusterNodeDebugObservation, ClusterNodeView,
+            ClusterStatusView, DebugObservationStatus, QueryOrigin,
+        },
     };
+    use crate::debug_api::view::{
+        ApiSection, ConfigSection, DcsSection, DebugChangeView, DebugMeta, DebugSection,
+        DebugTimelineView, DebugVerbosePayload, HaSection, PgInfoSection, ProcessSection,
+    };
+
+    fn sample_debug_payload(member_id: &str) -> DebugVerbosePayload {
+        DebugVerbosePayload {
+            meta: DebugMeta {
+                schema_version: "v1".to_string(),
+                generated_at_ms: 1,
+                channel_updated_at_ms: 1,
+                channel_version: 1,
+                app_lifecycle: "Running".to_string(),
+                sequence: 42,
+            },
+            config: ConfigSection {
+                version: 1,
+                updated_at_ms: 1,
+                cluster_name: "cluster-a".to_string(),
+                member_id: member_id.to_string(),
+                scope: "scope-a".to_string(),
+                debug_enabled: true,
+                tls_enabled: false,
+            },
+            pginfo: PgInfoSection {
+                version: 1,
+                updated_at_ms: 1,
+                variant: "Primary".to_string(),
+                worker: "Running".to_string(),
+                sql: "Healthy".to_string(),
+                readiness: "Ready".to_string(),
+                timeline: Some(7),
+                summary: "primary wal_lsn=7 slots=2 readiness=Ready".to_string(),
+            },
+            dcs: DcsSection {
+                version: 1,
+                updated_at_ms: 1,
+                worker: "Running".to_string(),
+                trust: "FullQuorum".to_string(),
+                member_count: 2,
+                leader: Some("node-a".to_string()),
+                has_switchover_request: false,
+            },
+            process: ProcessSection {
+                version: 1,
+                updated_at_ms: 1,
+                worker: "Running".to_string(),
+                state: "Idle".to_string(),
+                running_job_id: None,
+                last_outcome: Some("Success(job-1)".to_string()),
+            },
+            ha: HaSection {
+                version: 1,
+                updated_at_ms: 1,
+                worker: "Running".to_string(),
+                phase: "Primary".to_string(),
+                tick: 1,
+                decision: "NoChange".to_string(),
+                decision_detail: Some("already converged".to_string()),
+                planned_actions: 0,
+            },
+            api: ApiSection {
+                endpoints: vec!["/debug/verbose".to_string()],
+            },
+            debug: DebugSection {
+                history_changes: 2,
+                history_timeline: 2,
+                last_sequence: 42,
+            },
+            changes: vec![DebugChangeView {
+                sequence: 41,
+                at_ms: 1,
+                domain: "ha".to_string(),
+                previous_version: Some(1),
+                current_version: Some(2),
+                summary: "decision updated".to_string(),
+            }],
+            timeline: vec![DebugTimelineView {
+                sequence: 42,
+                at_ms: 1,
+                category: "ha".to_string(),
+                message: "promoted primary".to_string(),
+            }],
+        }
+    }
+
+    fn sample_debug_observation(
+        status: DebugObservationStatus,
+        payload: Option<DebugVerbosePayload>,
+    ) -> ClusterNodeDebugObservation {
+        ClusterNodeDebugObservation {
+            status,
+            detail: None,
+            payload,
+        }
+    }
 
     fn sample_status_view(verbose: bool) -> ClusterStatusView {
         ClusterStatusView {
@@ -198,6 +510,12 @@ mod tests {
                     pginfo: verbose.then_some("primary wal_lsn=7".to_string()),
                     readiness: verbose.then_some("ready".to_string()),
                     process: verbose.then_some("idle".to_string()),
+                    debug: verbose.then(|| {
+                        sample_debug_observation(
+                            DebugObservationStatus::Available,
+                            Some(sample_debug_payload("node-a")),
+                        )
+                    }),
                     observation_error: None,
                 },
                 ClusterNodeView {
@@ -215,6 +533,8 @@ mod tests {
                     pginfo: verbose.then_some("replica replay_lsn=7".to_string()),
                     readiness: verbose.then_some("ready".to_string()),
                     process: verbose.then_some("idle".to_string()),
+                    debug: verbose
+                        .then(|| sample_debug_observation(DebugObservationStatus::Disabled, None)),
                     observation_error: None,
                 },
             ],
@@ -241,6 +561,42 @@ mod tests {
         assert!(value.contains("LEADER"));
         assert!(value.contains("PGINFO"));
         assert!(value.contains("PROCESS"));
+        assert!(value.contains("DEBUG"));
+        assert!(value.contains("debug details:"));
+        assert!(value.contains("node-b: debug=disabled"));
+    }
+
+    #[test]
+    fn debug_verbose_text_output_renders_summary_and_history() {
+        let view = DebugVerboseView {
+            api_url: "http://node-a:8080".to_string(),
+            since: Some(40),
+            payload: sample_debug_payload("node-a"),
+        };
+
+        let rendered = render_debug_verbose_view(&view, false);
+        assert!(rendered.is_ok(), "debug verbose text render should succeed");
+        let value = rendered.unwrap_or_default();
+        assert!(value.contains("member: node-a  cluster: cluster-a  scope: scope-a"));
+        assert!(value.contains("since: 40"));
+        assert!(value.contains("recent changes:"));
+        assert!(value.contains("recent timeline:"));
+    }
+
+    #[test]
+    fn debug_verbose_json_output_is_raw_payload() {
+        let view = DebugVerboseView {
+            api_url: "http://node-a:8080".to_string(),
+            since: Some(40),
+            payload: sample_debug_payload("node-a"),
+        };
+
+        let rendered = render_debug_verbose_view(&view, true);
+        assert!(rendered.is_ok(), "debug verbose json render should succeed");
+        let value = rendered.unwrap_or_default();
+        assert!(value.contains("\"schema_version\": \"v1\""));
+        assert!(!value.contains("\"api_url\""));
+        assert!(!value.contains("\"since\""));
     }
 
     #[test]

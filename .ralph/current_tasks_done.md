@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar  9 03:37:02 AM CET 2026
+Generated: Mon Mar  9 04:23:38 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -77,6 +77,18 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 
 ```
 ## Task: Add Primary Resolution And Shell-Friendly Connection Helpers To `pgtm` <status>completed</status> <passes>true</passes>
+
+<priority>medium</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ctl-operator-experience/05-task-add-debug-reporting-and-incident-surfaces-to-ctl.md`
+
+```
+## Task: Add Debug Reporting And Incident Investigation Surfaces To `pgtm` <status>completed</status> <passes>true</passes>
 
 <priority>medium</priority>
 

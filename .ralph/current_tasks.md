@@ -1,18 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar  9 03:37:02 AM CET 2026
-
-# Task `.ralph/tasks/story-ctl-operator-experience/05-task-add-debug-reporting-and-incident-surfaces-to-ctl.md`
-
-```
-## Task: Add Debug Reporting And Incident Investigation Surfaces To `pgtm` <status>not_started</status> <passes>false</passes>
-
-<priority>medium</priority>
-
-<description>
-```
-
-==============
+Generated: Mon Mar  9 04:23:38 AM CET 2026
 
 # Task `.ralph/tasks/story-ctl-operator-experience/06-task-rewrite-operator-docs-to-prefer-ctl-over-raw-curl.md`
 

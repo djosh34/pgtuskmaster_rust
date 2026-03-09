@@ -35,6 +35,18 @@ pub enum ApiStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugObservationStatus {
+    Available,
+    Disabled,
+    AuthFailed,
+    NotReady,
+    TransportFailed,
+    DecodeFailed,
+    ApiStatusFailed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ClusterWarning {
     pub code: String,
     pub message: String,
@@ -53,6 +65,13 @@ pub struct ClusterSwitchoverView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ClusterNodeDebugObservation {
+    pub status: DebugObservationStatus,
+    pub detail: Option<String>,
+    pub payload: Option<DebugVerboseResponse>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ClusterNodeView {
     pub member_id: String,
     pub is_self: bool,
@@ -67,6 +86,7 @@ pub struct ClusterNodeView {
     pub pginfo: Option<String>,
     pub readiness: Option<String>,
     pub process: Option<String>,
+    pub debug: Option<ClusterNodeDebugObservation>,
     pub observation_error: Option<String>,
 }
 
@@ -87,7 +107,7 @@ pub struct ClusterStatusView {
 #[derive(Clone, Debug)]
 pub(crate) struct SampledNodeState {
     pub(crate) state: HaStateResponse,
-    pub(crate) verbose: Option<DebugVerboseResponse>,
+    pub(crate) debug: Option<ClusterNodeDebugObservation>,
 }
 
 #[derive(Clone, Debug)]
@@ -144,7 +164,7 @@ pub(crate) async fn build_sampled_cluster_snapshot(
 ) -> Result<SampledClusterSnapshot, CliError> {
     let seed_client = CliApiClient::from_config(context.api_client.clone())?;
     let seed_state = seed_client.get_ha_state().await?;
-    let seed_verbose = fetch_optional_debug(&seed_client, verbose).await;
+    let seed_debug = fetch_debug_observation(&seed_client, verbose).await;
     let discovered_members = seed_state.members.clone();
     let queried_via = QueryOrigin {
         member_id: seed_state.self_member_id.clone(),
@@ -152,7 +172,7 @@ pub(crate) async fn build_sampled_cluster_snapshot(
     };
 
     let peer_observations =
-        sample_peer_states(&context.api_client, &seed_state, seed_verbose, verbose).await;
+        sample_peer_states(&context.api_client, &seed_state, seed_debug, verbose).await;
     let warnings = collect_warnings(&seed_state, &discovered_members, &peer_observations);
 
     Ok(SampledClusterSnapshot {
@@ -192,14 +212,14 @@ async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<
 async fn sample_peer_states(
     base_config: &CliApiClientConfig,
     seed_state: &HaStateResponse,
-    seed_verbose: Option<DebugVerboseResponse>,
+    seed_debug: Option<ClusterNodeDebugObservation>,
     verbose: bool,
 ) -> BTreeMap<String, PeerObservation> {
     let seed_observation = PeerObservation {
         member_id: seed_state.self_member_id.clone(),
         sampled: Ok(SampledNodeState {
             state: seed_state.clone(),
-            verbose: seed_verbose,
+            debug: seed_debug,
         }),
     };
 
@@ -242,12 +262,12 @@ async fn sample_peer_states(
             match CliApiClient::from_config(config) {
                 Ok(client) => match client.get_ha_state().await {
                     Ok(state) => {
-                        let verbose_payload = fetch_optional_debug(&client, verbose).await;
+                        let debug_observation = fetch_debug_observation(&client, verbose).await;
                         PeerObservation {
                             member_id: member_id.clone(),
                             sampled: Ok(SampledNodeState {
                                 state,
-                                verbose: verbose_payload,
+                                debug: debug_observation,
                             }),
                         }
                     }
@@ -285,19 +305,85 @@ async fn sample_peer_states(
     observations
 }
 
-async fn fetch_optional_debug(
+async fn fetch_debug_observation(
     client: &CliApiClient,
     verbose: bool,
-) -> Option<DebugVerboseResponse> {
+) -> Option<ClusterNodeDebugObservation> {
     if !verbose {
         return None;
     }
 
     match client.get_debug_verbose().await {
-        Ok(value) => Some(value),
-        Err(CliError::ApiStatus { status, .. }) if status == 404 || status == 503 => None,
-        Err(_) => None,
+        Ok(value) => Some(ClusterNodeDebugObservation {
+            status: DebugObservationStatus::Available,
+            detail: None,
+            payload: Some(value),
+        }),
+        Err(CliError::ApiStatus { status, body }) if status == 404 => {
+            Some(ClusterNodeDebugObservation {
+                status: DebugObservationStatus::Disabled,
+                detail: summarize_api_failure(status, body.as_str()),
+                payload: None,
+            })
+        }
+        Err(CliError::ApiStatus { status, body }) if status == 401 || status == 403 => {
+            Some(ClusterNodeDebugObservation {
+                status: DebugObservationStatus::AuthFailed,
+                detail: summarize_api_failure(status, body.as_str()),
+                payload: None,
+            })
+        }
+        Err(CliError::ApiStatus { status, body }) if status == 503 => {
+            Some(ClusterNodeDebugObservation {
+                status: DebugObservationStatus::NotReady,
+                detail: summarize_api_failure(status, body.as_str()),
+                payload: None,
+            })
+        }
+        Err(CliError::ApiStatus { status, body }) => Some(ClusterNodeDebugObservation {
+            status: DebugObservationStatus::ApiStatusFailed,
+            detail: summarize_api_failure(status, body.as_str()),
+            payload: None,
+        }),
+        Err(CliError::Transport(message) | CliError::RequestBuild(message)) => {
+            Some(ClusterNodeDebugObservation {
+                status: DebugObservationStatus::TransportFailed,
+                detail: Some(message),
+                payload: None,
+            })
+        }
+        Err(CliError::Decode(message)) => Some(ClusterNodeDebugObservation {
+            status: DebugObservationStatus::DecodeFailed,
+            detail: Some(message),
+            payload: None,
+        }),
+        Err(
+            CliError::Config(message) | CliError::Resolution(message) | CliError::Output(message),
+        ) => Some(ClusterNodeDebugObservation {
+            status: DebugObservationStatus::ApiStatusFailed,
+            detail: Some(message),
+            payload: None,
+        }),
     }
+}
+
+fn summarize_api_failure(status: u16, body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Some(format!("http {status}"));
+    }
+
+    let first_line = match trimmed.lines().next() {
+        Some(value) => value,
+        None => trimmed,
+    };
+    let clipped = if first_line.chars().count() > 120 {
+        let shortened = first_line.chars().take(120).collect::<String>();
+        format!("{shortened}...")
+    } else {
+        first_line.to_string()
+    };
+    Some(format!("http {status}: {clipped}"))
 }
 
 fn assemble_cluster_view(snapshot: &SampledClusterSnapshot, verbose: bool) -> ClusterStatusView {
@@ -461,7 +547,10 @@ fn build_node_row(
             sampled: Ok(sampled),
             ..
         }) => {
-            let verbose = sampled.verbose.as_ref();
+            let debug_payload = sampled
+                .debug
+                .as_ref()
+                .and_then(|observation| observation.payload.as_ref());
             ClusterNodeView {
                 member_id: member.member_id.clone(),
                 is_self: member.member_id == queried_member_id,
@@ -473,9 +562,10 @@ fn build_node_row(
                 phase: sampled.state.ha_phase.to_string(),
                 leader: sampled.state.leader.clone(),
                 decision: Some(render_decision_text(&sampled.state.ha_decision)),
-                pginfo: verbose.map(|value| value.pginfo.summary.clone()),
-                readiness: verbose.map(|value| value.pginfo.readiness.to_ascii_lowercase()),
-                process: verbose.map(|value| value.process.state.to_ascii_lowercase()),
+                pginfo: debug_payload.map(|value| value.pginfo.summary.clone()),
+                readiness: debug_payload.map(|value| value.pginfo.readiness.to_ascii_lowercase()),
+                process: debug_payload.map(|value| value.process.state.to_ascii_lowercase()),
+                debug: sampled.debug.clone(),
                 observation_error: None,
             }
         }
@@ -500,6 +590,7 @@ fn build_node_row(
             pginfo: None,
             readiness: None,
             process: None,
+            debug: None,
             observation_error: Some(message.clone()),
         },
         None => ClusterNodeView {
@@ -516,6 +607,7 @@ fn build_node_row(
             pginfo: None,
             readiness: None,
             process: None,
+            debug: None,
             observation_error: Some("no observation recorded".to_string()),
         },
     }
@@ -600,7 +692,17 @@ mod tests {
             DcsTrustResponse, HaClusterMemberResponse, HaDecisionResponse, HaPhaseResponse,
             HaStateResponse, MemberRoleResponse, ReadinessResponse, SqlStatusResponse,
         },
-        cli::status::{assemble_cluster_view, ApiStatus, QueryOrigin, SampledClusterSnapshot},
+        cli::{
+            client::DebugVerboseResponse,
+            status::{
+                assemble_cluster_view, ApiStatus, ClusterNodeDebugObservation,
+                DebugObservationStatus, QueryOrigin, SampledClusterSnapshot,
+            },
+        },
+        debug_api::view::{
+            ApiSection, ConfigSection, DcsSection, DebugChangeView, DebugMeta, DebugSection,
+            DebugTimelineView, HaSection, PgInfoSection, ProcessSection,
+        },
     };
 
     fn sample_member(member_id: &str, api_url: Option<&str>) -> HaClusterMemberResponse {
@@ -662,6 +764,87 @@ mod tests {
         }
     }
 
+    fn sample_debug_payload(member_id: &str) -> DebugVerboseResponse {
+        DebugVerboseResponse {
+            meta: DebugMeta {
+                schema_version: "v1".to_string(),
+                generated_at_ms: 1,
+                channel_updated_at_ms: 1,
+                channel_version: 1,
+                app_lifecycle: "Running".to_string(),
+                sequence: 42,
+            },
+            config: ConfigSection {
+                version: 1,
+                updated_at_ms: 1,
+                cluster_name: "cluster-a".to_string(),
+                member_id: member_id.to_string(),
+                scope: "scope-a".to_string(),
+                debug_enabled: true,
+                tls_enabled: false,
+            },
+            pginfo: PgInfoSection {
+                version: 1,
+                updated_at_ms: 1,
+                variant: "Primary".to_string(),
+                worker: "Running".to_string(),
+                sql: "Healthy".to_string(),
+                readiness: "Ready".to_string(),
+                timeline: Some(7),
+                summary: "primary wal_lsn=7 readiness=Ready".to_string(),
+            },
+            dcs: DcsSection {
+                version: 1,
+                updated_at_ms: 1,
+                worker: "Running".to_string(),
+                trust: "FullQuorum".to_string(),
+                member_count: 1,
+                leader: Some("node-a".to_string()),
+                has_switchover_request: false,
+            },
+            process: ProcessSection {
+                version: 1,
+                updated_at_ms: 1,
+                worker: "Running".to_string(),
+                state: "Idle".to_string(),
+                running_job_id: None,
+                last_outcome: Some("Success(job-1)".to_string()),
+            },
+            ha: HaSection {
+                version: 1,
+                updated_at_ms: 1,
+                worker: "Running".to_string(),
+                phase: "Primary".to_string(),
+                tick: 1,
+                decision: "NoChange".to_string(),
+                decision_detail: Some("steady".to_string()),
+                planned_actions: 0,
+            },
+            api: ApiSection {
+                endpoints: vec!["/debug/verbose".to_string()],
+            },
+            debug: DebugSection {
+                history_changes: 1,
+                history_timeline: 1,
+                last_sequence: 42,
+            },
+            changes: vec![DebugChangeView {
+                sequence: 41,
+                at_ms: 1,
+                domain: "ha".to_string(),
+                previous_version: Some(1),
+                current_version: Some(2),
+                summary: "decision updated".to_string(),
+            }],
+            timeline: vec![DebugTimelineView {
+                sequence: 42,
+                at_ms: 1,
+                category: "ha".to_string(),
+                message: "primary steady".to_string(),
+            }],
+        }
+    }
+
     #[test]
     fn assemble_cluster_view_marks_missing_api_targets_as_degraded() {
         let members = vec![
@@ -682,7 +865,7 @@ mod tests {
                     member_id: "node-a".to_string(),
                     sampled: Ok(super::SampledNodeState {
                         state: seed_state.clone(),
-                        verbose: None,
+                        debug: None,
                     }),
                 },
             ),
@@ -736,7 +919,7 @@ mod tests {
                     member_id: "node-a".to_string(),
                     sampled: Ok(super::SampledNodeState {
                         state: seed_state.clone(),
-                        verbose: None,
+                        debug: None,
                     }),
                 },
             ),
@@ -746,7 +929,7 @@ mod tests {
                     member_id: "node-b".to_string(),
                     sampled: Ok(super::SampledNodeState {
                         state: other_state,
-                        verbose: None,
+                        debug: None,
                     }),
                 },
             ),
@@ -782,7 +965,7 @@ mod tests {
                 member_id: "node-a".to_string(),
                 sampled: Ok(super::SampledNodeState {
                     state: seed_state.clone(),
-                    verbose: None,
+                    debug: None,
                 }),
             },
         )]);
@@ -813,7 +996,7 @@ mod tests {
                 member_id: "node-a".to_string(),
                 sampled: Ok(super::SampledNodeState {
                     state: seed_state.clone(),
-                    verbose: None,
+                    debug: None,
                 }),
             },
         )]);
@@ -823,5 +1006,80 @@ mod tests {
 
         assert!(view.verbose);
         assert_eq!(view.nodes[0].pginfo, None);
+    }
+
+    #[test]
+    fn assemble_cluster_view_preserves_debug_observation_reasons() {
+        let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
+        let seed_state = sample_state(
+            "node-a",
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FullQuorum,
+            Some("node-a"),
+            members.clone(),
+        );
+        let observations = BTreeMap::from([(
+            "node-a".to_string(),
+            super::PeerObservation {
+                member_id: "node-a".to_string(),
+                sampled: Ok(super::SampledNodeState {
+                    state: seed_state.clone(),
+                    debug: Some(ClusterNodeDebugObservation {
+                        status: DebugObservationStatus::AuthFailed,
+                        detail: Some("http 401: missing token".to_string()),
+                        payload: None,
+                    }),
+                }),
+            },
+        )]);
+
+        let snapshot = sample_snapshot(seed_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, true);
+
+        assert!(view.verbose);
+        assert_eq!(view.nodes[0].pginfo, None);
+        assert_eq!(
+            view.nodes[0].debug.as_ref().map(|value| &value.status),
+            Some(&DebugObservationStatus::AuthFailed)
+        );
+    }
+
+    #[test]
+    fn assemble_cluster_view_includes_debug_payload_summary_when_available() {
+        let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
+        let seed_state = sample_state(
+            "node-a",
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FullQuorum,
+            Some("node-a"),
+            members.clone(),
+        );
+        let observations = BTreeMap::from([(
+            "node-a".to_string(),
+            super::PeerObservation {
+                member_id: "node-a".to_string(),
+                sampled: Ok(super::SampledNodeState {
+                    state: seed_state.clone(),
+                    debug: Some(ClusterNodeDebugObservation {
+                        status: DebugObservationStatus::Available,
+                        detail: None,
+                        payload: Some(sample_debug_payload("node-a")),
+                    }),
+                }),
+            },
+        )]);
+
+        let snapshot = sample_snapshot(seed_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, true);
+
+        assert_eq!(
+            view.nodes[0].pginfo.as_deref(),
+            Some("primary wal_lsn=7 readiness=Ready")
+        );
+        assert_eq!(view.nodes[0].process.as_deref(), Some("idle"));
+        assert_eq!(
+            view.nodes[0].debug.as_ref().map(|value| &value.status),
+            Some(&DebugObservationStatus::Available)
+        );
     }
 }

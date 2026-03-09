@@ -29,9 +29,27 @@ pub struct Cli {
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     Status,
+    Debug(DebugArgs),
     Primary(ConnectionArgs),
     Replicas(ConnectionArgs),
     Switchover(SwitchoverArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct DebugArgs {
+    #[command(subcommand)]
+    pub command: DebugCommand,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum DebugCommand {
+    Verbose(DebugVerboseArgs),
+}
+
+#[derive(Clone, Debug, Args, PartialEq, Eq)]
+pub struct DebugVerboseArgs {
+    #[arg(long)]
+    pub since: Option<u64>,
 }
 
 #[derive(Clone, Debug, Args, PartialEq, Eq)]
@@ -93,7 +111,8 @@ mod tests {
     use clap::Parser;
 
     use crate::cli::args::{
-        Cli, Command, ConnectionArgs, SwitchoverCommand, SwitchoverRequestArgs,
+        Cli, Command, ConnectionArgs, DebugArgs, DebugCommand, DebugVerboseArgs, SwitchoverCommand,
+        SwitchoverRequestArgs,
     };
 
     #[test]
@@ -135,6 +154,33 @@ mod tests {
         assert!(cli.watch);
         assert!(cli.command.is_none());
         Ok(())
+    }
+
+    #[test]
+    fn parse_debug_verbose_command() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "debug", "verbose"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        match cli.command {
+            Some(Command::Debug(DebugArgs {
+                command: DebugCommand::Verbose(DebugVerboseArgs { since: None }),
+            })) => Ok(()),
+            _ => Err("expected debug verbose command".to_string()),
+        }
+    }
+
+    #[test]
+    fn parse_debug_verbose_since_command() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["pgtm", "--json", "debug", "verbose", "--since", "42"])
+            .map_err(|err| format!("parse should succeed: {err}"))?;
+
+        assert!(cli.json);
+        match cli.command {
+            Some(Command::Debug(DebugArgs {
+                command: DebugCommand::Verbose(DebugVerboseArgs { since: Some(42) }),
+            })) => Ok(()),
+            _ => Err("expected debug verbose --since command".to_string()),
+        }
     }
 
     #[test]

@@ -2,14 +2,16 @@ pub mod args;
 pub mod client;
 pub mod config;
 pub mod connect;
+pub mod debug;
 pub mod error;
 pub mod output;
 pub mod status;
 
-use args::{Cli, Command, SwitchoverCommand};
+use args::{Cli, Command, DebugCommand, SwitchoverCommand};
 use client::CliApiClient;
 use config::resolve_operator_context;
 use connect::{run_primary, run_replicas};
+use debug::run_debug_verbose;
 use error::CliError;
 
 pub async fn run(cli: Cli) -> Result<String, CliError> {
@@ -27,6 +29,18 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
 
     match command {
         Command::Status => status::run_status(&context, status_options).await,
+        Command::Debug(debug_args) => {
+            if status_options.watch || status_options.verbose {
+                return Err(CliError::Config(
+                    "`--watch` and `--verbose` are only supported for `pgtm status`".to_string(),
+                ));
+            }
+            match debug_args.command {
+                DebugCommand::Verbose(args) => {
+                    run_debug_verbose(&context, cli.json, args.since).await
+                }
+            }
+        }
         Command::Primary(connection_args) => {
             if status_options.watch || status_options.verbose {
                 return Err(CliError::Config(

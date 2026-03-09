@@ -2,10 +2,11 @@ use std::{path::PathBuf, time::Duration};
 
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 pub(crate) use crate::api::{AcceptedResponse, HaStateResponse};
 use crate::cli::error::CliError;
+pub(crate) use crate::debug_api::view::DebugVerbosePayload as DebugVerboseResponse;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CliAuthConfig {
@@ -63,24 +64,6 @@ struct SwitchoverRequestInput {
     switchover_to: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct DebugVerboseResponse {
-    pub pginfo: DebugVerbosePgInfoSection,
-    pub process: DebugVerboseProcessSection,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct DebugVerbosePgInfoSection {
-    pub variant: String,
-    pub readiness: String,
-    pub summary: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct DebugVerboseProcessSection {
-    pub state: String,
-}
-
 impl CliApiClient {
     pub fn new(
         base_url: String,
@@ -124,13 +107,23 @@ impl CliApiClient {
     }
 
     pub async fn get_debug_verbose(&self) -> Result<DebugVerboseResponse, CliError> {
-        self.send_json_no_body(
-            Method::GET,
-            "/debug/verbose",
-            AuthRole::Read,
-            StatusCode::OK,
-        )
-        .await
+        self.get_debug_verbose_since(None).await
+    }
+
+    pub async fn get_debug_verbose_since(
+        &self,
+        since: Option<u64>,
+    ) -> Result<DebugVerboseResponse, CliError> {
+        let mut url = self
+            .base_url
+            .join("/debug/verbose")
+            .map_err(|err| CliError::RequestBuild(format!("compose URL failed: {err}")))?;
+        if let Some(value) = since {
+            url.query_pairs_mut()
+                .append_pair("since", value.to_string().as_str());
+        }
+        self.send_json_to_url(Method::GET, url, AuthRole::Read, StatusCode::OK)
+            .await
     }
 
     pub async fn delete_switchover(&self) -> Result<AcceptedResponse, CliError> {
@@ -172,6 +165,20 @@ impl CliApiClient {
             .base_url
             .join(path)
             .map_err(|err| CliError::RequestBuild(format!("compose URL failed: {err}")))?;
+        self.send_json_to_url(method, url, role, expected_status)
+            .await
+    }
+
+    async fn send_json_to_url<T>(
+        &self,
+        method: Method,
+        url: Url,
+        role: AuthRole,
+        expected_status: StatusCode,
+    ) -> Result<T, CliError>
+    where
+        T: DeserializeOwned,
+    {
         let mut request = self.http.request(method, url);
         if let Some(token) = self.token_for(role) {
             request = request.bearer_auth(token);
@@ -314,6 +321,69 @@ mod tests {
         cli::client::{CliApiClient, CliError},
     };
 
+    fn sample_debug_verbose_json() -> &'static str {
+        r#"{
+            "meta":{
+                "schema_version":"v1",
+                "generated_at_ms":1,
+                "channel_updated_at_ms":1,
+                "channel_version":1,
+                "app_lifecycle":"Running",
+                "sequence":42
+            },
+            "config":{
+                "version":1,
+                "updated_at_ms":1,
+                "cluster_name":"cluster-a",
+                "member_id":"node-a",
+                "scope":"scope-a",
+                "debug_enabled":true,
+                "tls_enabled":false
+            },
+            "pginfo":{
+                "version":1,
+                "updated_at_ms":1,
+                "variant":"Primary",
+                "worker":"Running",
+                "sql":"Healthy",
+                "readiness":"Ready",
+                "timeline":7,
+                "summary":"primary wal_lsn=7 readiness=Ready"
+            },
+            "dcs":{
+                "version":1,
+                "updated_at_ms":1,
+                "worker":"Running",
+                "trust":"FullQuorum",
+                "member_count":1,
+                "leader":"node-a",
+                "has_switchover_request":false
+            },
+            "process":{
+                "version":1,
+                "updated_at_ms":1,
+                "worker":"Running",
+                "state":"Idle",
+                "running_job_id":null,
+                "last_outcome":"Success(job-1)"
+            },
+            "ha":{
+                "version":1,
+                "updated_at_ms":1,
+                "worker":"Running",
+                "phase":"Primary",
+                "tick":1,
+                "decision":"NoChange",
+                "decision_detail":"steady",
+                "planned_actions":0
+            },
+            "api":{"endpoints":["/debug/verbose"]},
+            "debug":{"history_changes":1,"history_timeline":1,"last_sequence":42},
+            "changes":[{"sequence":41,"at_ms":1,"domain":"ha","previous_version":1,"current_version":2,"summary":"decision updated"}],
+            "timeline":[{"sequence":42,"at_ms":1,"category":"ha","message":"primary steady"}]
+        }"#
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedRequest {
         method: String,
@@ -362,6 +432,45 @@ mod tests {
 
         let request = handle_request(handle).await?;
         assert_header(&request.headers, "authorization", "Bearer admin-token")?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn debug_verbose_request_decodes_full_payload() -> Result<(), CliError> {
+        let (addr, handle) = spawn_server(http_response(200, sample_debug_verbose_json())).await?;
+        let client = CliApiClient::new(
+            format!("http://{addr}"),
+            5_000,
+            Some("reader".to_string()),
+            None,
+        )?;
+
+        let payload = client.get_debug_verbose().await?;
+        assert_eq!(payload.meta.sequence, 42);
+        assert_eq!(payload.pginfo.variant, "Primary");
+        assert_eq!(payload.process.state, "Idle");
+        assert_eq!(payload.timeline.len(), 1);
+
+        let request = handle_request(handle).await?;
+        assert_eq!(request.path, "/debug/verbose");
+        assert_header(&request.headers, "authorization", "Bearer reader")?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn debug_verbose_since_adds_query_parameter() -> Result<(), CliError> {
+        let (addr, handle) = spawn_server(http_response(200, sample_debug_verbose_json())).await?;
+        let client = CliApiClient::new(
+            format!("http://{addr}"),
+            5_000,
+            Some("reader".to_string()),
+            None,
+        )?;
+
+        let _ = client.get_debug_verbose_since(Some(99)).await?;
+
+        let request = handle_request(handle).await?;
+        assert_eq!(request.path, "/debug/verbose?since=99");
         Ok(())
     }
 

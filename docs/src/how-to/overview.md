@@ -11,8 +11,8 @@ This chapter contains goal-oriented guides that help you perform specific operat
 ## Health and Monitoring
 
 - [Check Cluster Health](check-cluster-health.md) - Inspect runtime health using `pgtm` CLI against node APIs
-- [Monitor via API and CLI Signals](monitor-via-metrics.md) - Track leader changes, trust degradation, and recovery activity using JSON observation surfaces
-- [Debug Cluster Issues](debug-cluster-issues.md) - Investigate incidents using `/ha/state` and `/debug/verbose` endpoints
+- [Monitor via API and CLI Signals](monitor-via-metrics.md) - Track leader changes, trust degradation, and recovery activity with `pgtm status -v`, `pgtm debug verbose`, and the underlying JSON surfaces
+- [Debug Cluster Issues](debug-cluster-issues.md) - Investigate incidents with `pgtm status -v` first, then drop to `pgtm debug verbose` or raw debug HTTP only when needed
 
 ## Failure Handling
 

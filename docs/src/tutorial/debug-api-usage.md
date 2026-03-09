@@ -1,6 +1,6 @@
 # Debug API Usage
 
-This tutorial shows how to read the debug API as an operator-facing observation surface. The goal is not to change cluster state, but to learn how to inspect the current snapshot and how to poll incrementally with `since=`.
+This tutorial shows how to inspect the stable verbose debug payload as an operator-facing observation surface. The goal is not to change cluster state, but to learn how to inspect the current snapshot and how to poll incrementally with `since`.
 
 ## Prerequisites
 
@@ -8,31 +8,28 @@ Complete [First HA Cluster](first-ha-cluster.md) and keep the cluster running.
 
 The shipped cluster runtime config enables the debug API, so node-a exposes it on the same HTTP listener as the normal API.
 
-## Step 1: Read the current verbose snapshot
+## Step 1: Start with the CLI wrapper
 
-Start with node-a:
+The normal operator entry point is:
 
 ```bash
-curl --fail --silent http://127.0.0.1:18081/debug/verbose | jq .
+cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 debug verbose
 ```
 
-This response contains the current system snapshot plus retained history. The most useful top-level sections to start with are:
+That summary already tells you:
 
-- `meta`
-- `config`
-- `pginfo`
-- `dcs`
-- `process`
-- `ha`
-- `changes`
-- `timeline`
+- the current sequence
+- PostgreSQL role and readiness
+- DCS trust and leader
+- HA phase and decision
+- recent `changes` and `timeline`
 
-## Step 2: Identify the fields you will poll
+## Step 2: Read the raw stable payload through the CLI
 
-For cluster observation, these are the fastest fields to read:
+When you want the full machine-readable document, keep the CLI but switch to JSON:
 
 ```bash
-curl --fail --silent http://127.0.0.1:18081/debug/verbose | jq '{
+cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose | jq '{
   sequence: .meta.sequence,
   trust: .dcs.trust,
   member_count: .dcs.member_count,
@@ -49,23 +46,23 @@ Those values let you answer:
 - which HA phase the local node is in
 - which HA decision the node currently wants
 
-## Step 3: Learn the `since=` polling model
+## Step 3: Learn the `since` polling model
 
 The debug worker keeps bounded in-memory history for `changes` and `timeline`. The current default limit is `300` entries for each stream.
 
-The `since` query parameter does not remove the current snapshot. It only filters the retained history arrays so that they include entries with `sequence > since`.
+The `since` cursor does not remove the current snapshot. It only filters the retained history arrays so that they include entries with `sequence > since`.
 
 Capture the current sequence:
 
 ```bash
-seq=$(curl --fail --silent http://127.0.0.1:18081/debug/verbose | jq '.meta.sequence')
+seq=$(cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose | jq '.meta.sequence')
 echo "$seq"
 ```
 
 Then ask for only newer events:
 
 ```bash
-curl --fail --silent "http://127.0.0.1:18081/debug/verbose?since=${seq}" | jq '{
+cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose --since "${seq}" | jq '{
   sequence: .meta.sequence,
   changes: .changes,
   timeline: .timeline
@@ -79,13 +76,13 @@ If nothing changed, the snapshot still reports the latest `meta.sequence`, but `
 You usually do not need the full payload on every poll. This view narrows the response to the parts most relevant during cluster movement:
 
 ```bash
-curl --fail --silent "http://127.0.0.1:18081/debug/verbose?since=0" | jq '{
+cargo run --bin pgtm -- --base-url http://127.0.0.1:18081 --json debug verbose --since 0 | jq '{
   trust: .dcs.trust,
   leader: .dcs.leader,
   phase: .ha.phase,
   decision: .ha.decision,
-  changes: [.changes[] | select(.domain == "Dcs" or .domain == "Ha")],
-  timeline: [.timeline[] | select(.category == "Dcs" or .category == "Ha")]
+  changes: [.changes[] | select(.domain == "dcs" or .domain == "ha")],
+  timeline: [.timeline[] | select(.category == "dcs" or .category == "ha")]
 }'
 ```
 
@@ -96,26 +93,16 @@ That is a practical pattern for:
 - fail-safe entry
 - recovery progress
 
-## Step 5: Build a simple incremental poll loop
+## Step 5: Fall back to raw HTTP only when you need the protocol directly
 
-Use the latest sequence number as your next cursor:
+The CLI reads the same stable payload you can read directly:
 
 ```bash
-last_seq=0
-
-while true; do
-  payload=$(curl --fail --silent "http://127.0.0.1:18081/debug/verbose?since=${last_seq}")
-  echo "$payload" | jq '{sequence: .meta.sequence, changes: .changes, timeline: .timeline}'
-  last_seq=$(echo "$payload" | jq '.meta.sequence')
-  sleep 2
-done
+curl --fail --silent http://127.0.0.1:18081/debug/verbose | jq .
+curl --fail --silent "http://127.0.0.1:18081/debug/verbose?since=${seq}" | jq .
 ```
 
-This loop is useful when you want:
-
-- the current snapshot every time
-- only new history entries
-- a stable cursor taken from `meta.sequence`
+Use the raw HTTP form when you are testing the protocol itself, another client implementation, or auth/TLS behavior outside `pgtm`.
 
 ## Step 6: Understand the availability rules
 
@@ -123,7 +110,7 @@ The debug endpoints live on the normal API listener and follow its auth and TLS 
 
 That means:
 
-- if `debug.enabled` is `false`, `/debug/snapshot`, `/debug/verbose`, and `/debug/ui` return `404`
+- if `debug.enabled` is `false`, the CLI will surface `debug=disabled` from `status -v`, and direct `/debug/verbose` reads return `404`
 - if API auth is disabled, the debug endpoints are reachable without bearer tokens
 - if role tokens are configured, debug routes are read endpoints and require read access
 
@@ -133,7 +120,7 @@ The shipped docker cluster config disables API auth, so the local tutorial comma
 
 You now know how to:
 
-- read the current debug snapshot
-- extract high-signal HA and DCS fields
+- use `pgtm debug verbose` as the normal operator entry point
+- read the raw stable payload with `--json`
 - use `meta.sequence` as an incremental polling cursor
-- treat `since=` as a history filter rather than a delta-only snapshot format
+- treat `since` as a history filter rather than a delta-only snapshot format

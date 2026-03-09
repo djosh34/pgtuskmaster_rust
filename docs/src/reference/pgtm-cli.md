@@ -10,6 +10,8 @@ pgtm - operator CLI for the PGTuskMaster HA API
 
 `pgtm [OPTIONS] status [--json] [-v|--verbose] [--watch]`
 
+`pgtm [OPTIONS] debug verbose [--json] [--since <sequence>]`
+
 `pgtm [OPTIONS] primary [--json] [--tls]`
 
 `pgtm [OPTIONS] replicas [--json] [--tls]`
@@ -28,10 +30,12 @@ The default operator entry point is cluster status:
 - `pgtm status` is the explicit form
 - the default presentation is a compact human table
 - `--json` switches to the machine-readable cluster view
-- `-v` expands the table with deeper node detail
+- `-v` expands the table with deeper node detail, explicit debug availability, and a per-node debug detail block
 - `--watch` repeats the same cluster sampling loop on an interval
 
 `pgtm` also exposes shell-oriented connection helpers that resolve the current primary or currently sampled replicas into libpq keyword/value DSNs. These helpers are the supported way to feed the cluster view into `psql`, scripts, or automation without scraping the status table.
+
+For deeper single-node inspection, `pgtm debug verbose` reads the stable `/debug/verbose` payload and renders an operator-oriented summary by default. Add `--json` when you need the raw stable payload for automation or archival capture.
 
 ## Global Options
 
@@ -59,6 +63,8 @@ Read operations use the read token first and fall back to the admin token when n
 
 ```text
 pgtm (= status)
+├── debug
+│   └── verbose
 ├── primary
 ├── replicas
 └── switchover
@@ -97,13 +103,31 @@ cluster: prod-eu1  health: degraded
 queried via: node-a
 warning: node-c could not be sampled: transport error: ...
 
-NODE    SELF  ROLE     TRUST      PHASE     LEADER  DECISION     PGINFO   READINESS  PROCESS  API
-node-a  *     primary  fail_safe  primary   node-a  no_change    ...      ready      idle     ok
-node-b        replica  fail_safe  replica   node-a  follow_...   ...      ready      idle     ok
-node-c        unknown  unknown    unknown   ?       ?            ?        ?          ?        down
+NODE    SELF  ROLE     TRUST      PHASE     LEADER  DECISION     PGINFO   READINESS  PROCESS  DEBUG      API
+node-a  *     primary  fail_safe  primary   node-a  no_change    ...      ready      idle     available  ok
+node-b        replica  fail_safe  replica   node-a  follow_...   ...      ready      idle     disabled   ok
+node-c        unknown  unknown    unknown   ?       ?            ?        ?          ?        ?          down
+
+debug details:
+  node-a: debug=available
+    dcs: trust=FullQuorum leader=node-a
+    ha: phase=Primary decision=NoChange detail=steady
+    pginfo: variant=Primary sql=Healthy readiness=Ready summary=primary wal_lsn=7 readiness=Ready
+  node-b: debug=disabled
+    detail: http 404: debug disabled
+    no debug payload
+  node-c: debug not requested
 ```
 
 The `SELF` marker identifies the node used as the initial seed for cluster discovery. The rendered cluster also records `queried via` so operators can see which node started the sample.
+
+The `DEBUG` column tells you whether `/debug/verbose` was available for each sampled node:
+
+- `available`: debug payload fetched successfully
+- `disabled`: the node returned `404 Not Found`, which usually means `debug.enabled = false`
+- `auth_failed`: the node rejected the debug read with `401` or `403`
+- `not_ready`: the node returned `503` while the debug subsystem was not ready
+- `transport_failed`, `decode_failed`, or `api_status_failed`: the seed `/ha/state` read succeeded, but the debug read failed for the specific reason shown in the detail block or JSON output
 
 `--watch` repeats the same cluster sampling path. Human mode redraws the table. JSON mode prints one full JSON document per tick.
 
@@ -141,9 +165,55 @@ Each `nodes[]` entry includes:
 - `pginfo`
 - `readiness`
 - `process`
+- `debug`
 - `observation_error`
 
-`pginfo`, `readiness`, and `process` are populated only when `-v --json` is used and debug detail is available from the sampled node.
+`pginfo`, `readiness`, `process`, and `debug` are populated only when `-v --json` is used. `debug.status` always records whether the CLI fetched `/debug/verbose` successfully, and `debug.payload` contains the full stable verbose payload when it is available.
+
+### `debug verbose`
+
+Fetches the stable `/debug/verbose` payload from the selected API target.
+
+- HTTP method: `GET`
+- Path: `/debug/verbose`
+- Auth role: read, with fallback to admin
+
+The default output is a compact incident-oriented summary. It keeps the full payload available behind `--json`, but the human rendering is structured for quick operator review:
+
+- identity header with member, cluster, scope, and current sequence
+- summary lines for `pginfo`, `dcs`, `ha`, `process`, and debug-retention state
+- bounded recent `changes` and `timeline` excerpts
+
+Example default output:
+
+```text
+member: node-a  cluster: cluster-a  scope: scope-a
+api url: http://127.0.0.1:8080
+sequence: 42  schema: v1
+
+pginfo: variant=Primary sql=Healthy readiness=Ready summary=primary wal_lsn=7 readiness=Ready
+dcs: trust=FullQuorum leader=node-a members=3 switchover_request=false
+ha: phase=Primary decision=NoChange detail=steady planned_actions=0
+process: state=Idle worker=Running running_job=none last_outcome=Success(job-1)
+debug: history_changes=12 history_timeline=12 last_sequence=42
+
+recent changes:
+  - #41 ha decision updated
+recent timeline:
+  - #42 ha primary steady
+```
+
+### `debug verbose --json`
+
+Emits the raw stable `/debug/verbose` payload exactly as returned by the API. This is the machine-readable form to use when you want the complete `changes` and `timeline` arrays without the CLI summary.
+
+### `debug verbose --since <sequence>`
+
+Passes the `since` cursor through to `/debug/verbose?since=<sequence>`.
+
+- only `changes` and `timeline` are filtered
+- the other top-level sections still describe the current snapshot
+- the default human rendering keeps the same layout while showing only the filtered retained history
 
 ### `primary`
 
@@ -271,6 +341,15 @@ pgtm -c /etc/pgtuskmaster/config.toml status -v
 
 # Repeated observation
 pgtm -c /etc/pgtuskmaster/config.toml status --watch
+
+# Inspect one node's stable debug payload through the CLI
+pgtm -c /etc/pgtuskmaster/config.toml debug verbose
+
+# Poll only new retained debug history entries after sequence 42
+pgtm -c /etc/pgtuskmaster/config.toml debug verbose --since 42
+
+# Export the raw stable verbose payload for automation
+pgtm -c /etc/pgtuskmaster/config.toml --json debug verbose
 
 # Connect to the current primary without scraping table output
 psql "$(pgtm -c /etc/pgtuskmaster/config.toml primary)"
