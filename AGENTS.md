@@ -33,5 +33,9 @@ We don't have legacy at all. If you find any legacy code/docs, remove it.
 No backwards compatibility allowed!
 You are free and encouraged to make large code/schema changes, if that will improve the codebase.
 
+Never run `cargo test` in this repo.
+For validation, prefer make targets
+If you need a focused local test while developing, use `cargo nextest run ...`, not `cargo test`.
+
 ## Cross application applicable learnings
 - `git commit` triggers a post-commit hook that builds the mdBook and publishes `dist/` to the separate `pgtuskmaster-docs` repo; expect an extra docs publish step and ensure your environment has the needed Node/mdBook dependencies configured.
