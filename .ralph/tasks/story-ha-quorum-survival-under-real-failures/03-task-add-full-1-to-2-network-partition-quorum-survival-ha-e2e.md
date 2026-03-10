@@ -5,6 +5,8 @@
 <description>
 **Goal:** Add realistic full-network-partition coverage where all control-plane and data-plane traffic is split 1:2, and the majority side elects or preserves exactly one primary before any heal as long as DCS quorum still exists. The higher-order goal is to validate the strongest quorum claim the user cares about: majority partition stays available, minority partition cannot remain or become primary.
 
+**Execution contract for this task:** The HA partition E2E coverage added here must remain safe under parallel execution. Do not serialize the partition suite to avoid harness conflicts. Any binary-build or artifact-sharing problem must be solved through nextest-friendly prebuild/reuse of the `pgtuskmaster` binary plus per-test namespace isolation, not by forcing single-test execution.
+
 **Scope:**
 - Extend the partition-proxy harness and partition scenarios in:
 - `tests/ha/support/partition.rs`
@@ -28,6 +30,7 @@
 - Current partition tests cover etcd isolation, API-only isolation, PostgreSQL-path isolation, and mixed faults, but not a true full 1:2 cluster split across all paths.
 - Current tests also explicitly accept `FailSafe` for an etcd-isolated primary, but they do not prove the majority side remains available with one primary under a full partition.
 - The user wants quorum-preserving availability to be the rule whenever the majority side still has DCS quorum.
+- The user also wants HA E2E to keep running in parallel; this task must not rely on one-at-a-time execution to stay stable.
 
 **Expected outcome:**
 - The partition suite proves the majority side of a 1:2 split keeps or regains one primary before heal.
@@ -52,6 +55,8 @@
 - [ ] Each scenario must include a bounded pre-heal safety criterion on the minority side: zero primary observations and no successful proof writes as primary.
 - [ ] Each scenario verifies post-heal SQL/data convergence once the partition is removed.
 - [ ] The scenario design remains readable: one failure story per scenario, with timeline artifacts naming which node was isolated and whether it was primary or replica at split time.
+- [ ] The added partition scenarios remain compatible with parallel `nextest`-style execution; this task must not introduce suite-wide serialization or build-lock workarounds.
+- [ ] Verification for this task includes a nextest-friendly path that reuses a single built `pgtuskmaster` binary across parallel HA E2E runs.
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly

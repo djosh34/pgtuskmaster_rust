@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 12:56:42 AM CET 2026
+Generated: Tue Mar 10 01:26:47 AM CET 2026
 
 # Task `.ralph/tasks/bugs/ha-authoritative-startup-redesign-still-has-legacy-phase-machine-and-incomplete-offline-election.md`
 
@@ -142,6 +142,18 @@ leader lease to any healthy primary member record in DCS. This lets a stale form
 <priority>high</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-managed-start-intent-architecture/task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md`
+
+```
+## Task: Redesign HA Startup Bootstrap And Rejoin Around Authoritative DCS Reconciliation <status>retry-tests</status> <passes>false</passes> <priority>ultra high</priority>
+
+
+<description>
+**Goal:** Replace the current split startup/rejoin/follow-leader architecture with one authoritative reconciliation model that derives node behavior from DCS authority plus local physical facts, rather than from mixed local heuristics and phase-specific patches. The higher-order goal is to guarantee that ephemeral node restarts, cold restarts, preserved-PGDATA rejoins, and leader-loss reactions all converge through the same control rules and therefore produce the same safe behavior.
 ```
 
 ==============

@@ -5,6 +5,8 @@
 <description>
 **Goal:** Add a full-partition recovery scenario where the old primary lived on the minority side, the majority moved on, and the minority old primary later reconnects with a stale view. The higher-order goal is to prove the stale old primary is fenced, rewound, or otherwise forced into a safe follower path instead of continuing to serve as primary.
 
+**Execution contract for this task:** The HA E2E coverage added here must remain safe under parallel execution. If partition scenarios need the runtime binary or other shared artifacts, make them nextest-friendly through prebuild/reuse and test-namespace isolation rather than serializing the suite.
+
 **Scope:**
 - Extend partition or multi-node HA E2E coverage in:
 - `tests/ha/support/partition.rs`
@@ -19,6 +21,7 @@
 **Context from research:**
 - This is one of the highest-risk real-world split-brain recovery paths.
 - It is not enough to prove the majority side survives; the old minority primary must also be shown to rejoin safely when connectivity returns.
+- The user wants HA E2E to keep running in parallel; this task must not require one-at-a-time scheduling as a workaround.
 
 **Expected outcome:**
 - The suite proves that stale former primaries from the minority side cannot keep serving once they reconnect.
@@ -32,6 +35,7 @@
 - [ ] After reconnecting the minority old primary, the scenario must prove it does not remain or become primary and instead enters a safe rejoin path as replica.
 - [ ] The scenario must verify final proof-row convergence and no dual-primary window across the split and rejoin interval.
 - [ ] Timeline artifacts must make the minority old-primary story explicit: split time, majority promotion time, minority reconnect time, safe rejoin time.
+- [ ] The added scenario remains compatible with parallel `nextest`-style execution and does not require suite-wide serialization or repeated in-test runtime-binary builds.
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly

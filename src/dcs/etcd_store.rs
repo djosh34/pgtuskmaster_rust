@@ -2084,62 +2084,68 @@ mod tests {
             let mut observer = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
             let mut writer = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
 
-            for record in [
-                MemberRecord {
-                    member_id: MemberId("node-a".to_string()),
-                    postgres_host: "127.0.0.1".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Primary,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
-                    updated_at: UnixMillis(1),
-                    pg_version: Version(1),
-                },
-                MemberRecord {
-                    member_id: MemberId("node-b".to_string()),
-                    postgres_host: "127.0.0.2".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Primary,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
-                    updated_at: UnixMillis(15_000),
-                    pg_version: Version(1),
-                },
-                MemberRecord {
-                    member_id: MemberId("node-c".to_string()),
-                    postgres_host: "127.0.0.3".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Replica,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
-                    updated_at: UnixMillis(15_000),
-                    pg_version: Version(1),
-                },
-            ] {
+	            for record in [
+	                MemberRecord {
+	                    member_id: MemberId("node-a".to_string()),
+	                    postgres_host: "127.0.0.1".to_string(),
+	                    postgres_port: 5432,
+	                    api_url: None,
+	                    role: MemberRole::Primary,
+	                    sql: SqlStatus::Healthy,
+	                    readiness: Readiness::Ready,
+	                    timeline: Some(crate::state::TimelineId(1)),
+	                    write_lsn: Some(crate::state::WalLsn(10)),
+	                    replay_lsn: None,
+	                    system_identifier: Some(crate::state::SystemIdentifier(42)),
+	                    durable_end_lsn: Some(crate::state::WalLsn(10)),
+	                    state_class: Some(crate::dcs::state::MemberStateClass::Promotable),
+	                    postgres_runtime_class: Some(
+	                        crate::dcs::state::PostgresRuntimeClass::RunningHealthy,
+	                    ),
+	                    updated_at: UnixMillis(1),
+	                    pg_version: Version(1),
+	                },
+	                MemberRecord {
+	                    member_id: MemberId("node-b".to_string()),
+	                    postgres_host: "127.0.0.2".to_string(),
+	                    postgres_port: 5432,
+	                    api_url: None,
+	                    role: MemberRole::Replica,
+	                    sql: SqlStatus::Healthy,
+	                    readiness: Readiness::Ready,
+	                    timeline: Some(crate::state::TimelineId(1)),
+	                    write_lsn: None,
+	                    replay_lsn: Some(crate::state::WalLsn(15)),
+	                    system_identifier: Some(crate::state::SystemIdentifier(42)),
+	                    durable_end_lsn: Some(crate::state::WalLsn(15)),
+	                    state_class: Some(crate::dcs::state::MemberStateClass::ReplicaOnly),
+	                    postgres_runtime_class: Some(
+	                        crate::dcs::state::PostgresRuntimeClass::RunningHealthy,
+	                    ),
+	                    updated_at: UnixMillis(15_000),
+	                    pg_version: Version(1),
+	                },
+	                MemberRecord {
+	                    member_id: MemberId("node-c".to_string()),
+	                    postgres_host: "127.0.0.3".to_string(),
+	                    postgres_port: 5432,
+	                    api_url: None,
+	                    role: MemberRole::Replica,
+	                    sql: SqlStatus::Healthy,
+	                    readiness: Readiness::Ready,
+	                    timeline: Some(crate::state::TimelineId(1)),
+	                    write_lsn: None,
+	                    replay_lsn: Some(crate::state::WalLsn(12)),
+	                    system_identifier: Some(crate::state::SystemIdentifier(42)),
+	                    durable_end_lsn: Some(crate::state::WalLsn(12)),
+	                    state_class: Some(crate::dcs::state::MemberStateClass::ReplicaOnly),
+	                    postgres_runtime_class: Some(
+	                        crate::dcs::state::PostgresRuntimeClass::RunningHealthy,
+	                    ),
+	                    updated_at: UnixMillis(15_000),
+	                    pg_version: Version(1),
+	                },
+	            ] {
                 let encoded = serde_json::to_string(&record)
                     .map_err(|err| boxed_error(format!("encode member record failed: {err}")))?;
                 writer.write_path(
@@ -2172,15 +2178,22 @@ mod tests {
 
             let mut snapshot_store =
                 EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
-            let mut cache = DcsView {
-                members: BTreeMap::new(),
-                leader: None,
-                switchover: None,
-                config: sample_runtime_config(&fixture.scope),
-                cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
-            };
+	            let mut cache = DcsView {
+	                members: BTreeMap::new(),
+	                leader: None,
+	                switchover: None,
+	                config: sample_runtime_config(&fixture.scope),
+	                cluster_initialized: Some(crate::dcs::state::ClusterInitializedRecord {
+	                    initialized_by: MemberId("node-a".to_string()),
+	                    initialized_at: UnixMillis(1),
+	                }),
+	                cluster_identity: Some(crate::dcs::state::ClusterIdentityRecord {
+	                    system_identifier: crate::state::SystemIdentifier(42),
+	                    bootstrapped_by: MemberId("node-a".to_string()),
+	                    bootstrapped_at: UnixMillis(1),
+	                }),
+	                bootstrap_lock: None,
+	            };
             let events = snapshot_store.drain_watch_events()?;
             refresh_from_etcd_watch(&fixture.scope, &mut cache, events)?;
 
@@ -2202,28 +2215,29 @@ mod tests {
             world_config.cluster.member_id = "node-b".to_string();
             let world = WorldSnapshot {
                 config: crate::state::Versioned::new(Version(1), now, world_config.clone()),
-                pg: crate::state::Versioned::new(
-                    Version(1),
-                    now,
-                    PgInfoState::Primary {
-                        common: PgInfoCommon {
-                            worker: WorkerStatus::Running,
-                            sql: SqlStatus::Healthy,
-                            readiness: Readiness::Ready,
-                            timeline: None,
-                            pg_config: PgConfig {
-                                port: None,
-                                hot_standby: None,
-                                primary_conninfo: None,
-                                primary_slot_name: None,
-                                extra: BTreeMap::new(),
-                            },
-                            last_refresh_at: Some(now),
-                        },
-                        wal_lsn: crate::state::WalLsn(10),
-                        slots: Vec::new(),
-                    },
-                ),
+	                pg: crate::state::Versioned::new(
+	                    Version(1),
+	                    now,
+	                    PgInfoState::Replica {
+	                        common: PgInfoCommon {
+	                            worker: WorkerStatus::Running,
+	                            sql: SqlStatus::Healthy,
+	                            readiness: Readiness::Ready,
+	                            timeline: Some(crate::state::TimelineId(1)),
+	                            pg_config: PgConfig {
+	                                port: None,
+	                                hot_standby: None,
+	                                primary_conninfo: None,
+	                                primary_slot_name: None,
+	                                extra: BTreeMap::new(),
+	                            },
+	                            last_refresh_at: Some(now),
+	                        },
+	                        replay_lsn: crate::state::WalLsn(15),
+	                        follow_lsn: None,
+	                        upstream: None,
+	                    },
+	                ),
                 dcs: crate::state::Versioned::new(
                     Version(1),
                     now,

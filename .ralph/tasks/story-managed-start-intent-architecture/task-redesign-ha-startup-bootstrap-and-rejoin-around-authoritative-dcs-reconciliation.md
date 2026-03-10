@@ -1,7 +1,11 @@
-## Task: Redesign HA Startup Bootstrap And Rejoin Around Authoritative DCS Reconciliation <status>completed</status> <passes>true</passes> <priority>ultra high</priority>
+## Task: Redesign HA Startup Bootstrap And Rejoin Around Authoritative DCS Reconciliation <status>retry-tests</status> <passes>false</passes> <priority>ultra high</priority>
 
+
+### Note from you PO:
+This task has been partially done outside the ralph loop, your first action must be to check which acceptance checkboxes can be ticked off via verification inside the code, and which are still 'TODO'
 
 <description>
+
 **Goal:** Replace the current split startup/rejoin/follow-leader architecture with one authoritative reconciliation model that derives node behavior from DCS authority plus local physical facts, rather than from mixed local heuristics and phase-specific patches. The higher-order goal is to guarantee that ephemeral node restarts, cold restarts, preserved-PGDATA rejoins, and leader-loss reactions all converge through the same control rules and therefore produce the same safe behavior.
 
 The redesign must explicitly eliminate the current class of confusing and unsafe behavior where startup can infer local primary intent without authoritative DCS confirmation, while HA steady-state follow behavior performs a different partial sequence than cold startup. The new model must make bootstrap, rejoin, election participation, rewind, basebackup, and replica retargeting parts of one coherent state machine.
@@ -362,94 +366,6 @@ The implementation may rename these, but it must preserve this degree of compres
 
 </description>
 
-<acceptance_criteria>
-- [x] Write and commit a concrete architecture note in docs and code comments that defines:
-- [ ] durable DCS facts (`cluster_initialized`)
-- [ ] leased DCS facts (`bootstrap_lock`, `leader_lock`)
-- [ ] per-tick input facts (DCS authority, trust, member freshness, local postgres runtime facts, local physical `PGDATA` facts, recovery compatibility facts)
-- [ ] per-tick desired outputs (`Bootstrap`, `Primary`, `Replica`, `Quiescent`, `Fence`) and the nested subplans for each
-- [ ] the exact deterministic bootstrap and initialized-cluster leader-election ordering
-- [ ] the exact local `PGDATA` inspection fields and which implementation source is authoritative (`pg_control` / `pg_controldata`-equivalent)
-- [ ] Replace the current startup-mode selection in `src/runtime/node.rs` with the new reconcile model and delete the old `InitializePrimary` / `CloneReplica` / `ResumeExisting` split if it is no longer the direct architecture.
-- [ ] Remove the current “initialized cluster + no DCS authority + no managed replica residue => start as primary” fallback from `src/runtime/node.rs`.
-- [ ] Remove every startup or HA path that treats DCS probe failure, stale DCS, or no-fresh-quorum state as enough reason to become writable primary in an initialized cluster.
-- [ ] Replace plain `init_lock` semantics across `src/dcs/state.rs`, `src/dcs/worker.rs`, `src/dcs/store.rs`, `src/dcs/etcd_store.rs`, and `src/runtime/node.rs` with the new durable/leased bootstrap model. No old init-lock-only bootstrap path may remain reachable after completion.
-- [x] Rename `DcsTrust::FullQuorum` everywhere it is surfaced in product code, tests, debug API, and CLI output to a more truthful name such as `FreshQuorum`, and update all labels/docs accordingly.
-- [ ] Delete the current `foreign healthy primary` fallback model from startup and HA. After completion, follower/rejoin authority comes from the authoritative leader only, not from arbitrary member records that claim to be primary.
-- [ ] Implement the explicit safe policy for `cluster_initialized = false` plus non-empty local `PGDATA`:
-- [ ] this is always `Quiescent(UnsafeUninitializedPgData)` plus a hard surfaced error
-- [ ] no adoption mode exists
-- [ ] no silent deletion exists
-- [ ] Redesign `src/ha/state.rs`, `src/ha/decision.rs`, and `src/ha/lower.rs` so the public/internal HA state space reflects the new smaller set of desired states and nested plans rather than the current overlapping phases and decisions.
-- [ ] Redesign `src/ha/decide.rs` so replica reconciliation is one ordered flow that chooses:
-- [ ] direct follow
-- [ ] rewind then follow
-- [ ] basebackup then follow
-- [ ] without splitting that one logical flow across unrelated top-level states
-- [ ] Redesign `src/ha/process_dispatch.rs`, `src/ha/worker.rs`, `src/process/jobs.rs`, `src/process/state.rs`, and `src/process/worker.rs` so a follower reconcile plan can own the full transition it needs without cross-tick ambiguity or latching hacks that suppress necessary retries.
-- [ ] Remove the current semantic overlap between `WaitForPostgres`, `StartPostgres`, and `FollowLeader`; after completion there must be one clearly authoritative path for “this node should converge to follower-of-X”.
-- [ ] Define explicitly what happens when `cluster_initialized = true` and all nodes were offline long enough for all leases to expire:
-- [ ] which nodes may join election
-- [ ] which nodes stay quiescent
-- [ ] how no dual-primary is preserved while re-electing a leader
-- [ ] how the per-node published startup/election descriptor is compared across nodes and which node is allowed to attempt the leader lease
-- [ ] how cold nodes publish their pre-election descriptors before a leader exists and before writable PostgreSQL starts
-- [ ] explicitly preserve the requirement that a healthy 2-of-3 quorum elects and restores one primary before the third node returns; no task rewrite or test rewrite may weaken this into “wait for all three nodes”
-- [ ] Define explicitly what happens when `cluster_initialized = false` but unexpected non-empty local `PGDATA` exists; the task must choose and implement one safe policy, and test it:
-- [ ] explicit hard error requiring operator action
-- [ ] silent deletion or silent bootstrap-over-existing-data is forbidden
-- [ ] Define explicitly what happens when the local node owns `leader_lock` and then self-detects PostgreSQL unhealth or loss of local primary validity:
-- [ ] stop serving and fence immediately
-- [ ] release the owned leader lease when possible through the proper owner path
-- [ ] rely on lease expiry when hard death prevents active release
-- [ ] do not introduce any non-leader “healthy primary fallback” for followers while waiting for lease cleanup
-- [ ] Define explicitly whether cold leader election requires starting postgres before final leader acquisition:
-- [ ] if no, implement the full offline inspection + published descriptor path
-- [ ] if yes, the task must implement and document a non-writable/fenced pre-election postgres mode and prove it cannot create dual-primary service exposure
-- [ ] Define explicitly the success ordering for first bootstrap:
-- [ ] bootstrap lease acquired first
-- [ ] bootstrap performed
-- [ ] durable cluster identity record written on success
-- [ ] `cluster_initialized` written only on success
-- [ ] no durable plain `init_lock` or equivalent bootstrap-start marker remains
-- [ ] Ensure `src/postgres_managed.rs` and `src/postgres_managed_conf.rs` remain pure render/output layers:
-- [ ] they may receive an authoritative reconcile plan
-- [ ] they must not derive authority or role intent from local managed files
-- [ ] Add or rewrite tests in `tests/ha/support/multi_node.rs`, `tests/ha_multi_node_failover.rs`, and any necessary unit/integration suites to cover at minimum:
-- [ ] concurrent first bootstrap with one bootstrap winner and all other nodes staying stopped until leadership exists
-- [ ] bootstrap lock expiry and bootstrap retry before cluster initialization completes
-- [ ] initialized cluster restart after all nodes were offline and all leases expired
-- [ ] initialized cluster restart after all leases expired but existing local `PGDATA` is preserved on every node
-- [ ] in a 3-node cluster, primary hard loss with one healthy replica still online and the third node still offline must restore exactly one primary on the healthy 2-node quorum before the third node returns
-- [ ] follower restart while healthy leader exists
-- [ ] old primary restart after failover, including rewind-eligible and reclone-required variants
-- [ ] preserved replica restart after failover
-- [ ] `cluster_initialized = false` with unexpected non-empty `PGDATA`, proving the chosen safe policy
-- [ ] deterministic winner-selection unit tests for the published descriptor ordering:
-- [ ] higher timeline beats lower timeline
-- [ ] same timeline higher durable LSN beats lower durable LSN
-- [ ] running healthy beats offline inspectable on otherwise equal facts
-- [ ] lexical `member_id` tie-break is stable and deterministic
-- [ ] leader lease loss while fresh quorum remains
-- [ ] leader loss while fresh quorum does not remain
-- [ ] strict multi-node post-restart convergence assertions that validate the full expected follower set rather than only a subset of nodes
-- [ ] Audit and update the source-level tests in:
-- [ ] `src/runtime/node.rs`
-- [ ] `src/dcs/state.rs`
-- [ ] `src/ha/decision.rs`
-- [ ] `src/ha/decide.rs`
-- [ ] `src/ha/process_dispatch.rs`
-- [ ] `src/ha/worker.rs`
-- [ ] so their asserted phases/decisions/trust labels match the new architecture instead of the removed overlap
-- [ ] Audit and update HA partition coverage in `tests/ha_partition_isolation.rs` and `tests/ha/support/partition.rs` wherever the new leader/bootstrap/rejoin rules change expected behavior.
-- [ ] Remove or rewrite stale legacy tests, helper logic, and API/debug labels that still encode the old startup/follow split. No dead or shadow logic may remain in the final tree.
-- [ ] Reconcile the Ralph HA task and bug files listed in the Scope section so completed/superseded task narratives no longer contradict the redesigned product behavior and test suite.
-- [x] Update docs in `docs/src/reference/ha-decisions.md`, `docs/src/explanation/ha-decision-engine.md`, and `docs/src/how-to/handle-primary-failure.md` so the shipped behavior matches the redesigned architecture exactly.
-- [x] `make check` — passes cleanly
-- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [x] `make lint` — passes cleanly
-- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
-</acceptance_criteria>
 
 ## Detailed implementation plan
 
@@ -683,5 +599,121 @@ Skeptical review amendment:
    - run `/bin/bash .ralph/task_switch.sh`
    - commit all changes, including `.ralph` updates
    - `git push`
+
+
+<acceptance_criteria>
+- [ ] Write and commit a concrete architecture note in docs and code comments that defines:
+- [ ] durable DCS facts (`cluster_initialized`)
+- [ ] leased DCS facts (`bootstrap_lock`, `leader_lock`)
+- [ ] per-tick input facts (DCS authority, trust, member freshness, local postgres runtime facts, local physical `PGDATA` facts, recovery compatibility facts)
+- [ ] per-tick desired outputs (`Bootstrap`, `Primary`, `Replica`, `Quiescent`, `Fence`) and the nested subplans for each
+- [ ] the exact deterministic bootstrap and initialized-cluster leader-election ordering
+- [ ] the exact local `PGDATA` inspection fields and which implementation source is authoritative (`pg_control` / `pg_controldata`-equivalent)
+- [ ] Replace the current startup-mode selection in `src/runtime/node.rs` with the new reconcile model and delete the old `InitializePrimary` / `CloneReplica` / `ResumeExisting` split if it is no longer the direct architecture.
+- [ ] Remove the current “initialized cluster + no DCS authority + no managed replica residue => start as primary” fallback from `src/runtime/node.rs`.
+- [ ] Remove every startup or HA path that treats DCS probe failure, stale DCS, or no-fresh-quorum state as enough reason to become writable primary in an initialized cluster.
+- [x] Replace plain `init_lock` semantics across `src/dcs/state.rs`, `src/dcs/worker.rs`, `src/dcs/store.rs`, `src/dcs/etcd_store.rs`, and `src/runtime/node.rs` with the new durable/leased bootstrap model. No old init-lock-only bootstrap path may remain reachable after completion.
+- [x] Rename `DcsTrust::FullQuorum` everywhere it is surfaced in product code, tests, debug API, and CLI output to a more truthful name such as `FreshQuorum`, and update all labels/docs accordingly.
+- [x] Delete the current `foreign healthy primary` fallback model from startup and HA. After completion, follower/rejoin authority comes from the authoritative leader only, not from arbitrary member records that claim to be primary.
+- [x] Implement the explicit safe policy for `cluster_initialized = false` plus non-empty local `PGDATA`:
+- [x] this is always `Quiescent(UnsafeUninitializedPgData)` plus a hard surfaced error
+- [x] no adoption mode exists
+- [x] no silent deletion exists
+- [x] Redesign `src/ha/state.rs`, `src/ha/decision.rs`, and `src/ha/lower.rs` so the public/internal HA state space reflects the new smaller set of desired states and nested plans rather than the current overlapping phases and decisions.
+- [x] Redesign `src/ha/decide.rs` so replica reconciliation is one ordered flow that chooses:
+- [x] direct follow
+- [x] rewind then follow
+- [x] basebackup then follow
+- [x] without splitting that one logical flow across unrelated top-level states
+- [x] Redesign `src/ha/process_dispatch.rs`, `src/ha/worker.rs`, `src/process/jobs.rs`, `src/process/state.rs`, and `src/process/worker.rs` so a follower reconcile plan can own the full transition it needs without cross-tick ambiguity or latching hacks that suppress necessary retries.
+- [x] Remove the current semantic overlap between `WaitForPostgres`, `StartPostgres`, and `FollowLeader`; after completion there must be one clearly authoritative path for “this node should converge to follower-of-X”.
+- [ ] Define explicitly what happens when `cluster_initialized = true` and all nodes were offline long enough for all leases to expire:
+- [ ] which nodes may join election
+- [ ] which nodes stay quiescent
+- [ ] how no dual-primary is preserved while re-electing a leader
+- [ ] how the per-node published startup/election descriptor is compared across nodes and which node is allowed to attempt the leader lease
+- [ ] how cold nodes publish their pre-election descriptors before a leader exists and before writable PostgreSQL starts
+- [ ] explicitly preserve the requirement that a healthy 2-of-3 quorum elects and restores one primary before the third node returns; no task rewrite or test rewrite may weaken this into “wait for all three nodes”
+- [ ] Define explicitly what happens when `cluster_initialized = false` but unexpected non-empty local `PGDATA` exists; the task must choose and implement one safe policy, and test it:
+- [ ] explicit hard error requiring operator action
+- [ ] silent deletion or silent bootstrap-over-existing-data is forbidden
+- [ ] Define explicitly what happens when the local node owns `leader_lock` and then self-detects PostgreSQL unhealth or loss of local primary validity:
+- [ ] stop serving and fence immediately
+- [ ] release the owned leader lease when possible through the proper owner path
+- [ ] rely on lease expiry when hard death prevents active release
+- [ ] do not introduce any non-leader “healthy primary fallback” for followers while waiting for lease cleanup
+- [ ] Define explicitly whether cold leader election requires starting postgres before final leader acquisition:
+- [ ] if no, implement the full offline inspection + published descriptor path
+- [ ] if yes, the task must implement and document a non-writable/fenced pre-election postgres mode and prove it cannot create dual-primary service exposure
+- [ ] Define explicitly the success ordering for first bootstrap:
+- [ ] bootstrap lease acquired first
+- [ ] bootstrap performed
+- [ ] durable cluster identity record written on success
+- [ ] `cluster_initialized` written only on success
+- [ ] no durable plain `init_lock` or equivalent bootstrap-start marker remains
+- [ ] Ensure `src/postgres_managed.rs` and `src/postgres_managed_conf.rs` remain pure render/output layers:
+- [ ] they may receive an authoritative reconcile plan
+- [ ] they must not derive authority or role intent from local managed files
+- [ ] Add or rewrite tests in `tests/ha/support/multi_node.rs`, `tests/ha_multi_node_failover.rs`, and any necessary unit/integration suites to cover at minimum:
+- [ ] concurrent first bootstrap with one bootstrap winner and all other nodes staying stopped until leadership exists
+- [ ] bootstrap lock expiry and bootstrap retry before cluster initialization completes
+- [ ] initialized cluster restart after all nodes were offline and all leases expired
+- [ ] initialized cluster restart after all leases expired but existing local `PGDATA` is preserved on every node
+- [ ] in a 3-node cluster, primary hard loss with one healthy replica still online and the third node still offline must restore exactly one primary on the healthy 2-node quorum before the third node returns
+- [ ] follower restart while healthy leader exists
+- [ ] old primary restart after failover, including rewind-eligible and reclone-required variants
+- [ ] preserved replica restart after failover
+- [ ] `cluster_initialized = false` with unexpected non-empty `PGDATA`, proving the chosen safe policy
+- [ ] deterministic winner-selection unit tests for the published descriptor ordering:
+- [ ] higher timeline beats lower timeline
+- [ ] same timeline higher durable LSN beats lower durable LSN
+- [ ] running healthy beats offline inspectable on otherwise equal facts
+- [ ] lexical `member_id` tie-break is stable and deterministic
+- [ ] leader lease loss while fresh quorum remains
+- [ ] leader loss while fresh quorum does not remain
+- [ ] strict multi-node post-restart convergence assertions that validate the full expected follower set rather than only a subset of nodes
+- [x] Audit and update the source-level tests in:
+- [x] `src/runtime/node.rs`
+- [x] `src/dcs/state.rs`
+- [x] `src/ha/decision.rs`
+- [x] `src/ha/decide.rs`
+- [x] `src/ha/process_dispatch.rs`
+- [x] `src/ha/worker.rs`
+- [x] so their asserted phases/decisions/trust labels match the new architecture instead of the removed overlap
+- [ ] Audit and update HA partition coverage in `tests/ha_partition_isolation.rs` and `tests/ha/support/partition.rs` wherever the new leader/bootstrap/rejoin rules change expected behavior.
+- [ ] Remove or rewrite stale legacy tests, helper logic, and API/debug labels that still encode the old startup/follow split. No dead or shadow logic may remain in the final tree.
+- [ ] Reconcile the Ralph HA task and bug files listed in the Scope section so completed/superseded task narratives no longer contradict the redesigned product behavior and test suite.
+- [ ] Update docs in `docs/src/reference/ha-decisions.md`, `docs/src/explanation/ha-decision-engine.md`, and `docs/src/how-to/handle-primary-failure.md` so the shipped behavior matches the redesigned architecture exactly.
+- [ ] `make check` — passes cleanly
+- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [ ] `make lint` — passes cleanly
+- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [ ] Additional remaining work discovered during retry verification:
+- [ ] Replace the remaining startup-only `InitializePrimary` / `CloneReplica` / `ResumeExisting` planning split in `src/runtime/node.rs` with an authoritative reconcile-first startup path that can safely defer to HA when leader authority is not yet available.
+- [ ] Add an explicit startup mode for “authoritative facts insufficient to start postgres yet” so runtime startup does not exit hard while the cluster is initialized but there is temporarily no authoritative leader or no basebackup source.
+- [ ] Fix initialized-cluster empty-`PGDATA` join/rejoin so follower nodes wait for authoritative leader election instead of aborting with `cluster is already initialized but no healthy primary is available for basebackup`.
+- [ ] Fix initialized-cluster preserved-`PGDATA` restart/rejoin so nodes do not abort with `cluster is already initialized but no authoritative leader is available to derive startup intent`; they must come up non-writable and reconcile through HA.
+- [ ] Reconcile runtime restart semantics in `src/test_harness/ha_e2e/handle.rs` and runtime startup so `restart_node` no longer fails with `runtime restart requested for running node` in the redesigned control flow.
+- [ ] Re-run and make green every failing HA multi-node e2e discovered during deep verification:
+- [ ] `e2e_multi_node_partial_recovery_restores_quorum_before_full_heal`
+- [ ] `e2e_multi_node_rejects_targeted_switchover_to_ineligible_member`
+- [ ] `e2e_multi_node_primary_runtime_restart_recovers_without_split_brain`
+- [ ] `e2e_multi_node_repeated_failovers_preserve_intermediate_writes`
+- [ ] `e2e_multi_node_repeated_leadership_changes_preserve_single_primary`
+- [ ] `e2e_multi_node_rewind_failure_falls_back_to_basebackup`
+- [ ] `e2e_multi_node_stress_planned_switchover_concurrent_sql`
+- [ ] `e2e_multi_node_stress_unassisted_failover_concurrent_sql`
+- [ ] `e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity`
+- [ ] `e2e_multi_node_targeted_switchover_promotes_requested_replica`
+- [ ] `e2e_multi_node_primary_whole_node_hard_kill_failover_recovers_after_heal`
+- [ ] `e2e_multi_node_cli_primary_and_replicas_follow_switchover`
+- [ ] Re-run `tests/ha_partition_isolation.rs` after the runtime startup/rejoin fixes and confirm the updated partition expectations still hold.
+- [ ] Legacy-code cleanup verification still required before this task can be marked passing:
+- [ ] repo-wide grep proves no `HaPhase`, `HaDecision`, `ha_phase`, `ha_decision`, `WaitForPostgres`, `FollowLeader`, `WaitingSwitchoverSuccessor`, `FullQuorum`, or old fail-safe phase labels remain in `src/` or `tests/`
+- [ ] runtime startup code no longer contains the old architecture split as the controlling mental model, even if helper names survive temporarily during refactor
+- [ ] multi-node and partition helpers/assertions no longer encode old phase semantics; they must assert against `DesiredNodeState` / new safe-state outcomes only
+- [ ] CLI/debug/test fixtures no longer serialize or assert the removed legacy HA API fields
+- [ ] source-level and e2e tests together prove that restart, cold rejoin, switchover, no-quorum fencing, and post-failover rejoin all converge through the same authoritative reconciliation rules
+  </acceptance_criteria>
 
 NOW EXECUTE

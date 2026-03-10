@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 10 12:56:42 AM CET 2026
+Generated: Tue Mar 10 01:26:47 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -197,18 +197,6 @@ An accepted targeted switchover request is not reliably honored in the HA multi-
 <priority>high</priority>
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-managed-start-intent-architecture/task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md`
-
-```
-## Task: Redesign HA Startup Bootstrap And Rejoin Around Authoritative DCS Reconciliation <status>completed</status> <passes>true</passes> <priority>ultra high</priority>
-
-
-<description>
-**Goal:** Replace the current split startup/rejoin/follow-leader architecture with one authoritative reconciliation model that derives node behavior from DCS authority plus local physical facts, rather than from mixed local heuristics and phase-specific patches. The higher-order goal is to guarantee that ephemeral node restarts, cold restarts, preserved-PGDATA rejoins, and leader-loss reactions all converge through the same control rules and therefore produce the same safe behavior.
 ```
 
 ==============

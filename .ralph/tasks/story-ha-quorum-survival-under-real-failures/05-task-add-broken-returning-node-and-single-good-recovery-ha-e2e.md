@@ -5,9 +5,13 @@
 <description>
 **Goal:** Cover the case where two nodes are down, quorum is lost, and then only one node returns successfully while another remains broken and cannot start PostgreSQL. The higher-order goal is to prove the cluster can recover to one primary as soon as quorum is restored by one good returning node, without requiring every failed node to recover cleanly.
 
+**Execution contract for this task:** The HA E2E coverage added here must remain safe under parallel execution. Do not serialize the suite to avoid runtime-binary or pid-file contention. The task must preserve or improve nextest-friendly execution where the runtime binary is built once and reused across isolated test namespaces.
+
 **Whole-node outage semantics for this task:**
 - Reuse the explicit outage modes introduced in task 02.
 - This task does not need to cover both clean-stop and hard-kill variants by itself, but it must use true whole-node outage semantics for whichever variant it chooses, not only database stop semantics.
+- If this task uses the hard-kill path from task 02, that path must mean honest OS-level abrupt death, not `pg_ctl stop -m immediate`.
+- If this task uses the hard-kill path from task 02, it must use the explicit tracked runtime PID plus current `postmaster.pid` PID kill contract from task 02.
 
 **Scope:**
 - Extend multi-node HA E2E coverage in:
@@ -28,6 +32,7 @@
 - The user explicitly called out “two nodes die, one returns with disk issue, the other good one should still become leader”.
 - The current suite has no real partial-recovery coverage of this shape.
 - Existing wrapper-based recovery-failure tests already provide some patterns for deterministic breakage of node startup/recovery paths.
+- The user wants HA E2E to keep running in parallel; this task must not weaken coverage by imposing serial execution.
 
 **Expected outcome:**
 - The suite proves quorum restoration by one healthy returning node is enough to recover service, even if another failed node stays broken.
@@ -44,6 +49,7 @@
 - [ ] The scenario verifies the broken node never becomes an eligible primary while still broken.
 - [ ] The scenario includes a bounded pre-heal assertion after only one node returns: service is restored with one stable primary and a successful proof write before the broken third node is healed.
 - [ ] The scenario includes a post-heal assertion, if the broken node is eventually fixed in the same test, that it rejoins as replica only and does not disturb the elected primary.
+- [ ] The scenario and harness changes remain compatible with parallel `nextest`-style execution and do not require suite-wide serialization or repeated in-test runtime-binary builds.
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly

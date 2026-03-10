@@ -5,6 +5,8 @@
 <description>
 **Goal:** Add realistic recovery coverage for a full-cluster fail-safe event where no node can coordinate, followed by restoration of quorum through reconnecting two or all nodes. The higher-order goal is to prove that fail-safe is a temporary safety mode and that the cluster deterministically returns to exactly one primary when enough connectivity is restored.
 
+**Execution contract for this task:** The HA E2E recovery coverage added here must remain safe under parallel execution. If new helpers need the runtime binary or other shared artifacts, the task must make them nextest-friendly by prebuilding once and reusing them across test namespaces rather than forcing serial execution.
+
 **Scope:**
 - Extend HA E2E coverage in:
 - `tests/ha/support/multi_node.rs`
@@ -20,6 +22,7 @@
 **Context from research:**
 - Current tests cover entry into fail-safe during etcd quorum loss and recovery after etcd restoration, but they do not directly exercise a “nobody can coordinate, then quorum returns partially” story as an operator would experience it.
 - The user wants explicit proof that after fail-safe, reconnecting two nodes is enough to get one primary again.
+- The user also wants HA E2E to keep running in parallel; test stability must come from isolation, not from one-at-a-time scheduling.
 
 **Expected outcome:**
 - The suite proves fail-safe is recoverable through partial quorum restoration.
@@ -36,6 +39,7 @@
 - [ ] The scenarios verify post-recovery SQL writes on the elected primary and convergence to all expected online nodes.
 - [ ] The two-node restoration scenario must include a strict pre-heal assertion: once exactly two nodes are back, there is one stable primary and successful proof writes before the third node returns.
 - [ ] The all-node restoration scenario must include a post-heal assertion that the final cluster converges to exactly one primary with identical proof rows on every node.
+- [ ] The added fail-safe recovery scenarios remain compatible with parallel `nextest`-style execution and do not require suite-wide serialization or repeated in-test runtime-binary builds.
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly

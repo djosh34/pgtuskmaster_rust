@@ -5,6 +5,8 @@
 <description>
 **Goal:** Add realistic HA coverage for the case where the primary does not disappear cleanly, but becomes unusable because storage is full or WAL cannot advance. The higher-order goal is to prove the cluster can replace a wedged primary whose process may still exist but whose PostgreSQL instance can no longer make forward progress safely.
 
+**Execution contract for this task:** The storage/WAL-fault E2E coverage added here must remain safe under parallel execution. If the fault-injection mechanism interacts with shared binaries or build artifacts, solve that through nextest-friendly prebuild/reuse of the runtime binary and per-test namespaces rather than serializing HA E2E.
+
 **Scope:**
 - Extend the HA E2E harness and/or process-fault tooling in:
 - `tests/ha/support/multi_node.rs`
@@ -25,6 +27,7 @@
 - Current failover tests model “primary Postgres stopped” but not “primary still exists yet is wedged by storage/WAL pressure”.
 - Real incidents often look like disk full, WAL cannot be extended, or primary becomes read-only/broken without a clean shutdown.
 - This fault can expose different bugs than simple process death because the old leader may linger longer and may still interact badly with DCS/trust.
+- The user wants HA E2E to keep running in parallel; this task must not introduce a "run alone" requirement as a workaround.
 
 **Expected outcome:**
 - The suite covers a realistic “primary stalled by storage/WAL failure” outage, not only process death.
@@ -42,6 +45,7 @@
 - [ ] The scenario verifies the broken old primary does not silently remain an eligible leader while stalled.
 - [ ] The scenario records evidence of the intended fault, such as WAL/full-disk style write failure, startup/readiness degradation, or another operator-visible marker proving the primary was stalled rather than cleanly shut down.
 - [ ] Timeline artifacts clearly identify when the storage/WAL fault took effect and when the replacement primary became stable.
+- [ ] The added scenarios remain compatible with parallel `nextest`-style execution and do not require suite-wide serialization or repeated in-test runtime-binary builds.
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
