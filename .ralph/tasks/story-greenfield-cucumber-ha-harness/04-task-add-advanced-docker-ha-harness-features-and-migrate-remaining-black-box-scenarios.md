@@ -7,7 +7,7 @@ Add the advanced greenfield Docker HA harness capabilities required for the rema
 
 It is explicitly not a requirement that every advanced scenario pass against the product before this task is considered complete. The requirement is that every advanced scenario is created and executable on the greenfield harness, and that each run produces enough evidence to show whether a failure is a real HA behavior failure in the system under test rather than a harness failure.
 
-Any trustworthy HA or product failure exposed by these advanced feature runs must create a bug task with add-bug, and that bug task must contain `<blocked_by>` tags for all four tasks in `story-greenfield-cucumber-ha-harness`.
+Any trustworthy HA or product failure exposed by these advanced feature runs must create a bug task with add-bug, and that bug task must contain `<blocked_by>` tags for every task in `story-greenfield-cucumber-ha-harness`.
 Another explicit requirement, is that the tests must (just like before), be able to succesfully executed in parallel.
 Serial execution of tests, is a failure of this task.
 
@@ -342,7 +342,7 @@ Each scenario below is one feature, one `.feature` file, and one tiny Rust wrapp
 - [ ] product or HA scenario failure
 - [ ] successful scenario pass
 - [ ] Fix harness failures until every advanced feature can be executed to a trustworthy outcome.
-- [ ] For every trustworthy product or HA scenario failure, create a bug task with add-bug and add `<blocked_by>` tags for all four tasks in this story.
+- [ ] For every trustworthy product or HA scenario failure, create a bug task with add-bug and add `<blocked_by>` tags for every task in this story.
 - [ ] Do not leave scenarios uncreated just because they currently expose product bugs.
 - [ ] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.

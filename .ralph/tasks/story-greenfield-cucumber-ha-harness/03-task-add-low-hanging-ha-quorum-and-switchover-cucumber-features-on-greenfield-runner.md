@@ -7,7 +7,7 @@ Add the next six greenfield Docker HA cucumber features after task 01. This task
 
 It is explicitly not a requirement that all six scenarios pass against the product before this task is considered complete. The requirement is that all six scenarios are created, wired into the greenfield harness, and can be executed. If a scenario fails, the run must make it clear that the failure is an HA behavior failure in the system under test rather than a harness failure such as broken startup, broken orchestration, bad fixture wiring, missing commands, or unreadable artifacts.
 
-Any trustworthy HA or product failure exposed by these six feature runs must create a bug task with add-bug, and that bug task must contain `<blocked_by>` tags for all four tasks in `story-greenfield-cucumber-ha-harness`.
+Any trustworthy HA or product failure exposed by these six feature runs must create a bug task with add-bug, and that bug task must contain `<blocked_by>` tags for every task in `story-greenfield-cucumber-ha-harness`.
 Another explicit requirement, is that the tests must (just like before), be able to succesfully executed in parallel.
 Serial execution of tests, is a failure of this task.
 
@@ -190,7 +190,7 @@ Serial execution of tests, is a failure of this task.
 - [ ] product or HA scenario failure
 - [ ] successful scenario pass
 - [ ] Fix harness failures until every feature can be executed to a trustworthy outcome.
-- [ ] For every trustworthy product or HA scenario failure, create a bug task immediately with add-bug and add `<blocked_by>` tags for all four tasks in this story.
+- [ ] For every trustworthy product or HA scenario failure, create a bug task immediately with add-bug and add `<blocked_by>` tags for every task in this story.
 - [ ] Do not defer feature creation just because one scenario currently exposes a product bug.
 - [ ] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.

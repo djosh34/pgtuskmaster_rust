@@ -57,7 +57,7 @@
 - [ ] The comparison artifact explicitly maps each then-current failing test or failing scenario class to every option, so it is clear how each plan claims to solve the entire failing set.
 - [ ] If existing bug tasks from the greenfield runs are present, the artifacts reference them only as evidence and do not fix them during this task.
 - [ ] The executor independently checks the artifacts against the then-current failing greenfield test files and the implicated HA source files, and records that cross-check in the story artifacts.
-- [ ] An email is sent with the discovered on-host `reply.sh` helper from the receive-mail or receive-email directory, and the email contains a natural-language summary without bullet points, the best and second-best options with reasons, and substantive architecture questions for the user.
+- [ ] An email is sent with the discovered on-host `reply.sh` helper from the receive_mail or receive_email directory, and the email contains a natural-language summary without bullet points, the best and second-best options with reasons, and substantive architecture questions for the user.
 - [ ] `.ralph/STOP` is written after the email is sent and before any further Ralph loop work continues.
 - [ ] Docs are updated if this task changes any documented workflow around the design-review stop; otherwise the story artifacts and task markdown are the required written record.
 - [ ] `make check` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set and `<passes>true</passes>` remains false.

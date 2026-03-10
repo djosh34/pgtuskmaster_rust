@@ -5,7 +5,7 @@
 <description>
 **Goal:** Build a fully separate greenfield HA end-to-end test framework under `cucumber_tests/ha` that does not reuse any of the current HA test harness logic from `tests/` or `src/test_harness/ha_e2e/`. The framework must use `cucumber-rs` feature files, Docker CLI orchestration, real compiled `pgtuskmaster` and `pgtm` binaries, static checked-in fixture files for the 3-node cluster, and an observer flow that inspects the system only through `pgtm` plus `psql`. Deliver the first real feature as a primary-container-crash failover-and-rejoin scenario.
 
-It is explicitly not a requirement that the first HA scenario already passes against the product before this task is considered complete. The requirement is that the harness exists, the first feature exists, and the feature can be executed to a trustworthy outcome. If the run exposes an HA or product failure rather than a harness failure, that failure must create a bug task in `.ralph/tasks/bugs/`, and that bug task must contain `<blocked_by>` tags for all four tasks in `story-greenfield-cucumber-ha-harness`.
+It is explicitly not a requirement that the first HA scenario already passes against the product before this task is considered complete. The requirement is that the harness exists, the first feature exists, and the feature can be executed to a trustworthy outcome. If the run exposes an HA or product failure rather than a harness failure, that failure must create a bug task in `.ralph/tasks/bugs/`, and that bug task must contain `<blocked_by>` tags for every task in `story-greenfield-cucumber-ha-harness`.
 
 **Original user shift / motivation:** The user wants to fully redesign the HA/e2e test approach because the current `tests/` tree has too much opaque custom harness logic, including custom HTTP handling that is hard to read and hard to trust. The new framework must be visibly simple, independent from the old HA harness, centered on `.feature` files, centered on the real binaries, and built so the old harness can later be deleted entirely.
 
@@ -255,4 +255,4 @@ It is explicitly not a requirement that the first HA scenario already passes aga
 TO BE VERIFIED
 - [ ] Run targeted execution of `primary_crash_rejoin`.
 - [ ] If the result is a harness failure, keep fixing the harness until the run reaches a trustworthy outcome.
-- [ ] If the result is a trustworthy HA or product failure, create a bug task immediately with add-bug and add `<blocked_by>` tags for all four tasks in this story.
+- [ ] If the result is a trustworthy HA or product failure, create a bug task immediately with add-bug and add `<blocked_by>` tags for every task in this story.

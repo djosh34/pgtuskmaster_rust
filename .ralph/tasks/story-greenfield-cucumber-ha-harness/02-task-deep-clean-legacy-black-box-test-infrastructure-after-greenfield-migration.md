@@ -9,7 +9,7 @@ This task therefore narrows cleanup to the legacy boundary that task 01 actually
 
 Do not delete `tests/ha_partition_isolation.rs`, `tests/ha/support/partition.rs`, `tests/ha/support/observer.rs`, `src/test_harness/ha_e2e/`, `src/test_harness/net_proxy.rs`, `tests/policy_e2e_api_only.rs`, or the remaining `ha_multi_node_failover` scenarios in this task. Those still back unreplaced coverage that tasks 03 and 04 explicitly plan to migrate later.
 
-This task is still deletion-first, but only within the currently migrated boundary. If rerunning the greenfield `primary_crash_rejoin` feature or the repo gates exposes a trustworthy HA or product failure rather than a harness failure, create a bug task via add-bug and add `<blocked_by>` tags for all four tasks in `story-greenfield-cucumber-ha-harness`.
+This task is still deletion-first, but only within the currently migrated boundary. If rerunning the greenfield `primary_crash_rejoin` feature or the repo gates exposes a trustworthy HA or product failure rather than a harness failure, create a bug task via add-bug and add `<blocked_by>` tags for every task in `story-greenfield-cucumber-ha-harness`.
 </description>
 
 <acceptance_criteria>
@@ -21,7 +21,7 @@ This task is still deletion-first, but only within the currently migrated bounda
 - [ ] Any docs or comments that still imply the legacy long HA binary owns the primary-crash/rejoin boundary are updated in the same task.
 - [ ] Repo-wide verification shows the deleted legacy primary-crash overlap is gone while unreplaced legacy HA coverage remains intentionally present.
 - [ ] Cleanup happens only for the replacement greenfield feature that already exists and can be executed to a trustworthy harness-backed outcome, even if that outcome is a product-failure result.
-- [ ] Any trustworthy HA or product failure found while rerunning migrated greenfield features after cleanup creates a bug task with add-bug with `<blocked_by>` tags for all four tasks in this story.
+- [ ] Any trustworthy HA or product failure found while rerunning migrated greenfield features after cleanup creates a bug task with add-bug with `<blocked_by>` tags for every task in this story.
 - [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
