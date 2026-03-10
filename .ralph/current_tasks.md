@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 02:59:53 PM CET 2026
+Generated: Tue Mar 10 03:20:22 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-replica-bootstrap-auth-breaks-when-runtime-roles-reuse-postgres.md`
 
@@ -25,10 +25,34 @@ The new `cucumber_tests/ha` Docker HA harness now reaches a real primary on `nod
 
 ==============
 
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-cucumber-features-on-greenfield-runner.md`
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
 
 ```
-## Task: Add Low-Hanging HA Quorum Cucumber Features On The Greenfield Runner <status>not_started</status> <passes>false</passes>
+## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+
+```
+## Task: Deep Clean Legacy Black-Box Test Infrastructure After Greenfield Migration <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
+
+```
+## Task: Add Advanced Docker HA Harness Features And Migrate Remaining Black-Box Scenarios <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 
