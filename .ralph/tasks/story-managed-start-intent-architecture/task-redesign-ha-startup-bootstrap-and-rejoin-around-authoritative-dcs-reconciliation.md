@@ -714,6 +714,7 @@ Skeptical review amendment:
 - [ ] multi-node and partition helpers/assertions no longer encode old phase semantics; they must assert against `DesiredNodeState` / new safe-state outcomes only
 - [ ] CLI/debug/test fixtures no longer serialize or assert the removed legacy HA API fields
 - [ ] source-level and e2e tests together prove that restart, cold rejoin, switchover, no-quorum fencing, and post-failover rejoin all converge through the same authoritative reconciliation rules
+- [ ] FINAL DEEP VERIFICATION THAT EVERYTHING WAS ACTUALLY DONE, AND NO LEGACY AND OLD CODE NEEDS TO BE CLEANED UP ANYWHERE!!
   </acceptance_criteria>
 
 NOW EXECUTE
