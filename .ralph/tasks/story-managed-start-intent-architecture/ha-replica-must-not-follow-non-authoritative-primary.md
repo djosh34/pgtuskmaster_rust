@@ -1,4 +1,5 @@
-## Bug: HA replica must not follow non-authoritative primary <status>not_started</status> <passes>false</passes>
+## Extra Check Task: HA replica must not follow non-authoritative primary <status>not_started</status> <passes>false</passes> <priority>high</priority>
+<blocked_by>task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md</blocked_by>
 
 <description>
 In the HA decision and startup-rejoin paths, source selection falls back from the authoritative
