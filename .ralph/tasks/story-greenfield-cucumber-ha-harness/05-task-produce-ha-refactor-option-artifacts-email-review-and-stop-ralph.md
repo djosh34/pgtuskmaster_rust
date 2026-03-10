@@ -13,6 +13,8 @@
 
 **Higher-order goal:** Keep the HA architecture centered on the current `ha_loop` plus functional `decide` style, while generating credible whole-system refactor options that improve correctness, determinism, and maintainability together. The broader goal is to make later implementation follow a deliberate architectural choice, not an accident of whichever failing test somebody notices first.
 
+HARD REQUIREMENT: DO NOT FIX/ALTER ANY CODE WHATSOEVER! ONLY PLAN AND WRITE PLANS!
+
 **Scope:**
 - This task is planning-only. It must not implement the HA refactor itself, and it must not “fix forward” production code or test code just to get through failing scenarios.
 - The task must begin only after all four tasks in `story-greenfield-cucumber-ha-harness` are complete, because its input is the full then-current greenfield failing set after the migration work has landed.

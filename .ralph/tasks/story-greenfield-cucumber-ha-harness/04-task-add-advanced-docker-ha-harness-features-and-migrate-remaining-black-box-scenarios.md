@@ -11,6 +11,10 @@ Any trustworthy HA or product failure exposed by these advanced feature runs mus
 Another explicit requirement, is that the tests must (just like before), be able to succesfully executed in parallel.
 Serial execution of tests, is a failure of this task.
 
+HARD REQUIREMENT: DO NOT SOLVE ANY TEST FAILURES THAT ARE IN `src/`, instead create bug tasks using add-bug, blocked by this story.
+Any attempt of solving bugs outside the scope of this harness are STRICTLY FORBIDDEN!
+JUST RUN ALL TESTS IN PARALLEL, GATHER FAILURES, ADD BUGS, AND MOVE ON!
+
 Advanced harness capabilities required in this task:
 - full 1:2 network partition control
 - path-specific network isolation for etcd, API, and postgres/replication traffic
