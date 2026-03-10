@@ -35,7 +35,8 @@ You are free and encouraged to make large code/schema changes, if that will impr
 
 Never run `cargo test` in this repo.
 For validation, prefer make targets
-If you need a focused local test while developing, use `cargo nextest run ...`, not `cargo test`.
+If you need a focused local test while developing, use `cargo nextest ...`, not `cargo test`.
+`cargo test` causes linking issues often
 
 ## Cross application applicable learnings
 - `git commit` triggers a post-commit hook that builds the mdBook and publishes `dist/` to the separate `pgtuskmaster-docs` repo; expect an extra docs publish step and ensure your environment has the needed Node/mdBook dependencies configured.
