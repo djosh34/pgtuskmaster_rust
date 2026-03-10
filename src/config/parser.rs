@@ -523,6 +523,7 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         "postgres.roles.rewinder.username",
         cfg.postgres.roles.rewinder.username.as_str(),
     )?;
+    validate_distinct_role_usernames(cfg)?;
 
     if cfg.postgres.local_conn_identity.user != cfg.postgres.roles.superuser.username {
         return Err(ConfigError::Validation {
@@ -542,6 +543,7 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
             ),
         });
     }
+    validate_distinct_postgres_role_usernames(cfg)?;
 
     validate_postgres_auth_tls_invariants(cfg)?;
 
@@ -755,6 +757,58 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
 
     validate_dcs_init_config(cfg)?;
 
+    Ok(())
+}
+
+fn validate_distinct_postgres_role_usernames(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    let roles = [
+        ("postgres.roles.superuser.username", cfg.postgres.roles.superuser.username.as_str()),
+        ("postgres.roles.replicator.username", cfg.postgres.roles.replicator.username.as_str()),
+        ("postgres.roles.rewinder.username", cfg.postgres.roles.rewinder.username.as_str()),
+    ];
+    for (current_index, (current_field, current_username)) in roles.iter().enumerate() {
+        for (other_field, other_username) in roles.iter().skip(current_index + 1) {
+            if current_username == other_username {
+                return Err(ConfigError::Validation {
+                    field: *other_field,
+                    message: format!(
+                        "must differ from {current_field} (both were `{current_username}`)"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_distinct_role_usernames(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    if cfg.postgres.roles.superuser.username == cfg.postgres.roles.replicator.username {
+        return Err(ConfigError::Validation {
+            field: "postgres.roles.replicator.username",
+            message: format!(
+                "must differ from postgres.roles.superuser.username (`{}`) so replication does not reuse the superuser role",
+                cfg.postgres.roles.superuser.username
+            ),
+        });
+    }
+    if cfg.postgres.roles.superuser.username == cfg.postgres.roles.rewinder.username {
+        return Err(ConfigError::Validation {
+            field: "postgres.roles.rewinder.username",
+            message: format!(
+                "must differ from postgres.roles.superuser.username (`{}`) so rewind does not reuse the superuser role",
+                cfg.postgres.roles.superuser.username
+            ),
+        });
+    }
+    if cfg.postgres.roles.replicator.username == cfg.postgres.roles.rewinder.username {
+        return Err(ConfigError::Validation {
+            field: "postgres.roles.rewinder.username",
+            message: format!(
+                "must differ from postgres.roles.replicator.username (`{}`); replication and rewind use separate roles",
+                cfg.postgres.roles.replicator.username
+            ),
+        });
+    }
     Ok(())
 }
 
@@ -2243,6 +2297,39 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
+    fn validate_runtime_config_rejects_replicator_reusing_superuser_username() -> Result<(), String> {
+        let mut cfg = base_runtime_config();
+        cfg.postgres.roles.replicator.username = cfg.postgres.roles.superuser.username.clone();
+        expect_validation_error(
+            validate_runtime_config(&cfg),
+            "postgres.roles.replicator.username",
+            "must differ from postgres.roles.superuser.username",
+        )
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_rewinder_reusing_superuser_username() -> Result<(), String> {
+        let mut cfg = base_runtime_config();
+        cfg.postgres.roles.rewinder.username = cfg.postgres.roles.superuser.username.clone();
+        expect_validation_error(
+            validate_runtime_config(&cfg),
+            "postgres.roles.rewinder.username",
+            "must differ from postgres.roles.superuser.username",
+        )
+    }
+
+    #[test]
+    fn validate_runtime_config_rejects_rewinder_reusing_replicator_username() -> Result<(), String> {
+        let mut cfg = base_runtime_config();
+        cfg.postgres.roles.rewinder.username = cfg.postgres.roles.replicator.username.clone();
+        expect_validation_error(
+            validate_runtime_config(&cfg),
+            "postgres.roles.rewinder.username",
+            "must differ from postgres.roles.replicator.username",
+        )
+    }
+
+    #[test]
     fn load_runtime_config_missing_replicator_username_is_actionable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let unique = std::time::SystemTime::now()
@@ -2725,6 +2812,89 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
                 }
             }
             other => Err(format!("expected validation error, got {other:?}")),
+        };
+        mapped.map_err(std::io::Error::other)?;
+
+        std::fs::remove_file(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_rejects_duplicate_postgres_role_usernames(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-duplicate-postgres-role-usernames-{unique}.toml"
+        ));
+
+        let toml = r#"
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+connect_timeout_s = 5
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
+rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
+tls = { mode = "required", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 1000
+bootstrap_timeout_ms = 1000
+fencing_timeout_ms = 1000
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[logging]
+level = "info"
+capture_subprocess_output = false
+postgres = { enabled = false, poll_interval_ms = 1000, cleanup = { enabled = false, max_files = 1, max_age_seconds = 1, protect_recent_seconds = 1 } }
+sinks = { stderr = { enabled = true }, file = { enabled = false, mode = "append", path = "/tmp/runtime.jsonl" } }
+
+[api]
+listen_addr = "127.0.0.1:8443"
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+
+[debug]
+enabled = true
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        let mapped = match err {
+            Err(ConfigError::Validation { field, message }) => {
+                if field != "postgres.roles.rewinder.username" {
+                    Err(format!(
+                        "expected validation field postgres.roles.rewinder.username, got {field}"
+                    ))
+                } else if !message.contains("postgres.roles.superuser.username") {
+                    Err(format!(
+                        "expected validation message to mention superuser username duplication, got {message:?}"
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            Ok(_) => Err("expected duplicate role usernames to fail validation".to_string()),
+            Err(other) => Err(format!("expected validation error, got {other}")),
         };
         mapped.map_err(std::io::Error::other)?;
 

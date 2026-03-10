@@ -5,6 +5,8 @@
 <description>
 **Goal:** Build a fully separate greenfield HA end-to-end test framework under `cucumber_tests/ha` that does not reuse any of the current HA test harness logic from `tests/` or `src/test_harness/ha_e2e/`. The framework must use `cucumber-rs` feature files, Docker CLI orchestration, real compiled `pgtuskmaster` and `pgtm` binaries, static checked-in fixture files for the 3-node cluster, and an observer flow that inspects the system only through `pgtm` plus `psql`. Deliver the first real feature as a primary-container-crash failover-and-rejoin scenario.
 
+It is explicitly not a requirement that the first HA scenario already passes against the product before this task is considered complete. The requirement is that the harness exists, the first feature exists, and the feature can be executed to a trustworthy outcome. If the run exposes an HA or product failure rather than a harness failure, that failure must create a bug task in `.ralph/tasks/bugs/`, and that bug task must contain `<blocked_by>` tags for all four tasks in `story-greenfield-cucumber-ha-harness`.
+
 **Original user shift / motivation:** The user wants to fully redesign the HA/e2e test approach because the current `tests/` tree has too much opaque custom harness logic, including custom HTTP handling that is hard to read and hard to trust. The new framework must be visibly simple, independent from the old HA harness, centered on `.feature` files, centered on the real binaries, and built so the old harness can later be deleted entirely.
 
 **Higher-order goal:** Replace the existing HA behavioural test infrastructure with a simpler, more operator-realistic system that is easy to inspect, parallel-safe, and grounded in real Dockerized nodes rather than custom in-process control logic.
@@ -62,10 +64,13 @@
 - [ ] the implementation makes the separation goal explicit in code comments and/or task notes: this framework is independent by design and is intended to make the legacy HA harness deletable later
 - [ ] old harness reuse is fully rejected in code and repo-wide verification confirms the new framework files do not import legacy test harness modules accidentally
 - [ ] docs are updated with the new cucumber HA test entrypoint and layout, and stale or misleading references are corrected where relevant
-- [ ] `make check` passes cleanly
-- [ ] `make test` passes cleanly
-- [ ] `make test-long` passes cleanly
-- [ ] `make lint` passes cleanly
+- [ ] the first feature wrapper can be executed on the new greenfield harness to a trustworthy outcome
+- [ ] the first feature run produces enough evidence to distinguish harness failure from HA behavior failure in the system under test
+- [ ] if the first feature exposes a trustworthy product or HA failure, a bug task is created under `.ralph/tasks/bugs/` and that bug contains `<blocked_by>` tags for:
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
 - [ ] `<passes>true</passes>` is set only after every acceptance-criteria item and every required implementation-plan checkbox is complete
 </acceptance_criteria>
 
@@ -240,3 +245,6 @@
 - [ ] Push with `git push`
 
 TO BE VERIFIED
+- [ ] Run targeted execution of `primary_crash_rejoin`.
+- [ ] If the result is a harness failure, keep fixing the harness until the run reaches a trustworthy outcome.
+- [ ] If the result is a trustworthy HA or product failure, create a bug task immediately with add-bug and add `<blocked_by>` tags for all four tasks in this story.

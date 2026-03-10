@@ -1,44 +1,83 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::Duration,
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::support::{
+    config::harness_settings,
     error::{HarnessError, Result},
     process::{self, CommandSpec},
 };
-
-const DEFAULT_DOCKER_BIN_CANDIDATES: [&str; 2] = ["/usr/bin/docker", "/usr/local/bin/docker"];
 
 #[derive(Clone, Debug)]
 pub struct DockerCli {
     executable: PathBuf,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ComposePsEntry {
+    #[serde(rename = "ID")]
+    pub id: String,
+    #[serde(rename = "Service")]
+    pub service: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DockerInspectEntry {
+    #[serde(rename = "NetworkSettings")]
+    network_settings: Option<DockerNetworkSettings>,
+    #[serde(rename = "State")]
+    state: Option<DockerContainerState>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DockerNetworkSettings {
+    #[serde(rename = "Ports")]
+    ports: Option<BTreeMap<String, Option<Vec<DockerPortBinding>>>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DockerPortBinding {
+    #[serde(rename = "HostPort")]
+    host_port: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DockerContainerState {
+    #[serde(rename = "Status")]
+    status: Option<String>,
+    #[serde(rename = "Health")]
+    health: Option<DockerHealthState>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DockerHealthState {
+    #[serde(rename = "Status")]
+    status: Option<String>,
+}
+
 impl DockerCli {
     pub fn discover() -> Result<Self> {
-        if let Some(path) = std::env::var_os("PGTUSKMASTER_HA_DOCKER_BIN") {
-            let candidate = PathBuf::from(path);
-            process::ensure_absolute_executable(candidate.as_path())?;
-            return Ok(Self {
-                executable: candidate,
-            });
-        }
-
-        let candidate = DEFAULT_DOCKER_BIN_CANDIDATES
+        let settings = harness_settings()?;
+        let candidate = settings
+            .docker
+            .executable_candidates
             .iter()
-            .map(PathBuf::from)
             .find(|path| path.exists())
             .ok_or_else(|| {
                 HarnessError::message(
-                    "docker binary was not found; set PGTUSKMASTER_HA_DOCKER_BIN to an absolute path or install docker at /usr/bin/docker",
+                    "docker binary was not found in cucumber_tests/ha/harness.toml executable_candidates",
                 )
             })?;
         process::ensure_absolute_executable(candidate.as_path())?;
         Ok(Self {
-            executable: candidate,
+            executable: candidate.clone(),
         })
     }
 
@@ -105,7 +144,7 @@ impl DockerCli {
         Ok(())
     }
 
-    pub fn compose_ps_json(&self, compose_file: &Path, project: &str) -> Result<Value> {
+    pub fn compose_ps_entries(&self, compose_file: &Path, project: &str) -> Result<Vec<ComposePsEntry>> {
         let output = self.run_text_in_dir(
             compose_file.parent().ok_or_else(|| {
                 HarnessError::message(format!(
@@ -160,20 +199,14 @@ impl DockerCli {
         project: &str,
         service: &str,
     ) -> Result<String> {
-        let entries = self.compose_ps_json(compose_file, project)?;
-        let rows = entries.as_array().ok_or_else(|| {
-            HarnessError::message("docker compose ps --format json did not return an array")
-        })?;
-        let matches = rows
+        let matches = self
+            .compose_ps_entries(compose_file, project)?
             .iter()
             .filter_map(|entry| {
-                let service_name = entry.get("Service")?.as_str()?;
-                if service_name != service {
+                if entry.service != service {
                     return None;
                 }
-                entry.get("ID")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string)
+                Some(entry.id.clone())
             })
             .collect::<Vec<_>>();
         match matches.as_slice() {
@@ -223,20 +256,20 @@ impl DockerCli {
     }
 
     pub fn published_host_port(&self, container: &str, port: &str) -> Result<u16> {
-        let inspect = self.inspect_container_json(container)?;
-        let details = inspect
-            .as_array()
-            .and_then(|entries| entries.first())
+        let inspect_entries = self.inspect_container_entries(container)?;
+        let details = inspect_entries
+            .first()
             .ok_or_else(|| {
                 HarnessError::message(format!(
                     "docker inspect for `{container}` did not return a container object"
                 ))
             })?;
         let port_bindings = details
-            .get("NetworkSettings")
-            .and_then(|value| value.get("Ports"))
+            .network_settings
+            .as_ref()
+            .and_then(|value| value.ports.as_ref())
             .and_then(|value| value.get(port))
-            .and_then(Value::as_array)
+            .and_then(|value| value.as_ref())
             .ok_or_else(|| {
                 HarnessError::message(format!(
                     "container `{container}` does not expose published port `{port}`"
@@ -247,14 +280,11 @@ impl DockerCli {
                 "container `{container}` has no host binding for `{port}`"
             ))
         })?;
-        let host_port = binding
-            .get("HostPort")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                HarnessError::message(format!(
-                    "container `{container}` binding for `{port}` is missing HostPort"
-                ))
-            })?;
+        let host_port = binding.host_port.as_deref().ok_or_else(|| {
+            HarnessError::message(format!(
+                "container `{container}` binding for `{port}` is missing HostPort"
+            ))
+        })?;
         host_port.parse::<u16>().map_err(|err| {
             HarnessError::message(format!(
                 "container `{container}` binding for `{port}` has invalid host port `{host_port}`: {err}"
@@ -263,26 +293,19 @@ impl DockerCli {
     }
 
     pub fn container_health_status(&self, container: &str) -> Result<Option<String>> {
-        let inspect = self.inspect_container_json(container)?;
-        Ok(inspect
-            .as_array()
-            .and_then(|entries| entries.first())
-            .and_then(|entry| entry.get("State"))
-            .and_then(|state| state.get("Health"))
-            .and_then(|health| health.get("Status"))
-            .and_then(Value::as_str)
-            .map(ToString::to_string))
+        Ok(self
+            .inspect_container_entries(container)?
+            .first()
+            .and_then(|entry| entry.state.as_ref())
+            .and_then(|state| state.health.as_ref())
+            .and_then(|health| health.status.clone()))
     }
 
     pub fn container_state_status(&self, container: &str) -> Result<String> {
-        let inspect = self.inspect_container_json(container)?;
-        inspect
-            .as_array()
-            .and_then(|entries| entries.first())
-            .and_then(|entry| entry.get("State"))
-            .and_then(|state| state.get("Status"))
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
+        self.inspect_container_entries(container)?
+            .first()
+            .and_then(|entry| entry.state.as_ref())
+            .and_then(|state| state.status.clone())
             .ok_or_else(|| {
                 HarnessError::message(format!(
                     "container `{container}` inspect payload is missing State.Status"
@@ -373,7 +396,7 @@ impl DockerCli {
         self.run_in_dir(cwd, args, context.clone())?.stdout_text(context)
     }
 
-    fn inspect_container_json(&self, container: &str) -> Result<Value> {
+    fn inspect_container_entries(&self, container: &str) -> Result<Vec<DockerInspectEntry>> {
         let output = self.inspect_container(container)?;
         serde_json::from_str(output.as_str()).map_err(|source| HarnessError::Json {
             context: format!("parsing docker inspect json for `{container}`"),
@@ -382,10 +405,10 @@ impl DockerCli {
     }
 }
 
-fn parse_json_sequence(input: &str, context: String) -> Result<Value> {
+fn parse_json_sequence(input: &str, context: String) -> Result<Vec<ComposePsEntry>> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Ok(Value::Array(Vec::new()));
+        return Ok(Vec::new());
     }
     if trimmed.starts_with('[') {
         return serde_json::from_str(trimmed).map_err(|source| HarnessError::Json {
@@ -397,11 +420,10 @@ fn parse_json_sequence(input: &str, context: String) -> Result<Value> {
     trimmed
         .lines()
         .map(|line| {
-            serde_json::from_str::<Value>(line).map_err(|source| HarnessError::Json {
+            serde_json::from_str::<ComposePsEntry>(line).map_err(|source| HarnessError::Json {
                 context: context.clone(),
                 source,
             })
         })
         .collect::<Result<Vec<_>>>()
-        .map(Value::Array)
 }

@@ -1,7 +1,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,28 +16,42 @@ use crate::support::{
         pgtm::{ClusterStatusView, PgtmObserver},
         sql::SqlObserver,
     },
-    register_run,
     timeouts::TimeoutModel,
 };
 
 #[derive(Debug, Default, World)]
 pub struct HaWorld {
-    pub harness: Option<Arc<Mutex<HarnessShared>>>,
+    pub harness: Option<HarnessShared>,
+    pub killed_node: Option<String>,
+    pub new_primary: Option<String>,
+    pub proof_token: Option<String>,
 }
 
 impl HaWorld {
     pub fn reset(&mut self) {
         self.harness = None;
+        self.killed_node = None;
+        self.new_primary = None;
+        self.proof_token = None;
     }
 
-    pub fn harness(&self) -> Result<Arc<Mutex<HarnessShared>>> {
-        self.harness.clone().ok_or_else(|| {
-            HarnessError::message("scenario harness has not been initialized")
-        })
+    pub fn harness(&self) -> Result<&HarnessShared> {
+        self.harness
+            .as_ref()
+            .ok_or_else(|| HarnessError::message("scenario harness has not been initialized"))
     }
 
-    pub fn set_harness(&mut self, harness: Arc<Mutex<HarnessShared>>) {
+    pub fn set_harness(&mut self, harness: HarnessShared) {
         self.harness = Some(harness);
+    }
+
+    pub fn cleanup(&mut self) -> Result<()> {
+        let cleanup_result = match self.harness.as_mut() {
+            Some(harness) => harness.cleanup(),
+            None => Ok(()),
+        };
+        self.reset();
+        cleanup_result
     }
 }
 
@@ -57,14 +70,11 @@ pub struct HarnessShared {
     pub observer_container: String,
     pub postgres_password: String,
     pub timeouts: TimeoutModel,
-    pub killed_node: Option<String>,
-    pub new_primary: Option<String>,
-    pub proof_token: Option<String>,
     cleaned_up: bool,
 }
 
 impl HarnessShared {
-    pub async fn initialize(given_name: &str) -> Result<Arc<Mutex<Self>>> {
+    pub async fn initialize(given_name: &str) -> Result<Self> {
         if given_name != THREE_NODE_PLAIN {
             return Err(HarnessError::message(format!(
                 "unsupported given `{given_name}`; only `{THREE_NODE_PLAIN}` is implemented"
@@ -111,8 +121,8 @@ impl HarnessShared {
             "observer",
         )?;
 
-        let shared = Arc::new(Mutex::new(Self {
-            run_id: run_id.clone(),
+        let mut harness = Self {
+            run_id,
             feature_name: feature.feature_name.clone(),
             given_name: given_name.to_string(),
             run_dir,
@@ -125,16 +135,10 @@ impl HarnessShared {
             observer_container,
             postgres_password,
             timeouts,
-            killed_node: None,
-            new_primary: None,
-            proof_token: None,
             cleaned_up: false,
-        }));
-        if let Err(err) = Self::bootstrap_cluster(shared.clone()).await {
-            let cleanup_error = {
-                let mut guard = lock_shared(shared.as_ref())?;
-                guard.cleanup().err()
-            };
+        };
+        if let Err(err) = harness.bootstrap_cluster().await {
+            let cleanup_error = harness.cleanup().err();
             return match cleanup_error {
                 None => Err(err),
                 Some(cleanup) => Err(HarnessError::message(format!(
@@ -142,8 +146,7 @@ impl HarnessShared {
                 ))),
             };
         }
-        register_run(run_id, shared.clone())?;
-        Ok(shared)
+        Ok(harness)
     }
 
     pub fn observer(&self) -> PgtmObserver {
@@ -166,58 +169,43 @@ impl HarnessShared {
         )
     }
 
-    async fn bootstrap_cluster(shared: Arc<Mutex<Self>>) -> Result<()> {
-        Self::wait_for_service_health(shared.clone(), "etcd").await?;
-        {
-            let guard = lock_shared(shared.as_ref())?;
-            guard.docker.compose_up_services(
-                guard.compose_file.as_path(),
-                guard.compose_project.as_str(),
-                &["node-b"],
-            )?;
-        }
-        Self::wait_for_seed_primary(shared.clone()).await?;
-        let guard = lock_shared(shared.as_ref())?;
-        guard.docker.compose_up_services(
-            guard.compose_file.as_path(),
-            guard.compose_project.as_str(),
+    async fn bootstrap_cluster(&self) -> Result<()> {
+        self.wait_for_service_health("etcd").await?;
+        self.docker.compose_up_services(
+            self.compose_file.as_path(),
+            self.compose_project.as_str(),
+            &["node-b"],
+        )?;
+        self.wait_for_seed_primary().await?;
+        self.docker.compose_up_services(
+            self.compose_file.as_path(),
+            self.compose_project.as_str(),
             &["node-a", "node-c"],
         )
     }
 
-    async fn wait_for_service_health(shared: Arc<Mutex<Self>>, service: &str) -> Result<()> {
-        let deadline = {
-            let guard = lock_shared(shared.as_ref())?;
-            Instant::now() + guard.timeouts.startup_deadline
-        };
-        let poll_interval = {
-            let guard = lock_shared(shared.as_ref())?;
-            guard.timeouts.poll_interval
-        };
-
+    async fn wait_for_service_health(&self, service: &str) -> Result<()> {
+        let deadline = Instant::now() + self.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
-            let result: Result<()> = {
-                let guard = lock_shared(shared.as_ref())?;
-                match guard
-                    .service_container_id(service)
-                    .and_then(|container_id| guard.docker.container_health_status(container_id.as_str()))
-                {
-                    Ok(Some(status)) if status == "healthy" => Ok(()),
-                    Ok(Some(status)) => Err(HarnessError::message(format!(
-                        "service `{service}` health is `{status}`"
-                    ))),
-                    Ok(None) => Err(HarnessError::message(format!(
-                        "service `{service}` does not expose a docker health status"
-                    ))),
-                    Err(err) => Err(err),
-                }
+            let result = match self
+                .service_container_id(service)
+                .and_then(|container_id| self.docker.container_health_status(container_id.as_str()))
+            {
+                Ok(Some(status)) if status == "healthy" => Ok(()),
+                Ok(Some(status)) => Err(HarnessError::message(format!(
+                    "service `{service}` health is `{status}`"
+                ))),
+                Ok(None) => Err(HarnessError::message(format!(
+                    "service `{service}` does not expose a docker health status"
+                ))),
+                Err(err) => Err(err),
             };
             match result {
                 Ok(()) => return Ok(()),
                 Err(err) => last_error = Some(err.to_string()),
             }
-            tokio::time::sleep(poll_interval).await;
+            tokio::time::sleep(self.timeouts.poll_interval).await;
         }
 
         Err(HarnessError::message(format!(
@@ -226,30 +214,19 @@ impl HarnessShared {
         )))
     }
 
-    async fn wait_for_seed_primary(shared: Arc<Mutex<Self>>) -> Result<()> {
-        let deadline = {
-            let guard = lock_shared(shared.as_ref())?;
-            Instant::now() + guard.timeouts.startup_deadline
-        };
-        let poll_interval = {
-            let guard = lock_shared(shared.as_ref())?;
-            guard.timeouts.poll_interval
-        };
-
+    async fn wait_for_seed_primary(&self) -> Result<()> {
+        let deadline = Instant::now() + self.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
-            let result: Result<()> = {
-                let guard = lock_shared(shared.as_ref())?;
-                match guard.observer().status() {
-                    Ok(status) => validate_seed_primary(&status),
-                    Err(err) => Err(err),
-                }
+            let result = match self.observer().status() {
+                Ok(status) => validate_seed_primary(&status),
+                Err(err) => Err(err),
             };
             match result {
                 Ok(()) => return Ok(()),
                 Err(err) => last_error = Some(err.to_string()),
             }
-            tokio::time::sleep(poll_interval).await;
+            tokio::time::sleep(self.timeouts.poll_interval).await;
         }
 
         Err(HarnessError::message(format!(
@@ -288,12 +265,13 @@ impl HarnessShared {
     }
 
     fn capture_artifacts(&self) -> Result<()> {
+        let mut failures = Vec::new();
         write_text_file(
             self.artifacts_dir.join("compose-ps.json").as_path(),
             serde_json::to_string_pretty(
                 &self
                     .docker
-                    .compose_ps_json(self.compose_file.as_path(), self.compose_project.as_str())?,
+                    .compose_ps_entries(self.compose_file.as_path(), self.compose_project.as_str())?,
             )
             .map_err(|source| HarnessError::Json {
                 context: "serializing docker compose ps json".to_string(),
@@ -324,8 +302,8 @@ impl HarnessShared {
             })?
             .as_str(),
         )?;
-        if let Ok(debug) = self.observer().debug_verbose() {
-            write_text_file(
+        match self.observer().debug_verbose() {
+            Ok(debug) => write_text_file(
                 self.artifacts_dir.join("observer-debug-verbose.json").as_path(),
                 serde_json::to_string_pretty(&debug)
                     .map_err(|source| HarnessError::Json {
@@ -333,20 +311,31 @@ impl HarnessShared {
                         source,
                     })?
                     .as_str(),
-            )?;
+            )?,
+            Err(err) => failures.push(format!("observer debug verbose capture failed: {err}")),
         }
 
         for service in ["observer", "node-a", "node-b", "node-c", "etcd"] {
-            if let Ok(container_id) = self.service_container_id(service) {
-                if let Ok(inspect) = self.docker.inspect_container(container_id.as_str()) {
-                    let artifact = self
-                        .artifacts_dir
-                        .join(format!("inspect-{service}.json"));
-                    let _ = write_text_file(artifact.as_path(), inspect.as_str());
-                }
+            match self.service_container_id(service) {
+                Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
+                    Ok(inspect) => {
+                        let artifact = self.artifacts_dir.join(format!("inspect-{service}.json"));
+                        write_text_file(artifact.as_path(), inspect.as_str())?;
+                    }
+                    Err(err) => failures.push(format!(
+                        "docker inspect artifact capture failed for `{service}`: {err}"
+                    )),
+                },
+                Err(err) => failures.push(format!(
+                    "container resolution failed for artifact capture `{service}`: {err}"
+                )),
             }
         }
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(HarnessError::message(failures.join("\n")))
+        }
     }
 }
 
@@ -463,12 +452,6 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn lock_shared(shared: &Mutex<HarnessShared>) -> Result<std::sync::MutexGuard<'_, HarnessShared>> {
-    shared
-        .lock()
-        .map_err(|_| HarnessError::message("harness mutex was poisoned"))
 }
 
 fn validate_seed_primary(status: &ClusterStatusView) -> Result<()> {

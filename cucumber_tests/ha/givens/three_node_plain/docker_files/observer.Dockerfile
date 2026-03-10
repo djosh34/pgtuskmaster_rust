@@ -7,6 +7,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o postgres -g postgres \
         /etc/pgtuskmaster \
+        /etc/pgtuskmaster/observer \
+        /etc/pgtuskmaster/tls \
         /run/secrets
 
 COPY docker_files/bin/pgtm /usr/local/bin/pgtm

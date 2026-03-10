@@ -6,6 +6,8 @@
 Add the advanced greenfield Docker HA harness capabilities required for the remaining black-box scenarios that can still be tested by running real `pgtuskmaster` binaries and controlling them externally. This task contains the exact advanced harness requirements and the exact scenario contracts.
 
 It is explicitly not a requirement that every advanced scenario pass against the product before this task is considered complete. The requirement is that every advanced scenario is created and executable on the greenfield harness, and that each run produces enough evidence to show whether a failure is a real HA behavior failure in the system under test rather than a harness failure.
+
+Any trustworthy HA or product failure exposed by these advanced feature runs must create a bug task with add-bug, and that bug task must contain `<blocked_by>` tags for all four tasks in `story-greenfield-cucumber-ha-harness`.
 Another explicit requirement, is that the tests must (just like before), be able to succesfully executed in parallel.
 Serial execution of tests, is a failure of this task.
 
@@ -289,6 +291,11 @@ Each scenario below is one feature, one `.feature` file, and one tiny Rust wrapp
 - [ ] All advanced feature wrappers can be executed on the greenfield harness.
 - [ ] Each advanced feature run produces enough evidence to distinguish a harness failure from an HA behavior failure in the system under test.
 - [ ] If a scenario fails, the failure is captured after the harness has successfully applied the intended setup and fault choreography, so the failure is attributable to product behavior rather than harness breakage.
+- [ ] Every trustworthy HA or product failure found while running these advanced features creates a bug task with add-bug with `<blocked_by>` tags for:
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
 - [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
@@ -335,6 +342,7 @@ Each scenario below is one feature, one `.feature` file, and one tiny Rust wrapp
 - [ ] product or HA scenario failure
 - [ ] successful scenario pass
 - [ ] Fix harness failures until every advanced feature can be executed to a trustworthy outcome.
+- [ ] For every trustworthy product or HA scenario failure, create a bug task with add-bug and add `<blocked_by>` tags for all four tasks in this story.
 - [ ] Do not leave scenarios uncreated just because they currently expose product bugs.
 - [ ] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.

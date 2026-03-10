@@ -116,12 +116,15 @@ The current greenfield entrypoints are:
 - `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.feature`
 - `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.rs`
 
+Right now `make test-cucumber-ha` is a stable suite alias for the single shipped greenfield feature target, `make test-cucumber-ha-primary-crash-rejoin`.
+
 The greenfield harness layout is:
 
 - `cucumber_tests/ha/features/` for one feature directory plus tiny wrapper `.rs` per scenario file
 - `cucumber_tests/ha/givens/three_node_plain/` for the static Docker compose fixture, static configs, static secrets, and Dockerfiles
 - `cucumber_tests/ha/support/` for the independent runner, world, Docker CLI, Ryuk, `pgtm`, and `psql` plumbing
 - `cucumber_tests/ha/runs/` for copied per-run input snapshots and captured artifacts
+- `cucumber_tests/ha/harness.toml` for checked-in harness-local settings such as Docker binary discovery
 
 That harness uses:
 
@@ -130,6 +133,14 @@ That harness uses:
 - `pgtm` as the cluster observer path
 - `psql --dbname <conninfo>` with conninfo resolved by `pgtm`
 - repo-local copied run workspaces so every feature run preserves its exact input files and artifacts
+- Docker Compose `configs:` and `secrets:` entries for checked-in fixture material instead of bind-mounting host config/secret paths into the containers
+
+Inside `three_node_plain`, the checked-in config layout is intentionally explicit rather than directory-noisy:
+
+- `configs/node-a|node-b|node-c/runtime.toml` for node runtime configs
+- `configs/observer/node-a.toml|node-b.toml|node-c.toml` for observer seed configs
+- `configs/pg_hba.conf`, `configs/pg_ident.conf`, and `configs/tls/*` for shared material
+- `secrets/*` for the checked-in test-only secret files consumed through Compose `secrets:`
 
 ## Real-Binary Expectations
 

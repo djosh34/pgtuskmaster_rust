@@ -55,14 +55,13 @@ The bootstrap node publishes its member record including PostgreSQL host, port, 
 
 ## Provision Replication Roles
 
-Before starting additional nodes, create the replication roles on the elected primary. The replicator role requires `LOGIN REPLICATION` privileges. The rewinder role requires `LOGIN SUPERUSER` privileges for `pg_rewind` operations.
+After the first node becomes primary, `pgtuskmaster` provisions the configured replication roles on that primary. The runtime expects:
 
-After the first node becomes primary, provision the replication roles on that primary before you start later nodes. The harness requires:
+- a distinct `replicator` login role with `LOGIN REPLICATION`
+- a distinct `rewinder` login role with `LOGIN`
+- `GRANT EXECUTE` on the `pg_catalog.pg_ls_dir`, `pg_stat_file`, and `pg_read_binary_file` functions for the rewinder role
 
-- a replicator role with `LOGIN REPLICATION`
-- a rewinder role with `LOGIN SUPERUSER`
-
-These credentials must match the PostgreSQL role settings in your runtime configuration.
+These credentials and usernames must match the PostgreSQL role settings in your runtime configuration. The runtime creates or updates those roles during initial primary bootstrap, so additional nodes can join without a manual SQL setup step.
 
 ## Deploy Subsequent Nodes
 
@@ -102,6 +101,6 @@ If two nodes appear primary at the same time, treat that as a split-brain signal
 ### Subsequent Node Fails to Join
 
 - Confirm replication roles exist on primary with correct passwords
-- Verify `rewind_conn_identity` points to a superuser role
+- Verify `rewind_conn_identity` points to the configured rewinder role
 - Check DCS member records show primary as healthy
 - Review `pg_hba.conf` on primary allows replication connections from new node

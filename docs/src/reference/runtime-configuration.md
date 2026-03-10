@@ -45,7 +45,7 @@ listen_port = 5432
 socket_dir = "/var/lib/pgtuskmaster/socket"
 log_file = "/var/log/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
-rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "disable" }
 tls = { mode = "disabled" }
 pg_hba = { source = { path = "/etc/pgtuskmaster/pg_hba.conf" } }
 pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
@@ -101,15 +101,15 @@ username = "postgres"
 auth = { type = "password", password = { path = "/run/secrets/postgres-superuser-password" } }
 
 [postgres.roles.replicator]
-username = "postgres"
+username = "replicator"
 auth = { type = "password", password = { path = "/run/secrets/replicator-password" } }
 
 [postgres.roles.rewinder]
-username = "postgres"
+username = "rewinder"
 auth = { type = "password", password = { path = "/run/secrets/rewinder-password" } }
 ```
 
-All three roles (`superuser`, `replicator`, `rewinder`) are required. Each role must provide:
+All three roles (`superuser`, `replicator`, `rewinder`) are required, and their usernames must be distinct. Each role must provide:
 
 | Subfield | Type | Constraints |
 |----------|------|-------------|

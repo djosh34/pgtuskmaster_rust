@@ -7,12 +7,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o postgres -g postgres \
         /etc/pgtuskmaster \
+        /etc/pgtuskmaster/tls \
         /var/lib/pgtuskmaster/socket \
         /var/log/pgtuskmaster
 
 COPY docker_files/bin/pgtuskmaster /usr/local/bin/pgtuskmaster
 
 RUN chmod 0755 /usr/local/bin/pgtuskmaster
+
+ENV PGSSLROOTCERT=/etc/pgtuskmaster/tls/ca.crt
 
 USER postgres
 

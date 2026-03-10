@@ -155,11 +155,7 @@ fn blocking_primary_warnings(snapshot: &SampledClusterSnapshot) -> Vec<&ClusterW
         .filter(|warning| {
             matches!(
                 warning.code.as_str(),
-                "missing_api_url"
-                    | "unreachable_node"
-                    | "missing_observation"
-                    | "insufficient_sampling"
-                    | "leader_mismatch"
+                "leader_mismatch"
                     | "membership_mismatch"
                     | "multi_primary"
             )
@@ -466,7 +462,8 @@ mod tests {
     }
 
     #[test]
-    fn primary_resolution_fails_when_sampling_is_incomplete() {
+    fn primary_resolution_allows_partial_sampling_when_one_primary_is_sampled(
+    ) -> Result<(), String> {
         let members = vec![
             sample_member("node-a", Some("http://node-a:8080")),
             sample_member("node-b", Some("http://node-b:8080")),
@@ -508,11 +505,18 @@ mod tests {
         ];
         let snapshot = sample_snapshot(seed_state, members, observations, warnings);
 
-        let result = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false);
-        assert!(
-            result.is_err(),
-            "primary should fail on incomplete sampling"
-        );
+        let view = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
+            .map_err(|err| err.to_string())?;
+        if view.targets.len() != 1 {
+            return Err("expected exactly one primary target".to_string());
+        }
+        if view.targets[0].member_id != "node-a" {
+            return Err(format!(
+                "expected node-a primary target, got {}",
+                view.targets[0].member_id
+            ));
+        }
+        Ok(())
     }
 
     #[test]

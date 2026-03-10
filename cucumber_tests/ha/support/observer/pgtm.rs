@@ -116,9 +116,9 @@ impl PgtmObserver {
         F: FnMut(&Path) -> Result<T>,
     {
         let configs = [
-            Path::new("/etc/pgtuskmaster/observer-node-a.toml"),
-            Path::new("/etc/pgtuskmaster/observer-node-b.toml"),
-            Path::new("/etc/pgtuskmaster/observer-node-c.toml"),
+            Path::new("/etc/pgtuskmaster/observer/node-a.toml"),
+            Path::new("/etc/pgtuskmaster/observer/node-b.toml"),
+            Path::new("/etc/pgtuskmaster/observer/node-c.toml"),
         ];
         let mut errors = Vec::new();
         for config in configs {

@@ -7,10 +7,14 @@ use std::{
 
 use thiserror::Error;
 use tokio::{net::TcpListener, sync::mpsc};
+use tokio_postgres::NoTls;
 
 use crate::{
     api::worker::ApiWorkerCtx,
-    config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
+    config::{
+        load_runtime_config, resolve_secret_string, validate_runtime_config, ConfigError,
+        RoleAuthConfig, RuntimeConfig,
+    },
     dcs::{
         etcd_store::EtcdDcsStore,
         state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx, MemberRole},
@@ -50,6 +54,7 @@ enum StartupAction {
     ClaimInitLockAndSeedConfig,
     RunJob(Box<ProcessJobKind>),
     StartPostgres(ManagedPostgresStartIntent),
+    EnsureRequiredRoles,
 }
 
 #[derive(Debug, Error)]
@@ -150,6 +155,7 @@ fn startup_action_kind_label(action: &StartupAction) -> &'static str {
         StartupAction::ClaimInitLockAndSeedConfig => "claim_init_lock_and_seed_config",
         StartupAction::RunJob(_) => "run_job",
         StartupAction::StartPostgres(_) => "start_postgres",
+        StartupAction::EnsureRequiredRoles => "ensure_required_roles",
     }
 }
 
@@ -683,6 +689,9 @@ async fn execute_startup(
             StartupAction::StartPostgres(start_intent) => {
                 run_start_job(cfg, process_defaults, &start_intent, log).await
             }
+            StartupAction::EnsureRequiredRoles => {
+                ensure_required_roles(cfg, process_defaults).await
+            }
         };
 
         match result {
@@ -757,6 +766,7 @@ fn build_startup_actions(
                 timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
             }))),
             StartupAction::StartPostgres(start_intent.clone()),
+            StartupAction::EnsureRequiredRoles,
         ]),
         StartupMode::CloneReplica {
             source,
@@ -778,6 +788,132 @@ fn build_startup_actions(
             }
         }
     }
+}
+
+async fn ensure_required_roles(
+    cfg: &RuntimeConfig,
+    process_defaults: &ProcessDispatchDefaults,
+) -> Result<(), RuntimeError> {
+    let mut config = tokio_postgres::Config::new();
+    config.host_path(process_defaults.socket_dir.as_path());
+    config.port(process_defaults.postgres_port);
+    config.user(cfg.postgres.roles.superuser.username.as_str());
+    config.dbname(cfg.postgres.local_conn_identity.dbname.as_str());
+    config.connect_timeout(Duration::from_secs(cfg.postgres.connect_timeout_s.into()));
+    if let RoleAuthConfig::Password { password } = &cfg.postgres.roles.superuser.auth {
+        let resolved =
+            resolve_secret_string("postgres.roles.superuser.auth.password", password).map_err(
+                |err| {
+                    RuntimeError::StartupExecution(format!(
+                        "failed to resolve bootstrap superuser password for role provisioning: {err}"
+                    ))
+                },
+            )?;
+        config.password(resolved);
+    }
+
+    let (client, connection) = config.connect(NoTls).await.map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "failed to connect to local postgres for role provisioning: {err}"
+        ))
+    })?;
+    let connection_task = tokio::spawn(connection);
+
+    let provision_sql = render_required_role_sql(cfg)?;
+    client.batch_execute(provision_sql.as_str()).await.map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "failed to provision required postgres roles: {err}"
+        ))
+    })?;
+    drop(client);
+
+    let connection_result = connection_task.await.map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "role provisioning connection task join failed: {err}"
+        ))
+    })?;
+    connection_result.map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "role provisioning connection ended with an error: {err}"
+        ))
+    })
+}
+
+fn render_required_role_sql(cfg: &RuntimeConfig) -> Result<String, RuntimeError> {
+    let superuser = render_role_provision_block(
+        cfg.postgres.roles.superuser.username.as_str(),
+        &cfg.postgres.roles.superuser.auth,
+        "LOGIN SUPERUSER NOREPLICATION",
+    )?;
+    let replicator = render_role_provision_block(
+        cfg.postgres.roles.replicator.username.as_str(),
+        &cfg.postgres.roles.replicator.auth,
+        "LOGIN REPLICATION NOSUPERUSER",
+    )?;
+    let rewinder = render_role_provision_block(
+        cfg.postgres.roles.rewinder.username.as_str(),
+        &cfg.postgres.roles.rewinder.auth,
+        "LOGIN NOREPLICATION NOSUPERUSER",
+    )?;
+    let rewinder_grants = render_rewinder_grants_sql(cfg.postgres.roles.rewinder.username.as_str());
+    Ok(format!(
+        "{superuser}\n{replicator}\n{rewinder}\n{rewinder_grants}"
+    ))
+}
+
+fn render_role_provision_block(
+    username: &str,
+    auth: &RoleAuthConfig,
+    attributes: &str,
+) -> Result<String, RuntimeError> {
+    let username_literal = sql_literal(username);
+    let role_statement = match auth {
+        RoleAuthConfig::Tls => format!(
+            "format('ALTER ROLE %I WITH {attributes}', {username_literal})"
+        ),
+        RoleAuthConfig::Password { password } => {
+            let resolved = resolve_secret_string("runtime role provisioning password", password)
+                .map_err(|err| {
+                RuntimeError::StartupExecution(format!(
+                    "failed to resolve runtime role provisioning password for `{username}`: {err}"
+                ))
+            })?;
+            let password_literal = sql_literal(resolved.as_str());
+            format!(
+                "format('ALTER ROLE %I WITH {attributes} PASSWORD %L', {username_literal}, {password_literal})"
+            )
+        }
+    };
+    Ok(format!(
+        "DO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {username_literal}) THEN\n    EXECUTE format('CREATE ROLE %I', {username_literal});\n  END IF;\n  EXECUTE {role_statement};\nEND\n$$;"
+    ))
+}
+
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn sql_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn render_rewinder_grants_sql(username: &str) -> String {
+    let role = sql_identifier(username);
+    [
+        "GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO ",
+        role.as_str(),
+        ";",
+        "\nGRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_file(text, boolean) TO ",
+        role.as_str(),
+        ";",
+        "\nGRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO ",
+        role.as_str(),
+        ";",
+        "\nGRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO ",
+        role.as_str(),
+        ";",
+    ]
+    .concat()
 }
 
 fn ensure_start_paths(
@@ -1794,5 +1930,50 @@ mod tests {
             .with_postgres_advertise_port(Some(6543))
             .build();
         assert_eq!(advertised_postgres_port(&cfg), 6543);
+    }
+
+    #[test]
+    fn initialize_primary_startup_actions_provision_required_roles(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = sample_runtime_config();
+        let actions = super::build_startup_actions(
+            &cfg,
+            &StartupMode::InitializePrimary {
+                start_intent: ManagedPostgresStartIntent::primary(),
+            },
+        )?;
+        let labels = actions
+            .iter()
+            .map(super::startup_action_kind_label)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec![
+                "claim_init_lock_and_seed_config",
+                "run_job",
+                "start_postgres",
+                "ensure_required_roles",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn render_required_role_sql_uses_distinct_replication_roles(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cfg = sample_runtime_config();
+        cfg.postgres.roles.replicator.username = "repl_user".to_string();
+        cfg.postgres.roles.rewinder.username = "rewind_user".to_string();
+
+        let rendered = super::render_required_role_sql(&cfg)?;
+        assert!(rendered.contains("ALTER ROLE %I WITH LOGIN SUPERUSER NOREPLICATION PASSWORD %L"));
+        assert!(rendered.contains("ALTER ROLE %I WITH LOGIN REPLICATION NOSUPERUSER PASSWORD %L"));
+        assert!(rendered.contains("ALTER ROLE %I WITH LOGIN NOREPLICATION NOSUPERUSER PASSWORD %L"));
+        assert!(rendered.contains("'repl_user'"));
+        assert!(rendered.contains("'rewind_user'"));
+        assert!(rendered.contains(
+            "GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO \"rewind_user\";"
+        ));
+        Ok(())
     }
 }

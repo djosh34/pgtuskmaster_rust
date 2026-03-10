@@ -6,6 +6,8 @@
 Add the next six greenfield Docker HA cucumber features after task 01. This task contains the exact scenario contracts. Each scenario is one feature, one `.feature` file, and one tiny Rust wrapper. Use real `pgtuskmaster` nodes in Docker and use `pgtm` as the operator control and observation surface after startup.
 
 It is explicitly not a requirement that all six scenarios pass against the product before this task is considered complete. The requirement is that all six scenarios are created, wired into the greenfield harness, and can be executed. If a scenario fails, the run must make it clear that the failure is an HA behavior failure in the system under test rather than a harness failure such as broken startup, broken orchestration, bad fixture wiring, missing commands, or unreadable artifacts.
+
+Any trustworthy HA or product failure exposed by these six feature runs must create a bug task with add-bug, and that bug task must contain `<blocked_by>` tags for all four tasks in `story-greenfield-cucumber-ha-harness`.
 Another explicit requirement, is that the tests must (just like before), be able to succesfully executed in parallel.
 Serial execution of tests, is a failure of this task.
 
@@ -145,6 +147,11 @@ Serial execution of tests, is a failure of this task.
 - [ ] All six feature wrappers can be executed on the greenfield harness.
 - [ ] Each feature run produces enough evidence to distinguish a harness failure from an HA behavior failure in the system under test.
 - [ ] If a scenario fails, the failure is captured as a product or HA failure after the harness has successfully started the cluster, injected the intended action, and recorded the expected topology or proof-row observations up to the failing assertion.
+- [ ] Every trustworthy HA or product failure found while running these six features creates a bug task with add-bug with `<blocked_by>` tags for:
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
 - [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
@@ -179,6 +186,7 @@ Serial execution of tests, is a failure of this task.
 - [ ] product or HA scenario failure
 - [ ] successful scenario pass
 - [ ] Fix harness failures until every feature can be executed to a trustworthy outcome.
+- [ ] For every trustworthy product or HA scenario failure, create a bug task immediately with add-bug and add `<blocked_by>` tags for all four tasks in this story.
 - [ ] Do not defer feature creation just because one scenario currently exposes a product bug.
 - [ ] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.

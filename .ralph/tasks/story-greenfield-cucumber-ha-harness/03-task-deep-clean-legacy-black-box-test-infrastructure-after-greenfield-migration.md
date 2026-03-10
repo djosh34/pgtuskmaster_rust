@@ -9,6 +9,8 @@ This task is deletion only. It is not a scenario-definition task. It must remove
 
 This cleanup does not require every migrated HA scenario to pass. It requires that the migrated greenfield features already exist and can be executed by the harness to a trustworthy outcome, including product-failure outcomes that are clearly not caused by the harness.
 
+If cleanup execution or post-cleanup reruns expose a trustworthy HA or product failure in the migrated greenfield suite, create a bug task via add-bug and add `<blocked_by>` tags for all four tasks in `story-greenfield-cucumber-ha-harness`.
+
 Hard deletion requirements:
 - delete `tests/ha_multi_node_failover.rs` once its migrated scenarios exist in greenfield
 - delete `tests/ha_partition_isolation.rs` once its migrated scenarios exist in greenfield
@@ -33,6 +35,7 @@ Hard deletion requirements:
 - [ ] `Cargo.toml`, `Makefile`, `.config/nextest.toml`, `tests/nextest_config_contract.rs`, and docs no longer refer to deleted legacy black-box test entrypoints.
 - [ ] Repo-wide verification shows no stale legacy-harness references remain outside intentional retained deep-control tests and historical `.ralph/tasks/` text.
 - [ ] Cleanup happens only after the replacement greenfield features exist and can be executed to a trustworthy harness-backed outcome, even if some of those outcomes are product-failure results.
+- [ ] Any trustworthy HA or product failure found while rerunning migrated greenfield features after cleanup creates a bug task with add-bug with `<blocked_by>` tags for all four tasks in this story.
 - [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
@@ -60,6 +63,7 @@ Hard deletion requirements:
 - [ ] Run `rg -n "ha_e2e::|net_proxy::" src tests docs`.
 - [ ] Confirm every surviving hit is either an intentional retained deep-control boundary or historical `.ralph/tasks/` text.
 - [ ] Confirm the migrated greenfield replacements for the deleted coverage can still be executed after cleanup.
+- [ ] For every trustworthy product or HA failure found in those reruns, create a bug task with add-bug and add `<blocked_by>` tags for all four tasks in this story.
 - [ ] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.
 - [ ] Run `/bin/bash .ralph/task_switch.sh`.

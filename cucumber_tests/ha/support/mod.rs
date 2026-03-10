@@ -1,3 +1,4 @@
+mod config;
 mod error;
 mod process;
 pub mod docker;
@@ -9,18 +10,14 @@ pub mod timeouts;
 pub mod world;
 
 use std::{
-    collections::BTreeMap,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Mutex, OnceLock},
 };
 
 use cucumber::{World as _, WriterExt as _, writer};
 use futures::FutureExt as _;
 
-use crate::support::{
-    error::{HarnessError, Result},
-    world::{HarnessShared, HaWorld},
-};
+use crate::support::{error::{HarnessError, Result}, world::HaWorld};
 
 #[derive(Clone, Debug)]
 pub struct FeatureMetadata {
@@ -35,8 +32,7 @@ pub struct BinaryPaths {
 
 static FEATURE_METADATA: OnceLock<FeatureMetadata> = OnceLock::new();
 static BINARY_PATHS: OnceLock<BinaryPaths> = OnceLock::new();
-static ACTIVE_RUNS: OnceLock<Mutex<BTreeMap<String, Arc<Mutex<HarnessShared>>>>> =
-    OnceLock::new();
+static CLEANUP_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 // This runner is intentionally independent from the legacy HA harness so the old
 // `tests/ha` and `src/test_harness/ha_e2e` flows can be deleted later.
@@ -50,13 +46,23 @@ pub async fn run_feature(feature_name: &str, feature_path: &str) -> std::result:
             }
             .boxed_local()
         })
+        .after(|_, _, _, _, world| {
+            async move {
+                if let Some(world) = world {
+                    if let Err(err) = world.cleanup() {
+                        record_cleanup_error(err.to_string());
+                    }
+                }
+            }
+            .boxed_local()
+        })
         .with_writer(writer::Basic::stdout().summarized())
         .with_default_cli()
         .run(feature_path)
         .await;
 
     let stats_error = summarize_result(writer.scenarios_stats(), writer.steps_stats()).err();
-    let cleanup_error = cleanup_active_runs().err();
+    let cleanup_error = cleanup_recorded_errors().err();
 
     match (stats_error, cleanup_error) {
         (None, None) => Ok(()),
@@ -76,15 +82,6 @@ pub fn binary_paths() -> Result<&'static BinaryPaths> {
     BINARY_PATHS
         .get()
         .ok_or_else(|| HarnessError::message("binary paths have not been initialized"))
-}
-
-pub fn register_run(run_id: String, shared: Arc<Mutex<HarnessShared>>) -> Result<()> {
-    let registry = ACTIVE_RUNS.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut guard = registry
-        .lock()
-        .map_err(|_| HarnessError::message("run registry mutex was poisoned"))?;
-    guard.insert(run_id, shared);
-    Ok(())
 }
 
 fn install_context(feature_name: &str, _feature_path: &str) -> Result<()> {
@@ -124,33 +121,26 @@ fn summarize_result(
     Ok(())
 }
 
-fn cleanup_active_runs() -> Result<()> {
-    let registry = ACTIVE_RUNS.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let runs = {
-        let mut guard = registry
+fn cleanup_recorded_errors() -> Result<()> {
+    let recorded = CLEANUP_ERRORS.get_or_init(|| Mutex::new(Vec::new()));
+    let errors = {
+        let mut guard = recorded
             .lock()
-            .map_err(|_| HarnessError::message("run registry mutex was poisoned"))?;
+            .map_err(|_| HarnessError::message("cleanup error registry mutex was poisoned"))?;
         std::mem::take(&mut *guard)
-            .into_values()
-            .collect::<Vec<_>>()
     };
-
-    let errors = runs
-        .into_iter()
-        .filter_map(|shared: Arc<Mutex<HarnessShared>>| {
-            let mut guard = match shared.lock() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    return Some("failed to lock harness state for cleanup".to_string());
-                }
-            };
-            guard.cleanup().err().map(|err| err.to_string())
-        })
-        .collect::<Vec<_>>();
 
     if errors.is_empty() {
         Ok(())
     } else {
         Err(HarnessError::message(errors.join("\n")))
+    }
+}
+
+fn record_cleanup_error(error: String) {
+    let recorded = CLEANUP_ERRORS.get_or_init(|| Mutex::new(Vec::new()));
+    match recorded.lock() {
+        Ok(mut guard) => guard.push(error),
+        Err(poisoned) => poisoned.into_inner().push(error),
     }
 }
