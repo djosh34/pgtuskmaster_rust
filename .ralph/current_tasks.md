@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 01:58:32 PM CET 2026
+Generated: Tue Mar 10 02:11:50 PM CET 2026
 
 # Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
 
@@ -18,18 +18,6 @@ Generated: Tue Mar 10 01:58:32 PM CET 2026
 
 ```
 ## Task: Add Low-Hanging HA Quorum Cucumber Features On The Greenfield Runner <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/02-task-add-whole-node-kill-and-partial-recovery-ha-e2e.md`
-
-```
-## Task: Add Whole Node Kill And Partial Recovery HA E2E Coverage <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 
@@ -74,46 +62,10 @@ Generated: Tue Mar 10 01:58:32 PM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/06-task-add-full-failsafe-recovery-when-quorum-returns-ha-e2e.md`
-
-```
-## Task: Add Full FailSafe Recovery When Quorum Returns HA E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/07-task-add-old-primary-returns-as-replica-only-after-majority-failover-e2e.md`
-
-```
-## Task: Add Old Primary Returns As Replica Only After Majority Failover E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
 # Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/08-task-add-lagging-or-stale-replica-is-never-promoted-over-healthier-candidate-e2e.md`
 
 ```
 ## Task: Add Lagging Or Stale Replica Is Never Promoted Over Healthier Candidate E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/09-task-add-node-flapping-with-healthy-majority-does-not-cause-leadership-thrash-e2e.md`
-
-```
-## Task: Add Node Flapping With Healthy Majority Does Not Cause Leadership Thrash E2E Coverage <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 
