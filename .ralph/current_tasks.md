@@ -1,6 +1,17 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 02:11:50 PM CET 2026
+Generated: Tue Mar 10 02:59:53 PM CET 2026
+
+# Task `.ralph/tasks/bugs/bug-replica-bootstrap-auth-breaks-when-runtime-roles-reuse-postgres.md`
+
+```
+## Bug: Replica Bootstrap Auth Breaks When Runtime Roles Reuse `postgres` <status>not_started</status> <passes>false</passes>
+
+<description>
+The new `cucumber_tests/ha` Docker HA harness now reaches a real primary on `node-b`, but replica bootstrap currently fails during `pg_basebackup` when `node-a` and `node-c` try to clone from that primary.
+```
+
+==============
 
 # Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
 

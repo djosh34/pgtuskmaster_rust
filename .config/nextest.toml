@@ -15,7 +15,7 @@ store-failure-output = true
 [profile.ultra-long]
 fail-fast = false
 # The long-running HA binaries live behind `make test-long` because they take longer,
-# not because they are allowed to require serial execution.
+# including the explicit greenfield cucumber targets under `cucumber_tests/ha`.
 # These binaries are expected to be parallel-safe. If a scenario only passes in serial,
 # that scenario is buggy and must be fixed instead of protected by serialization.
 default-filter = '''

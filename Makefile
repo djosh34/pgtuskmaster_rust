@@ -8,7 +8,7 @@ DOCKER_CLUSTER_PROJECT ?= pgtuskmaster-cluster
 
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test-long lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-docker ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest ensure-timeout guard-makeflags docker-compose-config docker-up docker-down docker-up-cluster docker-status-cluster docker-down-cluster docker-smoke-single docker-smoke-cluster
+.PHONY: check test test-long test-cucumber-ha test-cucumber-ha-primary-crash-rejoin lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-docker ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest ensure-timeout guard-makeflags docker-compose-config docker-up docker-down docker-up-cluster docker-status-cluster docker-down-cluster docker-smoke-single docker-smoke-cluster
 
 SINGLE_DASH_MAKEFLAGS := $(filter -%,$(MAKEFLAGS))
 SINGLE_DASH_MAKEFLAGS := $(filter-out --%,$(SINGLE_DASH_MAKEFLAGS))
@@ -171,6 +171,14 @@ test-long: guard-makeflags ensure-nextest ensure-timeout ensure-docker
 		./tools/docker/smoke-single.sh
 	"$(GATE_STEP)" --gate test-long --step test_long.docker_smoke_cluster --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(DOCKER_SMOKE_CLUSTER_TIMEOUT_SECS)" --kill-after-secs "$(DOCKER_SMOKE_CLUSTER_TIMEOUT_KILL_AFTER_SECS)" -- \
 		./tools/docker/smoke-cluster.sh
+
+test-cucumber-ha: guard-makeflags ensure-nextest ensure-docker
+	@set -euo pipefail; \
+	cargo nextest run --workspace --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" --test ha_primary_crash_rejoin
+
+test-cucumber-ha-primary-crash-rejoin: guard-makeflags ensure-nextest ensure-docker
+	@set -euo pipefail; \
+	cargo nextest run --workspace --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" --test ha_primary_crash_rejoin
 
 docs-lint: guard-makeflags ensure-timeout ensure-docs-node-deps
 	@echo "gate evidence: $(GATE_EVIDENCE_DIR)"

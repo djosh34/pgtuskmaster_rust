@@ -1,0 +1,110 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-cluster-state=new
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/etcdctl",
+          "--endpoints=http://127.0.0.1:2379",
+          "endpoint",
+          "health",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - ha
+    volumes:
+      - etcd-data:/etcd-data
+
+  node-a:
+    build:
+      context: .
+      dockerfile: docker_files/node.Dockerfile
+    networks:
+      - ha
+    volumes:
+      - ./configs/node-a/runtime.toml:/etc/pgtuskmaster/runtime.toml:ro
+      - ./configs/pg_hba.conf:/etc/pgtuskmaster/pg_hba.conf:ro
+      - ./configs/pg_ident.conf:/etc/pgtuskmaster/pg_ident.conf:ro
+      - ./configs/tls:/etc/pgtuskmaster/tls:ro
+      - ./secrets/postgres-superuser-password:/run/secrets/postgres-superuser-password:ro
+      - ./secrets/api-read-token:/run/secrets/api-read-token:ro
+      - ./secrets/replicator-password:/run/secrets/replicator-password:ro
+      - ./secrets/rewinder-password:/run/secrets/rewinder-password:ro
+      - node-a-data:/var/lib/postgresql
+      - node-a-logs:/var/log/pgtuskmaster
+
+  node-b:
+    build:
+      context: .
+      dockerfile: docker_files/node.Dockerfile
+    networks:
+      - ha
+    volumes:
+      - ./configs/node-b/runtime.toml:/etc/pgtuskmaster/runtime.toml:ro
+      - ./configs/pg_hba.conf:/etc/pgtuskmaster/pg_hba.conf:ro
+      - ./configs/pg_ident.conf:/etc/pgtuskmaster/pg_ident.conf:ro
+      - ./configs/tls:/etc/pgtuskmaster/tls:ro
+      - ./secrets/postgres-superuser-password:/run/secrets/postgres-superuser-password:ro
+      - ./secrets/api-read-token:/run/secrets/api-read-token:ro
+      - ./secrets/replicator-password:/run/secrets/replicator-password:ro
+      - ./secrets/rewinder-password:/run/secrets/rewinder-password:ro
+      - node-b-data:/var/lib/postgresql
+      - node-b-logs:/var/log/pgtuskmaster
+
+  node-c:
+    build:
+      context: .
+      dockerfile: docker_files/node.Dockerfile
+    networks:
+      - ha
+    volumes:
+      - ./configs/node-c/runtime.toml:/etc/pgtuskmaster/runtime.toml:ro
+      - ./configs/pg_hba.conf:/etc/pgtuskmaster/pg_hba.conf:ro
+      - ./configs/pg_ident.conf:/etc/pgtuskmaster/pg_ident.conf:ro
+      - ./configs/tls:/etc/pgtuskmaster/tls:ro
+      - ./secrets/postgres-superuser-password:/run/secrets/postgres-superuser-password:ro
+      - ./secrets/api-read-token:/run/secrets/api-read-token:ro
+      - ./secrets/replicator-password:/run/secrets/replicator-password:ro
+      - ./secrets/rewinder-password:/run/secrets/rewinder-password:ro
+      - node-c-data:/var/lib/postgresql
+      - node-c-logs:/var/log/pgtuskmaster
+
+  observer:
+    build:
+      context: .
+      dockerfile: docker_files/observer.Dockerfile
+    command:
+      - /usr/bin/tail
+      - -f
+      - /dev/null
+    networks:
+      - ha
+    volumes:
+      - ./configs:/etc/pgtuskmaster:ro
+      - ./secrets:/run/secrets:ro
+
+networks:
+  ha:
+    driver: bridge
+
+volumes:
+  etcd-data:
+  node-a-data:
+  node-a-logs:
+  node-b-data:
+  node-b-logs:
+  node-c-data:
+  node-c-logs:

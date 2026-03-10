@@ -11,6 +11,8 @@ Pick the right validation command for the change you made:
 - `make check` for a fast compile gate
 - `make test` for the default automated suite
 - `make test-long` for the longest HA and Docker validation path
+- `make test-cucumber-ha` for the greenfield cucumber Docker HA harness
+- `make test-cucumber-ha-primary-crash-rejoin` for the first greenfield cucumber HA feature
 - `make lint` for docs and clippy enforcement
 
 ## Prerequisites
@@ -104,6 +106,30 @@ The requested source files give a good picture of the suite layout:
 - `tests/ha/support/partition.rs`: partition orchestration, pg-proxy fault injection, and convergence assertions
 - `tests/ha/support/observer.rs`: split-brain and HA observation checks
 - `src/worker_contract_tests.rs`: contract-style runtime and debug API expectations
+
+The repository also now ships a separate greenfield HA end-to-end surface under `cucumber_tests/ha/`. That tree is intentionally independent from the legacy `tests/ha*` harness so the old HA harness can be deleted later without taking the new cucumber runner with it.
+
+The current greenfield entrypoints are:
+
+- `make test-cucumber-ha`
+- `make test-cucumber-ha-primary-crash-rejoin`
+- `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.feature`
+- `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.rs`
+
+The greenfield harness layout is:
+
+- `cucumber_tests/ha/features/` for one feature directory plus tiny wrapper `.rs` per scenario file
+- `cucumber_tests/ha/givens/three_node_plain/` for the static Docker compose fixture, static configs, static secrets, and Dockerfiles
+- `cucumber_tests/ha/support/` for the independent runner, world, Docker CLI, Ryuk, `pgtm`, and `psql` plumbing
+- `cucumber_tests/ha/runs/` for copied per-run input snapshots and captured artifacts
+
+That harness uses:
+
+- Docker CLI orchestration with one unique Compose project per feature run
+- Ryuk ownership keyed by the Compose project label
+- `pgtm` as the cluster observer path
+- `psql --dbname <conninfo>` with conninfo resolved by `pgtm`
+- repo-local copied run workspaces so every feature run preserves its exact input files and artifacts
 
 ## Real-Binary Expectations
 
