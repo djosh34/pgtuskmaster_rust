@@ -5,6 +5,8 @@
 <description>
 Add the next six greenfield Docker HA cucumber features after task 01. This task contains the exact scenario contracts. Each scenario is one feature, one `.feature` file, and one tiny Rust wrapper. Use real `pgtuskmaster` nodes in Docker and use `pgtm` as the operator control and observation surface after startup.
 
+It is explicitly not a requirement that all six scenarios pass against the product before this task is considered complete. The requirement is that all six scenarios are created, wired into the greenfield harness, and can be executed. If a scenario fails, the run must make it clear that the failure is an HA behavior failure in the system under test rather than a harness failure such as broken startup, broken orchestration, bad fixture wiring, missing commands, or unreadable artifacts.
+
 Allowed harness growth in this task is small only:
 - kill and restart named node containers
 - poll for zero primary / one primary / same primary / changed primary via `pgtm`
@@ -148,10 +150,9 @@ Do not add any new given, new Compose topology, network partition control, DCS q
 - [ ] Each of the six features has one tiny wrapper `.rs` file and one explicit `[[test]]` entry in `Cargo.toml`.
 - [ ] Runner edits stay limited to the small harness growth listed in this task and do not introduce advanced harness features.
 - [ ] The existing `primary_crash_rejoin` feature from task 01 is not reimplemented or duplicated here.
-- [ ] `make check` passes cleanly.
-- [ ] `make test` passes cleanly.
-- [ ] `make test-long` passes cleanly.
-- [ ] `make lint` passes cleanly.
+- [ ] All six feature wrappers can be executed on the greenfield harness.
+- [ ] Each feature run produces enough evidence to distinguish a harness failure from an HA behavior failure in the system under test.
+- [ ] If a scenario fails, the failure is captured as a product or HA failure after the harness has successfully started the cluster, injected the intended action, and recorded the expected topology or proof-row observations up to the failing assertion.
 - [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
@@ -181,10 +182,12 @@ Do not add any new given, new Compose topology, network partition control, DCS q
 
 ### Phase 4: Verification and closeout
 - [ ] Run targeted execution for each of the six new feature wrappers.
-- [ ] Run `make check`.
-- [ ] Run `make test`.
-- [ ] Run `make test-long`.
-- [ ] Run `make lint`.
+- [ ] For each wrapper run, record whether the result is:
+- [ ] harness failure
+- [ ] product or HA scenario failure
+- [ ] successful scenario pass
+- [ ] Fix harness failures until every feature can be executed to a trustworthy outcome.
+- [ ] Do not defer feature creation just because one scenario currently exposes a product bug.
 - [ ] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.
 - [ ] Run `/bin/bash .ralph/task_switch.sh`.

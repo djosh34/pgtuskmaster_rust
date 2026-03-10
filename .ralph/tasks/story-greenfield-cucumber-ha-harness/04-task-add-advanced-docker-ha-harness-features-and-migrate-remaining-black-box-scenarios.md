@@ -5,6 +5,8 @@
 <description>
 Add the advanced greenfield Docker HA harness capabilities required for the remaining black-box scenarios that can still be tested by running real `pgtuskmaster` binaries and controlling them externally. This task contains the exact advanced harness requirements and the exact scenario contracts.
 
+It is explicitly not a requirement that every advanced scenario pass against the product before this task is considered complete. The requirement is that every advanced scenario is created and executable on the greenfield harness, and that each run produces enough evidence to show whether a failure is a real HA behavior failure in the system under test rather than a harness failure.
+
 Advanced harness capabilities required in this task:
 - full 1:2 network partition control
 - path-specific network isolation for etcd, API, and postgres/replication traffic
@@ -282,10 +284,9 @@ Each scenario below is one feature, one `.feature` file, and one tiny Rust wrapp
 - [ ] Every advanced feature implements the exact scenario contract written in this task and does not silently substitute a different story.
 - [ ] Every advanced feature uses the greenfield Docker harness and does not import or call the legacy `tests/ha` or `src/test_harness/ha_e2e` code.
 - [ ] Required checked-in given variants exist for scenarios that need non-default configuration.
-- [ ] `make check` passes cleanly.
-- [ ] `make test` passes cleanly.
-- [ ] `make test-long` passes cleanly.
-- [ ] `make lint` passes cleanly.
+- [ ] All advanced feature wrappers can be executed on the greenfield harness.
+- [ ] Each advanced feature run produces enough evidence to distinguish a harness failure from an HA behavior failure in the system under test.
+- [ ] If a scenario fails, the failure is captured after the harness has successfully applied the intended setup and fault choreography, so the failure is attributable to product behavior rather than harness breakage.
 - [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
@@ -327,10 +328,12 @@ Each scenario below is one feature, one `.feature` file, and one tiny Rust wrapp
 
 ### Phase 4: Verification and closeout
 - [ ] Run targeted execution for the advanced feature wrappers.
-- [ ] Run `make check`.
-- [ ] Run `make test`.
-- [ ] Run `make test-long`.
-- [ ] Run `make lint`.
+- [ ] For each advanced wrapper run, record whether the result is:
+- [ ] harness failure
+- [ ] product or HA scenario failure
+- [ ] successful scenario pass
+- [ ] Fix harness failures until every advanced feature can be executed to a trustworthy outcome.
+- [ ] Do not leave scenarios uncreated just because they currently expose product bugs.
 - [ ] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.
 - [ ] Run `/bin/bash .ralph/task_switch.sh`.
