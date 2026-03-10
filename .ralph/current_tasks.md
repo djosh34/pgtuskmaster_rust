@@ -1,6 +1,18 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 11:33:11 AM CET 2026
+Generated: Tue Mar 10 13:46:50 CET 2026
+
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
+
+```
+## Task: Build Independent Cucumber Docker HA Harness And Primary Crash Rejoin Feature <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
 
 # Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/02-task-add-whole-node-kill-and-partial-recovery-ha-e2e.md`
 
