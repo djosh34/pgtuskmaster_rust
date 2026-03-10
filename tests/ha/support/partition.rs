@@ -110,6 +110,7 @@ impl PartitionFixture {
             etcd_proxies,
             api_proxies,
             pg_proxies,
+            ..
         } = handle;
 
         Ok(Self {
@@ -335,7 +336,8 @@ impl PartitionFixture {
                     let leader = state.leader.as_deref().unwrap_or("none");
                     format!(
                         "{}:{}:leader={leader}",
-                        state.self_member_id, state.ha_phase
+                        state.self_member_id,
+                        Self::state_label(state)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -415,7 +417,8 @@ impl PartitionFixture {
                     let leader = state.leader.as_deref().unwrap_or("none");
                     format!(
                         "{}:{}:leader={leader}",
-                        state.self_member_id, state.ha_phase
+                        state.self_member_id,
+                        Self::state_label(state)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -624,9 +627,26 @@ impl PartitionFixture {
     fn primary_members(states: &[HaStateResponse]) -> Vec<String> {
         states
             .iter()
-            .filter(|state| state.ha_phase == "Primary")
+            .filter(|state| Self::state_is_primary(state))
             .map(|state| state.self_member_id.clone())
             .collect()
+    }
+
+    fn state_label(state: &HaStateResponse) -> &'static str {
+        match &state.desired_state {
+            pgtuskmaster_rust::api::DesiredNodeStateResponse::Primary { .. } => "Primary",
+            pgtuskmaster_rust::api::DesiredNodeStateResponse::Replica { .. } => "Replica",
+            pgtuskmaster_rust::api::DesiredNodeStateResponse::Fence { .. } => "Fence",
+            pgtuskmaster_rust::api::DesiredNodeStateResponse::Quiescent { .. } => "Quiescent",
+            pgtuskmaster_rust::api::DesiredNodeStateResponse::Bootstrap { .. } => "Bootstrap",
+        }
+    }
+
+    fn state_is_primary(state: &HaStateResponse) -> bool {
+        matches!(
+            state.desired_state,
+            pgtuskmaster_rust::api::DesiredNodeStateResponse::Primary { .. }
+        )
     }
 
     fn replica_node_ids(&self, primary_id: &str) -> Vec<String> {
@@ -673,10 +693,10 @@ impl PartitionFixture {
         loop {
             let observation = match self.fetch_node_ha_state(node_id).await {
                 Ok(state) => {
-                    if state.ha_phase == expected_phase {
+                    if Self::state_label(&state) == expected_phase {
                         return Ok(());
                     }
-                    format!("phase={} leader={:?}", state.ha_phase, state.leader)
+                    format!("state={} leader={:?}", Self::state_label(&state), state.leader)
                 }
                 Err(err) => err.to_string(),
             };
@@ -1033,7 +1053,9 @@ impl PartitionFixture {
     async fn shutdown(&mut self) -> Result<(), WorkerError> {
         let mut failures = Vec::new();
 
-        self.runtime_nodes.shutdown_all().await;
+        if let Err(err) = self.runtime_nodes.shutdown_all().await {
+            failures.push(format!("runtime shutdown failed: {err}"));
+        }
 
         let mut pg_stops = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
@@ -1305,12 +1327,12 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
             fixture
                 .wait_for_node_phase(
                     bootstrap_primary.as_str(),
-                    "FailSafe",
+                    "Fence",
                     E2E_PARTITION_RECOVERY_TIMEOUT,
                 )
                 .await?;
             fixture.record(format!(
-                "primary isolation: isolated primary entered FailSafe node={bootstrap_primary}"
+                "primary isolation: isolated primary entered Fence node={bootstrap_primary}"
             ));
             fixture
                 .assert_no_dual_primary_window(E2E_PARTITION_LONG_NO_DUAL_PRIMARY_WINDOW)
@@ -1404,8 +1426,8 @@ pub async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), 
             fixture.isolate_api_path(isolated_node.as_str()).await?;
             if let Ok(state) = fixture.fetch_node_ha_state(isolated_node.as_str()).await {
                 return Err(WorkerError::Message(format!(
-                    "expected API isolation for node {isolated_node}, but /ha/state succeeded with phase={} leader={:?}",
-                    state.ha_phase,
+                    "expected API isolation for node {isolated_node}, but /ha/state succeeded with state={} leader={:?}",
+                    PartitionFixture::state_label(&state),
                     state.leader
                 )));
             }
@@ -1703,12 +1725,12 @@ pub async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerErr
             fixture
                 .wait_for_node_phase(
                     bootstrap_primary.as_str(),
-                    "FailSafe",
+                    "Fence",
                     Duration::from_secs(150),
                 )
                 .await?;
             fixture.record(format!(
-                "mixed faults: isolated primary entered FailSafe node={bootstrap_primary}"
+                "mixed faults: isolated primary entered Fence node={bootstrap_primary}"
             ));
             fixture
                 .assert_no_dual_primary_window(Duration::from_secs(10))

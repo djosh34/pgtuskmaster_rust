@@ -1255,8 +1255,9 @@ mod tests {
             AppLifecycle, DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot,
         },
         ha::{
-            decision::HaDecision,
-            state::{HaPhase, HaState},
+            state::{
+                ClusterMode, DesiredNodeState, HaState, LeadershipTransferState, QuiescentReason,
+            },
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
@@ -1407,11 +1408,14 @@ mod tests {
     fn sample_ha_state() -> HaState {
         HaState {
             worker: crate::state::WorkerStatus::Running,
-            phase: HaPhase::Replica,
-            tick: 7,
-            decision: HaDecision::EnterFailSafe {
-                release_leader_lease: false,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: crate::state::MemberId("node-a".to_string()),
             },
+            desired_state: DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 7,
         }
     }
 
@@ -1985,10 +1989,13 @@ mod tests {
         assert_eq!(decoded["switchover_to"], serde_json::Value::Null);
         assert_eq!(decoded["member_count"], 0);
         assert_eq!(decoded["dcs_trust"], "fresh_quorum");
-        assert_eq!(decoded["ha_phase"], "replica");
+        assert_eq!(decoded["cluster_mode"]["kind"], "initialized_leader_present");
         assert_eq!(decoded["ha_tick"], 7);
-        assert_eq!(decoded["ha_decision"]["kind"], "enter_fail_safe");
-        assert_eq!(decoded["ha_decision"]["release_leader_lease"], false);
+        assert_eq!(decoded["desired_state"]["kind"], "quiescent");
+        assert_eq!(
+            decoded["desired_state"]["reason"],
+            "waiting_for_authoritative_leader"
+        );
         assert_eq!(decoded["snapshot_sequence"], 2);
         Ok(())
     }

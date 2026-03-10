@@ -1364,8 +1364,10 @@ mod tests {
         },
         ha::{
             decide::decide,
-            decision::HaDecision,
-            state::{DecideInput, HaPhase, HaState, WorldSnapshot},
+            state::{
+                ClusterMode, DecideInput, DesiredNodeState, HaState, LeadershipTransferState,
+                QuiescentReason, WorldSnapshot,
+            },
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
@@ -2068,7 +2070,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn leader_expiry_flows_through_watch_cache_trust_and_ha_decision() -> TestResult {
+    async fn leader_expiry_flows_through_watch_cache_trust_and_desired_state() -> TestResult {
         let fixture = RealEtcdFixture::spawn(
             "dcs-etcd-store-leader-expiry-ha-chain",
             "scope-leader-expiry-ha-chain",
@@ -2245,23 +2247,23 @@ mod tests {
             let decision = decide(DecideInput {
                 current: HaState {
                     worker: WorkerStatus::Running,
-                    phase: HaPhase::WaitingDcsTrusted,
+                    cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+                    desired_state: DesiredNodeState::Quiescent {
+                        reason: QuiescentReason::WaitingForAuthoritativeLeader,
+                    },
+                    leadership_transfer: LeadershipTransferState::None,
                     tick: 3,
-                    decision: HaDecision::WaitForDcsTrust,
                 },
                 world,
             });
 
-            if decision.next.phase != HaPhase::CandidateLeader {
+            if !matches!(
+                decision.next.desired_state,
+                DesiredNodeState::Primary { .. }
+            ) {
                 return Err(boxed_error(format!(
-                    "expected lease-expiry chain to advance into candidate leader, got {:?}",
-                    decision.next.phase
-                )));
-            }
-            if decision.outcome.decision != HaDecision::AttemptLeadership {
-                return Err(boxed_error(format!(
-                    "expected lease-expiry chain to attempt leadership, got {:?}",
-                    decision.outcome.decision
+                    "expected lease-expiry chain to advance into a primary acquisition plan, got {:?}",
+                    decision.next.desired_state
                 )));
             }
 

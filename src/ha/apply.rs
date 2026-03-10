@@ -9,13 +9,9 @@ use super::{
         emit_ha_action_result_ok, emit_ha_action_result_skipped, emit_ha_lease_transition,
     },
     lower::{
-        HaEffectPlan, LeaseEffect, PostgresEffect, ReplicationEffect, SafetyEffect,
-        SwitchoverEffect,
+        HaEffectPlan, LeaseEffect, PostgresEffect, RecoveryEffect, SafetyEffect, SwitchoverEffect,
     },
-    process_dispatch::{
-        dispatch_process_action, validate_basebackup_source, ProcessDispatchError,
-        ProcessDispatchOutcome,
-    },
+    process_dispatch::{dispatch_process_action, validate_basebackup_source, ProcessDispatchError, ProcessDispatchOutcome},
     state::HaWorkerCtx,
 };
 
@@ -27,6 +23,8 @@ pub(crate) enum ActionDispatchError {
     ManagedConfig { action: ActionId, message: String },
     #[error("filesystem operation failed for action `{action:?}`: {message}")]
     Filesystem { action: ActionId, message: String },
+    #[error("remote source selection failed for action `{action:?}`: {message}")]
+    SourceSelection { action: ActionId, message: String },
     #[error("dcs write failed for action `{action:?}` at `{path}`: {message}")]
     DcsWrite {
         action: ActionId,
@@ -50,6 +48,17 @@ pub(crate) fn apply_effect_plan(
     let mut errors = Vec::new();
     let mut action_index = 0usize;
 
+    if matches!(plan.lease, LeaseEffect::AcquireLeader) {
+        action_index = dispatch_lease_effect(
+            ctx,
+            ha_tick,
+            action_index,
+            &plan.lease,
+            &runtime_config,
+            &mut errors,
+        )?;
+    }
+
     action_index = dispatch_postgres_effect(
         ctx,
         ha_tick,
@@ -58,31 +67,15 @@ pub(crate) fn apply_effect_plan(
         &runtime_config,
         &mut errors,
     )?;
-    action_index = dispatch_lease_effect(
+    action_index = dispatch_recovery_effect(
         ctx,
         ha_tick,
         action_index,
-        &plan.lease,
+        &plan.recovery,
         &runtime_config,
         &mut errors,
     )?;
-    action_index = dispatch_switchover_effect(
-        ctx,
-        ha_tick,
-        action_index,
-        &plan.switchover,
-        &runtime_config,
-        &mut errors,
-    )?;
-    action_index = dispatch_replication_effect(
-        ctx,
-        ha_tick,
-        action_index,
-        &plan.replication,
-        &runtime_config,
-        &mut errors,
-    )?;
-    let _ = dispatch_safety_effect(
+    action_index = dispatch_safety_effect(
         ctx,
         ha_tick,
         action_index,
@@ -91,17 +84,35 @@ pub(crate) fn apply_effect_plan(
         &mut errors,
     )?;
 
+    if matches!(plan.lease, LeaseEffect::ReleaseLeader) {
+        action_index = dispatch_lease_effect(
+            ctx,
+            ha_tick,
+            action_index,
+            &plan.lease,
+            &runtime_config,
+            &mut errors,
+        )?;
+    }
+
+    let _ = dispatch_switchover_effect(
+        ctx,
+        ha_tick,
+        action_index,
+        &plan.switchover,
+        &runtime_config,
+        &mut errors,
+    )?;
+
     Ok(errors)
 }
 
 pub(crate) fn format_dispatch_errors(errors: &[ActionDispatchError]) -> String {
-    let mut details = String::new();
-    for (index, err) in errors.iter().enumerate() {
-        if index > 0 {
-            details.push_str("; ");
-        }
-        details.push_str(&err.to_string());
-    }
+    let details = errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ");
     format!(
         "ha dispatch failed with {} error(s): {details}",
         errors.len()
@@ -118,11 +129,21 @@ fn dispatch_postgres_effect(
 ) -> Result<usize, WorkerError> {
     match effect {
         PostgresEffect::None => Ok(action_index),
-        PostgresEffect::Start => dispatch_effect_action(
+        PostgresEffect::StartPrimary => dispatch_effect_action(
             ctx,
             ha_tick,
             action_index,
-            HaAction::StartPostgres,
+            HaAction::StartPrimary,
+            runtime_config,
+            errors,
+        ),
+        PostgresEffect::StartReplica { leader_member_id } => dispatch_effect_action(
+            ctx,
+            ha_tick,
+            action_index,
+            HaAction::StartReplica {
+                leader_member_id: leader_member_id.clone(),
+            },
             runtime_config,
             errors,
         ),
@@ -195,84 +216,72 @@ fn dispatch_switchover_effect(
     }
 }
 
-fn dispatch_replication_effect(
+fn dispatch_recovery_effect(
     ctx: &mut HaWorkerCtx,
     ha_tick: u64,
     action_index: usize,
-    effect: &ReplicationEffect,
+    effect: &RecoveryEffect,
     runtime_config: &crate::config::RuntimeConfig,
     errors: &mut Vec<ActionDispatchError>,
 ) -> Result<usize, WorkerError> {
     match effect {
-        ReplicationEffect::None => Ok(action_index),
-        ReplicationEffect::FollowLeader { leader_member_id } => dispatch_effect_action(
+        RecoveryEffect::None => Ok(action_index),
+        RecoveryEffect::Rewind { leader_member_id } => dispatch_effect_action(
             ctx,
             ha_tick,
             action_index,
-            HaAction::FollowLeader {
-                leader_member_id: leader_member_id.0.clone(),
+            HaAction::StartRewind {
+                leader_member_id: leader_member_id.clone(),
             },
             runtime_config,
             errors,
         ),
-        ReplicationEffect::RecoverReplica { strategy } => match strategy {
-            crate::ha::decision::RecoveryStrategy::Rewind { leader_member_id } => {
-                dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    action_index,
-                    HaAction::StartRewind {
-                        leader_member_id: leader_member_id.clone(),
-                    },
-                    runtime_config,
-                    errors,
-                )
+        RecoveryEffect::Basebackup { leader_member_id } => {
+            if let Err(err) = validate_basebackup_source(
+                ctx,
+                ActionId::StartBaseBackup,
+                leader_member_id,
+            ) {
+                errors.push(map_process_dispatch_error(err));
+                return Ok(action_index);
             }
-            crate::ha::decision::RecoveryStrategy::BaseBackup { leader_member_id } => {
-                if let Err(err) =
-                    validate_basebackup_source(ctx, ActionId::StartBaseBackup, leader_member_id)
-                {
-                    errors.push(map_process_dispatch_error(err));
-                    return Ok(action_index);
-                }
-                let next_index = dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    action_index,
-                    HaAction::WipeDataDir,
-                    runtime_config,
-                    errors,
-                )?;
-                dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    next_index,
-                    HaAction::StartBaseBackup {
-                        leader_member_id: leader_member_id.clone(),
-                    },
-                    runtime_config,
-                    errors,
-                )
-            }
-            crate::ha::decision::RecoveryStrategy::Bootstrap => {
-                let next_index = dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    action_index,
-                    HaAction::WipeDataDir,
-                    runtime_config,
-                    errors,
-                )?;
-                dispatch_effect_action(
-                    ctx,
-                    ha_tick,
-                    next_index,
-                    HaAction::RunBootstrap,
-                    runtime_config,
-                    errors,
-                )
-            }
-        },
+            let next_index = dispatch_effect_action(
+                ctx,
+                ha_tick,
+                action_index,
+                HaAction::WipeDataDir,
+                runtime_config,
+                errors,
+            )?;
+            dispatch_effect_action(
+                ctx,
+                ha_tick,
+                next_index,
+                HaAction::StartBaseBackup {
+                    leader_member_id: leader_member_id.clone(),
+                },
+                runtime_config,
+                errors,
+            )
+        }
+        RecoveryEffect::Bootstrap => {
+            let next_index = dispatch_effect_action(
+                ctx,
+                ha_tick,
+                action_index,
+                HaAction::WipeDataDir,
+                runtime_config,
+                errors,
+            )?;
+            dispatch_effect_action(
+                ctx,
+                ha_tick,
+                next_index,
+                HaAction::RunBootstrap,
+                runtime_config,
+                errors,
+            )
+        }
     }
 }
 
@@ -291,14 +300,6 @@ fn dispatch_safety_effect(
             ha_tick,
             action_index,
             HaAction::FenceNode,
-            runtime_config,
-            errors,
-        ),
-        SafetyEffect::SignalFailSafe => dispatch_effect_action(
-            ctx,
-            ha_tick,
-            action_index,
-            HaAction::SignalFailSafe,
             runtime_config,
             errors,
         ),
@@ -332,7 +333,7 @@ fn dispatch_action(
 ) -> Result<Option<ActionDispatchError>, WorkerError> {
     match action {
         HaAction::AcquireLeaderLease => {
-            let dispatch_result = acquire_leader_lease(ctx);
+            let dispatch_result = ctx.dcs_store.acquire_leader_lease(&ctx.scope, &ctx.self_id);
             dcs_dispatch_result(
                 ctx,
                 ha_tick,
@@ -344,7 +345,7 @@ fn dispatch_action(
             )
         }
         HaAction::ReleaseLeaderLease => {
-            let dispatch_result = release_leader_lease(ctx);
+            let dispatch_result = ctx.dcs_store.release_leader_lease(&ctx.scope, &ctx.self_id);
             dcs_dispatch_result(
                 ctx,
                 ha_tick,
@@ -357,12 +358,11 @@ fn dispatch_action(
         }
         HaAction::ClearSwitchover => {
             let path = switchover_path(&ctx.scope);
-            let result = clear_switchover_request(ctx);
-            dcs_delete_result(ctx, ha_tick, action_index, action, path, result)
+            let dispatch_result = ctx.dcs_store.clear_switchover(&ctx.scope);
+            dcs_delete_result(ctx, ha_tick, action_index, action, path, dispatch_result)
         }
         _ => {
-            let result =
-                dispatch_process_action(ctx, ha_tick, action_index, action, runtime_config);
+            let result = dispatch_process_action(ctx, ha_tick, action_index, action, runtime_config);
             process_dispatch_result(ctx, ha_tick, action_index, action, result)
         }
     }
@@ -384,22 +384,20 @@ fn dcs_dispatch_result(
             Ok(None)
         }
         Err(err) => {
-            let message = err.to_string();
-            emit_ha_action_result_failed(ctx, ha_tick, action_index, action, message)?;
-            let error = if acquired {
+            emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
+            Ok(Some(if acquired {
                 ActionDispatchError::DcsWrite {
                     action: action.id(),
                     path,
-                    message: dcs_error_message(err),
+                    message: err.to_string(),
                 }
             } else {
                 ActionDispatchError::DcsDelete {
                     action: action.id(),
                     path,
-                    message: dcs_error_message(err),
+                    message: err.to_string(),
                 }
-            };
-            Ok(Some(error))
+            }))
         }
     }
 }
@@ -418,12 +416,11 @@ fn dcs_delete_result(
             Ok(None)
         }
         Err(err) => {
-            let message = err.to_string();
-            emit_ha_action_result_failed(ctx, ha_tick, action_index, action, message)?;
+            emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
             Ok(Some(ActionDispatchError::DcsDelete {
                 action: action.id(),
                 path,
-                message: dcs_error_message(err),
+                message: err.to_string(),
             }))
         }
     }
@@ -445,46 +442,15 @@ fn process_dispatch_result(
             emit_ha_action_result_skipped(ctx, ha_tick, action_index, action)?;
             Ok(None)
         }
-        Err(ProcessDispatchError::UnsupportedAction { action }) => {
-            Err(WorkerError::Message(format!(
-                "ha apply routed unsupported process action `{}`",
-                action.label()
-            )))
-        }
         Err(err) => {
-            let message = err.to_string();
-            emit_ha_action_result_failed(ctx, ha_tick, action_index, action, message)?;
+            emit_ha_action_result_failed(ctx, ha_tick, action_index, action, err.to_string())?;
             Ok(Some(map_process_dispatch_error(err)))
         }
     }
 }
 
-fn acquire_leader_lease(ctx: &mut HaWorkerCtx) -> Result<(), DcsStoreError> {
-    ctx.dcs_store.acquire_leader_lease(&ctx.scope, &ctx.self_id)
-}
-
-fn release_leader_lease(ctx: &mut HaWorkerCtx) -> Result<(), DcsStoreError> {
-    ctx.dcs_store.release_leader_lease(&ctx.scope, &ctx.self_id)
-}
-
-fn clear_switchover_request(ctx: &mut HaWorkerCtx) -> Result<(), DcsStoreError> {
-    ctx.dcs_store.clear_switchover(&ctx.scope)
-}
-
-fn leader_path(scope: &str) -> String {
-    format!("/{}/leader", scope.trim_matches('/'))
-}
-
-fn switchover_path(scope: &str) -> String {
-    format!("/{}/switchover", scope.trim_matches('/'))
-}
-
-fn dcs_error_message(error: DcsStoreError) -> String {
-    error.to_string()
-}
-
-fn map_process_dispatch_error(error: ProcessDispatchError) -> ActionDispatchError {
-    match error {
+fn map_process_dispatch_error(err: ProcessDispatchError) -> ActionDispatchError {
+    match err {
         ProcessDispatchError::ProcessSend { action, message } => {
             ActionDispatchError::ProcessSend { action, message }
         }
@@ -495,11 +461,19 @@ fn map_process_dispatch_error(error: ProcessDispatchError) -> ActionDispatchErro
             ActionDispatchError::Filesystem { action, message }
         }
         ProcessDispatchError::SourceSelection { action, message } => {
-            ActionDispatchError::ProcessSend { action, message }
+            ActionDispatchError::SourceSelection { action, message }
         }
         ProcessDispatchError::UnsupportedAction { action } => ActionDispatchError::ProcessSend {
             action,
             message: "unsupported process action".to_string(),
         },
     }
+}
+
+fn leader_path(scope: &str) -> String {
+    format!("/{}/leader", scope.trim_matches('/'))
+}
+
+fn switchover_path(scope: &str) -> String {
+    format!("/{}/switchover", scope.trim_matches('/'))
 }

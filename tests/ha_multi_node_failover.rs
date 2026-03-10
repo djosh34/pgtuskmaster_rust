@@ -100,9 +100,9 @@ async fn e2e_multi_node_targeted_switchover_promotes_requested_replica(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn e2e_no_quorum_enters_failsafe_strict_all_nodes(
+async fn e2e_no_quorum_enters_safe_state_strict_all_nodes(
 ) -> Result<(), pgtuskmaster_rust::state::WorkerError> {
-    multi_node::e2e_no_quorum_enters_failsafe_strict_all_nodes().await
+    multi_node::e2e_no_quorum_enters_safe_state_strict_all_nodes().await
 }
 
 #[tokio::test(flavor = "current_thread")]

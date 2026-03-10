@@ -329,8 +329,9 @@ mod tests {
 
     use crate::{
         api::{
-            DcsTrustResponse, HaClusterMemberResponse, HaDecisionResponse, HaPhaseResponse,
-            HaStateResponse, MemberRoleResponse, ReadinessResponse, SqlStatusResponse,
+            DcsTrustResponse, DesiredNodeStateResponse, HaClusterMemberResponse, HaStateResponse,
+            MemberRoleResponse, PrimaryPlanResponse, ReadinessResponse, ReplicaPlanResponse,
+            SqlStatusResponse,
         },
         cli::{
             client::CliTlsConfig,
@@ -359,7 +360,7 @@ mod tests {
 
     fn sample_state(
         self_member_id: &str,
-        phase: HaPhaseResponse,
+        desired_state: DesiredNodeStateResponse,
         leader: Option<&str>,
         members: Vec<HaClusterMemberResponse>,
     ) -> HaStateResponse {
@@ -373,9 +374,14 @@ mod tests {
             member_count: members.len(),
             members,
             dcs_trust: DcsTrustResponse::FreshQuorum,
-            ha_phase: phase,
+            cluster_mode: match leader {
+                Some(value) => crate::api::ClusterModeResponse::InitializedLeaderPresent {
+                    leader: value.to_string(),
+                },
+                None => crate::api::ClusterModeResponse::InitializedNoLeaderFreshQuorum,
+            },
+            desired_state,
             ha_tick: 1,
-            ha_decision: HaDecisionResponse::NoChange,
             snapshot_sequence: 10,
         }
     }
@@ -417,13 +423,19 @@ mod tests {
         ];
         let seed_state = sample_state(
             "node-a",
-            HaPhaseResponse::Primary,
+            DesiredNodeStateResponse::Primary {
+                plan: PrimaryPlanResponse::KeepLeader,
+            },
             Some("node-a"),
             members.clone(),
         );
         let replica_state = sample_state(
             "node-b",
-            HaPhaseResponse::Replica,
+            DesiredNodeStateResponse::Replica {
+                plan: ReplicaPlanResponse::DirectFollow {
+                    leader_member_id: "node-a".to_string(),
+                },
+            },
             Some("node-a"),
             members.clone(),
         );
@@ -473,7 +485,9 @@ mod tests {
         ];
         let seed_state = sample_state(
             "node-a",
-            HaPhaseResponse::Primary,
+            DesiredNodeStateResponse::Primary {
+                plan: PrimaryPlanResponse::KeepLeader,
+            },
             Some("node-a"),
             members.clone(),
         );
@@ -524,13 +538,19 @@ mod tests {
         ];
         let seed_state = sample_state(
             "node-a",
-            HaPhaseResponse::Primary,
+            DesiredNodeStateResponse::Primary {
+                plan: PrimaryPlanResponse::KeepLeader,
+            },
             Some("node-a"),
             members.clone(),
         );
         let replica_state = sample_state(
             "node-b",
-            HaPhaseResponse::Replica,
+            DesiredNodeStateResponse::Replica {
+                plan: ReplicaPlanResponse::DirectFollow {
+                    leader_member_id: "node-a".to_string(),
+                },
+            },
             Some("node-a"),
             members.clone(),
         );
@@ -594,7 +614,9 @@ mod tests {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
             "node-a",
-            HaPhaseResponse::Primary,
+            DesiredNodeStateResponse::Primary {
+                plan: PrimaryPlanResponse::KeepLeader,
+            },
             Some("node-a"),
             members.clone(),
         );
@@ -626,7 +648,9 @@ mod tests {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
             "node-a",
-            HaPhaseResponse::Primary,
+            DesiredNodeStateResponse::Primary {
+                plan: PrimaryPlanResponse::KeepLeader,
+            },
             Some("node-a"),
             members.clone(),
         );

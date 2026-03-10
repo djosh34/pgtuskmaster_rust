@@ -313,15 +313,18 @@ pub async fn wait_for_bootstrap_primary(
     loop {
         let observation = match client.get_ha_state().await {
             Ok(state) => {
-                let is_expected_primary =
-                    state.self_member_id == expected_member_id && state.ha_phase == "Primary";
+                let is_expected_primary = state.self_member_id == expected_member_id
+                    && matches!(
+                        state.desired_state,
+                        crate::api::DesiredNodeStateResponse::Primary { .. }
+                    );
                 if is_expected_primary {
                     return Ok(());
                 }
                 let leader = state.leader.as_deref().unwrap_or("none");
                 format!(
-                    "member={} phase={} leader={leader}",
-                    state.self_member_id, state.ha_phase
+                    "member={} desired_state={:?} leader={leader}",
+                    state.self_member_id, state.desired_state
                 )
             }
             Err(err) => err.to_string(),
@@ -357,9 +360,9 @@ pub async fn wait_for_node_api_unavailable(
             Ok(state) => {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(WorkerError::Message(format!(
-                        "timed out waiting for api unavailability for {node_id} at {node_addr}; last_observation=member={} phase={} leader={:?}",
+                        "timed out waiting for api unavailability for {node_id} at {node_addr}; last_observation=member={} desired_state={:?} leader={:?}",
                         state.self_member_id,
-                        state.ha_phase,
+                        state.desired_state,
                         state.leader
                     )));
                 }

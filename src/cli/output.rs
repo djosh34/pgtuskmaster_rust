@@ -151,10 +151,9 @@ fn render_debug_verbose_text(view: &DebugVerboseView) -> String {
         payload.dcs.has_switchover_request
     ));
     lines.push(format!(
-        "ha: phase={} decision={} detail={} planned_actions={}",
-        payload.ha.phase,
-        payload.ha.decision,
-        payload.ha.decision_detail.as_deref().unwrap_or("none"),
+        "ha: cluster_mode={} desired_state={} planned_actions={}",
+        payload.ha.cluster_mode,
+        payload.ha.desired_state,
         payload.ha.planned_actions
     ));
     lines.push(format!(
@@ -241,10 +240,9 @@ fn render_status_debug_details(view: &ClusterStatusView) -> Vec<String> {
                     payload.dcs.leader.as_deref().unwrap_or("none")
                 ));
                 lines.push(format!(
-                    "    ha: phase={} decision={} detail={}",
-                    payload.ha.phase,
-                    payload.ha.decision,
-                    payload.ha.decision_detail.as_deref().unwrap_or("none")
+                    "    ha: cluster_mode={} desired_state={}",
+                    payload.ha.cluster_mode,
+                    payload.ha.desired_state
                 ));
                 lines.push(format!(
                     "    pginfo: variant={} sql={} readiness={} summary={}",
@@ -439,10 +437,9 @@ mod tests {
                 version: 1,
                 updated_at_ms: 1,
                 worker: "Running".to_string(),
-                phase: "Primary".to_string(),
+                cluster_mode: "InitializedLeaderPresent".to_string(),
+                desired_state: "Primary".to_string(),
                 tick: 1,
-                decision: "NoChange".to_string(),
-                decision_detail: Some("already converged".to_string()),
                 planned_actions: 0,
             },
             api: ApiSection {
@@ -459,7 +456,7 @@ mod tests {
                 domain: "ha".to_string(),
                 previous_version: Some(1),
                 current_version: Some(2),
-                summary: "decision updated".to_string(),
+                summary: "desired state updated".to_string(),
             }],
             timeline: vec![DebugTimelineView {
                 sequence: 42,

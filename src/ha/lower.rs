@@ -1,14 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::MemberId;
+use crate::{process::jobs::ActiveJobKind, state::MemberId};
 
-use super::decision::{HaDecision, RecoveryStrategy, StepDownPlan};
+use super::{
+    decision::{process_activity, ProcessActivity, ReconcileFacts},
+    state::{DesiredNodeState, FencePlan, PrimaryPlan, ReplicaPlan},
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct HaEffectPlan {
     pub(crate) lease: LeaseEffect,
     pub(crate) switchover: SwitchoverEffect,
-    pub(crate) replication: ReplicationEffect,
+    pub(crate) recovery: RecoveryEffect,
     pub(crate) postgres: PostgresEffect,
     pub(crate) safety: SafetyEffect,
 }
@@ -32,15 +35,12 @@ pub(crate) enum SwitchoverEffect {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ReplicationEffect {
+pub(crate) enum RecoveryEffect {
     #[default]
     None,
-    FollowLeader {
-        leader_member_id: MemberId,
-    },
-    RecoverReplica {
-        strategy: RecoveryStrategy,
-    },
+    Rewind { leader_member_id: MemberId },
+    Basebackup { leader_member_id: MemberId },
+    Bootstrap,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,7 +48,8 @@ pub(crate) enum ReplicationEffect {
 pub(crate) enum PostgresEffect {
     #[default]
     None,
-    Start,
+    StartPrimary,
+    StartReplica { leader_member_id: MemberId },
     Promote,
     Demote,
 }
@@ -59,79 +60,196 @@ pub(crate) enum SafetyEffect {
     #[default]
     None,
     FenceNode,
-    SignalFailSafe,
 }
 
-impl HaDecision {
-    pub(crate) fn lower(&self) -> HaEffectPlan {
-        match self {
-            Self::NoChange | Self::WaitForDcsTrust | Self::WaitForPromotionSafety { .. } => {
-                HaEffectPlan::default()
-            }
-            Self::WaitForPostgres {
-                start_requested, ..
-            } => HaEffectPlan {
-                postgres: if *start_requested {
-                    PostgresEffect::Start
-                } else {
-                    PostgresEffect::None
-                },
-                ..HaEffectPlan::default()
-            },
-            Self::AttemptLeadership => HaEffectPlan {
-                lease: LeaseEffect::AcquireLeader,
-                ..HaEffectPlan::default()
-            },
-            Self::FollowLeader { leader_member_id } => HaEffectPlan {
-                replication: ReplicationEffect::FollowLeader {
-                    leader_member_id: leader_member_id.clone(),
-                },
-                ..HaEffectPlan::default()
-            },
-            Self::BecomePrimary { promote } => HaEffectPlan {
-                postgres: if *promote {
-                    PostgresEffect::Promote
-                } else {
-                    PostgresEffect::None
-                },
-                ..HaEffectPlan::default()
-            },
-            Self::CompleteSwitchover => HaEffectPlan {
-                switchover: SwitchoverEffect::ClearRequest,
-                ..HaEffectPlan::default()
-            },
-            Self::StepDown(plan) => lower_step_down(plan),
-            Self::RecoverReplica { strategy } => HaEffectPlan {
-                replication: ReplicationEffect::RecoverReplica {
-                    strategy: strategy.clone(),
-                },
-                ..HaEffectPlan::default()
-            },
-            Self::FenceNode => HaEffectPlan {
-                safety: SafetyEffect::FenceNode,
-                ..HaEffectPlan::default()
-            },
-            Self::ReleaseLeaderLease { .. } => HaEffectPlan {
-                lease: LeaseEffect::ReleaseLeader,
-                ..HaEffectPlan::default()
-            },
-            Self::EnterFailSafe {
-                release_leader_lease,
-            } => HaEffectPlan {
-                lease: if *release_leader_lease {
-                    LeaseEffect::ReleaseLeader
-                } else {
+pub(crate) fn lower_desired_state(
+    desired_state: &DesiredNodeState,
+    facts: &ReconcileFacts,
+) -> HaEffectPlan {
+    match desired_state {
+        DesiredNodeState::Bootstrap { .. } => lower_bootstrap(facts),
+        DesiredNodeState::Primary { plan } => lower_primary(plan, facts),
+        DesiredNodeState::Replica { plan } => lower_replica(plan, facts),
+        DesiredNodeState::Quiescent { .. } => lower_quiescent(facts),
+        DesiredNodeState::Fence { plan } => lower_fence(plan, facts),
+    }
+}
+
+fn lower_bootstrap(facts: &ReconcileFacts) -> HaEffectPlan {
+    match process_activity(&facts.current_process, &[ActiveJobKind::Bootstrap]) {
+        ProcessActivity::Running => HaEffectPlan::default(),
+        _ => HaEffectPlan {
+            recovery: RecoveryEffect::Bootstrap,
+            ..HaEffectPlan::default()
+        },
+    }
+}
+
+fn lower_primary(plan: &PrimaryPlan, facts: &ReconcileFacts) -> HaEffectPlan {
+    match plan {
+        PrimaryPlan::KeepLeader => maybe_clear_switchover(facts, HaEffectPlan::default()),
+        PrimaryPlan::AcquireLeaderThenResumePrimary => maybe_clear_switchover(
+            facts,
+            HaEffectPlan {
+                lease: if facts.i_am_authoritative_leader {
                     LeaseEffect::None
+                } else {
+                    LeaseEffect::AcquireLeader
                 },
-                safety: SafetyEffect::FenceNode,
                 ..HaEffectPlan::default()
             },
+        ),
+        PrimaryPlan::AcquireLeaderThenPromote => HaEffectPlan {
+            lease: if facts.i_am_authoritative_leader {
+                LeaseEffect::None
+            } else {
+                LeaseEffect::AcquireLeader
+            },
+            postgres: match process_activity(&facts.current_process, &[ActiveJobKind::Promote]) {
+                ProcessActivity::Running => PostgresEffect::None,
+                _ => PostgresEffect::Promote,
+            },
+            ..HaEffectPlan::default()
+        },
+        PrimaryPlan::AcquireLeaderThenStartPrimary => HaEffectPlan {
+            lease: if facts.i_am_authoritative_leader {
+                LeaseEffect::None
+            } else {
+                LeaseEffect::AcquireLeader
+            },
+            postgres: match process_activity(&facts.current_process, &[ActiveJobKind::StartPostgres]) {
+                ProcessActivity::Running => PostgresEffect::None,
+                _ => PostgresEffect::StartPrimary,
+            },
+            ..HaEffectPlan::default()
+        },
+    }
+}
+
+fn lower_replica(plan: &ReplicaPlan, facts: &ReconcileFacts) -> HaEffectPlan {
+    match plan {
+        ReplicaPlan::DirectFollow { leader_member_id } => lower_direct_follow(leader_member_id, facts),
+        ReplicaPlan::RewindThenFollow { leader_member_id } => lower_rewind_then_follow(leader_member_id, facts),
+        ReplicaPlan::BasebackupThenFollow { leader_member_id } => {
+            lower_basebackup_then_follow(leader_member_id, facts)
         }
     }
 }
 
-pub(crate) fn lower_decision(decision: &HaDecision) -> HaEffectPlan {
-    decision.lower()
+fn lower_direct_follow(leader_member_id: &MemberId, facts: &ReconcileFacts) -> HaEffectPlan {
+    if facts.postgres_primary {
+        return HaEffectPlan {
+            postgres: PostgresEffect::Demote,
+            ..HaEffectPlan::default()
+        };
+    }
+
+    if facts.postgres_reachable {
+        return maybe_clear_switchover(facts, HaEffectPlan::default());
+    }
+
+    match process_activity(&facts.current_process, &[ActiveJobKind::StartPostgres]) {
+        ProcessActivity::Running => HaEffectPlan::default(),
+        _ => HaEffectPlan {
+            postgres: PostgresEffect::StartReplica {
+                leader_member_id: leader_member_id.clone(),
+            },
+            ..HaEffectPlan::default()
+        },
+    }
+}
+
+fn lower_rewind_then_follow(leader_member_id: &MemberId, facts: &ReconcileFacts) -> HaEffectPlan {
+    if facts.postgres_primary {
+        return HaEffectPlan {
+            postgres: PostgresEffect::Demote,
+            ..HaEffectPlan::default()
+        };
+    }
+
+    match process_activity(&facts.current_process, &[ActiveJobKind::PgRewind]) {
+        ProcessActivity::Running => HaEffectPlan::default(),
+        ProcessActivity::IdleSuccess => lower_direct_follow(leader_member_id, facts),
+        _ => HaEffectPlan {
+            recovery: RecoveryEffect::Rewind {
+                leader_member_id: leader_member_id.clone(),
+            },
+            ..HaEffectPlan::default()
+        },
+    }
+}
+
+fn lower_basebackup_then_follow(
+    leader_member_id: &MemberId,
+    facts: &ReconcileFacts,
+) -> HaEffectPlan {
+    if facts.postgres_primary || facts.postgres_reachable {
+        return HaEffectPlan {
+            postgres: PostgresEffect::Demote,
+            ..HaEffectPlan::default()
+        };
+    }
+
+    match process_activity(&facts.current_process, &[ActiveJobKind::BaseBackup]) {
+        ProcessActivity::Running => HaEffectPlan::default(),
+        ProcessActivity::IdleSuccess => lower_direct_follow(leader_member_id, facts),
+        _ => HaEffectPlan {
+            recovery: RecoveryEffect::Basebackup {
+                leader_member_id: leader_member_id.clone(),
+            },
+            ..HaEffectPlan::default()
+        },
+    }
+}
+
+fn lower_quiescent(facts: &ReconcileFacts) -> HaEffectPlan {
+    if facts.i_am_authoritative_leader || facts.postgres_primary {
+        return HaEffectPlan {
+            postgres: if facts.postgres_primary {
+                PostgresEffect::Demote
+            } else {
+                PostgresEffect::None
+            },
+            lease: if facts.i_am_authoritative_leader {
+                LeaseEffect::ReleaseLeader
+            } else {
+                LeaseEffect::None
+            },
+            ..HaEffectPlan::default()
+        };
+    }
+
+    HaEffectPlan::default()
+}
+
+fn lower_fence(_plan: &FencePlan, facts: &ReconcileFacts) -> HaEffectPlan {
+    let fencing_running = matches!(
+        process_activity(&facts.current_process, &[ActiveJobKind::Fencing]),
+        ProcessActivity::Running
+    );
+    HaEffectPlan {
+        lease: if facts.i_am_authoritative_leader {
+            LeaseEffect::ReleaseLeader
+        } else {
+            LeaseEffect::None
+        },
+        safety: if fencing_running {
+            SafetyEffect::None
+        } else {
+            SafetyEffect::FenceNode
+        },
+        ..HaEffectPlan::default()
+    }
+}
+
+fn maybe_clear_switchover(facts: &ReconcileFacts, plan: HaEffectPlan) -> HaEffectPlan {
+    if facts.switchover_pending && facts.i_am_authoritative_leader && facts.postgres_primary {
+        return HaEffectPlan {
+            switchover: SwitchoverEffect::ClearRequest,
+            ..plan
+        };
+    }
+    plan
 }
 
 impl HaEffectPlan {
@@ -142,27 +260,9 @@ impl HaEffectPlan {
     pub(crate) fn dispatch_step_count(&self) -> usize {
         lease_effect_step_count(&self.lease)
             + switchover_effect_step_count(&self.switchover)
-            + replication_effect_step_count(&self.replication)
+            + recovery_effect_step_count(&self.recovery)
             + postgres_effect_step_count(&self.postgres)
             + safety_effect_step_count(&self.safety)
-    }
-}
-
-fn lower_step_down(plan: &StepDownPlan) -> HaEffectPlan {
-    HaEffectPlan {
-        lease: if plan.release_leader_lease {
-            LeaseEffect::ReleaseLeader
-        } else {
-            LeaseEffect::None
-        },
-        switchover: SwitchoverEffect::None,
-        replication: ReplicationEffect::None,
-        postgres: PostgresEffect::Demote,
-        safety: if plan.fence {
-            SafetyEffect::FenceNode
-        } else {
-            SafetyEffect::None
-        },
     }
 }
 
@@ -180,164 +280,27 @@ pub(crate) fn switchover_effect_step_count(effect: &SwitchoverEffect) -> usize {
     }
 }
 
-pub(crate) fn replication_effect_step_count(effect: &ReplicationEffect) -> usize {
+pub(crate) fn recovery_effect_step_count(effect: &RecoveryEffect) -> usize {
     match effect {
-        ReplicationEffect::None => 0,
-        ReplicationEffect::FollowLeader { .. } => 1,
-        ReplicationEffect::RecoverReplica { strategy } => match strategy {
-            RecoveryStrategy::Rewind { .. } => 1,
-            RecoveryStrategy::BaseBackup { .. } | RecoveryStrategy::Bootstrap => 2,
-        },
+        RecoveryEffect::None => 0,
+        RecoveryEffect::Rewind { .. } => 1,
+        RecoveryEffect::Basebackup { .. } | RecoveryEffect::Bootstrap => 2,
     }
 }
 
 pub(crate) fn postgres_effect_step_count(effect: &PostgresEffect) -> usize {
     match effect {
         PostgresEffect::None => 0,
-        PostgresEffect::Start | PostgresEffect::Promote | PostgresEffect::Demote => 1,
+        PostgresEffect::StartPrimary
+        | PostgresEffect::StartReplica { .. }
+        | PostgresEffect::Promote
+        | PostgresEffect::Demote => 1,
     }
 }
 
 pub(crate) fn safety_effect_step_count(effect: &SafetyEffect) -> usize {
     match effect {
         SafetyEffect::None => 0,
-        SafetyEffect::FenceNode | SafetyEffect::SignalFailSafe => 1,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::state::MemberId;
-
-    use super::{
-        super::decision::{
-            HaDecision, LeaseReleaseReason, RecoveryStrategy, StepDownPlan, StepDownReason,
-        },
-        HaEffectPlan, LeaseEffect, PostgresEffect, ReplicationEffect, SafetyEffect,
-        SwitchoverEffect,
-    };
-
-    #[test]
-    fn lowers_composite_step_down_into_bucketed_plan() {
-        let decision = HaDecision::StepDown(StepDownPlan {
-            reason: StepDownReason::Switchover,
-            release_leader_lease: true,
-            fence: false,
-        });
-
-        assert_eq!(
-            decision.lower(),
-            HaEffectPlan {
-                lease: LeaseEffect::ReleaseLeader,
-                switchover: SwitchoverEffect::None,
-                replication: ReplicationEffect::None,
-                postgres: PostgresEffect::Demote,
-                safety: SafetyEffect::None,
-            }
-        );
-    }
-
-    #[test]
-    fn lowers_complete_switchover_into_clear_request_plan() {
-        let decision = HaDecision::CompleteSwitchover;
-
-        assert_eq!(
-            decision.lower(),
-            HaEffectPlan {
-                lease: LeaseEffect::None,
-                switchover: SwitchoverEffect::ClearRequest,
-                replication: ReplicationEffect::None,
-                postgres: PostgresEffect::None,
-                safety: SafetyEffect::None,
-            }
-        );
-    }
-
-    #[test]
-    fn lowers_fail_safe_primary_release_into_fencing_plan() {
-        let decision = HaDecision::EnterFailSafe {
-            release_leader_lease: true,
-        };
-
-        assert_eq!(
-            decision.lower(),
-            HaEffectPlan {
-                lease: LeaseEffect::ReleaseLeader,
-                switchover: SwitchoverEffect::None,
-                replication: ReplicationEffect::None,
-                postgres: PostgresEffect::None,
-                safety: SafetyEffect::FenceNode,
-            }
-        );
-    }
-
-    #[test]
-    fn lowers_fail_safe_without_release_into_fencing_plan() {
-        let decision = HaDecision::EnterFailSafe {
-            release_leader_lease: false,
-        };
-
-        assert_eq!(
-            decision.lower(),
-            HaEffectPlan {
-                lease: LeaseEffect::None,
-                switchover: SwitchoverEffect::None,
-                replication: ReplicationEffect::None,
-                postgres: PostgresEffect::None,
-                safety: SafetyEffect::FenceNode,
-            }
-        );
-    }
-
-    #[test]
-    fn lowers_recovery_variants() {
-        let rewind = HaDecision::RecoverReplica {
-            strategy: RecoveryStrategy::Rewind {
-                leader_member_id: MemberId("node-b".to_string()),
-            },
-        };
-        let basebackup = HaDecision::RecoverReplica {
-            strategy: RecoveryStrategy::BaseBackup {
-                leader_member_id: MemberId("node-b".to_string()),
-            },
-        };
-        let bootstrap = HaDecision::RecoverReplica {
-            strategy: RecoveryStrategy::Bootstrap,
-        };
-
-        assert_eq!(
-            rewind.lower(),
-            HaEffectPlan {
-                lease: LeaseEffect::None,
-                switchover: SwitchoverEffect::None,
-                replication: ReplicationEffect::RecoverReplica {
-                    strategy: RecoveryStrategy::Rewind {
-                        leader_member_id: MemberId("node-b".to_string()),
-                    },
-                },
-                postgres: PostgresEffect::None,
-                safety: SafetyEffect::None,
-            }
-        );
-        assert_eq!(basebackup.lower().dispatch_step_count(), 2);
-        assert_eq!(bootstrap.lower().dispatch_step_count(), 2);
-    }
-
-    #[test]
-    fn lowers_extra_release_variant() {
-        let decision = HaDecision::ReleaseLeaderLease {
-            reason: LeaseReleaseReason::FencingComplete,
-        };
-
-        assert_eq!(
-            decision.lower(),
-            HaEffectPlan {
-                lease: LeaseEffect::ReleaseLeader,
-                switchover: SwitchoverEffect::None,
-                replication: ReplicationEffect::None,
-                postgres: PostgresEffect::None,
-                safety: SafetyEffect::None,
-            }
-        );
+        SafetyEffect::FenceNode => 1,
     }
 }

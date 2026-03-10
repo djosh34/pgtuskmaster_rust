@@ -23,7 +23,8 @@ use crate::{
     },
     ha::source_conn::basebackup_source_from_member,
     ha::state::{
-        HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
+        ClusterMode, DesiredNodeState, HaState, HaWorkerContractStubInputs, HaWorkerCtx,
+        LeadershipTransferState, ProcessDispatchDefaults, QuiescentReason,
     },
     local_physical::{inspect_local_physical_state, DataDirKind},
     logging::{
@@ -1118,9 +1119,12 @@ async fn run_workers(
 
     let initial_ha = HaState {
         worker: WorkerStatus::Starting,
-        phase: HaPhase::Init,
+        cluster_mode: ClusterMode::DcsUnavailable,
+        desired_state: DesiredNodeState::Quiescent {
+            reason: QuiescentReason::WaitingForAuthoritativeClusterState,
+        },
+        leadership_transfer: LeadershipTransferState::None,
         tick: 0,
-        decision: crate::ha::decision::HaDecision::NoChange,
     };
     let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha, now);
 

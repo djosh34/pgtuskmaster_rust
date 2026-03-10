@@ -17,8 +17,8 @@ use super::observer::{
 
 use pgtuskmaster_rust::{
     api::{
-        AcceptedResponse as CliAcceptedResponse, HaStateResponse, ReadinessResponse,
-        SqlStatusResponse,
+        AcceptedResponse as CliAcceptedResponse, DesiredNodeStateResponse, HaStateResponse,
+        QuiescentReasonResponse, ReadinessResponse, SqlStatusResponse,
     },
     cli::{self, args::Cli, client::CliApiClient, error::CliError},
     state::WorkerError,
@@ -1589,7 +1589,7 @@ impl ClusterFixture {
         })?;
         match self.fetch_node_ha_state_by_index(node_index).await {
             Ok(state) => {
-                if state.ha_phase == "Primary" {
+                if Self::state_is_primary(&state) {
                     match self
                         .run_sql_on_node(
                             former_primary,
@@ -1600,12 +1600,14 @@ impl ClusterFixture {
                     {
                         Ok(output) => {
                             return Err(WorkerError::Message(format!(
-                                "former primary {former_primary} still reports Primary phase and remains SQL reachable with output={output:?}"
+                                "former primary {former_primary} still reports desired_state={} and remains SQL reachable with output={output:?}",
+                                Self::state_label(&state)
                             )));
                         }
                         Err(err) => {
                             self.record(format!(
-                                "former primary {former_primary} API still reports Primary phase, but SQL is unreachable after transition; treating unreachable SQL as demotion evidence: {err}"
+                                "former primary {former_primary} API still reports desired_state={}, but SQL is unreachable after transition; treating unreachable SQL as demotion evidence: {err}",
+                                Self::state_label(&state)
                             ));
                             return Ok(());
                         }
@@ -1806,21 +1808,46 @@ impl ClusterFixture {
         Ok(())
     }
 
-    fn update_phase_history(
-        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+    fn update_state_history(
+        state_history: &mut BTreeMap<String, BTreeSet<String>>,
         states: &[HaStateResponse],
     ) {
         for state in states {
-            phase_history
+            state_history
                 .entry(state.self_member_id.clone())
                 .or_default()
-                .insert(state.ha_phase.to_string());
+                .insert(Self::state_label(state).to_string());
         }
     }
 
-    fn format_phase_history(phase_history: &BTreeMap<String, BTreeSet<String>>) -> String {
-        let mut node_entries = Vec::with_capacity(phase_history.len());
-        for (node_id, phases) in phase_history {
+    fn state_label(state: &HaStateResponse) -> &'static str {
+        match &state.desired_state {
+            DesiredNodeStateResponse::Bootstrap { .. } => "Bootstrap",
+            DesiredNodeStateResponse::Primary { .. } => "Primary",
+            DesiredNodeStateResponse::Replica { .. } => "Replica",
+            DesiredNodeStateResponse::Quiescent { .. } => "Quiescent",
+            DesiredNodeStateResponse::Fence { .. } => "Fence",
+        }
+    }
+
+    fn state_is_primary(state: &HaStateResponse) -> bool {
+        matches!(state.desired_state, DesiredNodeStateResponse::Primary { .. })
+    }
+
+    fn state_is_no_quorum_safe(state: &HaStateResponse) -> bool {
+        matches!(
+            &state.desired_state,
+            DesiredNodeStateResponse::Fence { .. }
+                | DesiredNodeStateResponse::Quiescent {
+                    reason: QuiescentReasonResponse::WaitingForFreshQuorum
+                        | QuiescentReasonResponse::WaitingForAuthoritativeClusterState,
+                }
+        )
+    }
+
+    fn format_state_history(state_history: &BTreeMap<String, BTreeSet<String>>) -> String {
+        let mut node_entries = Vec::with_capacity(state_history.len());
+        for (node_id, phases) in state_history {
             let phase_list: Vec<&str> = phases.iter().map(String::as_str).collect();
             node_entries.push(format!("{node_id}:{}", phase_list.join("|")));
         }
@@ -1832,7 +1859,7 @@ impl ClusterFixture {
         timeout: Duration,
         excluded_primary: Option<&str>,
         required_consecutive: usize,
-        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+        state_history: &mut BTreeMap<String, BTreeSet<String>>,
     ) -> Result<String, WorkerError> {
         if required_consecutive == 0 {
             return Err(WorkerError::Message(
@@ -1849,14 +1876,16 @@ impl ClusterFixture {
         loop {
             match self.cluster_ha_states().await {
                 Ok(states) => {
-                    Self::update_phase_history(phase_history, states.as_slice());
+                    Self::update_state_history(state_history, states.as_slice());
                     let state_summary = states
                         .iter()
                         .map(|state| {
                             let leader = state.leader.as_deref().unwrap_or("none");
                             format!(
                                 "{}:{}:leader={}",
-                                state.self_member_id, state.ha_phase, leader
+                                state.self_member_id,
+                                Self::state_label(state),
+                                leader
                             )
                         })
                         .collect::<Vec<_>>()
@@ -1917,7 +1946,7 @@ impl ClusterFixture {
         excluded_primary: Option<&str>,
         required_consecutive: usize,
         min_observed_nodes: usize,
-        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+        state_history: &mut BTreeMap<String, BTreeSet<String>>,
     ) -> Result<String, WorkerError> {
         if required_consecutive == 0 {
             return Err(WorkerError::Message(
@@ -1949,7 +1978,8 @@ impl ClusterFixture {
                                 let leader = state.leader.as_deref().unwrap_or("none");
                                 fragments.push(format!(
                                     "{}:{}:leader={leader}",
-                                    state.self_member_id, state.ha_phase
+                                    state.self_member_id,
+                                    Self::state_label(&state)
                                 ));
                                 states.push(state);
                             }
@@ -1980,7 +2010,7 @@ impl ClusterFixture {
                             states.len()
                         );
                     } else {
-                        Self::update_phase_history(phase_history, states.as_slice());
+                        Self::update_state_history(state_history, states.as_slice());
                         let primaries = Self::primary_members(states.as_slice());
                         if primaries.len() == 1 {
                             if let Some(primary) = primaries.into_iter().next() {
@@ -2024,37 +2054,37 @@ impl ClusterFixture {
         }
     }
 
-    fn assert_phase_history_contains_failover(
-        phase_history: &BTreeMap<String, BTreeSet<String>>,
+    fn assert_state_history_contains_failover(
+        state_history: &BTreeMap<String, BTreeSet<String>>,
         former_primary: &str,
         new_primary: &str,
     ) -> Result<(), WorkerError> {
-        const PRIMARY_PHASE: &str = "primary";
+        const PRIMARY_STATE: &str = "Primary";
 
-        let former_phases = phase_history.get(former_primary).ok_or_else(|| {
+        let former_phases = state_history.get(former_primary).ok_or_else(|| {
             WorkerError::Message(format!(
                 "missing phase history for former primary {former_primary}"
             ))
         })?;
-        if !former_phases.contains(PRIMARY_PHASE) {
+        if !former_phases.contains(PRIMARY_STATE) {
             return Err(WorkerError::Message(format!(
-                "former primary {former_primary} never observed in Primary phase"
+                "former primary {former_primary} never observed in Primary desired state"
             )));
         }
-        if !former_phases.iter().any(|phase| phase != PRIMARY_PHASE) {
+        if !former_phases.iter().any(|phase| phase != PRIMARY_STATE) {
             return Err(WorkerError::Message(format!(
-                "former primary {former_primary} never observed leaving Primary phase"
+                "former primary {former_primary} never observed leaving Primary desired state"
             )));
         }
 
-        let promoted_phases = phase_history.get(new_primary).ok_or_else(|| {
+        let promoted_phases = state_history.get(new_primary).ok_or_else(|| {
             WorkerError::Message(format!(
                 "missing phase history for promoted primary {new_primary}"
             ))
         })?;
-        if !promoted_phases.contains(PRIMARY_PHASE) {
+        if !promoted_phases.contains(PRIMARY_STATE) {
             return Err(WorkerError::Message(format!(
-                "new primary {new_primary} never observed in Primary phase"
+                "new primary {new_primary} never observed in Primary desired state"
             )));
         }
 
@@ -2381,7 +2411,7 @@ impl ClusterFixture {
         max_attempts: usize,
         per_attempt_timeout: Duration,
         required_consecutive: usize,
-        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+        state_history: &mut BTreeMap<String, BTreeSet<String>>,
     ) -> Result<String, WorkerError> {
         if max_attempts == 0 {
             return Err(WorkerError::Message(
@@ -2403,7 +2433,7 @@ impl ClusterFixture {
                     Some(previous_primary),
                     required_consecutive,
                     1,
-                    phase_history,
+                    state_history,
                 )
                 .await
             {
@@ -2418,7 +2448,7 @@ impl ClusterFixture {
                             per_attempt_timeout,
                             previous_primary,
                             1,
-                            phase_history,
+                            state_history,
                         )
                         .await
                     {
@@ -2450,7 +2480,7 @@ impl ClusterFixture {
         timeout: Duration,
         required_consecutive: usize,
         min_observed_nodes: usize,
-        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+        state_history: &mut BTreeMap<String, BTreeSet<String>>,
     ) -> Result<String, WorkerError> {
         if required_consecutive == 0 {
             return Err(WorkerError::Message(
@@ -2482,7 +2512,7 @@ impl ClusterFixture {
                     }
 
                     if states.len() >= min_observed_nodes {
-                        Self::update_phase_history(phase_history, states.as_slice());
+                        Self::update_state_history(state_history, states.as_slice());
                         let primaries = Self::primary_members(states.as_slice());
                         if primaries.len() == 1
                             && primaries.first().map(String::as_str) == Some(expected_primary)
@@ -2626,7 +2656,7 @@ impl ClusterFixture {
                         || member_state.readiness != ReadinessResponse::Ready =>
                 {
                     self.record(format!(
-                        "target member became ineligible: observer={observer_node_id} target={target_node_id} sql={} readiness={}",
+                        "target member became ineligible: observer={observer_node_id} target={target_node_id} sql={:?} readiness={:?}",
                         member_state.sql, member_state.readiness
                     ));
                     return Ok(());
@@ -2642,7 +2672,7 @@ impl ClusterFixture {
                     return Ok(());
                 }
                 Some(member_state) => format!(
-                    "sql={} readiness={} role={} stale_ms={}",
+                    "sql={:?} readiness={:?} role={:?} stale_ms={}",
                     member_state.sql,
                     member_state.readiness,
                     member_state.role,
@@ -2661,30 +2691,32 @@ impl ClusterFixture {
         }
     }
 
-    async fn wait_for_node_ha_phase(
+    async fn wait_for_node_desired_state(
         &mut self,
         node_id: &str,
-        expected_phase: &str,
+        expected_state: &str,
         timeout: Duration,
     ) -> Result<(), WorkerError> {
         let node_index = self.node_index_by_id(node_id).ok_or_else(|| {
-            WorkerError::Message(format!("unknown node id for HA phase wait: {node_id}"))
+            WorkerError::Message(format!("unknown node id for desired-state wait: {node_id}"))
         })?;
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
             let state = self.fetch_node_ha_state_by_index(node_index).await?;
-            if state.ha_phase == expected_phase {
+            if Self::state_label(&state) == expected_state {
                 self.record(format!(
-                    "node phase observed: node={node_id} phase={} leader={:?}",
-                    state.ha_phase, state.leader
+                    "node desired state observed: node={node_id} desired_state={} leader={:?}",
+                    Self::state_label(&state),
+                    state.leader
                 ));
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for node {node_id} to enter HA phase {expected_phase}; last_phase={} leader={:?}",
-                    state.ha_phase, state.leader
+                    "timed out waiting for node {node_id} to enter desired state {expected_state}; last_state={} leader={:?}",
+                    Self::state_label(&state),
+                    state.leader
                 )));
             }
             tokio::time::sleep(E2E_STABLE_PRIMARY_API_POLL_INTERVAL).await;
@@ -2698,7 +2730,7 @@ impl ClusterFixture {
     fn primary_members(states: &[HaStateResponse]) -> Vec<String> {
         states
             .iter()
-            .filter(|state| state.ha_phase == "Primary")
+            .filter(|state| Self::state_is_primary(state))
             .map(|state| state.self_member_id.clone())
             .collect()
     }
@@ -2743,7 +2775,7 @@ impl ClusterFixture {
         timeout: Duration,
         previous: &str,
         min_observed_nodes: usize,
-        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+        state_history: &mut BTreeMap<String, BTreeSet<String>>,
     ) -> Result<String, WorkerError> {
         if min_observed_nodes == 0 {
             return Err(WorkerError::Message(
@@ -2768,7 +2800,8 @@ impl ClusterFixture {
                                 let leader = state.leader.as_deref().unwrap_or("none");
                                 fragments.push(format!(
                                     "{}:{}:leader={leader}",
-                                    state.self_member_id, state.ha_phase
+                                    state.self_member_id,
+                                    Self::state_label(&state)
                                 ));
                                 states.push(state);
                             }
@@ -2797,7 +2830,7 @@ impl ClusterFixture {
                             states.len()
                         );
                     } else {
-                        Self::update_phase_history(phase_history, states.as_slice());
+                        Self::update_state_history(state_history, states.as_slice());
                         let primaries = Self::primary_members(states.as_slice());
                         if primaries.len() == 1 {
                             if let Some(primary) = primaries.into_iter().next() {
@@ -2912,7 +2945,7 @@ impl ClusterFixture {
     async fn wait_for_stable_primary_resilient(
         &mut self,
         plan: StablePrimaryWaitPlan<'_>,
-        phase_history: &mut BTreeMap<String, BTreeSet<String>>,
+        state_history: &mut BTreeMap<String, BTreeSet<String>>,
     ) -> Result<String, WorkerError> {
         if plan.required_consecutive == 0 {
             return Err(WorkerError::Message(
@@ -2951,7 +2984,7 @@ impl ClusterFixture {
                 strict_timeout,
                 plan.excluded_primary,
                 strict_required_consecutive,
-                phase_history,
+                state_history,
             )
             .await
         {
@@ -2984,7 +3017,7 @@ impl ClusterFixture {
                 plan.excluded_primary,
                 relaxed_required_consecutive,
                 plan.min_observed_nodes,
-                phase_history,
+                state_history,
             )
             .await
         {
@@ -3101,16 +3134,19 @@ impl ClusterFixture {
         }
     }
 
-    async fn wait_for_all_nodes_failsafe(&mut self, timeout: Duration) -> Result<(), WorkerError> {
+    async fn wait_for_all_nodes_no_quorum_safe(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
         let deadline = tokio::time::Instant::now() + timeout;
-        let mut observed_api_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
+        let mut observed_api_safe_nodes: BTreeSet<String> = BTreeSet::new();
         let mut observed_api_non_primary_nodes: BTreeSet<String> = BTreeSet::new();
         let mut last_observation: Option<String> = None;
         let mut last_recorded_at = tokio::time::Instant::now();
         let node_count = self.nodes.len();
         if node_count == 0 {
             return Err(WorkerError::Message(
-                "cannot wait for fail-safe with zero nodes".to_string(),
+                "cannot wait for no-quorum safe state with zero nodes".to_string(),
             ));
         }
 
@@ -3120,7 +3156,7 @@ impl ClusterFixture {
                     .as_deref()
                     .map_or_else(|| "none".to_string(), ToString::to_string);
                 return Err(WorkerError::Message(format!(
-                    "timed out waiting for no-quorum fail-safe API observability (all nodes must answer /ha/state, at least one node must report FailSafe, and no node may report Primary); last_observation={detail}"
+                    "timed out waiting for no-quorum safe-state API observability (all nodes must answer /ha/state, at least one node must report Fence or Quiescent without fresh quorum, and no node may report Primary); last_observation={detail}"
                 )));
             }
             self.ensure_runtime_tasks_healthy().await?;
@@ -3144,7 +3180,7 @@ impl ClusterFixture {
                 .cluster_sql_roles_best_effort_with_timeout(E2E_NO_QUORUM_OBSERVATION_TIMEOUT)
                 .await?;
             let mut api_success_count = 0usize;
-            let mut current_api_failsafe_nodes: BTreeSet<String> = BTreeSet::new();
+            let mut current_api_safe_nodes: BTreeSet<String> = BTreeSet::new();
             let mut current_api_non_primary_nodes: BTreeSet<String> = BTreeSet::new();
             let mut current_api_primary_nodes: BTreeSet<String> = BTreeSet::new();
 
@@ -3152,19 +3188,20 @@ impl ClusterFixture {
                 match state_result {
                     Ok(state) => {
                         api_success_count = api_success_count.saturating_add(1);
-                        if state.ha_phase == "Primary" {
+                        if Self::state_is_primary(&state) {
                             current_api_primary_nodes.insert(node_id.clone());
                         } else {
                             current_api_non_primary_nodes.insert(node_id.clone());
                             observed_api_non_primary_nodes.insert(node_id.clone());
                         }
-                        if state.ha_phase == "FailSafe" {
-                            current_api_failsafe_nodes.insert(node_id.clone());
-                            observed_api_failsafe_nodes.insert(node_id.clone());
+                        if Self::state_is_no_quorum_safe(&state) {
+                            current_api_safe_nodes.insert(node_id.clone());
+                            observed_api_safe_nodes.insert(node_id.clone());
                         }
                         poll_details.push(format!(
-                            "{node_id}:phase={} leader={:?}",
-                            state.ha_phase, state.leader
+                            "{node_id}:desired_state={} leader={:?}",
+                            Self::state_label(&state),
+                            state.leader
                         ));
                     }
                     Err(err) => {
@@ -3175,18 +3212,18 @@ impl ClusterFixture {
 
             if api_success_count == node_count
                 && current_api_primary_nodes.is_empty()
-                && !current_api_failsafe_nodes.is_empty()
+                && !current_api_safe_nodes.is_empty()
                 && current_api_non_primary_nodes.len() == node_count
             {
                 return Ok(());
             }
 
             last_observation = Some(format!(
-                "api_success_count={api_success_count}/{node_count}; current_api_failsafe_nodes={:?}; current_api_non_primary_nodes={:?}; current_api_primary_nodes={:?}; observed_api_failsafe_nodes={:?}; observed_api_non_primary_nodes={:?}; poll={}",
-                current_api_failsafe_nodes,
+                "api_success_count={api_success_count}/{node_count}; current_api_safe_nodes={:?}; current_api_non_primary_nodes={:?}; current_api_primary_nodes={:?}; observed_api_safe_nodes={:?}; observed_api_non_primary_nodes={:?}; poll={}",
+                current_api_safe_nodes,
                 current_api_non_primary_nodes,
                 current_api_primary_nodes,
-                observed_api_failsafe_nodes,
+                observed_api_safe_nodes,
                 observed_api_non_primary_nodes,
                 poll_details.join(" | ")
             ));
@@ -3631,7 +3668,7 @@ fn finalize_timeline_scenario_result(
     }
 }
 
-async fn stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
+async fn stop_etcd_majority_and_wait_safe_state_strict_all_nodes(
     fixture: &mut ClusterFixture,
     stop_count: usize,
     timeout: Duration,
@@ -3643,15 +3680,15 @@ async fn stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
         stopped_members.join(",")
     ));
 
-    fixture.wait_for_all_nodes_failsafe(timeout).await?;
-    fixture.record("no-quorum: fail-safe observed on all nodes");
+    fixture.wait_for_all_nodes_no_quorum_safe(timeout).await?;
+    fixture.record("no-quorum: safe state observed on all nodes");
     Ok((stopped_members, ha_e2e::util::unix_now()?.0))
 }
 
 pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
-    let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
         fixture.record("unassisted failover bootstrap: wait for stable primary");
@@ -3666,7 +3703,7 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
-                &mut phase_history,
+                &mut state_history,
             )
             .await?;
         fixture.record(format!(
@@ -3741,7 +3778,7 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
                 Some(&bootstrap_primary),
                 3,
                 1,
-                &mut phase_history,
+                &mut state_history,
             )
             .await
         {
@@ -3785,11 +3822,11 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
                 .into_iter()
                 .filter_map(|(_, result)| result.ok())
                 .collect::<Vec<_>>();
-            ClusterFixture::update_phase_history(&mut phase_history, states.as_slice());
+            ClusterFixture::update_state_history(&mut state_history, states.as_slice());
         }
         let failover_primary = sql_confirmed_primary;
-        ClusterFixture::assert_phase_history_contains_failover(
-            &phase_history,
+        ClusterFixture::assert_state_history_contains_failover(
+            &state_history,
             &bootstrap_primary,
             &failover_primary,
         )?;
@@ -3798,7 +3835,7 @@ pub async fn e2e_multi_node_unassisted_failover_sql_consistency() -> Result<(), 
         ));
         fixture.record(format!(
             "phase history evidence: {}",
-            ClusterFixture::format_phase_history(&phase_history)
+            ClusterFixture::format_state_history(&state_history)
         ));
 
         fixture.record("unassisted failover SQL post-check: insert post-failure row");
@@ -3881,7 +3918,7 @@ pub async fn e2e_multi_node_primary_whole_node_hard_kill_failover_recovers_after
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name =
             "ha-e2e-primary-whole-node-hard-kill-failover-recovers-after-heal";
 
@@ -3898,7 +3935,7 @@ pub async fn e2e_multi_node_primary_whole_node_hard_kill_failover_recovers_after
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             let table_name = fixture.proof_table_name("ha_whole_node_primary_kill")?;
@@ -3940,7 +3977,7 @@ pub async fn e2e_multi_node_primary_whole_node_hard_kill_failover_recovers_after
                                     fallback_required_consecutive: 1,
                                     min_observed_nodes: 2,
                                 },
-                                &mut phase_history,
+                                &mut state_history,
                             )
                             .await
                     },
@@ -4002,8 +4039,8 @@ pub async fn e2e_multi_node_primary_whole_node_hard_kill_failover_recovers_after
                 )
                 .await?;
             fixture.record(format!(
-                "primary whole-node hard kill healed successfully: bootstrap_primary={bootstrap_primary} failover_primary={failover_primary} phase_history={}",
-                ClusterFixture::format_phase_history(&phase_history)
+                "primary whole-node hard kill healed successfully: bootstrap_primary={bootstrap_primary} failover_primary={failover_primary} state_history={}",
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -4027,7 +4064,7 @@ pub async fn e2e_multi_node_replica_whole_node_clean_stop_preserves_primary_writ
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name = "ha-e2e-replica-whole-node-clean-stop-preserves-primary-writes";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -4043,7 +4080,7 @@ pub async fn e2e_multi_node_replica_whole_node_clean_stop_preserves_primary_writ
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             let replica_node = fixture
@@ -4085,7 +4122,7 @@ pub async fn e2e_multi_node_replica_whole_node_clean_stop_preserves_primary_writ
                         fallback_required_consecutive: 1,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             if surviving_primary != bootstrap_primary {
@@ -4145,8 +4182,8 @@ pub async fn e2e_multi_node_replica_whole_node_clean_stop_preserves_primary_writ
                 )
                 .await?;
             fixture.record(format!(
-                "replica whole-node clean stop healed successfully: primary={bootstrap_primary} replica={replica_node} phase_history={}",
-                ClusterFixture::format_phase_history(&phase_history)
+                "replica whole-node clean stop healed successfully: primary={bootstrap_primary} replica={replica_node} state_history={}",
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -4170,7 +4207,7 @@ pub async fn e2e_multi_node_partial_recovery_restores_quorum_before_full_heal(
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name = "ha-e2e-partial-recovery-restores-quorum-before-full-heal";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -4186,7 +4223,7 @@ pub async fn e2e_multi_node_partial_recovery_restores_quorum_before_full_heal(
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             let replica_nodes = fixture.node_ids_excluding(&bootstrap_primary);
@@ -4223,14 +4260,14 @@ pub async fn e2e_multi_node_partial_recovery_restores_quorum_before_full_heal(
             fixture.stop_whole_node_cleanly(&first_stopped_replica).await?;
             fixture.stop_whole_node_cleanly(&bootstrap_primary).await?;
             fixture
-                .wait_for_node_ha_phase(
+                .wait_for_node_desired_state(
                     &survivor,
-                    "FailSafe",
+                    "Quiescent",
                     E2E_PRIMARY_CONVERGENCE_TIMEOUT,
                 )
                 .await?;
             fixture.record(format!(
-                "partial recovery quorum loss observed: survivor={survivor} entered fail-safe while {bootstrap_primary} and {first_stopped_replica} stayed offline"
+                "partial recovery quorum loss observed: survivor={survivor} entered Quiescent while {bootstrap_primary} and {first_stopped_replica} stayed offline"
             ));
 
             fixture.restart_whole_node(&bootstrap_primary).await?;
@@ -4245,7 +4282,7 @@ pub async fn e2e_multi_node_partial_recovery_restores_quorum_before_full_heal(
                         fallback_required_consecutive: 1,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             fixture
@@ -4300,8 +4337,8 @@ pub async fn e2e_multi_node_partial_recovery_restores_quorum_before_full_heal(
                 )
                 .await?;
             fixture.record(format!(
-                "partial recovery healed successfully: restored_primary={restored_primary} final_rejoined={first_stopped_replica} phase_history={}",
-                ClusterFixture::format_phase_history(&phase_history)
+                "partial recovery healed successfully: restored_primary={restored_primary} final_rejoined={first_stopped_replica} state_history={}",
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -4354,7 +4391,7 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
         },
     })
     .await?;
-    let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
         fixture.record("custom-role bootstrap: wait for stable primary");
@@ -4369,7 +4406,7 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
-                &mut phase_history,
+                &mut state_history,
             )
             .await?;
         fixture.record(format!(
@@ -4425,7 +4462,7 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
                 Some(&bootstrap_primary),
                 3,
                 1,
-                &mut phase_history,
+                &mut state_history,
             )
             .await
         {
@@ -4454,8 +4491,8 @@ pub async fn e2e_multi_node_custom_postgres_role_names_survive_bootstrap_and_rew
             )
             .await
             .unwrap_or(failover_primary);
-        ClusterFixture::assert_phase_history_contains_failover(
-            &phase_history,
+        ClusterFixture::assert_state_history_contains_failover(
+            &state_history,
             &bootstrap_primary,
             &failover_primary,
         )?;
@@ -4596,7 +4633,7 @@ pub async fn e2e_multi_node_clone_failure_recovers_after_fault_removed() -> Resu
             },
         })
         .await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
             fixture.record(format!(
@@ -4614,7 +4651,7 @@ pub async fn e2e_multi_node_clone_failure_recovers_after_fault_removed() -> Resu
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 3,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             fixture.record(format!(
@@ -4841,7 +4878,7 @@ pub async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup() -> Result<
             },
         })
         .await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
             fixture.record(format!(
@@ -4859,7 +4896,7 @@ pub async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup() -> Result<
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 3,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             if bootstrap_primary != "node-1" {
@@ -4897,7 +4934,7 @@ pub async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup() -> Result<
                     Some(&bootstrap_primary),
                     3,
                     1,
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await
             {
@@ -4922,8 +4959,8 @@ pub async fn e2e_multi_node_rewind_failure_falls_back_to_basebackup() -> Result<
                     &bootstrap_primary,
                 )
                 .await?;
-            ClusterFixture::assert_phase_history_contains_failover(
-                &phase_history,
+            ClusterFixture::assert_state_history_contains_failover(
+                &state_history,
                 &bootstrap_primary,
                 &failover_primary,
             )?;
@@ -5018,7 +5055,7 @@ pub async fn e2e_multi_node_cli_primary_and_replicas_follow_switchover() -> Resu
 {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
             fixture.record("cli connect bootstrap: wait for stable primary");
@@ -5033,7 +5070,7 @@ pub async fn e2e_multi_node_cli_primary_and_replicas_follow_switchover() -> Resu
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             fixture.record(format!(
@@ -5095,7 +5132,7 @@ pub async fn e2e_multi_node_cli_primary_and_replicas_follow_switchover() -> Resu
                     Some(&bootstrap_primary),
                     3,
                     1,
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await
             {
@@ -5232,7 +5269,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
         let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
             scenario_name: scenario_name.clone(),
             table_name: "ha_stress_switchover".to_string(),
@@ -5253,7 +5290,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
-                &mut phase_history,
+                &mut state_history,
             )
             .await?;
         fixture
@@ -5293,7 +5330,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
                     fallback_required_consecutive: 1,
                     min_observed_nodes: 1,
                 },
-                &mut phase_history,
+                &mut state_history,
             )
             .await
         {
@@ -5308,7 +5345,7 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
                         2,
                         Duration::from_secs(35),
                         1,
-                        &mut phase_history,
+                        &mut state_history,
                     )
                     .await?
             }
@@ -5364,8 +5401,8 @@ pub async fn e2e_multi_node_stress_planned_switchover_concurrent_sql() -> Result
             ha_observations: ha_stats,
             notes: vec![
                 format!(
-                    "phase_history={}",
-                    ClusterFixture::format_phase_history(&phase_history)
+                    "state_history={}",
+                    ClusterFixture::format_state_history(&state_history)
                 ),
                 format!(
                     "primary_transition={}=>{}",
@@ -5407,7 +5444,7 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
 
     let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
         let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
             scenario_name: scenario_name.clone(),
             table_name: "ha_stress_failover".to_string(),
@@ -5428,7 +5465,7 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
-                &mut phase_history,
+                &mut state_history,
             )
             .await?;
         fixture
@@ -5462,7 +5499,7 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
                 E2E_LOADED_FAILOVER_TIMEOUT,
                 Some(&bootstrap_primary),
                 3,
-                &mut phase_history,
+                &mut state_history,
             )
             .await
         {
@@ -5479,8 +5516,8 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
                     .await?
             }
         };
-        ClusterFixture::assert_phase_history_contains_failover(
-            &phase_history,
+        ClusterFixture::assert_state_history_contains_failover(
+            &state_history,
             &bootstrap_primary,
             &failover_primary,
         )?;
@@ -5535,8 +5572,8 @@ pub async fn e2e_multi_node_stress_unassisted_failover_concurrent_sql() -> Resul
             ha_observations: ha_stats,
             notes: vec![
                 format!(
-                    "phase_history={}",
-                    ClusterFixture::format_phase_history(&phase_history)
+                    "state_history={}",
+                    ClusterFixture::format_state_history(&state_history)
                 ),
                 format!(
                     "primary_transition={}=>{}",
@@ -5575,7 +5612,7 @@ pub async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name = "ha-e2e-primary-runtime-restart-recovers-without-split-brain";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -5591,7 +5628,7 @@ pub async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             let table_name = fixture.proof_table_name("ha_restart_proof")?;
@@ -5633,7 +5670,7 @@ pub async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain
                         fallback_required_consecutive: 1,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
 
@@ -5707,8 +5744,8 @@ pub async fn e2e_multi_node_primary_runtime_restart_recovers_without_split_brain
                 )
                 .await?;
             fixture.record(format!(
-                "runtime restart recovery succeeded: bootstrap_primary={bootstrap_primary} recovered_primary={recovered_primary} phase_history={}",
-                ClusterFixture::format_phase_history(&phase_history)
+                "runtime restart recovery succeeded: bootstrap_primary={bootstrap_primary} recovered_primary={recovered_primary} state_history={}",
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -5732,7 +5769,7 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name = "ha-e2e-repeated-leadership-changes-preserve-single-primary";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -5748,7 +5785,7 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
 
@@ -5773,7 +5810,7 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
                                     fallback_required_consecutive: 1,
                                     min_observed_nodes: 1,
                                 },
-                                &mut phase_history,
+                                &mut state_history,
                             )
                             .await?;
                         fixture
@@ -5835,10 +5872,10 @@ pub async fn e2e_multi_node_repeated_leadership_changes_preserve_single_primary(
                 ]
             };
             fixture.record(format!(
-                "leadership churn succeeded: primary_sequence={} no_dual_samples={} phase_history={}",
+                "leadership churn succeeded: primary_sequence={} no_dual_samples={} state_history={}",
                 ordered_sequence.join(" -> "),
                 ha_stats.sample_count,
-                ClusterFixture::format_phase_history(&phase_history)
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -5862,7 +5899,7 @@ pub async fn e2e_multi_node_repeated_failovers_preserve_intermediate_writes(
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name = "ha-e2e-repeated-failovers-preserve-intermediate-writes";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -5878,7 +5915,7 @@ pub async fn e2e_multi_node_repeated_failovers_preserve_intermediate_writes(
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             fixture
@@ -5916,7 +5953,7 @@ pub async fn e2e_multi_node_repeated_failovers_preserve_intermediate_writes(
                         fallback_required_consecutive: 1,
                         min_observed_nodes: 1,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             fixture
@@ -5924,8 +5961,8 @@ pub async fn e2e_multi_node_repeated_failovers_preserve_intermediate_writes(
                     &bootstrap_primary,
                 )
                 .await?;
-            ClusterFixture::assert_phase_history_contains_failover(
-                &phase_history,
+            ClusterFixture::assert_state_history_contains_failover(
+                &state_history,
                 &bootstrap_primary,
                 &first_successor,
             )?;
@@ -5986,8 +6023,8 @@ pub async fn e2e_multi_node_repeated_failovers_preserve_intermediate_writes(
             }
 
             fixture.record(format!(
-                "repeated write-survival succeeded: bootstrap_primary={bootstrap_primary} first_successor={first_successor} guarded_replica={remaining_replica} phase_history={}",
-                ClusterFixture::format_phase_history(&phase_history)
+                "repeated write-survival succeeded: bootstrap_primary={bootstrap_primary} first_successor={first_successor} guarded_replica={remaining_replica} state_history={}",
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -6011,7 +6048,7 @@ pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_targ
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name = "ha-e2e-degraded-replica-failover-promotes-only-healthy-target";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -6027,7 +6064,7 @@ pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_targ
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             let replica_ids = fixture.node_ids_excluding(&bootstrap_primary);
@@ -6098,7 +6135,7 @@ pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_targ
                                 E2E_PRIMARY_CONVERGENCE_TIMEOUT,
                                 2,
                                 1,
-                                &mut phase_history,
+                                &mut state_history,
                             )
                             .await
                     },
@@ -6142,8 +6179,8 @@ pub async fn e2e_multi_node_degraded_replica_failover_promotes_only_healthy_targ
                 )
                 .await?;
             fixture.record(format!(
-                "degraded failover succeeded: bootstrap_primary={bootstrap_primary} degraded_replica={degraded_replica} promoted_primary={promoted_primary} phase_history={}",
-                ClusterFixture::format_phase_history(&phase_history)
+                "degraded failover succeeded: bootstrap_primary={bootstrap_primary} degraded_replica={degraded_replica} promoted_primary={promoted_primary} state_history={}",
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -6167,7 +6204,7 @@ pub async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name = "ha-e2e-rejects-targeted-switchover-to-ineligible-member";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -6183,7 +6220,7 @@ pub async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             let degraded_replica = fixture
@@ -6228,7 +6265,7 @@ pub async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
                                     fallback_required_consecutive: 1,
                                     min_observed_nodes: 1,
                                 },
-                                &mut phase_history,
+                                &mut state_history,
                             )
                             .await?;
                         if stable_primary != bootstrap_primary {
@@ -6258,9 +6295,9 @@ pub async fn e2e_multi_node_rejects_targeted_switchover_to_ineligible_member(
                 )
                 .await?;
             fixture.record(format!(
-                "targeted rejection succeeded: primary={bootstrap_primary} target={degraded_replica} body={rejection_body} no_dual_samples={} phase_history={}",
+                "targeted rejection succeeded: primary={bootstrap_primary} target={degraded_replica} body={rejection_body} no_dual_samples={} state_history={}",
                 ha_stats.sample_count,
-                ClusterFixture::format_phase_history(&phase_history)
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -6284,7 +6321,7 @@ pub async fn e2e_multi_node_targeted_switchover_promotes_requested_replica(
 ) -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
         let mut fixture = ClusterFixture::start(3).await?;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let scenario_name = "ha-e2e-targeted-switchover-promotes-requested-replica";
 
         let run_result = match tokio::time::timeout(E2E_SCENARIO_TIMEOUT, async {
@@ -6300,7 +6337,7 @@ pub async fn e2e_multi_node_targeted_switchover_promotes_requested_replica(
                         fallback_required_consecutive: 2,
                         min_observed_nodes: 2,
                     },
-                    &mut phase_history,
+                    &mut state_history,
                 )
                 .await?;
             let replica_ids = fixture.node_ids_excluding(&bootstrap_primary);
@@ -6350,7 +6387,7 @@ pub async fn e2e_multi_node_targeted_switchover_promotes_requested_replica(
                                 E2E_PRIMARY_CONVERGENCE_TIMEOUT,
                                 2,
                                 1,
-                                &mut phase_history,
+                                &mut state_history,
                             )
                             .await
                     },
@@ -6397,8 +6434,8 @@ pub async fn e2e_multi_node_targeted_switchover_promotes_requested_replica(
                 )
                 .await?;
             fixture.record(format!(
-                "targeted switchover succeeded: bootstrap_primary={bootstrap_primary} requested_successor={requested_successor} disallowed_alternate={disallowed_alternate} promoted_primary={promoted_primary} phase_history={}",
-                ClusterFixture::format_phase_history(&phase_history)
+                "targeted switchover succeeded: bootstrap_primary={bootstrap_primary} requested_successor={requested_successor} disallowed_alternate={disallowed_alternate} promoted_primary={promoted_primary} state_history={}",
+                ClusterFixture::format_state_history(&state_history)
             ));
             Ok(())
         })
@@ -6418,15 +6455,15 @@ pub async fn e2e_multi_node_targeted_switchover_promotes_requested_replica(
     .await
 }
 
-pub async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), WorkerError> {
+pub async fn e2e_no_quorum_enters_safe_state_strict_all_nodes() -> Result<(), WorkerError> {
     ha_e2e::util::run_with_local_set(async {
     let mut fixture = ClusterFixture::start(3).await?;
     let token = unique_e2e_token()?;
-    let scenario_name = format!("ha-e2e-no-quorum-enters-failsafe-strict-all-nodes-{token}");
+    let scenario_name = format!("ha-e2e-no-quorum-enters-safe_state-strict-all-nodes-{token}");
 
     let run_result = (async {
         let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
         fixture.record("no-quorum: wait for stable primary");
         let bootstrap_primary = fixture
@@ -6440,11 +6477,11 @@ pub async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), Work
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
-                &mut phase_history,
+                &mut state_history,
             )
             .await?;
-        let (_stopped_members, failsafe_observed_at_ms) =
-            stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
+        let (_stopped_members, safe_state_observed_at_ms) =
+            stop_etcd_majority_and_wait_safe_state_strict_all_nodes(
             &mut fixture,
             2,
             Duration::from_secs(60),
@@ -6459,10 +6496,10 @@ pub async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), Work
         for (node_id, state_result) in polled {
             match state_result {
                 Ok(state) => {
-                    if state.ha_phase == "Primary" {
+                    if ClusterFixture::state_is_primary(&state) {
                         observed_primary = true;
                     }
-                    observed.push(format!("{node_id}:{}", state.ha_phase));
+                    observed.push(format!("{node_id}:{}", ClusterFixture::state_label(&state)));
                 }
                 Err(err) => {
                     fixture.record(format!("no-quorum: best-effort ha poll error for {node_id}: {err}"));
@@ -6471,7 +6508,7 @@ pub async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), Work
         }
         if observed_primary {
             return Err(WorkerError::Message(format!(
-                "expected no Primary phase after quorum loss in best-effort poll; observed={observed:?}"
+                "expected no Primary desired state after quorum loss in best-effort poll; observed={observed:?}"
             )));
         }
         let ha_stats = fixture
@@ -6498,10 +6535,10 @@ pub async fn e2e_no_quorum_enters_failsafe_strict_all_nodes() -> Result<(), Work
             ha_observations: ha_stats,
             notes: vec![
                 format!(
-                    "phase_history={}",
-                    ClusterFixture::format_phase_history(&phase_history)
+                    "state_history={}",
+                    ClusterFixture::format_state_history(&state_history)
                 ),
-                format!("failsafe_observed_at_ms={failsafe_observed_at_ms}"),
+                format!("safe_state_observed_at_ms={safe_state_observed_at_ms}"),
             ],
         })
     })
@@ -6534,7 +6571,7 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
 
     let run_result = (async {
         let started_at_unix_ms = ha_e2e::util::unix_now()?.0;
-        let mut phase_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut state_history: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let workload_spec = SqlWorkloadSpec {
             scenario_name: scenario_name.to_string(),
             table_name: format!("ha_no_quorum_fencing_{token}"),
@@ -6555,7 +6592,7 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
                     fallback_required_consecutive: 2,
                     min_observed_nodes: 2,
                 },
-                &mut phase_history,
+                &mut state_history,
             )
             .await?;
         fixture
@@ -6566,8 +6603,8 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
 
         fixture.record("no-quorum fencing: stop etcd majority while workload active");
         let quorum_lost_at_ms = ha_e2e::util::unix_now()?.0;
-        let (stopped_members, failsafe_observed_at_ms) =
-            stop_etcd_majority_and_wait_failsafe_strict_all_nodes(
+        let (stopped_members, safe_state_observed_at_ms) =
+            stop_etcd_majority_and_wait_safe_state_strict_all_nodes(
                 &mut fixture,
                 2,
                 Duration::from_secs(60),
@@ -6592,18 +6629,18 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             .saturating_add(workload.transient_failures);
         if rejected_writes == 0 {
             return Err(WorkerError::Message(
-                "expected write rejections (fencing or transient) during fail-safe window"
+                "expected write rejections (fencing or transient) during safe-state window"
                     .to_string(),
             ));
         }
 
-        let cutoff_ms = failsafe_observed_at_ms.saturating_add(fencing_grace_ms);
+        let cutoff_ms = safe_state_observed_at_ms.saturating_add(fencing_grace_ms);
         let commits_after_cutoff =
             ClusterFixture::count_commits_after_cutoff_strict(&workload, cutoff_ms)?;
         let allowed_post_cutoff_commits = 10usize;
         if commits_after_cutoff > allowed_post_cutoff_commits {
             return Err(WorkerError::Message(format!(
-                "writes still committed after fail-safe fencing cutoff beyond tolerance; cutoff_ms={cutoff_ms} commits_after_cutoff={commits_after_cutoff} allowed={allowed_post_cutoff_commits}"
+                "writes still committed after safe-state fencing cutoff beyond tolerance; cutoff_ms={cutoff_ms} commits_after_cutoff={commits_after_cutoff} allowed={allowed_post_cutoff_commits}"
             )));
         }
         ClusterFixture::assert_no_split_brain_write_evidence(&workload, &ha_stats)?;
@@ -6629,7 +6666,7 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
                     fallback_required_consecutive: 1,
                     min_observed_nodes: 2,
                 },
-                &mut phase_history,
+                &mut state_history,
             )
             .await?;
         fixture.record(format!(
@@ -6669,9 +6706,9 @@ pub async fn e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_inte
             workload,
             ha_observations: ha_stats,
             notes: vec![
-                format!("phase_history={}", ClusterFixture::format_phase_history(&phase_history)),
+                format!("state_history={}", ClusterFixture::format_state_history(&state_history)),
                 format!("quorum_lost_at_ms={quorum_lost_at_ms}"),
-                format!("failsafe_observed_at_ms={failsafe_observed_at_ms}"),
+                format!("safe_state_observed_at_ms={safe_state_observed_at_ms}"),
                 format!("fencing_cutoff_ms={cutoff_ms}"),
                 format!("allowed_post_cutoff_commits={allowed_post_cutoff_commits}"),
                 format!(
@@ -6922,11 +6959,11 @@ mod unit_tests {
         let _ = ClusterFixture::assert_table_key_integrity_strict;
         let _ = ClusterFixture::assert_table_recovery_key_integrity_on_node;
         let _ = ClusterFixture::assert_no_split_brain_write_evidence;
-        let _ = ClusterFixture::update_phase_history;
-        let _ = ClusterFixture::format_phase_history;
+        let _ = ClusterFixture::update_state_history;
+        let _ = ClusterFixture::format_state_history;
         let _ = ClusterFixture::wait_for_stable_primary;
         let _ = ClusterFixture::wait_for_stable_primary_best_effort;
-        let _ = ClusterFixture::assert_phase_history_contains_failover;
+        let _ = ClusterFixture::assert_state_history_contains_failover;
         let _ = ClusterFixture::node_api_base_url_by_index;
         let _ = ClusterFixture::cli_api_client_for_node_index;
         let _ = ClusterFixture::request_switchover_via_cli;
@@ -6942,7 +6979,7 @@ mod unit_tests {
         let _ = ClusterFixture::wait_for_stable_primary_via_sql;
         let _ = ClusterFixture::wait_for_stable_primary_resilient;
         let _ = ClusterFixture::assert_no_dual_primary_window;
-        let _ = ClusterFixture::wait_for_all_nodes_failsafe;
+        let _ = ClusterFixture::wait_for_all_nodes_no_quorum_safe;
         let _ = ClusterFixture::stop_postgres_for_node;
         let _ = ClusterFixture::stop_etcd_majority;
         let _ = ClusterFixture::restore_etcd_members;
@@ -6951,11 +6988,11 @@ mod unit_tests {
         let _ = ClusterFixture::shutdown;
         let _ = run_sql_workload_worker;
         let _ = finalize_stress_scenario_result;
-        let _ = stop_etcd_majority_and_wait_failsafe_strict_all_nodes;
+        let _ = stop_etcd_majority_and_wait_safe_state_strict_all_nodes;
         let _ = e2e_multi_node_unassisted_failover_sql_consistency;
         let _ = e2e_multi_node_stress_planned_switchover_concurrent_sql;
         let _ = e2e_multi_node_stress_unassisted_failover_concurrent_sql;
-        let _ = e2e_no_quorum_enters_failsafe_strict_all_nodes;
+        let _ = e2e_no_quorum_enters_safe_state_strict_all_nodes;
         let _ = e2e_no_quorum_fencing_blocks_post_cutoff_commits_and_preserves_integrity;
     }
 }
