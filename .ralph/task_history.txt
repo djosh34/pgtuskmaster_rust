@@ -178,3 +178,4 @@
 .ralph/tasks/story-managed-start-intent-architecture/task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md
 .ralph/tasks/story-ha-quorum-survival-under-real-failures/02-task-add-whole-node-kill-and-partial-recovery-ha-e2e.md
 .ralph/tasks/story-managed-start-intent-architecture/task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md
+.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md

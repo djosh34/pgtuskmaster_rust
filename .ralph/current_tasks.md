@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 04:53:27 PM CET 2026
+Generated: Tue Mar 10 05:00:02 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-greenfield-ha-proof-visibility-stalls-on-restarted-replica.md`
 
@@ -58,18 +58,6 @@ Generated: Tue Mar 10 04:53:27 PM CET 2026
 <priority>high</priority>
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-managed-start-intent-architecture/task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md`
-
-```
-## Task: Redesign HA Startup Bootstrap And Rejoin Around Authoritative DCS Reconciliation <status>retry-tests</status> <passes>false</passes> <priority>ultra high</priority>
-
-
-### Note from you PO:
-This task has been partially done outside the ralph loop, your first action must be to check which acceptance checkboxes can be ticked off via verification inside the code, and which are still 'TODO'
 ```
 
 ==============

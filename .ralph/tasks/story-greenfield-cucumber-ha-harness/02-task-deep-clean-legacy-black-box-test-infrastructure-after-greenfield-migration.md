@@ -3,7 +3,7 @@
 <priority>high</priority>
 
 <description>
-After tasks 01, 03, and 04 land, aggressively delete the old black-box HA/E2E/half-BDD test infrastructure and any code, config, docs, or helpers that become unused after that deletion.
+Before tasks 01, 03, and 04 land, aggressively delete the old black-box HA/E2E/half-BDD test infrastructure and any code, config, docs, or helpers that become unused after that deletion.
 
 This task is deletion only. It is not a scenario-definition task. It must remove the old paths completely wherever the greenfield Docker cucumber suite now covers the behavior.
 
