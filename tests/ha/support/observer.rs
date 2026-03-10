@@ -1,4 +1,4 @@
-use pgtuskmaster_rust::{api::DesiredNodeStateResponse, api::HaStateResponse, state::WorkerError};
+use pgtuskmaster_rust::{api::HaPhaseResponse, api::HaStateResponse, state::WorkerError};
 
 #[derive(Clone, Default, serde::Serialize)]
 pub struct HaObservationStats {
@@ -6,7 +6,7 @@ pub struct HaObservationStats {
     pub api_error_count: u64,
     pub max_concurrent_primaries: usize,
     pub leader_change_count: u64,
-    pub safe_state_sample_count: u64,
+    pub failsafe_sample_count: u64,
     pub recent_samples: Vec<String>,
 }
 
@@ -61,12 +61,7 @@ impl HaInvariantObserver {
         self.stats.sample_count = self.stats.sample_count.saturating_add(1);
         let primary_count = states
             .iter()
-            .filter(|state| {
-                matches!(
-                    state.desired_state,
-                    DesiredNodeStateResponse::Primary { .. }
-                )
-            })
+            .filter(|state| state.ha_phase == HaPhaseResponse::Primary)
             .count();
         self.stats.max_concurrent_primaries =
             self.stats.max_concurrent_primaries.max(primary_count);
@@ -90,10 +85,9 @@ impl HaInvariantObserver {
 
         if states
             .iter()
-            .all(|state| matches!(state.desired_state, DesiredNodeStateResponse::Fence { .. }))
+            .all(|state| state.ha_phase == HaPhaseResponse::FailSafe)
         {
-            self.stats.safe_state_sample_count =
-                self.stats.safe_state_sample_count.saturating_add(1);
+            self.stats.failsafe_sample_count = self.stats.failsafe_sample_count.saturating_add(1);
         }
 
         let mut fragments = states
@@ -101,8 +95,8 @@ impl HaInvariantObserver {
             .map(|state| {
                 let leader = state.leader.as_deref().unwrap_or("none");
                 format!(
-                    "{}:{:?}:leader={leader}",
-                    state.self_member_id, state.desired_state
+                    "{}:{}:leader={leader}",
+                    state.self_member_id, state.ha_phase
                 )
             })
             .collect::<Vec<_>>();
@@ -114,7 +108,7 @@ impl HaInvariantObserver {
                 "split-brain detected: more than one primary; observations={} errors={}",
                 states
                     .iter()
-                    .map(|state| format!("{}:{:?}", state.self_member_id, state.desired_state))
+                    .map(|state| format!("{}:{}", state.self_member_id, state.ha_phase))
                     .collect::<Vec<_>>()
                     .join(","),
                 summarize_errors(errors)
@@ -269,14 +263,14 @@ mod unit_tests {
         HaObserverConfig,
     };
     use pgtuskmaster_rust::api::{
-        ClusterModeResponse, DcsTrustResponse, DesiredNodeStateResponse, HaStateResponse,
-        MemberRoleResponse, PrimaryPlanResponse, ReadinessResponse, SqlStatusResponse,
+        DcsTrustResponse, HaDecisionResponse, HaPhaseResponse, HaStateResponse, MemberRoleResponse,
+        ReadinessResponse, SqlStatusResponse,
     };
     use std::collections::BTreeMap;
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-    fn ha_state(member_id: &str, is_primary: bool, leader: Option<&str>) -> HaStateResponse {
+    fn ha_state(member_id: &str, phase: HaPhaseResponse, leader: Option<&str>) -> HaStateResponse {
         HaStateResponse {
             cluster_name: "cluster-e2e".to_string(),
             scope: "scope-ha-e2e".to_string(),
@@ -286,37 +280,37 @@ mod unit_tests {
             switchover_to: None,
             member_count: 3,
             members: [
-                (member_id.to_string(), is_primary),
+                (member_id.to_string(), phase.clone()),
                 (
                     "node-b".to_string(),
                     if member_id == "node-b" {
-                        is_primary
+                        phase.clone()
                     } else {
-                        false
+                        HaPhaseResponse::Replica
                     },
                 ),
                 (
                     "node-c".to_string(),
                     if member_id == "node-c" {
-                        is_primary
+                        phase.clone()
                     } else {
-                        false
+                        HaPhaseResponse::Replica
                     },
                 ),
             ]
             .into_iter()
             .collect::<BTreeMap<_, _>>()
             .into_iter()
-            .map(|(sample_member_id, sample_is_primary)| {
+            .map(|(sample_member_id, sample_phase)| {
                 pgtuskmaster_rust::api::HaClusterMemberResponse {
                     member_id: sample_member_id,
                     postgres_host: "127.0.0.1".to_string(),
                     postgres_port: 5432,
                     api_url: Some("http://127.0.0.1:8080".to_string()),
-                    role: if sample_is_primary {
-                        MemberRoleResponse::Primary
-                    } else {
-                        MemberRoleResponse::Replica
+                    role: match sample_phase {
+                        HaPhaseResponse::Primary => MemberRoleResponse::Primary,
+                        HaPhaseResponse::Replica => MemberRoleResponse::Replica,
+                        _ => MemberRoleResponse::Unknown,
                     },
                     sql: SqlStatusResponse::Healthy,
                     readiness: ReadinessResponse::Ready,
@@ -328,25 +322,10 @@ mod unit_tests {
                 }
             })
             .collect(),
-            dcs_trust: DcsTrustResponse::FreshQuorum,
-            cluster_mode: match leader {
-                Some(value) => ClusterModeResponse::InitializedLeaderPresent {
-                    leader: value.to_string(),
-                },
-                None => ClusterModeResponse::InitializedNoLeaderFreshQuorum,
-            },
-            desired_state: if is_primary {
-                DesiredNodeStateResponse::Primary {
-                    plan: PrimaryPlanResponse::KeepLeader,
-                }
-            } else {
-                DesiredNodeStateResponse::Replica {
-                    plan: pgtuskmaster_rust::api::ReplicaPlanResponse::Direct {
-                        leader_member_id: leader.unwrap_or("node-a").to_string(),
-                    },
-                }
-            },
+            dcs_trust: DcsTrustResponse::FullQuorum,
+            ha_phase: phase,
             ha_tick: 1,
+            ha_decision: HaDecisionResponse::NoChange,
             snapshot_sequence: 1,
         }
     }
@@ -373,7 +352,10 @@ mod unit_tests {
             ring_capacity: 4,
         });
         observer.record_poll_attempt();
-        observer.record_api_states(&[ha_state("node-1", true, Some("node-1"))], &[])?;
+        observer.record_api_states(
+            &[ha_state("node-1", HaPhaseResponse::Primary, Some("node-1"))],
+            &[],
+        )?;
         let result = observer.finalize_no_dual_primary_window();
         if result.is_ok() {
             return Err(Box::new(std::io::Error::other(
@@ -391,7 +373,10 @@ mod unit_tests {
         });
         for _ in 0..2 {
             observer.record_poll_attempt();
-            observer.record_api_states(&[ha_state("node-1", true, Some("node-1"))], &[])?;
+            observer.record_api_states(
+                &[ha_state("node-1", HaPhaseResponse::Primary, Some("node-1"))],
+                &[],
+            )?;
         }
         observer.finalize_no_dual_primary_window()?;
         Ok(())
@@ -406,8 +391,8 @@ mod unit_tests {
         observer.record_poll_attempt();
         let result = observer.record_api_states(
             &[
-                ha_state("node-1", true, Some("node-1")),
-                ha_state("node-2", true, Some("node-2")),
+                ha_state("node-1", HaPhaseResponse::Primary, Some("node-1")),
+                ha_state("node-2", HaPhaseResponse::Primary, Some("node-2")),
             ],
             &[],
         );
@@ -426,7 +411,7 @@ mod unit_tests {
             api_error_count: 1,
             max_concurrent_primaries: 2,
             leader_change_count: 0,
-            safe_state_sample_count: 0,
+            failsafe_sample_count: 0,
             recent_samples: vec!["node-1:Primary,node-2:Primary".to_string()],
         };
         let result = assert_no_dual_primary_in_samples(&stats, 1);

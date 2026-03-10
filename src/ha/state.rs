@@ -16,84 +16,30 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::decision::{HaDecision, PhaseOutcome};
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ClusterMode {
-    DcsUnavailable,
-    UninitializedNoBootstrapOwner,
-    UninitializedBootstrapInProgress { holder: MemberId },
-    InitializedLeaderPresent { leader: MemberId },
-    InitializedNoLeaderFreshQuorum,
-    InitializedNoLeaderNoFreshQuorum,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum DesiredNodeState {
-    Bootstrap { plan: BootstrapPlan },
-    Primary { plan: PrimaryPlan },
-    Replica { plan: ReplicaPlan },
-    Quiescent { reason: QuiescentReason },
-    Fence { plan: FencePlan },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum BootstrapPlan {
-    InitDb,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PrimaryPlan {
-    KeepLeader,
-    AcquireLeaderThenResumePrimary,
-    AcquireLeaderThenPromote,
-    AcquireLeaderThenStartPrimary,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ReplicaPlan {
-    Direct { leader_member_id: MemberId },
-    Rewind { leader_member_id: MemberId },
-    Basebackup { leader_member_id: MemberId },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum QuiescentReason {
-    WaitingForBootstrapWinner,
-    WaitingForAuthoritativeLeader,
-    WaitingForFreshQuorum,
-    WaitingForAuthoritativeClusterState,
-    WaitingForRecoveryPreconditions,
-    UnsafeUninitializedPgData,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum FencePlan {
-    StopAndStayNonWritable,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum LeadershipTransferState {
-    #[default]
-    None,
-    WaitingForOtherLeader {
-        target: Option<MemberId>,
-    },
+pub(crate) enum HaPhase {
+    Init,
+    WaitingPostgresReachable,
+    WaitingDcsTrusted,
+    WaitingSwitchoverSuccessor,
+    Replica,
+    CandidateLeader,
+    Primary,
+    Rewinding,
+    Bootstrapping,
+    Fencing,
+    FailSafe,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HaState {
     pub(crate) worker: WorkerStatus,
-    pub(crate) cluster_mode: ClusterMode,
-    pub(crate) desired_state: DesiredNodeState,
-    pub(crate) leadership_transfer: LeadershipTransferState,
+    pub(crate) phase: HaPhase,
     pub(crate) tick: u64,
+    pub(crate) decision: HaDecision,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,6 +59,7 @@ pub(crate) struct DecideInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DecideOutput {
     pub(crate) next: HaState,
+    pub(crate) outcome: PhaseOutcome,
 }
 
 pub(crate) struct HaWorkerCtx {
@@ -134,7 +81,6 @@ pub(crate) struct HaWorkerCtx {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProcessDispatchDefaults {
-    pub(crate) postgres_binary: PathBuf,
     pub(crate) postgres_host: String,
     pub(crate) postgres_port: u16,
     pub(crate) socket_dir: PathBuf,
@@ -152,7 +98,6 @@ pub(crate) struct ProcessDispatchDefaults {
 impl ProcessDispatchDefaults {
     pub(crate) fn contract_stub() -> Self {
         Self {
-            postgres_binary: PathBuf::from("/usr/bin/postgres"),
             postgres_host: "127.0.0.1".to_string(),
             postgres_port: 5432,
             socket_dir: PathBuf::from("/tmp/pgtuskmaster/socket"),
@@ -207,12 +152,9 @@ impl HaWorkerCtx {
             poll_interval: Duration::from_millis(10),
             state: HaState {
                 worker: WorkerStatus::Starting,
-                cluster_mode: ClusterMode::DcsUnavailable,
-                desired_state: DesiredNodeState::Quiescent {
-                    reason: QuiescentReason::WaitingForAuthoritativeClusterState,
-                },
-                leadership_transfer: LeadershipTransferState::None,
+                phase: HaPhase::Init,
                 tick: 0,
+                decision: HaDecision::NoChange,
             },
             publisher,
             config_subscriber,

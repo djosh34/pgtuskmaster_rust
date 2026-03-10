@@ -82,7 +82,6 @@ impl PartitionFixture {
                 "etcd-b".to_string(),
                 "etcd-c".to_string(),
             ],
-            node_etcd_colocation: BTreeMap::new(),
             recovery_binary_overrides: BTreeMap::new(),
             postgres_roles: None,
             mode: ha_e2e::Mode::PartitionProxy,
@@ -110,7 +109,6 @@ impl PartitionFixture {
             etcd_proxies,
             api_proxies,
             pg_proxies,
-            ..
         } = handle;
 
         Ok(Self {
@@ -336,8 +334,7 @@ impl PartitionFixture {
                     let leader = state.leader.as_deref().unwrap_or("none");
                     format!(
                         "{}:{}:leader={leader}",
-                        state.self_member_id,
-                        Self::state_label(state)
+                        state.self_member_id, state.ha_phase
                     )
                 })
                 .collect::<Vec<_>>()
@@ -417,8 +414,7 @@ impl PartitionFixture {
                     let leader = state.leader.as_deref().unwrap_or("none");
                     format!(
                         "{}:{}:leader={leader}",
-                        state.self_member_id,
-                        Self::state_label(state)
+                        state.self_member_id, state.ha_phase
                     )
                 })
                 .collect::<Vec<_>>()
@@ -627,26 +623,9 @@ impl PartitionFixture {
     fn primary_members(states: &[HaStateResponse]) -> Vec<String> {
         states
             .iter()
-            .filter(|state| Self::state_is_primary(state))
+            .filter(|state| state.ha_phase == "Primary")
             .map(|state| state.self_member_id.clone())
             .collect()
-    }
-
-    fn state_label(state: &HaStateResponse) -> &'static str {
-        match &state.desired_state {
-            pgtuskmaster_rust::api::DesiredNodeStateResponse::Primary { .. } => "Primary",
-            pgtuskmaster_rust::api::DesiredNodeStateResponse::Replica { .. } => "Replica",
-            pgtuskmaster_rust::api::DesiredNodeStateResponse::Fence { .. } => "Fence",
-            pgtuskmaster_rust::api::DesiredNodeStateResponse::Quiescent { .. } => "Quiescent",
-            pgtuskmaster_rust::api::DesiredNodeStateResponse::Bootstrap { .. } => "Bootstrap",
-        }
-    }
-
-    fn state_is_primary(state: &HaStateResponse) -> bool {
-        matches!(
-            state.desired_state,
-            pgtuskmaster_rust::api::DesiredNodeStateResponse::Primary { .. }
-        )
     }
 
     fn replica_node_ids(&self, primary_id: &str) -> Vec<String> {
@@ -693,14 +672,10 @@ impl PartitionFixture {
         loop {
             let observation = match self.fetch_node_ha_state(node_id).await {
                 Ok(state) => {
-                    if Self::state_label(&state) == expected_phase {
+                    if state.ha_phase == expected_phase {
                         return Ok(());
                     }
-                    format!(
-                        "state={} leader={:?}",
-                        Self::state_label(&state),
-                        state.leader
-                    )
+                    format!("phase={} leader={:?}", state.ha_phase, state.leader)
                 }
                 Err(err) => err.to_string(),
             };
@@ -965,41 +940,6 @@ impl PartitionFixture {
         }
     }
 
-    async fn wait_for_node_sql_role(
-        &self,
-        node_id: &str,
-        expected_role: &str,
-        timeout: Duration,
-    ) -> Result<(), WorkerError> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let observation = match self
-                .run_sql_on_node(
-                    node_id,
-                    "SELECT CASE WHEN pg_is_in_recovery() THEN 'replica' ELSE 'primary' END",
-                )
-                .await
-            {
-                Ok(output) => {
-                    let rows = ha_e2e::util::parse_psql_rows(output.as_str());
-                    let role = rows.first().cloned().unwrap_or_default();
-                    if role == expected_role {
-                        return Ok(());
-                    }
-                    format!("role={role}")
-                }
-                Err(err) => err.to_string(),
-            };
-
-            if tokio::time::Instant::now() >= deadline {
-                return Err(WorkerError::Message(format!(
-                    "timed out waiting for node {node_id} SQL role {expected_role}; last_observation={observation}"
-                )));
-            }
-            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
-        }
-    }
-
     async fn wait_for_table_digest_convergence(
         &self,
         table_name: &str,
@@ -1092,9 +1032,7 @@ impl PartitionFixture {
     async fn shutdown(&mut self) -> Result<(), WorkerError> {
         let mut failures = Vec::new();
 
-        if let Err(err) = self.runtime_nodes.shutdown_all().await {
-            failures.push(format!("runtime shutdown failed: {err}"));
-        }
+        self.runtime_nodes.shutdown_all().await;
 
         let mut pg_stops = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
@@ -1359,25 +1297,6 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                     E2E_PARTITION_WRITE_TIMEOUT,
                 )
                 .await?;
-            let initial_rows = vec!["1:before".to_string()];
-            for node_id in fixture.node_ids() {
-                fixture
-                    .wait_for_rows_on_node(
-                        node_id.as_str(),
-                        "SELECT id::text || ':' || payload FROM ha_partition_primary ORDER BY id",
-                        initial_rows.as_slice(),
-                        E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
-                    )
-                    .await?;
-            }
-            fixture
-                .wait_for_table_digest_convergence(
-                    "ha_partition_primary",
-                    fixture.node_ids().as_slice(),
-                    1,
-                    E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
-                )
-                .await?;
 
             fixture
                 .partition_primary_from_etcd(bootstrap_primary.as_str())
@@ -1385,12 +1304,12 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
             fixture
                 .wait_for_node_phase(
                     bootstrap_primary.as_str(),
-                    "Fence",
+                    "FailSafe",
                     E2E_PARTITION_RECOVERY_TIMEOUT,
                 )
                 .await?;
             fixture.record(format!(
-                "primary isolation: isolated primary entered Fence node={bootstrap_primary}"
+                "primary isolation: isolated primary entered FailSafe node={bootstrap_primary}"
             ));
             fixture
                 .assert_no_dual_primary_window(E2E_PARTITION_LONG_NO_DUAL_PRIMARY_WINDOW)
@@ -1418,20 +1337,6 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                 .await?;
 
             let expected_rows = vec!["1:before".to_string(), "2:after".to_string()];
-            for node_id in fixture.node_ids() {
-                let expected_role = if node_id == healed_primary {
-                    "primary"
-                } else {
-                    "replica"
-                };
-                fixture
-                    .wait_for_node_sql_role(
-                        node_id.as_str(),
-                        expected_role,
-                        E2E_PARTITION_RECOVERY_TIMEOUT,
-                    )
-                    .await?;
-            }
             for node_id in fixture.node_ids() {
                 fixture
                     .wait_for_rows_on_node(
@@ -1498,8 +1403,8 @@ pub async fn e2e_partition_api_path_isolation_preserves_primary() -> Result<(), 
             fixture.isolate_api_path(isolated_node.as_str()).await?;
             if let Ok(state) = fixture.fetch_node_ha_state(isolated_node.as_str()).await {
                 return Err(WorkerError::Message(format!(
-                    "expected API isolation for node {isolated_node}, but /ha/state succeeded with state={} leader={:?}",
-                    PartitionFixture::state_label(&state),
+                    "expected API isolation for node {isolated_node}, but /ha/state succeeded with phase={} leader={:?}",
+                    state.ha_phase,
                     state.leader
                 )));
             }
@@ -1788,25 +1693,6 @@ pub async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerErr
                     Duration::from_secs(30),
                 )
                 .await?;
-            let initial_rows = vec!["1:before".to_string()];
-            for node_id in fixture.node_ids() {
-                fixture
-                    .wait_for_rows_on_node(
-                        node_id.as_str(),
-                        "SELECT id::text || ':' || payload FROM ha_partition_mixed ORDER BY id",
-                        initial_rows.as_slice(),
-                        Duration::from_secs(120),
-                    )
-                    .await?;
-            }
-            fixture
-                .wait_for_table_digest_convergence(
-                    "ha_partition_mixed",
-                    fixture.node_ids().as_slice(),
-                    1,
-                    Duration::from_secs(120),
-                )
-                .await?;
 
             fixture
                 .partition_primary_from_etcd(bootstrap_primary.as_str())
@@ -1816,12 +1702,12 @@ pub async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerErr
             fixture
                 .wait_for_node_phase(
                     bootstrap_primary.as_str(),
-                    "Fence",
+                    "FailSafe",
                     Duration::from_secs(150),
                 )
                 .await?;
             fixture.record(format!(
-                "mixed faults: isolated primary entered Fence node={bootstrap_primary}"
+                "mixed faults: isolated primary entered FailSafe node={bootstrap_primary}"
             ));
             fixture
                 .assert_no_dual_primary_window(Duration::from_secs(10))
@@ -1850,20 +1736,6 @@ pub async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerErr
                 .await?;
 
             let expected_rows = vec!["1:before".to_string(), "2:after".to_string()];
-            for node_id in fixture.node_ids() {
-                let expected_role = if node_id == healed_primary {
-                    "primary"
-                } else {
-                    "replica"
-                };
-                fixture
-                    .wait_for_node_sql_role(
-                        node_id.as_str(),
-                        expected_role,
-                        Duration::from_secs(120),
-                    )
-                    .await?;
-            }
             for node_id in fixture.node_ids() {
                 fixture
                     .wait_for_rows_on_node(

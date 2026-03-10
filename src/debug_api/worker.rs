@@ -7,7 +7,7 @@ use crate::{
         build_snapshot, AppLifecycle, DebugChangeEvent, DebugDomain, DebugSnapshotCtx,
         DebugTimelineEntry, SystemSnapshot,
     },
-    ha::state::HaState,
+    ha::{lower::lower_decision, state::HaState},
     pginfo::state::PgInfoState,
     process::state::ProcessState,
     state::{StatePublisher, StateSubscriber, UnixMillis, Version, WorkerError},
@@ -373,16 +373,32 @@ fn summarize_process(state: &ProcessState) -> String {
 }
 
 fn summarize_ha(state: &HaState) -> String {
+    let decision_detail = state
+        .decision
+        .detail()
+        .unwrap_or_else(|| "<none>".to_string());
     format!(
-        "ha worker={:?} cluster_mode={:?} desired_state={:?} tick={}",
-        state.worker, state.cluster_mode, state.desired_state, state.tick,
+        "ha worker={:?} phase={:?} tick={} decision={} detail={} planned_actions={}",
+        state.worker,
+        state.phase,
+        state.tick,
+        state.decision.label(),
+        decision_detail,
+        lower_decision(&state.decision).len()
     )
 }
 
 fn ha_signature(state: &HaState) -> String {
+    let decision_detail = state
+        .decision
+        .detail()
+        .unwrap_or_else(|| "<none>".to_string());
     format!(
-        "ha worker={:?} cluster_mode={:?} desired_state={:?}",
-        state.worker, state.cluster_mode, state.desired_state
+        "ha worker={:?} phase={:?} decision={} detail={}",
+        state.worker,
+        state.phase,
+        state.decision.label(),
+        decision_detail
     )
 }
 
@@ -392,11 +408,10 @@ mod tests {
 
     use crate::{
         config::{ApiTlsMode, RuntimeConfig},
-        dcs::state::{DcsState, DcsTrust, DcsView},
+        dcs::state::{DcsCache, DcsState, DcsTrust},
         debug_api::snapshot::{AppLifecycle, DebugDomain, SystemSnapshot},
-        ha::state::{
-            ClusterMode, DesiredNodeState, HaState, LeadershipTransferState, QuiescentReason,
-        },
+        ha::decision::HaDecision,
+        ha::state::{HaPhase, HaState},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
         state::{new_state_channel, UnixMillis, WorkerError, WorkerStatus},
@@ -431,14 +446,12 @@ mod tests {
         DcsState {
             worker: WorkerStatus::Starting,
             trust: DcsTrust::NotTrusted,
-            cache: DcsView {
+            cache: DcsCache {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config: cfg,
-                cluster_initialized: None,
-                cluster_identity: None,
-                bootstrap_lock: None,
+                init_lock: None,
             },
             last_refresh_at: None,
         }
@@ -454,12 +467,11 @@ mod tests {
     fn sample_ha_state() -> HaState {
         HaState {
             worker: WorkerStatus::Starting,
-            cluster_mode: ClusterMode::DcsUnavailable,
-            desired_state: DesiredNodeState::Quiescent {
-                reason: QuiescentReason::WaitingForAuthoritativeClusterState,
-            },
-            leadership_transfer: LeadershipTransferState::None,
+            phase: HaPhase::Init,
             tick: 0,
+            decision: HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            },
         }
     }
 

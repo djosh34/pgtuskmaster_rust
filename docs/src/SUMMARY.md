@@ -40,7 +40,6 @@
     - [HA Decisions](reference/ha-decisions.md)
     - [Debug API](reference/debug-api.md)
     - [DCS State Model](reference/dcs-state-model.md)
-    - [HA Authority Reconciliation Note](reference/ha-authoritative-reconciliation.md)
     - [pgtm CLI](reference/pgtm-cli.md)
     - [pgtuskmaster CLI](reference/pgtuskmaster-cli.md)
     - [Runtime Configuration](reference/runtime-configuration.md)

@@ -4,11 +4,7 @@ use crate::{
     config::RuntimeConfig,
     dcs::state::{DcsState, DcsTrust},
     debug_api::snapshot::{DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot},
-    ha::{
-        decision::reconcile_facts,
-        lower::lower_desired_state,
-        state::{HaState, WorldSnapshot},
-    },
+    ha::{lower::lower_decision, state::HaState},
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     process::state::{JobOutcome, ProcessState},
     state::{Versioned, WorkerStatus},
@@ -87,9 +83,10 @@ pub struct HaSection {
     pub(crate) version: u64,
     pub(crate) updated_at_ms: u64,
     pub(crate) worker: String,
-    pub(crate) cluster_mode: String,
-    pub(crate) desired_state: String,
+    pub(crate) phase: String,
     pub(crate) tick: u64,
+    pub(crate) decision: String,
+    pub(crate) decision_detail: Option<String>,
     pub(crate) planned_actions: usize,
 }
 
@@ -162,7 +159,7 @@ pub(crate) fn build_verbose_payload(
         pginfo: to_pg_section(pg),
         dcs: to_dcs_section(dcs),
         process: to_process_section(process),
-        ha: to_ha_section(&snapshot.value, ha),
+        ha: to_ha_section(ha),
         api: ApiSection {
             endpoints: vec![
                 "/debug/snapshot".to_string(),
@@ -301,23 +298,18 @@ fn to_process_section(process: &Versioned<ProcessState>) -> ProcessSection {
     }
 }
 
-fn to_ha_section(snapshot: &SystemSnapshot, ha: &Versioned<HaState>) -> HaSection {
-    let world = WorldSnapshot {
-        config: snapshot.config.clone(),
-        pg: snapshot.pg.clone(),
-        dcs: snapshot.dcs.clone(),
-        process: snapshot.process.clone(),
-    };
-    let facts = reconcile_facts(&ha.value, &world);
-    let plan = lower_desired_state(&ha.value.desired_state, &facts);
+fn to_ha_section(ha: &Versioned<HaState>) -> HaSection {
+    let decision = &ha.value.decision;
+
     HaSection {
         version: ha.version.0,
         updated_at_ms: ha.updated_at.0,
         worker: worker_status_label(&ha.value.worker),
-        cluster_mode: format!("{:?}", ha.value.cluster_mode),
-        desired_state: format!("{:?}", ha.value.desired_state),
+        phase: format!("{:?}", ha.value.phase),
         tick: ha.value.tick,
-        planned_actions: plan.len(),
+        decision: decision.label().to_string(),
+        decision_detail: decision.detail(),
+        planned_actions: lower_decision(decision).len(),
     }
 }
 
@@ -369,8 +361,8 @@ fn readiness_label(readiness: &Readiness) -> String {
 
 fn dcs_trust_label(trust: &DcsTrust) -> String {
     match trust {
-        DcsTrust::FreshQuorum => "FreshQuorum".to_string(),
-        DcsTrust::NoFreshQuorum => "NoFreshQuorum".to_string(),
+        DcsTrust::FullQuorum => "FullQuorum".to_string(),
+        DcsTrust::FailSafe => "FailSafe".to_string(),
         DcsTrust::NotTrusted => "NotTrusted".to_string(),
     }
 }

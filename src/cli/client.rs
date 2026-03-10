@@ -317,7 +317,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use crate::{
-        api::DesiredNodeStateResponse,
+        api::HaDecisionResponse,
         cli::client::{CliApiClient, CliError},
     };
 
@@ -354,7 +354,7 @@ mod tests {
                 "version":1,
                 "updated_at_ms":1,
                 "worker":"Running",
-                "trust":"FreshQuorum",
+                "trust":"FullQuorum",
                 "member_count":1,
                 "leader":"node-a",
                 "has_switchover_request":false
@@ -371,14 +371,15 @@ mod tests {
                 "version":1,
                 "updated_at_ms":1,
                 "worker":"Running",
-                "cluster_mode":"InitializedLeaderPresent",
-                "desired_state":"Primary",
+                "phase":"Primary",
                 "tick":1,
+                "decision":"NoChange",
+                "decision_detail":"steady",
                 "planned_actions":0
             },
             "api":{"endpoints":["/debug/verbose"]},
             "debug":{"history_changes":1,"history_timeline":1,"last_sequence":42},
-            "changes":[{"sequence":41,"at_ms":1,"domain":"ha","previous_version":1,"current_version":2,"summary":"desired state updated"}],
+            "changes":[{"sequence":41,"at_ms":1,"domain":"ha","previous_version":1,"current_version":2,"summary":"decision updated"}],
             "timeline":[{"sequence":42,"at_ms":1,"category":"ha","message":"primary steady"}]
         }"#
     }
@@ -393,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_uses_read_token_when_configured() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"http://node-a:8080","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}],"dcs_trust":"fresh_quorum","cluster_mode":{"kind":"initialized_leader_present","leader":"node-a"},"desired_state":{"kind":"primary","plan":"keep_leader"},"ha_tick":1,"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"http://node-a:8080","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}],"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(
@@ -405,10 +406,8 @@ mod tests {
         let state = client.get_ha_state().await?;
         assert_eq!(state.cluster_name, "cluster-a");
         assert_eq!(
-            state.desired_state,
-            DesiredNodeStateResponse::Primary {
-                plan: crate::api::PrimaryPlanResponse::KeepLeader,
-            }
+            state.ha_decision,
+            HaDecisionResponse::BecomePrimary { promote: true }
         );
 
         let request = handle_request(handle).await?;
@@ -420,7 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_request_falls_back_to_admin_token_when_read_missing() -> Result<(), CliError> {
-        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"http://node-a:8080","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}],"dcs_trust":"fresh_quorum","cluster_mode":{"kind":"initialized_leader_present","leader":"node-a"},"desired_state":{"kind":"primary","plan":"keep_leader"},"ha_tick":1,"snapshot_sequence":10}"#;
+        let response_body = r#"{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":null,"switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"http://node-a:8080","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}],"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{"kind":"become_primary","promote":true},"snapshot_sequence":10}"#;
         let (addr, handle) = spawn_server(http_response(200, response_body)).await?;
 
         let client = CliApiClient::new(

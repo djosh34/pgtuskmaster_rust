@@ -1,5 +1,5 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
-use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -8,8 +8,8 @@ use crate::{
     logging::LogHandle,
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     state::{
-        MemberId, StatePublisher, StateSubscriber, SystemIdentifier, TimelineId, UnixMillis,
-        Version, WalLsn, WorkerStatus,
+        MemberId, StatePublisher, StateSubscriber, TimelineId, UnixMillis, Version, WalLsn,
+        WorkerStatus,
     },
 };
 
@@ -18,9 +18,8 @@ use super::store::DcsStore;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DcsTrust {
-    // Trust is derived per tick from store health plus fresh quorum visibility.
-    FreshQuorum,
-    NoFreshQuorum,
+    FullQuorum,
+    FailSafe,
     NotTrusted,
 }
 
@@ -29,24 +28,6 @@ pub(crate) enum MemberRole {
     Unknown,
     Primary,
     Replica,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MemberStateClass {
-    EmptyOrMissingDataDir,
-    InitializedInspectable,
-    InvalidDataDir,
-    ReplicaOnly,
-    Promotable,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PostgresRuntimeClass {
-    RunningHealthy,
-    OfflineInspectable,
-    UnsafeLocalState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,10 +42,6 @@ pub(crate) struct MemberRecord {
     pub(crate) timeline: Option<TimelineId>,
     pub(crate) write_lsn: Option<WalLsn>,
     pub(crate) replay_lsn: Option<WalLsn>,
-    pub(crate) system_identifier: Option<SystemIdentifier>,
-    pub(crate) durable_end_lsn: Option<WalLsn>,
-    pub(crate) state_class: Option<MemberStateClass>,
-    pub(crate) postgres_runtime_class: Option<PostgresRuntimeClass>,
     pub(crate) updated_at: UnixMillis,
     pub(crate) pg_version: Version,
 }
@@ -82,40 +59,24 @@ pub(crate) struct SwitchoverRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BootstrapLockRecord {
+pub(crate) struct InitLockRecord {
     pub(crate) holder: MemberId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ClusterInitializedRecord {
-    pub(crate) initialized_by: MemberId,
-    pub(crate) initialized_at: UnixMillis,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ClusterIdentityRecord {
-    pub(crate) system_identifier: SystemIdentifier,
-    pub(crate) bootstrapped_by: MemberId,
-    pub(crate) bootstrapped_at: UnixMillis,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DcsView {
-    // These are the only durable or leased cluster facts cached from DCS.
+pub(crate) struct DcsCache {
     pub(crate) members: BTreeMap<MemberId, MemberRecord>,
     pub(crate) leader: Option<LeaderRecord>,
     pub(crate) switchover: Option<SwitchoverRequest>,
     pub(crate) config: RuntimeConfig,
-    pub(crate) cluster_initialized: Option<ClusterInitializedRecord>,
-    pub(crate) cluster_identity: Option<ClusterIdentityRecord>,
-    pub(crate) bootstrap_lock: Option<BootstrapLockRecord>,
+    pub(crate) init_lock: Option<InitLockRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DcsState {
     pub(crate) worker: WorkerStatus,
     pub(crate) trust: DcsTrust,
-    pub(crate) cache: DcsView,
+    pub(crate) cache: DcsCache,
     pub(crate) last_refresh_at: Option<UnixMillis>,
 }
 
@@ -126,32 +87,19 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) local_postgres_host: String,
     pub(crate) local_postgres_port: u16,
     pub(crate) local_api_url: Option<String>,
-    pub(crate) local_data_dir: PathBuf,
-    pub(crate) local_postgres_binary: PathBuf,
     pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
     pub(crate) publisher: StatePublisher<DcsState>,
     pub(crate) store: Box<dyn DcsStore>,
     pub(crate) log: LogHandle,
-    pub(crate) cache: DcsView,
+    pub(crate) cache: DcsCache,
     pub(crate) last_published_pg_version: Option<Version>,
     pub(crate) last_emitted_store_healthy: Option<bool>,
     pub(crate) last_emitted_trust: Option<DcsTrust>,
 }
 
-pub(crate) struct BuildLocalMemberRecordInput<'a> {
-    pub(crate) self_id: &'a MemberId,
-    pub(crate) postgres_host: &'a str,
-    pub(crate) postgres_port: u16,
-    pub(crate) api_url: Option<&'a str>,
-    pub(crate) pg_state: &'a PgInfoState,
-    pub(crate) previous_record: Option<&'a MemberRecord>,
-    pub(crate) now: UnixMillis,
-    pub(crate) pg_version: Version,
-}
-
 pub(crate) fn evaluate_trust(
     etcd_healthy: bool,
-    cache: &DcsView,
+    cache: &DcsCache,
     self_id: &MemberId,
     now: UnixMillis,
 ) -> DcsTrust {
@@ -160,29 +108,29 @@ pub(crate) fn evaluate_trust(
     }
 
     let Some(self_member) = cache.members.get(self_id) else {
-        return DcsTrust::NoFreshQuorum;
+        return DcsTrust::FailSafe;
     };
     if !member_record_is_fresh(self_member, cache, now) {
-        return DcsTrust::NoFreshQuorum;
+        return DcsTrust::FailSafe;
     }
 
     if !has_fresh_quorum(cache, now) {
-        return DcsTrust::NoFreshQuorum;
+        return DcsTrust::FailSafe;
     }
 
-    DcsTrust::FreshQuorum
+    DcsTrust::FullQuorum
 }
 
 pub(crate) fn member_record_is_fresh(
     record: &MemberRecord,
-    cache: &DcsView,
+    cache: &DcsCache,
     now: UnixMillis,
 ) -> bool {
     let max_age_ms = cache.config.ha.lease_ttl_ms;
     now.0.saturating_sub(record.updated_at.0) <= max_age_ms
 }
 
-fn fresh_member_count(cache: &DcsView, now: UnixMillis) -> usize {
+fn fresh_member_count(cache: &DcsCache, now: UnixMillis) -> usize {
     cache
         .members
         .values()
@@ -190,7 +138,7 @@ fn fresh_member_count(cache: &DcsView, now: UnixMillis) -> usize {
         .count()
 }
 
-fn has_fresh_quorum(cache: &DcsView, now: UnixMillis) -> bool {
+fn has_fresh_quorum(cache: &DcsCache, now: UnixMillis) -> bool {
     let fresh_members = fresh_member_count(cache, now);
 
     // The current runtime only knows the observed DCS member set. Until there is an explicit
@@ -204,17 +152,15 @@ fn has_fresh_quorum(cache: &DcsView, now: UnixMillis) -> bool {
     }
 }
 
-pub(crate) fn build_local_member_record(input: BuildLocalMemberRecordInput<'_>) -> MemberRecord {
-    let BuildLocalMemberRecordInput {
-        self_id,
-        postgres_host,
-        postgres_port,
-        api_url,
-        pg_state,
-        previous_record,
-        now,
-        pg_version,
-    } = input;
+pub(crate) fn build_local_member_record(
+    self_id: &MemberId,
+    postgres_host: &str,
+    postgres_port: u16,
+    api_url: Option<&str>,
+    pg_state: &PgInfoState,
+    now: UnixMillis,
+    pg_version: Version,
+) -> MemberRecord {
     match pg_state {
         PgInfoState::Unknown { common } => MemberRecord {
             member_id: self_id.clone(),
@@ -224,16 +170,9 @@ pub(crate) fn build_local_member_record(input: BuildLocalMemberRecordInput<'_>) 
             role: MemberRole::Unknown,
             sql: common.sql.clone(),
             readiness: common.readiness.clone(),
-            timeline: common
-                .timeline
-                .or(previous_record.and_then(|record| record.timeline)),
-            write_lsn: previous_record.and_then(|record| record.write_lsn),
-            replay_lsn: previous_record.and_then(|record| record.replay_lsn),
-            system_identifier: previous_record.and_then(|record| record.system_identifier),
-            durable_end_lsn: previous_record.and_then(|record| record.durable_end_lsn),
-            state_class: previous_record.and_then(|record| record.state_class.clone()),
-            postgres_runtime_class: previous_record
-                .and_then(|record| record.postgres_runtime_class.clone()),
+            timeline: common.timeline,
+            write_lsn: None,
+            replay_lsn: None,
             updated_at: now,
             pg_version,
         },
@@ -250,12 +189,6 @@ pub(crate) fn build_local_member_record(input: BuildLocalMemberRecordInput<'_>) 
             timeline: common.timeline,
             write_lsn: Some(*wal_lsn),
             replay_lsn: None,
-            system_identifier: previous_record.and_then(|record| record.system_identifier),
-            durable_end_lsn: previous_record
-                .and_then(|record| record.durable_end_lsn)
-                .or(Some(*wal_lsn)),
-            state_class: previous_record.and_then(|record| record.state_class.clone()),
-            postgres_runtime_class: Some(PostgresRuntimeClass::RunningHealthy),
             updated_at: now,
             pg_version,
         },
@@ -272,12 +205,6 @@ pub(crate) fn build_local_member_record(input: BuildLocalMemberRecordInput<'_>) 
             timeline: common.timeline,
             write_lsn: None,
             replay_lsn: Some(*replay_lsn),
-            system_identifier: previous_record.and_then(|record| record.system_identifier),
-            durable_end_lsn: previous_record
-                .and_then(|record| record.durable_end_lsn)
-                .or(Some(*replay_lsn)),
-            state_class: previous_record.and_then(|record| record.state_class.clone()),
-            postgres_runtime_class: Some(PostgresRuntimeClass::RunningHealthy),
             updated_at: now,
             pg_version,
         },
@@ -295,8 +222,8 @@ mod tests {
     };
 
     use super::{
-        build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsTrust, DcsView,
-        LeaderRecord, MemberRecord, MemberRole,
+        build_local_member_record, evaluate_trust, DcsCache, DcsTrust, LeaderRecord, MemberRecord,
+        MemberRole,
     };
     use crate::{
         pginfo::state::{PgInfoState, Readiness, SqlStatus},
@@ -307,15 +234,13 @@ mod tests {
         crate::test_harness::runtime_config::sample_runtime_config()
     }
 
-    fn sample_cache() -> DcsView {
-        DcsView {
+    fn sample_cache() -> DcsCache {
+        DcsCache {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
             config: sample_runtime_config(),
-            cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+            init_lock: None,
         }
     }
 
@@ -330,7 +255,7 @@ mod tests {
         );
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
-            DcsTrust::NoFreshQuorum
+            DcsTrust::FailSafe
         );
 
         cache.members.insert(
@@ -346,21 +271,17 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                system_identifier: None,
-                durable_end_lsn: None,
-                state_class: None,
-                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
         );
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
-            DcsTrust::FreshQuorum
+            DcsTrust::FullQuorum
         );
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
-            DcsTrust::NoFreshQuorum
+            DcsTrust::FailSafe
         );
 
         cache.leader = Some(LeaderRecord {
@@ -368,7 +289,7 @@ mod tests {
         });
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
-            DcsTrust::FreshQuorum
+            DcsTrust::FullQuorum
         );
     }
 
@@ -393,10 +314,6 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    system_identifier: None,
-                    durable_end_lsn: None,
-                    state_class: None,
-                    postgres_runtime_class: None,
                     updated_at: fresh_time,
                     pg_version: Version(1),
                 },
@@ -415,10 +332,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                system_identifier: None,
-                durable_end_lsn: None,
-                state_class: None,
-                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -429,13 +342,13 @@ mod tests {
 
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(5_000)),
-            DcsTrust::FreshQuorum
+            DcsTrust::FullQuorum
         );
 
         cache.members.remove(&MemberId("node-b".to_string()));
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(5_000)),
-            DcsTrust::FreshQuorum
+            DcsTrust::FullQuorum
         );
     }
 
@@ -457,10 +370,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                system_identifier: None,
-                durable_end_lsn: None,
-                state_class: None,
-                postgres_runtime_class: None,
                 updated_at: UnixMillis(100),
                 pg_version: Version(1),
             },
@@ -478,10 +387,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                system_identifier: None,
-                durable_end_lsn: None,
-                state_class: None,
-                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -499,10 +404,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                system_identifier: None,
-                durable_end_lsn: None,
-                state_class: None,
-                postgres_runtime_class: None,
                 updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
@@ -513,7 +414,7 @@ mod tests {
 
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
-            DcsTrust::NoFreshQuorum
+            DcsTrust::FailSafe
         );
     }
 
@@ -540,16 +441,15 @@ mod tests {
         let unknown = PgInfoState::Unknown {
             common: common(SqlStatus::Unknown, Readiness::Unknown),
         };
-        let unknown_record = build_local_member_record(BuildLocalMemberRecordInput {
-            self_id: &self_id,
-            postgres_host: "10.0.0.11",
-            postgres_port: 5433,
-            api_url: Some("http://node-a:8080"),
-            pg_state: &unknown,
-            previous_record: None,
-            now: UnixMillis(10),
-            pg_version: Version(11),
-        });
+        let unknown_record = build_local_member_record(
+            &self_id,
+            "10.0.0.11",
+            5433,
+            Some("http://node-a:8080"),
+            &unknown,
+            UnixMillis(10),
+            Version(11),
+        );
         assert_eq!(unknown_record.postgres_host, "10.0.0.11".to_string());
         assert_eq!(unknown_record.postgres_port, 5433);
         assert_eq!(
@@ -567,16 +467,15 @@ mod tests {
                 name: "slot-a".to_string(),
             }],
         };
-        let primary_record = build_local_member_record(BuildLocalMemberRecordInput {
-            self_id: &self_id,
-            postgres_host: "10.0.0.12",
-            postgres_port: 5434,
-            api_url: Some("http://node-a:8081"),
-            pg_state: &primary,
-            previous_record: None,
-            now: UnixMillis(12),
-            pg_version: Version(13),
-        });
+        let primary_record = build_local_member_record(
+            &self_id,
+            "10.0.0.12",
+            5434,
+            Some("http://node-a:8081"),
+            &primary,
+            UnixMillis(12),
+            Version(13),
+        );
         assert_eq!(primary_record.postgres_host, "10.0.0.12".to_string());
         assert_eq!(primary_record.postgres_port, 5434);
         assert_eq!(primary_record.role, MemberRole::Primary);
@@ -589,63 +488,20 @@ mod tests {
             follow_lsn: Some(WalLsn(23)),
             upstream: None,
         };
-        let replica_record = build_local_member_record(BuildLocalMemberRecordInput {
-            self_id: &self_id,
-            postgres_host: "10.0.0.13",
-            postgres_port: 5435,
-            api_url: None,
-            pg_state: &replica,
-            previous_record: None,
-            now: UnixMillis(14),
-            pg_version: Version(15),
-        });
+        let replica_record = build_local_member_record(
+            &self_id,
+            "10.0.0.13",
+            5435,
+            None,
+            &replica,
+            UnixMillis(14),
+            Version(15),
+        );
         assert_eq!(replica_record.postgres_host, "10.0.0.13".to_string());
         assert_eq!(replica_record.postgres_port, 5435);
         assert_eq!(replica_record.api_url, None);
         assert_eq!(replica_record.role, MemberRole::Replica);
         assert_eq!(replica_record.write_lsn, None);
         assert_eq!(replica_record.replay_lsn, Some(WalLsn(22)));
-    }
-
-    #[test]
-    fn build_local_member_record_retains_last_known_wal_evidence_for_unknown_pg_state() {
-        let self_id = MemberId("node-a".to_string());
-        let previous = MemberRecord {
-            member_id: self_id.clone(),
-            postgres_host: "10.0.0.10".to_string(),
-            postgres_port: 5432,
-            api_url: None,
-            role: MemberRole::Primary,
-            sql: SqlStatus::Healthy,
-            readiness: Readiness::Ready,
-            timeline: Some(TimelineId(4)),
-            write_lsn: Some(WalLsn(99)),
-            replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
-            updated_at: UnixMillis(8),
-            pg_version: Version(9),
-        };
-        let unknown = PgInfoState::Unknown {
-            common: common(SqlStatus::Unreachable, Readiness::NotReady),
-        };
-
-        let unknown_record = build_local_member_record(BuildLocalMemberRecordInput {
-            self_id: &self_id,
-            postgres_host: "10.0.0.11",
-            postgres_port: 5433,
-            api_url: None,
-            pg_state: &unknown,
-            previous_record: Some(&previous),
-            now: UnixMillis(10),
-            pg_version: Version(11),
-        });
-
-        assert_eq!(unknown_record.role, MemberRole::Unknown);
-        assert_eq!(unknown_record.timeline, Some(TimelineId(4)));
-        assert_eq!(unknown_record.write_lsn, Some(WalLsn(99)));
-        assert_eq!(unknown_record.replay_lsn, None);
     }
 }

@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::task::JoinSet;
 
 use crate::{
-    api::{DesiredNodeStateResponse, HaClusterMemberResponse, HaStateResponse},
+    api::{HaClusterMemberResponse, HaDecisionResponse, HaStateResponse},
     cli::{
         args::StatusOptions,
         client::{CliApiClient, CliApiClientConfig, DebugVerboseResponse},
@@ -454,7 +454,7 @@ fn collect_warnings(
                 if local_role_from_state(&sampled.state) == "primary" {
                     sampled_primary_members.insert(sampled.state.self_member_id.clone());
                 }
-                if sampled.state.dcs_trust != crate::api::DcsTrustResponse::FreshQuorum {
+                if sampled.state.dcs_trust != crate::api::DcsTrustResponse::FullQuorum {
                     warnings.push(ClusterWarning {
                         code: "degraded_trust".to_string(),
                         message: format!(
@@ -559,9 +559,9 @@ fn build_node_row(
                 api_status: ApiStatus::Ok,
                 role: local_role_from_state(&sampled.state).to_string(),
                 trust: sampled.state.dcs_trust.to_string(),
-                phase: render_desired_state_text(&sampled.state.desired_state),
+                phase: sampled.state.ha_phase.to_string(),
                 leader: sampled.state.leader.clone(),
-                decision: Some(render_desired_state_text(&sampled.state.desired_state)),
+                decision: Some(render_decision_text(&sampled.state.ha_decision)),
                 pginfo: debug_payload.map(|value| value.pginfo.summary.clone()),
                 readiness: debug_payload.map(|value| value.pginfo.readiness.to_ascii_lowercase()),
                 process: debug_payload.map(|value| value.process.state.to_ascii_lowercase()),
@@ -635,22 +635,51 @@ fn role_rank(role: &str) -> u8 {
 }
 
 pub(crate) fn local_role_from_state(state: &HaStateResponse) -> &'static str {
-    match &state.desired_state {
-        DesiredNodeStateResponse::Primary { .. } => "primary",
-        DesiredNodeStateResponse::Replica { .. } => "replica",
+    match state.ha_phase {
+        crate::api::HaPhaseResponse::Primary => "primary",
+        crate::api::HaPhaseResponse::Replica => "replica",
         _ => "unknown",
     }
 }
 
-fn render_desired_state_text(value: &DesiredNodeStateResponse) -> String {
+fn render_decision_text(value: &HaDecisionResponse) -> String {
     match value {
-        DesiredNodeStateResponse::Bootstrap { plan } => format!("bootstrap(plan={plan:?})"),
-        DesiredNodeStateResponse::Primary { plan } => format!("primary(plan={plan:?})"),
-        DesiredNodeStateResponse::Replica { plan } => format!("replica(plan={plan:?})"),
-        DesiredNodeStateResponse::Quiescent { reason } => {
-            format!("quiescent(reason={reason:?})")
+        HaDecisionResponse::NoChange => "no_change".to_string(),
+        HaDecisionResponse::WaitForPostgres {
+            start_requested,
+            leader_member_id,
+        } => {
+            let leader_detail = leader_member_id.as_deref().unwrap_or("none");
+            format!(
+                "wait_for_postgres(start_requested={start_requested}, leader_member_id={leader_detail})"
+            )
         }
-        DesiredNodeStateResponse::Fence { plan } => format!("fence(plan={plan:?})"),
+        HaDecisionResponse::WaitForDcsTrust => "wait_for_dcs_trust".to_string(),
+        HaDecisionResponse::AttemptLeadership => "attempt_leadership".to_string(),
+        HaDecisionResponse::FollowLeader { leader_member_id } => {
+            format!("follow_leader(leader_member_id={leader_member_id})")
+        }
+        HaDecisionResponse::BecomePrimary { promote } => {
+            format!("become_primary(promote={promote})")
+        }
+        HaDecisionResponse::CompleteSwitchover => "complete_switchover".to_string(),
+        HaDecisionResponse::StepDown {
+            reason,
+            release_leader_lease,
+            fence,
+        } => format!(
+            "step_down(reason={reason}, release_leader_lease={release_leader_lease}, fence={fence})"
+        ),
+        HaDecisionResponse::RecoverReplica { strategy } => {
+            format!("recover_replica(strategy={strategy})")
+        }
+        HaDecisionResponse::FenceNode => "fence_node".to_string(),
+        HaDecisionResponse::ReleaseLeaderLease { reason } => {
+            format!("release_leader_lease(reason={reason})")
+        }
+        HaDecisionResponse::EnterFailSafe {
+            release_leader_lease,
+        } => format!("enter_fail_safe(release_leader_lease={release_leader_lease})"),
     }
 }
 
@@ -660,9 +689,8 @@ mod tests {
 
     use crate::{
         api::{
-            ClusterModeResponse, DcsTrustResponse, DesiredNodeStateResponse,
-            HaClusterMemberResponse, HaStateResponse, MemberRoleResponse, PrimaryPlanResponse,
-            ReadinessResponse, SqlStatusResponse,
+            DcsTrustResponse, HaClusterMemberResponse, HaDecisionResponse, HaPhaseResponse,
+            HaStateResponse, MemberRoleResponse, ReadinessResponse, SqlStatusResponse,
         },
         cli::{
             client::DebugVerboseResponse,
@@ -696,7 +724,7 @@ mod tests {
 
     fn sample_state(
         self_member_id: &str,
-        desired_state: DesiredNodeStateResponse,
+        phase: HaPhaseResponse,
         trust: DcsTrustResponse,
         leader: Option<&str>,
         members: Vec<HaClusterMemberResponse>,
@@ -711,14 +739,9 @@ mod tests {
             member_count: members.len(),
             members,
             dcs_trust: trust,
-            cluster_mode: match leader {
-                Some(value) => ClusterModeResponse::InitializedLeaderPresent {
-                    leader: value.to_string(),
-                },
-                None => ClusterModeResponse::InitializedNoLeaderFreshQuorum,
-            },
-            desired_state,
+            ha_phase: phase,
             ha_tick: 1,
+            ha_decision: HaDecisionResponse::NoChange,
             snapshot_sequence: 10,
         }
     }
@@ -774,7 +797,7 @@ mod tests {
                 version: 1,
                 updated_at_ms: 1,
                 worker: "Running".to_string(),
-                trust: "FreshQuorum".to_string(),
+                trust: "FullQuorum".to_string(),
                 member_count: 1,
                 leader: Some("node-a".to_string()),
                 has_switchover_request: false,
@@ -791,9 +814,10 @@ mod tests {
                 version: 1,
                 updated_at_ms: 1,
                 worker: "Running".to_string(),
-                cluster_mode: "InitializedLeaderPresent".to_string(),
-                desired_state: "Primary".to_string(),
+                phase: "Primary".to_string(),
                 tick: 1,
+                decision: "NoChange".to_string(),
+                decision_detail: Some("steady".to_string()),
                 planned_actions: 0,
             },
             api: ApiSection {
@@ -810,7 +834,7 @@ mod tests {
                 domain: "ha".to_string(),
                 previous_version: Some(1),
                 current_version: Some(2),
-                summary: "desired state updated".to_string(),
+                summary: "decision updated".to_string(),
             }],
             timeline: vec![DebugTimelineView {
                 sequence: 42,
@@ -829,10 +853,8 @@ mod tests {
         ];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
-            DcsTrustResponse::FreshQuorum,
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FullQuorum,
             Some("node-a"),
             members.clone(),
         );
@@ -878,19 +900,15 @@ mod tests {
         ];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
-            DcsTrustResponse::FreshQuorum,
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FullQuorum,
             Some("node-a"),
             members.clone(),
         );
         let other_state = sample_state(
             "node-b",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
-            DcsTrustResponse::FreshQuorum,
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FullQuorum,
             Some("node-b"),
             members.clone(),
         );
@@ -936,10 +954,8 @@ mod tests {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
-            DcsTrustResponse::NoFreshQuorum,
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FailSafe,
             Some("node-a"),
             members.clone(),
         );
@@ -969,10 +985,8 @@ mod tests {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
-            DcsTrustResponse::FreshQuorum,
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FullQuorum,
             Some("node-a"),
             members.clone(),
         );
@@ -999,10 +1013,8 @@ mod tests {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
-            DcsTrustResponse::FreshQuorum,
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FullQuorum,
             Some("node-a"),
             members.clone(),
         );
@@ -1037,10 +1049,8 @@ mod tests {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
-            DcsTrustResponse::FreshQuorum,
+            HaPhaseResponse::Primary,
+            DcsTrustResponse::FullQuorum,
             Some("node-a"),
             members.clone(),
         );

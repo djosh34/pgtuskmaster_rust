@@ -329,9 +329,8 @@ mod tests {
 
     use crate::{
         api::{
-            DcsTrustResponse, DesiredNodeStateResponse, HaClusterMemberResponse, HaStateResponse,
-            MemberRoleResponse, PrimaryPlanResponse, ReadinessResponse, ReplicaPlanResponse,
-            SqlStatusResponse,
+            DcsTrustResponse, HaClusterMemberResponse, HaDecisionResponse, HaPhaseResponse,
+            HaStateResponse, MemberRoleResponse, ReadinessResponse, SqlStatusResponse,
         },
         cli::{
             client::CliTlsConfig,
@@ -360,7 +359,7 @@ mod tests {
 
     fn sample_state(
         self_member_id: &str,
-        desired_state: DesiredNodeStateResponse,
+        phase: HaPhaseResponse,
         leader: Option<&str>,
         members: Vec<HaClusterMemberResponse>,
     ) -> HaStateResponse {
@@ -373,15 +372,10 @@ mod tests {
             switchover_to: None,
             member_count: members.len(),
             members,
-            dcs_trust: DcsTrustResponse::FreshQuorum,
-            cluster_mode: match leader {
-                Some(value) => crate::api::ClusterModeResponse::InitializedLeaderPresent {
-                    leader: value.to_string(),
-                },
-                None => crate::api::ClusterModeResponse::InitializedNoLeaderFreshQuorum,
-            },
-            desired_state,
+            dcs_trust: DcsTrustResponse::FullQuorum,
+            ha_phase: phase,
             ha_tick: 1,
+            ha_decision: HaDecisionResponse::NoChange,
             snapshot_sequence: 10,
         }
     }
@@ -423,19 +417,13 @@ mod tests {
         ];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
+            HaPhaseResponse::Primary,
             Some("node-a"),
             members.clone(),
         );
         let replica_state = sample_state(
             "node-b",
-            DesiredNodeStateResponse::Replica {
-                plan: ReplicaPlanResponse::Direct {
-                    leader_member_id: "node-a".to_string(),
-                },
-            },
+            HaPhaseResponse::Replica,
             Some("node-a"),
             members.clone(),
         );
@@ -485,9 +473,7 @@ mod tests {
         ];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
+            HaPhaseResponse::Primary,
             Some("node-a"),
             members.clone(),
         );
@@ -538,19 +524,13 @@ mod tests {
         ];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
+            HaPhaseResponse::Primary,
             Some("node-a"),
             members.clone(),
         );
         let replica_state = sample_state(
             "node-b",
-            DesiredNodeStateResponse::Replica {
-                plan: ReplicaPlanResponse::Direct {
-                    leader_member_id: "node-a".to_string(),
-                },
-            },
+            HaPhaseResponse::Replica,
             Some("node-a"),
             members.clone(),
         );
@@ -614,9 +594,7 @@ mod tests {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
+            HaPhaseResponse::Primary,
             Some("node-a"),
             members.clone(),
         );
@@ -648,9 +626,7 @@ mod tests {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
             "node-a",
-            DesiredNodeStateResponse::Primary {
-                plan: PrimaryPlanResponse::KeepLeader,
-            },
+            HaPhaseResponse::Primary,
             Some("node-a"),
             members.clone(),
         );

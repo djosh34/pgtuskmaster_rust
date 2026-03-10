@@ -64,7 +64,7 @@ security = {api_security}
 
 fn sample_status_json(api_url: &str) -> String {
     format!(
-        r#"{{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":"node-a","switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"{api_url}","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}}],"dcs_trust":"fresh_quorum","cluster_mode":{{"kind":"initialized_leader_present","leader":"node-a"}},"desired_state":{{"kind":"primary","plan":"keep_leader"}},"ha_tick":1,"snapshot_sequence":10}}"#
+        r#"{{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"node-a","leader":"node-a","switchover_pending":false,"switchover_to":null,"member_count":1,"members":[{{"member_id":"node-a","postgres_host":"127.0.0.1","postgres_port":5432,"api_url":"{api_url}","role":"primary","sql":"healthy","readiness":"ready","timeline":7,"write_lsn":10,"replay_lsn":null,"updated_at_ms":1,"pg_version":1}}],"dcs_trust":"full_quorum","ha_phase":"primary","ha_tick":1,"ha_decision":{{"kind":"become_primary","promote":true}},"snapshot_sequence":10}}"#
     )
 }
 
@@ -83,12 +83,12 @@ fn sample_member_json(
 fn sample_cluster_state_json(
     self_member_id: &str,
     leader: &str,
-    cluster_mode: &str,
-    desired_state: &str,
+    phase: &str,
+    decision: &str,
     members: &[String],
 ) -> String {
     format!(
-        r#"{{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"{self_member_id}","leader":"{leader}","switchover_pending":false,"switchover_to":null,"member_count":{member_count},"members":[{members}],"dcs_trust":"fresh_quorum","cluster_mode":{cluster_mode},"desired_state":{desired_state},"ha_tick":1,"snapshot_sequence":10}}"#,
+        r#"{{"cluster_name":"cluster-a","scope":"scope-a","self_member_id":"{self_member_id}","leader":"{leader}","switchover_pending":false,"switchover_to":null,"member_count":{member_count},"members":[{members}],"dcs_trust":"full_quorum","ha_phase":"{phase}","ha_tick":1,"ha_decision":{decision},"snapshot_sequence":10}}"#,
         member_count = members.len(),
         members = members.join(",")
     )
@@ -128,7 +128,7 @@ fn sample_debug_verbose_json(member_id: &str) -> String {
                 "version":1,
                 "updated_at_ms":1,
                 "worker":"Running",
-                "trust":"FreshQuorum",
+                "trust":"FullQuorum",
                 "member_count":1,
                 "leader":"node-a",
                 "has_switchover_request":false
@@ -145,14 +145,15 @@ fn sample_debug_verbose_json(member_id: &str) -> String {
                 "version":1,
                 "updated_at_ms":1,
                 "worker":"Running",
-                "cluster_mode":"InitializedLeaderPresent",
-                "desired_state":"Primary",
+                "phase":"Primary",
                 "tick":1,
+                "decision":"NoChange",
+                "decision_detail":"steady",
                 "planned_actions":0
             }},
             "api":{{"endpoints":["/debug/verbose"]}},
             "debug":{{"history_changes":1,"history_timeline":1,"last_sequence":42}},
-            "changes":[{{"sequence":41,"at_ms":1,"domain":"ha","previous_version":1,"current_version":2,"summary":"desired state updated"}}],
+            "changes":[{{"sequence":41,"at_ms":1,"domain":"ha","previous_version":1,"current_version":2,"summary":"decision updated"}}],
             "timeline":[{{"sequence":42,"at_ms":1,"category":"ha","message":"primary steady"}}]
         }}"#
     )
@@ -443,7 +444,7 @@ fn status_verbose_fetches_debug_verbose_and_renders_detail_block() -> Result<(),
     assert!(stdout.contains("DEBUG"));
     assert!(stdout.contains("available"));
     assert!(stdout.contains("debug details:"));
-    assert!(stdout.contains("dcs: trust=FreshQuorum leader=node-a"));
+    assert!(stdout.contains("dcs: trust=FullQuorum leader=node-a"));
 
     let first_request = rx
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -601,8 +602,8 @@ fn primary_command_renders_single_dsn_line() -> Result<(), String> {
     let seed_state = sample_cluster_state_json(
         "node-a",
         "node-a",
-        r#"{"kind":"initialized_leader_present","leader":"node-a"}"#,
-        r#"{"kind":"primary","plan":"keep_leader"}"#,
+        "primary",
+        r#"{"kind":"become_primary","promote":true}"#,
         &[sample_member_json(
             "node-a",
             "node-a.db.example.com",
@@ -723,8 +724,8 @@ fn replicas_command_renders_one_dsn_per_line() -> Result<(), String> {
     let replica_state = sample_cluster_state_json(
         "node-b",
         "node-a",
-        r#"{"kind":"initialized_leader_present","leader":"node-a"}"#,
-        r#"{"kind":"replica","plan":{"kind":"direct","leader_member_id":"node-a"}}"#,
+        "replica",
+        r#"{"kind":"follow_leader","leader_member_id":"node-a"}"#,
         &[
             sample_member_json(
                 "node-a",
@@ -747,8 +748,8 @@ fn replicas_command_renders_one_dsn_per_line() -> Result<(), String> {
     let seed_state = sample_cluster_state_json(
         "node-a",
         "node-a",
-        r#"{"kind":"initialized_leader_present","leader":"node-a"}"#,
-        r#"{"kind":"primary","plan":"keep_leader"}"#,
+        "primary",
+        r#"{"kind":"become_primary","promote":true}"#,
         &[
             sample_member_json(
                 "node-a",

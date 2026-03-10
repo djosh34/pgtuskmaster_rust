@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, fmt, net::SocketAddr, path::PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::endpoint::DcsEndpoint;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum InlineOrPath {
     Path(PathBuf),
@@ -12,7 +12,7 @@ pub enum InlineOrPath {
     Inline { content: String },
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum SecretSource {
     Path(PathBuf),
@@ -44,7 +44,7 @@ impl fmt::Debug for SecretSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiTlsMode {
     Disabled,
@@ -54,21 +54,21 @@ pub enum ApiTlsMode {
 
 pub type TlsMode = ApiTlsMode;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsServerIdentityConfig {
     pub cert_chain: InlineOrPath,
     pub private_key: InlineOrPath,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsClientAuthConfig {
     pub client_ca: InlineOrPath,
     pub require_client_cert: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsServerConfig {
     pub mode: TlsMode,
@@ -76,7 +76,7 @@ pub struct TlsServerConfig {
     pub client_auth: Option<TlsClientAuthConfig>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct RuntimeConfig {
     pub cluster: ClusterConfig,
     pub postgres: PostgresConfig,
@@ -89,14 +89,14 @@ pub struct RuntimeConfig {
     pub debug: DebugConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterConfig {
     pub name: String,
     pub member_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresConfig {
     pub data_dir: PathBuf,
@@ -115,7 +115,7 @@ pub struct PostgresConfig {
     pub extra_gucs: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresConnIdentityConfig {
     pub user: String,
@@ -123,21 +123,21 @@ pub struct PostgresConnIdentityConfig {
     pub ssl_mode: crate::pginfo::conninfo::PgSslMode,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum RoleAuthConfig {
     Tls,
     Password { password: SecretSource },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresRoleConfig {
     pub username: String,
     pub auth: RoleAuthConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresRolesConfig {
     pub superuser: PostgresRoleConfig,
@@ -145,19 +145,19 @@ pub struct PostgresRolesConfig {
     pub rewinder: PostgresRoleConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PgHbaConfig {
     pub source: InlineOrPath,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PgIdentConfig {
     pub source: InlineOrPath,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DcsConfig {
     pub endpoints: Vec<DcsEndpoint>,
@@ -173,21 +173,21 @@ pub struct DcsConfigInput {
     pub init: Option<DcsInitConfig>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DcsInitConfig {
     pub payload_json: String,
     pub write_on_bootstrap: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HaConfig {
     pub loop_interval_ms: u64,
     pub lease_ttl_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessConfig {
     pub pg_rewind_timeout_ms: u64,
@@ -196,7 +196,7 @@ pub struct ProcessConfig {
     pub binaries: BinaryPaths,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     pub level: LogLevel,
@@ -205,7 +205,7 @@ pub struct LoggingConfig {
     pub sinks: LoggingSinksConfig,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
@@ -216,7 +216,7 @@ pub enum LogLevel {
     Fatal,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresLoggingConfig {
     pub enabled: bool,
@@ -226,20 +226,20 @@ pub struct PostgresLoggingConfig {
     pub cleanup: LogCleanupConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoggingSinksConfig {
     pub stderr: StderrSinkConfig,
     pub file: FileSinkConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StderrSinkConfig {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileSinkConfig {
     pub enabled: bool,
@@ -247,14 +247,14 @@ pub struct FileSinkConfig {
     pub mode: FileSinkMode,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileSinkMode {
     Append,
     Truncate,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogCleanupConfig {
     pub enabled: bool,
@@ -268,7 +268,7 @@ fn default_log_cleanup_protect_recent_seconds() -> u64 {
     300
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryPaths {
     pub postgres: PathBuf,
@@ -279,35 +279,35 @@ pub struct BinaryPaths {
     pub psql: PathBuf,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiConfig {
     pub listen_addr: SocketAddr,
     pub security: ApiSecurityConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiSecurityConfig {
     pub tls: TlsServerConfig,
     pub auth: ApiAuthConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ApiAuthConfig {
     Disabled,
     RoleTokens(ApiRoleTokensConfig),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiRoleTokensConfig {
     pub read_token: Option<SecretSource>,
     pub admin_token: Option<SecretSource>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PgtmConfig {
     pub api_url: Option<String>,
@@ -315,7 +315,7 @@ pub struct PgtmConfig {
     pub postgres_client: Option<PgtmPostgresClientConfig>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PgtmApiClientConfig {
     pub ca_cert: Option<InlineOrPath>,
@@ -323,7 +323,7 @@ pub struct PgtmApiClientConfig {
     pub client_key: Option<SecretSource>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PgtmPostgresClientConfig {
     pub ca_cert: Option<InlineOrPath>,
@@ -331,7 +331,7 @@ pub struct PgtmPostgresClientConfig {
     pub client_key: Option<SecretSource>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DebugConfig {
     pub enabled: bool,

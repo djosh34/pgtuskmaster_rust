@@ -1,4 +1,4 @@
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de, Deserialize, Deserializer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PgSslMode {
@@ -43,15 +43,6 @@ impl<'de> Deserialize<'de> for PgSslMode {
         let raw = String::deserialize(deserializer)?;
         Self::parse(raw.as_str())
             .ok_or_else(|| de::Error::custom(format!("unsupported sslmode `{raw}`")))
-    }
-}
-
-impl Serialize for PgSslMode {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
     }
 }
 

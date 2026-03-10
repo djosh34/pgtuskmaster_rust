@@ -29,7 +29,7 @@ Focus on:
 A primary failure usually surfaces as:
 
 - no stable primary in the sampled view
-- trust degrading to `NoFreshQuorum` or `NotTrusted`
+- trust degrading to `fail_safe` or `not_trusted`
 - one or more nodes moving through `candidate_leader`, `rewinding`, or other recovery-related phases
 
 If the cluster view is degraded, repeat the same command from another seed config before you conclude the failure scope.
@@ -40,7 +40,7 @@ Look for:
 
 - exactly one node in `ROLE=primary` once the cluster settles
 - all other nodes in replica-oriented behavior
-- `TRUST=FreshQuorum` on the healthy view
+- `TRUST=full_quorum` on the healthy view
 
 The Docker cluster example uses `ha.lease_ttl_ms = 10000` and `ha.loop_interval_ms = 1000`. Those values bound member freshness checks and also define the etcd leader-lease TTL. In abrupt-node-loss cases, the old leader is invalidated when etcd expires that lease and the watched DCS cache drops `/{scope}/leader`.
 
@@ -67,7 +67,6 @@ No manual intervention is required for most failures. The HA decision engine aut
 4. Moves through recovery and election logic on the surviving majority.
 5. Selects a recovery target from healthy members.
 6. Executes rewind or base-backup recovery so the failed node can rejoin safely.
-7. If a preserved replica comes back queryable while still pointed at the old primary, rewrites managed recovery config toward the authoritative leader and demotes PostgreSQL on that replica so the normal wait/start or recovery path can reconnect it.
 
 To monitor automated recovery, keep watching cluster status:
 
@@ -77,7 +76,7 @@ pgtm -c config.toml status -v --watch
 
 ### If automation stalls
 
-If decisions remain unchanged and trust stays at `NoFreshQuorum` or `NotTrusted`, resolve the underlying etcd, network, or PostgreSQL problem before expecting promotion to proceed. A healthy 2-of-3 majority should not remain stuck behind a dead primary's stale leader metadata once the old leader lease has actually expired.
+If decisions remain unchanged and trust stays at `fail_safe` or `not_trusted`, resolve the underlying etcd, network, or PostgreSQL problem before expecting promotion to proceed. A healthy 2-of-3 majority should not remain stuck behind a dead primary's stale leader metadata once the old leader lease has actually expired.
 
 ## Verify recovery
 
@@ -103,7 +102,7 @@ Once a new primary is visible in cluster status, verify data consistency:
 
 ## Troubleshoot common scenarios
 
-### All nodes show `TRUST=NoFreshQuorum`
+### All nodes show `TRUST=fail_safe`
 
 Cause: etcd unreachable or most member records stale.  
 Action: restore etcd cluster health first.
@@ -113,11 +112,6 @@ Action: restore etcd cluster health first.
 Cause: rewind or catch-up still running, or recovery escalated because WAL continuity was not sufficient.  
 Action: keep watching `status -v` and inspect `debug verbose` on the affected replica.
 
-### Replica is queryable but still missing new rows after failover
-
-Cause: the replica came back online with preserved PGDATA but had not yet converged on the authoritative follow target. Queryability alone does not prove it is following the new primary.
-Action: check `DECISION=follow_leader` and confirm the replica's `primary_conninfo` now references the promoted primary. pgtuskmaster corrects this by rewriting managed recovery config and demoting PostgreSQL so the normal wait/start or recovery path reconnects the replica; if that does not converge, inspect `debug verbose` and the PostgreSQL logs on that node.
-
 ### You suspect split-brain
 
 Cause: network partition or stale observations.  
@@ -126,15 +120,14 @@ Action: run `pgtm status -v` from more than one seed config and treat any sustai
 ### Leader lease release stalls
 
 Cause: the previous primary cannot reach etcd to revoke its own lease cleanly.  
-Action: wait for lease expiry on the etcd side, then verify that `LEADER` clears from `pgtm status -v` and that the surviving majority returns to `TRUST=FreshQuorum`. `ha.lease_ttl_ms` bounds both member freshness and the leader-lease TTL.
+Action: wait for lease expiry on the etcd side, then verify that `LEADER` clears from `pgtm status -v` and that the surviving majority returns to `TRUST=full_quorum`. `ha.lease_ttl_ms` bounds both member freshness and the leader-lease TTL.
 
 ## Verification checklist
 
 - [ ] Exactly one node reports `ROLE=primary`
 - [ ] All other nodes report replica-oriented behavior
-- [ ] `TRUST=FreshQuorum` on the healthy view
+- [ ] `TRUST=full_quorum` on the healthy view
 - [ ] `pg_is_in_recovery()` returns `false` on one node only
 - [ ] Replication lag on replicas is acceptable
-- [ ] Each replica's `primary_conninfo` points at the current primary rather than a failed predecessor
 - [ ] No sustained split-brain evidence appears in repeated status samples
 - [ ] Application traffic can write to the new primary

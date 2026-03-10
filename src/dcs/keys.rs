@@ -6,11 +6,9 @@ use crate::state::MemberId;
 pub(crate) enum DcsKey {
     Member(MemberId),
     Leader,
-    BootstrapLock,
-    ClusterInitialized,
-    ClusterIdentity,
     Switchover,
     Config,
+    InitLock,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -39,11 +37,9 @@ pub(crate) fn key_from_path(scope: &str, full_path: &str) -> Result<DcsKey, DcsK
     let parts: Vec<&str> = suffix.split('/').collect();
     match parts.as_slice() {
         ["leader"] => Ok(DcsKey::Leader),
-        ["bootstrap"] => Ok(DcsKey::BootstrapLock),
-        ["cluster", "initialized"] => Ok(DcsKey::ClusterInitialized),
-        ["cluster", "identity"] => Ok(DcsKey::ClusterIdentity),
         ["switchover"] => Ok(DcsKey::Switchover),
         ["config"] => Ok(DcsKey::Config),
+        ["init"] => Ok(DcsKey::InitLock),
         ["member", member_id] => {
             if member_id.is_empty() {
                 return Err(DcsKeyParseError::MissingMemberId(full_path.to_string()));
@@ -72,24 +68,16 @@ mod tests {
             Ok(DcsKey::Leader)
         );
         assert_eq!(
-            key_from_path("scope-a", "/scope-a/bootstrap"),
-            Ok(DcsKey::BootstrapLock)
-        );
-        assert_eq!(
-            key_from_path("scope-a", "/scope-a/cluster/initialized"),
-            Ok(DcsKey::ClusterInitialized)
-        );
-        assert_eq!(
-            key_from_path("scope-a", "/scope-a/cluster/identity"),
-            Ok(DcsKey::ClusterIdentity)
+            key_from_path("scope-a", "/scope-a/switchover"),
+            Ok(DcsKey::Switchover)
         );
         assert_eq!(
             key_from_path("scope-a", "/scope-a/config"),
             Ok(DcsKey::Config)
         );
         assert_eq!(
-            key_from_path("scope-a", "/scope-a/switchover"),
-            Ok(DcsKey::Switchover)
+            key_from_path("scope-a", "/scope-a/init"),
+            Ok(DcsKey::InitLock)
         );
     }
 

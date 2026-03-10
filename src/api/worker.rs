@@ -1249,13 +1249,14 @@ mod tests {
             HTTP_REQUEST_SCRATCH_BUFFER_BYTES,
         },
         config::{ApiAuthConfig, ApiRoleTokensConfig, ApiTlsMode, InlineOrPath, RuntimeConfig},
-        dcs::state::{DcsState, DcsTrust, DcsView},
+        dcs::state::{DcsCache, DcsState, DcsTrust},
         dcs::store::{DcsStore, DcsStoreError, WatchEvent},
         debug_api::snapshot::{
             AppLifecycle, DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot,
         },
-        ha::state::{
-            ClusterMode, DesiredNodeState, HaState, LeadershipTransferState, QuiescentReason,
+        ha::{
+            decision::HaDecision,
+            state::{HaPhase, HaState},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
@@ -1382,15 +1383,13 @@ mod tests {
     fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
         DcsState {
             worker: crate::state::WorkerStatus::Running,
-            trust: DcsTrust::FreshQuorum,
-            cache: DcsView {
+            trust: DcsTrust::FullQuorum,
+            cache: DcsCache {
                 members: BTreeMap::new(),
                 leader: None,
                 switchover: None,
                 config: cfg,
-                cluster_initialized: None,
-                cluster_identity: None,
-                bootstrap_lock: None,
+                init_lock: None,
             },
             last_refresh_at: Some(UnixMillis(1)),
         }
@@ -1406,14 +1405,11 @@ mod tests {
     fn sample_ha_state() -> HaState {
         HaState {
             worker: crate::state::WorkerStatus::Running,
-            cluster_mode: ClusterMode::InitializedLeaderPresent {
-                leader: crate::state::MemberId("node-a".to_string()),
-            },
-            desired_state: DesiredNodeState::Quiescent {
-                reason: QuiescentReason::WaitingForAuthoritativeLeader,
-            },
-            leadership_transfer: LeadershipTransferState::None,
+            phase: HaPhase::Replica,
             tick: 7,
+            decision: HaDecision::EnterFailSafe {
+                release_leader_lease: false,
+            },
         }
     }
 
@@ -1986,17 +1982,11 @@ mod tests {
         assert_eq!(decoded["switchover_pending"], false);
         assert_eq!(decoded["switchover_to"], serde_json::Value::Null);
         assert_eq!(decoded["member_count"], 0);
-        assert_eq!(decoded["dcs_trust"], "fresh_quorum");
-        assert_eq!(
-            decoded["cluster_mode"]["kind"],
-            "initialized_leader_present"
-        );
+        assert_eq!(decoded["dcs_trust"], "full_quorum");
+        assert_eq!(decoded["ha_phase"], "replica");
         assert_eq!(decoded["ha_tick"], 7);
-        assert_eq!(decoded["desired_state"]["kind"], "quiescent");
-        assert_eq!(
-            decoded["desired_state"]["reason"],
-            "waiting_for_authoritative_leader"
-        );
+        assert_eq!(decoded["ha_decision"]["kind"], "enter_fail_safe");
+        assert_eq!(decoded["ha_decision"]["release_leader_lease"], false);
         assert_eq!(decoded["snapshot_sequence"], 2);
         Ok(())
     }

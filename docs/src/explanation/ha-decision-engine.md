@@ -11,7 +11,7 @@ The HA decision engine turns a world snapshot into a single next HA phase and a 
 
 The first branch in `decide_phase(...)` is the trust gate.
 
-If trust is not `FreshQuorum`:
+If trust is not `FullQuorum`:
 
 - a local primary enters `FailSafe` with `EnterFailSafe { release_leader_lease: false }`
 - a non-primary also enters the `FailSafe` phase, but with `NoChange`
@@ -20,11 +20,11 @@ That means the engine prefers safety over recovery whenever its view of cluster 
 
 `DcsTrust` has three variants:
 
-- `FreshQuorum`
-- `NoFreshQuorum`
+- `FullQuorum`
+- `FailSafe`
 - `NotTrusted`
 
-`FreshQuorum` is the only trust state that allows the normal phase handlers to run.
+`FullQuorum` is the only state that allows the normal phase handlers to run.
 
 ## Phase-Driven Logic
 
@@ -116,7 +116,7 @@ This layer is what prevents contradictory action mixes from being dispatched as 
 
 Recovery paths only make sense once trust is good enough to rely on DCS-backed membership and leader information.
 
-Under `FreshQuorum`, the engine can choose recovery behaviors such as:
+Under `FullQuorum`, the engine can choose recovery behaviors such as:
 
 - `RecoverReplica { strategy: Rewind { ... } }`
 - `RecoverReplica { strategy: BaseBackup { ... } }`
@@ -145,9 +145,7 @@ It turns lowered HA actions into jobs such as:
 At the same time, the dispatcher explicitly does not treat every HA effect as a process job:
 
 - lease and switchover actions are not process actions there
-- `SignalFailSafe` is skipped at the process-dispatch layer
-
-`FollowLeader` has a steady-state fast path and an invasive correction path. If the local replica already reports the authoritative upstream, dispatch skips the action. If the replica is still pointed at an old leader, dispatch rewrites managed recovery config for the authoritative leader and queues a demote so the ordinary wait/start or recovery path can bring PostgreSQL back following the corrected primary.
+- `FollowLeader` and `SignalFailSafe` are skipped at the process-dispatch layer
 
 That separation is important: the decision engine describes intent, the lowerer organizes effects, and only part of that plan becomes spawned process work.
 

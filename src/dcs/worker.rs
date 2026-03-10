@@ -1,8 +1,4 @@
 use crate::{
-    local_physical::{
-        inspect_local_physical_state, DataDirKind, LocalPhysicalState, LocalPhysicalStateError,
-        SignalFileState,
-    },
     logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
     state::WorkerError,
 };
@@ -10,10 +6,8 @@ use crate::{
 use super::{
     keys::DcsKey,
     state::{
-        build_local_member_record, evaluate_trust, BootstrapLockRecord,
-        BuildLocalMemberRecordInput, ClusterIdentityRecord, ClusterInitializedRecord, DcsState,
-        DcsTrust, DcsView, DcsWorkerCtx, LeaderRecord, MemberRecord, MemberStateClass,
-        PostgresRuntimeClass, SwitchoverRequest,
+        build_local_member_record, evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
+        InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest,
     },
     store::{refresh_from_etcd_watch, write_local_member},
 };
@@ -22,11 +16,9 @@ use super::{
 pub(crate) enum DcsValue {
     Member(MemberRecord),
     Leader(LeaderRecord),
-    BootstrapLock(BootstrapLockRecord),
-    ClusterInitialized(ClusterInitializedRecord),
-    ClusterIdentity(ClusterIdentityRecord),
     Switchover(SwitchoverRequest),
     Config(Box<crate::config::RuntimeConfig>),
+    InitLock(InitLockRecord),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,7 +70,7 @@ pub(crate) async fn run(mut ctx: DcsWorkerCtx) -> Result<(), WorkerError> {
     }
 }
 
-pub(crate) fn apply_watch_update(cache: &mut DcsView, update: DcsWatchUpdate) {
+pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
     match update {
         DcsWatchUpdate::Put { key, value } => match (key, *value) {
             (DcsKey::Member(member_id), DcsValue::Member(record)) => {
@@ -87,20 +79,14 @@ pub(crate) fn apply_watch_update(cache: &mut DcsView, update: DcsWatchUpdate) {
             (DcsKey::Leader, DcsValue::Leader(record)) => {
                 cache.leader = Some(record);
             }
-            (DcsKey::BootstrapLock, DcsValue::BootstrapLock(record)) => {
-                cache.bootstrap_lock = Some(record);
-            }
-            (DcsKey::ClusterInitialized, DcsValue::ClusterInitialized(record)) => {
-                cache.cluster_initialized = Some(record);
-            }
-            (DcsKey::ClusterIdentity, DcsValue::ClusterIdentity(record)) => {
-                cache.cluster_identity = Some(record);
-            }
             (DcsKey::Switchover, DcsValue::Switchover(record)) => {
                 cache.switchover = Some(record);
             }
             (DcsKey::Config, DcsValue::Config(config)) => {
                 cache.config = *config;
+            }
+            (DcsKey::InitLock, DcsValue::InitLock(record)) => {
+                cache.init_lock = Some(record);
             }
             _ => {}
         },
@@ -111,19 +97,13 @@ pub(crate) fn apply_watch_update(cache: &mut DcsView, update: DcsWatchUpdate) {
             DcsKey::Leader => {
                 cache.leader = None;
             }
-            DcsKey::BootstrapLock => {
-                cache.bootstrap_lock = None;
-            }
-            DcsKey::ClusterInitialized => {
-                cache.cluster_initialized = None;
-            }
-            DcsKey::ClusterIdentity => {
-                cache.cluster_identity = None;
-            }
             DcsKey::Switchover => {
                 cache.switchover = None;
             }
             DcsKey::Config => {}
+            DcsKey::InitLock => {
+                cache.init_lock = None;
+            }
         },
     }
 }
@@ -137,42 +117,15 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let mut local_member_publish_succeeded = false;
 
     if must_publish_local_member {
-        let mut local_member = build_local_member_record(BuildLocalMemberRecordInput {
-            self_id: &ctx.self_id,
-            postgres_host: ctx.local_postgres_host.as_str(),
-            postgres_port: ctx.local_postgres_port,
-            api_url: ctx.local_api_url.as_deref(),
-            pg_state: &pg_snapshot.value,
-            previous_record: ctx.cache.members.get(&ctx.self_id),
+        let local_member = build_local_member_record(
+            &ctx.self_id,
+            ctx.local_postgres_host.as_str(),
+            ctx.local_postgres_port,
+            ctx.local_api_url.as_deref(),
+            &pg_snapshot.value,
             now,
-            pg_version: pg_snapshot.version,
-        });
-        let (local_physical_state, inspection_warning) = inspect_local_physical_state_for_dcs(
-            ctx.local_data_dir.as_path(),
-            ctx.local_postgres_binary.as_path(),
-        )?;
-        if let Some(message) = inspection_warning {
-            let mut event = dcs_event(
-                SeverityText::Warn,
-                "dcs local physical inspection recovered transitional state",
-                "dcs.local_physical.inspection_recovered",
-                "recovered",
-            );
-            let fields = event.fields_mut();
-            dcs_append_base_fields(fields, ctx);
-            fields.insert(
-                "postgres.data_dir",
-                ctx.local_data_dir.display().to_string(),
-            );
-            fields.insert("message", message);
-            emit_dcs_event(
-                ctx,
-                "dcs_worker::step_once",
-                event,
-                "dcs local physical recovery log emit failed",
-            )?;
-        }
-        apply_local_physical_state(&mut local_member, &local_physical_state);
+            pg_snapshot.version,
+        );
         match write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member) {
             Ok(()) => {
                 ctx.last_published_pg_version = Some(pg_snapshot.version);
@@ -336,86 +289,6 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     Ok(())
 }
 
-fn inspect_local_physical_state_for_dcs(
-    data_dir: &std::path::Path,
-    postgres_binary: &std::path::Path,
-) -> Result<(LocalPhysicalState, Option<String>), WorkerError> {
-    match inspect_local_physical_state(data_dir, postgres_binary) {
-        Ok(state) => Ok((state, None)),
-        Err(err) => match recover_transitional_local_physical_state(data_dir, &err) {
-            Some(state) => Ok((
-                state,
-                Some(format!(
-                    "pg_controldata not yet readable while local data dir is still being materialized: {err}"
-                )),
-            )),
-            None => Err(WorkerError::Message(format!(
-                "local physical inspection failed: {err}"
-            ))),
-        },
-    }
-}
-
-fn recover_transitional_local_physical_state(
-    data_dir: &std::path::Path,
-    err: &LocalPhysicalStateError,
-) -> Option<LocalPhysicalState> {
-    let pg_control_path = data_dir.join("global").join("pg_control");
-    match err {
-        LocalPhysicalStateError::PgControlDataCommand { .. } if !pg_control_path.exists() => {
-            Some(LocalPhysicalState {
-                data_dir_kind: DataDirKind::InvalidNonEmptyWithoutPgVersion,
-                system_identifier: None,
-                pg_version: None,
-                control_file_state: None,
-                timeline_id: None,
-                durable_end_lsn: None,
-                was_in_recovery: None,
-                signal_file_state: SignalFileState::None,
-                eligible_for_bootstrap: false,
-                eligible_for_direct_follow: false,
-                eligible_for_rewind: false,
-                eligible_for_basebackup: true,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn apply_local_physical_state(
-    member: &mut MemberRecord,
-    local_physical_state: &crate::local_physical::LocalPhysicalState,
-) {
-    member.system_identifier = local_physical_state.system_identifier;
-    member.durable_end_lsn = local_physical_state.durable_end_lsn;
-    member.state_class = Some(match local_physical_state.data_dir_kind {
-        DataDirKind::Missing | DataDirKind::Empty => MemberStateClass::EmptyOrMissingDataDir,
-        DataDirKind::InvalidNonEmptyWithoutPgVersion => MemberStateClass::InvalidDataDir,
-        DataDirKind::Initialized => {
-            if matches!(
-                local_physical_state.signal_file_state,
-                SignalFileState::Standby | SignalFileState::Recovery
-            ) || local_physical_state.was_in_recovery.unwrap_or(false)
-            {
-                MemberStateClass::ReplicaOnly
-            } else {
-                MemberStateClass::Promotable
-            }
-        }
-    });
-    member.postgres_runtime_class = Some(match local_physical_state.data_dir_kind {
-        DataDirKind::Initialized => PostgresRuntimeClass::OfflineInspectable,
-        DataDirKind::Missing
-        | DataDirKind::Empty
-        | DataDirKind::InvalidNonEmptyWithoutPgVersion => PostgresRuntimeClass::UnsafeLocalState,
-    });
-    if matches!(member.sql, crate::pginfo::state::SqlStatus::Healthy)
-        && matches!(member.readiness, crate::pginfo::state::Readiness::Ready)
-    {
-        member.postgres_runtime_class = Some(PostgresRuntimeClass::RunningHealthy);
-    }
-}
-
 fn now_unix_millis() -> Result<crate::state::UnixMillis, WorkerError> {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -429,8 +302,6 @@ fn now_unix_millis() -> Result<crate::state::UnixMillis, WorkerError> {
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::VecDeque;
-    use std::fs;
-    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -439,7 +310,7 @@ mod tests {
         dcs::{
             keys::DcsKey,
             state::{
-                BootstrapLockRecord, DcsState, DcsTrust, DcsView, DcsWorkerCtx, LeaderRecord,
+                DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord,
                 MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
@@ -450,7 +321,7 @@ mod tests {
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
 
-    use super::{recover_transitional_local_physical_state, step_once};
+    use super::step_once;
 
     const TEST_DCS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -612,29 +483,14 @@ mod tests {
         }
     }
 
-    fn sample_cache(cfg: RuntimeConfig) -> DcsView {
-        DcsView {
+    fn sample_cache(cfg: RuntimeConfig) -> DcsCache {
+        DcsCache {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
             config: cfg,
-            cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+            init_lock: None,
         }
-    }
-
-    fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let unique = format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        );
-        let path = std::env::temp_dir().join(format!("pgtm-dcs-worker-{label}-{unique}"));
-        fs::create_dir_all(&path)?;
-        Ok(path)
     }
 
     #[test]
@@ -656,10 +512,6 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    system_identifier: None,
-                    durable_end_lsn: None,
-                    state_class: None,
-                    postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 })),
@@ -692,13 +544,13 @@ mod tests {
         apply_watch_update(
             &mut cache,
             DcsWatchUpdate::Put {
-                key: DcsKey::BootstrapLock,
-                value: Box::new(DcsValue::BootstrapLock(BootstrapLockRecord {
+                key: DcsKey::InitLock,
+                value: Box::new(DcsValue::InitLock(InitLockRecord {
                     holder: member_id.clone(),
                 })),
             },
         );
-        assert!(cache.bootstrap_lock.is_some());
+        assert!(cache.init_lock.is_some());
 
         apply_watch_update(
             &mut cache,
@@ -721,14 +573,14 @@ mod tests {
         apply_watch_update(
             &mut cache,
             DcsWatchUpdate::Delete {
-                key: DcsKey::BootstrapLock,
+                key: DcsKey::InitLock,
             },
         );
 
         assert!(!cache.members.contains_key(&member_id));
         assert!(cache.leader.is_none());
         assert!(cache.switchover.is_none());
-        assert!(cache.bootstrap_lock.is_none());
+        assert!(cache.init_lock.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -764,8 +616,6 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
-            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
-            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -780,7 +630,7 @@ mod tests {
         assert_eq!(stepped, Ok(()));
 
         let latest = dcs_subscriber.latest();
-        assert_eq!(latest.value.trust, DcsTrust::FreshQuorum);
+        assert_eq!(latest.value.trust, DcsTrust::FullQuorum);
         assert!(latest.value.cache.leader.is_some());
         assert!(latest
             .value
@@ -817,8 +667,6 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
-            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
-            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(FailingWriteStore::default()),
@@ -884,8 +732,6 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
-            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
-            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -931,8 +777,6 @@ mod tests {
             local_postgres_host: "127.0.0.9".to_string(),
             local_postgres_port: 6543,
             local_api_url: Some("http://127.0.0.9:6543".to_string()),
-            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
-            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -976,8 +820,6 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
-            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
-            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -1020,8 +862,6 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
-            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
-            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -1068,8 +908,6 @@ mod tests {
             local_postgres_host: "127.0.0.1".to_string(),
             local_postgres_port: 5432,
             local_api_url: Some("http://127.0.0.1:8080".to_string()),
-            local_data_dir: std::path::PathBuf::from("/tmp/pgtm/data"),
-            local_postgres_binary: std::path::PathBuf::from("/usr/bin/postgres"),
             pg_subscriber,
             publisher: dcs_publisher,
             store: Box::new(store),
@@ -1087,52 +925,5 @@ mod tests {
             latest.value.worker,
             WorkerStatus::Faulted(WorkerError::Message(_))
         ));
-    }
-
-    #[test]
-    fn recovers_pg_controldata_failure_while_pg_control_is_absent(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = temp_dir("missing-pg-control")?;
-        fs::write(dir.join("PG_VERSION"), "16\n")?;
-        fs::create_dir_all(dir.join("global"))?;
-
-        let recovered = recover_transitional_local_physical_state(
-            dir.as_path(),
-            &crate::local_physical::LocalPhysicalStateError::PgControlDataCommand {
-                binary: Path::new("/usr/bin/pg_controldata").to_path_buf(),
-                data_dir: dir.clone(),
-                message: "could not open pg_control".to_string(),
-            },
-        );
-
-        let state = recovered.ok_or("expected transitional recovery state")?;
-        assert_eq!(
-            state.data_dir_kind,
-            crate::local_physical::DataDirKind::InvalidNonEmptyWithoutPgVersion
-        );
-        assert!(state.eligible_for_basebackup);
-        assert!(!state.eligible_for_direct_follow);
-        Ok(())
-    }
-
-    #[test]
-    fn does_not_recover_pg_controldata_failure_once_pg_control_exists(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = temp_dir("present-pg-control")?;
-        fs::write(dir.join("PG_VERSION"), "16\n")?;
-        fs::create_dir_all(dir.join("global"))?;
-        fs::write(dir.join("global").join("pg_control"), b"placeholder")?;
-
-        let recovered = recover_transitional_local_physical_state(
-            dir.as_path(),
-            &crate::local_physical::LocalPhysicalStateError::PgControlDataCommand {
-                binary: Path::new("/usr/bin/pg_controldata").to_path_buf(),
-                data_dir: dir.clone(),
-                message: "could not parse pg_control".to_string(),
-            },
-        );
-
-        assert!(recovered.is_none());
-        Ok(())
     }
 }

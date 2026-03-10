@@ -514,21 +514,10 @@ mod tests {
 
         reservation.release_port(ports[0])?;
 
-        let released_bind_attempt = (0..100).find_map(|_| {
-            let bind_result = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, ports[0]));
-            if bind_result.is_ok() {
-                return Some(bind_result);
-            }
-            std::thread::sleep(PORT_ALLOCATION_SETTLE_POLL_INTERVAL);
-            None
-        });
-        let released_bind = match released_bind_attempt {
-            Some(bind_result) => bind_result,
-            None => TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, ports[0])),
-        };
+        let released_bind = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, ports[0]));
         if released_bind.is_err() {
             return Err(HarnessError::InvalidInput(format!(
-                "expected released port to be bindable after release: port={} err={:?}",
+                "expected released port to be bindable: port={} err={:?}",
                 ports[0], released_bind
             )));
         }

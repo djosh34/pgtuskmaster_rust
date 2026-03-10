@@ -17,14 +17,10 @@ use etcd_client::{
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::store::{
-    bootstrap_path, cluster_identity_path, cluster_initialized_path, encode_leader_record,
-    leader_path, DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent, WatchOp,
+    encode_leader_record, leader_path, DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent, WatchOp,
 };
 use crate::config::DcsEndpoint;
-use crate::{
-    dcs::state::{BootstrapLockRecord, ClusterIdentityRecord, ClusterInitializedRecord},
-    state::MemberId,
-};
+use crate::state::MemberId;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -1254,26 +1250,6 @@ impl DcsLeaderStore for EtcdDcsStore {
         )
     }
 
-    fn acquire_bootstrap_lease(
-        &mut self,
-        scope: &str,
-        member_id: &MemberId,
-    ) -> Result<(), DcsStoreError> {
-        let path = bootstrap_path(scope);
-        let encoded = serde_json::to_string(&BootstrapLockRecord {
-            holder: member_id.clone(),
-        })
-        .map_err(|err| DcsStoreError::Decode {
-            key: path.clone(),
-            message: err.to_string(),
-        })?;
-        if self.put_path_if_absent(path.as_str(), encoded)? {
-            Ok(())
-        } else {
-            Err(DcsStoreError::AlreadyExists(path))
-        }
-    }
-
     fn release_leader_lease(
         &mut self,
         scope: &str,
@@ -1287,40 +1263,6 @@ impl DcsLeaderStore for EtcdDcsStore {
             },
             "release leader lease",
         )
-    }
-
-    fn release_bootstrap_lease(
-        &mut self,
-        scope: &str,
-        _member_id: &MemberId,
-    ) -> Result<(), DcsStoreError> {
-        self.delete_path(bootstrap_path(scope).as_str())
-    }
-
-    fn write_cluster_initialized(
-        &mut self,
-        scope: &str,
-        record: &ClusterInitializedRecord,
-    ) -> Result<(), DcsStoreError> {
-        let path = cluster_initialized_path(scope);
-        let encoded = serde_json::to_string(record).map_err(|err| DcsStoreError::Decode {
-            key: path.clone(),
-            message: err.to_string(),
-        })?;
-        self.write_path(path.as_str(), encoded)
-    }
-
-    fn write_cluster_identity(
-        &mut self,
-        scope: &str,
-        record: &ClusterIdentityRecord,
-    ) -> Result<(), DcsStoreError> {
-        let path = cluster_identity_path(scope);
-        let encoded = serde_json::to_string(record).map_err(|err| DcsStoreError::Decode {
-            key: path.clone(),
-            message: err.to_string(),
-        })?;
-        self.write_path(path.as_str(), encoded)
     }
 
     fn clear_switchover(&mut self, scope: &str) -> Result<(), DcsStoreError> {
@@ -1353,7 +1295,7 @@ mod tests {
         dcs::{
             etcd_store::EtcdDcsStore,
             state::{
-                evaluate_trust, BootstrapLockRecord, DcsState, DcsTrust, DcsView, DcsWorkerCtx,
+                evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord,
                 LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{
@@ -1364,10 +1306,8 @@ mod tests {
         },
         ha::{
             decide::decide,
-            state::{
-                ClusterMode, DecideInput, DesiredNodeState, HaState, LeadershipTransferState,
-                QuiescentReason, WorldSnapshot,
-            },
+            decision::HaDecision,
+            state::{DecideInput, HaPhase, HaState, WorldSnapshot},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
@@ -1522,15 +1462,13 @@ mod tests {
             .build()
     }
 
-    fn sample_cache(scope: &str) -> DcsView {
-        DcsView {
+    fn sample_cache(scope: &str) -> DcsCache {
+        DcsCache {
             members: BTreeMap::new(),
             leader: None,
             switchover: None,
             config: sample_runtime_config(scope),
-            cluster_initialized: None,
-            cluster_identity: None,
-            bootstrap_lock: None,
+            init_lock: None,
         }
     }
 
@@ -1579,8 +1517,6 @@ mod tests {
                 local_postgres_host: "127.0.0.1".to_string(),
                 local_postgres_port: 5432,
                 local_api_url: Some("http://127.0.0.1:8080".to_string()),
-                local_data_dir: PathBuf::from("/tmp/pgtm/data"),
-                local_postgres_binary: PathBuf::from("/usr/bin/postgres"),
                 pg_subscriber,
                 publisher: dcs_publisher,
                 store: Box::new(store),
@@ -1694,10 +1630,6 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-            system_identifier: None,
-            durable_end_lsn: None,
-            state_class: None,
-            postgres_runtime_class: None,
                     updated_at: UnixMillis(1),
                     pg_version: crate::state::Version(1),
                 },
@@ -1705,7 +1637,7 @@ mod tests {
             cache.switchover = Some(SwitchoverRequest {
                 switchover_to: None,
             });
-            cache.bootstrap_lock = Some(BootstrapLockRecord {
+            cache.init_lock = Some(InitLockRecord {
                 holder: MemberId("node-stale".to_string()),
             });
 
@@ -1789,9 +1721,9 @@ mod tests {
                     "expected switchover record to be cleared by reconnect reset",
                 ));
             }
-            if cache.bootstrap_lock.is_some() {
+            if cache.init_lock.is_some() {
                 return Err(boxed_error(
-                    "expected bootstrap lock record to be cleared by reconnect reset",
+                    "expected init lock record to be cleared by reconnect reset",
                 ));
             }
 
@@ -2070,7 +2002,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn leader_expiry_flows_through_watch_cache_trust_and_desired_state() -> TestResult {
+    async fn leader_expiry_flows_through_watch_cache_trust_and_ha_decision() -> TestResult {
         let fixture = RealEtcdFixture::spawn(
             "dcs-etcd-store-leader-expiry-ha-chain",
             "scope-leader-expiry-ha-chain",
@@ -2084,68 +2016,50 @@ mod tests {
             let mut observer = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
             let mut writer = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
 
-	            for record in [
-	                MemberRecord {
-	                    member_id: MemberId("node-a".to_string()),
-	                    postgres_host: "127.0.0.1".to_string(),
-	                    postgres_port: 5432,
-	                    api_url: None,
-	                    role: MemberRole::Primary,
-	                    sql: SqlStatus::Healthy,
-	                    readiness: Readiness::Ready,
-	                    timeline: Some(crate::state::TimelineId(1)),
-	                    write_lsn: Some(crate::state::WalLsn(10)),
-	                    replay_lsn: None,
-	                    system_identifier: Some(crate::state::SystemIdentifier(42)),
-	                    durable_end_lsn: Some(crate::state::WalLsn(10)),
-	                    state_class: Some(crate::dcs::state::MemberStateClass::Promotable),
-	                    postgres_runtime_class: Some(
-	                        crate::dcs::state::PostgresRuntimeClass::RunningHealthy,
-	                    ),
-	                    updated_at: UnixMillis(1),
-	                    pg_version: Version(1),
-	                },
-	                MemberRecord {
-	                    member_id: MemberId("node-b".to_string()),
-	                    postgres_host: "127.0.0.2".to_string(),
-	                    postgres_port: 5432,
-	                    api_url: None,
-	                    role: MemberRole::Replica,
-	                    sql: SqlStatus::Healthy,
-	                    readiness: Readiness::Ready,
-	                    timeline: Some(crate::state::TimelineId(1)),
-	                    write_lsn: None,
-	                    replay_lsn: Some(crate::state::WalLsn(15)),
-	                    system_identifier: Some(crate::state::SystemIdentifier(42)),
-	                    durable_end_lsn: Some(crate::state::WalLsn(15)),
-	                    state_class: Some(crate::dcs::state::MemberStateClass::ReplicaOnly),
-	                    postgres_runtime_class: Some(
-	                        crate::dcs::state::PostgresRuntimeClass::RunningHealthy,
-	                    ),
-	                    updated_at: UnixMillis(15_000),
-	                    pg_version: Version(1),
-	                },
-	                MemberRecord {
-	                    member_id: MemberId("node-c".to_string()),
-	                    postgres_host: "127.0.0.3".to_string(),
-	                    postgres_port: 5432,
-	                    api_url: None,
-	                    role: MemberRole::Replica,
-	                    sql: SqlStatus::Healthy,
-	                    readiness: Readiness::Ready,
-	                    timeline: Some(crate::state::TimelineId(1)),
-	                    write_lsn: None,
-	                    replay_lsn: Some(crate::state::WalLsn(12)),
-	                    system_identifier: Some(crate::state::SystemIdentifier(42)),
-	                    durable_end_lsn: Some(crate::state::WalLsn(12)),
-	                    state_class: Some(crate::dcs::state::MemberStateClass::ReplicaOnly),
-	                    postgres_runtime_class: Some(
-	                        crate::dcs::state::PostgresRuntimeClass::RunningHealthy,
-	                    ),
-	                    updated_at: UnixMillis(15_000),
-	                    pg_version: Version(1),
-	                },
-	            ] {
+            for record in [
+                MemberRecord {
+                    member_id: MemberId("node-a".to_string()),
+                    postgres_host: "127.0.0.1".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(1),
+                    pg_version: Version(1),
+                },
+                MemberRecord {
+                    member_id: MemberId("node-b".to_string()),
+                    postgres_host: "127.0.0.2".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Primary,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(15_000),
+                    pg_version: Version(1),
+                },
+                MemberRecord {
+                    member_id: MemberId("node-c".to_string()),
+                    postgres_host: "127.0.0.3".to_string(),
+                    postgres_port: 5432,
+                    api_url: None,
+                    role: MemberRole::Replica,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: None,
+                    write_lsn: None,
+                    replay_lsn: None,
+                    updated_at: UnixMillis(15_000),
+                    pg_version: Version(1),
+                },
+            ] {
                 let encoded = serde_json::to_string(&record)
                     .map_err(|err| boxed_error(format!("encode member record failed: {err}")))?;
                 writer.write_path(
@@ -2178,22 +2092,13 @@ mod tests {
 
             let mut snapshot_store =
                 EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
-	            let mut cache = DcsView {
-	                members: BTreeMap::new(),
-	                leader: None,
-	                switchover: None,
-	                config: sample_runtime_config(&fixture.scope),
-	                cluster_initialized: Some(crate::dcs::state::ClusterInitializedRecord {
-	                    initialized_by: MemberId("node-a".to_string()),
-	                    initialized_at: UnixMillis(1),
-	                }),
-	                cluster_identity: Some(crate::dcs::state::ClusterIdentityRecord {
-	                    system_identifier: crate::state::SystemIdentifier(42),
-	                    bootstrapped_by: MemberId("node-a".to_string()),
-	                    bootstrapped_at: UnixMillis(1),
-	                }),
-	                bootstrap_lock: None,
-	            };
+            let mut cache = DcsCache {
+                members: BTreeMap::new(),
+                leader: None,
+                switchover: None,
+                config: sample_runtime_config(&fixture.scope),
+                init_lock: None,
+            };
             let events = snapshot_store.drain_watch_events()?;
             refresh_from_etcd_watch(&fixture.scope, &mut cache, events)?;
 
@@ -2205,7 +2110,7 @@ mod tests {
 
             let now = UnixMillis(20_000);
             let trust = evaluate_trust(true, &cache, &MemberId("node-b".to_string()), now);
-            if trust != DcsTrust::FreshQuorum {
+            if trust != DcsTrust::FullQuorum {
                 return Err(boxed_error(format!(
                     "expected healthy majority to remain full quorum after leader expiry, got {trust:?}"
                 )));
@@ -2215,29 +2120,28 @@ mod tests {
             world_config.cluster.member_id = "node-b".to_string();
             let world = WorldSnapshot {
                 config: crate::state::Versioned::new(Version(1), now, world_config.clone()),
-	                pg: crate::state::Versioned::new(
-	                    Version(1),
-	                    now,
-	                    PgInfoState::Replica {
-	                        common: PgInfoCommon {
-	                            worker: WorkerStatus::Running,
-	                            sql: SqlStatus::Healthy,
-	                            readiness: Readiness::Ready,
-	                            timeline: Some(crate::state::TimelineId(1)),
-	                            pg_config: PgConfig {
-	                                port: None,
-	                                hot_standby: None,
-	                                primary_conninfo: None,
-	                                primary_slot_name: None,
-	                                extra: BTreeMap::new(),
-	                            },
-	                            last_refresh_at: Some(now),
-	                        },
-	                        replay_lsn: crate::state::WalLsn(15),
-	                        follow_lsn: None,
-	                        upstream: None,
-	                    },
-	                ),
+                pg: crate::state::Versioned::new(
+                    Version(1),
+                    now,
+                    PgInfoState::Primary {
+                        common: PgInfoCommon {
+                            worker: WorkerStatus::Running,
+                            sql: SqlStatus::Healthy,
+                            readiness: Readiness::Ready,
+                            timeline: None,
+                            pg_config: PgConfig {
+                                port: None,
+                                hot_standby: None,
+                                primary_conninfo: None,
+                                primary_slot_name: None,
+                                extra: BTreeMap::new(),
+                            },
+                            last_refresh_at: Some(now),
+                        },
+                        wal_lsn: crate::state::WalLsn(10),
+                        slots: Vec::new(),
+                    },
+                ),
                 dcs: crate::state::Versioned::new(
                     Version(1),
                     now,
@@ -2261,23 +2165,23 @@ mod tests {
             let decision = decide(DecideInput {
                 current: HaState {
                     worker: WorkerStatus::Running,
-                    cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
-                    desired_state: DesiredNodeState::Quiescent {
-                        reason: QuiescentReason::WaitingForAuthoritativeLeader,
-                    },
-                    leadership_transfer: LeadershipTransferState::None,
+                    phase: HaPhase::WaitingDcsTrusted,
                     tick: 3,
+                    decision: HaDecision::WaitForDcsTrust,
                 },
                 world,
             });
 
-            if !matches!(
-                decision.next.desired_state,
-                DesiredNodeState::Primary { .. }
-            ) {
+            if decision.next.phase != HaPhase::CandidateLeader {
                 return Err(boxed_error(format!(
-                    "expected lease-expiry chain to advance into a primary acquisition plan, got {:?}",
-                    decision.next.desired_state
+                    "expected lease-expiry chain to advance into candidate leader, got {:?}",
+                    decision.next.phase
+                )));
+            }
+            if decision.outcome.decision != HaDecision::AttemptLeadership {
+                return Err(boxed_error(format!(
+                    "expected lease-expiry chain to attempt leadership, got {:?}",
+                    decision.outcome.decision
                 )));
             }
 
