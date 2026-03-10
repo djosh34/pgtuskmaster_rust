@@ -96,57 +96,17 @@ This task must make the deletion boundary fully unambiguous before any more gree
 
 ## Detailed implementation plan
 
-### Phase 0: Rewrite the deletion boundary so it is explicit
-- [ ] Update this task text and any directly adjacent story wording so the repo no longer says task 02 must preserve the legacy HA/E2E harness.
-- [ ] Make it explicit that the old HA/E2E surface is being removed because it is actively harming the repo, not because it has been perfectly feature-for-feature replaced already.
-- [ ] Make it explicit that all unit tests stay, most non-HA integration tests stay, and only the HA/E2E part is being aggressively removed.
-- [ ] Make it explicit that keep/delete decisions are made test-by-test and helper-by-helper, not by preserving or deleting whole files out of convenience.
+### Phase 1: Read Own analysis and delete what should be deleted
 
-### Phase 1: Delete the legacy HA/E2E integration tests in `tests/`
-- [ ] Delete `tests/ha_multi_node_failover.rs`.
-- [ ] Delete `tests/ha_partition_isolation.rs`.
-- [ ] Delete `tests/ha/support/multi_node.rs`.
-- [ ] Delete `tests/ha/support/partition.rs`.
-- [ ] Delete `tests/ha/support/observer.rs`.
-- [ ] Delete `tests/policy_e2e_api_only.rs`.
-- [ ] Remove the now-empty `tests/ha/` directory if it becomes empty.
-- [ ] Inventory every remaining integration test in `tests/` with the rule “remove HA/E2E, keep non-HA unless specifically unjustified”.
-- [ ] Delete any remaining `tests/*.rs` file that has no keeper tests left after the per-test review.
-- [ ] If a remaining file mixes keeper tests and dead tests, delete only the dead tests and keep the file only if the surviving tests still justify it.
-
-### Phase 2: Delete the hidden legacy HA/E2E support surface in `src/test_harness/`
-- [ ] Delete the entire `src/test_harness/ha_e2e/` directory.
-- [ ] Delete `src/test_harness/net_proxy.rs`.
-- [ ] Remove `pub mod ha_e2e;`, `pub mod net_proxy;`, and any other newly dead exports or references from `src/test_harness/mod.rs` or elsewhere.
-- [ ] Review the remaining `src/test_harness/*` modules helper-by-helper with the rule “keep only what surviving tests still need”.
-- [ ] If deletion exposes additional `src/test_harness` modules that were only there for the old HA/E2E path, remove them too in this task; do not preserve dead support code.
-- [ ] Only keep helper code under `src/test_harness/*` when there is a direct surviving test caller and a clear reason to keep it.
-- [ ] If a helper file mixes keeper helpers and dead helpers, delete the dead helpers instead of preserving the whole file by default.
-- [ ] After each helper cleanup, remove newly unused functions, structs, constants, imports, and linter suppressions instead of leaving dead remnants.
-
-### Phase 3: Preserve the important non-HA tests and the exact helpers they need
-- [ ] Keep unit tests in `src/**` unless they only test deleted legacy HA/E2E code.
-- [ ] Keep most non-HA integration tests in `tests/**`.
-- [ ] Treat `tests/bdd_state_watch.rs`, `tests/bdd_api_http.rs`, `tests/cli_binary.rs`, and `tests/nextest_config_contract.rs` as examples of integration-test containers that should be reviewed test-by-test rather than deleted reflexively.
-- [ ] Apply the current concrete review of `tests/**`:
-- [ ] keep the state-channel test in `tests/bdd_state_watch.rs`
-- [ ] keep only non-HA API/auth/debug/fallback tests in `tests/bdd_api_http.rs`
-- [ ] keep only generic CLI help/debug/node-config validation tests in `tests/cli_binary.rs`
-- [ ] delete all tests in `tests/ha_multi_node_failover.rs`, `tests/ha_partition_isolation.rs`, and `tests/policy_e2e_api_only.rs`
-- [ ] delete or rewrite `tests/nextest_config_contract.rs` if it still encodes the removed `ha_*` split
-- [ ] For helpers such as `pg16`, `etcd3`, `runtime_config`, `tls`, `ports`, `namespace`, `binaries`, `auth`, `provenance`, and `signals`, inspect which surviving tests still call them before deciding which parts stay.
-- [ ] Apply the current concrete review of `src/test_harness/**`:
-- [ ] delete `ha_e2e` and `net_proxy`
-- [ ] delete `auth` unless a concrete surviving caller is found during execution
-- [ ] keep and trim `runtime_config`, `tls`, `namespace`, `ports`, `binaries`, `provenance`, `pg16`, and `signals` according to the exact surviving tests that still use them
-- [ ] make an explicit keep-or-delete decision for `etcd3` based on whether its non-HA etcd-control tests are still wanted under the new boundary
-- [ ] Do not keep any test or helper merely because it once provided coverage, but also do not delete good non-HA coverage just because the PO reacted strongly to the bad HA/E2E path.
-
-### Phase 4: Remove stale references and routing
+### Phase 2: Remove stale references and routing
 - [ ] Update `.config/nextest.toml` so it no longer routes or documents deleted `tests/ha_*` binaries as the long-test boundary.
 - [ ] Update `Makefile` targets or comments that still imply the old HA binaries are the `test-long` payload.
 - [ ] Update `docs/src/how-to/run-tests.md` and any directly stale docs so they no longer describe the deleted legacy HA/E2E harness as present.
-- [ ] Update any nearby Ralph task text that still depends on the old “keep the legacy harness for later migration” assumption if that wording would now mislead the next executor.
+
+### Phase 3: Delete all still code, unused code, dead_code
+- [ ] Find and remove all #[allow(xxx)] markers for unused code etc
+- [ ] Remove any of the problematic and need for deletion code
+
 
 ### Phase 5: Verification and closeout
 - [ ] Run `rg -n "tests/ha_|tests/ha/support|policy_e2e_api_only|src/test_harness/ha_e2e|src/test_harness/net_proxy" src tests docs .config Makefile .ralph`.
