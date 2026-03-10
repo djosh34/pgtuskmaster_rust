@@ -63,6 +63,98 @@
 - The new features all run on top of the task 01 primitives, use `pgtm` for control and topology observation, and remain visibly separate from the legacy HA harness.
 - Later work is clearer because the low-hanging features are harvested now and every scenario that needs new infrastructure is explicitly left for a follow-up task instead of being smuggled into this one.
 
+**Scenario contracts:** Every feature in this task must ship with one concrete scenario whose behavior is already fixed here. The executor must not invent a different story.
+
+1. `replica_outage_keeps_primary_stable`
+- Start `three_node_plain` and wait for exactly one stable primary.
+- Record the primary member id as `initial_primary`.
+- Choose one non-primary node as `stopped_replica`.
+- Create one proof table for this feature and insert proof row `1:before-replica-outage` through `initial_primary`.
+- Verify that all three nodes show row `1:before-replica-outage`.
+- Kill the `stopped_replica` container.
+- Prove `pgtm primary` still resolves to `initial_primary`.
+- Prove there is still exactly one primary and the remaining online replica is still non-primary.
+- Insert proof row `2:during-replica-outage` through `initial_primary`.
+- Restart `stopped_replica`.
+- Wait until `stopped_replica` is visible again as a replica, not a primary.
+- Verify all three nodes converge on exactly the rows `1:before-replica-outage`, `2:during-replica-outage`.
+
+2. `two_node_outage_one_return_restores_quorum`
+- Start `three_node_plain` and wait for exactly one stable primary.
+- Record the stable primary as `initial_primary`.
+- Choose the two other nodes as `stopped_node_a` and `stopped_node_b`.
+- Create one proof table and insert proof row `1:before-two-node-outage` through `initial_primary`.
+- Verify that all three nodes show row `1:before-two-node-outage`.
+- Kill `stopped_node_a` and `stopped_node_b`.
+- Prove the lone survivor does not have an operator-visible primary outcome anymore: no single primary is available and no step treats the lone survivor as writable primary.
+- Restart only `stopped_node_a`.
+- Wait until exactly one primary exists again across the two online nodes.
+- Insert proof row `2:after-quorum-restore-before-full-heal` through the restored primary.
+- Prove the cluster is degraded but operational before `stopped_node_b` returns.
+- Restart `stopped_node_b`.
+- Wait until `stopped_node_b` rejoins as a replica.
+- Verify all three nodes converge on exactly the rows `1:before-two-node-outage`, `2:after-quorum-restore-before-full-heal`.
+
+3. `full_cluster_outage_restore_quorum_then_converge`
+- Start `three_node_plain` and wait for exactly one stable primary.
+- Create one proof table and insert proof row `1:before-full-cluster-outage`.
+- Verify all three nodes show row `1:before-full-cluster-outage`.
+- Kill all three node containers.
+- Start exactly two fixed nodes first, keeping the third node stopped for the pre-heal window.
+- Wait until the two-node subset restores exactly one primary.
+- Insert proof row `2:after-two-node-restore-before-final-node`.
+- Prove the third node is still offline during that write.
+- Start the final node.
+- Wait until the final node rejoins as a replica and does not disturb the elected primary.
+- Verify all three nodes converge on exactly the rows `1:before-full-cluster-outage`, `2:after-two-node-restore-before-final-node`.
+
+4. `replica_flap_keeps_primary_stable`
+- Start `three_node_plain` and wait for exactly one stable primary.
+- Record `initial_primary`.
+- Choose one non-primary node as `flapping_replica`.
+- Create one proof table and insert proof row `1:before-flap`.
+- Verify all three nodes show row `1:before-flap`.
+- Perform three bounded flap cycles on `flapping_replica`.
+- In each cycle: kill `flapping_replica`, prove `initial_primary` is still the only primary, insert one new proof row through `initial_primary`, restart `flapping_replica`, wait for it to return as replica.
+- Use distinct proof rows for each cycle:
+- `2:flap-cycle-1`
+- `3:flap-cycle-2`
+- `4:flap-cycle-3`
+- After the final restart, verify `initial_primary` never changed.
+- Verify all three nodes converge on exactly the rows `1:before-flap`, `2:flap-cycle-1`, `3:flap-cycle-2`, `4:flap-cycle-3`.
+
+5. `planned_switchover_changes_primary_cleanly`
+- Start `three_node_plain` and wait for exactly one stable primary.
+- Record `initial_primary`.
+- Record the initial replica set from `pgtm replicas`.
+- Create one proof table and insert proof row `1:before-planned-switchover`.
+- Verify all three nodes show row `1:before-planned-switchover`.
+- Run `pgtm switchover request`.
+- Wait until exactly one different node becomes primary.
+- Record that node as `new_primary`.
+- Prove `new_primary != initial_primary`.
+- Prove `initial_primary` stays online and becomes a replica, not a stopped node.
+- Prove `pgtm primary` resolves to `new_primary`.
+- Prove `pgtm replicas` now lists exactly the two non-primary nodes, including `initial_primary`.
+- Insert proof row `2:after-planned-switchover` through `new_primary`.
+- Verify all three nodes converge on exactly the rows `1:before-planned-switchover`, `2:after-planned-switchover`.
+
+6. `targeted_switchover_promotes_requested_replica`
+- Start `three_node_plain` and wait for exactly one stable primary.
+- Record `initial_primary`.
+- Sort the two replica member ids deterministically.
+- Choose the first as `requested_replica` and the second as `alternate_replica`.
+- Create one proof table and insert proof row `1:before-targeted-switchover`.
+- Verify all three nodes show row `1:before-targeted-switchover`.
+- Run `pgtm switchover request --switchover-to <requested_replica>`.
+- Wait until exactly one primary exists and prove it is `requested_replica`.
+- Prove `alternate_replica` never becomes primary during the targeted switchover window.
+- Prove `initial_primary` demotes to replica and remains online.
+- Prove `pgtm primary` resolves to `requested_replica`.
+- Prove `pgtm replicas` lists exactly `initial_primary` and `alternate_replica`.
+- Insert proof row `2:after-targeted-switchover` through `requested_replica`.
+- Verify all three nodes converge on exactly the rows `1:before-targeted-switchover`, `2:after-targeted-switchover`.
+
 </description>
 
 <acceptance_criteria>
@@ -73,6 +165,7 @@
 - [ ] `cucumber_tests/ha/features/replica_flap_keeps_primary_stable/replica_flap_keeps_primary_stable.feature` and its tiny wrapper `.rs` file exist, with exactly one scenario proving that repeated kill/start cycles of a replica do not change the primary and do not interrupt proof writes on the stable primary.
 - [ ] `cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.feature` and its tiny wrapper `.rs` file exist, with exactly one scenario proving that a planned `pgtm switchover request` changes leadership to a different node, leaves exactly one primary, demotes the old primary to replica, and updates `pgtm primary` / `pgtm replicas` output to the new topology.
 - [ ] `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.feature` and its tiny wrapper `.rs` file exist, with exactly one scenario proving that `pgtm switchover request --switchover-to <member>` promotes the requested replica, does not promote the alternate healthy replica, leaves exactly one primary, and preserves proof-row convergence.
+- [ ] Each of the six features implements the exact scenario contract written in this task, including the specified action order, topology assertions, and proof-row payloads; the executor does not silently substitute a different story.
 - [ ] `Cargo.toml` registers one explicit `[[test]]` target for each new feature wrapper outside `tests/`, following the tiny-wrapper pattern established by task 01.
 - [ ] Any runner edits under `cucumber_tests/ha/support/...` are documented up front before implementation starts, and the documented edit list stays limited to small greenfield-only plumbing: generic node kill/start helpers, zero-primary and same-primary polling via `pgtm`, reusable proof-row SQL helpers, `pgtm` primary/replicas topology assertions, `pgtm` switchover request helpers, and timeline/event recording. No new given, no new Compose file, no partition proxy, no lag/fault injector, no broken-node wrapper path, and no legacy harness import is introduced.
 - [ ] `cucumber_tests/ha/features/primary_crash_rejoin/` is not duplicated or renamed as part of this task; this task extends the suite beyond the first feature instead of redoing it.
@@ -138,21 +231,21 @@
 - [ ] Keep all support edits greenfield-only. Do not import anything from `tests/`, `tests/ha/`, `tests/ha_*.rs`, or `src/test_harness/ha_e2e/`.
 - [ ] Do not add new infrastructure modules for partitioning, storage faults, lag control, broken startup, runtime-only restart, or custom APIs in this task.
 
-### Phase 4: Implement each low-hanging outage scenario as one feature
-- [ ] Write `replica_outage_keeps_primary_stable.feature` so the operator story is: start `three_node_plain`, identify the stable primary, kill one replica container, prove the same primary remains the only primary and accepts a proof write, restart the killed replica, and prove it catches up as a replica.
-- [ ] Implement or wire the shared step definitions for that feature using only current runner primitives and config-derived deadlines.
-- [ ] Write `two_node_outage_one_return_restores_quorum.feature` so the operator story is: start `three_node_plain`, create proof state, kill two node containers, prove the lone survivor has no primary / is not writable as a primary, start exactly one stopped node, prove exactly one primary appears and accepts a proof write before the third node returns, then start the third node and prove final convergence.
-- [ ] Implement or wire the shared step definitions for that feature using only current runner primitives and config-derived deadlines.
-- [ ] Write `full_cluster_outage_restore_quorum_then_converge.feature` so the operator story is: start `three_node_plain`, create proof state, kill all node containers, start exactly two nodes, prove exactly one primary is restored and accepts a new proof write before the final node returns, then start the last node and prove it converges as a replica while the elected primary remains unchanged.
-- [ ] Implement or wire the shared step definitions for that feature using only current runner primitives and config-derived deadlines.
-- [ ] Write `replica_flap_keeps_primary_stable.feature` so the operator story is: start `three_node_plain`, record the stable primary, repeatedly kill and restart one replica container for a bounded number of cycles, perform proof writes during the flap window, and prove the primary identity never changes and the restarted replica eventually reconverges.
-- [ ] Implement or wire the shared step definitions for that feature using only current runner primitives and config-derived deadlines.
+### Phase 4: Implement each outage scenario exactly as specified
+- [ ] Write `replica_outage_keeps_primary_stable.feature` with the exact row ids, row payloads, outage order, and final convergence checks defined in the scenario contract above.
+- [ ] Implement or wire the shared step definitions for `replica_outage_keeps_primary_stable` using only current runner primitives and config-derived deadlines.
+- [ ] Write `two_node_outage_one_return_restores_quorum.feature` with the exact row ids, outage order, pre-heal assertions, and final convergence checks defined in the scenario contract above.
+- [ ] Implement or wire the shared step definitions for `two_node_outage_one_return_restores_quorum` using only current runner primitives and config-derived deadlines.
+- [ ] Write `full_cluster_outage_restore_quorum_then_converge.feature` with the exact start/stop order, pre-heal two-node restore assertions, and final convergence checks defined in the scenario contract above.
+- [ ] Implement or wire the shared step definitions for `full_cluster_outage_restore_quorum_then_converge` using only current runner primitives and config-derived deadlines.
+- [ ] Write `replica_flap_keeps_primary_stable.feature` with exactly three flap cycles and the exact proof-row payloads defined in the scenario contract above.
+- [ ] Implement or wire the shared step definitions for `replica_flap_keeps_primary_stable` using only current runner primitives and config-derived deadlines.
 
-### Phase 5: Implement the new switchover scenarios as separate features
-- [ ] Write `planned_switchover_changes_primary_cleanly.feature` so the operator story is: start `three_node_plain`, record the stable primary, create proof state, run `pgtm switchover request`, prove a different node becomes the only primary, prove the old primary remains online and demotes to replica, prove `pgtm primary` and `pgtm replicas` show the new topology, and prove post-switchover writes replicate to every node.
-- [ ] Implement or wire the shared step definitions for the normal switchover feature using only current runner primitives and config-derived deadlines.
-- [ ] Write `targeted_switchover_promotes_requested_replica.feature` so the operator story is: start `three_node_plain`, record the stable primary and the two replicas, select one replica as the requested successor, create proof state, run `pgtm switchover request --switchover-to <requested-replica>`, prove the requested replica becomes the only primary, prove the alternate healthy replica does not become primary, prove the old primary demotes to replica, and prove post-switchover writes replicate to every node.
-- [ ] Implement or wire the shared step definitions for the targeted switchover feature using only current runner primitives and config-derived deadlines.
+### Phase 5: Implement the two switchover scenarios exactly as specified
+- [ ] Write `planned_switchover_changes_primary_cleanly.feature` with the exact pre-switchover topology capture, `pgtm switchover request` action, post-switchover `pgtm primary` / `pgtm replicas` assertions, and proof-row checks defined in the scenario contract above.
+- [ ] Implement or wire the shared step definitions for `planned_switchover_changes_primary_cleanly` using only current runner primitives and config-derived deadlines.
+- [ ] Write `targeted_switchover_promotes_requested_replica.feature` with deterministic replica selection, `pgtm switchover request --switchover-to <requested_replica>`, the “alternate replica never becomes primary” assertion, and the proof-row checks defined in the scenario contract above.
+- [ ] Implement or wire the shared step definitions for `targeted_switchover_promotes_requested_replica` using only current runner primitives and config-derived deadlines.
 - [ ] Keep the planned and targeted switchover stories as separate features. Do not collapse them into one scenario.
 
 ### Phase 6: Enforce the greenfield boundary and document the feature set

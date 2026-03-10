@@ -13,7 +13,7 @@
 - no second legacy black-box harness surviving out of inertia
 
 **Scope:**
-- Audit and remove duplicated legacy black-box scenario coverage after tasks 01, 02, and 04 land.
+- After tasks 01, 02, and 04 land, aggressively delete the old black-box test infrastructure and any code that becomes unused after that deletion.
 - Remove or drastically shrink the legacy HA E2E harness rooted in:
 - `tests/ha/support/`
 - `tests/ha_multi_node_failover.rs`
@@ -23,10 +23,7 @@
 - Remove old “policy around the legacy harness” files once the harness itself is gone, especially `tests/policy_e2e_api_only.rs`.
 - Audit mixed black-box test files such as `tests/bdd_api_http.rs` and `tests/cli_binary.rs` and remove any scenarios that have been migrated into the greenfield Docker-based acceptance path. Retain only true unit/contract-scale tests that still need local stubs or non-Docker synthetic setup.
 - Update `Cargo.toml`, `Makefile`, `.config/nextest.toml`, `tests/nextest_config_contract.rs`, and docs so the greenfield suite is the documented black-box path and stale legacy references are removed.
-- This task must explicitly decide the fate of every old black-box scenario discovered during research. A scenario must end this task in exactly one of these states:
-- migrated to greenfield and legacy copy removed
-- explicitly retained as non-migratable deep-control coverage, with written justification
-- split into a named follow-up if it truly still lacks the needed greenfield support
+- Remove dead helper code that exists only because of the deleted legacy harness. Do not leave stale support code, stale policies, stale wiring, or stale test-only helpers behind.
 
 **Context from research:**
 - The legacy black-box HA surface currently lives in:
@@ -86,24 +83,7 @@
 
 ## Detailed implementation plan
 
-### Phase 1: Build the migration and deletion matrix
-- [ ] Read tasks 01, 02, and 04 in `story-greenfield-cucumber-ha-harness/` and build an explicit matrix of old scenario -> greenfield replacement -> legacy deletion target.
-- [ ] The matrix must enumerate at least the old black-box scenarios in `tests/ha_multi_node_failover.rs` and `tests/ha_partition_isolation.rs`, including:
-- [ ] unassisted failover continuity
-- [ ] planned switchover
-- [ ] targeted switchover accepted path
-- [ ] targeted switchover rejected path
-- [ ] workload switchover / workload failover
-- [ ] custom postgres roles
-- [ ] clone failure recovery
-- [ ] rewind fallback recovery
-- [ ] repeated leadership changes
-- [ ] degraded / lagging replica promotion choice
-- [ ] no-quorum fail-safe and fencing
-- [ ] partition and mixed-fault stories
-- [ ] For each old scenario, decide whether task 01/02/04 migrates it, whether it is intentionally retained as deep-control coverage, or whether it needs an explicit follow-up. Do not delete before that mapping is written down.
-
-### Phase 2: Remove the legacy HA black-box harness
+### Phase 1: Remove the legacy HA black-box harness aggressively
 - [ ] Delete legacy wrappers in `tests/ha_multi_node_failover.rs` and `tests/ha_partition_isolation.rs` once their migrated replacements exist in greenfield cucumber.
 - [ ] Delete `tests/ha/support/multi_node.rs`, `tests/ha/support/observer.rs`, and `tests/ha/support/partition.rs` once no retained test depends on them.
 - [ ] Delete obsolete harness modules in `src/test_harness/ha_e2e/`:
@@ -116,11 +96,16 @@
 - [ ] Audit `src/test_harness/namespace.rs`, `src/test_harness/binaries.rs`, and adjacent helpers and remove or simplify any code that only existed for the deleted legacy HA harness.
 - [ ] Audit `src/test_harness/net_proxy.rs` and delete it if partition scenarios have fully moved to the greenfield Docker network-fault layer.
 
-### Phase 3: Clean mixed black-box files instead of leaving hidden duplicates
+### Phase 2: Remove migrated black-box leftovers from mixed test files
 - [ ] Audit `tests/policy_e2e_api_only.rs` and delete it once the old harness files it policed are gone.
 - [ ] Audit `tests/bdd_api_http.rs` and remove any scenario that now has a greenfield Docker-based replacement. If some tests remain because they are true worker/API contract tests with local stubs, keep only those and update comments/file naming so that boundary is obvious.
 - [ ] Audit `tests/cli_binary.rs` and remove any black-box story that is now better covered through the greenfield runtime-based operator path. Keep only CLI contract tests that still need synthetic HTTP fixtures or config parsing boundaries and cannot be replaced cleanly by the Docker suite.
 - [ ] If `tests/cli_binary.rs` or `tests/bdd_api_http.rs` remain mixed after deletion, split the retained contract-only cases into clearer files so the repo no longer signals “half-BDD” ambiguity.
+
+### Phase 3: Delete code that becomes unused after the harness removal
+- [ ] Run unused-code and stale-reference discovery after the file deletions and remove any helper, module export, or test-only support code that no longer has a justified caller.
+- [ ] Pay special attention to dead code that only existed for the old harness in `src/test_harness/`, `tests/`, `Cargo.toml`, `Makefile`, and `.config/nextest.toml`.
+- [ ] Remove stale comments, task notes, and docs that talk about the deleted legacy harness as if it still exists.
 
 ### Phase 4: Update tooling, docs, and stale references
 - [ ] Update `Cargo.toml` so deleted legacy test targets are gone and greenfield cucumber targets remain the primary black-box suite.
@@ -132,6 +117,7 @@
 - [ ] Run repo-wide stale-pattern verification:
 - [ ] `rg -n "tests/ha/support|tests/ha_multi_node_failover|tests/ha_partition_isolation|src/test_harness/ha_e2e|tests/policy_e2e_api_only" .`
 - [ ] `rg -n "ha_e2e::|net_proxy::" src tests docs`
+- [ ] `cargo check --tests` or the repo-equivalent compile gate must not report unused references caused by the deleted legacy harness
 - [ ] Confirm every surviving hit is either an intentional retained deep-control boundary or historical task text under `.ralph/tasks/`.
 - [ ] Run targeted execution of the greenfield replacements so cleanup is backed by real migrated coverage rather than assumption.
 - [ ] Run `make check`
