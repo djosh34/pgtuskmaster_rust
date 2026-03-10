@@ -1,11 +1,23 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 13:46:50 CET 2026
+Generated: Tue Mar 10 01:58:32 PM CET 2026
 
 # Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
 
 ```
 ## Task: Build Independent Cucumber Docker HA Harness And Primary Crash Rejoin Feature <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-cucumber-features-on-greenfield-runner.md`
+
+```
+## Task: Add Low-Hanging HA Quorum Cucumber Features On The Greenfield Runner <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 

@@ -8,6 +8,7 @@ description: Create a task when the AGENT (Claude) needs to create one. Agents s
 Create an execution-ready Ralph task that acts as the full contract for later work.
 
 The task must not be a vague summary. It must preserve the original user goal, every user request that was agreed to, every suggestion from the conversation that was agreed to, the important research context, and a concrete implementation plan with checkboxes. The person executing the task should not need the original conversation to understand what "done" means.
+You should make it verbose!
 
 If you cannot yet write a zero-ambiguity plan, do more research first. Do not create a wishy-washy task.
 
