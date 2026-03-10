@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 04:46:31 PM CET 2026
+Generated: Tue Mar 10 04:53:27 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-greenfield-ha-proof-visibility-stalls-on-restarted-replica.md`
 
@@ -22,18 +22,6 @@ Generated: Tue Mar 10 04:46:31 PM CET 2026
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
-```
-
-==============
-
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
-
-```
-## Task: Build Independent Cucumber Docker HA Harness And Primary Crash Rejoin Feature <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
 ```
 
 ==============
@@ -66,78 +54,6 @@ Generated: Tue Mar 10 04:46:31 PM CET 2026
 
 ```
 ## Task: Add Advanced Docker HA Harness Features And Migrate Remaining Black-Box Scenarios <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/03-task-add-full-1-to-2-network-partition-quorum-survival-ha-e2e.md`
-
-```
-## Task: Add Full 1 To 2 Network Partition Quorum Survival HA E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/04-task-add-primary-storage-stall-and-wal-full-failover-e2e.md`
-
-```
-## Task: Add Primary Storage Stall And WAL Full Failover E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/05-task-add-broken-returning-node-and-single-good-recovery-ha-e2e.md`
-
-```
-## Task: Add Broken Returning Node And Single Good Recovery HA E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/08-task-add-lagging-or-stale-replica-is-never-promoted-over-healthier-candidate-e2e.md`
-
-```
-## Task: Add Lagging Or Stale Replica Is Never Promoted Over Healthier Candidate E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/10-task-add-minority-old-primary-returns-with-stale-view-and-is-forced-to-rejoin-safely-e2e.md`
-
-```
-## Task: Add Minority Old Primary Returns With Stale View And Is Forced To Rejoin Safely E2E Coverage <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/11-task-add-broken-replica-rejoin-does-not-block-healthy-quorum-availability-e2e.md`
-
-```
-## Task: Add Broken Replica Rejoin Does Not Block Healthy Quorum Availability E2E Coverage <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 

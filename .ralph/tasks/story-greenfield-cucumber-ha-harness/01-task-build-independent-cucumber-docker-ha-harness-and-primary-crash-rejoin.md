@@ -1,4 +1,4 @@
-## Task: Build Independent Cucumber Docker HA Harness And Primary Crash Rejoin Feature <status>not_started</status> <passes>false</passes>
+## Task: Build Independent Cucumber Docker HA Harness And Primary Crash Rejoin Feature <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -52,27 +52,35 @@ It is explicitly not a requirement that the first HA scenario already passes aga
 </description>
 
 <acceptance_criteria>
-- [ ] `cucumber_tests/ha/` exists as a fully separate framework root and does not import or call any code from `tests/ha/`, `tests/ha_*.rs`, or `src/test_harness/ha_e2e/`
-- [ ] `Cargo.toml` registers one explicit `[[test]]` target for the first cucumber feature wrapper outside `tests/`, and the wrapper is tiny and delegates entirely to shared runner code
-- [ ] `cucumber_tests/ha/givens/three_node_plain/` exists with one static compose file, one static shared config set, one static shared secret set, and one shared `docker_files/` directory; there is no separate supervised Given in this task
-- [ ] each feature run copies the selected Given into `cucumber_tests/ha/runs/<feature>/<run-id>/source-copy/` and writes artifacts into `cucumber_tests/ha/runs/<feature>/<run-id>/artifacts/`; `cucumber_tests/ha/runs/.gitignore` keeps the run tree untracked
-- [ ] the framework starts Docker Compose with a unique project name per feature run and uses Ryuk ownership based on `com.docker.compose.project=<project>`; no rendered label file or rendered compose file is present in the shipped implementation
-- [ ] every host-side and in-container process execution path uses an explicit executable path plus argument list only; no `sh -c`, no shell parsing, and no PATH-based resolution remains in the new framework
-- [ ] the observer path uses only `pgtm` plus `psql`; the framework does not ship custom HTTP handlers, custom fake servers, or custom API protocol recreation for HA observation
-- [ ] the first feature lives in its own directory at `cucumber_tests/ha/features/primary_crash_rejoin/` and includes both `primary_crash_rejoin.feature` and a tiny `primary_crash_rejoin.rs` wrapper; the scenario expresses a killed-primary-container failover/rejoin story with config-derived waiting semantics rather than magic-number assertions
-- [ ] the first wrapper/test passes only by returning `Result` through `?`; failure paths surface as test failure without `panic!`, `unwrap`, `expect`, or shell exit-code swallowing
-- [ ] the implementation makes the separation goal explicit in code comments and/or task notes: this framework is independent by design and is intended to make the legacy HA harness deletable later
-- [ ] old harness reuse is fully rejected in code and repo-wide verification confirms the new framework files do not import legacy test harness modules accidentally
-- [ ] docs are updated with the new cucumber HA test entrypoint and layout, and stale or misleading references are corrected where relevant
-- [ ] the first feature wrapper can be executed on the new greenfield harness to a trustworthy outcome
-- [ ] the first feature run produces enough evidence to distinguish harness failure from HA behavior failure in the system under test
-- [ ] if the first feature exposes a trustworthy product or HA failure, a bug task is created under `.ralph/tasks/bugs/` and that bug contains `<blocked_by>` tags for:
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
-- [ ] `<passes>true</passes>` is set only after every acceptance-criteria item and every required implementation-plan checkbox is complete
+- [x] `cucumber_tests/ha/` exists as a fully separate framework root and does not import or call any code from `tests/ha/`, `tests/ha_*.rs`, or `src/test_harness/ha_e2e/`
+- [x] `Cargo.toml` registers one explicit `[[test]]` target for the first cucumber feature wrapper outside `tests/`, and the wrapper is tiny and delegates entirely to shared runner code
+- [x] `cucumber_tests/ha/givens/three_node_plain/` exists with one static compose file, one static shared config set, one static shared secret set, and one shared `docker_files/` directory; there is no separate supervised Given in this task
+- [x] each feature run copies the selected Given into `cucumber_tests/ha/runs/<feature>/<run-id>/source-copy/` and writes artifacts into `cucumber_tests/ha/runs/<feature>/<run-id>/artifacts/`; `cucumber_tests/ha/runs/.gitignore` keeps the run tree untracked
+- [x] the framework starts Docker Compose with a unique project name per feature run and uses Ryuk ownership based on `com.docker.compose.project=<project>`; no rendered label file or rendered compose file is present in the shipped implementation
+- [x] every host-side and in-container process execution path uses an explicit executable path plus argument list only; no `sh -c`, no shell parsing, and no PATH-based resolution remains in the new framework
+- [x] the observer path uses only `pgtm` plus `psql`; the framework does not ship custom HTTP handlers, custom fake servers, or custom API protocol recreation for HA observation
+- [x] the first feature lives in its own directory at `cucumber_tests/ha/features/primary_crash_rejoin/` and includes both `primary_crash_rejoin.feature` and a tiny `primary_crash_rejoin.rs` wrapper; the scenario expresses a killed-primary-container failover/rejoin story with config-derived waiting semantics rather than magic-number assertions
+- [x] the first wrapper/test passes only by returning `Result` through `?`; failure paths surface as test failure without `panic!`, `unwrap`, `expect`, or shell exit-code swallowing
+- [x] the implementation makes the separation goal explicit in code comments and/or task notes: this framework is independent by design and is intended to make the legacy HA harness deletable later
+- [x] old harness reuse is fully rejected in code and repo-wide verification confirms the new framework files do not import legacy test harness modules accidentally
+- [x] docs are updated with the new cucumber HA test entrypoint and layout, and stale or misleading references are corrected where relevant
+- [x] the first feature wrapper can be executed on the new greenfield harness to a trustworthy outcome
+- [x] the first feature run produces enough evidence to distinguish harness failure from HA behavior failure in the system under test
+- [x] if the first feature exposes a trustworthy product or HA failure, a bug task is created under `.ralph/tasks/bugs/` and that bug contains `<blocked_by>` tags for:
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
+- [x] `<passes>true</passes>` is set only after every acceptance-criteria item and every required implementation-plan checkbox is complete
 </acceptance_criteria>
+
+## Verification notes
+
+- Verified on March 10, 2026 that `cucumber_tests/ha/` ships an independent runner, world, Docker CLI, Ryuk, `pgtm`, `psql`, process, and timeout stack rooted entirely outside `tests/` and `src/test_harness/ha_e2e/`.
+- Verified that [Cargo.toml](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/Cargo.toml) registers the explicit `ha_primary_crash_rejoin` wrapper and that [Makefile](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/Makefile) provides stable `make test-cucumber-ha` and `make test-cucumber-ha-primary-crash-rejoin` entrypoints.
+- Verified repo-local run evidence exists under `cucumber_tests/ha/runs/primary_crash_rejoin/...` with copied `source-copy/` input material and `artifacts/` such as `compose-logs.txt`, `compose-ps.json`, `inspect-*.json`, `observer-debug-verbose.json`, and `run-metadata.json`.
+- Verified the first feature reaches a trustworthy product failure rather than a harness failure, which satisfies this task's completion rule. The resulting blocked bug tasks are `.ralph/tasks/bugs/bug-replica-bootstrap-auth-breaks-when-runtime-roles-reuse-postgres.md` and `.ralph/tasks/bugs/bug-greenfield-ha-proof-visibility-stalls-on-restarted-replica.md`.
+- Verified from the March 10, 2026 progress log that `make check`, `make test`, and `make lint` passed on the harness tree, and that `make test-cucumber-ha-primary-crash-rejoin` reaches the final product-side proof-visibility failure with preserved run artifacts.
 
 ## Detailed implementation plan
 

@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 10 04:46:31 PM CET 2026
+Generated: Tue Mar 10 04:53:27 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -200,10 +200,10 @@ An accepted targeted switchover request is not reliably honored in the HA multi-
 
 ==============
 
-# Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/01-task-fix-leader-liveness-and-majority-election-after-hard-node-loss.md`
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
 
 ```
-## Task: Fix Leader Liveness And Majority Election After Hard Node Loss <status>done</status> <passes>true</passes>
+## Task: Build Independent Cucumber Docker HA Harness And Primary Crash Rejoin Feature <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 
