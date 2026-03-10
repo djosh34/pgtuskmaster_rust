@@ -75,6 +75,8 @@ ca_cert = { path = "/etc/pgtuskmaster/tls/ca.crt" }
 
 [pgtm.postgres_client]
 ca_cert = { path = "/etc/pgtuskmaster/tls/ca.crt" }
+client_cert = { path = "/etc/pgtuskmaster/tls/observer.crt" }
+client_key = { path = "/etc/pgtuskmaster/tls/observer.key" }
 
 [debug]
 enabled = true

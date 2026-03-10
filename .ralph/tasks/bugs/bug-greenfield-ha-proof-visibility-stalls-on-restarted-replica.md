@@ -11,6 +11,7 @@ Detection context on March 10, 2026:
 - `make test-cucumber-ha-primary-crash-rejoin` reached the final proof-visibility step after the runtime-side role provisioning fixes
 - one run failed fast with `ERROR: relation "ha_cucumber_proof" does not exist`, which shows the restarted node can report as a replica before the post-failover write is visible there
 - after changing the harness to poll instead of checking once, a later run stalled for minutes instead of converging, which points to an unbounded operator-connection/readiness problem rather than a one-shot timing mistake
+- after removing the harness-side observer superuser password dependency, a later March 10, 2026 run still failed at the same final proof-read step while node logs repeatedly showed `fe_sendauth: no password supplied` on replica follow-upstream connections, which is additional evidence that the remaining failure is product-side replica recovery/auth behavior rather than a harness observer bug
 
 The executor should explore the codebase first, then fix the underlying issue rather than adding a flaky harness sleep.
 

@@ -11,24 +11,18 @@ const PSQL_BIN: &str = "/usr/lib/postgresql/16/bin/psql";
 pub struct SqlObserver {
     docker: DockerCli,
     observer_container: String,
-    postgres_password: String,
 }
 
 impl SqlObserver {
-    pub fn new(
-        docker: DockerCli,
-        observer_container: String,
-        postgres_password: String,
-    ) -> Self {
+    pub fn new(docker: DockerCli, observer_container: String) -> Self {
         Self {
             docker,
             observer_container,
-            postgres_password,
         }
     }
 
     pub fn execute(&self, dsn: &str, sql: &str) -> Result<String> {
-        self.docker.exec_with_env(
+        self.docker.exec(
             self.observer_container.as_str(),
             Path::new(PSQL_BIN),
             [
@@ -44,7 +38,6 @@ impl SqlObserver {
                 sql,
             ]
             .as_slice(),
-            [("PGPASSWORD", self.postgres_password.as_str())].as_slice(),
         )
     }
 }

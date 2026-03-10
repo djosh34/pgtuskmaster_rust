@@ -116,7 +116,7 @@ The current greenfield entrypoints are:
 - `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.feature`
 - `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.rs`
 
-Right now `make test-cucumber-ha` is a stable suite alias for the single shipped greenfield feature target, `make test-cucumber-ha-primary-crash-rejoin`.
+Right now the greenfield suite contains one shipped feature, so `make test-cucumber-ha` currently runs the same single wrapper as `make test-cucumber-ha-primary-crash-rejoin`. The targets stay split intentionally: the suite target is the stable suite entrypoint, while the feature target stays pinned to the specific scenario wrapper.
 
 The greenfield harness layout is:
 

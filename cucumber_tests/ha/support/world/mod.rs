@@ -68,7 +68,6 @@ pub struct HarnessShared {
     pub docker: DockerCli,
     pub ryuk: Option<RyukGuard>,
     pub observer_container: String,
-    pub postgres_password: String,
     pub timeouts: TimeoutModel,
     cleaned_up: bool,
 }
@@ -105,9 +104,6 @@ impl HarnessShared {
         let timeouts = TimeoutModel::from_runtime_config(
             source_copy_dir.join("configs/node-a/runtime.toml").as_path(),
         )?;
-        let postgres_password = read_secret(
-            source_copy_dir.join("secrets/postgres-superuser-password").as_path(),
-        )?;
         let ryuk = RyukGuard::start(docker.clone(), compose_project.as_str())?;
         docker.compose_up_services(compose_file.as_path(), compose_project.as_str(), &["etcd"])?;
         docker.compose_up_services(
@@ -133,7 +129,6 @@ impl HarnessShared {
             docker,
             ryuk: Some(ryuk),
             observer_container,
-            postgres_password,
             timeouts,
             cleaned_up: false,
         };
@@ -154,11 +149,7 @@ impl HarnessShared {
     }
 
     pub fn sql(&self) -> SqlObserver {
-        SqlObserver::new(
-            self.docker.clone(),
-            self.observer_container.clone(),
-            self.postgres_password.clone(),
-        )
+        SqlObserver::new(self.docker.clone(), self.observer_container.clone())
     }
 
     pub fn service_container_id(&self, service: &str) -> Result<String> {
@@ -399,21 +390,6 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
             path: to.to_path_buf(),
             source,
         })
-}
-
-fn read_secret(path: &Path) -> Result<String> {
-    let content = fs::read_to_string(path).map_err(|source| HarnessError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let secret = content.trim().to_string();
-    if secret.is_empty() {
-        return Err(HarnessError::message(format!(
-            "secret file `{}` was empty",
-            path.display()
-        )));
-    }
-    Ok(secret)
 }
 
 fn write_text_file(path: &Path, content: &str) -> Result<()> {

@@ -10,7 +10,7 @@ socket_dir = "/var/lib/pgtuskmaster/socket"
 log_file = "/var/log/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full" }
-tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/node-a.crt" }, private_key = { path = "/etc/pgtuskmaster/tls/node-a.key" } } }
+tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/node-a.crt" }, private_key = { path = "/etc/pgtuskmaster/tls/node-a.key" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/ca.crt" }, require_client_cert = false } }
 pg_hba = { source = { path = "/etc/pgtuskmaster/pg_hba.conf" } }
 pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
 

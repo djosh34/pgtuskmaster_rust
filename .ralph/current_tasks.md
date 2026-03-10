@@ -1,6 +1,18 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 03:46:17 PM CET 2026
+Generated: Tue Mar 10 04:09:20 PM CET 2026
+
+# Task `.ralph/tasks/bugs/bug-greenfield-ha-node-image-relies-on-pgsslrootcert-env-hack.md`
+
+```
+## Bug: Greenfield HA Node Image Relies On PGSSLROOTCERT Env Hack <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/bug-greenfield-ha-proof-visibility-stalls-on-restarted-replica.md`
 

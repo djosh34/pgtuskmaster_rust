@@ -172,13 +172,18 @@ test-long: guard-makeflags ensure-nextest ensure-timeout ensure-docker
 	"$(GATE_STEP)" --gate test-long --step test_long.docker_smoke_cluster --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(DOCKER_SMOKE_CLUSTER_TIMEOUT_SECS)" --kill-after-secs "$(DOCKER_SMOKE_CLUSTER_TIMEOUT_KILL_AFTER_SECS)" -- \
 		./tools/docker/smoke-cluster.sh
 
-run-cucumber-ha: guard-makeflags ensure-nextest ensure-docker
+CUCUMBER_HA_SUITE_TESTS := \
+	--test ha_primary_crash_rejoin
+
+run-cucumber-ha: test-cucumber-ha
+
+test-cucumber-ha: guard-makeflags ensure-nextest ensure-docker
+	@set -euo pipefail; \
+	cargo nextest run --workspace --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" $(CUCUMBER_HA_SUITE_TESTS)
+
+test-cucumber-ha-primary-crash-rejoin: guard-makeflags ensure-nextest ensure-docker
 	@set -euo pipefail; \
 	cargo nextest run --workspace --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" --test ha_primary_crash_rejoin
-
-test-cucumber-ha-primary-crash-rejoin: run-cucumber-ha
-
-test-cucumber-ha: run-cucumber-ha
 
 docs-lint: guard-makeflags ensure-timeout ensure-docs-node-deps
 	@echo "gate evidence: $(GATE_EVIDENCE_DIR)"
