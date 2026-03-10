@@ -2,6 +2,7 @@ nextest-version = { recommended = "0.9.100" }
 
 [profile.default]
 fail-fast = false
+# Default runs keep the greenfield HA binaries out of the normal gate.
 default-filter = '''
 not (kind(test) & binary(ha_*))
 '''
@@ -14,8 +15,8 @@ store-failure-output = true
 
 [profile.ultra-long]
 fail-fast = false
-# The long-running HA binaries live behind `make test-long` because they take longer,
-# including the explicit greenfield cucumber targets under `cucumber_tests/ha`.
+# The long-running greenfield HA binaries live behind `make test-long` because they
+# take longer. Keep routing them by durable binary name rather than exact test lists.
 # These binaries are expected to be parallel-safe. If a scenario only passes in serial,
 # that scenario is buggy and must be fixed instead of protected by serialization.
 default-filter = '''

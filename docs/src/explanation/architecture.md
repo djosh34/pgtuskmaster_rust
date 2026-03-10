@@ -165,7 +165,7 @@ The controller surface in [`src/api/controller.rs`](/home/joshazimullah.linux/wo
 
 The same controller also accepts a generic switchover request and writes it into the DCS namespace. That means operator intent enters through the API, but the HA loop still decides what to do with that request and which member becomes the new primary.
 
-The HA observer in [`tests/ha/support/observer.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tests/ha/support/observer.rs) gives another useful architectural clue: the project explicitly measures whether more than one primary is observed during a sample window. Split-brain avoidance is not implicit; it is a tested operational invariant.
+The current HA surface still treats split-brain avoidance as a first-class invariant. That shows up in the cluster state exposed by the controller, in the HA decision logic, and in the surviving greenfield HA end-to-end coverage under `cucumber_tests/ha/`, rather than through the deleted legacy observer helper.
 
 ## Summary
 

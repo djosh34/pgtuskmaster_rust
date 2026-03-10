@@ -3,10 +3,10 @@ use std::fs;
 const NEXTTEST_CONFIG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/.config/nextest.toml");
 const PARALLEL_POLICY_COMMENT_START: &str = "If a scenario only passes in serial,";
 const PARALLEL_POLICY_COMMENT_END: &str = "must be fixed instead of protected by serialization.";
-const HA_BINARY_LAYOUT_RULE: &str = "binary(ha_*)";
+const GREENFIELD_HA_BINARY_RULE: &str = "binary(ha_*)";
 
 #[test]
-fn nextest_profiles_use_ha_binary_split_without_serial_cap() {
+fn nextest_profiles_route_greenfield_ha_binaries_without_serial_cap() {
     let config_text_result = fs::read_to_string(NEXTTEST_CONFIG_PATH);
     assert!(
         config_text_result.is_ok(),
@@ -30,14 +30,14 @@ fn nextest_profiles_use_ha_binary_split_without_serial_cap() {
     let ultra_long_threads = profile_test_threads(&parsed, "ultra-long");
 
     assert!(
-        default_filter.contains(HA_BINARY_LAYOUT_RULE),
-        "default profile must exclude long HA binaries via {}: {default_filter}",
-        HA_BINARY_LAYOUT_RULE
+        default_filter.contains(GREENFIELD_HA_BINARY_RULE),
+        "default profile must exclude long greenfield HA binaries via {}: {default_filter}",
+        GREENFIELD_HA_BINARY_RULE
     );
     assert!(
-        ultra_long_filter.contains(HA_BINARY_LAYOUT_RULE),
-        "ultra-long profile must select long HA binaries via {}: {ultra_long_filter}",
-        HA_BINARY_LAYOUT_RULE
+        ultra_long_filter.contains(GREENFIELD_HA_BINARY_RULE),
+        "ultra-long profile must select long greenfield HA binaries via {}: {ultra_long_filter}",
+        GREENFIELD_HA_BINARY_RULE
     );
     assert!(
         !default_filter.contains("test(="),
@@ -66,9 +66,9 @@ fn nextest_config_keeps_parallel_policy_comment_visible() {
     let config_text = config_text_result.unwrap_or_default();
 
     assert!(
-        config_text.contains(HA_BINARY_LAYOUT_RULE),
-        "nextest config must document the durable HA binary layout rule {}",
-        HA_BINARY_LAYOUT_RULE
+        config_text.contains(GREENFIELD_HA_BINARY_RULE),
+        "nextest config must document the durable greenfield HA binary rule {}",
+        GREENFIELD_HA_BINARY_RULE
     );
     assert!(
         config_text.contains(PARALLEL_POLICY_COMMENT_START),

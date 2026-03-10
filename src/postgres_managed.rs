@@ -313,11 +313,13 @@ fn render_libpq_passfile_entry(
     conninfo: &crate::pginfo::state::PgConnInfo,
     password: &str,
 ) -> Result<String, ManagedPostgresError> {
+    const STREAMING_REPLICATION_DATABASE: &str = "replication";
+
     if [
         conninfo.host.as_str(),
-        conninfo.dbname.as_str(),
         conninfo.user.as_str(),
         password,
+        STREAMING_REPLICATION_DATABASE,
     ]
     .iter()
     .any(|value| value.chars().any(|ch| ch == '\n' || ch == '\r'))
@@ -331,7 +333,7 @@ fn render_libpq_passfile_entry(
         "{}:{}:{}:{}:{}\n",
         escape_libpq_passfile_field(conninfo.host.as_str()),
         conninfo.port,
-        escape_libpq_passfile_field(conninfo.dbname.as_str()),
+        STREAMING_REPLICATION_DATABASE,
         escape_libpq_passfile_field(conninfo.user.as_str()),
         escape_libpq_passfile_field(password),
     ))
@@ -826,7 +828,7 @@ mod tests {
                 passfile_path.display()
             )
         })?;
-        if contents != "leader.internal:5432:postgres:replicator:secret-password\n" {
+        if contents != "leader.internal:5432:replication:replicator:secret-password\n" {
             return Err(format!(
                 "unexpected standby passfile contents at {}: {contents:?}",
                 passfile_path.display()
@@ -1238,9 +1240,9 @@ mod tests {
                         standby_passfile.display()
                     ))
                 })?;
-                if !passfile_contents.contains("replicator:secret-password") {
+                if !passfile_contents.contains(":replication:replicator:secret-password") {
                     return Err(real_test_error(format!(
-                        "expected standby passfile to contain replicator credentials, got {:?}",
+                        "expected standby passfile to contain replication-scope replicator credentials, got {:?}",
                         passfile_contents
                     )));
                 }

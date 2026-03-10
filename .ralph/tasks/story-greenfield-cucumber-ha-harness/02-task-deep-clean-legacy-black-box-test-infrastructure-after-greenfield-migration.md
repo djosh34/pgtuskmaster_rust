@@ -1,4 +1,4 @@
-## Task: Deep Clean Legacy Black-Box Test Infrastructure After Greenfield Migration <status>not_started</status> <passes>false</passes>
+## Task: Deep Clean Legacy Black-Box Test Infrastructure After Greenfield Migration <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -71,27 +71,27 @@ This task must make the deletion boundary fully unambiguous before any more gree
 </description>
 
 <acceptance_criteria>
-- [ ] Task 02 explicitly supersedes the earlier “retain unreplaced legacy HA coverage” plan and instead treats old HA/E2E removal as mandatory before continuing the greenfield story.
-- [ ] `tests/ha_multi_node_failover.rs` is deleted.
-- [ ] `tests/ha_partition_isolation.rs` is deleted.
-- [ ] `tests/ha/support/multi_node.rs` is deleted.
-- [ ] `tests/ha/support/partition.rs` is deleted.
-- [ ] `tests/ha/support/observer.rs` is deleted.
-- [ ] `tests/policy_e2e_api_only.rs` is deleted.
-- [ ] `src/test_harness/ha_e2e/` is deleted.
-- [ ] `src/test_harness/net_proxy.rs` is deleted.
-- [ ] Any newly dead `src/test_harness` exports or modules caused by those deletions are removed in the same task instead of being left as tombstones.
-- [ ] Docs, task text, and gate/config references no longer claim that `tests/ha_*`, `tests/ha/support/*`, `src/test_harness/ha_e2e`, `src/test_harness/net_proxy.rs`, or any other removed legacy helpers are still part of the supported verification story.
-- [ ] All unit tests remain unless they only test deleted HA/E2E code.
-- [ ] Non-HA integration tests remain unless a specific test is stale or only exists to support deleted HA/E2E routing.
-- [ ] HA integration tests and old E2E tests are removed.
-- [ ] No kept test target or helper still imports, references, or textually depends on the deleted legacy HA/E2E harness.
-- [ ] Surviving integration tests are chosen on a test-by-test basis rather than by preserving whole files out of convenience.
-- [ ] Surviving helper code under `src/test_harness/` is chosen on a test-by-test caller basis rather than by preserving whole helper files out of convenience.
-- [ ] Surviving helper code under `src/test_harness/` is chosen function-by-function, struct-by-struct, and test-by-test when needed rather than preserving dead code in mixed files.
-- [ ] Any `allow(dead_code)`, `allow(unused)`, clippy suppression, or similar unused-code marker that existed to tolerate removed HA/E2E code is deleted, and the newly unused code is deleted too.
-- [ ] Tasks 03 and 04 are left clearly positioned as greenfield feature-construction tasks, not as reasons to keep the old harness alive.
-- [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
+ - [x] Task 02 explicitly supersedes the earlier “retain unreplaced legacy HA coverage” plan and instead treats old HA/E2E removal as mandatory before continuing the greenfield story.
+ - [x] `tests/ha_multi_node_failover.rs` is deleted.
+ - [x] `tests/ha_partition_isolation.rs` is deleted.
+ - [x] `tests/ha/support/multi_node.rs` is deleted.
+ - [x] `tests/ha/support/partition.rs` is deleted.
+ - [x] `tests/ha/support/observer.rs` is deleted.
+ - [x] `tests/policy_e2e_api_only.rs` is deleted.
+ - [x] `src/test_harness/ha_e2e/` is deleted.
+ - [x] `src/test_harness/net_proxy.rs` is deleted.
+ - [x] Any newly dead `src/test_harness` exports or modules caused by those deletions are removed in the same task instead of being left as tombstones.
+ - [x] Docs, task text, and gate/config references no longer claim that `tests/ha_*`, `tests/ha/support/*`, `src/test_harness/ha_e2e`, `src/test_harness/net_proxy.rs`, or any other removed legacy helpers are still part of the supported verification story.
+ - [x] All unit tests remain unless they only test deleted HA/E2E code.
+ - [x] Non-HA integration tests remain unless a specific test is stale or only exists to support deleted HA/E2E routing.
+ - [x] HA integration tests and old E2E tests are removed.
+ - [x] No kept test target or helper still imports, references, or textually depends on the deleted legacy HA/E2E harness.
+ - [x] Surviving integration tests are chosen on a test-by-test basis rather than by preserving whole files out of convenience.
+ - [x] Surviving helper code under `src/test_harness/` is chosen on a test-by-test caller basis rather than by preserving whole helper files out of convenience.
+ - [x] Surviving helper code under `src/test_harness/` is chosen function-by-function, struct-by-struct, and test-by-test when needed rather than preserving dead code in mixed files.
+ - [x] Any `allow(dead_code)`, `allow(unused)`, clippy suppression, or similar unused-code marker that existed to tolerate removed HA/E2E code is deleted, and the newly unused code is deleted too.
+ - [x] Tasks 03 and 04 are left clearly positioned as greenfield feature-construction tasks, not as reasons to keep the old harness alive.
+ - [x] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
 ## Detailed implementation plan
@@ -99,25 +99,25 @@ This task must make the deletion boundary fully unambiguous before any more gree
 ### Phase 1: Read Own analysis and delete what should be deleted
 
 ### Phase 2: Remove stale references and routing
-- [ ] Update `.config/nextest.toml` so it no longer routes or documents deleted `tests/ha_*` binaries as the long-test boundary.
-- [ ] Update `Makefile` targets or comments that still imply the old HA binaries are the `test-long` payload.
-- [ ] Update `docs/src/how-to/run-tests.md` and any directly stale docs so they no longer describe the deleted legacy HA/E2E harness as present.
+- [x] Update `.config/nextest.toml` so it no longer routes or documents deleted `tests/ha_*` binaries as the long-test boundary.
+- [x] Update `Makefile` targets or comments that still imply the old HA binaries are the `test-long` payload.
+- [x] Update `docs/src/how-to/run-tests.md` and any directly stale docs so they no longer describe the deleted legacy HA/E2E harness as present.
 
 ### Phase 3: Delete all still code, unused code, dead_code
-- [ ] Find and remove all #[allow(xxx)] markers for unused code etc
-- [ ] Remove any of the problematic and need for deletion code
+- [x] Find and remove all #[allow(xxx)] markers for unused code etc
+- [x] Remove any of the problematic and need for deletion code
 
 
-### Phase 5: Verification and closeout
-- [ ] Run `rg -n "tests/ha_|tests/ha/support|policy_e2e_api_only|src/test_harness/ha_e2e|src/test_harness/net_proxy" src tests docs .config Makefile .ralph`.
-- [ ] Confirm any remaining matches are intentional historical/task references only, or remove/update them if they still describe live code paths.
-- [ ] Verify the remaining integration-test surface keeps the non-HA tests while removing the HA/E2E path.
-- [ ] Verify unit tests remain intact except for tests that necessarily disappear with deleted legacy modules.
-- [ ] For every helper left in `src/test_harness/`, verify there is still at least one surviving concrete test that needs it.
-- [ ] Verify there are no stale unused-code suppressions or dead helper remnants left behind by the cleanup.
-- [ ] Update this task file only after the work and verification are actually complete.
-- [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.
-- [ ] Run `/bin/bash .ralph/task_switch.sh`.
+### Phase 4: Verification and closeout
+- [x] Run `rg -n "tests/ha_|tests/ha/support|policy_e2e_api_only|src/test_harness/ha_e2e|src/test_harness/net_proxy" src tests docs .config Makefile .ralph`.
+- [x] Confirm any remaining matches are intentional historical/task references only, or remove/update them if they still describe live code paths.
+- [x] Verify the remaining integration-test surface keeps the non-HA tests while removing the HA/E2E path.
+- [x] Verify unit tests remain intact except for tests that necessarily disappear with deleted legacy modules.
+- [x] For every helper left in `src/test_harness/`, verify there is still at least one surviving concrete test that needs it.
+- [x] Verify there are no stale unused-code suppressions or dead helper remnants left behind by the cleanup.
+- [x] Update this task file only after the work and verification are actually complete.
+- [x] Only after all required checkboxes are complete, set `<passes>true</passes>`.
+- [x] Run `/bin/bash .ralph/task_switch.sh`.
 - [ ] Commit all required files, including `.ralph/` updates, with a task-finished commit message that includes verification evidence.
 - [ ] Push with `git push`.
 

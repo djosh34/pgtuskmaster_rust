@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 10 05:52:52 PM CET 2026
+Generated: Tue Mar 10 18:20:53 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -204,6 +204,18 @@ An accepted targeted switchover request is not reliably honored in the HA multi-
 
 ```
 ## Task: Build Independent Cucumber Docker HA Harness And Primary Crash Rejoin Feature <status>done</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+
+```
+## Task: Deep Clean Legacy Black-Box Test Infrastructure After Greenfield Migration <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 

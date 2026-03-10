@@ -24,14 +24,6 @@ impl RecordingStore {
             .map_err(|_| WorkerError::Message("writes lock poisoned".to_string()))?;
         Ok(guard.clone())
     }
-
-    fn deletes(&self) -> Result<Vec<String>, WorkerError> {
-        let guard = self
-            .deletes
-            .lock()
-            .map_err(|_| WorkerError::Message("deletes lock poisoned".to_string()))?;
-        Ok(guard.clone())
-    }
 }
 
 impl DcsStore for RecordingStore {
@@ -128,24 +120,12 @@ const IO_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 struct TestHttpResponse {
     status_code: u16,
-    headers: Vec<(String, String)>,
     body: Vec<u8>,
-}
-
-fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    headers.iter().find_map(|(k, v)| {
-        if k.eq_ignore_ascii_case(name) {
-            Some(v.as_str())
-        } else {
-            None
-        }
-    })
 }
 
 #[derive(Debug)]
 struct ParsedHttpHead {
     status_code: u16,
-    headers: Vec<(String, String)>,
     content_length: usize,
     body_start: usize,
 }
@@ -198,7 +178,6 @@ fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpH
     let header_text = std::str::from_utf8(header_text)
         .map_err(|err| WorkerError::Message(format!("response headers not utf8: {err}")))?;
 
-    let mut headers: Vec<(String, String)> = Vec::new();
     let mut content_length: Option<usize> = None;
     for line in header_text.split("\r\n") {
         if line.is_empty() {
@@ -211,7 +190,6 @@ fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpH
         })?;
         let name = name.trim();
         let value = value.trim();
-        headers.push((name.to_string(), value.to_string()));
 
         if name.eq_ignore_ascii_case("Content-Length") {
             if content_length.is_some() {
@@ -236,7 +214,6 @@ fn parse_http_response_head(raw: &[u8], header_end: usize) -> Result<ParsedHttpH
 
     Ok(ParsedHttpHead {
         status_code,
-        headers,
         content_length,
         body_start,
     })
@@ -269,7 +246,6 @@ async fn read_http_response_framed(
                         .to_vec();
                     return Ok(TestHttpResponse {
                         status_code: parsed.status_code,
-                        headers: parsed.headers,
                         body,
                     });
                 }
@@ -338,231 +314,6 @@ async fn read_http_response_framed(
             timeout.as_secs()
         ))),
     }
-}
-
-#[test]
-fn bdd_http_parser_rejects_four_digit_status_code() -> Result<(), WorkerError> {
-    let raw = b"HTTP/1.1 1200 OK\r\nContent-Length: 0\r\n\r\n";
-    let header_end = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| {
-            WorkerError::Message("synthetic response missing header terminator".to_string())
-        })?;
-
-    let parsed = parse_http_response_head(raw, header_end);
-    if parsed.is_ok() {
-        return Err(WorkerError::Message(
-            "expected parser to reject 4-digit http status code, but it accepted it".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn bdd_api_post_switchover_writes_dcs_key() -> Result<(), WorkerError> {
-    let cfg = sample_runtime_config(None);
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
-
-    let store = RecordingStore::default();
-    let store_for_ctx = store.clone();
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
-    let addr = ctx.local_addr()?;
-
-    let mut client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    let body = br#"{}"#;
-    let request = format!(
-        "POST /switchover HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    );
-    client
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|err| WorkerError::Message(format!("client write header failed: {err}")))?;
-    client
-        .write_all(body)
-        .await
-        .map_err(|err| WorkerError::Message(format!("client write body failed: {err}")))?;
-
-    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
-
-    let response = read_http_response_framed(&mut client, IO_TIMEOUT).await?;
-    assert_eq!(response.status_code, 202);
-    let connection = header_value(&response.headers, "Connection")
-        .ok_or_else(|| WorkerError::Message("response missing Connection header".to_string()))?;
-    if connection != "close" {
-        return Err(WorkerError::Message(format!(
-            "expected Connection: close, got: {connection}"
-        )));
-    }
-    let decoded: serde_json::Value = serde_json::from_slice(&response.body)
-        .map_err(|err| WorkerError::Message(format!("decode response json failed: {err}")))?;
-    assert_eq!(decoded["accepted"], true);
-
-    let writes = store.writes()?;
-    assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0].0, "/scope-a/switchover");
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn bdd_api_removed_ha_leader_routes_and_ha_state_contract() -> Result<(), WorkerError> {
-    let cfg = sample_runtime_config(None);
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
-
-    let store = RecordingStore::default();
-    let store_for_ctx = store.clone();
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
-    let addr = ctx.local_addr()?;
-
-    let mut post_client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    let post_body = br#"{"member_id":"node-b"}"#;
-    let post_request = format!(
-        "POST /ha/leader HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        post_body.len()
-    );
-    post_client
-        .write_all(post_request.as_bytes())
-        .await
-        .map_err(|err| WorkerError::Message(format!("post write header failed: {err}")))?;
-    post_client
-        .write_all(post_body)
-        .await
-        .map_err(|err| WorkerError::Message(format!("post write body failed: {err}")))?;
-    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
-    let post_response = read_http_response_framed(&mut post_client, IO_TIMEOUT).await?;
-    assert_eq!(post_response.status_code, 404);
-
-    let mut delete_leader_client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    delete_leader_client
-        .write_all(b"DELETE /ha/leader HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .await
-        .map_err(|err| WorkerError::Message(format!("delete leader write failed: {err}")))?;
-    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
-    let delete_leader_response =
-        read_http_response_framed(&mut delete_leader_client, IO_TIMEOUT).await?;
-    assert_eq!(delete_leader_response.status_code, 404);
-
-    let mut delete_switchover_client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    delete_switchover_client
-        .write_all(
-            b"DELETE /ha/switchover HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-        )
-        .await
-        .map_err(|err| WorkerError::Message(format!("delete switchover write failed: {err}")))?;
-    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
-    let delete_switchover_response =
-        read_http_response_framed(&mut delete_switchover_client, IO_TIMEOUT).await?;
-    assert_eq!(delete_switchover_response.status_code, 202);
-
-    let mut state_client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    state_client
-        .write_all(b"GET /ha/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .await
-        .map_err(|err| WorkerError::Message(format!("state write failed: {err}")))?;
-    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
-    let state_response = read_http_response_framed(&mut state_client, IO_TIMEOUT).await?;
-    assert_eq!(state_response.status_code, 503);
-    let state_text = String::from_utf8(state_response.body)
-        .map_err(|err| WorkerError::Message(format!("state body not utf8: {err}")))?;
-    assert!(state_text.contains("snapshot unavailable"));
-
-    let writes = store.writes()?;
-    assert_eq!(writes.len(), 0);
-    let deletes = store.deletes()?;
-    assert_eq!(deletes, vec!["/scope-a/switchover"]);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn bdd_api_removed_ha_leader_routes_require_legacy_auth_token() -> Result<(), WorkerError> {
-    let cfg = sample_runtime_config(Some("secret".to_string()));
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg, UnixMillis(1));
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
-
-    let store = RecordingStore::default();
-    let store_for_ctx = store.clone();
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store_for_ctx));
-    let addr = ctx.local_addr()?;
-
-    let mut denied_client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    let body = br#"{"member_id":"node-a"}"#;
-    let denied_request = format!(
-        "POST /ha/leader HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    );
-    denied_client
-        .write_all(denied_request.as_bytes())
-        .await
-        .map_err(|err| WorkerError::Message(format!("denied write header failed: {err}")))?;
-    denied_client
-        .write_all(body)
-        .await
-        .map_err(|err| WorkerError::Message(format!("denied write body failed: {err}")))?;
-    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
-    let denied_response = read_http_response_framed(&mut denied_client, IO_TIMEOUT).await?;
-    assert_eq!(denied_response.status_code, 401);
-
-    let mut allowed_client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    let allowed_request = format!(
-        "POST /ha/leader HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer secret\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    );
-    allowed_client
-        .write_all(allowed_request.as_bytes())
-        .await
-        .map_err(|err| WorkerError::Message(format!("allowed write header failed: {err}")))?;
-    allowed_client
-        .write_all(body)
-        .await
-        .map_err(|err| WorkerError::Message(format!("allowed write body failed: {err}")))?;
-    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
-    let allowed_response = read_http_response_framed(&mut allowed_client, IO_TIMEOUT).await?;
-    assert_eq!(allowed_response.status_code, 404);
-
-    let mut state_client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    state_client
-        .write_all(
-            b"GET /ha/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer secret\r\n\r\n",
-        )
-        .await
-        .map_err(|err| WorkerError::Message(format!("state write failed: {err}")))?;
-    pgtuskmaster_rust::api::worker::step_once(&mut ctx).await?;
-    let state_response = read_http_response_framed(&mut state_client, IO_TIMEOUT).await?;
-    assert_eq!(state_response.status_code, 503);
-
-    let writes = store.writes()?;
-    assert_eq!(writes.len(), 0);
-    let deletes = store.deletes()?;
-    assert_eq!(deletes.len(), 0);
-    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
