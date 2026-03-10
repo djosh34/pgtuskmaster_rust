@@ -1,4 +1,4 @@
-## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>not_started</status> <passes>false</passes>
+## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>in_progress</status> <passes>false</passes>
 
 <priority>high</priority>
 
@@ -10,6 +10,10 @@ It is explicitly not a requirement that all six scenarios pass against the produ
 Any trustworthy HA or product failure exposed by these six feature runs must create a bug task with add-bug, and that bug task must contain `<blocked_by>` tags for every task in `story-greenfield-cucumber-ha-harness`.
 Another explicit requirement, is that the tests must (just like before), be able to succesfully executed in parallel.
 Serial execution of tests, is a failure of this task.
+
+
+HARD REQUIREMENT: DO NOT SOLVE ANY TEST FAILURES THAT ARE IN `src/`, instead create bug tasks using add-bug, blocked by this story.
+Any attempt of solving bugs outside the scope of this harness are STRICTLY FORBIDDEN!
 
 
 **Scenario contracts**
@@ -135,67 +139,76 @@ Serial execution of tests, is a failure of this task.
 </description>
 
 <acceptance_criteria>
-- [ ] make test-long MUST now point to all docker (greenfield/these) tests that are available (not static only feature x or y, no all features), via cargo nextest, and not to the old tests anymore
-- [ ] `cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.feature` exists and implements the exact `replica_outage_keeps_primary_stable` scenario contract above.
-- [ ] `cucumber_tests/ha/features/two_node_outage_one_return_restores_quorum/two_node_outage_one_return_restores_quorum.feature` exists and implements the exact `two_node_outage_one_return_restores_quorum` scenario contract above.
-- [ ] `cucumber_tests/ha/features/full_cluster_outage_restore_quorum_then_converge/full_cluster_outage_restore_quorum_then_converge.feature` exists and implements the exact `full_cluster_outage_restore_quorum_then_converge` scenario contract above.
-- [ ] `cucumber_tests/ha/features/replica_flap_keeps_primary_stable/replica_flap_keeps_primary_stable.feature` exists and implements the exact `replica_flap_keeps_primary_stable` scenario contract above.
-- [ ] `cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.feature` exists and implements the exact `planned_switchover_changes_primary_cleanly` scenario contract above.
-- [ ] `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.feature` exists and implements the exact `targeted_switchover_promotes_requested_replica` scenario contract above.
-- [ ] Each of the six features has one tiny wrapper `.rs` file and one explicit `[[test]]` entry in `Cargo.toml`.
-- [ ] Runner edits stay limited to the small harness growth listed in this task and do not introduce advanced harness features.
-- [ ] The existing `primary_crash_rejoin` feature from task 01 is not reimplemented or duplicated here.
-- [ ] All six feature wrappers can be executed on the greenfield harness.
-- [ ] Each feature run produces enough evidence to distinguish a harness failure from an HA behavior failure in the system under test.
-- [ ] If a scenario fails, the failure is captured as a product or HA failure after the harness has successfully started the cluster, injected the intended action, and recorded the expected topology or proof-row observations up to the failing assertion.
-- [ ] Every trustworthy HA or product failure found while running these six features creates a bug task with add-bug with `<blocked_by>` tags for:
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
+- [x] make test-long MUST now point to all docker (greenfield/these) tests that are available (not static only feature x or y, no all features), via cargo nextest, and not to the old tests anymore
+- [x] `cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.feature` exists and implements the exact `replica_outage_keeps_primary_stable` scenario contract above.
+- [x] `cucumber_tests/ha/features/two_node_outage_one_return_restores_quorum/two_node_outage_one_return_restores_quorum.feature` exists and implements the exact `two_node_outage_one_return_restores_quorum` scenario contract above.
+- [x] `cucumber_tests/ha/features/full_cluster_outage_restore_quorum_then_converge/full_cluster_outage_restore_quorum_then_converge.feature` exists and implements the exact `full_cluster_outage_restore_quorum_then_converge` scenario contract above.
+- [x] `cucumber_tests/ha/features/replica_flap_keeps_primary_stable/replica_flap_keeps_primary_stable.feature` exists and implements the exact `replica_flap_keeps_primary_stable` scenario contract above.
+- [x] `cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.feature` exists and implements the exact `planned_switchover_changes_primary_cleanly` scenario contract above.
+- [x] `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.feature` exists and implements the exact `targeted_switchover_promotes_requested_replica` scenario contract above.
+- [x] Each of the six features has one tiny wrapper `.rs` file and one explicit `[[test]]` entry in `Cargo.toml`.
+- [x] Runner edits stay limited to the small harness growth listed in this task and do not introduce advanced harness features.
+- [x] The existing `primary_crash_rejoin` feature from task 01 is not reimplemented or duplicated here.
+- [x] All six feature wrappers can be executed on the greenfield harness.
+- [x] Each feature run produces enough evidence to distinguish a harness failure from an HA behavior failure in the system under test.
+- [x] If a scenario fails, the failure is captured as a product or HA failure after the harness has successfully started the cluster, injected the intended action, and recorded the expected topology or proof-row observations up to the failing assertion.
+- [x] Every trustworthy HA or product failure found while running these six features creates a bug task with add-bug with `<blocked_by>` tags for:
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md`
 - [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
 ## Detailed implementation plan
 
-### Phase 0: Point make test-long to here
-- [ ] As title says...
+### Phase 0: Lock suite routing to the durable greenfield HA binary rule
+- [x] Keep `.config/nextest.toml` routing the ultra-long greenfield HA binaries by durable `binary(ha_*)` selection rather than exact test-name filters.
+- [x] Make `make test-long` and the stable suite entrypoint `make test-cucumber-ha` both execute the full greenfield HA surface without hardcoding a single wrapper.
+- [x] Update any contract tests or docs that still describe the suite as only `primary_crash_rejoin`.
 
 ### Phase 1: Add the six feature directories and wrappers
-- [ ] Add the six feature directories named in this task.
-- [ ] Add one `.feature` file per directory.
-- [ ] Add one tiny Rust wrapper per directory.
-- [ ] Register one `[[test]]` target per wrapper in `Cargo.toml`.
+- [x] Add the six feature directories named in this task.
+- [x] Add one `.feature` file per directory.
+- [x] Add one tiny Rust wrapper per directory.
+- [x] Register one `[[test]]` target per wrapper in `Cargo.toml`.
 
 ### Phase 2: Add only the small harness support this task allows
-- [ ] Add named node kill and restart helpers.
-- [ ] Add `pgtm` polling helpers for zero primary, one primary, same primary, and changed primary.
-- [ ] Add topology assertions based on `pgtm primary` and `pgtm replicas`.
-- [ ] Add reusable proof-table and proof-row helpers.
-- [ ] Add `pgtm` helpers for normal and targeted switchover requests.
-- [ ] Add simple timeline recording.
+- [x] Add world helpers to record the initial primary, chosen replicas, and per-scenario proof rows without duplicating the task-01 primary-crash flow.
+- [x] Add named node kill, restart, kill-all, and fixed-subset restart helpers so the scenarios can stop or restore exactly the intended nodes.
+- [x] Add `pgtm` polling helpers for zero primary, one primary, same primary, changed primary, and replica rejoin checks.
+- [x] Add topology assertions based on `pgtm primary` and `pgtm replicas`.
+- [x] Add reusable proof-table, proof-row, and exact-row-convergence helpers.
+- [x] Add `pgtm` helpers for normal and targeted switchover requests.
+- [x] Add simple timeline and status-snapshot recording so failures show the last trustworthy topology observations before the failing assertion.
 
 ### Phase 3: Implement the exact scenario contracts
-- [ ] Implement `replica_outage_keeps_primary_stable` exactly as written.
-- [ ] Implement `two_node_outage_one_return_restores_quorum` exactly as written.
-- [ ] Implement `full_cluster_outage_restore_quorum_then_converge` exactly as written.
-- [ ] Implement `replica_flap_keeps_primary_stable` exactly as written.
-- [ ] Implement `planned_switchover_changes_primary_cleanly` exactly as written.
-- [ ] Implement `targeted_switchover_promotes_requested_replica` exactly as written.
+- [x] Implement `replica_outage_keeps_primary_stable` exactly as written.
+- [x] Implement `two_node_outage_one_return_restores_quorum` exactly as written.
+- [x] Implement `full_cluster_outage_restore_quorum_then_converge` exactly as written.
+- [x] Implement `replica_flap_keeps_primary_stable` exactly as written.
+- [x] Implement `planned_switchover_changes_primary_cleanly` exactly as written.
+- [x] Implement `targeted_switchover_promotes_requested_replica` exactly as written.
 
 ### Phase 4: Verification and closeout
-- [ ] Run targeted execution for each of the six new feature wrappers.
-- [ ] For each wrapper run, record whether the result is:
-- [ ] harness failure
-- [ ] product or HA scenario failure
-- [ ] successful scenario pass
-- [ ] Fix harness failures until every feature can be executed to a trustworthy outcome.
-- [ ] For every trustworthy product or HA scenario failure, create a bug task immediately with add-bug and add `<blocked_by>` tags for every task in this story.
-- [ ] Do not defer feature creation just because one scenario currently exposes a product bug.
-- [ ] Update this task file only after the work and verification are actually complete.
+- [x] Run targeted execution for each of the six new feature wrappers.
+- [x] For each wrapper run, record whether the result is:
+- [x] harness failure
+- [x] product or HA scenario failure
+- [x] successful scenario pass
+- [x] Fix harness failures until every feature can be executed to a trustworthy outcome.
+- [x] For every trustworthy product or HA scenario failure, create a bug task immediately with add-bug and add `<blocked_by>` tags for all five tasks in this story.
+- [x] Do not defer feature creation just because one scenario currently exposes a product bug.
+- [x] Update docs with `k2-docs-loop` so the greenfield HA suite entrypoints, shipped scenarios, and execution guidance no longer describe only the original feature.
+- [x] Run `make check`.
+- [x] Run `make test`.
+- [ ] Run `make test-long`.
+- [x] Run `make lint`.
+- [x] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.
 - [ ] Run `/bin/bash .ralph/task_switch.sh`.
 - [ ] Commit all required files, including `.ralph/` updates, with a task-finished commit message that includes verification evidence.
 - [ ] Push with `git push`.
 
-TO BE VERIFIED
+NOW EXECUTE
