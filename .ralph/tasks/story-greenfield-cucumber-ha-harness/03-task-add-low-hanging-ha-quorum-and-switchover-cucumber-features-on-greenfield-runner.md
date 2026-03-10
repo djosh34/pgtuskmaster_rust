@@ -135,6 +135,7 @@ Serial execution of tests, is a failure of this task.
 </description>
 
 <acceptance_criteria>
+- [ ] make test-long MUST now point to all docker (greenfield/these) tests that are available (not static only feature x or y, no all features), via cargo nextest, and not to the old tests anymore
 - [ ] `cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.feature` exists and implements the exact `replica_outage_keeps_primary_stable` scenario contract above.
 - [ ] `cucumber_tests/ha/features/two_node_outage_one_return_restores_quorum/two_node_outage_one_return_restores_quorum.feature` exists and implements the exact `two_node_outage_one_return_restores_quorum` scenario contract above.
 - [ ] `cucumber_tests/ha/features/full_cluster_outage_restore_quorum_then_converge/full_cluster_outage_restore_quorum_then_converge.feature` exists and implements the exact `full_cluster_outage_restore_quorum_then_converge` scenario contract above.
@@ -156,6 +157,9 @@ Serial execution of tests, is a failure of this task.
 </acceptance_criteria>
 
 ## Detailed implementation plan
+
+### Phase 0: Point make test-long to here
+- [ ] As title says...
 
 ### Phase 1: Add the six feature directories and wrappers
 - [ ] Add the six feature directories named in this task.
