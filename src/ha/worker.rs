@@ -194,8 +194,8 @@ mod tests {
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::{
             jobs::{
-                ActiveJobKind, ProcessCommandRunner, ProcessCommandSpec, ProcessError, ProcessExit,
-                ProcessHandle,
+                ActiveJob, ActiveJobKind, ProcessCommandRunner, ProcessCommandSpec, ProcessError,
+                ProcessExit, ProcessHandle,
             },
             state::{
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
@@ -1013,6 +1013,7 @@ mod tests {
         let BuiltContext {
             mut ctx,
             ha_subscriber: _ha_subscriber,
+            _process_publisher,
             mut process_rx,
             ..
         } = HaWorkerTestBuilder::new()
@@ -1027,6 +1028,23 @@ mod tests {
             ))
         })?;
         assert!(matches!(first.kind, ProcessJobKind::StartPostgres(_)));
+
+        _process_publisher
+            .publish(
+                ProcessState::Running {
+                    worker: WorkerStatus::Running,
+                    active: ActiveJob {
+                        id: JobId("job-start".to_string()),
+                        kind: ActiveJobKind::StartPostgres,
+                        started_at: UnixMillis(98),
+                        deadline_at: UnixMillis(198),
+                    },
+                },
+                UnixMillis(99),
+            )
+            .map_err(|err| {
+                WorkerError::Message(format!("process publish failed after first tick: {err}"))
+            })?;
 
         step_once(&mut ctx).await?;
         assert_eq!(process_rx.try_recv(), Err(TryRecvError::Empty));

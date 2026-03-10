@@ -1,26 +1,14 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 04:09:20 PM CET 2026
-
-# Task `.ralph/tasks/bugs/bug-greenfield-ha-node-image-relies-on-pgsslrootcert-env-hack.md`
-
-```
-## Bug: Greenfield HA Node Image Relies On PGSSLROOTCERT Env Hack <status>not_started</status> <passes>false</passes>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
-```
-
-==============
+Generated: Tue Mar 10 04:46:31 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-greenfield-ha-proof-visibility-stalls-on-restarted-replica.md`
 
 ```
 ## Bug: Greenfield HA Proof Visibility Stalls On Restarted Replica <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
 ```
 
@@ -31,8 +19,8 @@ Generated: Tue Mar 10 04:09:20 PM CET 2026
 ```
 ## Bug: Replica Bootstrap Auth Breaks When Runtime Roles Reuse `postgres` <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
 ```
 
@@ -50,10 +38,10 @@ Generated: Tue Mar 10 04:09:20 PM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
 
 ```
-## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>not_started</status> <passes>false</passes>
+## Task: Deep Clean Legacy Black-Box Test Infrastructure After Greenfield Migration <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 
@@ -62,10 +50,10 @@ Generated: Tue Mar 10 04:09:20 PM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
 
 ```
-## Task: Deep Clean Legacy Black-Box Test Infrastructure After Greenfield Migration <status>not_started</status> <passes>false</passes>
+## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 

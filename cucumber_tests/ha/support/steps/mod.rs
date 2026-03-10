@@ -129,7 +129,7 @@ async fn the_restarted_node_rejoins_as_a_replica(world: &mut HaWorld) -> Result<
         .clone()
         .ok_or_else(|| HarnessError::message("no killed node was recorded"))?;
     let harness = world.harness()?;
-    let _ = poll_for_status(harness, PollKind::Recovery, |status| {
+    poll_for_status(harness, PollKind::Recovery, |status| {
         require_sampled_members(status, 3)?;
         let primary = single_primary(status)?;
         let restarted_node = status

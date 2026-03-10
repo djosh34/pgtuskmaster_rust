@@ -121,6 +121,7 @@ pub struct PostgresConnIdentityConfig {
     pub user: String,
     pub dbname: String,
     pub ssl_mode: crate::pginfo::conninfo::PgSslMode,
+    pub ca_cert: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -434,6 +435,7 @@ pub struct PostgresConnIdentityConfigInput {
     pub user: Option<String>,
     pub dbname: Option<String>,
     pub ssl_mode: Option<crate::pginfo::conninfo::PgSslMode>,
+    pub ca_cert: Option<InlineOrPath>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

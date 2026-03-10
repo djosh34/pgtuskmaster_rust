@@ -172,6 +172,7 @@ mod tests {
             application_name: None,
             connect_timeout_s: None,
             ssl_mode: PgSslMode::Prefer,
+            ssl_root_cert: None,
             options: None,
         }
     }

@@ -85,7 +85,7 @@ listen_port = 5432
 socket_dir = "/var/lib/pgtuskmaster/socket"
 log_file = "/var/log/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
-rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { path = "/etc/pgtuskmaster/tls/postgres-ca.pem" } }
 tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } } }
 pg_hba = { source = { path = "/etc/pgtuskmaster/pg_hba.conf" } }
 pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
@@ -94,6 +94,7 @@ pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
 Two details matter here:
 
 - `local_conn_identity.ssl_mode` and `rewind_conn_identity.ssl_mode` must match the fact that the server now expects TLS-capable connections
+- `verify_ca` and `verify_full` also require an explicit `ca_cert` path in the matching connection identity so runtime-managed conninfo can render `sslrootcert=...`
 - if `postgres.tls.mode` stays `disabled`, the runtime rejects TLS-required client modes such as `require`, `verify_ca`, or `verify_full`
 
 If you want `pgtm primary --tls` and `pgtm replicas --tls` to emit PostgreSQL client certificate paths, also configure:

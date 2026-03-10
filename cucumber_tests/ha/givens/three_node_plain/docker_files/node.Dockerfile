@@ -15,8 +15,6 @@ COPY docker_files/bin/pgtuskmaster /usr/local/bin/pgtuskmaster
 
 RUN chmod 0755 /usr/local/bin/pgtuskmaster
 
-ENV PGSSLROOTCERT=/etc/pgtuskmaster/tls/ca.crt
-
 USER postgres
 
 WORKDIR /var/lib/postgresql

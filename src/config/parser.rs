@@ -151,6 +151,11 @@ fn normalize_postgres_conn_identity(
         "postgres.rewind_conn_identity" => "postgres.rewind_conn_identity.ssl_mode",
         _ => field_prefix,
     };
+    let ca_cert_field = match field_prefix {
+        "postgres.local_conn_identity" => "postgres.local_conn_identity.ca_cert",
+        "postgres.rewind_conn_identity" => "postgres.rewind_conn_identity.ca_cert",
+        _ => field_prefix,
+    };
 
     let user = identity.user.ok_or_else(|| ConfigError::Validation {
         field: user_field,
@@ -169,11 +174,31 @@ fn normalize_postgres_conn_identity(
         message: "missing required secure field".to_string(),
     })?;
 
+    let ca_cert = normalize_conn_identity_ca_cert(ca_cert_field, identity.ca_cert.as_ref())?;
+
     Ok(PostgresConnIdentityConfig {
         user,
         dbname,
         ssl_mode,
+        ca_cert,
     })
+}
+
+fn normalize_conn_identity_ca_cert(
+    field: &'static str,
+    input: Option<&InlineOrPath>,
+) -> Result<Option<PathBuf>, ConfigError> {
+    match input {
+        None => Ok(None),
+        Some(InlineOrPath::Path(path)) | Some(InlineOrPath::PathConfig { path }) => {
+            validate_non_empty_path(field, path)?;
+            Ok(Some(path.clone()))
+        }
+        Some(InlineOrPath::Inline { .. }) => Err(ConfigError::Validation {
+            field,
+            message: "must be a path-backed CA bundle; inline content is not supported".to_string(),
+        }),
+    }
 }
 
 fn normalize_postgres_roles(
@@ -770,7 +795,7 @@ fn validate_distinct_postgres_role_usernames(cfg: &RuntimeConfig) -> Result<(), 
         for (other_field, other_username) in roles.iter().skip(current_index + 1) {
             if current_username == other_username {
                 return Err(ConfigError::Validation {
-                    field: *other_field,
+                    field: other_field,
                     message: format!(
                         "must differ from {current_field} (both were `{current_username}`)"
                     ),
@@ -966,12 +991,12 @@ fn validate_postgres_auth_tls_invariants(cfg: &RuntimeConfig) -> Result<(), Conf
 
     validate_postgres_conn_identity_ssl_mode_supported(
         "postgres.local_conn_identity.ssl_mode",
-        cfg.postgres.local_conn_identity.ssl_mode,
+        &cfg.postgres.local_conn_identity,
         cfg.postgres.tls.mode,
     )?;
     validate_postgres_conn_identity_ssl_mode_supported(
         "postgres.rewind_conn_identity.ssl_mode",
-        cfg.postgres.rewind_conn_identity.ssl_mode,
+        &cfg.postgres.rewind_conn_identity,
         cfg.postgres.tls.mode,
     )?;
 
@@ -995,9 +1020,10 @@ fn validate_postgres_role_auth_supported(
 
 fn validate_postgres_conn_identity_ssl_mode_supported(
     field: &'static str,
-    ssl_mode: crate::pginfo::conninfo::PgSslMode,
+    identity: &PostgresConnIdentityConfig,
     tls_mode: crate::config::ApiTlsMode,
 ) -> Result<(), ConfigError> {
+    let ssl_mode = identity.ssl_mode;
     if matches!(tls_mode, crate::config::ApiTlsMode::Disabled)
         && postgres_ssl_mode_requires_server_tls(ssl_mode)
     {
@@ -1005,6 +1031,17 @@ fn validate_postgres_conn_identity_ssl_mode_supported(
             field,
             message: format!(
                 "must not require server TLS when postgres.tls.mode is disabled (got `{}`)",
+                ssl_mode.as_str()
+            ),
+        });
+    }
+
+    if postgres_ssl_mode_requires_root_cert(ssl_mode) && identity.ca_cert.is_none() {
+        return Err(ConfigError::Validation {
+            field,
+            message: format!(
+                "must configure the matching `{}.ca_cert` path when ssl_mode is `{}`",
+                field.trim_end_matches(".ssl_mode"),
                 ssl_mode.as_str()
             ),
         });
@@ -1018,6 +1055,14 @@ fn postgres_ssl_mode_requires_server_tls(ssl_mode: crate::pginfo::conninfo::PgSs
         ssl_mode,
         crate::pginfo::conninfo::PgSslMode::Require
             | crate::pginfo::conninfo::PgSslMode::VerifyCa
+            | crate::pginfo::conninfo::PgSslMode::VerifyFull
+    )
+}
+
+fn postgres_ssl_mode_requires_root_cert(ssl_mode: crate::pginfo::conninfo::PgSslMode) -> bool {
+    matches!(
+        ssl_mode,
+        crate::pginfo::conninfo::PgSslMode::VerifyCa
             | crate::pginfo::conninfo::PgSslMode::VerifyFull
     )
 }
@@ -1376,11 +1421,13 @@ mod tests {
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
                     ssl_mode: PgSslMode::Prefer,
+                    ca_cert: None,
                 },
                 rewind_conn_identity: PostgresConnIdentityConfig {
                     user: "rewinder".to_string(),
                     dbname: "postgres".to_string(),
                     ssl_mode: PgSslMode::Prefer,
+                    ca_cert: None,
                 },
                 tls: TlsServerConfig {
                     mode: ApiTlsMode::Disabled,
@@ -2806,6 +2853,142 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
                 } else if !message.contains("postgres.tls.mode is disabled") {
                     Err(format!(
                         "expected validation message to mention disabled postgres TLS, got {message:?}"
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            other => Err(format!("expected validation error, got {other:?}")),
+        };
+        mapped.map_err(std::io::Error::other)?;
+
+        std::fs::remove_file(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_rejects_verify_full_without_ca_cert(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-postgres-verify-full-missing-ca-cert-{unique}.toml"
+        ));
+
+        let toml = r#"
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full" }
+tls = { mode = "required", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        let mapped = match err {
+            Err(ConfigError::Validation { field, message }) => {
+                if field != "postgres.rewind_conn_identity.ssl_mode" {
+                    Err(format!(
+                        "expected validation field postgres.rewind_conn_identity.ssl_mode, got {field}"
+                    ))
+                } else if !message.contains("postgres.rewind_conn_identity.ca_cert") {
+                    Err(format!(
+                        "expected validation message to mention postgres.rewind_conn_identity.ca_cert, got {message:?}"
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            other => Err(format!("expected validation error, got {other:?}")),
+        };
+        mapped.map_err(std::io::Error::other)?;
+
+        std::fs::remove_file(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_rejects_inline_conn_identity_ca_cert(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-config-postgres-inline-conn-identity-ca-cert-{unique}.toml"
+        ));
+
+        let toml = r#"
+[cluster]
+name = "cluster-a"
+member_id = "member-a"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "127.0.0.1"
+listen_port = 5432
+socket_dir = "/tmp/pgtuskmaster/socket"
+log_file = "/tmp/pgtuskmaster/postgres.log"
+local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { content = "ca-pem" } }
+tls = { mode = "required", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
+pg_hba = { source = { content = "local all all trust" } }
+pg_ident = { source = { content = "empty" } }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+scope = "scope-a"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+
+[api]
+security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+"#;
+
+        std::fs::write(&path, toml)?;
+
+        let err = load_runtime_config(&path);
+        let mapped = match err {
+            Err(ConfigError::Validation { field, message }) => {
+                if field != "postgres.rewind_conn_identity.ca_cert" {
+                    Err(format!(
+                        "expected validation field postgres.rewind_conn_identity.ca_cert, got {field}"
+                    ))
+                } else if !message.contains("path-backed CA bundle") {
+                    Err(format!(
+                        "expected validation message to mention path-backed CA bundle, got {message:?}"
                     ))
                 } else {
                     Ok(())

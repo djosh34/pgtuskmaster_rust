@@ -54,6 +54,7 @@ pub fn sample_local_conn_identity() -> PostgresConnIdentityConfig {
         user: "postgres".to_string(),
         dbname: "postgres".to_string(),
         ssl_mode: PgSslMode::Prefer,
+        ca_cert: None,
     }
 }
 
@@ -62,6 +63,7 @@ pub fn sample_rewind_conn_identity() -> PostgresConnIdentityConfig {
         user: "rewinder".to_string(),
         dbname: "postgres".to_string(),
         ssl_mode: PgSslMode::Prefer,
+        ca_cert: None,
     }
 }
 

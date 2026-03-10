@@ -425,6 +425,7 @@ mod tests {
                     application_name: Some("node-b".to_string()),
                     connect_timeout_s: Some(5),
                     ssl_mode: PgSslMode::Require,
+                    ssl_root_cert: Some(PathBuf::from("/var/lib/postgresql/data/pgtm.ca.crt")),
                     options: Some("-c wal_receiver_status_interval=5s".to_string()),
                 },
                 ManagedStandbyAuth::PasswordPassfile {
@@ -508,7 +509,7 @@ mod tests {
             ));
         }
         if !rendered.contains(
-            "primary_conninfo = 'host=leader.internal port=5432 user=replicator dbname=postgres application_name=node-b connect_timeout=5 sslmode=require options=''-c wal_receiver_status_interval=5s'' passfile=/var/lib/postgresql/data/pgtm.standby.passfile'",
+            "primary_conninfo = 'host=leader.internal port=5432 user=replicator dbname=postgres application_name=node-b connect_timeout=5 sslmode=require sslrootcert=/var/lib/postgresql/data/pgtm.ca.crt options=''-c wal_receiver_status_interval=5s'' passfile=/var/lib/postgresql/data/pgtm.standby.passfile'",
         ) {
             return Err(format!(
                 "missing quoted primary_conninfo in rendered conf: {rendered}"
@@ -578,6 +579,7 @@ mod tests {
                     application_name: None,
                     connect_timeout_s: None,
                     ssl_mode: PgSslMode::Prefer,
+                    ssl_root_cert: None,
                     options: None,
                 },
                 ManagedStandbyAuth::NoPassword,

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{de, Deserialize, Deserializer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +57,7 @@ pub(crate) struct PgConnInfo {
     pub(crate) application_name: Option<String>,
     pub(crate) connect_timeout_s: Option<u32>,
     pub(crate) ssl_mode: PgSslMode,
+    pub(crate) ssl_root_cert: Option<PathBuf>,
     pub(crate) options: Option<String>,
 }
 
@@ -73,6 +76,12 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
         pairs.push(("connect_timeout".to_string(), value.to_string()));
     }
     pairs.push(("sslmode".to_string(), info.ssl_mode.as_str().to_string()));
+    if let Some(value) = &info.ssl_root_cert {
+        pairs.push((
+            "sslrootcert".to_string(),
+            value.display().to_string(),
+        ));
+    }
     if let Some(value) = &info.options {
         pairs.push(("options".to_string(), value.clone()));
     }
@@ -106,6 +115,8 @@ fn render_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{render_pg_conninfo, PgConnInfo, PgSslMode};
 
     fn sample_conninfo() -> PgConnInfo {
@@ -117,6 +128,7 @@ mod tests {
             application_name: Some("ha worker".to_string()),
             connect_timeout_s: Some(5),
             ssl_mode: PgSslMode::Require,
+            ssl_root_cert: Some(PathBuf::from("/etc/pgtm/ca bundle.pem")),
             options: Some("-c search_path=public".to_string()),
         }
     }
@@ -126,7 +138,7 @@ mod tests {
         let rendered = render_pg_conninfo(&sample_conninfo());
         assert_eq!(
             rendered,
-            "host=127.0.0.1 port=5432 user=postgres dbname='postgres' application_name='ha worker' connect_timeout=5 sslmode=require options='-c search_path=public'"
+            "host=127.0.0.1 port=5432 user=postgres dbname='postgres' application_name='ha worker' connect_timeout=5 sslmode=require sslrootcert='/etc/pgtm/ca bundle.pem' options='-c search_path=public'"
                 .replace("dbname='postgres'", "dbname=postgres")
         );
     }

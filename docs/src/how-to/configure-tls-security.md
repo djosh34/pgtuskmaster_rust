@@ -82,7 +82,7 @@ For PostgreSQL, the runtime schema supports the same TLS shape:
 ```toml
 [postgres]
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
-rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
+rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { path = "/etc/pgtuskmaster/tls/postgres-ca.pem" } }
 tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } } }
 ```
 
@@ -90,6 +90,7 @@ Security-sensitive points to verify:
 
 - the runtime can read the configured key material
 - connection identities use a TLS-capable `ssl_mode`
+- every `verify_ca` or `verify_full` identity also carries a readable `ca_cert` path
 - replication and rewind paths are updated alongside ordinary SQL clients
 
 If operators need TLS-expanded DSN output from `pgtm`, also configure `[pgtm.postgres_client]`.

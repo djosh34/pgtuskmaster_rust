@@ -69,15 +69,16 @@ pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
 
 ### Connection Identity
 
-Both `local_conn_identity` and `rewind_conn_identity` must be table literals with three keys:
+Both `local_conn_identity` and `rewind_conn_identity` must be table literals with these fields:
 
 | Subfield | Type | Constraints |
 |----------|------|-------------|
 | `user` | string | non-empty |
 | `dbname` | string | non-empty |
 | `ssl_mode` | enum | `disable`, `prefer`, `require`, `verify_ca`, `verify_full` |
+| `ca_cert` | inline-or-path | optional path-backed CA bundle; required when `ssl_mode` is `verify_ca` or `verify_full` |
 
-If any subfield is missing or empty, normalization fails with a field-specific validation error listing the exact missing key. If `postgres.tls.mode` is `disabled`, the `ssl_mode` must not require TLS (`require`, `verify_ca`, `verify_full`) or validation fails.
+If any required subfield is missing or empty, normalization fails with a field-specific validation error listing the exact missing key. `ca_cert` must be path-backed; inline content is rejected because libpq needs a file path for `sslrootcert`. If `postgres.tls.mode` is `disabled`, the `ssl_mode` must not require TLS (`require`, `verify_ca`, `verify_full`) or validation fails. If `ssl_mode` is `verify_ca` or `verify_full`, the matching `ca_cert` path is required.
 
 ### TLS Server Mode
 

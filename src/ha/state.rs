@@ -91,6 +91,7 @@ pub(crate) struct ProcessDispatchDefaults {
     pub(crate) rewinder_auth: RoleAuthConfig,
     pub(crate) remote_dbname: String,
     pub(crate) remote_ssl_mode: PgSslMode,
+    pub(crate) remote_ssl_root_cert: Option<PathBuf>,
     pub(crate) connect_timeout_s: u32,
     pub(crate) shutdown_mode: ShutdownMode,
 }
@@ -108,6 +109,7 @@ impl ProcessDispatchDefaults {
             rewinder_auth: contract_stub_password_auth(),
             remote_dbname: "postgres".to_string(),
             remote_ssl_mode: PgSslMode::Prefer,
+            remote_ssl_root_cert: None,
             connect_timeout_s: 5,
             shutdown_mode: ShutdownMode::Fast,
         }

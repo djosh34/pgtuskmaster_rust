@@ -53,7 +53,7 @@ const PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 enum StartupAction {
     ClaimInitLockAndSeedConfig,
     RunJob(Box<ProcessJobKind>),
-    StartPostgres(ManagedPostgresStartIntent),
+    StartPostgres(Box<ManagedPostgresStartIntent>),
     EnsureRequiredRoles,
 }
 
@@ -79,15 +79,15 @@ pub enum RuntimeError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum StartupMode {
     InitializePrimary {
-        start_intent: ManagedPostgresStartIntent,
+        start_intent: Box<ManagedPostgresStartIntent>,
     },
     CloneReplica {
         leader_member_id: MemberId,
-        source: ReplicatorSourceConn,
-        start_intent: ManagedPostgresStartIntent,
+        source: Box<ReplicatorSourceConn>,
+        start_intent: Box<ManagedPostgresStartIntent>,
     },
     ResumeExisting {
-        start_intent: ManagedPostgresStartIntent,
+        start_intent: Box<ManagedPostgresStartIntent>,
     },
 }
 
@@ -219,6 +219,7 @@ fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults 
         rewinder_auth: cfg.postgres.roles.rewinder.auth.clone(),
         remote_dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
         remote_ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
+        remote_ssl_root_cert: cfg.postgres.rewind_conn_identity.ca_cert.clone(),
         connect_timeout_s: cfg.postgres.connect_timeout_s,
         shutdown_mode: crate::process::jobs::ShutdownMode::Fast,
     }
@@ -432,12 +433,12 @@ fn select_startup_mode(
 ) -> Result<StartupMode, RuntimeError> {
     match data_dir_state {
         DataDirState::Existing => Ok(StartupMode::ResumeExisting {
-            start_intent: select_resume_start_intent(
+            start_intent: Box::new(select_resume_start_intent(
                 data_dir,
                 cache,
                 self_member_id,
                 process_defaults,
-            )?,
+            )?),
         }),
         DataDirState::Missing | DataDirState::Empty => {
             let init_lock_present = cache
@@ -463,8 +464,8 @@ fn select_startup_mode(
                     .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
                     Ok(StartupMode::CloneReplica {
                         leader_member_id: leader_member.member_id.clone(),
-                        start_intent: replica_start_intent_from_source(&source, data_dir),
-                        source,
+                        source: Box::new(source.clone()),
+                        start_intent: Box::new(replica_start_intent_from_source(&source, data_dir)),
                     })
                 }
                 None => {
@@ -475,7 +476,7 @@ fn select_startup_mode(
                         ))
                     } else {
                         Ok(StartupMode::InitializePrimary {
-                            start_intent: ManagedPostgresStartIntent::primary(),
+                            start_intent: Box::new(ManagedPostgresStartIntent::primary()),
                         })
                     }
                 }
@@ -687,7 +688,7 @@ async fn execute_startup(
             }
             StartupAction::RunJob(job) => run_startup_job(cfg, *job, log).await,
             StartupAction::StartPostgres(start_intent) => {
-                run_start_job(cfg, process_defaults, &start_intent, log).await
+                run_start_job(cfg, process_defaults, start_intent.as_ref(), log).await
             }
             StartupAction::EnsureRequiredRoles => {
                 ensure_required_roles(cfg, process_defaults).await
@@ -775,7 +776,7 @@ fn build_startup_actions(
         } => Ok(vec![
             StartupAction::RunJob(Box::new(ProcessJobKind::BaseBackup(BaseBackupSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
-                source: source.clone(),
+                source: source.as_ref().clone(),
                 timeout_ms: Some(cfg.process.bootstrap_timeout_ms),
             }))),
             StartupAction::StartPostgres(start_intent.clone()),
@@ -1359,6 +1360,7 @@ fn local_postgres_conninfo(
         application_name: None,
         connect_timeout_s: Some(connect_timeout_s),
         ssl_mode: identity.ssl_mode,
+        ssl_root_cert: identity.ca_cert.clone(),
         options: None,
     }
 }
@@ -1604,7 +1606,7 @@ mod tests {
         {
             assert_eq!(leader_member_id, leader_id);
             assert_eq!(
-                source,
+                *source,
                 crate::ha::source_conn::basebackup_source_from_member(
                     &MemberId("node-a".to_string()),
                     cache.members.get(&leader_id).ok_or_else(|| {
@@ -1629,7 +1631,7 @@ mod tests {
         assert_eq!(
             mode,
             StartupMode::InitializePrimary {
-                start_intent: ManagedPostgresStartIntent::primary(),
+                start_intent: Box::new(ManagedPostgresStartIntent::primary()),
             }
         );
         Ok(())
@@ -1646,7 +1648,7 @@ mod tests {
         assert_eq!(
             mode,
             StartupMode::ResumeExisting {
-                start_intent: ManagedPostgresStartIntent::primary(),
+                start_intent: Box::new(ManagedPostgresStartIntent::primary()),
             }
         );
         Ok(())
@@ -1679,6 +1681,7 @@ mod tests {
                     application_name: None,
                     connect_timeout_s: Some(2),
                     ssl_mode: PgSslMode::Prefer,
+                    ssl_root_cert: None,
                     options: None,
                 },
                 managed_standby_auth_from_role_auth(
@@ -1771,6 +1774,7 @@ mod tests {
                     application_name: None,
                     connect_timeout_s: Some(2),
                     ssl_mode: PgSslMode::Prefer,
+                    ssl_root_cert: None,
                     options: None,
                 },
                 managed_standby_auth_from_role_auth(
@@ -1883,10 +1887,16 @@ mod tests {
         cfg.postgres.roles.rewinder.username = "rewind_user".to_string();
         cfg.postgres.local_conn_identity.user = "su_admin".to_string();
         cfg.postgres.rewind_conn_identity.user = "rewind_user".to_string();
+        cfg.postgres.rewind_conn_identity.ca_cert =
+            Some(PathBuf::from("/etc/pgtuskmaster/tls/root-ca.pem"));
 
         let defaults = super::process_defaults_from_config(&cfg);
         assert_eq!(defaults.replicator_username, "repl_user");
         assert_eq!(defaults.rewinder_username, "rewind_user");
+        assert_eq!(
+            defaults.remote_ssl_root_cert,
+            Some(PathBuf::from("/etc/pgtuskmaster/tls/root-ca.pem"))
+        );
 
         let local_conninfo = super::local_postgres_conninfo(
             &defaults,
@@ -1915,6 +1925,10 @@ mod tests {
             &defaults,
         )?;
         assert_eq!(leader_source.conninfo.user, "repl_user");
+        assert_eq!(
+            leader_source.conninfo.ssl_root_cert,
+            Some(PathBuf::from("/etc/pgtuskmaster/tls/root-ca.pem"))
+        );
         Ok(())
     }
 
@@ -1939,7 +1953,7 @@ mod tests {
         let actions = super::build_startup_actions(
             &cfg,
             &StartupMode::InitializePrimary {
-                start_intent: ManagedPostgresStartIntent::primary(),
+                start_intent: Box::new(ManagedPostgresStartIntent::primary()),
             },
         )?;
         let labels = actions

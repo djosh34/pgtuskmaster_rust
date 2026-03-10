@@ -1309,16 +1309,17 @@ pub(crate) fn build_command(
                     "basebackup.source_conninfo.user must not be empty".to_string(),
                 ));
             }
+            if spec.source.conninfo.dbname.trim().is_empty() {
+                return Err(ProcessError::InvalidSpec(
+                    "basebackup.source_conninfo.dbname must not be empty".to_string(),
+                ));
+            }
             let program = config.binaries.pg_basebackup.clone();
             Ok(ProcessCommandSpec {
                 program: program.clone(),
                 args: vec![
-                    "-h".to_string(),
-                    spec.source.conninfo.host.clone(),
-                    "-p".to_string(),
-                    spec.source.conninfo.port.to_string(),
-                    "-U".to_string(),
-                    spec.source.conninfo.user.clone(),
+                    "--dbname".to_string(),
+                    render_pg_conninfo(&spec.source.conninfo),
                     "-D".to_string(),
                     spec.data_dir.display().to_string(),
                     "-Fp".to_string(),
@@ -1725,6 +1726,7 @@ mod tests {
             application_name: None,
             connect_timeout_s: None,
             ssl_mode: PgSslMode::Prefer,
+            ssl_root_cert: None,
             options: None,
         }
     }
@@ -1754,6 +1756,7 @@ mod tests {
                         application_name: None,
                         connect_timeout_s: None,
                         ssl_mode: PgSslMode::Prefer,
+                        ssl_root_cert: Some(PathBuf::from("/etc/pgtm/root-ca.crt")),
                         options: None,
                     },
                     auth: sample_password_auth("secret-password"),
@@ -1771,12 +1774,8 @@ mod tests {
             assert_eq!(
                 spec.args,
                 vec![
-                    "-h",
-                    "10.0.0.12",
-                    "-p",
-                    "5433",
-                    "-U",
-                    "replicator",
+                    "--dbname",
+                    "host=10.0.0.12 port=5433 user=replicator dbname=postgres sslmode=prefer sslrootcert=/etc/pgtm/root-ca.crt",
                     "-D",
                     "/tmp/node/data",
                     "-Fp",
@@ -1803,6 +1802,7 @@ mod tests {
                         application_name: None,
                         connect_timeout_s: None,
                         ssl_mode: PgSslMode::Prefer,
+                        ssl_root_cert: Some(PathBuf::from("/etc/pgtm/root-ca.crt")),
                         options: None,
                     },
                     auth: RoleAuthConfig::Password {
@@ -1916,6 +1916,7 @@ mod tests {
                         application_name: None,
                         connect_timeout_s: None,
                         ssl_mode: PgSslMode::Prefer,
+                        ssl_root_cert: Some(PathBuf::from("/etc/pgtm/root-ca.crt")),
                         options: None,
                     },
                     auth: RoleAuthConfig::Password {
@@ -2279,6 +2280,7 @@ mod tests {
                             application_name: None,
                             connect_timeout_s: None,
                             ssl_mode: PgSslMode::Prefer,
+                            ssl_root_cert: None,
                             options: None,
                         },
                         auth: sample_password_auth("secret-password"),

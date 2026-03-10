@@ -722,6 +722,7 @@ mod tests {
             application_name: None,
             connect_timeout_s: Some(2),
             ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
+            ssl_root_cert: None,
             options: Some("-c wal_receiver_status_interval=5s".to_string()),
         };
         let _ = crate::postgres_managed::materialize_managed_postgres_config(

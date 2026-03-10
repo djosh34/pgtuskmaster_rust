@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 10 04:09:20 PM CET 2026
+Generated: Tue Mar 10 04:46:31 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -21,6 +21,17 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 <priority>high</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-runtime-verify-full-conninfo-lacks-explicit-ca-path.md`
+
+```
+## Bug: Runtime Verify-Full Conninfo Lacks Explicit CA Path <status>not_started</status> <passes>true</passes>
+
+<description>
+Runtime-managed PostgreSQL connections can require `sslmode=verify-full`, but the internal conninfo model does not carry an explicit CA-path field. As a result, the current runtime path falls back to ambient libpq environment such as `PGSSLROOTCERT` instead of rendering a complete source-backed conninfo.
 ```
 
 ==============

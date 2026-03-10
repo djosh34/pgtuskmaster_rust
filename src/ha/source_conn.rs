@@ -82,6 +82,7 @@ fn remote_conninfo(
         application_name: None,
         connect_timeout_s: Some(defaults.connect_timeout_s),
         ssl_mode: defaults.remote_ssl_mode,
+        ssl_root_cert: defaults.remote_ssl_root_cert.clone(),
         options: None,
     }
 }

@@ -358,6 +358,7 @@ async fn step_once_contracts_are_callable() -> Result<(), WorkerError> {
             application_name: None,
             connect_timeout_s: None,
             ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
+            ssl_root_cert: None,
             options: None,
         },
         poll_interval: CONTRACT_WORKER_POLL_INTERVAL,

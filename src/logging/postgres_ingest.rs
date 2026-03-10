@@ -1860,6 +1860,7 @@ mod tests {
                             application_name: None,
                             connect_timeout_s: Some(1),
                             ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
+                            ssl_root_cert: None,
                             options: None,
                         },
                         auth: RoleAuthConfig::Password {

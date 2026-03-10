@@ -706,6 +706,7 @@ mod tests {
                 application_name: None,
                 connect_timeout_s: Some(5),
                 ssl_mode: PgSslMode::Prefer,
+                ssl_root_cert: None,
                 options: None,
             },
             sample_password_standby_auth(&data_dir),
@@ -774,6 +775,7 @@ mod tests {
                     application_name: None,
                     connect_timeout_s: Some(5),
                     ssl_mode: PgSslMode::Prefer,
+                    ssl_root_cert: None,
                     options: None,
                 },
                 sample_password_standby_auth(&data_dir),
@@ -1129,6 +1131,7 @@ mod tests {
                         application_name: None,
                         connect_timeout_s: Some(5),
                         ssl_mode: PgSslMode::Prefer,
+                        ssl_root_cert: None,
                         options: None,
                     },
                     sample_password_standby_auth(&replica_data),
@@ -1390,6 +1393,7 @@ mod tests {
             application_name: None,
             connect_timeout_s: Some(5),
             ssl_mode: PgSslMode::Prefer,
+            ssl_root_cert: None,
             options: None,
         }
     }
