@@ -1,6 +1,17 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 03:42:04 PM CET 2026
+Generated: Tue Mar 10 03:44:34 PM CET 2026
+
+# Task `.ralph/tasks/bugs/bug-greenfield-ha-proof-visibility-stalls-on-restarted-replica.md`
+
+```
+## Bug: Greenfield HA Proof Visibility Stalls On Restarted Replica <status>not_started</status> <passes>false</passes>
+
+<description>
+The greenfield cucumber HA feature now gets through bootstrap, failover, proof write on the new primary, and restarted-node rejoin, but the final proof-read from the restarted replica is still broken.
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/bug-replica-bootstrap-auth-breaks-when-runtime-roles-reuse-postgres.md`
 

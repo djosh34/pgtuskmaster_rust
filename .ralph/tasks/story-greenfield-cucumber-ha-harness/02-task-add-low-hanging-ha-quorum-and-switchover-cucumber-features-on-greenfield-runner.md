@@ -6,17 +6,9 @@
 Add the next six greenfield Docker HA cucumber features after task 01. This task contains the exact scenario contracts. Each scenario is one feature, one `.feature` file, and one tiny Rust wrapper. Use real `pgtuskmaster` nodes in Docker and use `pgtm` as the operator control and observation surface after startup.
 
 It is explicitly not a requirement that all six scenarios pass against the product before this task is considered complete. The requirement is that all six scenarios are created, wired into the greenfield harness, and can be executed. If a scenario fails, the run must make it clear that the failure is an HA behavior failure in the system under test rather than a harness failure such as broken startup, broken orchestration, bad fixture wiring, missing commands, or unreadable artifacts.
+Another explicit requirement, is that the tests must (just like before), be able to succesfully executed in parallel.
+Serial execution of tests, is a failure of this task.
 
-Allowed harness growth in this task is small only:
-- kill and restart named node containers
-- poll for zero primary / one primary / same primary / changed primary via `pgtm`
-- query topology through `pgtm primary` and `pgtm replicas`
-- create proof tables and proof rows through DSNs discovered from `pgtm`
-- run `pgtm switchover request`
-- run `pgtm switchover request --switchover-to <member>`
-- record simple timeline events
-
-Do not add any new given, new Compose topology, network partition control, DCS quorum faulting, lag injection, broken startup wrapper, storage/WAL faulting, or other advanced harness feature in this task.
 
 **Scenario contracts**
 

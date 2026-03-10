@@ -6,6 +6,8 @@
 Add the advanced greenfield Docker HA harness capabilities required for the remaining black-box scenarios that can still be tested by running real `pgtuskmaster` binaries and controlling them externally. This task contains the exact advanced harness requirements and the exact scenario contracts.
 
 It is explicitly not a requirement that every advanced scenario pass against the product before this task is considered complete. The requirement is that every advanced scenario is created and executable on the greenfield harness, and that each run produces enough evidence to show whether a failure is a real HA behavior failure in the system under test rather than a harness failure.
+Another explicit requirement, is that the tests must (just like before), be able to succesfully executed in parallel.
+Serial execution of tests, is a failure of this task.
 
 Advanced harness capabilities required in this task:
 - full 1:2 network partition control
