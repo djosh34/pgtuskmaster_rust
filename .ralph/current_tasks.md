@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 08:01:06 PM CET 2026
+Generated: Tue Mar 10 08:19:35 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-greenfield-full-cluster-restore-times-out-under-parallel-ultra-long-suite.md`
 
@@ -50,10 +50,34 @@ Generated: Tue Mar 10 08:01:06 PM CET 2026
 
 ==============
 
+# Task `.ralph/tasks/bugs/bug-greenfield-old-primary-stays-unknown-after-targeted-switchover.md`
+
+```
+## Bug: Greenfield old primary stays unknown after targeted switchover <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
 # Task `.ralph/tasks/bugs/bug-greenfield-restarted-replica-stays-unknown-after-container-return.md`
 
 ```
 ## Bug: Greenfield restarted replica stays unknown after container return <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-two-node-quorum-restore-node-exits-before-primary-recovers.md`
+
+```
+## Bug: Greenfield two-node quorum restore node exits before primary recovers <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>

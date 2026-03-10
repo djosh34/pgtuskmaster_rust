@@ -14,6 +14,7 @@
 **Higher-order goal:** Keep the HA architecture centered on the current `ha_loop` plus functional `decide` style, while generating credible whole-system refactor options that improve correctness, determinism, and maintainability together. The broader goal is to make later implementation follow a deliberate architectural choice, not an accident of whichever failing test somebody notices first.
 
 HARD REQUIREMENT: DO NOT FIX/ALTER ANY CODE WHATSOEVER! ONLY PLAN AND WRITE PLANS!
+This means that if make test and/or make test-long fails, ARE NOT BLOCKING FOR THIS TASK!
 
 **Scope:**
 - This task is planning-only. It must not implement the HA refactor itself, and it must not “fix forward” production code or test code just to get through failing scenarios.
@@ -63,8 +64,8 @@ HARD REQUIREMENT: DO NOT FIX/ALTER ANY CODE WHATSOEVER! ONLY PLAN AND WRITE PLAN
 - [ ] `.ralph/STOP` is written after the email is sent and before any further Ralph loop work continues.
 - [ ] Docs are updated if this task changes any documented workflow around the design-review stop; otherwise the story artifacts and task markdown are the required written record.
 - [ ] `make check` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set and `<passes>true</passes>` remains false.
-- [ ] `make test` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set and `<passes>true</passes>` remains false.
-- [ ] `make test-long` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set and `<passes>true</passes>` remains false.
+- [ ] `make test` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set
+- [ ] `make test-long` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set
 - [ ] `make lint` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set and `<passes>true</passes>` remains false.
 - [ ] `<passes>true</passes>` is set only after every acceptance-criteria item and every required implementation-plan checkbox is complete; if the planning stop intentionally lands before downstream bug fixing, leave `<passes>false</passes>` and say so explicitly in the artifacts instead of pretending the repo is passing.
 </acceptance_criteria>

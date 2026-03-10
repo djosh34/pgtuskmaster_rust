@@ -15,6 +15,7 @@ Serial execution of tests, is a failure of this task.
 HARD REQUIREMENT: DO NOT SOLVE ANY TEST FAILURES THAT ARE IN `src/`, instead create bug tasks using add-bug, blocked by this story.
 Any attempt of solving bugs outside the scope of this harness are STRICTLY FORBIDDEN!
 JUST RUN ALL TESTS IN PARALLEL, GATHER FAILURES, ADD BUGS, AND MOVE ON!
+This means that if make test and/or make test-long fails, BUT all bugs are written, they PASS, and DO NOT BLOCK
 
 
 **Scenario contracts**
@@ -203,8 +204,8 @@ JUST RUN ALL TESTS IN PARALLEL, GATHER FAILURES, ADD BUGS, AND MOVE ON!
 - [x] Do not defer feature creation just because one scenario currently exposes a product bug.
 - [x] Update docs with `k2-docs-loop` so the greenfield HA suite entrypoints, shipped scenarios, and execution guidance no longer describe only the original feature.
 - [x] Run `make check`.
-- [x] Run `make test`.
-- [ ] Run `make test-long`.
+- [x] Run `make test`, all failures given have a bug task
+- [ ] Run `make test-long`, all failures given have a bug task
 - [x] Run `make lint`.
 - [x] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.
