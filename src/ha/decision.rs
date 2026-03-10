@@ -20,10 +20,13 @@ use super::state::{
     PrimaryPlan, QuiescentReason, ReplicaPlan, WorldSnapshot,
 };
 
+const DIRECT_FOLLOW_RECLONE_LAG_THRESHOLD: u64 = 8 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReconcileFacts {
     pub(crate) self_member_id: MemberId,
     pub(crate) cluster_mode: ClusterMode,
+    pub(crate) current_desired_state: DesiredNodeState,
     pub(crate) leadership_transfer: LeadershipTransferState,
     pub(crate) current_process: ProcessState,
     pub(crate) local_member: Option<MemberRecord>,
@@ -34,9 +37,15 @@ pub(crate) struct ReconcileFacts {
     pub(crate) authoritative_leader_member_id: Option<MemberId>,
     pub(crate) authoritative_leader_member: Option<MemberRecord>,
     pub(crate) i_am_authoritative_leader: bool,
+    pub(crate) fresh_unleased_primary_claim_present: bool,
+    pub(crate) fresh_running_healthy_replica_present: bool,
+    pub(crate) fresh_running_promotable_replica_present: bool,
+    pub(crate) replica_targets_authoritative_leader: Option<bool>,
     pub(crate) postgres_reachable: bool,
     pub(crate) postgres_primary: bool,
     pub(crate) postgres_replica: bool,
+    pub(crate) postgres_replay_lsn: Option<WalLsn>,
+    pub(crate) postgres_follow_lsn: Option<WalLsn>,
     pub(crate) promotion_safety: PromotionSafety,
     pub(crate) elected_candidate: Option<MemberId>,
 }
@@ -110,6 +119,13 @@ impl PromotionSafety {
 pub(crate) fn reconcile_facts(current: &HaState, world: &WorldSnapshot) -> ReconcileFacts {
     let self_member_id = MemberId(world.config.value.cluster.member_id.clone());
     let cluster_mode = derive_cluster_mode(&world.dcs.value, &self_member_id);
+    let expected_cluster_identity = world
+        .dcs
+        .value
+        .cache
+        .cluster_identity
+        .as_ref()
+        .map(|record| record.system_identifier);
     let authoritative_leader_member_id = match &cluster_mode {
         ClusterMode::InitializedLeaderPresent { leader } => Some(leader.clone()),
         _ => None,
@@ -118,7 +134,14 @@ pub(crate) fn reconcile_facts(current: &HaState, world: &WorldSnapshot) -> Recon
         .as_ref()
         .and_then(|leader_id| world.dcs.value.cache.members.get(leader_id))
         .cloned()
-        .filter(|member| member_is_authoritative_follow_source(member, &world.dcs.value.cache, world.dcs.updated_at));
+        .filter(|member| {
+            member_is_authoritative_follow_source(
+                member,
+                &world.dcs.value.cache,
+                world.dcs.updated_at,
+                expected_cluster_identity,
+            )
+        });
     let local_member = world.dcs.value.cache.members.get(&self_member_id).cloned();
     let promotion_safety = local_member
         .as_ref()
@@ -134,6 +157,7 @@ pub(crate) fn reconcile_facts(current: &HaState, world: &WorldSnapshot) -> Recon
     ReconcileFacts {
         self_member_id: self_member_id.clone(),
         cluster_mode,
+        current_desired_state: current.desired_state.clone(),
         leadership_transfer: current.leadership_transfer.clone(),
         current_process: world.process.value.clone(),
         local_member,
@@ -146,19 +170,35 @@ pub(crate) fn reconcile_facts(current: &HaState, world: &WorldSnapshot) -> Recon
             .switchover
             .as_ref()
             .and_then(|request| request.switchover_to.clone()),
-        expected_cluster_identity: world
-            .dcs
-            .value
-            .cache
-            .cluster_identity
-            .as_ref()
-            .map(|record| record.system_identifier),
+        expected_cluster_identity,
         authoritative_leader_member_id: authoritative_leader_member_id.clone(),
         authoritative_leader_member,
         i_am_authoritative_leader: authoritative_leader_member_id.as_ref() == Some(&self_member_id),
+        fresh_unleased_primary_claim_present: fresh_unleased_primary_claim_present(
+            &world.dcs.value.cache,
+            world.dcs.updated_at,
+            expected_cluster_identity,
+        ),
+        fresh_running_healthy_replica_present: fresh_running_healthy_replica_present(
+            &world.dcs.value.cache,
+            world.dcs.updated_at,
+            expected_cluster_identity,
+        ),
+        fresh_running_promotable_replica_present: fresh_running_promotable_replica_present(
+            &self_member_id,
+            &world.dcs.value.cache,
+            world.dcs.updated_at,
+            expected_cluster_identity,
+        ),
+        replica_targets_authoritative_leader: authoritative_leader_member_id
+            .as_ref()
+            .and_then(|leader_id| world.dcs.value.cache.members.get(leader_id))
+            .and_then(|leader_member| pg_targets_member(&world.pg.value, leader_member)),
         postgres_reachable: is_postgres_reachable(&world.pg.value),
         postgres_primary: is_local_primary(&world.pg.value),
         postgres_replica: is_local_replica(&world.pg.value),
+        postgres_replay_lsn: postgres_replay_lsn(&world.pg.value),
+        postgres_follow_lsn: postgres_follow_lsn(&world.pg.value),
         promotion_safety,
         elected_candidate: highest_ranked_candidate(
             &world.dcs.value.cache,
@@ -189,9 +229,11 @@ pub(crate) fn derive_cluster_mode(
             holder: record.holder.clone(),
         },
         (_, None, None, _) => ClusterMode::UninitializedNoBootstrapOwner,
-        (DcsTrust::FreshQuorum, Some(_), _, Some(record)) => ClusterMode::InitializedLeaderPresent {
-            leader: record.member_id.clone(),
-        },
+        (DcsTrust::FreshQuorum, Some(_), _, Some(record)) => {
+            ClusterMode::InitializedLeaderPresent {
+                leader: record.member_id.clone(),
+            }
+        }
         (DcsTrust::FreshQuorum, Some(_), _, None) => ClusterMode::InitializedNoLeaderFreshQuorum,
         (_, Some(_), _, _) => ClusterMode::InitializedNoLeaderNoFreshQuorum,
     }
@@ -204,7 +246,9 @@ pub(crate) fn desired_state_for(facts: &ReconcileFacts) -> DesiredNodeState {
 
     match &facts.cluster_mode {
         ClusterMode::DcsUnavailable => desired_state_when_dcs_unavailable(facts),
-        ClusterMode::UninitializedNoBootstrapOwner => desired_state_when_uninitialized_without_owner(facts),
+        ClusterMode::UninitializedNoBootstrapOwner => {
+            desired_state_when_uninitialized_without_owner(facts)
+        }
         ClusterMode::UninitializedBootstrapInProgress { holder } => {
             desired_state_when_bootstrap_in_progress(facts, holder)
         }
@@ -227,20 +271,21 @@ pub(crate) fn next_leadership_transfer(
     match (
         facts.switchover_pending,
         facts.i_am_authoritative_leader,
-        facts.authoritative_leader_member_id.as_ref(),
         current,
     ) {
-        (false, _, _, _) => LeadershipTransferState::None,
-        (true, true, _, _) => LeadershipTransferState::WaitingForOtherLeader {
+        (false, _, _) => LeadershipTransferState::None,
+        (true, false, _) if facts.authoritative_leader_member_id.is_some() => {
+            LeadershipTransferState::None
+        }
+        (true, true, _) => LeadershipTransferState::WaitingForOtherLeader {
             target: facts.switchover_target.clone(),
         },
-        (
-            true,
-            false,
-            Some(other_leader),
-            LeadershipTransferState::WaitingForOtherLeader { .. },
-        ) if other_leader != &facts.self_member_id => LeadershipTransferState::None,
-        _ => current.clone(),
+        (true, false, LeadershipTransferState::WaitingForOtherLeader { target }) => {
+            LeadershipTransferState::WaitingForOtherLeader {
+                target: target.clone(),
+            }
+        }
+        (true, false, _) => current.clone(),
     }
 }
 
@@ -279,8 +324,9 @@ pub(crate) fn switchover_target_is_eligible_member(
         && member_matches_expected_identity(member, expected_cluster_identity)
         && match member.postgres_runtime_class {
             Some(PostgresRuntimeClass::RunningHealthy) => {
-                evaluate_promotion_safety(&member_promotion_candidate(member), cache, observed_at)
-                    .allows_promotion()
+                member.role == MemberRole::Replica
+                    && member.sql == SqlStatus::Healthy
+                    && member.readiness == Readiness::Ready
             }
             Some(PostgresRuntimeClass::OfflineInspectable) => {
                 member.state_class == Some(MemberStateClass::Promotable)
@@ -337,7 +383,7 @@ pub(crate) enum ProcessActivity {
 }
 
 fn desired_state_when_dcs_unavailable(facts: &ReconcileFacts) -> DesiredNodeState {
-    if facts.postgres_primary {
+    if facts.postgres_primary || local_member_claims_primary(facts) {
         return fence();
     }
     quiescent(QuiescentReason::WaitingForAuthoritativeClusterState)
@@ -372,8 +418,11 @@ fn desired_state_with_authoritative_leader(
     leader: &MemberId,
 ) -> DesiredNodeState {
     if facts.i_am_authoritative_leader {
-        if facts.switchover_pending {
+        if authoritative_leader_should_step_aside_for_switchover(facts) {
             return quiescent(QuiescentReason::WaitingForAuthoritativeLeader);
+        }
+        if authoritative_leader_must_fence(facts) {
+            return fence();
         }
         return primary_state_for_candidate(facts);
     }
@@ -390,15 +439,30 @@ fn desired_state_with_authoritative_leader(
 }
 
 fn desired_state_without_leader_with_fresh_quorum(facts: &ReconcileFacts) -> DesiredNodeState {
+    if facts.switchover_pending {
+        return desired_state_during_switchover_without_leader(facts);
+    }
+
+    if facts.fresh_unleased_primary_claim_present {
+        return if facts.postgres_primary {
+            fence()
+        } else {
+            quiescent(QuiescentReason::WaitingForAuthoritativeLeader)
+        };
+    }
+
+    if matches!(facts.current_desired_state, DesiredNodeState::Fence { .. })
+        && local_member_claims_primary(facts)
+        && !facts.postgres_primary
+    {
+        return quiescent(QuiescentReason::WaitingForAuthoritativeLeader);
+    }
+
     if matches!(
         facts.leadership_transfer,
         LeadershipTransferState::WaitingForOtherLeader { .. }
     ) {
         return quiescent(QuiescentReason::WaitingForAuthoritativeLeader);
-    }
-
-    if facts.switchover_pending {
-        return desired_state_during_switchover_without_leader(facts);
     }
 
     match facts.elected_candidate.as_ref() {
@@ -409,6 +473,10 @@ fn desired_state_without_leader_with_fresh_quorum(facts: &ReconcileFacts) -> Des
 }
 
 fn desired_state_during_switchover_without_leader(facts: &ReconcileFacts) -> DesiredNodeState {
+    if should_keep_waiting_for_other_leader_during_switchover(facts) {
+        return quiescent(QuiescentReason::WaitingForAuthoritativeLeader);
+    }
+
     match facts.switchover_target.as_ref() {
         Some(target) if target == &facts.self_member_id => {
             if local_target_is_eligible(facts) {
@@ -420,14 +488,16 @@ fn desired_state_during_switchover_without_leader(facts: &ReconcileFacts) -> Des
         Some(_) => quiescent(QuiescentReason::WaitingForAuthoritativeLeader),
         None if facts.postgres_primary => quiescent(QuiescentReason::WaitingForAuthoritativeLeader),
         None => match facts.elected_candidate.as_ref() {
-            Some(candidate) if candidate == &facts.self_member_id => primary_state_for_candidate(facts),
+            Some(candidate) if candidate == &facts.self_member_id => {
+                primary_state_for_candidate(facts)
+            }
             _ => quiescent(QuiescentReason::WaitingForAuthoritativeLeader),
         },
     }
 }
 
 fn desired_state_without_leader_without_fresh_quorum(facts: &ReconcileFacts) -> DesiredNodeState {
-    if facts.postgres_primary {
+    if facts.postgres_primary || local_member_claims_primary(facts) {
         return fence();
     }
     quiescent(QuiescentReason::WaitingForFreshQuorum)
@@ -438,16 +508,25 @@ fn primary_state_for_candidate(facts: &ReconcileFacts) -> DesiredNodeState {
         return fence();
     }
 
-    match (facts.i_am_authoritative_leader, facts.postgres_primary, facts.postgres_replica) {
+    match (
+        facts.i_am_authoritative_leader,
+        facts.postgres_primary,
+        facts.postgres_replica,
+    ) {
         (true, true, _) => DesiredNodeState::Primary {
             plan: PrimaryPlan::KeepLeader,
         },
         (_, true, _) => DesiredNodeState::Primary {
             plan: PrimaryPlan::AcquireLeaderThenResumePrimary,
         },
-        (_, _, true) if facts.promotion_safety.allows_promotion() => DesiredNodeState::Primary {
-            plan: PrimaryPlan::AcquireLeaderThenPromote,
-        },
+        (_, _, true)
+            if facts.promotion_safety.allows_promotion()
+                && local_runtime_is_running_healthy(facts) =>
+        {
+            DesiredNodeState::Primary {
+                plan: PrimaryPlan::AcquireLeaderThenPromote,
+            }
+        }
         _ if local_can_start_primary(facts) => DesiredNodeState::Primary {
             plan: PrimaryPlan::AcquireLeaderThenStartPrimary,
         },
@@ -455,49 +534,194 @@ fn primary_state_for_candidate(facts: &ReconcileFacts) -> DesiredNodeState {
     }
 }
 
-fn replica_or_quiescent_for_leader(
-    facts: &ReconcileFacts,
-    leader: &MemberId,
-) -> DesiredNodeState {
+fn replica_or_quiescent_for_leader(facts: &ReconcileFacts, leader: &MemberId) -> DesiredNodeState {
     replica_plan_for_leader(facts, leader)
         .map(|plan| DesiredNodeState::Replica { plan })
         .unwrap_or_else(|| quiescent(QuiescentReason::WaitingForRecoveryPreconditions))
 }
 
-fn replica_plan_for_leader(
-    facts: &ReconcileFacts,
-    leader: &MemberId,
-) -> Option<ReplicaPlan> {
+fn replica_plan_for_leader(facts: &ReconcileFacts, leader: &MemberId) -> Option<ReplicaPlan> {
     let leader_member = facts.authoritative_leader_member.as_ref()?;
     if &leader_member.member_id != leader {
         return None;
+    }
+    if let Some(plan) = sticky_replica_recovery_plan(facts, leader) {
+        return Some(plan);
+    }
+    match process_activity(&facts.current_process, &[ActiveJobKind::BaseBackup]) {
+        ProcessActivity::Running => {
+            return Some(ReplicaPlan::Basebackup {
+                leader_member_id: leader.clone(),
+            });
+        }
+        ProcessActivity::IdleSuccess => {
+            return Some(ReplicaPlan::Direct {
+                leader_member_id: leader.clone(),
+            });
+        }
+        _ => {}
     }
     if local_state_is_invalid(facts) {
         return None;
     }
     if !local_matches_expected_identity(facts) {
-        return Some(ReplicaPlan::BasebackupThenFollow {
+        return Some(ReplicaPlan::Basebackup {
             leader_member_id: leader.clone(),
         });
     }
     if local_data_dir_missing_or_empty(facts) {
-        return Some(ReplicaPlan::BasebackupThenFollow {
+        return Some(ReplicaPlan::Basebackup {
+            leader_member_id: leader.clone(),
+        });
+    }
+    if direct_follow_restart_failed_needs_reclone(facts, leader) {
+        return Some(ReplicaPlan::Basebackup {
+            leader_member_id: leader.clone(),
+        });
+    }
+    if direct_follow_restart_needs_reclone(facts, leader) {
+        return Some(ReplicaPlan::Basebackup {
+            leader_member_id: leader.clone(),
+        });
+    }
+    if stopped_replica_needs_reclone_for_newer_leader_timeline(facts, leader_member) {
+        return Some(ReplicaPlan::Basebackup {
             leader_member_id: leader.clone(),
         });
     }
     if rewind_failed_recently(&facts.current_process) {
-        return Some(ReplicaPlan::BasebackupThenFollow {
+        return Some(ReplicaPlan::Basebackup {
             leader_member_id: leader.clone(),
         });
     }
     if facts.postgres_primary || local_member_claims_primary(facts) {
-        return Some(ReplicaPlan::RewindThenFollow {
+        return Some(ReplicaPlan::Rewind {
             leader_member_id: leader.clone(),
         });
     }
-    Some(ReplicaPlan::DirectFollow {
+    Some(ReplicaPlan::Direct {
         leader_member_id: leader.clone(),
     })
+}
+
+fn sticky_replica_recovery_plan(facts: &ReconcileFacts, leader: &MemberId) -> Option<ReplicaPlan> {
+    match &facts.current_desired_state {
+        DesiredNodeState::Replica {
+            plan: ReplicaPlan::Basebackup { leader_member_id },
+        } if leader_member_id == leader => {
+            match process_activity(&facts.current_process, &[ActiveJobKind::BaseBackup]) {
+                ProcessActivity::IdleSuccess => Some(ReplicaPlan::Direct {
+                    leader_member_id: leader.clone(),
+                }),
+                ProcessActivity::IdleFailure => Some(ReplicaPlan::Basebackup {
+                    leader_member_id: leader.clone(),
+                }),
+                ProcessActivity::Running | ProcessActivity::IdleNoOutcome => {
+                    Some(ReplicaPlan::Basebackup {
+                        leader_member_id: leader.clone(),
+                    })
+                }
+            }
+        }
+        DesiredNodeState::Replica {
+            plan: ReplicaPlan::Rewind { leader_member_id },
+        } if leader_member_id == leader => {
+            match process_activity(&facts.current_process, &[ActiveJobKind::PgRewind]) {
+                ProcessActivity::IdleSuccess => Some(ReplicaPlan::Direct {
+                    leader_member_id: leader.clone(),
+                }),
+                ProcessActivity::IdleFailure => None,
+                ProcessActivity::Running | ProcessActivity::IdleNoOutcome => {
+                    Some(ReplicaPlan::Rewind {
+                        leader_member_id: leader.clone(),
+                    })
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+fn stopped_replica_needs_reclone_for_newer_leader_timeline(
+    facts: &ReconcileFacts,
+    leader_member: &MemberRecord,
+) -> bool {
+    if facts.postgres_reachable {
+        return false;
+    }
+    let Some(local_member) = facts.local_member.as_ref() else {
+        return false;
+    };
+    if local_member.state_class != Some(MemberStateClass::ReplicaOnly) {
+        return false;
+    }
+    if local_member.replay_lsn.is_none() && local_member.durable_end_lsn.is_none() {
+        return false;
+    }
+    match (local_member.timeline, leader_member.timeline) {
+        (Some(local_timeline), Some(leader_timeline)) => leader_timeline > local_timeline,
+        _ => false,
+    }
+}
+
+fn direct_follow_restart_needs_reclone(facts: &ReconcileFacts, leader: &MemberId) -> bool {
+    if !facts.postgres_reachable || !facts.postgres_replica {
+        return false;
+    }
+    if facts.replica_targets_authoritative_leader != Some(true) {
+        return false;
+    }
+    if !matches!(
+        facts.current_desired_state,
+        DesiredNodeState::Replica {
+            plan: ReplicaPlan::Direct {
+                leader_member_id: ref current_leader,
+            },
+        } if current_leader == leader
+    ) {
+        return false;
+    }
+    if process_activity(&facts.current_process, &[ActiveJobKind::StartPostgres])
+        != ProcessActivity::IdleSuccess
+    {
+        return false;
+    }
+    let Some(local_member) = facts.local_member.as_ref() else {
+        return false;
+    };
+    if local_member.state_class != Some(MemberStateClass::ReplicaOnly) {
+        return false;
+    }
+    let Some(local_replay_lsn) = facts.postgres_replay_lsn else {
+        return false;
+    };
+    let Some(follow_lsn) = facts.postgres_follow_lsn else {
+        return false;
+    };
+    follow_lsn.0.saturating_sub(local_replay_lsn.0) >= DIRECT_FOLLOW_RECLONE_LAG_THRESHOLD
+}
+
+fn direct_follow_restart_failed_needs_reclone(facts: &ReconcileFacts, leader: &MemberId) -> bool {
+    if !matches!(
+        facts.current_desired_state,
+        DesiredNodeState::Replica {
+            plan: ReplicaPlan::Direct {
+                leader_member_id: ref current_leader,
+            },
+        } if current_leader == leader
+    ) {
+        return false;
+    }
+    if process_activity(&facts.current_process, &[ActiveJobKind::StartPostgres])
+        != ProcessActivity::IdleFailure
+    {
+        return false;
+    }
+    facts
+        .local_member
+        .as_ref()
+        .map(|member| member.state_class == Some(MemberStateClass::ReplicaOnly))
+        .unwrap_or(false)
 }
 
 fn highest_ranked_candidate(
@@ -512,7 +736,7 @@ fn highest_ranked_candidate(
         .map(|member| CandidateDescriptor {
             member: member.clone(),
             identity_rank: identity_rank(member, expected_cluster_identity),
-            eligible: switchover_target_is_eligible_member(
+            eligible: automatic_failover_candidate_is_eligible_member(
                 member,
                 cache,
                 observed_at,
@@ -537,7 +761,10 @@ fn highest_ranked_candidate(
         })
 }
 
-fn compare_candidate_descriptors(left: &CandidateDescriptor, right: &CandidateDescriptor) -> Ordering {
+fn compare_candidate_descriptors(
+    left: &CandidateDescriptor,
+    right: &CandidateDescriptor,
+) -> Ordering {
     left.identity_rank
         .cmp(&right.identity_rank)
         .then_with(|| left.eligible.cmp(&right.eligible))
@@ -564,6 +791,46 @@ fn runtime_rank(member: &MemberRecord) -> u8 {
     }
 }
 
+fn fresh_running_healthy_replica_present(
+    cache: &DcsView,
+    observed_at: UnixMillis,
+    expected_cluster_identity: Option<SystemIdentifier>,
+) -> bool {
+    cache.members.values().any(|member| {
+        member_record_is_fresh(member, cache, observed_at)
+            && member_matches_expected_identity(member, expected_cluster_identity)
+            && member.postgres_runtime_class == Some(PostgresRuntimeClass::RunningHealthy)
+            && member.role == MemberRole::Replica
+            && member.sql == SqlStatus::Healthy
+            && member.readiness == Readiness::Ready
+    })
+}
+
+fn automatic_failover_candidate_is_eligible_member(
+    member: &MemberRecord,
+    cache: &DcsView,
+    observed_at: UnixMillis,
+    expected_cluster_identity: Option<SystemIdentifier>,
+) -> bool {
+    member_record_is_fresh(member, cache, observed_at)
+        && member_matches_expected_identity(member, expected_cluster_identity)
+        && match member.postgres_runtime_class {
+            Some(PostgresRuntimeClass::RunningHealthy) => {
+                evaluate_promotion_safety(&member_promotion_candidate(member), cache, observed_at)
+                    .allows_promotion()
+            }
+            Some(PostgresRuntimeClass::OfflineInspectable) => {
+                member_is_offline_former_primary(member)
+                    && !fresh_running_healthy_replica_present(
+                        cache,
+                        observed_at,
+                        expected_cluster_identity,
+                    )
+            }
+            _ => false,
+        }
+}
+
 fn cluster_identity_missing_in_initialized_cluster(facts: &ReconcileFacts) -> bool {
     matches!(
         facts.cluster_mode,
@@ -587,11 +854,12 @@ fn member_is_authoritative_follow_source(
     member: &MemberRecord,
     cache: &DcsView,
     observed_at: UnixMillis,
+    expected_cluster_identity: Option<SystemIdentifier>,
 ) -> bool {
     member_record_is_fresh(member, cache, observed_at)
-        && member.role == MemberRole::Primary
-        && member.sql == SqlStatus::Healthy
-        && member.readiness == Readiness::Ready
+        && member_matches_expected_identity(member, expected_cluster_identity)
+        && member.state_class != Some(MemberStateClass::InvalidDataDir)
+        && member.state_class != Some(MemberStateClass::EmptyOrMissingDataDir)
 }
 
 fn local_target_is_eligible(facts: &ReconcileFacts) -> bool {
@@ -602,7 +870,9 @@ fn local_target_is_eligible(facts: &ReconcileFacts) -> bool {
             member_matches_expected_identity(member, facts.expected_cluster_identity)
                 && match member.postgres_runtime_class {
                     Some(PostgresRuntimeClass::RunningHealthy) => {
-                        facts.promotion_safety.allows_promotion()
+                        member.role == MemberRole::Replica
+                            && member.sql == SqlStatus::Healthy
+                            && member.readiness == Readiness::Ready
                     }
                     Some(PostgresRuntimeClass::OfflineInspectable) => {
                         member.state_class == Some(MemberStateClass::Promotable)
@@ -620,8 +890,14 @@ enum LocalUninitializedState {
 }
 
 fn local_uninitialized_state(facts: &ReconcileFacts) -> LocalUninitializedState {
-    match facts.local_member.as_ref().and_then(|member| member.state_class.clone()) {
-        Some(MemberStateClass::EmptyOrMissingDataDir) => LocalUninitializedState::EligibleForBootstrap,
+    match facts
+        .local_member
+        .as_ref()
+        .and_then(|member| member.state_class.clone())
+    {
+        Some(MemberStateClass::EmptyOrMissingDataDir) => {
+            LocalUninitializedState::EligibleForBootstrap
+        }
         Some(_) => LocalUninitializedState::UnsafeUnexpectedDataDir,
         None => LocalUninitializedState::Unknown,
     }
@@ -651,40 +927,170 @@ fn local_state_is_invalid(facts: &ReconcileFacts) -> bool {
         == Some(MemberStateClass::InvalidDataDir)
 }
 
+fn local_runtime_is_running_healthy(facts: &ReconcileFacts) -> bool {
+    facts
+        .local_member
+        .as_ref()
+        .and_then(|member| member.postgres_runtime_class.clone())
+        == Some(PostgresRuntimeClass::RunningHealthy)
+}
+
 fn local_can_start_primary(facts: &ReconcileFacts) -> bool {
     facts
         .local_member
         .as_ref()
-        .map(|member| {
-            member.postgres_runtime_class == Some(PostgresRuntimeClass::OfflineInspectable)
-                && member.state_class == Some(MemberStateClass::Promotable)
-        })
+        .map(member_is_offline_former_primary)
         .unwrap_or(false)
+        && !facts.fresh_running_healthy_replica_present
+        && !facts.fresh_running_promotable_replica_present
+}
+
+fn fresh_running_promotable_replica_present(
+    self_member_id: &MemberId,
+    cache: &DcsView,
+    observed_at: UnixMillis,
+    expected_cluster_identity: Option<SystemIdentifier>,
+) -> bool {
+    cache.members.values().any(|member| {
+        member.member_id != *self_member_id
+            && member_record_is_fresh(member, cache, observed_at)
+            && member_matches_expected_identity(member, expected_cluster_identity)
+            && member.postgres_runtime_class == Some(PostgresRuntimeClass::RunningHealthy)
+            && evaluate_promotion_safety(&member_promotion_candidate(member), cache, observed_at)
+                .allows_promotion()
+    })
 }
 
 fn local_member_claims_primary(facts: &ReconcileFacts) -> bool {
     facts
         .local_member
         .as_ref()
-        .map(|member| member.role == MemberRole::Primary)
+        .map(|member| {
+            member.role == MemberRole::Primary || member_is_offline_former_primary(member)
+        })
         .unwrap_or(false)
+}
+
+fn member_is_offline_promotable(member: &MemberRecord) -> bool {
+    member.postgres_runtime_class == Some(PostgresRuntimeClass::OfflineInspectable)
+        && member.state_class == Some(MemberStateClass::Promotable)
+}
+
+fn member_is_offline_former_primary(member: &MemberRecord) -> bool {
+    member_is_offline_promotable(member)
+        && member.write_lsn.is_some()
+        && member.replay_lsn.is_none()
+}
+
+fn authoritative_leader_must_fence(facts: &ReconcileFacts) -> bool {
+    if !facts.i_am_authoritative_leader {
+        return false;
+    }
+    if !local_matches_expected_identity(facts) || local_state_is_invalid(facts) {
+        return true;
+    }
+    if facts.postgres_primary {
+        return false;
+    }
+    if authoritative_leader_transition_still_converging(facts) {
+        return false;
+    }
+    if matches!(
+        process_activity(
+            &facts.current_process,
+            &[ActiveJobKind::StartPostgres, ActiveJobKind::Promote],
+        ),
+        ProcessActivity::Running
+    ) {
+        return false;
+    }
+    if facts.postgres_replica {
+        return true;
+    }
+    !matches!(
+        primary_state_for_candidate(facts),
+        DesiredNodeState::Primary { .. }
+    )
+}
+
+fn authoritative_leader_should_step_aside_for_switchover(facts: &ReconcileFacts) -> bool {
+    if !facts.i_am_authoritative_leader || !facts.switchover_pending {
+        return false;
+    }
+
+    match facts.switchover_target.as_ref() {
+        Some(target) => target != &facts.self_member_id,
+        None => !authoritative_leader_is_finishing_untargeted_switchover(facts),
+    }
+}
+
+fn should_keep_waiting_for_other_leader_during_switchover(facts: &ReconcileFacts) -> bool {
+    match (&facts.leadership_transfer, facts.switchover_target.as_ref()) {
+        (
+            LeadershipTransferState::WaitingForOtherLeader {
+                target: Some(wait_target),
+            },
+            Some(switchover_target),
+        ) => wait_target != switchover_target || switchover_target != &facts.self_member_id,
+        (LeadershipTransferState::WaitingForOtherLeader { target: None }, None) => {
+            !authoritative_leader_is_finishing_untargeted_switchover(facts)
+        }
+        (LeadershipTransferState::WaitingForOtherLeader { .. }, _) => true,
+        (LeadershipTransferState::None, _) => false,
+    }
+}
+
+fn authoritative_leader_transition_still_converging(facts: &ReconcileFacts) -> bool {
+    matches!(
+        facts.current_desired_state,
+        DesiredNodeState::Primary {
+            plan: PrimaryPlan::AcquireLeaderThenPromote
+                | PrimaryPlan::AcquireLeaderThenStartPrimary,
+        }
+    )
+}
+
+fn authoritative_leader_is_finishing_untargeted_switchover(facts: &ReconcileFacts) -> bool {
+    authoritative_leader_transition_still_converging(facts)
+        || matches!(
+            (&facts.current_desired_state, &facts.leadership_transfer),
+            (
+                DesiredNodeState::Primary {
+                    plan: PrimaryPlan::KeepLeader | PrimaryPlan::AcquireLeaderThenResumePrimary,
+                },
+                LeadershipTransferState::WaitingForOtherLeader { target: None },
+            )
+        )
 }
 
 fn rewind_failed_recently(process: &ProcessState) -> bool {
     matches!(
         process,
         ProcessState::Idle {
-            last_outcome:
-                Some(JobOutcome::Failure {
+            last_outcome: Some(
+                JobOutcome::Failure {
                     job_kind: ActiveJobKind::PgRewind,
                     ..
                 } | JobOutcome::Timeout {
                     job_kind: ActiveJobKind::PgRewind,
                     ..
-                }),
+                }
+            ),
             ..
         }
     )
+}
+
+fn fresh_unleased_primary_claim_present(
+    cache: &DcsView,
+    observed_at: UnixMillis,
+    expected_cluster_identity: Option<SystemIdentifier>,
+) -> bool {
+    cache.members.values().any(|member| {
+        member_record_is_fresh(member, cache, observed_at)
+            && member_matches_expected_identity(member, expected_cluster_identity)
+            && member.role == MemberRole::Primary
+    })
 }
 
 fn quiescent(reason: QuiescentReason) -> DesiredNodeState {
@@ -724,6 +1130,31 @@ fn is_local_replica(state: &PgInfoState) -> bool {
             ..
         } if matches!(common.sql, SqlStatus::Healthy)
     )
+}
+
+fn postgres_replay_lsn(state: &PgInfoState) -> Option<WalLsn> {
+    match state {
+        PgInfoState::Replica { replay_lsn, .. } => Some(*replay_lsn),
+        _ => None,
+    }
+}
+
+fn postgres_follow_lsn(state: &PgInfoState) -> Option<WalLsn> {
+    match state {
+        PgInfoState::Replica { follow_lsn, .. } => *follow_lsn,
+        _ => None,
+    }
+}
+
+fn pg_targets_member(state: &PgInfoState, member: &MemberRecord) -> Option<bool> {
+    let current_primary_conninfo = match state {
+        PgInfoState::Unknown { common }
+        | PgInfoState::Primary { common, .. }
+        | PgInfoState::Replica { common, .. } => common.pg_config.primary_conninfo.as_ref(),
+    };
+    current_primary_conninfo.map(|conninfo| {
+        conninfo.host == member.postgres_host && conninfo.port == member.postgres_port
+    })
 }
 
 fn member_promotion_candidate(member: &MemberRecord) -> PromotionCandidate {
@@ -779,7 +1210,11 @@ fn evaluate_promotion_safety(
         .members
         .values()
         .filter(|member| member_record_is_fresh(member, cache, observed_at))
-        .filter_map(|member| member.timeline.map(|timeline| (timeline, member.member_id.clone())))
+        .filter_map(|member| {
+            member
+                .timeline
+                .map(|timeline| (timeline, member.member_id.clone()))
+        })
         .max_by_key(|(timeline, _)| *timeline);
 
     if let Some((required_timeline, source_member_id)) = highest_timeline {
@@ -823,14 +1258,24 @@ mod tests {
             LeaderRecord, MemberRecord, MemberRole, MemberStateClass, PostgresRuntimeClass,
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        process::state::ProcessState,
-        state::{MemberId, SystemIdentifier, TimelineId, UnixMillis, Version, Versioned, WorkerStatus, WalLsn},
+        process::{
+            jobs::ActiveJobKind,
+            state::{JobOutcome, ProcessState},
+        },
+        state::{
+            MemberId, SystemIdentifier, TimelineId, UnixMillis, Version, Versioned, WalLsn,
+            WorkerStatus,
+        },
     };
 
-    use super::{desired_state_for, eligible_switchover_targets, next_leadership_transfer, reconcile_facts};
+    use super::{
+        desired_state_for, eligible_switchover_targets, highest_ranked_candidate,
+        next_leadership_transfer, reconcile_facts, ReconcileFacts,
+        DIRECT_FOLLOW_RECLONE_LAG_THRESHOLD,
+    };
     use crate::ha::state::{
-        ClusterMode, DesiredNodeState, FencePlan, HaState, LeadershipTransferState, QuiescentReason,
-        WorldSnapshot,
+        ClusterMode, DesiredNodeState, FencePlan, HaState, LeadershipTransferState,
+        QuiescentReason, WorldSnapshot,
     };
 
     fn sample_runtime_config() -> RuntimeConfig {
@@ -928,6 +1373,25 @@ mod tests {
         }
     }
 
+    fn sample_pg_unknown() -> PgInfoState {
+        PgInfoState::Unknown {
+            common: PgInfoCommon {
+                worker: WorkerStatus::Running,
+                sql: SqlStatus::Unknown,
+                readiness: Readiness::Unknown,
+                timeline: None,
+                pg_config: PgConfig {
+                    port: None,
+                    hot_standby: None,
+                    primary_conninfo: None,
+                    primary_slot_name: None,
+                    extra: BTreeMap::new(),
+                },
+                last_refresh_at: Some(UnixMillis(100)),
+            },
+        }
+    }
+
     #[test]
     fn authoritative_leader_absence_fences_local_primary_without_fresh_quorum() {
         let self_id = MemberId("node-a".to_string());
@@ -993,8 +1457,12 @@ mod tests {
             }),
             bootstrap_lock: None,
         };
-        cache.members.insert(self_id.clone(), sample_member("node-a"));
-        cache.members.insert(MemberId("node-b".to_string()), sample_member("node-b"));
+        cache
+            .members
+            .insert(self_id.clone(), sample_member("node-a"));
+        cache
+            .members
+            .insert(MemberId("node-b".to_string()), sample_member("node-b"));
         let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_replica());
         let current = HaState {
             worker: WorkerStatus::Running,
@@ -1013,6 +1481,40 @@ mod tests {
                 reason: QuiescentReason::WaitingForAuthoritativeLeader,
             }
         );
+    }
+
+    #[test]
+    fn healthy_target_remains_api_eligible_without_full_promotion_safety_metadata() {
+        let self_id = MemberId("node-a".to_string());
+        let target_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: self_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: self_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        cache
+            .members
+            .insert(self_id.clone(), sample_member("node-a"));
+        let mut target = sample_member("node-b");
+        target.timeline = None;
+        target.replay_lsn = None;
+        cache.members.insert(target_id.clone(), target);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_primary());
+        assert!(eligible_switchover_targets(&world).contains(&target_id));
     }
 
     #[test]
@@ -1041,9 +1543,11 @@ mod tests {
         let mut wrong_cluster = sample_member("node-c");
         wrong_cluster.system_identifier = Some(SystemIdentifier(77));
         cache.members.insert(self_id, leader);
-        cache.members
+        cache
+            .members
             .insert(MemberId("node-b".to_string()), healthy_replica.clone());
-        cache.members
+        cache
+            .members
             .insert(MemberId("node-c".to_string()), wrong_cluster);
         let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_primary());
 
@@ -1062,7 +1566,9 @@ mod tests {
             leader: Some(LeaderRecord {
                 member_id: MemberId("node-b".to_string()),
             }),
-            switchover: Some(crate::dcs::state::SwitchoverRequest { switchover_to: None }),
+            switchover: Some(crate::dcs::state::SwitchoverRequest {
+                switchover_to: None,
+            }),
             config: sample_runtime_config(),
             cluster_initialized: Some(ClusterInitializedRecord {
                 initialized_by: self_id.clone(),
@@ -1075,12 +1581,16 @@ mod tests {
             }),
             bootstrap_lock: None,
         };
-        cache.members.insert(MemberId("node-a".to_string()), sample_member("node-a"));
+        cache
+            .members
+            .insert(MemberId("node-a".to_string()), sample_member("node-a"));
         let mut new_leader = sample_member("node-b");
         new_leader.role = MemberRole::Primary;
         new_leader.write_lsn = Some(WalLsn(12));
         new_leader.replay_lsn = None;
-        cache.members.insert(MemberId("node-b".to_string()), new_leader);
+        cache
+            .members
+            .insert(MemberId("node-b".to_string()), new_leader);
         let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_replica());
         let current = HaState {
             worker: WorkerStatus::Running,
@@ -1096,6 +1606,1343 @@ mod tests {
         assert_eq!(
             next_leadership_transfer(&current.leadership_transfer, &facts),
             LeadershipTransferState::None
+        );
+    }
+
+    #[test]
+    fn authoritative_leader_with_stopped_postgres_fences_when_postgres_is_stopped() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: self_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: self_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.role = MemberRole::Unknown;
+        local.state_class = Some(MemberStateClass::Promotable);
+        local.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        cache.members.insert(self_id.clone(), local);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent { leader: self_id },
+            desired_state: DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::KeepLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Fence {
+                plan: FencePlan::StopAndStayNonWritable,
+            }
+        );
+    }
+
+    #[test]
+    fn authoritative_leader_keeps_converging_during_acquire_then_promote() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: self_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: self_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.role = MemberRole::Replica;
+        local.sql = SqlStatus::Healthy;
+        local.readiness = Readiness::Ready;
+        cache.members.insert(self_id.clone(), local);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_replica());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::AcquireLeaderThenPromote,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::AcquireLeaderThenPromote,
+            }
+        );
+    }
+
+    #[test]
+    fn switchover_target_keeps_primary_progress_after_acquiring_leader() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: self_id.clone(),
+            }),
+            switchover: Some(crate::dcs::state::SwitchoverRequest {
+                switchover_to: Some(self_id.clone()),
+            }),
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: MemberId("node-b".to_string()),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        cache
+            .members
+            .insert(self_id.clone(), sample_member("node-a"));
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_replica());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::AcquireLeaderThenPromote,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::AcquireLeaderThenPromote,
+            }
+        );
+    }
+
+    #[test]
+    fn untargeted_switchover_leader_keeps_primary_progress_after_acquiring_leader() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: self_id.clone(),
+            }),
+            switchover: Some(crate::dcs::state::SwitchoverRequest {
+                switchover_to: None,
+            }),
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: MemberId("node-b".to_string()),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        cache
+            .members
+            .insert(self_id.clone(), sample_member("node-a"));
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_replica());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::AcquireLeaderThenPromote,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::AcquireLeaderThenPromote,
+            }
+        );
+    }
+
+    #[test]
+    fn untargeted_switchover_existing_leader_steps_aside() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: self_id.clone(),
+            }),
+            switchover: Some(crate::dcs::state::SwitchoverRequest {
+                switchover_to: None,
+            }),
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: MemberId("node-b".to_string()),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.role = MemberRole::Primary;
+        local.sql = SqlStatus::Healthy;
+        local.readiness = Readiness::Ready;
+        cache.members.insert(self_id.clone(), local);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_primary());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: self_id.clone(),
+            },
+            desired_state: DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::KeepLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            }
+        );
+    }
+
+    #[test]
+    fn untargeted_switchover_new_leader_keeps_primary_while_clear_propagates() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: self_id.clone(),
+            }),
+            switchover: Some(crate::dcs::state::SwitchoverRequest {
+                switchover_to: None,
+            }),
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: MemberId("node-b".to_string()),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.role = MemberRole::Primary;
+        local.sql = SqlStatus::Healthy;
+        local.readiness = Readiness::Ready;
+        cache.members.insert(self_id.clone(), local);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_primary());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: self_id.clone(),
+            },
+            desired_state: DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::KeepLeader,
+            },
+            leadership_transfer: LeadershipTransferState::WaitingForOtherLeader { target: None },
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::KeepLeader,
+            }
+        );
+    }
+
+    #[test]
+    fn untargeted_switchover_old_leader_keeps_waiting_when_lease_briefly_disappears() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: Some(crate::dcs::state::SwitchoverRequest {
+                switchover_to: None,
+            }),
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: self_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.role = MemberRole::Primary;
+        local.write_lsn = Some(WalLsn(12));
+        local.replay_lsn = None;
+        cache.members.insert(self_id.clone(), local);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            },
+            leadership_transfer: LeadershipTransferState::WaitingForOtherLeader { target: None },
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            }
+        );
+    }
+
+    #[test]
+    fn switchover_target_still_advances_without_leader_while_waiting_transfer() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: Some(crate::dcs::state::SwitchoverRequest {
+                switchover_to: Some(self_id.clone()),
+            }),
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: MemberId("node-b".to_string()),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        cache
+            .members
+            .insert(self_id.clone(), sample_member("node-a"));
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_replica());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            },
+            leadership_transfer: LeadershipTransferState::WaitingForOtherLeader {
+                target: Some(self_id.clone()),
+            },
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::AcquireLeaderThenPromote,
+            }
+        );
+    }
+
+    #[test]
+    fn offline_promotable_non_leader_rejoins_via_rewind() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut former_primary = sample_member("node-a");
+        former_primary.role = MemberRole::Unknown;
+        former_primary.state_class = Some(MemberStateClass::Promotable);
+        former_primary.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        former_primary.write_lsn = Some(WalLsn(11));
+        former_primary.replay_lsn = None;
+        cache.members.insert(self_id.clone(), former_primary);
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        leader.write_lsn = Some(WalLsn(12));
+        leader.replay_lsn = None;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Rewind {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn follower_keeps_rejoining_toward_fresh_leader_before_sql_is_ready() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        cache
+            .members
+            .insert(self_id.clone(), sample_member("node-a"));
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Unknown;
+        leader.sql = SqlStatus::Unknown;
+        leader.readiness = Readiness::NotReady;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Direct {
+                    leader_member_id: leader_id.clone(),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Direct {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn no_leader_with_fresh_unleased_primary_claim_blocks_new_promotion() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: MemberId("node-b".to_string()),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        cache
+            .members
+            .insert(self_id.clone(), sample_member("node-a"));
+        let mut stale_primary = sample_member("node-b");
+        stale_primary.role = MemberRole::Primary;
+        stale_primary.write_lsn = Some(WalLsn(15));
+        stale_primary.replay_lsn = None;
+        cache
+            .members
+            .insert(MemberId("node-b".to_string()), stale_primary);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_replica());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Direct {
+                    leader_member_id: MemberId("node-b".to_string()),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            }
+        );
+    }
+
+    #[test]
+    fn automatic_failover_skips_offline_former_primary_when_healthy_replica_exists() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: MemberId("node-b".to_string()),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut healthy_replica = sample_member("node-a");
+        healthy_replica.role = MemberRole::Replica;
+        healthy_replica.timeline = Some(TimelineId(2));
+        healthy_replica.replay_lsn = Some(WalLsn(15));
+        cache.members.insert(self_id.clone(), healthy_replica);
+        let mut former_primary = sample_member("node-b");
+        former_primary.role = MemberRole::Unknown;
+        former_primary.state_class = Some(MemberStateClass::Promotable);
+        former_primary.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        former_primary.write_lsn = Some(WalLsn(15));
+        former_primary.replay_lsn = None;
+        cache
+            .members
+            .insert(MemberId("node-b".to_string()), former_primary);
+
+        assert_eq!(
+            highest_ranked_candidate(&cache, UnixMillis(100), Some(SystemIdentifier(42))),
+            Some(self_id)
+        );
+    }
+
+    #[test]
+    fn offline_former_primary_waits_when_healthy_replica_can_promote() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: self_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut former_primary = sample_member("node-a");
+        former_primary.role = MemberRole::Unknown;
+        former_primary.state_class = Some(MemberStateClass::Promotable);
+        former_primary.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        former_primary.write_lsn = Some(WalLsn(12));
+        former_primary.replay_lsn = None;
+        cache.members.insert(self_id.clone(), former_primary);
+        let mut healthy_replica = sample_member("node-b");
+        healthy_replica.role = MemberRole::Replica;
+        healthy_replica.postgres_runtime_class = Some(PostgresRuntimeClass::RunningHealthy);
+        healthy_replica.timeline = Some(TimelineId(2));
+        healthy_replica.replay_lsn = Some(WalLsn(12));
+        cache
+            .members
+            .insert(MemberId("node-b".to_string()), healthy_replica);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::KeepLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            }
+        );
+    }
+
+    #[test]
+    fn offline_former_primary_waits_when_healthy_replica_is_still_catching_up() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: self_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut former_primary = sample_member("node-a");
+        former_primary.role = MemberRole::Unknown;
+        former_primary.state_class = Some(MemberStateClass::Promotable);
+        former_primary.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        former_primary.timeline = Some(TimelineId(2));
+        former_primary.write_lsn = Some(WalLsn(12));
+        former_primary.replay_lsn = None;
+        cache.members.insert(self_id.clone(), former_primary);
+        let mut healthy_replica = sample_member("node-b");
+        healthy_replica.role = MemberRole::Replica;
+        healthy_replica.postgres_runtime_class = Some(PostgresRuntimeClass::RunningHealthy);
+        healthy_replica.timeline = Some(TimelineId(1));
+        healthy_replica.replay_lsn = Some(WalLsn(11));
+        cache
+            .members
+            .insert(MemberId("node-b".to_string()), healthy_replica);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Primary {
+                plan: crate::ha::state::PrimaryPlan::KeepLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            }
+        );
+    }
+
+    #[test]
+    fn fenced_former_primary_does_not_immediately_restart_without_leader() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: self_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut former_primary = sample_member("node-a");
+        former_primary.role = MemberRole::Unknown;
+        former_primary.state_class = Some(MemberStateClass::Promotable);
+        former_primary.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        former_primary.write_lsn = Some(WalLsn(12));
+        former_primary.replay_lsn = None;
+        cache.members.insert(self_id.clone(), former_primary);
+        let mut healthy_replica = sample_member("node-b");
+        healthy_replica.role = MemberRole::Replica;
+        healthy_replica.postgres_runtime_class = Some(PostgresRuntimeClass::RunningHealthy);
+        healthy_replica.timeline = Some(TimelineId(2));
+        healthy_replica.replay_lsn = Some(WalLsn(12));
+        cache
+            .members
+            .insert(MemberId("node-b".to_string()), healthy_replica);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Fence {
+                plan: FencePlan::StopAndStayNonWritable,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            }
+        );
+    }
+
+    #[test]
+    fn stopped_local_replica_does_not_promote_from_stale_pginfo() {
+        let self_id = MemberId("node-a".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: None,
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: self_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: self_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        cache.members.insert(self_id.clone(), local);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_replica());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedNoLeaderFreshQuorum,
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Direct {
+                    leader_member_id: MemberId("node-z".to_string()),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            }
+        );
+    }
+
+    #[test]
+    fn offline_promotable_clone_without_primary_wal_evidence_starts_direct_follow() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local_clone = sample_member("node-a");
+        local_clone.role = MemberRole::Unknown;
+        local_clone.state_class = Some(MemberStateClass::Promotable);
+        local_clone.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        local_clone.write_lsn = None;
+        local_clone.replay_lsn = None;
+        cache.members.insert(self_id.clone(), local_clone);
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        leader.write_lsn = Some(WalLsn(12));
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Direct {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn stopped_replica_with_older_timeline_reclones_from_newer_leader() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        cache
+            .members
+            .insert(self_id.clone(), sample_member("node-a"));
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        leader.timeline = Some(TimelineId(2));
+        leader.write_lsn = Some(WalLsn(12));
+        leader.replay_lsn = None;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+
+        let facts = reconcile_facts(&current, &world);
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn direct_follow_restart_with_large_authoritative_gap_falls_back_to_basebackup() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.timeline = Some(TimelineId(2));
+        local.replay_lsn = Some(WalLsn(10));
+        cache.members.insert(self_id.clone(), local);
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        leader.timeline = Some(TimelineId(2));
+        leader.write_lsn = Some(WalLsn(10 + DIRECT_FOLLOW_RECLONE_LAG_THRESHOLD + 1));
+        leader.replay_lsn = None;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let mut pg = sample_pg_replica();
+        if let PgInfoState::Replica {
+            common, follow_lsn, ..
+        } = &mut pg
+        {
+            common.pg_config.primary_conninfo = Some(crate::pginfo::state::PgConnInfo {
+                host: "127.0.0.1".to_string(),
+                port: 5432,
+                user: "replicator".to_string(),
+                dbname: "postgres".to_string(),
+                application_name: None,
+                connect_timeout_s: None,
+                ssl_mode: crate::pginfo::state::PgSslMode::Disable,
+                options: None,
+            });
+            *follow_lsn = Some(WalLsn(10 + DIRECT_FOLLOW_RECLONE_LAG_THRESHOLD + 1));
+        }
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, pg);
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Direct {
+                    leader_member_id: leader_id.clone(),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+        let restarted_direct_follow = ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: Some(JobOutcome::Success {
+                id: crate::state::JobId("job-3".to_string()),
+                job_kind: ActiveJobKind::StartPostgres,
+                finished_at: UnixMillis(2),
+            }),
+        };
+
+        let facts = ReconcileFacts {
+            current_process: restarted_direct_follow,
+            ..reconcile_facts(&current, &world)
+        };
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn running_basebackup_keeps_replica_in_basebackup_plan() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.state_class = Some(MemberStateClass::InvalidDataDir);
+        local.postgres_runtime_class = Some(PostgresRuntimeClass::UnsafeLocalState);
+        cache.members.insert(self_id.clone(), local);
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id.clone(),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+        let running_process = ProcessState::Running {
+            worker: WorkerStatus::Running,
+            active: crate::process::jobs::ActiveJob {
+                id: crate::state::JobId("job-1".to_string()),
+                kind: ActiveJobKind::BaseBackup,
+                started_at: UnixMillis(1),
+                deadline_at: UnixMillis(2),
+            },
+        };
+
+        let facts = ReconcileFacts {
+            current_process: running_process,
+            ..reconcile_facts(&current, &world)
+        };
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn basebackup_plan_sticks_until_outcome_is_observed() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.state_class = Some(MemberStateClass::Promotable);
+        local.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        cache.members.insert(self_id.clone(), local);
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id.clone(),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+        let facts = ReconcileFacts {
+            current_process: ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: None,
+            },
+            ..reconcile_facts(&current, &world)
+        };
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn failed_basebackup_stays_in_basebackup_for_same_leader() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.role = MemberRole::Unknown;
+        local.state_class = Some(MemberStateClass::Promotable);
+        local.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        cache.members.insert(self_id.clone(), local);
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id.clone(),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+        let failed_process = ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: Some(JobOutcome::Failure {
+                id: crate::state::JobId("job-3".to_string()),
+                job_kind: ActiveJobKind::BaseBackup,
+                error: crate::process::jobs::ProcessError::EarlyExit { code: Some(1) },
+                finished_at: UnixMillis(2),
+            }),
+        };
+
+        let facts = ReconcileFacts {
+            current_process: failed_process,
+            ..reconcile_facts(&current, &world)
+        };
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn successful_basebackup_transitions_to_direct_follow_startup() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut local = sample_member("node-a");
+        local.role = MemberRole::Unknown;
+        local.state_class = Some(MemberStateClass::Promotable);
+        local.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        cache.members.insert(self_id.clone(), local);
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Basebackup {
+                    leader_member_id: leader_id.clone(),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+        let successful_process = ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: Some(JobOutcome::Success {
+                id: crate::state::JobId("job-2".to_string()),
+                job_kind: ActiveJobKind::BaseBackup,
+                finished_at: UnixMillis(2),
+            }),
+        };
+
+        let facts = ReconcileFacts {
+            current_process: successful_process,
+            ..reconcile_facts(&current, &world)
+        };
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Direct {
+                    leader_member_id: leader_id,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn rewind_plan_sticks_until_outcome_is_observed() {
+        let self_id = MemberId("node-a".to_string());
+        let leader_id = MemberId("node-b".to_string());
+        let mut cache = DcsView {
+            members: BTreeMap::new(),
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: sample_runtime_config(),
+            cluster_initialized: Some(ClusterInitializedRecord {
+                initialized_by: leader_id.clone(),
+                initialized_at: UnixMillis(10),
+            }),
+            cluster_identity: Some(ClusterIdentityRecord {
+                system_identifier: SystemIdentifier(42),
+                bootstrapped_by: leader_id.clone(),
+                bootstrapped_at: UnixMillis(10),
+            }),
+            bootstrap_lock: None,
+        };
+        let mut former_primary = sample_member("node-a");
+        former_primary.role = MemberRole::Unknown;
+        former_primary.state_class = Some(MemberStateClass::Promotable);
+        former_primary.postgres_runtime_class = Some(PostgresRuntimeClass::OfflineInspectable);
+        former_primary.write_lsn = Some(WalLsn(11));
+        former_primary.replay_lsn = None;
+        cache.members.insert(self_id.clone(), former_primary);
+        let mut leader = sample_member("node-b");
+        leader.role = MemberRole::Primary;
+        leader.write_lsn = Some(WalLsn(12));
+        leader.replay_lsn = None;
+        cache.members.insert(leader_id.clone(), leader);
+
+        let world = sample_world(cache, DcsTrust::FreshQuorum, sample_pg_unknown());
+        let current = HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: leader_id.clone(),
+            },
+            desired_state: DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Rewind {
+                    leader_member_id: leader_id.clone(),
+                },
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 0,
+        };
+        let facts = ReconcileFacts {
+            current_process: ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: None,
+            },
+            ..reconcile_facts(&current, &world)
+        };
+        assert_eq!(
+            desired_state_for(&facts),
+            DesiredNodeState::Replica {
+                plan: crate::ha::state::ReplicaPlan::Rewind {
+                    leader_member_id: leader_id,
+                },
+            }
         );
     }
 }

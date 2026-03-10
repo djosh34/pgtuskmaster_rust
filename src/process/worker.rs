@@ -45,6 +45,7 @@ enum ProcessEventKind {
     FencingPreflightFailed,
     StartPostgresNoop,
     StartPostgresPreflightFailed,
+    StartPostgresValidationFailed,
     BuildCommandFailed,
     SpawnFailed,
     Started,
@@ -66,6 +67,7 @@ impl ProcessEventKind {
             Self::FencingPreflightFailed => "process.job.fencing_preflight_failed",
             Self::StartPostgresNoop => "process.job.start_postgres_noop",
             Self::StartPostgresPreflightFailed => "process.job.start_postgres_preflight_failed",
+            Self::StartPostgresValidationFailed => "process.job.start_postgres_validation_failed",
             Self::BuildCommandFailed => "process.job.build_command_failed",
             Self::SpawnFailed => "process.job.spawn_failed",
             Self::Started => "process.job.started",
@@ -524,7 +526,10 @@ fn fencing_preflight_is_already_stopped(data_dir: &Path) -> Result<bool, Process
     Ok(true)
 }
 
-fn start_postgres_preflight_is_already_running(data_dir: &Path) -> Result<bool, ProcessError> {
+fn start_postgres_preflight_is_already_running(
+    data_dir: &Path,
+    log_file: &Path,
+) -> Result<bool, ProcessError> {
     let pid_file = data_dir.join("postmaster.pid");
     if !pid_file.exists() {
         return Ok(false);
@@ -532,6 +537,10 @@ fn start_postgres_preflight_is_already_running(data_dir: &Path) -> Result<bool, 
 
     let pid = parse_postmaster_pid(&pid_file)?;
     if pid_matches_data_dir(pid, data_dir)? {
+        let log_text = read_postgres_log_text(log_file, None)?;
+        if let Some(message) = detect_start_postgres_failure(log_text.as_str()) {
+            return Err(ProcessError::StartValidationFailed(message.to_string()));
+        }
         return Ok(true);
     }
 
@@ -539,6 +548,83 @@ fn start_postgres_preflight_is_already_running(data_dir: &Path) -> Result<bool, 
     let opts_file = data_dir.join("postmaster.opts");
     remove_file_best_effort(&opts_file)?;
     Ok(false)
+}
+
+fn start_postgres_log_offset(request: &ProcessJobRequest) -> Result<Option<u64>, ProcessError> {
+    match &request.kind {
+        ProcessJobKind::StartPostgres(spec) => match fs::metadata(spec.log_file.as_path()) {
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Some(0)),
+            Err(err) => Err(ProcessError::StartValidationFailed(format!(
+                "postgres log metadata read failed for `{}`: {err}",
+                spec.log_file.display()
+            ))),
+        },
+        _ => Ok(None),
+    }
+}
+
+fn read_postgres_log_text(
+    log_file: &Path,
+    start_offset: Option<u64>,
+) -> Result<String, ProcessError> {
+    let log_bytes = match fs::read(log_file) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(err) => {
+            return Err(ProcessError::StartValidationFailed(format!(
+                "postgres log read failed for `{}`: {err}",
+                log_file.display()
+            )));
+        }
+    };
+    let start_offset = match start_offset {
+        Some(offset) => usize::try_from(offset).map_err(|err| {
+            ProcessError::StartValidationFailed(format!(
+                "postgres log offset conversion failed for `{}`: {err}",
+                log_file.display()
+            ))
+        })?,
+        None => 0,
+    };
+    let relevant_bytes = if start_offset >= log_bytes.len() {
+        &[][..]
+    } else {
+        &log_bytes[start_offset..]
+    };
+    Ok(String::from_utf8_lossy(relevant_bytes).to_ascii_lowercase())
+}
+
+fn detect_start_postgres_failure(log_text: &str) -> Option<&'static str> {
+    if log_text.contains("requested wal segment") && log_text.contains("has already been removed") {
+        return Some("postgres reported missing required WAL during startup; re-clone is required");
+    }
+    if log_text.contains("could not open file \"global/pg_filenode.map\"")
+        || log_text.contains("could not open file \"global/pg_control\"")
+    {
+        return Some(
+            "postgres reported missing core data-dir files during startup; fencing and re-clone are required",
+        );
+    }
+    if log_text.contains("could not access the server configuration file")
+        && log_text.contains("pgtm.postgresql.conf")
+    {
+        return Some(
+            "postgres reported missing managed configuration during startup; fencing and re-clone are required",
+        );
+    }
+    None
+}
+
+fn validate_successful_start_postgres(runtime: &ActiveRuntime) -> Result<(), ProcessError> {
+    let ProcessJobKind::StartPostgres(spec) = &runtime.request.kind else {
+        return Ok(());
+    };
+    let relevant_text = read_postgres_log_text(spec.log_file.as_path(), runtime.start_log_offset)?;
+    if let Some(message) = detect_start_postgres_failure(relevant_text.as_str()) {
+        return Err(ProcessError::StartValidationFailed(message.to_string()));
+    }
+    Ok(())
 }
 
 pub(crate) async fn start_job(
@@ -644,7 +730,10 @@ pub(crate) async fn start_job(
     }
 
     if let ProcessJobKind::StartPostgres(spec) = &request.kind {
-        match start_postgres_preflight_is_already_running(spec.data_dir.as_path()) {
+        match start_postgres_preflight_is_already_running(
+            spec.data_dir.as_path(),
+            spec.log_file.as_path(),
+        ) {
             Ok(true) => {
                 let mut event = process_event(
                     ProcessEventKind::StartPostgresNoop,
@@ -749,6 +838,40 @@ pub(crate) async fn start_job(
     };
 
     let log_identity = command.log_identity.clone();
+    let start_log_offset = match start_postgres_log_offset(&request) {
+        Ok(offset) => offset,
+        Err(error) => {
+            let mut event = process_event(
+                ProcessEventKind::StartPostgresValidationFailed,
+                "failed",
+                SeverityText::Error,
+                "start postgres validation setup failed",
+            );
+            let fields = event.fields_mut();
+            fields.append_json_map(
+                process_job_fields(&request.id, request.kind.label()).into_attributes(),
+            );
+            fields.insert("error", error.to_string());
+            ctx.log
+                .emit_app_event("process_worker::start_job", event)
+                .map_err(|err| {
+                    WorkerError::Message(format!(
+                        "process start-postgres validation setup log emit failed: {err}"
+                    ))
+                })?;
+            transition_to_idle(
+                ctx,
+                JobOutcome::Failure {
+                    id: request.id,
+                    job_kind: active_kind(&request.kind),
+                    error,
+                    finished_at: now,
+                },
+                now,
+            )?;
+            return Ok(());
+        }
+    };
     let handle = match ctx.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
@@ -794,6 +917,7 @@ pub(crate) async fn start_job(
         deadline_at,
         handle,
         log_identity,
+        start_log_offset,
     });
     ctx.state = ProcessState::Running {
         worker: WorkerStatus::Running,
@@ -977,20 +1101,46 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 }
             }
             let job_id = runtime.request.id.clone();
-            let outcome = JobOutcome::Success {
-                id: job_id.clone(),
-                job_kind: active_kind(&runtime.request.kind),
-                finished_at: now,
+            let post_start_validation = validate_successful_start_postgres(&runtime);
+            let (outcome, event) = match post_start_validation {
+                Ok(()) => {
+                    let outcome = JobOutcome::Success {
+                        id: job_id.clone(),
+                        job_kind: active_kind(&runtime.request.kind),
+                        finished_at: now,
+                    };
+                    let mut event = process_event(
+                        ProcessEventKind::Exited,
+                        "ok",
+                        SeverityText::Info,
+                        "process job exited successfully",
+                    );
+                    event.fields_mut().append_json_map(
+                        process_log_identity_fields(&runtime.log_identity).into_attributes(),
+                    );
+                    (outcome, event)
+                }
+                Err(error) => {
+                    let outcome = JobOutcome::Failure {
+                        id: job_id.clone(),
+                        job_kind: active_kind(&runtime.request.kind),
+                        error: error.clone(),
+                        finished_at: now,
+                    };
+                    let mut event = process_event(
+                        ProcessEventKind::StartPostgresValidationFailed,
+                        "failed",
+                        SeverityText::Warn,
+                        "start postgres post-exit validation failed",
+                    );
+                    let fields = event.fields_mut();
+                    fields.append_json_map(
+                        process_log_identity_fields(&runtime.log_identity).into_attributes(),
+                    );
+                    fields.insert("error", error.to_string());
+                    (outcome, event)
+                }
             };
-            let mut event = process_event(
-                ProcessEventKind::Exited,
-                "ok",
-                SeverityText::Info,
-                "process job exited successfully",
-            );
-            event.fields_mut().append_json_map(
-                process_log_identity_fields(&runtime.log_identity).into_attributes(),
-            );
             ctx.log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|err| {
@@ -1583,8 +1733,8 @@ mod tests {
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
             },
             worker::{
-                build_command, can_accept_job, start_job, step_once, tick_active_job,
-                TokioCommandRunner,
+                build_command, can_accept_job, detect_start_postgres_failure, start_job, step_once,
+                tick_active_job, TokioCommandRunner,
             },
         },
         state::{new_state_channel, JobId, UnixMillis, WorkerError, WorkerStatus},
@@ -2156,6 +2306,71 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn start_job_start_postgres_existing_corrupt_postmaster_fails_preflight(
+    ) -> Result<(), WorkerError> {
+        let runner = FakeRunner {
+            spawn_results: VecDeque::new(),
+        };
+        let (mut ctx, tx, subscriber) = test_ctx(Box::new(runner), queued_clock(vec![12, 13]));
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0u128, |duration| duration.as_nanos());
+        let base_dir = std::env::temp_dir().join(format!(
+            "pgtuskmaster-start-preflight-fail-{}-{unique}",
+            std::process::id(),
+        ));
+        let data_dir = base_dir.join("data");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("create data dir failed: {err}")))?;
+        let fake_postmaster = spawn_fake_postmaster_for_data_dir(data_dir.as_path())?;
+        let pid_file = data_dir.join("postmaster.pid");
+        fs::write(&pid_file, format!("{}\n", fake_postmaster.child.id()))
+            .map_err(|err| WorkerError::Message(format!("write pid file failed: {err}")))?;
+        let log_file = base_dir.join("postgres.log");
+        fs::write(
+            &log_file,
+            "FATAL: could not open file \"global/pg_filenode.map\": No such file or directory\n",
+        )
+        .map_err(|err| WorkerError::Message(format!("write log file failed: {err}")))?;
+
+        let send_result = tx.send(ProcessJobRequest {
+            id: JobId("job-preflight-fail".to_string()),
+            kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                data_dir: data_dir.clone(),
+                log_file: log_file.clone(),
+                config_file: data_dir.join("pgtm.postgresql.conf"),
+                wait_seconds: Some(1),
+                timeout_ms: Some(1_000),
+            }),
+        });
+        assert!(send_result.is_ok());
+
+        let stepped = step_once(&mut ctx).await;
+        assert_eq!(stepped, Ok(()));
+
+        assert!(matches!(
+            &ctx.state,
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Failure { .. }),
+                ..
+            }
+        ));
+        let published = subscriber.latest();
+        assert!(matches!(
+            published.value,
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Failure { .. }),
+                ..
+            }
+        ));
+
+        drop(fake_postmaster);
+        fs::remove_dir_all(&base_dir)
+            .map_err(|err| WorkerError::Message(format!("remove test dir failed: {err}")))?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn start_job_start_postgres_ignores_reused_foreign_pid_and_starts(
     ) -> Result<(), WorkerError> {
         let runner = FakeRunner {
@@ -2196,6 +2411,18 @@ mod tests {
         fs::remove_dir_all(&data_dir)
             .map_err(|err| WorkerError::Message(format!("remove data dir failed: {err}")))?;
         Ok(())
+    }
+
+    #[test]
+    fn detect_start_postgres_failure_flags_missing_filenode_map() {
+        assert_eq!(
+            detect_start_postgres_failure(
+                "fatal: could not open file \"global/pg_filenode.map\": no such file or directory",
+            ),
+            Some(
+                "postgres reported missing core data-dir files during startup; fencing and re-clone are required",
+            )
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

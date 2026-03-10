@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{process::jobs::ActiveJobKind, state::MemberId};
+use crate::{dcs::state::MemberStateClass, process::jobs::ActiveJobKind, state::MemberId};
 
 use super::{
     decision::{process_activity, ProcessActivity, ReconcileFacts},
@@ -38,8 +38,12 @@ pub(crate) enum SwitchoverEffect {
 pub(crate) enum RecoveryEffect {
     #[default]
     None,
-    Rewind { leader_member_id: MemberId },
-    Basebackup { leader_member_id: MemberId },
+    Rewind {
+        leader_member_id: MemberId,
+    },
+    Basebackup {
+        leader_member_id: MemberId,
+    },
     Bootstrap,
 }
 
@@ -49,7 +53,9 @@ pub(crate) enum PostgresEffect {
     #[default]
     None,
     StartPrimary,
-    StartReplica { leader_member_id: MemberId },
+    StartReplica {
+        leader_member_id: MemberId,
+    },
     Promote,
     Demote,
 }
@@ -117,7 +123,10 @@ fn lower_primary(plan: &PrimaryPlan, facts: &ReconcileFacts) -> HaEffectPlan {
             } else {
                 LeaseEffect::AcquireLeader
             },
-            postgres: match process_activity(&facts.current_process, &[ActiveJobKind::StartPostgres]) {
+            postgres: match process_activity(
+                &facts.current_process,
+                &[ActiveJobKind::StartPostgres],
+            ) {
                 ProcessActivity::Running => PostgresEffect::None,
                 _ => PostgresEffect::StartPrimary,
             },
@@ -128,9 +137,11 @@ fn lower_primary(plan: &PrimaryPlan, facts: &ReconcileFacts) -> HaEffectPlan {
 
 fn lower_replica(plan: &ReplicaPlan, facts: &ReconcileFacts) -> HaEffectPlan {
     match plan {
-        ReplicaPlan::DirectFollow { leader_member_id } => lower_direct_follow(leader_member_id, facts),
-        ReplicaPlan::RewindThenFollow { leader_member_id } => lower_rewind_then_follow(leader_member_id, facts),
-        ReplicaPlan::BasebackupThenFollow { leader_member_id } => {
+        ReplicaPlan::Direct { leader_member_id } => lower_direct_follow(leader_member_id, facts),
+        ReplicaPlan::Rewind { leader_member_id } => {
+            lower_rewind_then_follow(leader_member_id, facts)
+        }
+        ReplicaPlan::Basebackup { leader_member_id } => {
             lower_basebackup_then_follow(leader_member_id, facts)
         }
     }
@@ -138,6 +149,9 @@ fn lower_replica(plan: &ReplicaPlan, facts: &ReconcileFacts) -> HaEffectPlan {
 
 fn lower_direct_follow(leader_member_id: &MemberId, facts: &ReconcileFacts) -> HaEffectPlan {
     if facts.postgres_primary {
+        if facts.replica_targets_authoritative_leader == Some(true) {
+            return HaEffectPlan::default();
+        }
         return HaEffectPlan {
             postgres: PostgresEffect::Demote,
             ..HaEffectPlan::default()
@@ -145,7 +159,30 @@ fn lower_direct_follow(leader_member_id: &MemberId, facts: &ReconcileFacts) -> H
     }
 
     if facts.postgres_reachable {
-        return maybe_clear_switchover(facts, HaEffectPlan::default());
+        if facts.postgres_replica {
+            if facts.replica_targets_authoritative_leader == Some(false) {
+                return HaEffectPlan {
+                    postgres: PostgresEffect::Demote,
+                    ..HaEffectPlan::default()
+                };
+            }
+            if facts.replica_targets_authoritative_leader.is_none() {
+                return match process_activity(
+                    &facts.current_process,
+                    &[ActiveJobKind::StartPostgres],
+                ) {
+                    ProcessActivity::Running => HaEffectPlan::default(),
+                    _ => HaEffectPlan {
+                        postgres: PostgresEffect::StartReplica {
+                            leader_member_id: leader_member_id.clone(),
+                        },
+                        ..HaEffectPlan::default()
+                    },
+                };
+            }
+            return maybe_clear_switchover(facts, HaEffectPlan::default());
+        }
+        return HaEffectPlan::default();
     }
 
     match process_activity(&facts.current_process, &[ActiveJobKind::StartPostgres]) {
@@ -190,6 +227,19 @@ fn lower_basebackup_then_follow(
         };
     }
 
+    if !local_data_dir_is_missing_or_empty(facts) {
+        match process_activity(&facts.current_process, &[ActiveJobKind::Fencing]) {
+            ProcessActivity::Running => return HaEffectPlan::default(),
+            ProcessActivity::IdleSuccess => {}
+            ProcessActivity::IdleFailure | ProcessActivity::IdleNoOutcome => {
+                return HaEffectPlan {
+                    safety: SafetyEffect::FenceNode,
+                    ..HaEffectPlan::default()
+                };
+            }
+        }
+    }
+
     match process_activity(&facts.current_process, &[ActiveJobKind::BaseBackup]) {
         ProcessActivity::Running => HaEffectPlan::default(),
         ProcessActivity::IdleSuccess => lower_direct_follow(leader_member_id, facts),
@@ -200,6 +250,14 @@ fn lower_basebackup_then_follow(
             ..HaEffectPlan::default()
         },
     }
+}
+
+fn local_data_dir_is_missing_or_empty(facts: &ReconcileFacts) -> bool {
+    facts
+        .local_member
+        .as_ref()
+        .and_then(|member| member.state_class.clone())
+        == Some(MemberStateClass::EmptyOrMissingDataDir)
 }
 
 fn lower_quiescent(facts: &ReconcileFacts) -> HaEffectPlan {
@@ -302,5 +360,218 @@ pub(crate) fn safety_effect_step_count(effect: &SafetyEffect) -> usize {
     match effect {
         SafetyEffect::None => 0,
         SafetyEffect::FenceNode => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        dcs::state::{DcsTrust, MemberRecord, MemberRole, MemberStateClass, PostgresRuntimeClass},
+        ha::{
+            decision::ReconcileFacts,
+            state::{ClusterMode, DesiredNodeState, LeadershipTransferState},
+        },
+        pginfo::state::{Readiness, SqlStatus},
+        process::{
+            jobs::ActiveJobKind,
+            state::{JobOutcome, ProcessState},
+        },
+        state::{MemberId, UnixMillis, Version, WorkerStatus},
+    };
+
+    use super::{lower_desired_state, HaEffectPlan, PostgresEffect, SafetyEffect};
+
+    fn sample_facts() -> ReconcileFacts {
+        ReconcileFacts {
+            self_member_id: MemberId("node-2".to_string()),
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: MemberId("node-1".to_string()),
+            },
+            current_desired_state: DesiredNodeState::Quiescent {
+                reason: crate::ha::state::QuiescentReason::WaitingForAuthoritativeLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            current_process: ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: None,
+            },
+            local_member: None,
+            trust: DcsTrust::FreshQuorum,
+            switchover_pending: false,
+            switchover_target: None,
+            expected_cluster_identity: None,
+            authoritative_leader_member_id: Some(MemberId("node-1".to_string())),
+            authoritative_leader_member: None,
+            i_am_authoritative_leader: false,
+            fresh_unleased_primary_claim_present: false,
+            fresh_running_healthy_replica_present: false,
+            fresh_running_promotable_replica_present: false,
+            replica_targets_authoritative_leader: None,
+            postgres_reachable: true,
+            postgres_primary: false,
+            postgres_replica: false,
+            postgres_replay_lsn: None,
+            postgres_follow_lsn: None,
+            promotion_safety: crate::ha::decision::PromotionSafety { blocker: None },
+            elected_candidate: None,
+        }
+    }
+
+    #[test]
+    fn direct_follow_waits_for_replica_metadata_before_demoting() {
+        let facts = sample_facts();
+        let desired_state = DesiredNodeState::Replica {
+            plan: crate::ha::state::ReplicaPlan::Direct {
+                leader_member_id: MemberId("node-1".to_string()),
+            },
+        };
+
+        assert_eq!(
+            lower_desired_state(&desired_state, &facts),
+            HaEffectPlan::default()
+        );
+    }
+
+    #[test]
+    fn direct_follow_demotes_confirmed_replica_with_wrong_upstream() {
+        let mut facts = sample_facts();
+        facts.postgres_replica = true;
+        facts.replica_targets_authoritative_leader = Some(false);
+        let desired_state = DesiredNodeState::Replica {
+            plan: crate::ha::state::ReplicaPlan::Direct {
+                leader_member_id: MemberId("node-1".to_string()),
+            },
+        };
+
+        assert_eq!(
+            lower_desired_state(&desired_state, &facts),
+            HaEffectPlan {
+                postgres: PostgresEffect::Demote,
+                ..HaEffectPlan::default()
+            }
+        );
+    }
+
+    #[test]
+    fn direct_follow_restarts_replica_when_upstream_cannot_be_confirmed() {
+        let mut facts = sample_facts();
+        facts.postgres_replica = true;
+        facts.replica_targets_authoritative_leader = None;
+        let desired_state = DesiredNodeState::Replica {
+            plan: crate::ha::state::ReplicaPlan::Direct {
+                leader_member_id: MemberId("node-1".to_string()),
+            },
+        };
+
+        assert_eq!(
+            lower_desired_state(&desired_state, &facts),
+            HaEffectPlan {
+                postgres: PostgresEffect::StartReplica {
+                    leader_member_id: MemberId("node-1".to_string()),
+                },
+                ..HaEffectPlan::default()
+            }
+        );
+    }
+
+    #[test]
+    fn direct_follow_does_not_demote_primary_while_config_points_to_authoritative_leader() {
+        let mut facts = sample_facts();
+        facts.postgres_primary = true;
+        facts.replica_targets_authoritative_leader = Some(true);
+        let desired_state = DesiredNodeState::Replica {
+            plan: crate::ha::state::ReplicaPlan::Direct {
+                leader_member_id: MemberId("node-1".to_string()),
+            },
+        };
+
+        assert_eq!(
+            lower_desired_state(&desired_state, &facts),
+            HaEffectPlan::default()
+        );
+    }
+
+    #[test]
+    fn basebackup_fences_initialized_data_dir_before_reclone() {
+        let mut facts = sample_facts();
+        facts.postgres_reachable = false;
+        facts.local_member = Some(MemberRecord {
+            member_id: MemberId("node-2".to_string()),
+            postgres_host: "127.0.0.1".to_string(),
+            postgres_port: 5432,
+            api_url: None,
+            role: MemberRole::Replica,
+            sql: SqlStatus::Unknown,
+            readiness: Readiness::Unknown,
+            timeline: None,
+            write_lsn: None,
+            replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: Some(MemberStateClass::ReplicaOnly),
+            postgres_runtime_class: Some(PostgresRuntimeClass::OfflineInspectable),
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        });
+        let desired_state = DesiredNodeState::Replica {
+            plan: crate::ha::state::ReplicaPlan::Basebackup {
+                leader_member_id: MemberId("node-1".to_string()),
+            },
+        };
+
+        assert_eq!(
+            lower_desired_state(&desired_state, &facts),
+            HaEffectPlan {
+                safety: SafetyEffect::FenceNode,
+                ..HaEffectPlan::default()
+            }
+        );
+    }
+
+    #[test]
+    fn basebackup_proceeds_after_fencing_succeeds() {
+        let mut facts = sample_facts();
+        facts.postgres_reachable = false;
+        facts.local_member = Some(MemberRecord {
+            member_id: MemberId("node-2".to_string()),
+            postgres_host: "127.0.0.1".to_string(),
+            postgres_port: 5432,
+            api_url: None,
+            role: MemberRole::Replica,
+            sql: SqlStatus::Unknown,
+            readiness: Readiness::Unknown,
+            timeline: None,
+            write_lsn: None,
+            replay_lsn: None,
+            system_identifier: None,
+            durable_end_lsn: None,
+            state_class: Some(MemberStateClass::ReplicaOnly),
+            postgres_runtime_class: Some(PostgresRuntimeClass::OfflineInspectable),
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        });
+        facts.current_process = ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: Some(JobOutcome::Success {
+                id: crate::state::JobId("job-1".to_string()),
+                job_kind: ActiveJobKind::Fencing,
+                finished_at: UnixMillis(2),
+            }),
+        };
+        let desired_state = DesiredNodeState::Replica {
+            plan: crate::ha::state::ReplicaPlan::Basebackup {
+                leader_member_id: MemberId("node-1".to_string()),
+            },
+        };
+
+        assert_eq!(
+            lower_desired_state(&desired_state, &facts),
+            HaEffectPlan {
+                recovery: crate::ha::lower::RecoveryEffect::Basebackup {
+                    leader_member_id: MemberId("node-1".to_string()),
+                },
+                ..HaEffectPlan::default()
+            }
+        );
     }
 }

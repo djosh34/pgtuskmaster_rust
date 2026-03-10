@@ -127,14 +127,7 @@ fn should_skip_redundant_process_dispatch(
 ) -> bool {
     current.cluster_mode == next.cluster_mode
         && current.desired_state == next.desired_state
-        && (plan_effect_is_already_active(plan, process_state) || plan_dispatch_is_latched(plan))
-}
-
-fn plan_dispatch_is_latched(plan: &HaEffectPlan) -> bool {
-    matches!(
-        plan.postgres,
-        PostgresEffect::StartPrimary | PostgresEffect::StartReplica { .. }
-    )
+        && plan_effect_is_already_active(plan, process_state)
 }
 
 fn plan_effect_is_already_active(plan: &HaEffectPlan, process_state: &ProcessState) -> bool {
@@ -156,5 +149,116 @@ fn plan_effect_is_already_active(plan: &HaEffectPlan, process_state: &ProcessSta
     match process_state {
         ProcessState::Running { active, .. } => kinds.contains(&active.kind),
         ProcessState::Idle { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        ha::{
+            lower::{HaEffectPlan, PostgresEffect, RecoveryEffect, SafetyEffect},
+            state::{
+                ClusterMode, DesiredNodeState, HaState, LeadershipTransferState, QuiescentReason,
+            },
+        },
+        process::{
+            jobs::{ActiveJob, ActiveJobKind},
+            state::ProcessState,
+        },
+        state::{JobId, WorkerStatus},
+    };
+
+    use super::should_skip_redundant_process_dispatch;
+
+    fn quiescent_state() -> HaState {
+        HaState {
+            worker: WorkerStatus::Running,
+            cluster_mode: ClusterMode::InitializedLeaderPresent {
+                leader: crate::state::MemberId("node-1".to_string()),
+            },
+            desired_state: DesiredNodeState::Quiescent {
+                reason: QuiescentReason::WaitingForAuthoritativeLeader,
+            },
+            leadership_transfer: LeadershipTransferState::None,
+            tick: 1,
+        }
+    }
+
+    #[test]
+    fn start_postgres_is_not_latched_when_process_is_idle() {
+        let current = quiescent_state();
+        let next = current.clone();
+        let plan = HaEffectPlan {
+            postgres: PostgresEffect::StartReplica {
+                leader_member_id: crate::state::MemberId("node-1".to_string()),
+            },
+            ..HaEffectPlan::default()
+        };
+        let process_state = ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: None,
+        };
+
+        assert!(!should_skip_redundant_process_dispatch(
+            &current,
+            &next,
+            &plan,
+            &process_state
+        ));
+    }
+
+    #[test]
+    fn active_start_postgres_still_skips_redundant_dispatch() {
+        let current = quiescent_state();
+        let next = current.clone();
+        let plan = HaEffectPlan {
+            postgres: PostgresEffect::StartPrimary,
+            ..HaEffectPlan::default()
+        };
+        let process_state = ProcessState::Running {
+            worker: WorkerStatus::Running,
+            active: ActiveJob {
+                id: JobId("job-1".to_string()),
+                kind: ActiveJobKind::StartPostgres,
+                started_at: crate::state::UnixMillis(1),
+                deadline_at: crate::state::UnixMillis(2),
+            },
+        };
+
+        assert!(should_skip_redundant_process_dispatch(
+            &current,
+            &next,
+            &plan,
+            &process_state
+        ));
+    }
+
+    #[test]
+    fn active_recovery_job_still_skips_redundant_dispatch() {
+        let current = quiescent_state();
+        let next = current.clone();
+        let plan = HaEffectPlan {
+            recovery: RecoveryEffect::Basebackup {
+                leader_member_id: crate::state::MemberId("node-1".to_string()),
+            },
+            safety: SafetyEffect::None,
+            ..HaEffectPlan::default()
+        };
+        let process_state = ProcessState::Running {
+            worker: WorkerStatus::Running,
+            active: ActiveJob {
+                id: JobId("job-2".to_string()),
+                kind: ActiveJobKind::BaseBackup,
+                started_at: crate::state::UnixMillis(1),
+                deadline_at: crate::state::UnixMillis(2),
+            },
+        };
+
+        assert!(should_skip_redundant_process_dispatch(
+            &current,
+            &next,
+            &plan,
+            &process_state
+        ));
     }
 }

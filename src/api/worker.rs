@@ -1249,15 +1249,13 @@ mod tests {
             HTTP_REQUEST_SCRATCH_BUFFER_BYTES,
         },
         config::{ApiAuthConfig, ApiRoleTokensConfig, ApiTlsMode, InlineOrPath, RuntimeConfig},
-        dcs::state::{DcsView, DcsState, DcsTrust},
+        dcs::state::{DcsState, DcsTrust, DcsView},
         dcs::store::{DcsStore, DcsStoreError, WatchEvent},
         debug_api::snapshot::{
             AppLifecycle, DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot,
         },
-        ha::{
-            state::{
-                ClusterMode, DesiredNodeState, HaState, LeadershipTransferState, QuiescentReason,
-            },
+        ha::state::{
+            ClusterMode, DesiredNodeState, HaState, LeadershipTransferState, QuiescentReason,
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
@@ -1989,7 +1987,10 @@ mod tests {
         assert_eq!(decoded["switchover_to"], serde_json::Value::Null);
         assert_eq!(decoded["member_count"], 0);
         assert_eq!(decoded["dcs_trust"], "fresh_quorum");
-        assert_eq!(decoded["cluster_mode"]["kind"], "initialized_leader_present");
+        assert_eq!(
+            decoded["cluster_mode"]["kind"],
+            "initialized_leader_present"
+        );
         assert_eq!(decoded["ha_tick"], 7);
         assert_eq!(decoded["desired_state"]["kind"], "quiescent");
         assert_eq!(

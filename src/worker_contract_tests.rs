@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    api::{controller::get_ha_state, ClusterModeResponse, DesiredNodeStateResponse, PrimaryPlanResponse},
-    debug_api::snapshot::{AppLifecycle, SystemSnapshot},
+    api::{
+        controller::get_ha_state, ClusterModeResponse, DesiredNodeStateResponse,
+        PrimaryPlanResponse,
+    },
     dcs::state::{
         ClusterIdentityRecord, ClusterInitializedRecord, DcsState, DcsTrust, DcsView, MemberRecord,
         MemberRole, PostgresRuntimeClass,
     },
+    debug_api::snapshot::{AppLifecycle, SystemSnapshot},
     ha::{
         decide::decide,
         state::{
@@ -16,7 +19,10 @@ use crate::{
     },
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::state::ProcessState,
-    state::{MemberId, SystemIdentifier, TimelineId, UnixMillis, Version, Versioned, WalLsn, WorkerStatus},
+    state::{
+        MemberId, SystemIdentifier, TimelineId, UnixMillis, Version, Versioned, WalLsn,
+        WorkerStatus,
+    },
 };
 
 fn sample_member(member_id: &str, role: MemberRole) -> MemberRecord {
@@ -201,8 +207,14 @@ fn ha_state_response_exposes_cluster_mode_and_desired_state() {
 fn decide_promotes_best_candidate_when_initialized_without_leader() {
     let cfg = sample_runtime_config();
     let mut members = BTreeMap::new();
-    members.insert(MemberId("node-a".to_string()), sample_member("node-a", MemberRole::Replica));
-    members.insert(MemberId("node-b".to_string()), sample_member("node-b", MemberRole::Replica));
+    members.insert(
+        MemberId("node-a".to_string()),
+        sample_member("node-a", MemberRole::Replica),
+    );
+    members.insert(
+        MemberId("node-b".to_string()),
+        sample_member("node-b", MemberRole::Replica),
+    );
 
     let world = sample_world(
         DcsState {

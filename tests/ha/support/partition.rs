@@ -696,7 +696,11 @@ impl PartitionFixture {
                     if Self::state_label(&state) == expected_phase {
                         return Ok(());
                     }
-                    format!("state={} leader={:?}", Self::state_label(&state), state.leader)
+                    format!(
+                        "state={} leader={:?}",
+                        Self::state_label(&state),
+                        state.leader
+                    )
                 }
                 Err(err) => err.to_string(),
             };
@@ -955,6 +959,41 @@ impl PartitionFixture {
             if tokio::time::Instant::now() >= deadline {
                 return Err(WorkerError::Message(format!(
                     "timed out waiting for expected rows on {node_id}; expected={expected_rows:?}; last_observation={observation}"
+                )));
+            }
+            tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
+        }
+    }
+
+    async fn wait_for_node_sql_role(
+        &self,
+        node_id: &str,
+        expected_role: &str,
+        timeout: Duration,
+    ) -> Result<(), WorkerError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let observation = match self
+                .run_sql_on_node(
+                    node_id,
+                    "SELECT CASE WHEN pg_is_in_recovery() THEN 'replica' ELSE 'primary' END",
+                )
+                .await
+            {
+                Ok(output) => {
+                    let rows = ha_e2e::util::parse_psql_rows(output.as_str());
+                    let role = rows.first().cloned().unwrap_or_default();
+                    if role == expected_role {
+                        return Ok(());
+                    }
+                    format!("role={role}")
+                }
+                Err(err) => err.to_string(),
+            };
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for node {node_id} SQL role {expected_role}; last_observation={observation}"
                 )));
             }
             tokio::time::sleep(E2E_SQL_RETRY_INTERVAL).await;
@@ -1320,6 +1359,25 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                     E2E_PARTITION_WRITE_TIMEOUT,
                 )
                 .await?;
+            let initial_rows = vec!["1:before".to_string()];
+            for node_id in fixture.node_ids() {
+                fixture
+                    .wait_for_rows_on_node(
+                        node_id.as_str(),
+                        "SELECT id::text || ':' || payload FROM ha_partition_primary ORDER BY id",
+                        initial_rows.as_slice(),
+                        E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
+                    )
+                    .await?;
+            }
+            fixture
+                .wait_for_table_digest_convergence(
+                    "ha_partition_primary",
+                    fixture.node_ids().as_slice(),
+                    1,
+                    E2E_PARTITION_REPLICATION_CONVERGENCE_TIMEOUT,
+                )
+                .await?;
 
             fixture
                 .partition_primary_from_etcd(bootstrap_primary.as_str())
@@ -1360,6 +1418,20 @@ pub async fn e2e_partition_primary_isolation_failover_no_split_brain() -> Result
                 .await?;
 
             let expected_rows = vec!["1:before".to_string(), "2:after".to_string()];
+            for node_id in fixture.node_ids() {
+                let expected_role = if node_id == healed_primary {
+                    "primary"
+                } else {
+                    "replica"
+                };
+                fixture
+                    .wait_for_node_sql_role(
+                        node_id.as_str(),
+                        expected_role,
+                        E2E_PARTITION_RECOVERY_TIMEOUT,
+                    )
+                    .await?;
+            }
             for node_id in fixture.node_ids() {
                 fixture
                     .wait_for_rows_on_node(
@@ -1716,6 +1788,25 @@ pub async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerErr
                     Duration::from_secs(30),
                 )
                 .await?;
+            let initial_rows = vec!["1:before".to_string()];
+            for node_id in fixture.node_ids() {
+                fixture
+                    .wait_for_rows_on_node(
+                        node_id.as_str(),
+                        "SELECT id::text || ':' || payload FROM ha_partition_mixed ORDER BY id",
+                        initial_rows.as_slice(),
+                        Duration::from_secs(120),
+                    )
+                    .await?;
+            }
+            fixture
+                .wait_for_table_digest_convergence(
+                    "ha_partition_mixed",
+                    fixture.node_ids().as_slice(),
+                    1,
+                    Duration::from_secs(120),
+                )
+                .await?;
 
             fixture
                 .partition_primary_from_etcd(bootstrap_primary.as_str())
@@ -1759,6 +1850,20 @@ pub async fn e2e_partition_mixed_faults_heal_converges() -> Result<(), WorkerErr
                 .await?;
 
             let expected_rows = vec!["1:before".to_string(), "2:after".to_string()];
+            for node_id in fixture.node_ids() {
+                let expected_role = if node_id == healed_primary {
+                    "primary"
+                } else {
+                    "replica"
+                };
+                fixture
+                    .wait_for_node_sql_role(
+                        node_id.as_str(),
+                        expected_role,
+                        Duration::from_secs(120),
+                    )
+                    .await?;
+            }
             for node_id in fixture.node_ids() {
                 fixture
                     .wait_for_rows_on_node(

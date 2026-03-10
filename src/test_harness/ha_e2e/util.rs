@@ -142,18 +142,15 @@ pub async fn wait_for_node_api_ready_or_process_exit(
     )?;
 
     loop {
-        match child.try_wait().map_err(|err| {
+        if let Some(status) = child.try_wait().map_err(|err| {
             WorkerError::Message(format!(
                 "runtime process status probe failed for {node_id}: {err}"
             ))
         })? {
-            Some(status) => {
-                return Err(WorkerError::Message(format!(
-                    "runtime process for {node_id} exited before API became ready with status {status}; runtime_log_tail={}",
-                    read_log_tail(runtime_log_file, LOG_TAIL_LINE_LIMIT)
-                )));
-            }
-            None => {}
+            return Err(WorkerError::Message(format!(
+                "runtime process for {node_id} exited before API became ready with status {status}; runtime_log_tail={}",
+                read_log_tail(runtime_log_file, LOG_TAIL_LINE_LIMIT)
+            )));
         }
 
         let observation = match client.get_ha_state().await {
@@ -733,6 +730,42 @@ pub async fn wait_for_postgres_unavailable(
         if tokio::time::Instant::now() >= deadline {
             return Err(WorkerError::Message(format!(
                 "timed out waiting for postgres unavailability on port {port}; last_observation={last_observation}"
+            )));
+        }
+        tokio::time::sleep(API_READY_POLL_INTERVAL).await;
+    }
+}
+
+pub async fn wait_for_postgres_ready(
+    psql: &Path,
+    port: u16,
+    user: &str,
+    dbname: &str,
+    command_timeout: Duration,
+    command_kill_wait_timeout: Duration,
+    timeout: Duration,
+) -> Result<(), WorkerError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let last_observation = match run_psql_statement(
+            psql,
+            port,
+            user,
+            dbname,
+            "SELECT 1;",
+            command_timeout,
+            command_kill_wait_timeout,
+        )
+        .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => err.to_string(),
+        };
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(WorkerError::Message(format!(
+                "timed out waiting for postgres readiness on port {port}; last_observation={last_observation}"
             )));
         }
         tokio::time::sleep(API_READY_POLL_INTERVAL).await;

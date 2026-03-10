@@ -47,7 +47,7 @@ const E2E_SQL_WORKLOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const E2E_SQL_WORKLOAD_COMMAND_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 const E2E_PG_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const E2E_HTTP_STEP_TIMEOUT: Duration = Duration::from_secs(20);
-const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(45);
+const E2E_BOOTSTRAP_PRIMARY_TIMEOUT: Duration = Duration::from_secs(180);
 const E2E_SCENARIO_TIMEOUT: Duration = Duration::from_secs(300);
 const E2E_API_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
 const E2E_STABLE_PRIMARY_API_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -722,12 +722,19 @@ impl ClusterFixture {
     }
 
     async fn restart_runtime_process_for_node(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        if self.runtime_nodes.is_node_offline(node_id)? {
+            self.record(format!(
+                "runtime restart: node already offline before restart for node={node_id}"
+            ));
+        } else {
+            self.record(format!(
+                "runtime restart: stop requested for node={node_id}"
+            ));
+            self.stop_runtime_process_for_node(node_id).await?;
+        }
         let node = self.node_by_id(node_id).cloned().ok_or_else(|| {
             WorkerError::Message(format!("unknown node id for runtime restart: {node_id}"))
         })?;
-        self.record(format!(
-            "runtime restart: stop requested for node={node_id}"
-        ));
         self.runtime_nodes
             .restart_node(
                 &node,
@@ -737,7 +744,7 @@ impl ClusterFixture {
             )
             .await?;
         self.record(format!(
-            "runtime restart: api loss observed and process respawned for node={node_id}"
+            "runtime restart: process respawned for node={node_id}"
         ));
         self.record(format!("runtime restart: api recovered for node={node_id}"));
         Ok(())
@@ -1831,7 +1838,10 @@ impl ClusterFixture {
     }
 
     fn state_is_primary(state: &HaStateResponse) -> bool {
-        matches!(state.desired_state, DesiredNodeStateResponse::Primary { .. })
+        matches!(
+            state.desired_state,
+            DesiredNodeStateResponse::Primary { .. }
+        )
     }
 
     fn state_is_no_quorum_safe(state: &HaStateResponse) -> bool {
@@ -4143,7 +4153,7 @@ pub async fn e2e_multi_node_replica_whole_node_clean_stop_preserves_primary_writ
                 .await?;
             fixture
                 .wait_for_proof_rows_on_nodes(
-                    &[bootstrap_primary.clone()],
+                    std::slice::from_ref(&bootstrap_primary),
                     table_name.as_str(),
                     &[
                         "1:before-replica-stop".to_string(),

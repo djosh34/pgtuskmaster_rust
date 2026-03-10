@@ -27,7 +27,7 @@ use super::handle::{NodeHandle, RuntimeNodeHandle, RuntimeNodeSet, TestClusterHa
 use super::util::{
     parse_loopback_socket, reserve_non_overlapping_ports, resolve_node_binary_path,
     spawn_runtime_node_process, wait_for_bootstrap_primary,
-    wait_for_node_api_ready_or_process_exit, write_runtime_config_file,
+    wait_for_node_api_ready_or_process_exit, wait_for_postgres_ready, write_runtime_config_file,
 };
 
 const ETCD_CLUSTER_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -708,6 +708,16 @@ async fn start_cluster_inner(
             let superuser_dbname = guard.superuser_dbname.as_deref().ok_or_else(|| {
                 WorkerError::Message("startup missing postgres superuser dbname".to_string())
             })?;
+            wait_for_postgres_ready(
+                guard.binaries.psql.as_path(),
+                sql_port,
+                superuser_username,
+                superuser_dbname,
+                guard.timeouts.command_timeout,
+                guard.timeouts.command_kill_wait_timeout,
+                config.timeouts.bootstrap_primary_timeout,
+            )
+            .await?;
 
             let create_roles_sql = r#"
 DO $$

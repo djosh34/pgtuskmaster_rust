@@ -1,30 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 01:35:17 AM CET 2026
-
-# Task `.ralph/tasks/bugs/ha-authoritative-startup-redesign-still-has-legacy-phase-machine-and-incomplete-offline-election.md`
-
-```
-## Bug: HA authoritative startup redesign still has legacy phase machine and incomplete offline election <status>not_started</status> <passes>false</passes> <priority>high</priority>
-
-<description>
-The task `.ralph/tasks/story-managed-start-intent-architecture/task-redesign-ha-startup-bootstrap-and-rejoin-around-authoritative-dcs-reconciliation.md`
-is marked completed, but source audit shows major required redesign pieces are still not implemented.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/ha-replica-must-not-follow-non-authoritative-primary.md`
-
-```
-## Bug: HA replica must not follow non-authoritative primary <status>not_started</status> <passes>false</passes>
-
-<description>
-In the HA decision and startup-rejoin paths, source selection falls back from the authoritative
-leader lease to any healthy primary member record in DCS. This lets a stale former primary, or a
-```
-
-==============
+Generated: Tue Mar 10 08:13:54 AM CET 2026
 
 # Task `.ralph/tasks/story-ha-quorum-survival-under-real-failures/02-task-add-whole-node-kill-and-partial-recovery-ha-e2e.md`
 

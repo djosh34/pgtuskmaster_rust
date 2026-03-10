@@ -61,7 +61,12 @@ impl HaInvariantObserver {
         self.stats.sample_count = self.stats.sample_count.saturating_add(1);
         let primary_count = states
             .iter()
-            .filter(|state| matches!(state.desired_state, DesiredNodeStateResponse::Primary { .. }))
+            .filter(|state| {
+                matches!(
+                    state.desired_state,
+                    DesiredNodeStateResponse::Primary { .. }
+                )
+            })
             .count();
         self.stats.max_concurrent_primaries =
             self.stats.max_concurrent_primaries.max(primary_count);
@@ -87,7 +92,8 @@ impl HaInvariantObserver {
             .iter()
             .all(|state| matches!(state.desired_state, DesiredNodeStateResponse::Fence { .. }))
         {
-            self.stats.safe_state_sample_count = self.stats.safe_state_sample_count.saturating_add(1);
+            self.stats.safe_state_sample_count =
+                self.stats.safe_state_sample_count.saturating_add(1);
         }
 
         let mut fragments = states
@@ -335,7 +341,7 @@ mod unit_tests {
                 }
             } else {
                 DesiredNodeStateResponse::Replica {
-                    plan: pgtuskmaster_rust::api::ReplicaPlanResponse::DirectFollow {
+                    plan: pgtuskmaster_rust::api::ReplicaPlanResponse::Direct {
                         leader_member_id: leader.unwrap_or("node-a").to_string(),
                     },
                 }
@@ -367,10 +373,7 @@ mod unit_tests {
             ring_capacity: 4,
         });
         observer.record_poll_attempt();
-        observer.record_api_states(
-            &[ha_state("node-1", true, Some("node-1"))],
-            &[],
-        )?;
+        observer.record_api_states(&[ha_state("node-1", true, Some("node-1"))], &[])?;
         let result = observer.finalize_no_dual_primary_window();
         if result.is_ok() {
             return Err(Box::new(std::io::Error::other(
@@ -388,10 +391,7 @@ mod unit_tests {
         });
         for _ in 0..2 {
             observer.record_poll_attempt();
-            observer.record_api_states(
-                &[ha_state("node-1", true, Some("node-1"))],
-                &[],
-            )?;
+            observer.record_api_states(&[ha_state("node-1", true, Some("node-1"))], &[])?;
         }
         observer.finalize_no_dual_primary_window()?;
         Ok(())

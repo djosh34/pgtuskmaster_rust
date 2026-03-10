@@ -55,9 +55,9 @@ pub(crate) enum PrimaryPlan {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ReplicaPlan {
-    DirectFollow { leader_member_id: MemberId },
-    RewindThenFollow { leader_member_id: MemberId },
-    BasebackupThenFollow { leader_member_id: MemberId },
+    Direct { leader_member_id: MemberId },
+    Rewind { leader_member_id: MemberId },
+    Basebackup { leader_member_id: MemberId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,17 +77,14 @@ pub(crate) enum FencePlan {
     StopAndStayNonWritable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum LeadershipTransferState {
+    #[default]
     None,
-    WaitingForOtherLeader { target: Option<MemberId> },
-}
-
-impl Default for LeadershipTransferState {
-    fn default() -> Self {
-        Self::None
-    }
+    WaitingForOtherLeader {
+        target: Option<MemberId>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -152,9 +152,7 @@ fn render_debug_verbose_text(view: &DebugVerboseView) -> String {
     ));
     lines.push(format!(
         "ha: cluster_mode={} desired_state={} planned_actions={}",
-        payload.ha.cluster_mode,
-        payload.ha.desired_state,
-        payload.ha.planned_actions
+        payload.ha.cluster_mode, payload.ha.desired_state, payload.ha.planned_actions
     ));
     lines.push(format!(
         "process: state={} worker={} running_job={} last_outcome={}",
@@ -241,8 +239,7 @@ fn render_status_debug_details(view: &ClusterStatusView) -> Vec<String> {
                 ));
                 lines.push(format!(
                     "    ha: cluster_mode={} desired_state={}",
-                    payload.ha.cluster_mode,
-                    payload.ha.desired_state
+                    payload.ha.cluster_mode, payload.ha.desired_state
                 ));
                 lines.push(format!(
                     "    pginfo: variant={} sql={} readiness={} summary={}",

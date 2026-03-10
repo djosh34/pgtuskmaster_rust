@@ -78,7 +78,12 @@ pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateRespo
             .cache
             .switchover
             .as_ref()
-            .and_then(|request| request.switchover_to.as_ref().map(|member_id| member_id.0.clone())),
+            .and_then(|request| {
+                request
+                    .switchover_to
+                    .as_ref()
+                    .map(|member_id| member_id.0.clone())
+            }),
         member_count: snapshot.value.dcs.value.cache.members.len(),
         members: snapshot
             .value
@@ -102,14 +107,18 @@ fn validate_switchover_request(
     input: SwitchoverRequestInput,
 ) -> ApiResult<SwitchoverRequest> {
     let Some(raw_target) = input.switchover_to else {
-        return Ok(SwitchoverRequest { switchover_to: None });
+        return Ok(SwitchoverRequest {
+            switchover_to: None,
+        });
     };
     let snapshot =
         snapshot.ok_or_else(|| ApiError::DcsStore("snapshot unavailable".to_string()))?;
 
     let target = raw_target.trim();
     if target.is_empty() {
-        return Err(ApiError::bad_request("switchover_to must not be empty".to_string()));
+        return Err(ApiError::bad_request(
+            "switchover_to must not be empty".to_string(),
+        ));
     }
 
     let target_member_id = crate::state::MemberId(target.to_string());
@@ -168,7 +177,9 @@ fn map_dcs_trust(value: &DcsTrust) -> DcsTrustResponse {
 fn map_cluster_mode(value: &ClusterMode) -> ClusterModeResponse {
     match value {
         ClusterMode::DcsUnavailable => ClusterModeResponse::DcsUnavailable,
-        ClusterMode::UninitializedNoBootstrapOwner => ClusterModeResponse::UninitializedNoBootstrapOwner,
+        ClusterMode::UninitializedNoBootstrapOwner => {
+            ClusterModeResponse::UninitializedNoBootstrapOwner
+        }
         ClusterMode::UninitializedBootstrapInProgress { holder } => {
             ClusterModeResponse::UninitializedBootstrapInProgress {
                 holder: holder.0.clone(),
@@ -179,7 +190,9 @@ fn map_cluster_mode(value: &ClusterMode) -> ClusterModeResponse {
                 leader: leader.0.clone(),
             }
         }
-        ClusterMode::InitializedNoLeaderFreshQuorum => ClusterModeResponse::InitializedNoLeaderFreshQuorum,
+        ClusterMode::InitializedNoLeaderFreshQuorum => {
+            ClusterModeResponse::InitializedNoLeaderFreshQuorum
+        }
         ClusterMode::InitializedNoLeaderNoFreshQuorum => {
             ClusterModeResponse::InitializedNoLeaderNoFreshQuorum
         }
@@ -209,21 +222,15 @@ fn map_desired_state(value: &DesiredNodeState) -> DesiredNodeStateResponse {
         },
         DesiredNodeState::Replica { plan } => DesiredNodeStateResponse::Replica {
             plan: match plan {
-                ReplicaPlan::DirectFollow { leader_member_id } => {
-                    ReplicaPlanResponse::DirectFollow {
-                        leader_member_id: leader_member_id.0.clone(),
-                    }
-                }
-                ReplicaPlan::RewindThenFollow { leader_member_id } => {
-                    ReplicaPlanResponse::RewindThenFollow {
-                        leader_member_id: leader_member_id.0.clone(),
-                    }
-                }
-                ReplicaPlan::BasebackupThenFollow { leader_member_id } => {
-                    ReplicaPlanResponse::BasebackupThenFollow {
-                        leader_member_id: leader_member_id.0.clone(),
-                    }
-                }
+                ReplicaPlan::Direct { leader_member_id } => ReplicaPlanResponse::Direct {
+                    leader_member_id: leader_member_id.0.clone(),
+                },
+                ReplicaPlan::Rewind { leader_member_id } => ReplicaPlanResponse::Rewind {
+                    leader_member_id: leader_member_id.0.clone(),
+                },
+                ReplicaPlan::Basebackup { leader_member_id } => ReplicaPlanResponse::Basebackup {
+                    leader_member_id: leader_member_id.0.clone(),
+                },
             },
         },
         DesiredNodeState::Quiescent { reason } => DesiredNodeStateResponse::Quiescent {

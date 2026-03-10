@@ -295,7 +295,7 @@ mod tests {
     };
 
     use super::{
-        build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsView, DcsTrust,
+        build_local_member_record, evaluate_trust, BuildLocalMemberRecordInput, DcsTrust, DcsView,
         LeaderRecord, MemberRecord, MemberRole,
     };
     use crate::{

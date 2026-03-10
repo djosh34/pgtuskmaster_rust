@@ -23,7 +23,10 @@ use crate::{
 
 use super::{
     actions::{ActionId, HaAction},
-    source_conn::{basebackup_source_from_member, rewind_source_from_member},
+    source_conn::{
+        basebackup_source_from_member, replica_follow_conninfo_from_member,
+        rewind_source_from_member,
+    },
     state::HaWorkerCtx,
 };
 
@@ -67,7 +70,14 @@ pub(crate) fn dispatch_process_action(
                 None,
                 runtime_config.postgres.data_dir.as_path(),
             )?;
-            dispatch_start_postgres(ctx, ha_tick, action_index, action, runtime_config, &start_intent)
+            dispatch_start_postgres(
+                ctx,
+                ha_tick,
+                action_index,
+                action,
+                runtime_config,
+                &start_intent,
+            )
         }
         HaAction::StartReplica { leader_member_id } => {
             let start_intent = managed_start_intent_from_dcs(
@@ -84,7 +94,28 @@ pub(crate) fn dispatch_process_action(
             )? {
                 return Ok(ProcessDispatchOutcome::Skipped);
             }
-            dispatch_start_postgres(ctx, ha_tick, action_index, action, runtime_config, &start_intent)
+            if pginfo_common(&ctx.pg_subscriber.latest().value).sql
+                == crate::pginfo::state::SqlStatus::Healthy
+            {
+                let request = ProcessJobRequest {
+                    id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+                    kind: ProcessJobKind::Demote(DemoteSpec {
+                        data_dir: runtime_config.postgres.data_dir.clone(),
+                        mode: ctx.process_defaults.shutdown_mode.clone(),
+                        timeout_ms: None,
+                    }),
+                };
+                send_process_request(ctx, action.id(), request)?;
+                return Ok(ProcessDispatchOutcome::Applied);
+            }
+            dispatch_start_postgres(
+                ctx,
+                ha_tick,
+                action_index,
+                action,
+                runtime_config,
+                &start_intent,
+            )
         }
         HaAction::DemoteToReplica => {
             let request = ProcessJobRequest {
@@ -180,14 +211,12 @@ fn dispatch_start_postgres(
     runtime_config: &RuntimeConfig,
     start_intent: &ManagedPostgresStartIntent,
 ) -> Result<ProcessDispatchOutcome, ProcessDispatchError> {
-    let managed = crate::postgres_managed::materialize_managed_postgres_config(
-        runtime_config,
-        start_intent,
-    )
-    .map_err(|err| ProcessDispatchError::ManagedConfig {
-        action: action.id(),
-        message: err.to_string(),
-    })?;
+    let managed =
+        crate::postgres_managed::materialize_managed_postgres_config(runtime_config, start_intent)
+            .map_err(|err| ProcessDispatchError::ManagedConfig {
+                action: action.id(),
+                message: err.to_string(),
+            })?;
     let request = ProcessJobRequest {
         id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
         kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
@@ -271,23 +300,24 @@ fn managed_start_intent_from_dcs(
 ) -> Result<ManagedPostgresStartIntent, ProcessDispatchError> {
     if let Some(leader_member_id) = replica_leader_member_id {
         let leader = resolve_source_member(ctx, action.clone(), leader_member_id)?;
-        let source = basebackup_source_from_member(&ctx.self_id, &leader, &ctx.process_defaults)
-            .map_err(|err| ProcessDispatchError::SourceSelection {
-                action: action.clone(),
-                message: err.to_string(),
-            })?;
+        let primary_conninfo =
+            replica_follow_conninfo_from_member(&ctx.self_id, &leader, &ctx.process_defaults)
+                .map_err(|err| ProcessDispatchError::SourceSelection {
+                    action: action.clone(),
+                    message: err.to_string(),
+                })?;
         return Ok(ManagedPostgresStartIntent::replica(
-            source.conninfo.clone(),
-            managed_standby_auth_from_role_auth(&source.auth, data_dir),
+            primary_conninfo,
+            managed_standby_auth_from_role_auth(&ctx.process_defaults.replicator_auth, data_dir),
             None,
         ));
     }
 
     let inspected = inspect_local_physical_state(data_dir, &ctx.process_defaults.postgres_binary)
         .map_err(|err| ProcessDispatchError::ManagedConfig {
-            action: action.clone(),
-            message: err.to_string(),
-        })?;
+        action: action.clone(),
+        message: err.to_string(),
+    })?;
 
     if inspected.signal_file_state != SignalFileState::None {
         return Err(ProcessDispatchError::ManagedConfig {
@@ -312,19 +342,23 @@ fn start_replica_is_already_current_or_pending(
     };
 
     let pg = ctx.pg_subscriber.latest();
+    let sql_healthy = pginfo_common(&pg.value).sql == crate::pginfo::state::SqlStatus::Healthy;
     let Some(current_primary_conninfo) = current_primary_conninfo(&pg.value) else {
-        return managed_config_already_targets_start_intent(action, data_dir, start_intent);
+        if sql_healthy {
+            return managed_config_already_targets_start_intent(action, data_dir, start_intent);
+        }
+        return Ok(false);
     };
     if current_primary_conninfo.host == expected_primary_conninfo.host
         && current_primary_conninfo.port == expected_primary_conninfo.port
     {
-        return Ok(true);
+        return Ok(sql_healthy);
     }
-    if pginfo_common(&pg.value).sql == crate::pginfo::state::SqlStatus::Healthy {
+    if sql_healthy {
         return Ok(false);
     }
 
-    managed_config_already_targets_start_intent(action, data_dir, start_intent)
+    Ok(false)
 }
 
 fn pginfo_common(state: &PgInfoState) -> &crate::pginfo::state::PgInfoCommon {
@@ -358,7 +392,8 @@ fn managed_config_already_targets_start_intent(
     data_dir: &Path,
     start_intent: &ManagedPostgresStartIntent,
 ) -> Result<bool, ProcessDispatchError> {
-    let Some((expected_primary_conninfo, standby_auth)) = standby_start_details(start_intent) else {
+    let Some((expected_primary_conninfo, standby_auth)) = standby_start_details(start_intent)
+    else {
         return Ok(false);
     };
     let managed_conf_path = data_dir.join(MANAGED_POSTGRESQL_CONF_NAME);
@@ -378,9 +413,9 @@ fn managed_config_already_targets_start_intent(
     let expected_recovery_state = start_intent.recovery_signal();
     let actual_recovery_state = crate::postgres_managed::inspect_managed_recovery_state(data_dir)
         .map_err(|err| ProcessDispatchError::ManagedConfig {
-            action: action.clone(),
-            message: err.to_string(),
-        })?;
+        action: action.clone(),
+        message: err.to_string(),
+    })?;
     if actual_recovery_state != expected_recovery_state {
         return Ok(false);
     }
@@ -419,6 +454,12 @@ fn wipe_data_dir(data_dir: &Path) -> Result<(), String> {
     if data_dir.as_os_str().is_empty() {
         return Err("wipe_data_dir data_dir must not be empty".to_string());
     }
+    if live_postmaster_owns_data_dir(data_dir)? {
+        return Err(format!(
+            "wipe_data_dir refused because a live postmaster still owns `{}`",
+            data_dir.display()
+        ));
+    }
     if data_dir.exists() {
         fs::remove_dir_all(data_dir)
             .map_err(|err| format!("wipe_data_dir remove_dir_all failed: {err}"))?;
@@ -427,6 +468,109 @@ fn wipe_data_dir(data_dir: &Path) -> Result<(), String> {
         .map_err(|err| format!("wipe_data_dir create_dir_all failed: {err}"))?;
     set_postgres_data_dir_permissions(data_dir)?;
     Ok(())
+}
+
+fn live_postmaster_owns_data_dir(data_dir: &Path) -> Result<bool, String> {
+    let pid_file = data_dir.join("postmaster.pid");
+    if !pid_file.exists() {
+        return Ok(false);
+    }
+    let pid = parse_postmaster_pid(&pid_file)?;
+    pid_matches_data_dir(pid, data_dir)
+}
+
+fn parse_postmaster_pid(pid_file: &Path) -> Result<u32, String> {
+    let contents = fs::read_to_string(pid_file).map_err(|err| {
+        format!(
+            "read postmaster pid file `{}` failed: {err}",
+            pid_file.display()
+        )
+    })?;
+    let first_line = contents.lines().next().ok_or_else(|| {
+        format!(
+            "postmaster pid file `{}` is missing the pid line",
+            pid_file.display()
+        )
+    })?;
+    let trimmed = first_line.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "postmaster pid file `{}` has an empty pid line",
+            pid_file.display()
+        ));
+    }
+    trimmed.parse::<u32>().map_err(|err| {
+        format!(
+            "parse postmaster pid `{trimmed}` from `{}` failed: {err}",
+            pid_file.display()
+        )
+    })
+}
+
+fn pid_matches_data_dir(pid: u32, data_dir: &Path) -> Result<bool, String> {
+    if !pid_exists(pid)? {
+        return Ok(false);
+    }
+
+    #[cfg(unix)]
+    {
+        let cmdline_path = std::path::PathBuf::from(format!("/proc/{pid}/cmdline"));
+        let cmdline = match fs::read(&cmdline_path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => {
+                return Err(format!("read `{}` failed: {err}", cmdline_path.display()));
+            }
+        };
+        let data_dir_text = data_dir.display().to_string();
+        let cmdline_args = cmdline
+            .split(|byte| *byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .map(|arg| String::from_utf8_lossy(arg))
+            .collect::<Vec<_>>();
+        let has_data_dir = cmdline_args
+            .iter()
+            .any(|arg| arg.contains(data_dir_text.as_str()));
+        let has_postgres_argv = cmdline_args.iter().any(|arg| {
+            std::path::Path::new(arg.as_ref())
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| matches!(name, "postgres" | "postmaster"))
+                .unwrap_or(false)
+        });
+        Ok(has_data_dir && has_postgres_argv)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = data_dir;
+        Ok(true)
+    }
+}
+
+fn pid_exists(pid: u32) -> Result<bool, String> {
+    #[cfg(unix)]
+    {
+        let pid_i32 = i32::try_from(pid)
+            .map_err(|err| format!("postmaster pid {pid} i32 conversion failed: {err}"))?;
+        let rc = unsafe { libc::kill(pid_i32, 0) };
+        if rc == 0 {
+            return Ok(true);
+        }
+        let err = std::io::Error::last_os_error();
+        let raw = err.raw_os_error();
+        if raw == Some(libc::ESRCH) {
+            return Ok(false);
+        }
+        if raw == Some(libc::EPERM) {
+            return Ok(true);
+        }
+        Err(format!("kill(0) failed for pid={pid}: {err}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Ok(true)
+    }
 }
 
 fn set_postgres_data_dir_permissions(data_dir: &Path) -> Result<(), String> {

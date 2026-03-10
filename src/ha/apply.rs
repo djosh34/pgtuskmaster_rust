@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::process::state::ProcessState;
 use crate::{dcs::store::DcsStoreError, state::WorkerError};
 
 use super::{
@@ -11,7 +12,10 @@ use super::{
     lower::{
         HaEffectPlan, LeaseEffect, PostgresEffect, RecoveryEffect, SafetyEffect, SwitchoverEffect,
     },
-    process_dispatch::{dispatch_process_action, validate_basebackup_source, ProcessDispatchError, ProcessDispatchOutcome},
+    process_dispatch::{
+        dispatch_process_action, validate_basebackup_source, ProcessDispatchError,
+        ProcessDispatchOutcome,
+    },
     state::HaWorkerCtx,
 };
 
@@ -59,7 +63,7 @@ pub(crate) fn apply_effect_plan(
         )?;
     }
 
-    action_index = dispatch_postgres_effect(
+    let (next_index, postgres_dispatched) = dispatch_postgres_effect(
         ctx,
         ha_tick,
         action_index,
@@ -67,12 +71,16 @@ pub(crate) fn apply_effect_plan(
         &runtime_config,
         &mut errors,
     )?;
+    action_index = next_index;
+    let recovery_dispatch_blocked =
+        recovery_dispatch_is_blocked(&ctx.process_subscriber.latest().value, postgres_dispatched);
     action_index = dispatch_recovery_effect(
         ctx,
         ha_tick,
         action_index,
         &plan.recovery,
         &runtime_config,
+        recovery_dispatch_blocked,
         &mut errors,
     )?;
     action_index = dispatch_safety_effect(
@@ -126,10 +134,10 @@ fn dispatch_postgres_effect(
     effect: &PostgresEffect,
     runtime_config: &crate::config::RuntimeConfig,
     errors: &mut Vec<ActionDispatchError>,
-) -> Result<usize, WorkerError> {
+) -> Result<(usize, bool), WorkerError> {
     match effect {
-        PostgresEffect::None => Ok(action_index),
-        PostgresEffect::StartPrimary => dispatch_effect_action(
+        PostgresEffect::None => Ok((action_index, false)),
+        PostgresEffect::StartPrimary => dispatch_process_effect_action(
             ctx,
             ha_tick,
             action_index,
@@ -137,7 +145,7 @@ fn dispatch_postgres_effect(
             runtime_config,
             errors,
         ),
-        PostgresEffect::StartReplica { leader_member_id } => dispatch_effect_action(
+        PostgresEffect::StartReplica { leader_member_id } => dispatch_process_effect_action(
             ctx,
             ha_tick,
             action_index,
@@ -147,7 +155,7 @@ fn dispatch_postgres_effect(
             runtime_config,
             errors,
         ),
-        PostgresEffect::Promote => dispatch_effect_action(
+        PostgresEffect::Promote => dispatch_process_effect_action(
             ctx,
             ha_tick,
             action_index,
@@ -155,7 +163,7 @@ fn dispatch_postgres_effect(
             runtime_config,
             errors,
         ),
-        PostgresEffect::Demote => dispatch_effect_action(
+        PostgresEffect::Demote => dispatch_process_effect_action(
             ctx,
             ha_tick,
             action_index,
@@ -222,11 +230,15 @@ fn dispatch_recovery_effect(
     action_index: usize,
     effect: &RecoveryEffect,
     runtime_config: &crate::config::RuntimeConfig,
+    recovery_dispatch_blocked: bool,
     errors: &mut Vec<ActionDispatchError>,
 ) -> Result<usize, WorkerError> {
+    if recovery_dispatch_blocked {
+        return Ok(action_index);
+    }
     match effect {
         RecoveryEffect::None => Ok(action_index),
-        RecoveryEffect::Rewind { leader_member_id } => dispatch_effect_action(
+        RecoveryEffect::Rewind { leader_member_id } => dispatch_process_only_effect_action(
             ctx,
             ha_tick,
             action_index,
@@ -237,11 +249,9 @@ fn dispatch_recovery_effect(
             errors,
         ),
         RecoveryEffect::Basebackup { leader_member_id } => {
-            if let Err(err) = validate_basebackup_source(
-                ctx,
-                ActionId::StartBaseBackup,
-                leader_member_id,
-            ) {
+            if let Err(err) =
+                validate_basebackup_source(ctx, ActionId::StartBaseBackup, leader_member_id)
+            {
                 errors.push(map_process_dispatch_error(err));
                 return Ok(action_index);
             }
@@ -253,7 +263,7 @@ fn dispatch_recovery_effect(
                 runtime_config,
                 errors,
             )?;
-            dispatch_effect_action(
+            dispatch_process_only_effect_action(
                 ctx,
                 ha_tick,
                 next_index,
@@ -273,7 +283,7 @@ fn dispatch_recovery_effect(
                 runtime_config,
                 errors,
             )?;
-            dispatch_effect_action(
+            dispatch_process_only_effect_action(
                 ctx,
                 ha_tick,
                 next_index,
@@ -295,7 +305,7 @@ fn dispatch_safety_effect(
 ) -> Result<usize, WorkerError> {
     match effect {
         SafetyEffect::None => Ok(action_index),
-        SafetyEffect::FenceNode => dispatch_effect_action(
+        SafetyEffect::FenceNode => dispatch_process_only_effect_action(
             ctx,
             ha_tick,
             action_index,
@@ -304,6 +314,37 @@ fn dispatch_safety_effect(
             errors,
         ),
     }
+}
+
+fn dispatch_process_effect_action(
+    ctx: &mut HaWorkerCtx,
+    ha_tick: u64,
+    action_index: usize,
+    action: HaAction,
+    runtime_config: &crate::config::RuntimeConfig,
+    errors: &mut Vec<ActionDispatchError>,
+) -> Result<(usize, bool), WorkerError> {
+    let next_index =
+        dispatch_effect_action(ctx, ha_tick, action_index, action, runtime_config, errors)?;
+    Ok((next_index, true))
+}
+
+fn dispatch_process_only_effect_action(
+    ctx: &mut HaWorkerCtx,
+    ha_tick: u64,
+    action_index: usize,
+    action: HaAction,
+    runtime_config: &crate::config::RuntimeConfig,
+    errors: &mut Vec<ActionDispatchError>,
+) -> Result<usize, WorkerError> {
+    dispatch_effect_action(ctx, ha_tick, action_index, action, runtime_config, errors)
+}
+
+fn recovery_dispatch_is_blocked(
+    process_state: &ProcessState,
+    postgres_dispatch_started: bool,
+) -> bool {
+    postgres_dispatch_started || matches!(process_state, ProcessState::Running { .. })
 }
 
 fn dispatch_effect_action(
@@ -362,7 +403,8 @@ fn dispatch_action(
             dcs_delete_result(ctx, ha_tick, action_index, action, path, dispatch_result)
         }
         _ => {
-            let result = dispatch_process_action(ctx, ha_tick, action_index, action, runtime_config);
+            let result =
+                dispatch_process_action(ctx, ha_tick, action_index, action, runtime_config);
             process_dispatch_result(ctx, ha_tick, action_index, action, result)
         }
     }
@@ -476,4 +518,42 @@ fn leader_path(scope: &str) -> String {
 
 fn switchover_path(scope: &str) -> String {
     format!("/{}/switchover", scope.trim_matches('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        process::{
+            jobs::{ActiveJob, ActiveJobKind},
+            state::ProcessState,
+        },
+        state::{JobId, UnixMillis, WorkerStatus},
+    };
+
+    use super::recovery_dispatch_is_blocked;
+
+    #[test]
+    fn running_process_job_blocks_new_recovery_dispatch() {
+        let process_state = ProcessState::Running {
+            worker: WorkerStatus::Running,
+            active: ActiveJob {
+                id: JobId("job-1".to_string()),
+                kind: ActiveJobKind::Demote,
+                started_at: UnixMillis(1),
+                deadline_at: UnixMillis(2),
+            },
+        };
+
+        assert!(recovery_dispatch_is_blocked(&process_state, false));
+    }
+
+    #[test]
+    fn started_postgres_dispatch_blocks_later_recovery_phase_in_same_tick() {
+        let process_state = ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: None,
+        };
+
+        assert!(recovery_dispatch_is_blocked(&process_state, true));
+    }
 }

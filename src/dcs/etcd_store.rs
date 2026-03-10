@@ -1353,7 +1353,7 @@ mod tests {
         dcs::{
             etcd_store::EtcdDcsStore,
             state::{
-                evaluate_trust, BootstrapLockRecord, DcsView, DcsState, DcsTrust, DcsWorkerCtx,
+                evaluate_trust, BootstrapLockRecord, DcsState, DcsTrust, DcsView, DcsWorkerCtx,
                 LeaderRecord, MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{

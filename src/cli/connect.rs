@@ -432,7 +432,7 @@ mod tests {
         let replica_state = sample_state(
             "node-b",
             DesiredNodeStateResponse::Replica {
-                plan: ReplicaPlanResponse::DirectFollow {
+                plan: ReplicaPlanResponse::Direct {
                     leader_member_id: "node-a".to_string(),
                 },
             },
@@ -547,7 +547,7 @@ mod tests {
         let replica_state = sample_state(
             "node-b",
             DesiredNodeStateResponse::Replica {
-                plan: ReplicaPlanResponse::DirectFollow {
+                plan: ReplicaPlanResponse::Direct {
                     leader_member_id: "node-a".to_string(),
                 },
             },

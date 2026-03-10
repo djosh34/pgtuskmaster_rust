@@ -115,9 +115,9 @@ pub enum PrimaryPlanResponse {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReplicaPlanResponse {
-    DirectFollow { leader_member_id: String },
-    RewindThenFollow { leader_member_id: String },
-    BasebackupThenFollow { leader_member_id: String },
+    Direct { leader_member_id: String },
+    Rewind { leader_member_id: String },
+    Basebackup { leader_member_id: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

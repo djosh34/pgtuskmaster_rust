@@ -724,7 +724,7 @@ fn replicas_command_renders_one_dsn_per_line() -> Result<(), String> {
         "node-b",
         "node-a",
         r#"{"kind":"initialized_leader_present","leader":"node-a"}"#,
-        r#"{"kind":"replica","plan":{"kind":"direct_follow","leader_member_id":"node-a"}}"#,
+        r#"{"kind":"replica","plan":{"kind":"direct","leader_member_id":"node-a"}}"#,
         &[
             sample_member_json(
                 "node-a",

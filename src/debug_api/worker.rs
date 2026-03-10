@@ -375,19 +375,14 @@ fn summarize_process(state: &ProcessState) -> String {
 fn summarize_ha(state: &HaState) -> String {
     format!(
         "ha worker={:?} cluster_mode={:?} desired_state={:?} tick={}",
-        state.worker,
-        state.cluster_mode,
-        state.desired_state,
-        state.tick,
+        state.worker, state.cluster_mode, state.desired_state, state.tick,
     )
 }
 
 fn ha_signature(state: &HaState) -> String {
     format!(
         "ha worker={:?} cluster_mode={:?} desired_state={:?}",
-        state.worker,
-        state.cluster_mode,
-        state.desired_state
+        state.worker, state.cluster_mode, state.desired_state
     )
 }
 
@@ -397,7 +392,7 @@ mod tests {
 
     use crate::{
         config::{ApiTlsMode, RuntimeConfig},
-        dcs::state::{DcsView, DcsState, DcsTrust},
+        dcs::state::{DcsState, DcsTrust, DcsView},
         debug_api::snapshot::{AppLifecycle, DebugDomain, SystemSnapshot},
         ha::state::{
             ClusterMode, DesiredNodeState, HaState, LeadershipTransferState, QuiescentReason,

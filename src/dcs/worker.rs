@@ -1,5 +1,8 @@
 use crate::{
-    local_physical::{inspect_local_physical_state, DataDirKind, SignalFileState},
+    local_physical::{
+        inspect_local_physical_state, DataDirKind, LocalPhysicalState, LocalPhysicalStateError,
+        SignalFileState,
+    },
     logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
     state::WorkerError,
 };
@@ -8,8 +11,8 @@ use super::{
     keys::DcsKey,
     state::{
         build_local_member_record, evaluate_trust, BootstrapLockRecord,
-        BuildLocalMemberRecordInput, ClusterIdentityRecord, ClusterInitializedRecord, DcsView,
-        DcsState, DcsTrust, DcsWorkerCtx, LeaderRecord, MemberRecord, MemberStateClass,
+        BuildLocalMemberRecordInput, ClusterIdentityRecord, ClusterInitializedRecord, DcsState,
+        DcsTrust, DcsView, DcsWorkerCtx, LeaderRecord, MemberRecord, MemberStateClass,
         PostgresRuntimeClass, SwitchoverRequest,
     },
     store::{refresh_from_etcd_watch, write_local_member},
@@ -144,11 +147,31 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             now,
             pg_version: pg_snapshot.version,
         });
-        let local_physical_state = inspect_local_physical_state(
+        let (local_physical_state, inspection_warning) = inspect_local_physical_state_for_dcs(
             ctx.local_data_dir.as_path(),
             ctx.local_postgres_binary.as_path(),
-        )
-        .map_err(|err| WorkerError::Message(format!("local physical inspection failed: {err}")))?;
+        )?;
+        if let Some(message) = inspection_warning {
+            let mut event = dcs_event(
+                SeverityText::Warn,
+                "dcs local physical inspection recovered transitional state",
+                "dcs.local_physical.inspection_recovered",
+                "recovered",
+            );
+            let fields = event.fields_mut();
+            dcs_append_base_fields(fields, ctx);
+            fields.insert(
+                "postgres.data_dir",
+                ctx.local_data_dir.display().to_string(),
+            );
+            fields.insert("message", message);
+            emit_dcs_event(
+                ctx,
+                "dcs_worker::step_once",
+                event,
+                "dcs local physical recovery log emit failed",
+            )?;
+        }
         apply_local_physical_state(&mut local_member, &local_physical_state);
         match write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member) {
             Ok(()) => {
@@ -313,6 +336,52 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     Ok(())
 }
 
+fn inspect_local_physical_state_for_dcs(
+    data_dir: &std::path::Path,
+    postgres_binary: &std::path::Path,
+) -> Result<(LocalPhysicalState, Option<String>), WorkerError> {
+    match inspect_local_physical_state(data_dir, postgres_binary) {
+        Ok(state) => Ok((state, None)),
+        Err(err) => match recover_transitional_local_physical_state(data_dir, &err) {
+            Some(state) => Ok((
+                state,
+                Some(format!(
+                    "pg_controldata not yet readable while local data dir is still being materialized: {err}"
+                )),
+            )),
+            None => Err(WorkerError::Message(format!(
+                "local physical inspection failed: {err}"
+            ))),
+        },
+    }
+}
+
+fn recover_transitional_local_physical_state(
+    data_dir: &std::path::Path,
+    err: &LocalPhysicalStateError,
+) -> Option<LocalPhysicalState> {
+    let pg_control_path = data_dir.join("global").join("pg_control");
+    match err {
+        LocalPhysicalStateError::PgControlDataCommand { .. } if !pg_control_path.exists() => {
+            Some(LocalPhysicalState {
+                data_dir_kind: DataDirKind::InvalidNonEmptyWithoutPgVersion,
+                system_identifier: None,
+                pg_version: None,
+                control_file_state: None,
+                timeline_id: None,
+                durable_end_lsn: None,
+                was_in_recovery: None,
+                signal_file_state: SignalFileState::None,
+                eligible_for_bootstrap: false,
+                eligible_for_direct_follow: false,
+                eligible_for_rewind: false,
+                eligible_for_basebackup: true,
+            })
+        }
+        _ => None,
+    }
+}
+
 fn apply_local_physical_state(
     member: &mut MemberRecord,
     local_physical_state: &crate::local_physical::LocalPhysicalState,
@@ -360,6 +429,8 @@ fn now_unix_millis() -> Result<crate::state::UnixMillis, WorkerError> {
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::VecDeque;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -368,7 +439,7 @@ mod tests {
         dcs::{
             keys::DcsKey,
             state::{
-                BootstrapLockRecord, DcsView, DcsState, DcsTrust, DcsWorkerCtx, LeaderRecord,
+                BootstrapLockRecord, DcsState, DcsTrust, DcsView, DcsWorkerCtx, LeaderRecord,
                 MemberRecord, MemberRole, SwitchoverRequest,
             },
             store::{DcsStore, DcsStoreError, WatchEvent, WatchOp},
@@ -379,7 +450,7 @@ mod tests {
         state::{new_state_channel, MemberId, UnixMillis, Version, WorkerError, WorkerStatus},
     };
 
-    use super::step_once;
+    use super::{recover_transitional_local_physical_state, step_once};
 
     const TEST_DCS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -551,6 +622,19 @@ mod tests {
             cluster_identity: None,
             bootstrap_lock: None,
         }
+    }
+
+    fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(format!("pgtm-dcs-worker-{label}-{unique}"));
+        fs::create_dir_all(&path)?;
+        Ok(path)
     }
 
     #[test]
@@ -1003,5 +1087,52 @@ mod tests {
             latest.value.worker,
             WorkerStatus::Faulted(WorkerError::Message(_))
         ));
+    }
+
+    #[test]
+    fn recovers_pg_controldata_failure_while_pg_control_is_absent(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = temp_dir("missing-pg-control")?;
+        fs::write(dir.join("PG_VERSION"), "16\n")?;
+        fs::create_dir_all(dir.join("global"))?;
+
+        let recovered = recover_transitional_local_physical_state(
+            dir.as_path(),
+            &crate::local_physical::LocalPhysicalStateError::PgControlDataCommand {
+                binary: Path::new("/usr/bin/pg_controldata").to_path_buf(),
+                data_dir: dir.clone(),
+                message: "could not open pg_control".to_string(),
+            },
+        );
+
+        let state = recovered.ok_or("expected transitional recovery state")?;
+        assert_eq!(
+            state.data_dir_kind,
+            crate::local_physical::DataDirKind::InvalidNonEmptyWithoutPgVersion
+        );
+        assert!(state.eligible_for_basebackup);
+        assert!(!state.eligible_for_direct_follow);
+        Ok(())
+    }
+
+    #[test]
+    fn does_not_recover_pg_controldata_failure_once_pg_control_exists(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = temp_dir("present-pg-control")?;
+        fs::write(dir.join("PG_VERSION"), "16\n")?;
+        fs::create_dir_all(dir.join("global"))?;
+        fs::write(dir.join("global").join("pg_control"), b"placeholder")?;
+
+        let recovered = recover_transitional_local_physical_state(
+            dir.as_path(),
+            &crate::local_physical::LocalPhysicalStateError::PgControlDataCommand {
+                binary: Path::new("/usr/bin/pg_controldata").to_path_buf(),
+                data_dir: dir.clone(),
+                message: "could not parse pg_control".to_string(),
+            },
+        );
+
+        assert!(recovered.is_none());
+        Ok(())
     }
 }

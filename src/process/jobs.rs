@@ -199,6 +199,8 @@ pub(crate) enum ProcessError {
     EarlyExit { code: Option<i32> },
     #[error("job cancellation failed: {0}")]
     CancelFailure(String),
+    #[error("post-start validation failed: {0}")]
+    StartValidationFailed(String),
 }
 
 impl ProcessError {

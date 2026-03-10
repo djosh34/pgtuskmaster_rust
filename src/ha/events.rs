@@ -69,7 +69,12 @@ pub(crate) fn emit_ha_action_intent(
     let fields = event.fields_mut();
     ha_append_base_fields(fields, ctx, ha_tick);
     ha_append_action_fields(fields, action_index, action);
-    emit_ha_event(ctx, "ha_worker::step_once", event, "ha intent log emit failed")
+    emit_ha_event(
+        ctx,
+        "ha_worker::step_once",
+        event,
+        "ha intent log emit failed",
+    )
 }
 
 pub(crate) fn emit_desired_state_selected(

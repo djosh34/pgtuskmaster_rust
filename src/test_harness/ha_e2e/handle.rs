@@ -121,6 +121,13 @@ impl RuntimeNodeSet {
         self.nodes.is_empty()
     }
 
+    pub fn is_node_offline(&self, node_id: &str) -> Result<bool, WorkerError> {
+        self.nodes
+            .get(node_id)
+            .map(RuntimeNodeHandle::is_offline)
+            .ok_or_else(|| WorkerError::Message(format!("unknown runtime node id: {node_id}")))
+    }
+
     pub fn metadata_for_node(&self, node_id: &str) -> Option<(&RuntimeConfig, &PathBuf)> {
         self.nodes
             .get(node_id)
@@ -327,6 +334,9 @@ impl TestClusterHandle {
     }
 
     pub async fn restart_runtime_node(&mut self, node_id: &str) -> Result<(), WorkerError> {
+        if !self.runtime_nodes.is_node_offline(node_id)? {
+            self.stop_runtime_node(node_id).await?;
+        }
         let node = self.node_by_id(node_id)?;
         self.runtime_nodes
             .restart_node(
