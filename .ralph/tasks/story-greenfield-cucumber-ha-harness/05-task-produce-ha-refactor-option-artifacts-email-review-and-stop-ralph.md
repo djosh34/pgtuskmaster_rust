@@ -114,8 +114,8 @@ This means that if make test and/or make test-long fails, ARE NOT BLOCKING FOR T
 - [x] Write `.ralph/STOP` after the email is sent.
 - [x] Run `/bin/bash .ralph/task_switch.sh` before writing `.ralph/STOP` so Ralph history/current-task state is advanced without violating the stop marker boundary.
 - [x] Update this task markdown and the story artifacts so they accurately describe what was produced, what was recommended, what questions were sent, and whether the repo gates were passing or intentionally left failing.
-- [ ] If the worktree has task-artifact changes that should be preserved, commit them, including `.ralph/STOP`, with a message that makes the intentional design-review stop explicit.
-- [ ] Push with `git push` if the normal Ralph workflow still expects the story artifacts and stop marker to be shared.
+- [x] If the worktree has task-artifact changes that should be preserved, commit them, including `.ralph/STOP`, with a message that makes the intentional design-review stop explicit.
+- [x] Push with `git push` if the normal Ralph workflow still expects the story artifacts and stop marker to be shared.
 - [x] For this execution, treat `make check`, `make test`, `make test-long`, and `make lint` as required for final closeout in addition to the planning artifacts. If any gate fails, record that truthfully in the artifacts and task file, but do not pretend the task fully passes.
 
 ## Skeptical plan review notes
@@ -135,4 +135,5 @@ NOW EXECUTE
   - `make test`: pass
   - `make test-long`: fail (`26 tests run: 11 passed, 15 failed, 0 skipped`)
   - `make lint`: pass
+- Preserved the planning-stop state in git and pushed it after the review artifacts, email, `task_switch`, and `.ralph/STOP` were in place.
 - Because `make test-long` is still failing, this task is intentionally closed with `<passes>false</passes>`. The review artifacts are complete, but the repo is not green, and this markdown does not pretend otherwise.
