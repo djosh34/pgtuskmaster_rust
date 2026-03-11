@@ -185,3 +185,4 @@
 .ralph/tasks/bugs/docker-socket-permission-blocks-greenfield-ha-harness-runtime-validation.md
 .ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md
 NONE
+.ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md
