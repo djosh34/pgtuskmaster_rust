@@ -970,3 +970,18 @@ The correct move is not to abandon the pure-kernel architecture. The correct mov
 - explicit switchover eligibility
 
 With those added, the design remains elegant, testable, and compiler-driven, while now matching the real HA scenarios we actually care about.
+
+<acceptance_criteria>
+- [ ] The implementation remains in the spirit of the original design-based request: strong use of Rust's type system, maintainable structure, conceptual simplicity, and net code reduction rather than more incidental machinery.
+- [ ] All old code, old source paths, old structs, old assumptions, and other stale parallel design leftovers that conflict with this task are fully cleaned out and stripped rather than kept around beside the refactor.
+- [ ] All unit tests that assumed the old behavior are updated to align with the `.feature` files first and then with this task's instructions, so the lower-level tests validate the same HA contract as the feature suite.
+- [ ] The whole codebase is verified to follow the new design defined in this task, and any design drift or half-migrated logic discovered during the work is removed or brought into alignment before the task is considered done.
+- [ ] The work is executed in the required order: refactor the code first, then only if implementation proves the design is still incomplete, tune the design in the same spirit afterward instead of redesigning first.
+- [ ] `make check` passes cleanly.
+- [ ] `make test` passes cleanly.
+- [ ] `make test-long` passes cleanly.
+- [ ] `make lint` passes cleanly.
+- [ ] `<passes>true</passes>` is not set until every required acceptance criterion is complete and the required verification commands have actually passed.
+</acceptance_criteria>
+
+TO BE VERIFIED

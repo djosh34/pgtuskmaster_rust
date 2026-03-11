@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 12 12:36:14 AM CET 2026
+Generated: Thu Mar 12 12:47:29 AM CET 2026
 
 # Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md`
 
@@ -14,19 +14,7 @@ Generated: Thu Mar 12 12:36:14 AM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/ha_decision_structure_bundle.md`
-
-```
-# HA decision structure bundle
-
-This file consolidates the HA acceptance feature corpus and the runtime code/state that drives bootstrap, normal operation, degraded operation, and recovery.
-
-Rules used while assembling this bundle:
-```
-
-==============
-
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/ha_final_decision.md`
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/06-task-refactor-ha-loop-from-final-decision.md`
 
 ```
 

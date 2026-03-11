@@ -6,7 +6,7 @@
 - [ ] complete the work like this:
     - [ ] If you read nothing, do a EXHAUSTIVE, DEEP and SKEPTICAL review of the plan, and change it if necessary
     - [ ] Once your certain about the plan, replace end of plan with 'NOW EXECUTE'
-    - [ ] When you read 'NOW EXECUTE', do not explore, just execute the plan as written, and tick off the boxes when you do them. 
+    - [ ] When you read 'NOW EXECUTE', execute the plan as written, and tick off the boxes when you do them. 
 
 - [ ] you are really done if and only if ALL of these pass 100%:
     - [ ] `make check`
