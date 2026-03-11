@@ -1,4 +1,8 @@
 
+## Task: Refactor The HA Loop <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
 
 Refactor the 'ha-loop'
 
