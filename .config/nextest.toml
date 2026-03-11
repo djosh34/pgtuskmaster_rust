@@ -22,6 +22,7 @@ fail-fast = false
 default-filter = '''
 kind(test) & binary(ha_*)
 '''
+test-threads = 32
 slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
 
 [profile.ultra-long.junit]

@@ -10,9 +10,8 @@ Pick the right validation command for the change you made:
 
 - `make check` for a fast compile gate
 - `make test` for the default automated suite
-- `make test-long` for the longest HA and Docker validation path
-- `make test-cucumber-ha` for the shipped greenfield cucumber Docker HA suite
-- `make test-cucumber-ha-primary-crash-rejoin` for the original focused primary-crash scenario
+- `make test-long` for the HA nextest suite behind the `ultra-long` profile
+- `make test-long TESTS="ha_primary_crash_rejoin"` for focused HA runs
 - `make lint` for docs and clippy enforcement
 
 ## Prerequisites
@@ -21,10 +20,9 @@ Make sure these are available in your environment:
 
 - Rust toolchain with `cargo`
 - `cargo-nextest`
-- `timeout` or `gtimeout`
 - etcd real binary installed through the repository tooling
 - PostgreSQL 16 real binaries installed through the repository tooling
-- Docker and Docker Compose plugin for the longest validation targets
+- Docker and Docker Compose plugin for the HA validation targets
 - permission to access the Docker daemon, not only a running daemon process
 
 The repository itself points to helper installers for the real-binary prerequisites:
@@ -42,7 +40,7 @@ Run:
 make check
 ```
 
-This executes `cargo check --all-targets` through the Makefile gate wrapper.
+This executes `cargo check --all-targets`.
 
 Use it when you want a quick signal that the workspace still compiles before spending time on the longer suites.
 
@@ -54,11 +52,17 @@ Run:
 make test
 ```
 
-This uses `cargo nextest run --workspace --all-targets --profile default --no-fail-fast --no-tests fail`.
+This uses `cargo nextest run --workspace --all-targets --profile default --no-tests fail`.
 
 That is the normal validation path for most code changes. The default profile excludes the long-running greenfield HA binaries selected by the `binary(ha_*)` naming rule, so those Docker-backed scenarios stay out of the default gate.
 
-## Long HA And Docker Validation
+If you want the flattened per-test log files derived from nextest JUnit output after the run, use:
+
+```bash
+make test.convert-logs
+```
+
+## Long HA Validation
 
 Run:
 
@@ -66,18 +70,49 @@ Run:
 make test-long
 ```
 
-This target is intentionally heavier than `make test`. It runs:
-
-1. the `ultra-long` nextest profile
-2. Docker Compose config validation
-3. single-node Docker smoke coverage
-4. cluster Docker smoke coverage
+This target runs the `ultra-long` nextest profile for the HA cucumber suite.
 
 The `ultra-long` nextest profile selects the greenfield HA binaries and still runs them through normal nextest parallel scheduling. Those scenarios are expected to be parallel-safe. If a scenario only passes in serial, that is treated as a test bug rather than an accepted gate workaround.
 
-The shipped greenfield HA surface now includes the stable suite entrypoint `make test-cucumber-ha` plus the focused `make test-cucumber-ha-primary-crash-rejoin` target for the original scenario.
+Use it when your change can affect HA behavior or longer-running operational scenarios.
 
-Use it when your change can affect HA behavior, Docker packaging, or longer-running operational scenarios.
+For a focused HA run, pass one or more `ha_*` test target names through `TESTS`:
+
+```bash
+make test-long TESTS="ha_primary_crash_rejoin"
+make test-long TESTS="ha_primary_crash_rejoin ha_no_quorum_enters_failsafe"
+```
+
+In focused mode, `test-long` appends one `--test <name>` argument per selected target.
+
+The Makefile wrapper itself is intentionally thin:
+
+```bash
+make test-long
+```
+
+expands to the `cargo nextest run` invocation for the `ultra-long` profile, and:
+
+```bash
+make test-long TESTS="ha_primary_crash_rejoin ha_no_quorum_enters_failsafe"
+```
+
+adds repeated `--test` selectors to that same invocation.
+
+If you want the flattened per-test log files derived from nextest JUnit output after the run, use:
+
+```bash
+make test-long.convert-logs
+```
+
+The split targets are also available directly:
+
+```bash
+make test.nextest
+make test.convert-logs
+make test-long.nextest
+make test-long.convert-logs
+```
 
 ## Lint And Docs Validation
 
@@ -87,7 +122,7 @@ Run:
 make lint
 ```
 
-This is more than a clippy pass. The Makefile wires in:
+This is more than a clippy pass. The Makefile runs:
 
 - docs Mermaid linting
 - docs no-code guard checks
@@ -106,10 +141,8 @@ The requested source files give a good picture of the suite layout:
 
 The repository ships its supported HA end-to-end surface under `cucumber_tests/ha/`. That tree is intentionally independent from the ordinary `tests/` integration-test surface.
 
-The current greenfield entrypoints are:
+The current greenfield entrypoints are the `ha_*` nextest test targets plus `make test-long` as the canonical Makefile wrapper.
 
-- `make test-cucumber-ha`
-- `make test-cucumber-ha-primary-crash-rejoin`
 - `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.feature`
 - `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.rs`
 - `cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.feature`
@@ -124,8 +157,6 @@ The current greenfield entrypoints are:
 - `cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.rs`
 - `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.feature`
 - `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.rs`
-
-`make test-cucumber-ha` now runs the full shipped `ha_*` suite through the `ultra-long` nextest profile rather than pinning one wrapper. The feature target stays split intentionally: the suite target is the stable suite entrypoint, while `make test-cucumber-ha-primary-crash-rejoin` stays pinned to the original scenario wrapper.
 
 The shipped greenfield surface now covers primary crash and rejoin, replica outage, two-node outage with quorum restore, full-cluster outage with staged restore, repeated replica flap cycles, planned switchover, and targeted switchover. The old legacy HA/E2E harness has been removed, so new HA end-to-end coverage belongs in the cucumber runner.
 
@@ -169,7 +200,8 @@ Use this rule of thumb:
 
 - touched only Rust code and want a fast compile signal: `make check`
 - changed behavior and need normal validation: `make test`
-- touched HA flow, Docker assets, or anything likely to affect system behavior over time: `make test-long`
+- touched HA flow or anything likely to affect longer-running HA behavior: `make test-long`
+- want one or a few HA scenarios: `make test-long TESTS="ha_primary_crash_rejoin [ha_other_target ...]"`
 - changed docs or want the full style and lint gate: `make lint`
 
 ## Troubleshooting
@@ -200,4 +232,4 @@ That means the current account cannot access the socket. Fix the account-to-daem
 
 ### Lint fails on documentation-only work
 
-Read the docs-lint output first. The Makefile treats docs validation as a real gate, not as an optional afterthought.
+Read the docs-lint output first. The Makefile treats docs validation as part of normal validation, not as an optional afterthought.
