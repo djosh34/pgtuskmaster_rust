@@ -787,9 +787,18 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
 
 fn validate_distinct_postgres_role_usernames(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     let roles = [
-        ("postgres.roles.superuser.username", cfg.postgres.roles.superuser.username.as_str()),
-        ("postgres.roles.replicator.username", cfg.postgres.roles.replicator.username.as_str()),
-        ("postgres.roles.rewinder.username", cfg.postgres.roles.rewinder.username.as_str()),
+        (
+            "postgres.roles.superuser.username",
+            cfg.postgres.roles.superuser.username.as_str(),
+        ),
+        (
+            "postgres.roles.replicator.username",
+            cfg.postgres.roles.replicator.username.as_str(),
+        ),
+        (
+            "postgres.roles.rewinder.username",
+            cfg.postgres.roles.rewinder.username.as_str(),
+        ),
     ];
     for (current_index, (current_field, current_username)) in roles.iter().enumerate() {
         for (other_field, other_username) in roles.iter().skip(current_index + 1) {
@@ -2344,7 +2353,8 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn validate_runtime_config_rejects_replicator_reusing_superuser_username() -> Result<(), String> {
+    fn validate_runtime_config_rejects_replicator_reusing_superuser_username() -> Result<(), String>
+    {
         let mut cfg = base_runtime_config();
         cfg.postgres.roles.replicator.username = cfg.postgres.roles.superuser.username.clone();
         expect_validation_error(
@@ -2366,7 +2376,8 @@ security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
     }
 
     #[test]
-    fn validate_runtime_config_rejects_rewinder_reusing_replicator_username() -> Result<(), String> {
+    fn validate_runtime_config_rejects_rewinder_reusing_replicator_username() -> Result<(), String>
+    {
         let mut cfg = base_runtime_config();
         cfg.postgres.roles.rewinder.username = cfg.postgres.roles.replicator.username.clone();
         expect_validation_error(

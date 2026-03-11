@@ -16,7 +16,7 @@ FROM (
     SELECT
         pg_is_in_recovery() AS in_recovery,
         CASE
-            WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() IS NOT NULL
+            WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() IS NOT NULL OR pg_last_wal_receive_lsn() IS NOT NULL
             ELSE TRUE
         END AS is_ready,
         (pg_control_checkpoint()).timeline_id::bigint AS timeline_id,

@@ -18,6 +18,7 @@
     - [Configure TLS](how-to/configure-tls.md)
     - [Configure TLS Security](how-to/configure-tls-security.md)
     - [Debug Cluster Issues](how-to/debug-cluster-issues.md)
+    - [Handle Complex Failures](how-to/handle-complex-failures.md)
     - [Handle a Network Partition](how-to/handle-network-partition.md)
     - [Handle Primary Failure](how-to/handle-primary-failure.md)
     - [Monitor via CLI Signals](how-to/monitor-via-metrics.md)

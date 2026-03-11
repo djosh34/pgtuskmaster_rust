@@ -159,6 +159,8 @@ test: guard-makeflags ensure-nextest
 test-long: guard-makeflags ensure-nextest ensure-timeout ensure-docker
 	@echo "test-long runs the ultra-long HA scenarios plus Docker Compose validation and smoke coverage."
 	@set -euo pipefail; \
+	trap './tools/docker/cleanup-ha-compose-projects.py >/dev/null 2>&1 || true' EXIT INT TERM; \
+	./tools/docker/cleanup-ha-compose-projects.py; \
 	status=0; \
 	cargo nextest run --workspace --all-targets --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" || status="$$?"; \
 	python3 ./tools/export-nextest-junit-logs.py ./target/nextest/ultra-long/junit.xml ./target/nextest/ultra-long/logs; \
@@ -172,14 +174,13 @@ test-long: guard-makeflags ensure-nextest ensure-timeout ensure-docker
 	"$(GATE_STEP)" --gate test-long --step test_long.docker_smoke_cluster --run-id "$(GATE_RUN_ID)" --evidence-dir "$(GATE_EVIDENCE_DIR)" --timeout-bin "$(TIMEOUT_BIN)" --timeout-secs "$(DOCKER_SMOKE_CLUSTER_TIMEOUT_SECS)" --kill-after-secs "$(DOCKER_SMOKE_CLUSTER_TIMEOUT_KILL_AFTER_SECS)" -- \
 		./tools/docker/smoke-cluster.sh
 
-CUCUMBER_HA_SUITE_TESTS := \
-	--test ha_primary_crash_rejoin
-
 run-cucumber-ha: test-cucumber-ha
 
 test-cucumber-ha: guard-makeflags ensure-nextest ensure-docker
 	@set -euo pipefail; \
-	cargo nextest run --workspace --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" $(CUCUMBER_HA_SUITE_TESTS)
+	trap './tools/docker/cleanup-ha-compose-projects.py >/dev/null 2>&1 || true' EXIT INT TERM; \
+	./tools/docker/cleanup-ha-compose-projects.py; \
+	cargo nextest run --workspace --all-targets --profile ultra-long --no-fail-fast --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
 
 test-cucumber-ha-primary-crash-rejoin: guard-makeflags ensure-nextest ensure-docker
 	@set -euo pipefail; \

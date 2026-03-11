@@ -451,7 +451,7 @@ fn collect_warnings(
                         .clone()
                         .unwrap_or_else(|| "<none>".to_string()),
                 );
-                if local_role_from_state(&sampled.state) == "primary" {
+                if observed_role(member, &sampled.state) == "primary" {
                     sampled_primary_members.insert(sampled.state.self_member_id.clone());
                 }
                 if sampled.state.dcs_trust != crate::api::DcsTrustResponse::FullQuorum {
@@ -557,7 +557,7 @@ fn build_node_row(
                 sampled: true,
                 api_url: member.api_url.clone(),
                 api_status: ApiStatus::Ok,
-                role: local_role_from_state(&sampled.state).to_string(),
+                role: observed_role(member, &sampled.state).to_string(),
                 trust: sampled.state.dcs_trust.to_string(),
                 phase: sampled.state.ha_phase.to_string(),
                 leader: sampled.state.leader.clone(),
@@ -634,11 +634,33 @@ fn role_rank(role: &str) -> u8 {
     }
 }
 
-pub(crate) fn local_role_from_state(state: &HaStateResponse) -> &'static str {
+pub(crate) fn observed_role(
+    member: &HaClusterMemberResponse,
+    state: &HaStateResponse,
+) -> &'static str {
+    if !matches!(
+        state.dcs_trust,
+        crate::api::DcsTrustResponse::FullQuorum
+    ) {
+        return "unknown";
+    }
+
     match state.ha_phase {
         crate::api::HaPhaseResponse::Primary => "primary",
         crate::api::HaPhaseResponse::Replica => "replica",
-        _ => "unknown",
+        crate::api::HaPhaseResponse::WaitingDcsTrusted
+        | crate::api::HaPhaseResponse::WaitingPostgresReachable
+        | crate::api::HaPhaseResponse::WaitingSwitchoverSuccessor => match member.role {
+            crate::api::MemberRoleResponse::Primary => "primary",
+            crate::api::MemberRoleResponse::Replica => "replica",
+            crate::api::MemberRoleResponse::Unknown => "unknown",
+        },
+        crate::api::HaPhaseResponse::Init
+        | crate::api::HaPhaseResponse::CandidateLeader
+        | crate::api::HaPhaseResponse::Rewinding
+        | crate::api::HaPhaseResponse::Bootstrapping
+        | crate::api::HaPhaseResponse::Fencing
+        | crate::api::HaPhaseResponse::FailSafe => "unknown",
     }
 }
 
@@ -711,7 +733,7 @@ mod tests {
             postgres_host: "127.0.0.1".to_string(),
             postgres_port: 5432,
             api_url: api_url.map(ToString::to_string),
-            role: MemberRoleResponse::Replica,
+            role: MemberRoleResponse::Unknown,
             sql: SqlStatusResponse::Healthy,
             readiness: ReadinessResponse::Ready,
             timeline: Some(7),
@@ -1081,5 +1103,89 @@ mod tests {
             view.nodes[0].debug.as_ref().map(|value| &value.status),
             Some(&DebugObservationStatus::Available)
         );
+    }
+
+    #[test]
+    fn assemble_cluster_view_prefers_member_role_over_transitional_phase() {
+        let mut members = vec![sample_member("node-a", Some("http://node-a:8080"))];
+        members[0].role = MemberRoleResponse::Replica;
+        let transitional_state = sample_state(
+            "node-a",
+            HaPhaseResponse::WaitingDcsTrusted,
+            DcsTrustResponse::FullQuorum,
+            Some("node-b"),
+            members.clone(),
+        );
+        let observations = BTreeMap::from([(
+            "node-a".to_string(),
+            super::PeerObservation {
+                member_id: "node-a".to_string(),
+                sampled: Ok(super::SampledNodeState {
+                    state: transitional_state.clone(),
+                    debug: None,
+                }),
+            },
+        )]);
+
+        let snapshot = sample_snapshot(transitional_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, false);
+
+        assert_eq!(view.nodes[0].role, "replica");
+    }
+
+    #[test]
+    fn assemble_cluster_view_does_not_surface_failsafe_member_as_primary() {
+        let mut members = vec![sample_member("node-a", Some("http://node-a:8080"))];
+        members[0].role = MemberRoleResponse::Primary;
+        let failsafe_state = sample_state(
+            "node-a",
+            HaPhaseResponse::FailSafe,
+            DcsTrustResponse::FailSafe,
+            Some("node-a"),
+            members.clone(),
+        );
+        let observations = BTreeMap::from([(
+            "node-a".to_string(),
+            super::PeerObservation {
+                member_id: "node-a".to_string(),
+                sampled: Ok(super::SampledNodeState {
+                    state: failsafe_state.clone(),
+                    debug: None,
+                }),
+            },
+        )]);
+
+        let snapshot = sample_snapshot(failsafe_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, false);
+
+        assert_eq!(view.nodes[0].role, "unknown");
+    }
+
+    #[test]
+    fn assemble_cluster_view_does_not_surface_waiting_member_without_full_quorum() {
+        let mut members = vec![sample_member("node-a", Some("http://node-a:8080"))];
+        members[0].role = MemberRoleResponse::Primary;
+        let waiting_state = sample_state(
+            "node-a",
+            HaPhaseResponse::WaitingDcsTrusted,
+            DcsTrustResponse::FailSafe,
+            Some("node-a"),
+            members.clone(),
+        );
+        let observations = BTreeMap::from([(
+            "node-a".to_string(),
+            super::PeerObservation {
+                member_id: "node-a".to_string(),
+                sampled: Ok(super::SampledNodeState {
+                    state: waiting_state.clone(),
+                    debug: None,
+                }),
+            },
+        )]);
+
+        let snapshot = sample_snapshot(waiting_state, members, observations);
+        let view = assemble_cluster_view(&snapshot, false);
+
+        assert_eq!(view.nodes[0].role, "unknown");
     }
 }

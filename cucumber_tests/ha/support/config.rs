@@ -2,9 +2,7 @@ use std::{fs, path::PathBuf, sync::OnceLock};
 
 use serde::Deserialize;
 
-use crate::support::{
-    error::{HarnessError, Result},
-};
+use crate::support::error::{HarnessError, Result};
 
 static HARNESS_SETTINGS: OnceLock<HarnessSettings> = OnceLock::new();
 

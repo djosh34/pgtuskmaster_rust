@@ -1,7 +1,8 @@
 use std::{
     collections::BTreeMap,
+    fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -40,12 +41,20 @@ struct DockerInspectEntry {
 struct DockerNetworkSettings {
     #[serde(rename = "Ports")]
     ports: Option<BTreeMap<String, Option<Vec<DockerPortBinding>>>>,
+    #[serde(rename = "Networks")]
+    networks: Option<BTreeMap<String, DockerNetworkEndpoint>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct DockerPortBinding {
     #[serde(rename = "HostPort")]
     host_port: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DockerNetworkEndpoint {
+    #[serde(rename = "IPAddress")]
+    ip_address: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -83,7 +92,10 @@ impl DockerCli {
 
     pub fn verify_daemon(&self) -> Result<()> {
         let _ = self.run(["info"], "checking docker daemon availability")?;
-        let _ = self.run(["compose", "version"], "checking docker compose plugin availability")?;
+        let _ = self.run(
+            ["compose", "version"],
+            "checking docker compose plugin availability",
+        )?;
         Ok(())
     }
 
@@ -138,13 +150,19 @@ impl DockerCli {
                 "down".to_string(),
                 "-v".to_string(),
                 "--remove-orphans".to_string(),
+                "--rmi".to_string(),
+                "local".to_string(),
             ],
             "stopping docker compose stack",
         )?;
         Ok(())
     }
 
-    pub fn compose_ps_entries(&self, compose_file: &Path, project: &str) -> Result<Vec<ComposePsEntry>> {
+    pub fn compose_ps_entries(
+        &self,
+        compose_file: &Path,
+        project: &str,
+    ) -> Result<Vec<ComposePsEntry>> {
         let output = self.run_text_in_dir(
             compose_file.parent().ok_or_else(|| {
                 HarnessError::message(format!(
@@ -227,6 +245,17 @@ impl DockerCli {
         )
     }
 
+    pub fn container_logs(&self, container: &str) -> Result<String> {
+        self.run_text(
+            [
+                "logs".to_string(),
+                "--timestamps".to_string(),
+                container.to_string(),
+            ],
+            format!("capturing docker logs for container `{container}`"),
+        )
+    }
+
     pub fn kill_container(&self, container: &str) -> Result<()> {
         let _ = self.run(
             ["kill".to_string(), container.to_string()],
@@ -240,6 +269,34 @@ impl DockerCli {
             ["start".to_string(), container.to_string()],
             format!("starting container `{container}`"),
         )?;
+        Ok(())
+    }
+
+    pub fn touch_file_in_container(&self, container: &str, destination: &str) -> Result<()> {
+        let temp_path = self.empty_temp_file_path(container)?;
+        fs::write(temp_path.as_path(), "").map_err(|source| HarnessError::Io {
+            path: temp_path.clone(),
+            source,
+        })?;
+
+        let copy_result = self.run(
+            [
+                "cp".to_string(),
+                temp_path.display().to_string(),
+                format!("{container}:{destination}"),
+            ],
+            format!("copying marker file into stopped container `{container}`"),
+        );
+
+        let remove_result = fs::remove_file(temp_path.as_path()).map_err(|source| {
+            HarnessError::Io {
+                path: temp_path.clone(),
+                source,
+            }
+        });
+
+        let _ = copy_result?;
+        remove_result?;
         Ok(())
     }
 
@@ -257,13 +314,11 @@ impl DockerCli {
 
     pub fn published_host_port(&self, container: &str, port: &str) -> Result<u16> {
         let inspect_entries = self.inspect_container_entries(container)?;
-        let details = inspect_entries
-            .first()
-            .ok_or_else(|| {
-                HarnessError::message(format!(
-                    "docker inspect for `{container}` did not return a container object"
-                ))
-            })?;
+        let details = inspect_entries.first().ok_or_else(|| {
+            HarnessError::message(format!(
+                "docker inspect for `{container}` did not return a container object"
+            ))
+        })?;
         let port_bindings = details
             .network_settings
             .as_ref()
@@ -313,6 +368,30 @@ impl DockerCli {
             })
     }
 
+    pub fn container_ipv4_address(&self, container: &str) -> Result<String> {
+        let inspect_entries = self.inspect_container_entries(container)?;
+        let details = inspect_entries.first().ok_or_else(|| {
+            HarnessError::message(format!(
+                "docker inspect for `{container}` did not return a container object"
+            ))
+        })?;
+        details
+            .network_settings
+            .as_ref()
+            .and_then(|value| value.networks.as_ref())
+            .and_then(|value| {
+                value
+                    .values()
+                    .filter_map(|endpoint| endpoint.ip_address.clone())
+                    .find(|ip_address| !ip_address.is_empty())
+            })
+            .ok_or_else(|| {
+                HarnessError::message(format!(
+                    "container `{container}` does not expose a non-empty IPv4 address"
+                ))
+            })
+    }
+
     pub fn exec(&self, container: &str, binary: &Path, args: &[&str]) -> Result<String> {
         self.exec_with_env(container, binary, args, &[])
     }
@@ -324,15 +403,42 @@ impl DockerCli {
         args: &[&str],
         env: &[(&str, &str)],
     ) -> Result<String> {
+        self.exec_with_options(container, None, binary, args, env)
+    }
+
+    pub fn exec_as_user(
+        &self,
+        container: &str,
+        user: &str,
+        binary: &Path,
+        args: &[&str],
+    ) -> Result<String> {
+        self.exec_with_options(container, Some(user), binary, args, &[])
+    }
+
+    fn exec_with_options(
+        &self,
+        container: &str,
+        user: Option<&str>,
+        binary: &Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<String> {
         process::ensure_absolute_path(binary)?;
         let mut command = vec!["exec".to_string()];
+        if let Some(user) = user {
+            command.extend(["--user".to_string(), user.to_string()]);
+        }
         command.extend(
             env.iter()
                 .flat_map(|(key, value)| ["--env".to_string(), format!("{key}={value}")]),
         );
         command.extend([container.to_string(), binary.display().to_string()]);
         command.extend(args.iter().map(|value| value.to_string()));
-        self.run_text(command, format!("executing `{}` in `{container}`", binary.display()))
+        self.run_text(
+            command,
+            format!("executing `{}` in `{container}`", binary.display()),
+        )
     }
 
     pub fn run_detached(&self, args: Vec<String>, context: impl Into<String>) -> Result<String> {
@@ -393,7 +499,23 @@ impl DockerCli {
         S: Into<String>,
     {
         let context = context.into();
-        self.run_in_dir(cwd, args, context.clone())?.stdout_text(context)
+        self.run_in_dir(cwd, args, context.clone())?
+            .stdout_text(context)
+    }
+
+    fn empty_temp_file_path(&self, container: &str) -> Result<PathBuf> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|source| {
+                HarnessError::message(format!(
+                    "system clock is before unix epoch while preparing marker for `{container}`: {source}"
+                ))
+            })?
+            .as_millis();
+        let sanitized_container = container.replace('/', "_");
+        Ok(std::env::temp_dir().join(format!(
+            "pgtm-ha-marker-{sanitized_container}-{millis}"
+        )))
     }
 
     fn inspect_container_entries(&self, container: &str) -> Result<Vec<DockerInspectEntry>> {
@@ -411,10 +533,8 @@ fn parse_json_sequence(input: &str, context: String) -> Result<Vec<ComposePsEntr
         return Ok(Vec::new());
     }
     if trimmed.starts_with('[') {
-        return serde_json::from_str(trimmed).map_err(|source| HarnessError::Json {
-            context,
-            source,
-        });
+        return serde_json::from_str(trimmed)
+            .map_err(|source| HarnessError::Json { context, source });
     }
 
     trimmed

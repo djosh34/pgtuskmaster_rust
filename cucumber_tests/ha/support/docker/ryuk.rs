@@ -1,7 +1,4 @@
-use std::{
-    io::Write,
-    net::TcpStream,
-};
+use std::{io::Write, net::TcpStream};
 
 use crate::support::{
     docker::cli::DockerCli,
@@ -64,8 +61,23 @@ impl RyukGuard {
     pub fn close(&mut self) -> Result<()> {
         self.stream.take();
         self.docker.sleep_for_resource_cleanup();
-        self.docker.remove_container_force(self.container_id.as_str())
+        match self.docker.remove_container_force(self.container_id.as_str()) {
+            Ok(()) => Ok(()),
+            Err(HarnessError::CommandFailed { stderr, .. })
+                if ryuk_removal_already_completed(stderr.as_str()) =>
+            {
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
+}
+
+fn ryuk_removal_already_completed(stderr: &str) -> bool {
+    let normalized = stderr.to_ascii_lowercase();
+    normalized.contains("removal of container")
+        && normalized.contains("already in progress")
+        || normalized.contains("no such container")
 }
 
 fn wait_for_host_port(docker: &DockerCli, container_id: &str) -> Result<u16> {

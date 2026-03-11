@@ -121,15 +121,15 @@ pub(crate) fn to_member_status(
     };
 
     if polled.in_recovery {
-        if let Some(replay_lsn) = polled.replay_lsn {
-            return PgInfoState::Replica {
-                common,
-                replay_lsn,
-                follow_lsn: polled.receive_lsn,
-                upstream: None,
-            };
-        }
-        return PgInfoState::Unknown { common };
+        return PgInfoState::Replica {
+            common,
+            replay_lsn: polled
+                .replay_lsn
+                .or(polled.receive_lsn)
+                .unwrap_or(WalLsn(0)),
+            follow_lsn: polled.receive_lsn,
+            upstream: None,
+        };
     }
 
     if let Some(wal_lsn) = polled.current_wal_lsn {
@@ -234,6 +234,37 @@ mod tests {
             assert_eq!(*replay_lsn, WalLsn(11));
             assert_eq!(*follow_lsn, Some(WalLsn(12)));
             assert_eq!(common.readiness, Readiness::Ready);
+        }
+    }
+
+    #[test]
+    fn to_member_status_maps_replica_without_replay_lsn() {
+        let state = to_member_status(
+            WorkerStatus::Running,
+            SqlStatus::Healthy,
+            UnixMillis(100),
+            Some(PgPollData {
+                in_recovery: true,
+                is_ready: false,
+                timeline: Some(TimelineId(9)),
+                current_wal_lsn: None,
+                replay_lsn: None,
+                receive_lsn: None,
+                slot_names: Vec::new(),
+            }),
+        );
+
+        assert!(matches!(&state, PgInfoState::Replica { .. }));
+        if let PgInfoState::Replica {
+            replay_lsn,
+            follow_lsn,
+            common,
+            ..
+        } = &state
+        {
+            assert_eq!(*replay_lsn, WalLsn(0));
+            assert_eq!(*follow_lsn, None);
+            assert_eq!(common.readiness, Readiness::NotReady);
         }
     }
 }

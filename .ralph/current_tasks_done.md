@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 10 08:19:35 PM CET 2026
+Generated: Wed Mar 11 07:23:57 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -216,6 +216,30 @@ An accepted targeted switchover request is not reliably honored in the HA multi-
 
 ```
 ## Task: Deep Clean Legacy Black-Box Test Infrastructure After Greenfield Migration <status>done</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+
+```
+## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
+
+```
+## Task: Add Advanced Docker HA Harness Features And Migrate Remaining Black-Box Scenarios <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 

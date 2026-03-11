@@ -1,4 +1,4 @@
-## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>in_progress</status> <passes>false</passes>
+## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -205,7 +205,7 @@ This means that if make test and/or make test-long fails, BUT all bugs are writt
 - [x] Update docs with `k2-docs-loop` so the greenfield HA suite entrypoints, shipped scenarios, and execution guidance no longer describe only the original feature.
 - [x] Run `make check`.
 - [x] Run `make test`, all failures given have a bug task
-- [ ] Run `make test-long`, all failures given have a bug task
+- [x] Run `make test-long`, all failures given have a bug task
 - [x] Run `make lint`.
 - [x] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.

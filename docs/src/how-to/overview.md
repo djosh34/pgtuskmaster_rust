@@ -16,6 +16,7 @@ This chapter contains goal-oriented guides for operating pgtuskmaster with `pgtm
 
 ## Failure Handling
 
+- [Handle Complex Failures](handle-complex-failures.md) - Diagnose quorum loss, mixed partitions, and other compound HA incidents before manual intervention
 - [Handle Primary Failure](handle-primary-failure.md) - Detect, assess, and respond to PostgreSQL primary node failures automatically
 - [Handle a Network Partition](handle-network-partition.md) - Detect, monitor, and recover from network partitions using trust and leader consensus
 

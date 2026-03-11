@@ -1,9 +1,6 @@
 use std::path::Path;
 
-use crate::support::{
-    docker::cli::DockerCli,
-    error::Result,
-};
+use crate::support::{docker::cli::DockerCli, error::Result};
 
 const PSQL_BIN: &str = "/usr/lib/postgresql/16/bin/psql";
 

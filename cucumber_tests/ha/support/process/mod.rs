@@ -28,14 +28,10 @@ impl CommandOutput {
             source,
         })
     }
-
 }
 
 impl CommandSpec {
-    pub fn new(
-        executable: impl Into<PathBuf>,
-        context: impl Into<String>,
-    ) -> Self {
+    pub fn new(executable: impl Into<PathBuf>, context: impl Into<String>) -> Self {
         Self {
             executable: executable.into(),
             args: Vec::new(),
@@ -50,7 +46,11 @@ impl CommandSpec {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        self.args.extend(values.into_iter().map(|value| value.as_ref().to_os_string()));
+        self.args.extend(
+            values
+                .into_iter()
+                .map(|value| value.as_ref().to_os_string()),
+        );
         self
     }
 

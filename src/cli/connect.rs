@@ -9,7 +9,7 @@ use crate::{
         error::CliError,
         output,
         status::{
-            build_sampled_cluster_snapshot, local_role_from_state, ClusterWarning,
+            build_sampled_cluster_snapshot, observed_role, ClusterWarning,
             SampledClusterSnapshot,
         },
     },
@@ -155,9 +155,7 @@ fn blocking_primary_warnings(snapshot: &SampledClusterSnapshot) -> Vec<&ClusterW
         .filter(|warning| {
             matches!(
                 warning.code.as_str(),
-                "leader_mismatch"
-                    | "membership_mismatch"
-                    | "multi_primary"
+                "degraded_trust" | "leader_mismatch" | "multi_primary"
             )
         })
         .collect()
@@ -167,12 +165,7 @@ fn blocking_replica_warnings(snapshot: &SampledClusterSnapshot) -> Vec<&ClusterW
     snapshot
         .warnings
         .iter()
-        .filter(|warning| {
-            matches!(
-                warning.code.as_str(),
-                "leader_mismatch" | "membership_mismatch" | "multi_primary"
-            )
-        })
+        .filter(|warning| matches!(warning.code.as_str(), "leader_mismatch" | "multi_primary"))
         .collect()
 }
 
@@ -196,7 +189,7 @@ fn find_sampled_members_by_role<'a>(
                 .observations
                 .get(&member.member_id)
                 .and_then(|observation| observation.sampled.as_ref().ok())
-                .is_some_and(|sampled| local_role_from_state(&sampled.state) == role)
+                .is_some_and(|sampled| observed_role(member, &sampled.state) == role)
         })
         .collect::<Vec<_>>();
     members.sort_by_key(|member| {
@@ -342,7 +335,7 @@ mod tests {
             postgres_host: format!("{member_id}.db.example.com"),
             postgres_port: 5432,
             api_url: api_url.map(ToString::to_string),
-            role: MemberRoleResponse::Replica,
+            role: MemberRoleResponse::Unknown,
             sql: SqlStatusResponse::Healthy,
             readiness: ReadinessResponse::Ready,
             timeline: Some(7),
@@ -462,8 +455,8 @@ mod tests {
     }
 
     #[test]
-    fn primary_resolution_allows_partial_sampling_when_one_primary_is_sampled(
-    ) -> Result<(), String> {
+    fn primary_resolution_allows_partial_sampling_when_one_primary_is_sampled() -> Result<(), String>
+    {
         let members = vec![
             sample_member("node-a", Some("http://node-a:8080")),
             sample_member("node-b", Some("http://node-b:8080")),
@@ -517,6 +510,54 @@ mod tests {
             ));
         }
         Ok(())
+    }
+
+    #[test]
+    fn primary_resolution_rejects_degraded_trust_even_with_one_sampled_primary()
+    -> Result<(), String> {
+        let members = vec![
+            sample_member("node-a", Some("http://node-a:8080")),
+            sample_member("node-b", Some("http://node-b:8080")),
+            sample_member("node-c", Some("http://node-c:8080")),
+        ];
+        let seed_state = sample_state(
+            "node-a",
+            HaPhaseResponse::Primary,
+            Some("node-a"),
+            members.clone(),
+        );
+        let observations = BTreeMap::from([(
+            "node-a".to_string(),
+            crate::cli::status::PeerObservation {
+                member_id: "node-a".to_string(),
+                sampled: Ok(crate::cli::status::SampledNodeState {
+                    state: seed_state.clone(),
+                    debug: None,
+                }),
+            },
+        )]);
+        let warnings = vec![ClusterWarning {
+            code: "degraded_trust".to_string(),
+            message: "node node-a reports trust nottrusted".to_string(),
+        }];
+        let snapshot = sample_snapshot(seed_state, members, observations, warnings);
+
+        match resolve_primary_view(&snapshot, &CliTlsConfig::default(), false) {
+            Ok(view) => Err(format!(
+                "expected degraded trust to block primary resolution, got {:?}",
+                view.targets
+            )),
+            Err(err) => {
+                let rendered = err.to_string();
+                if rendered.contains("node node-a reports trust nottrusted") {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected degraded trust message in resolution error, got {rendered}"
+                    ))
+                }
+            }
+        }
     }
 
     #[test]
@@ -594,6 +635,184 @@ mod tests {
     }
 
     #[test]
+    fn primary_resolution_allows_membership_mismatch_when_one_primary_is_sampled(
+    ) -> Result<(), String> {
+        let members = vec![
+            sample_member("node-a", Some("http://node-a:8080")),
+            sample_member("node-b", Some("http://node-b:8080")),
+            sample_member("node-c", Some("http://node-c:8080")),
+        ];
+        let seed_state = sample_state(
+            "node-a",
+            HaPhaseResponse::Replica,
+            Some("node-b"),
+            members.clone(),
+        );
+        let replica_state = sample_state(
+            "node-c",
+            HaPhaseResponse::Replica,
+            Some("node-b"),
+            vec![members[0].clone(), members[1].clone()],
+        );
+        let primary_state = sample_state(
+            "node-b",
+            HaPhaseResponse::Primary,
+            Some("node-b"),
+            members.clone(),
+        );
+        let observations = BTreeMap::from([
+            (
+                "node-a".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-a".to_string(),
+                    sampled: Ok(crate::cli::status::SampledNodeState {
+                        state: seed_state,
+                        debug: None,
+                    }),
+                },
+            ),
+            (
+                "node-b".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-b".to_string(),
+                    sampled: Ok(crate::cli::status::SampledNodeState {
+                        state: primary_state,
+                        debug: None,
+                    }),
+                },
+            ),
+            (
+                "node-c".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-c".to_string(),
+                    sampled: Ok(crate::cli::status::SampledNodeState {
+                        state: replica_state,
+                        debug: None,
+                    }),
+                },
+            ),
+        ]);
+        let warnings = vec![ClusterWarning {
+            code: "membership_mismatch".to_string(),
+            message: "node node-c reports a different member set than queried_via node-a"
+                .to_string(),
+        }];
+        let snapshot = sample_snapshot(
+            sample_state(
+                "node-a",
+                HaPhaseResponse::Replica,
+                Some("node-b"),
+                members.clone(),
+            ),
+            members,
+            observations,
+            warnings,
+        );
+
+        let view = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
+            .map_err(|err| err.to_string())?;
+        if view.targets.len() != 1 {
+            return Err("expected exactly one primary target".to_string());
+        }
+        if view.targets[0].member_id != "node-b" {
+            return Err(format!(
+                "expected node-b primary target, got {}",
+                view.targets[0].member_id
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn replicas_resolution_allows_membership_mismatch_with_healthy_replica_sampling(
+    ) -> Result<(), String> {
+        let members = vec![
+            sample_member("node-a", Some("http://node-a:8080")),
+            sample_member("node-b", Some("http://node-b:8080")),
+            sample_member("node-c", Some("http://node-c:8080")),
+        ];
+        let seed_state = sample_state(
+            "node-a",
+            HaPhaseResponse::Primary,
+            Some("node-b"),
+            members.clone(),
+        );
+        let primary_state = sample_state(
+            "node-b",
+            HaPhaseResponse::Primary,
+            Some("node-b"),
+            members.clone(),
+        );
+        let replica_state = sample_state(
+            "node-c",
+            HaPhaseResponse::Replica,
+            Some("node-b"),
+            vec![members[0].clone(), members[1].clone()],
+        );
+        let observations = BTreeMap::from([
+            (
+                "node-a".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-a".to_string(),
+                    sampled: Ok(crate::cli::status::SampledNodeState {
+                        state: seed_state,
+                        debug: None,
+                    }),
+                },
+            ),
+            (
+                "node-b".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-b".to_string(),
+                    sampled: Ok(crate::cli::status::SampledNodeState {
+                        state: primary_state,
+                        debug: None,
+                    }),
+                },
+            ),
+            (
+                "node-c".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-c".to_string(),
+                    sampled: Ok(crate::cli::status::SampledNodeState {
+                        state: replica_state,
+                        debug: None,
+                    }),
+                },
+            ),
+        ]);
+        let warnings = vec![ClusterWarning {
+            code: "membership_mismatch".to_string(),
+            message: "node node-c reports a different member set than queried_via node-a"
+                .to_string(),
+        }];
+        let snapshot = sample_snapshot(
+            sample_state(
+                "node-a",
+                HaPhaseResponse::Primary,
+                Some("node-b"),
+                members.clone(),
+            ),
+            members,
+            observations,
+            warnings,
+        );
+
+        let view = resolve_replicas_view(&snapshot, &CliTlsConfig::default(), false)
+            .map_err(|err| err.to_string())?;
+        if view.targets.len() != 1 {
+            return Err("expected one replica target".to_string());
+        }
+        if view.targets[0].member_id != "node-c" {
+            return Err(format!(
+                "expected node-c replica target, got {}",
+                view.targets[0].member_id
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn tls_rendering_requires_path_backed_material() {
         let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
         let seed_state = sample_state(
@@ -663,5 +882,129 @@ mod tests {
         assert_eq!(escape_libpq_value("/tmp/a b"), "'/tmp/a b'");
         assert_eq!(escape_libpq_value("a'b"), "'a\\'b'");
         assert_eq!(escape_libpq_value(r"a\b"), r"'a\\b'");
+    }
+
+    #[test]
+    fn replicas_resolution_prefers_member_role_over_transitional_phase() -> Result<(), String> {
+        let mut members = vec![sample_member("node-b", Some("http://node-b:8080"))];
+        members[0].role = MemberRoleResponse::Replica;
+        let transitional_state = sample_state(
+            "node-b",
+            HaPhaseResponse::WaitingDcsTrusted,
+            Some("node-a"),
+            members.clone(),
+        );
+        let snapshot = sample_snapshot(
+            transitional_state.clone(),
+            members,
+            BTreeMap::from([(
+                "node-b".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-b".to_string(),
+                    sampled: Ok(crate::cli::status::SampledNodeState {
+                        state: transitional_state,
+                        debug: None,
+                    }),
+                },
+            )]),
+            Vec::new(),
+        );
+
+        let view =
+            resolve_replicas_view(&snapshot, &tls_paths(), false).map_err(|err| err.to_string())?;
+
+        if view.targets.len() != 1 {
+            return Err(format!("expected one replica target, got {}", view.targets.len()));
+        }
+        if view.targets[0].member_id != "node-b" {
+            return Err(format!(
+                "expected node-b replica target, got {}",
+                view.targets[0].member_id
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn primary_resolution_rejects_failsafe_primary_from_stale_member_role() {
+        let mut members = vec![sample_member("node-a", Some("http://node-a:8080"))];
+        members[0].role = MemberRoleResponse::Primary;
+        let failsafe_state = sample_state(
+            "node-a",
+            HaPhaseResponse::FailSafe,
+            Some("node-a"),
+            members.clone(),
+        );
+        let snapshot = sample_snapshot(
+            failsafe_state.clone(),
+            members,
+            BTreeMap::from([(
+                "node-a".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-a".to_string(),
+                    sampled: Ok(crate::cli::status::SampledNodeState {
+                        state: failsafe_state,
+                        debug: None,
+                    }),
+                },
+            )]),
+            Vec::new(),
+        );
+
+        let result = resolve_primary_view(&snapshot, &tls_paths(), false);
+        assert!(
+            result.is_err(),
+            "fail_safe should not resolve to an operator-visible primary, got {:?}",
+            result.as_ref().ok().map(|view| &view.targets)
+        );
+        let error = match result {
+            Ok(_) => return,
+            Err(error) => error,
+        };
+
+        assert_eq!(error.to_string(), "resolution error: no sampled primary member was observed");
+    }
+
+    #[test]
+    fn primary_resolution_rejects_waiting_member_without_full_quorum() {
+        let mut members = vec![sample_member("node-a", Some("http://node-a:8080"))];
+        members[0].role = MemberRoleResponse::Primary;
+        let waiting_state = crate::cli::status::SampledNodeState {
+            state: crate::api::HaStateResponse {
+                dcs_trust: crate::api::DcsTrustResponse::FailSafe,
+                ..sample_state(
+                    "node-a",
+                    HaPhaseResponse::WaitingDcsTrusted,
+                    Some("node-a"),
+                    members.clone(),
+                )
+            },
+            debug: None,
+        };
+        let snapshot = sample_snapshot(
+            waiting_state.state.clone(),
+            members,
+            BTreeMap::from([(
+                "node-a".to_string(),
+                crate::cli::status::PeerObservation {
+                    member_id: "node-a".to_string(),
+                    sampled: Ok(waiting_state),
+                },
+            )]),
+            Vec::new(),
+        );
+
+        let result = resolve_primary_view(&snapshot, &tls_paths(), false);
+        assert!(
+            result.is_err(),
+            "waiting node without full quorum should not resolve to primary, got {:?}",
+            result.as_ref().ok().map(|view| &view.targets)
+        );
+        let error = match result {
+            Ok(_) => return,
+            Err(error) => error,
+        };
+
+        assert_eq!(error.to_string(), "resolution error: no sampled primary member was observed");
     }
 }

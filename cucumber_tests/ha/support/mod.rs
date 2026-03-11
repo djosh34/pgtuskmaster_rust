@@ -1,12 +1,14 @@
 mod config;
-mod error;
-mod process;
 pub mod docker;
+mod error;
+pub mod faults;
 pub mod givens;
 pub mod observer;
+mod process;
 pub mod runner;
 pub mod steps;
 pub mod timeouts;
+pub mod workload;
 pub mod world;
 
 use std::{
@@ -14,10 +16,13 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use cucumber::{World as _, WriterExt as _, writer};
+use cucumber::{writer, World as _, WriterExt as _};
 use futures::FutureExt as _;
 
-use crate::support::{error::{HarnessError, Result}, world::HaWorld};
+use crate::support::{
+    error::{HarnessError, Result},
+    world::HaWorld,
+};
 
 #[derive(Clone, Debug)]
 pub struct FeatureMetadata {
@@ -36,7 +41,10 @@ static CLEANUP_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 // This runner is intentionally independent from the legacy HA harness so the old
 // `tests/ha` and `src/test_harness/ha_e2e` flows can be deleted later.
-pub async fn run_feature(feature_name: &str, feature_path: &str) -> std::result::Result<(), String> {
+pub async fn run_feature(
+    feature_name: &str,
+    feature_path: &str,
+) -> std::result::Result<(), String> {
     install_context(feature_name, feature_path).map_err(|err| err.to_string())?;
 
     let writer = HaWorld::cucumber()

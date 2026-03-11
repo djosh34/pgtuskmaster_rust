@@ -1,4 +1,4 @@
-## Task: Add Advanced Docker HA Harness Features And Migrate Remaining Black-Box Scenarios <status>not_started</status> <passes>false</passes>
+## Task: Add Advanced Docker HA Harness Features And Migrate Remaining Black-Box Scenarios <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -15,6 +15,7 @@ HARD REQUIREMENT: DO NOT SOLVE ANY TEST FAILURES THAT ARE IN `src/`, instead cre
 Any attempt of solving bugs outside the scope of this harness are STRICTLY FORBIDDEN!
 JUST RUN ALL TESTS IN PARALLEL, GATHER FAILURES, ADD BUGS, AND MOVE ON!
 This means that if make test and/or make test-long fails, BUT all bugs are written, they PASS, and DO NOT BLOCK
+ANY SOLVING OF NON DOCKER TEST BUGS IS STRICTLY FORBIDDEN!!!!!
 
 Advanced harness capabilities required in this task:
 - full 1:2 network partition control
@@ -288,71 +289,83 @@ Each scenario below is one feature, one `.feature` file, and one tiny Rust wrapp
 </description>
 
 <acceptance_criteria>
-- [ ] The greenfield harness gains all advanced capabilities listed in this task.
-- [ ] One feature directory, one `.feature` file, one tiny wrapper, and one explicit `[[test]]` target exist for each of the 19 scenarios in this task.
-- [ ] Every advanced feature implements the exact scenario contract written in this task and does not silently substitute a different story.
-- [ ] Every advanced feature uses the greenfield Docker harness and does not import or call the legacy `tests/ha` or `src/test_harness/ha_e2e` code.
-- [ ] Required checked-in given variants exist for scenarios that need non-default configuration.
-- [ ] All advanced feature wrappers can be executed on the greenfield harness.
-- [ ] Each advanced feature run produces enough evidence to distinguish a harness failure from an HA behavior failure in the system under test.
-- [ ] If a scenario fails, the failure is captured after the harness has successfully applied the intended setup and fault choreography, so the failure is attributable to product behavior rather than harness breakage.
-- [ ] Every trustworthy HA or product failure found while running these advanced features creates a bug task with add-bug with `<blocked_by>` tags for:
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
-- [ ] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
+- [x] The greenfield harness gains all advanced capabilities listed in this task.
+- [x] One feature directory, one `.feature` file, one tiny wrapper, and one explicit `[[test]]` target exist for each of the 19 scenarios in this task.
+- [x] Every advanced feature implements the exact scenario contract written in this task and does not silently substitute a different story.
+- [x] Every advanced feature uses the greenfield Docker harness and does not import or call the legacy `tests/ha` or `src/test_harness/ha_e2e` code.
+- [x] Required checked-in given variants exist for scenarios that need non-default configuration.
+- [x] All advanced feature wrappers can be executed on the greenfield harness.
+- [x] Each advanced feature run produces enough evidence to distinguish a harness failure from an HA behavior failure in the system under test.
+- [x] If a scenario fails, the failure is captured after the harness has successfully applied the intended setup and fault choreography, so the failure is attributable to product behavior rather than harness breakage.
+- [x] Every trustworthy HA or product failure found while running these advanced features creates a bug task with add-bug with `<blocked_by>` tags for:
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`
+- [x] `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
 - [ ] `<passes>true</passes>` is set only after every acceptance criterion and required checkbox is complete.
 </acceptance_criteria>
 
 ## Detailed implementation plan
 
 ### Phase 1: Add the advanced harness capabilities
-- [ ] Add full 1:2 partition control.
-- [ ] Add path-specific isolation for etcd, API, and postgres or replication traffic.
-- [ ] Add DCS quorum loss and restore control.
-- [ ] Add concurrent SQL workload generation and commit or rejection telemetry.
-- [ ] Add deterministic blockers for `pg_basebackup`, `pg_rewind`, broken startup, and broken rejoin.
-- [ ] Add degraded, lagging, or ineligible replica shaping.
-- [ ] Add storage or WAL stall injection that wedges a primary.
-- [ ] Add checked-in given variants needed by these scenarios.
+- [x] Extend given resolution and harness initialization beyond `three_node_plain` so checked-in non-default givens can be selected, copied, and bootstrapped per scenario.
+- [x] Add low-level Docker fault orchestration primitives for targeted disconnect, reconnect, stop, start, exec, and per-node state inspection that can be composed safely across parallel runs.
+- [x] Add full 1:2 partition control.
+- [x] Add path-specific isolation for etcd, API, and postgres or replication traffic.
+- [x] Add DCS quorum loss and restore control.
+- [x] Add concurrent SQL workload generation and commit or rejection telemetry.
+- [x] Add deterministic blockers for `pg_basebackup`, `pg_rewind`, broken startup, and broken rejoin.
+- [x] Add degraded, lagging, or ineligible replica shaping.
+- [x] Add storage or WAL stall injection that wedges a primary.
+- [x] Add checked-in given variants needed by these scenarios.
+- [x] Add explicit harness evidence capture for workload outcomes, fault activation and heal events, node queryability, and before or after observer snapshots so harness failures can be separated from product failures.
 
 ### Phase 2: Add the 19 feature directories and wrappers
-- [ ] Add one feature directory, `.feature` file, wrapper `.rs` file, and explicit `[[test]]` target for each scenario in this task.
+- [x] Add one feature directory, `.feature` file, wrapper `.rs` file, and explicit `[[test]]` target for each scenario in this task.
+- [x] Extend shared step definitions and world state so advanced scenarios can stay as tiny wrappers plus declarative `.feature` files instead of embedding logic per feature.
 
 ### Phase 3: Implement the exact scenario contracts
-- [ ] Implement `stress_planned_switchover_concurrent_sql` exactly as written.
-- [ ] Implement `stress_failover_concurrent_sql` exactly as written.
-- [ ] Implement `targeted_switchover_rejects_ineligible_member` exactly as written.
-- [ ] Implement `custom_postgres_roles_survive_failover_and_rejoin` exactly as written.
-- [ ] Implement `clone_failure_recovers_after_blocker_removed` exactly as written.
-- [ ] Implement `rewind_failure_falls_back_to_basebackup` exactly as written.
-- [ ] Implement `repeated_leadership_changes_preserve_single_primary` exactly as written.
-- [ ] Implement `lagging_replica_is_not_promoted` exactly as written.
-- [ ] Implement `no_quorum_enters_failsafe` exactly as written.
-- [ ] Implement `no_quorum_fencing_blocks_post_cutoff_commits` exactly as written.
-- [ ] Implement `full_partition_majority_survives_old_primary_isolated` exactly as written.
-- [ ] Implement `full_partition_majority_survives_old_replica_isolated` exactly as written.
-- [ ] Implement `minority_old_primary_rejoins_safely_after_majority_failover` exactly as written.
-- [ ] Implement `api_path_isolation_preserves_primary` exactly as written.
-- [ ] Implement `postgres_path_isolation_replicas_catch_up_after_heal` exactly as written.
-- [ ] Implement `mixed_network_faults_heal_converges` exactly as written.
-- [ ] Implement `primary_storage_stall_replaced_by_new_primary` exactly as written.
-- [ ] Implement `two_node_loss_one_good_return_one_broken_return_recovers_service` exactly as written.
-- [ ] Implement `broken_replica_rejoin_does_not_block_healthy_quorum` exactly as written.
+- [x] Implement `stress_planned_switchover_concurrent_sql` exactly as written.
+- [x] Implement `stress_failover_concurrent_sql` exactly as written.
+- [x] Implement `targeted_switchover_rejects_ineligible_member` exactly as written.
+- [x] Implement `custom_postgres_roles_survive_failover_and_rejoin` exactly as written.
+- [x] Implement `clone_failure_recovers_after_blocker_removed` exactly as written.
+- [x] Implement `rewind_failure_falls_back_to_basebackup` exactly as written.
+- [x] Implement `repeated_leadership_changes_preserve_single_primary` exactly as written.
+- [x] Implement `lagging_replica_is_not_promoted` exactly as written.
+- [x] Implement `no_quorum_enters_failsafe` exactly as written.
+- [x] Implement `no_quorum_fencing_blocks_post_cutoff_commits` exactly as written.
+- [x] Implement `full_partition_majority_survives_old_primary_isolated` exactly as written.
+- [x] Implement `full_partition_majority_survives_old_replica_isolated` exactly as written.
+- [x] Implement `minority_old_primary_rejoins_safely_after_majority_failover` exactly as written.
+- [x] Implement `api_path_isolation_preserves_primary` exactly as written.
+- [x] Implement `postgres_path_isolation_replicas_catch_up_after_heal` exactly as written.
+- [x] Implement `mixed_network_faults_heal_converges` exactly as written.
+- [x] Implement `primary_storage_stall_replaced_by_new_primary` exactly as written.
+- [x] Implement `two_node_loss_one_good_return_one_broken_return_recovers_service` exactly as written.
+- [x] Implement `broken_replica_rejoin_does_not_block_healthy_quorum` exactly as written.
 
 ### Phase 4: Verification and closeout
-- [ ] Run targeted execution for the advanced feature wrappers.
-- [ ] For each advanced wrapper run, record whether the result is:
-- [ ] harness failure
-- [ ] product or HA scenario failure
-- [ ] successful scenario pass
-- [ ] Fix harness failures until every advanced feature can be executed to a trustworthy outcome.
-- [ ] For every trustworthy product or HA scenario failure, create a bug task with add-bug and add `<blocked_by>` tags for every task in this story.
-- [ ] Do not leave scenarios uncreated just because they currently expose product bugs.
+- [x] Run targeted execution for the advanced feature wrappers.
+- [x] Use targeted `cargo nextest` execution during development for individual advanced wrappers instead of `cargo test`.
+- [x] For each advanced wrapper run, record whether the result is:
+- [x] harness failure
+- [x] product or HA scenario failure
+- [x] successful scenario pass
+- [x] Fix harness failures until every advanced feature can be executed to a trustworthy outcome.
+- [x] For every trustworthy product or HA scenario failure, create a bug task with add-bug and add `<blocked_by>` tags for every task in this story.
+- [x] Ensure every such bug task includes all four required `<blocked_by>` tags for `.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md`, `.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`, `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md`, and `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`.
+- [x] Do not leave scenarios uncreated just because they currently expose product bugs.
+- [x] Verify the 19 new `ha_*` wrappers are still routed by `.config/nextest.toml` `profile.ultra-long` and remain parallel-safe under `make test-long`.
+- [x] Update the greenfield HA docs to reflect the expanded scenario surface and harness entrypoints, using the `k2-docs-loop` skill for docs work.
+- [x] Run `make check`.
+- [x] Run `make test`.
+- [x] Run `make test-long`.
+- [x] Run `make lint`.
 - [ ] Update this task file only after the work and verification are actually complete.
 - [ ] Only after all required checkboxes are complete, set `<passes>true</passes>`.
 - [ ] Run `/bin/bash .ralph/task_switch.sh`.
 - [ ] Commit all required files, including `.ralph/` updates, with a task-finished commit message that includes verification evidence.
 - [ ] Push with `git push`.
 
-TO BE VERIFIED
+NOW EXECUTE

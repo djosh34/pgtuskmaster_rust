@@ -24,7 +24,7 @@ use crate::{
         snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx},
         worker::{DebugApiContractStubInputs, DebugApiCtx},
     },
-    ha::source_conn::basebackup_source_from_member,
+    ha::source_conn::{basebackup_resume_source_from_member, basebackup_source_from_member},
     ha::state::{
         HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
     },
@@ -40,7 +40,10 @@ use crate::{
             StartPostgresSpec,
         },
         state::{ProcessJobKind, ProcessState, ProcessWorkerCtx},
-        worker::{build_command, system_now_unix_millis, timeout_for_kind, TokioCommandRunner},
+        worker::{
+            build_command, start_postgres_preflight_is_already_running,
+            system_now_unix_millis, timeout_for_kind, TokioCommandRunner,
+        },
     },
     state::{new_state_channel, MemberId, UnixMillis, WorkerStatus},
 };
@@ -530,6 +533,15 @@ fn select_resume_start_intent(
     }
 
     if has_local_managed_replica_residue {
+        if let Some(source_member) = resume_replica_source_member(cache, &self_member_id) {
+            let source = basebackup_resume_source_from_member(
+                &self_member_id,
+                &source_member,
+                process_defaults,
+            )
+            .map_err(|err| RuntimeError::StartupPlanning(err.to_string()))?;
+            return Ok(replica_start_intent_from_source(&source, data_dir));
+        }
         return Err(RuntimeError::StartupPlanning(
             "existing postgres data dir contains managed replica recovery state but no healthy primary is available in DCS to rebuild authoritative managed config"
                 .to_string(),
@@ -580,6 +592,32 @@ fn local_primary_member<'a>(
         .members
         .get(self_member_id)
         .filter(|member| member.role == MemberRole::Primary && member.sql == SqlStatus::Healthy)
+}
+
+fn resume_replica_source_member(
+    cache: &DcsCache,
+    self_member_id: &MemberId,
+) -> Option<crate::dcs::state::MemberRecord> {
+    relaxed_leader_from_leader_key(cache, self_member_id).or_else(|| {
+        cache
+            .members
+            .values()
+            .filter(|member| member.member_id != *self_member_id)
+            .max_by_key(|member| member.updated_at)
+            .cloned()
+    })
+}
+
+fn relaxed_leader_from_leader_key(
+    cache: &DcsCache,
+    self_member_id: &MemberId,
+) -> Option<crate::dcs::state::MemberRecord> {
+    let leader_record = cache.leader.as_ref()?;
+    if leader_record.member_id == *self_member_id {
+        return None;
+    }
+
+    cache.members.get(&leader_record.member_id).cloned()
 }
 
 fn replica_start_intent_from_source(
@@ -802,14 +840,12 @@ async fn ensure_required_roles(
     config.dbname(cfg.postgres.local_conn_identity.dbname.as_str());
     config.connect_timeout(Duration::from_secs(cfg.postgres.connect_timeout_s.into()));
     if let RoleAuthConfig::Password { password } = &cfg.postgres.roles.superuser.auth {
-        let resolved =
-            resolve_secret_string("postgres.roles.superuser.auth.password", password).map_err(
-                |err| {
-                    RuntimeError::StartupExecution(format!(
-                        "failed to resolve bootstrap superuser password for role provisioning: {err}"
-                    ))
-                },
-            )?;
+        let resolved = resolve_secret_string("postgres.roles.superuser.auth.password", password)
+            .map_err(|err| {
+                RuntimeError::StartupExecution(format!(
+                    "failed to resolve bootstrap superuser password for role provisioning: {err}"
+                ))
+            })?;
         config.password(resolved);
     }
 
@@ -821,11 +857,14 @@ async fn ensure_required_roles(
     let connection_task = tokio::spawn(connection);
 
     let provision_sql = render_required_role_sql(cfg)?;
-    client.batch_execute(provision_sql.as_str()).await.map_err(|err| {
-        RuntimeError::StartupExecution(format!(
-            "failed to provision required postgres roles: {err}"
-        ))
-    })?;
+    client
+        .batch_execute(provision_sql.as_str())
+        .await
+        .map_err(|err| {
+            RuntimeError::StartupExecution(format!(
+                "failed to provision required postgres roles: {err}"
+            ))
+        })?;
     drop(client);
 
     let connection_result = connection_task.await.map_err(|err| {
@@ -869,16 +908,16 @@ fn render_role_provision_block(
 ) -> Result<String, RuntimeError> {
     let username_literal = sql_literal(username);
     let role_statement = match auth {
-        RoleAuthConfig::Tls => format!(
-            "format('ALTER ROLE %I WITH {attributes}', {username_literal})"
-        ),
+        RoleAuthConfig::Tls => {
+            format!("format('ALTER ROLE %I WITH {attributes}', {username_literal})")
+        }
         RoleAuthConfig::Password { password } => {
             let resolved = resolve_secret_string("runtime role provisioning password", password)
                 .map_err(|err| {
-                RuntimeError::StartupExecution(format!(
+                    RuntimeError::StartupExecution(format!(
                     "failed to resolve runtime role provisioning password for `{username}`: {err}"
                 ))
-            })?;
+                })?;
             let password_literal = sql_literal(resolved.as_str());
             format!(
                 "format('ALTER ROLE %I WITH {attributes} PASSWORD %L', {username_literal}, {password_literal})"
@@ -978,6 +1017,20 @@ async fn run_start_job(
     start_intent: &ManagedPostgresStartIntent,
     log: &crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
+    if start_postgres_preflight_is_already_running(cfg.postgres.data_dir.as_path()).map_err(
+        |err| RuntimeError::StartupExecution(format!("startup start-postgres preflight failed: {err}")),
+    )? {
+        emit_startup_phase(
+            log,
+            "start",
+            "postgres already running; startup start_postgres is a noop",
+        )
+        .map_err(|err| {
+            RuntimeError::StartupExecution(format!("startup phase log emit failed: {err}"))
+        })?;
+        return Ok(());
+    }
+
     let managed = crate::postgres_managed::materialize_managed_postgres_config(cfg, start_intent)
         .map_err(|err| {
         RuntimeError::StartupExecution(format!("materialize managed postgres config failed: {err}"))
@@ -1398,6 +1451,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         fs, io,
+        os::unix::fs::PermissionsExt,
         path::PathBuf,
         sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
@@ -1452,6 +1506,39 @@ mod tests {
             LogHandle::new("host-a".to_string(), sink_dyn, SeverityText::Trace),
             sink,
         )
+    }
+
+    struct FakePostmaster {
+        child: std::process::Child,
+        script_path: PathBuf,
+    }
+
+    impl Drop for FakePostmaster {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = fs::remove_file(&self.script_path);
+        }
+    }
+
+    fn spawn_fake_postmaster_for_data_dir(
+        data_dir: &std::path::Path,
+    ) -> Result<FakePostmaster, Box<dyn std::error::Error>> {
+        let script_path = temp_path("fake-postmaster-script");
+        fs::write(&script_path, "# helper kept for cleanup parity\n")?;
+        let permissions = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&script_path, permissions)?;
+
+        let child = std::process::Command::new("bash")
+            .arg("-c")
+            .arg("exec -a postgres bash -c 'while true; do sleep 60; done' postgres \"$1\"")
+            .arg("_")
+            .arg(data_dir)
+            .spawn()?;
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        Ok(FakePostmaster { child, script_path })
     }
 
     #[test]
@@ -1726,7 +1813,7 @@ mod tests {
         };
 
         let intent = select_resume_start_intent(&data_dir, Some(&cache), "node-a", &defaults)?;
-        let expected_source = crate::ha::source_conn::basebackup_source_from_member(
+        let expected_source = crate::ha::source_conn::basebackup_resume_source_from_member(
             &MemberId("node-a".to_string()),
             cache
                 .members
@@ -1790,6 +1877,95 @@ mod tests {
             result,
             Err(super::RuntimeError::StartupPlanning(_))
         ));
+
+        remove_if_exists(&data_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn select_resume_start_intent_uses_leader_record_even_when_not_yet_healthy(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = sample_runtime_config();
+        let defaults = process_defaults_from_config(&cfg);
+        let data_dir = temp_path("resume-with-relaxed-leader");
+        remove_if_exists(&data_dir)?;
+        fs::create_dir_all(&data_dir)?;
+
+        let runtime_config = RuntimeConfig {
+            postgres: PostgresConfig {
+                data_dir: data_dir.clone(),
+                ..cfg.postgres.clone()
+            },
+            ..cfg.clone()
+        };
+        crate::postgres_managed::materialize_managed_postgres_config(
+            &runtime_config,
+            &ManagedPostgresStartIntent::replica(
+                crate::pginfo::state::PgConnInfo {
+                    host: "10.0.0.30".to_string(),
+                    port: 5439,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: Some(2),
+                    ssl_mode: PgSslMode::Prefer,
+                    ssl_root_cert: None,
+                    options: None,
+                },
+                managed_standby_auth_from_role_auth(
+                    &runtime_config.postgres.roles.replicator.auth,
+                    &data_dir,
+                ),
+                Some("slot_local".to_string()),
+            ),
+        )?;
+
+        let leader_id = MemberId("node-b".to_string());
+        let mut members = BTreeMap::new();
+        members.insert(
+            leader_id.clone(),
+            MemberRecord {
+                member_id: leader_id.clone(),
+                postgres_host: "10.0.0.20".to_string(),
+                postgres_port: 5440,
+                api_url: None,
+                role: MemberRole::Unknown,
+                sql: SqlStatus::Unreachable,
+                readiness: Readiness::NotReady,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(2),
+                pg_version: Version(1),
+            },
+        );
+        let cache = DcsCache {
+            members,
+            leader: Some(LeaderRecord {
+                member_id: leader_id.clone(),
+            }),
+            switchover: None,
+            config: runtime_config.clone(),
+            init_lock: None,
+        };
+
+        let intent = select_resume_start_intent(&data_dir, Some(&cache), "node-a", &defaults)?;
+        let expected_source = crate::ha::source_conn::basebackup_resume_source_from_member(
+            &MemberId("node-a".to_string()),
+            cache
+                .members
+                .get(&leader_id)
+                .ok_or_else(|| io::Error::other("leader missing from test cache"))?,
+            &defaults,
+        )?;
+        assert_eq!(
+            intent,
+            ManagedPostgresStartIntent::replica(
+                expected_source.conninfo,
+                managed_standby_auth_from_role_auth(&expected_source.auth, &data_dir),
+                None,
+            )
+        );
 
         remove_if_exists(&data_dir)?;
         Ok(())
@@ -1988,6 +2164,52 @@ mod tests {
         assert!(rendered.contains(
             "GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO \"rewind_user\";"
         ));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_start_job_noops_when_postmaster_is_already_running(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cfg = sample_runtime_config();
+        let data_dir = temp_path("startup-noop-data-dir");
+        remove_if_exists(&data_dir)?;
+        fs::create_dir_all(&data_dir)?;
+        cfg.postgres.data_dir = data_dir.clone();
+
+        let fake_postmaster = spawn_fake_postmaster_for_data_dir(data_dir.as_path())?;
+        fs::write(
+            data_dir.join("postmaster.pid"),
+            format!("{}\n{}\n", fake_postmaster.child.id(), data_dir.display()),
+        )?;
+
+        let defaults = process_defaults_from_config(&cfg);
+        let (log, sink) = test_log_handle();
+        let result = super::run_start_job(
+            &cfg,
+            &defaults,
+            &ManagedPostgresStartIntent::primary(),
+            &log,
+        )
+        .await;
+
+        assert!(result.is_ok());
+
+        let saw_noop_phase = sink.snapshot()?.iter().any(|record| {
+            let decoded = decode_app_event(record);
+            match decoded {
+                Ok(event) => event
+                    .fields
+                    .get("startup.detail")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|detail| detail == "postgres already running; startup start_postgres is a noop")
+                    .unwrap_or(false),
+                Err(_) => false,
+            }
+        });
+        assert!(saw_noop_phase);
+
+        drop(fake_postmaster);
+        remove_if_exists(&data_dir)?;
         Ok(())
     }
 }

@@ -11,8 +11,8 @@ Pick the right validation command for the change you made:
 - `make check` for a fast compile gate
 - `make test` for the default automated suite
 - `make test-long` for the longest HA and Docker validation path
-- `make test-cucumber-ha` for the greenfield cucumber Docker HA harness
-- `make test-cucumber-ha-primary-crash-rejoin` for the first greenfield cucumber HA feature
+- `make test-cucumber-ha` for the shipped greenfield cucumber Docker HA suite
+- `make test-cucumber-ha-primary-crash-rejoin` for the original focused primary-crash scenario
 - `make lint` for docs and clippy enforcement
 
 ## Prerequisites
@@ -74,7 +74,7 @@ This target is intentionally heavier than `make test`. It runs:
 
 The `ultra-long` nextest profile selects the greenfield HA binaries and still runs them through normal nextest parallel scheduling. Those scenarios are expected to be parallel-safe. If a scenario only passes in serial, that is treated as a test bug rather than an accepted gate workaround.
 
-Right now the shipped greenfield HA surface is the primary-crash failover-and-rejoin feature exposed through `make test-cucumber-ha` and `make test-cucumber-ha-primary-crash-rejoin`.
+The shipped greenfield HA surface now includes the stable suite entrypoint `make test-cucumber-ha` plus the focused `make test-cucumber-ha-primary-crash-rejoin` target for the original scenario.
 
 Use it when your change can affect HA behavior, Docker packaging, or longer-running operational scenarios.
 
@@ -111,10 +111,22 @@ The current greenfield entrypoints are:
 - `make test-cucumber-ha-primary-crash-rejoin`
 - `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.feature`
 - `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.rs`
+- `cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.feature`
+- `cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.rs`
+- `cucumber_tests/ha/features/two_node_outage_one_return_restores_quorum/two_node_outage_one_return_restores_quorum.feature`
+- `cucumber_tests/ha/features/two_node_outage_one_return_restores_quorum/two_node_outage_one_return_restores_quorum.rs`
+- `cucumber_tests/ha/features/full_cluster_outage_restore_quorum_then_converge/full_cluster_outage_restore_quorum_then_converge.feature`
+- `cucumber_tests/ha/features/full_cluster_outage_restore_quorum_then_converge/full_cluster_outage_restore_quorum_then_converge.rs`
+- `cucumber_tests/ha/features/replica_flap_keeps_primary_stable/replica_flap_keeps_primary_stable.feature`
+- `cucumber_tests/ha/features/replica_flap_keeps_primary_stable/replica_flap_keeps_primary_stable.rs`
+- `cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.feature`
+- `cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.rs`
+- `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.feature`
+- `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.rs`
 
-Right now the greenfield suite contains one shipped feature, so `make test-cucumber-ha` currently runs the same single wrapper as `make test-cucumber-ha-primary-crash-rejoin`. The targets stay split intentionally: the suite target is the stable suite entrypoint, while the feature target stays pinned to the specific scenario wrapper.
+`make test-cucumber-ha` now runs the full shipped `ha_*` suite through the `ultra-long` nextest profile rather than pinning one wrapper. The feature target stays split intentionally: the suite target is the stable suite entrypoint, while `make test-cucumber-ha-primary-crash-rejoin` stays pinned to the original scenario wrapper.
 
-That shipped greenfield feature now owns the primary-crash failover/rejoin boundary. The old legacy HA/E2E harness has been removed, so new HA end-to-end coverage belongs in the cucumber runner.
+The shipped greenfield surface now covers primary crash and rejoin, replica outage, two-node outage with quorum restore, full-cluster outage with staged restore, repeated replica flap cycles, planned switchover, and targeted switchover. The old legacy HA/E2E harness has been removed, so new HA end-to-end coverage belongs in the cucumber runner.
 
 The greenfield harness layout is:
 

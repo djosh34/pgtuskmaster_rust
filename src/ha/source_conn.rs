@@ -24,7 +24,19 @@ pub(crate) fn basebackup_source_from_member(
     member: &MemberRecord,
     defaults: &ProcessDispatchDefaults,
 ) -> Result<ReplicatorSourceConn, SourceConnError> {
-    validate_remote_source_member(self_id, member)?;
+    validate_remote_source_member_strict(self_id, member)?;
+    Ok(ReplicatorSourceConn {
+        conninfo: remote_conninfo(member, defaults.replicator_username.as_str(), defaults),
+        auth: defaults.replicator_auth.clone(),
+    })
+}
+
+pub(crate) fn basebackup_resume_source_from_member(
+    self_id: &MemberId,
+    member: &MemberRecord,
+    defaults: &ProcessDispatchDefaults,
+) -> Result<ReplicatorSourceConn, SourceConnError> {
+    validate_remote_source_member_resume(self_id, member)?;
     Ok(ReplicatorSourceConn {
         conninfo: remote_conninfo(member, defaults.replicator_username.as_str(), defaults),
         auth: defaults.replicator_auth.clone(),
@@ -36,26 +48,33 @@ pub(crate) fn rewind_source_from_member(
     member: &MemberRecord,
     defaults: &ProcessDispatchDefaults,
 ) -> Result<RewinderSourceConn, SourceConnError> {
-    validate_remote_source_member(self_id, member)?;
+    validate_remote_source_member_strict(self_id, member)?;
     Ok(RewinderSourceConn {
         conninfo: remote_conninfo(member, defaults.rewinder_username.as_str(), defaults),
         auth: defaults.rewinder_auth.clone(),
     })
 }
 
-fn validate_remote_source_member(
+fn validate_remote_source_member_strict(
+    self_id: &MemberId,
+    member: &MemberRecord,
+) -> Result<(), SourceConnError> {
+    validate_remote_source_member_resume(self_id, member)?;
+    if member.role != MemberRole::Primary || member.sql != crate::pginfo::state::SqlStatus::Healthy
+    {
+        return Err(SourceConnError::NotHealthyPrimary {
+            member_id: member.member_id.0.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_remote_source_member_resume(
     self_id: &MemberId,
     member: &MemberRecord,
 ) -> Result<(), SourceConnError> {
     if &member.member_id == self_id {
         return Err(SourceConnError::SelfTarget {
-            member_id: member.member_id.0.clone(),
-        });
-    }
-
-    if member.role != MemberRole::Primary || member.sql != crate::pginfo::state::SqlStatus::Healthy
-    {
-        return Err(SourceConnError::NotHealthyPrimary {
             member_id: member.member_id.0.clone(),
         });
     }

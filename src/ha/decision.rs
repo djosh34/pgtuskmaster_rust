@@ -9,7 +9,7 @@ use crate::{
         jobs::ActiveJobKind,
         state::{JobOutcome, ProcessState},
     },
-    state::{MemberId, TimelineId},
+    state::{MemberId, TimelineId, UnixMillis},
 };
 
 use super::state::{HaPhase, WorldSnapshot};
@@ -20,6 +20,7 @@ pub(crate) struct DecisionFacts {
     pub(crate) trust: DcsTrust,
     pub(crate) postgres_reachable: bool,
     pub(crate) postgres_primary: bool,
+    pub(crate) pg_observed_at: UnixMillis,
     pub(crate) leader_member_id: Option<MemberId>,
     pub(crate) active_leader_member_id: Option<MemberId>,
     pub(crate) followable_member_id: Option<MemberId>,
@@ -156,6 +157,7 @@ impl DecisionFacts {
             trust: world.dcs.value.trust.clone(),
             postgres_reachable: is_postgres_reachable(&world.pg.value),
             postgres_primary: is_local_primary(&world.pg.value),
+            pg_observed_at: world.pg.updated_at,
             leader_member_id,
             active_leader_member_id: active_leader_member_id.clone(),
             followable_member_id: followable_member_id.clone(),

@@ -423,6 +423,23 @@ fn parse_postmaster_pid(pid_file: &Path) -> Result<u32, ProcessError> {
     })
 }
 
+fn postmaster_pid_data_dir_matches(pid_file: &Path, data_dir: &Path) -> Result<bool, ProcessError> {
+    let contents = fs::read_to_string(pid_file).map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "read postmaster.pid {} failed: {err}",
+            pid_file.display()
+        ))
+    })?;
+    let Some(raw_data_dir) = contents.lines().nth(1) else {
+        return Ok(false);
+    };
+    let trimmed = raw_data_dir.trim();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+    Ok(Path::new(trimmed) == data_dir)
+}
+
 fn pid_exists(pid: u32) -> Result<bool, ProcessError> {
     #[cfg(unix)]
     {
@@ -452,7 +469,7 @@ fn pid_exists(pid: u32) -> Result<bool, ProcessError> {
     }
 }
 
-fn pid_matches_data_dir(pid: u32, data_dir: &Path) -> Result<bool, ProcessError> {
+fn pid_matches_data_dir(pid: u32, data_dir: &Path, pid_file: &Path) -> Result<bool, ProcessError> {
     if !pid_exists(pid)? {
         return Ok(false);
     }
@@ -486,10 +503,17 @@ fn pid_matches_data_dir(pid: u32, data_dir: &Path) -> Result<bool, ProcessError>
                 .map(|name| matches!(name, "postgres" | "postmaster"))
                 .unwrap_or(false)
         });
-        Ok(has_data_dir && has_postgres_argv)
+        if !has_postgres_argv {
+            return Ok(false);
+        }
+        if has_data_dir {
+            return Ok(true);
+        }
+        postmaster_pid_data_dir_matches(pid_file, data_dir)
     }
     #[cfg(not(unix))]
     {
+        let _ = pid_file;
         let _ = data_dir;
         Ok(true)
     }
@@ -513,7 +537,7 @@ fn fencing_preflight_is_already_stopped(data_dir: &Path) -> Result<bool, Process
     }
 
     let pid = parse_postmaster_pid(&pid_file)?;
-    if pid_matches_data_dir(pid, data_dir)? {
+    if pid_matches_data_dir(pid, data_dir, &pid_file)? {
         return Ok(false);
     }
 
@@ -524,14 +548,16 @@ fn fencing_preflight_is_already_stopped(data_dir: &Path) -> Result<bool, Process
     Ok(true)
 }
 
-fn start_postgres_preflight_is_already_running(data_dir: &Path) -> Result<bool, ProcessError> {
+pub(crate) fn start_postgres_preflight_is_already_running(
+    data_dir: &Path,
+) -> Result<bool, ProcessError> {
     let pid_file = data_dir.join("postmaster.pid");
     if !pid_file.exists() {
         return Ok(false);
     }
 
     let pid = parse_postmaster_pid(&pid_file)?;
-    if pid_matches_data_dir(pid, data_dir)? {
+    if pid_matches_data_dir(pid, data_dir, &pid_file)? {
         return Ok(true);
     }
 
@@ -1626,6 +1652,18 @@ mod tests {
         Ok(TestProcessGuard { child })
     }
 
+    fn spawn_fake_postmaster_without_data_dir_arg() -> Result<TestProcessGuard, WorkerError> {
+        let child = std::process::Command::new("bash")
+            .arg("-c")
+            .arg("exec -a postgres bash -c 'while true; do sleep 60; done'")
+            .spawn()
+            .map_err(|err| {
+                WorkerError::Message(format!("spawn fake postmaster process failed: {err}"))
+            })?;
+        std::thread::sleep(Duration::from_millis(50));
+        Ok(TestProcessGuard { child })
+    }
+
     fn test_log_handle() -> (LogHandle, std::sync::Arc<TestSink>) {
         let sink = std::sync::Arc::new(TestSink::default());
         let sink_dyn: std::sync::Arc<dyn LogSink> = sink.clone();
@@ -2133,6 +2171,63 @@ mod tests {
 
         let stepped = step_once(&mut ctx).await;
         assert_eq!(stepped, Ok(()));
+
+        assert!(matches!(
+            &ctx.state,
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Success { .. }),
+                ..
+            }
+        ));
+        let published = subscriber.latest();
+        assert!(matches!(
+            published.value,
+            ProcessState::Idle {
+                last_outcome: Some(JobOutcome::Success { .. }),
+                ..
+            }
+        ));
+
+        drop(fake_postmaster);
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("remove data dir failed: {err}")))?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn start_job_start_postgres_noops_when_pid_file_matches_real_postmaster_shape(
+    ) -> Result<(), WorkerError> {
+        let runner = FakeRunner {
+            spawn_results: VecDeque::new(),
+        };
+        let (mut ctx, tx, subscriber) = test_ctx(Box::new(runner), queued_clock(vec![10, 11]));
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0u128, |duration| duration.as_nanos());
+        let data_dir = std::env::temp_dir().join(format!(
+            "pgtuskmaster-start-noop-real-shape-{}-{unique}",
+            std::process::id(),
+        ));
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("create data dir failed: {err}")))?;
+        let fake_postmaster = spawn_fake_postmaster_without_data_dir_arg()?;
+        let pid_file = data_dir.join("postmaster.pid");
+        fs::write(
+            &pid_file,
+            format!("{}\n{}\n", fake_postmaster.child.id(), data_dir.display()),
+        )
+        .map_err(|err| WorkerError::Message(format!("write pid file failed: {err}")))?;
+
+        tx.send(ProcessJobRequest {
+            id: JobId("job-real-shape-noop".to_string()),
+            kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                data_dir: data_dir.clone(),
+                ..sample_start_spec()
+            }),
+        })
+        .map_err(|err| WorkerError::Message(format!("send request failed: {err}")))?;
+
+        step_once(&mut ctx).await?;
 
         assert!(matches!(
             &ctx.state,

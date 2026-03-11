@@ -1,14 +1,50 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 10 08:19:35 PM CET 2026
+Generated: Wed Mar 11 07:23:57 CET 2026
+
+# Task `.ralph/tasks/bugs/bug-greenfield-broken-rejoin-can-stay-offline-after-blocker-removal.md`
+
+```
+## Bug: Greenfield broken rejoin can stay offline after blocker removal <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-clone-failure-can-report-rejoined-replica-before-it-is-queryable.md`
+
+```
+## Bug: Greenfield clone failure can report rejoined replica before it is queryable <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-concurrent-failover-can-leave-survivor-missing-acknowledged-writes.md`
+
+```
+## Bug: Greenfield concurrent failover can leave survivor missing acknowledged writes <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/bug-greenfield-full-cluster-restore-times-out-under-parallel-ultra-long-suite.md`
 
 ```
 ## Bug: Greenfield full-cluster restore times out under parallel ultra-long suite <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
 ```
 
@@ -26,13 +62,97 @@ Generated: Tue Mar 10 08:19:35 PM CET 2026
 
 ==============
 
+# Task `.ralph/tasks/bugs/bug-greenfield-lagging-replica-can-still-win-failover.md`
+
+```
+## Bug: Greenfield lagging replica can still win failover <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
 # Task `.ralph/tasks/bugs/bug-greenfield-lone-survivor-remains-primary-after-quorum-loss.md`
 
 ```
 ## Bug: Greenfield lone survivor remains primary after quorum loss <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-majority-partition-can-lose-primary-without-electing-survivor.md`
+
+```
+## Bug: Greenfield majority partition can lose primary without electing survivor <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-mixed-fault-heal-can-end-with-no-resolvable-primary.md`
+
+```
+## Bug: Greenfield mixed-fault heal can end with no resolvable primary <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-mixed-fault-heal-can-leave-primary-unqueryable.md`
+
+```
+## Bug: Greenfield mixed-fault heal can leave primary unqueryable <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-mixed-network-fault-can-leave-dcs-cut-primary-authoritative.md`
+
+```
+## Bug: Greenfield mixed network fault can leave DCS-cut primary authoritative <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-no-quorum-fencing-can-miss-fail-safe-state.md`
+
+```
+## Bug: Greenfield no quorum fencing can miss fail-safe state <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-no-quorum-still-exposes-operator-visible-primary.md`
+
+```
+## Bug: Greenfield no quorum still exposes operator-visible primary <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
 ```
 
@@ -62,6 +182,18 @@ Generated: Tue Mar 10 08:19:35 PM CET 2026
 
 ==============
 
+# Task `.ralph/tasks/bugs/bug-greenfield-replica-flap-can-finish-with-restarted-replica-still-unqueryable.md`
+
+```
+## Bug: Greenfield replica flap can finish with restarted replica still unqueryable <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
 # Task `.ralph/tasks/bugs/bug-greenfield-restarted-replica-stays-unknown-after-container-return.md`
 
 ```
@@ -69,6 +201,30 @@ Generated: Tue Mar 10 08:19:35 PM CET 2026
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-storage-stall-does-not-trigger-primary-replacement.md`
+
+```
+## Bug: Greenfield storage stall does not trigger primary replacement <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-greenfield-targeted-switchover-accepts-isolated-ineligible-target.md`
+
+```
+## Bug: Greenfield targeted switchover accepts isolated ineligible target <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
 ```
 
@@ -98,26 +254,37 @@ Generated: Tue Mar 10 08:19:35 PM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md`
+# Task `.ralph/tasks/bugs/docker-socket-permission-blocks-greenfield-ha-harness-runtime-validation.md`
 
 ```
-## Task: Add Low-Hanging HA Quorum And Switchover Cucumber Features On The Greenfield Runner <status>in_progress</status> <passes>false</passes>
-
-<priority>high</priority>
+## Bug: Docker socket permission blocks greenfield HA harness runtime validation <status>not_started</status> <passes>false</passes> <priority>high</priority>
 
 <description>
+Greenfield Docker HA cucumber scenarios cannot start in the current execution environment because `docker info` fails with:
 ```
 
 ==============
 
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md`
+# Task `.ralph/tasks/bugs/greenfield-repeated-leadership-churn-can-stall-on-stale-leader-lease.md`
 
 ```
-## Task: Add Advanced Docker HA Harness Features And Migrate Remaining Black-Box Scenarios <status>not_started</status> <passes>false</passes>
+## Bug: Greenfield Repeated Leadership Churn Can Stall On Stale Leader Lease <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+```
 
-<priority>high</priority>
+==============
 
-<description>
+# Task `.ralph/tasks/bugs/greenfield-rewind-fallback-scenario-never-attempts-pg-rewind.md`
+
+```
+## Bug: Greenfield Rewind Fallback Scenario Never Attempts Pg Rewind <status>not_started</status> <passes>false</passes>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
 ```
 
 ==============

@@ -36,3 +36,103 @@ x509-parser = "0.18.1"
 [[test]]
 name = "ha_primary_crash_rejoin"
 path = "cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.rs"
+
+[[test]]
+name = "ha_replica_outage_keeps_primary_stable"
+path = "cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.rs"
+
+[[test]]
+name = "ha_two_node_outage_one_return_restores_quorum"
+path = "cucumber_tests/ha/features/two_node_outage_one_return_restores_quorum/two_node_outage_one_return_restores_quorum.rs"
+
+[[test]]
+name = "ha_full_cluster_outage_restore_quorum_then_converge"
+path = "cucumber_tests/ha/features/full_cluster_outage_restore_quorum_then_converge/full_cluster_outage_restore_quorum_then_converge.rs"
+
+[[test]]
+name = "ha_replica_flap_keeps_primary_stable"
+path = "cucumber_tests/ha/features/replica_flap_keeps_primary_stable/replica_flap_keeps_primary_stable.rs"
+
+[[test]]
+name = "ha_planned_switchover_changes_primary_cleanly"
+path = "cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.rs"
+
+[[test]]
+name = "ha_targeted_switchover_promotes_requested_replica"
+path = "cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.rs"
+
+[[test]]
+name = "ha_stress_planned_switchover_concurrent_sql"
+path = "cucumber_tests/ha/features/stress_planned_switchover_concurrent_sql/stress_planned_switchover_concurrent_sql.rs"
+
+[[test]]
+name = "ha_stress_failover_concurrent_sql"
+path = "cucumber_tests/ha/features/stress_failover_concurrent_sql/stress_failover_concurrent_sql.rs"
+
+[[test]]
+name = "ha_targeted_switchover_rejects_ineligible_member"
+path = "cucumber_tests/ha/features/targeted_switchover_rejects_ineligible_member/targeted_switchover_rejects_ineligible_member.rs"
+
+[[test]]
+name = "ha_custom_postgres_roles_survive_failover_and_rejoin"
+path = "cucumber_tests/ha/features/custom_postgres_roles_survive_failover_and_rejoin/custom_postgres_roles_survive_failover_and_rejoin.rs"
+
+[[test]]
+name = "ha_clone_failure_recovers_after_blocker_removed"
+path = "cucumber_tests/ha/features/clone_failure_recovers_after_blocker_removed/clone_failure_recovers_after_blocker_removed.rs"
+
+[[test]]
+name = "ha_rewind_failure_falls_back_to_basebackup"
+path = "cucumber_tests/ha/features/rewind_failure_falls_back_to_basebackup/rewind_failure_falls_back_to_basebackup.rs"
+
+[[test]]
+name = "ha_repeated_leadership_changes_preserve_single_primary"
+path = "cucumber_tests/ha/features/repeated_leadership_changes_preserve_single_primary/repeated_leadership_changes_preserve_single_primary.rs"
+
+[[test]]
+name = "ha_lagging_replica_is_not_promoted"
+path = "cucumber_tests/ha/features/lagging_replica_is_not_promoted/lagging_replica_is_not_promoted.rs"
+
+[[test]]
+name = "ha_no_quorum_enters_failsafe"
+path = "cucumber_tests/ha/features/no_quorum_enters_failsafe/no_quorum_enters_failsafe.rs"
+
+[[test]]
+name = "ha_no_quorum_fencing_blocks_post_cutoff_commits"
+path = "cucumber_tests/ha/features/no_quorum_fencing_blocks_post_cutoff_commits/no_quorum_fencing_blocks_post_cutoff_commits.rs"
+
+[[test]]
+name = "ha_full_partition_majority_survives_old_primary_isolated"
+path = "cucumber_tests/ha/features/full_partition_majority_survives_old_primary_isolated/full_partition_majority_survives_old_primary_isolated.rs"
+
+[[test]]
+name = "ha_full_partition_majority_survives_old_replica_isolated"
+path = "cucumber_tests/ha/features/full_partition_majority_survives_old_replica_isolated/full_partition_majority_survives_old_replica_isolated.rs"
+
+[[test]]
+name = "ha_minority_old_primary_rejoins_safely_after_majority_failover"
+path = "cucumber_tests/ha/features/minority_old_primary_rejoins_safely_after_majority_failover/minority_old_primary_rejoins_safely_after_majority_failover.rs"
+
+[[test]]
+name = "ha_api_path_isolation_preserves_primary"
+path = "cucumber_tests/ha/features/api_path_isolation_preserves_primary/api_path_isolation_preserves_primary.rs"
+
+[[test]]
+name = "ha_postgres_path_isolation_replicas_catch_up_after_heal"
+path = "cucumber_tests/ha/features/postgres_path_isolation_replicas_catch_up_after_heal/postgres_path_isolation_replicas_catch_up_after_heal.rs"
+
+[[test]]
+name = "ha_mixed_network_faults_heal_converges"
+path = "cucumber_tests/ha/features/mixed_network_faults_heal_converges/mixed_network_faults_heal_converges.rs"
+
+[[test]]
+name = "ha_primary_storage_stall_replaced_by_new_primary"
+path = "cucumber_tests/ha/features/primary_storage_stall_replaced_by_new_primary/primary_storage_stall_replaced_by_new_primary.rs"
+
+[[test]]
+name = "ha_two_node_loss_one_good_return_one_broken_return_recovers_service"
+path = "cucumber_tests/ha/features/two_node_loss_one_good_return_one_broken_return_recovers_service/two_node_loss_one_good_return_one_broken_return_recovers_service.rs"
+
+[[test]]
+name = "ha_broken_replica_rejoin_does_not_block_healthy_quorum"
+path = "cucumber_tests/ha/features/broken_replica_rejoin_does_not_block_healthy_quorum/broken_replica_rejoin_does_not_block_healthy_quorum.rs"

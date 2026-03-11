@@ -77,10 +77,7 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
     }
     pairs.push(("sslmode".to_string(), info.ssl_mode.as_str().to_string()));
     if let Some(value) = &info.ssl_root_cert {
-        pairs.push((
-            "sslrootcert".to_string(),
-            value.display().to_string(),
-        ));
+        pairs.push(("sslrootcert".to_string(), value.display().to_string()));
     }
     if let Some(value) = &info.options {
         pairs.push(("options".to_string(), value.clone()));

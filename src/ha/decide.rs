@@ -61,7 +61,7 @@ fn decide_waiting_postgres_reachable(facts: &DecisionFacts) -> PhaseOutcome {
         return PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust);
     }
 
-    if completed_start_postgres(facts) {
+    if completed_start_postgres_successfully(facts) {
         return PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust);
     }
 
@@ -88,6 +88,10 @@ fn decide_waiting_dcs_trusted(current: &HaState, facts: &DecisionFacts) -> Phase
                 );
             }
 
+            return PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust);
+        }
+
+        if waiting_for_pginfo_after_successful_start(facts) {
             return PhaseOutcome::new(HaPhase::WaitingDcsTrusted, HaDecision::WaitForDcsTrust);
         }
 
@@ -406,24 +410,32 @@ fn other_leader_record(facts: &DecisionFacts) -> Option<MemberId> {
         .filter(|leader_member_id| leader_member_id != &facts.self_member_id)
 }
 
-fn completed_start_postgres(facts: &DecisionFacts) -> bool {
+fn completed_start_postgres_successfully(facts: &DecisionFacts) -> bool {
+    matches!(
+        &facts.process_state,
+        crate::process::state::ProcessState::Idle {
+            last_outcome: Some(crate::process::state::JobOutcome::Success {
+                job_kind: ActiveJobKind::StartPostgres,
+                ..
+            }),
+            ..
+        }
+    )
+}
+
+fn waiting_for_pginfo_after_successful_start(facts: &DecisionFacts) -> bool {
     matches!(
         &facts.process_state,
         crate::process::state::ProcessState::Idle {
             last_outcome: Some(
                 crate::process::state::JobOutcome::Success {
                     job_kind: ActiveJobKind::StartPostgres,
-                    ..
-                } | crate::process::state::JobOutcome::Failure {
-                    job_kind: ActiveJobKind::StartPostgres,
-                    ..
-                } | crate::process::state::JobOutcome::Timeout {
-                    job_kind: ActiveJobKind::StartPostgres,
+                    finished_at,
                     ..
                 }
             ),
             ..
-        }
+        } if *finished_at >= facts.pg_observed_at
     )
 }
 
@@ -1369,6 +1381,31 @@ mod tests {
     }
 
     #[test]
+    fn waiting_dcs_trusted_after_successful_start_waits_for_pginfo_refresh() {
+        let output = decide(DecideInput {
+            current: HaState {
+                worker: WorkerStatus::Running,
+                phase: HaPhase::WaitingDcsTrusted,
+                tick: 35,
+                decision: HaDecision::WaitForDcsTrust,
+            },
+            world: WorldBuilder::new()
+                .with_pg(pg_unknown(SqlStatus::Unreachable))
+                .with_leader("node-b")
+                .with_member(healthy_primary_member("node-b"))
+                .with_process(process_idle(Some(JobOutcome::Success {
+                    id: JobId("job-start".to_string()),
+                    job_kind: ActiveJobKind::StartPostgres,
+                    finished_at: UnixMillis(16),
+                })))
+                .build(),
+        });
+
+        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
+        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+    }
+
+    #[test]
     fn bootstrapping_success_waits_for_postgres_before_becoming_replica() {
         let output = decide(DecideInput {
             current: HaState {
@@ -1821,8 +1858,14 @@ mod tests {
                 .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
-        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: false,
+                leader_member_id: Some(MemberId("node-b".to_string())),
+            }
+        );
     }
 
     #[test]
@@ -1848,8 +1891,14 @@ mod tests {
                 .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
-        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: true,
+                leader_member_id: None,
+            }
+        );
     }
 
     #[test]
@@ -1890,8 +1939,14 @@ mod tests {
                 .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
-        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: true,
+                leader_member_id: Some(MemberId("node-b".to_string())),
+            }
+        );
     }
 
     #[test]
@@ -1918,8 +1973,14 @@ mod tests {
                 .build(),
         });
 
-        assert_eq!(output.next.phase, HaPhase::WaitingDcsTrusted);
-        assert_eq!(output.outcome.decision, HaDecision::WaitForDcsTrust);
+        assert_eq!(output.next.phase, HaPhase::WaitingPostgresReachable);
+        assert_eq!(
+            output.outcome.decision,
+            HaDecision::WaitForPostgres {
+                start_requested: true,
+                leader_member_id: None,
+            }
+        );
     }
 
     #[test]
