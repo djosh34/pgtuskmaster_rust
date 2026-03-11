@@ -11,7 +11,7 @@ Pick the right validation command for the change you made:
 - `make check` for a fast compile gate
 - `make test` for the default automated suite
 - `make test-long` for the HA nextest suite behind the `ultra-long` profile
-- `make test-long TESTS="ha_primary_crash_rejoin"` for focused HA runs
+- `make test-long TESTS="ha_replica_stopped_primary_stays_primary"` for focused HA runs
 - `make lint` for docs and clippy enforcement
 
 ## Prerequisites
@@ -54,7 +54,7 @@ make test
 
 This uses `cargo nextest run --workspace --all-targets --profile default --no-tests fail`.
 
-That is the normal validation path for most code changes. The default profile excludes the long-running greenfield HA binaries selected by the `binary(ha_*)` naming rule, so those Docker-backed scenarios stay out of the default gate.
+That is the normal validation path for most code changes. The default profile excludes the long-running greenfield HA scenarios selected by the shared `ha` test binary plus the `test(/^ha_/)` naming rule, so those Docker-backed scenarios stay out of the default gate.
 
 If you want the flattened per-test log files derived from nextest JUnit output after the run, use:
 
@@ -72,18 +72,18 @@ make test-long
 
 This target runs the `ultra-long` nextest profile for the HA cucumber suite.
 
-The `ultra-long` nextest profile selects the greenfield HA binaries and still runs them through normal nextest parallel scheduling. Those scenarios are expected to be parallel-safe. If a scenario only passes in serial, that is treated as a test bug rather than an accepted gate workaround.
+The `ultra-long` nextest profile selects the greenfield HA scenarios from the shared `ha` integration-test binary and still runs them through normal nextest parallel scheduling. Those scenarios are expected to be parallel-safe. If a scenario only passes in serial, that is treated as a test bug rather than an accepted gate workaround.
 
 Use it when your change can affect HA behavior or longer-running operational scenarios.
 
-For a focused HA run, pass one or more `ha_*` test target names through `TESTS`:
+For a focused HA run, pass one or more exact `ha_*` test names through `TESTS`:
 
 ```bash
-make test-long TESTS="ha_primary_crash_rejoin"
-make test-long TESTS="ha_primary_crash_rejoin ha_no_quorum_enters_failsafe"
+make test-long TESTS="ha_replica_stopped_primary_stays_primary"
+make test-long TESTS="ha_replica_stopped_primary_stays_primary ha_broken_replica_rejoin_attempt_does_not_destabilize_quorum"
 ```
 
-In focused mode, `test-long` appends one `--test <name>` argument per selected target.
+In focused mode, `test-long` keeps the shared `ha` test target and passes the selected exact test names to nextest after `-- ... --exact`.
 
 The Makefile wrapper itself is intentionally thin:
 
@@ -94,10 +94,10 @@ make test-long
 expands to the `cargo nextest run` invocation for the `ultra-long` profile, and:
 
 ```bash
-make test-long TESTS="ha_primary_crash_rejoin ha_no_quorum_enters_failsafe"
+make test-long TESTS="ha_replica_stopped_primary_stays_primary ha_broken_replica_rejoin_attempt_does_not_destabilize_quorum"
 ```
 
-adds repeated `--test` selectors to that same invocation.
+adds exact test-name selectors to that same invocation.
 
 If you want the flattened per-test log files derived from nextest JUnit output after the run, use:
 
@@ -139,34 +139,20 @@ The requested source files give a good picture of the suite layout:
 - `tests/nextest_config_contract.rs`: nextest profile routing expectations
 - `src/worker_contract_tests.rs`: contract-style runtime and debug API expectations
 
-The repository ships its supported HA end-to-end surface under `cucumber_tests/ha/`. That tree is intentionally independent from the ordinary `tests/` integration-test surface.
+The repository ships its supported HA end-to-end surface under `tests/ha/`, with the Rust integration-test entrypoint in `tests/ha.rs`. That HA harness remains intentionally independent from the ordinary API/CLI integration-test surface.
 
-The current greenfield entrypoints are the `ha_*` nextest test targets plus `make test-long` as the canonical Makefile wrapper.
-
-- `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.feature`
-- `cucumber_tests/ha/features/primary_crash_rejoin/primary_crash_rejoin.rs`
-- `cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.feature`
-- `cucumber_tests/ha/features/replica_outage_keeps_primary_stable/replica_outage_keeps_primary_stable.rs`
-- `cucumber_tests/ha/features/two_node_outage_one_return_restores_quorum/two_node_outage_one_return_restores_quorum.feature`
-- `cucumber_tests/ha/features/two_node_outage_one_return_restores_quorum/two_node_outage_one_return_restores_quorum.rs`
-- `cucumber_tests/ha/features/full_cluster_outage_restore_quorum_then_converge/full_cluster_outage_restore_quorum_then_converge.feature`
-- `cucumber_tests/ha/features/full_cluster_outage_restore_quorum_then_converge/full_cluster_outage_restore_quorum_then_converge.rs`
-- `cucumber_tests/ha/features/replica_flap_keeps_primary_stable/replica_flap_keeps_primary_stable.feature`
-- `cucumber_tests/ha/features/replica_flap_keeps_primary_stable/replica_flap_keeps_primary_stable.rs`
-- `cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.feature`
-- `cucumber_tests/ha/features/planned_switchover_changes_primary_cleanly/planned_switchover_changes_primary_cleanly.rs`
-- `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.feature`
-- `cucumber_tests/ha/features/targeted_switchover_promotes_requested_replica/targeted_switchover_promotes_requested_replica.rs`
+The current greenfield entrypoints are the `ha` nextest integration-test binary, its `ha_*` test functions, and `make test-long` as the canonical Makefile wrapper.
 
 The shipped greenfield surface now covers primary crash and rejoin, replica outage, two-node outage with quorum restore, full-cluster outage with staged restore, repeated replica flap cycles, planned switchover, and targeted switchover. The old legacy HA/E2E harness has been removed, so new HA end-to-end coverage belongs in the cucumber runner.
 
 The greenfield harness layout is:
 
-- `cucumber_tests/ha/features/` for one feature directory plus tiny wrapper `.rs` per scenario file
-- `cucumber_tests/ha/givens/three_node_plain/` for the static Docker compose fixture, static configs, static secrets, and Dockerfiles
-- `cucumber_tests/ha/support/` for the independent runner, world, Docker CLI, Ryuk, `pgtm`, and `psql` plumbing
-- `cucumber_tests/ha/runs/` for copied per-run input snapshots and captured artifacts
-- `cucumber_tests/ha/harness.toml` for checked-in harness-local settings such as Docker binary discovery
+- `tests/ha/features/` for one feature directory per scenario and its `.feature` file
+- `tests/ha/givens/three_node_plain/` for the static Docker compose fixture, static configs, static secrets, and Dockerfiles
+- `tests/ha/support/` for the independent runner, world, Docker CLI, Ryuk, `pgtm`, and `psql` plumbing
+- `tests/ha/runs/` for copied per-run input snapshots and captured artifacts
+- `tests/ha/harness.toml` for checked-in harness-local settings such as Docker binary discovery
+- `tests/ha.rs` for the shared Rust test entrypoint that preserves the exact `ha_*` scenario names
 
 That harness uses:
 
@@ -201,7 +187,7 @@ Use this rule of thumb:
 - touched only Rust code and want a fast compile signal: `make check`
 - changed behavior and need normal validation: `make test`
 - touched HA flow or anything likely to affect longer-running HA behavior: `make test-long`
-- want one or a few HA scenarios: `make test-long TESTS="ha_primary_crash_rejoin [ha_other_target ...]"`
+- want one or a few HA scenarios: `make test-long TESTS="ha_replica_stopped_primary_stays_primary [ha_other_test ...]"`
 - changed docs or want the full style and lint gate: `make lint`
 
 ## Troubleshooting

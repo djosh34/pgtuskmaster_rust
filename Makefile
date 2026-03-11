@@ -23,7 +23,8 @@ CARGO_INCREMENTAL_BOOL := false
 endif
 
 TESTS ?=
-TEST_LONG_SELECTION_ARGS := $(foreach test,$(strip $(TESTS)),--test $(test))
+TEST_LONG_TARGET_ARGS := --test ha
+TEST_LONG_SELECTION_ARGS = $(TEST_LONG_TARGET_ARGS) $(if $(strip $(TESTS)),-- $(strip $(TESTS)) --exact)
 
 ensure-mdbook:
 	@test -x "$(MDBOOK)" || (echo "missing mdBook binary: run ./tools/install-mdbook.sh" >&2; exit 1)

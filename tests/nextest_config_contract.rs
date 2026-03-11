@@ -3,7 +3,8 @@ use std::fs;
 const NEXTTEST_CONFIG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/.config/nextest.toml");
 const PARALLEL_POLICY_COMMENT_START: &str = "If a scenario only passes in serial,";
 const PARALLEL_POLICY_COMMENT_END: &str = "must be fixed instead of protected by serialization.";
-const GREENFIELD_HA_BINARY_RULE: &str = "binary(ha_*)";
+const GREENFIELD_HA_BINARY_RULE: &str = "binary(ha)";
+const GREENFIELD_HA_TEST_RULE: &str = "test(/^ha_/)";
 const SETUP_SCRIPTS_EXPERIMENT: &str = "setup-scripts";
 const HA_CUCUMBER_SETUP_SCRIPT: &str = "ha-cucumber-image";
 
@@ -39,9 +40,19 @@ fn nextest_profiles_route_greenfield_ha_binaries_without_serial_cap() {
         GREENFIELD_HA_BINARY_RULE
     );
     assert!(
+        default_filter.contains(GREENFIELD_HA_TEST_RULE),
+        "default profile must exclude only greenfield HA scenario tests via {}: {default_filter}",
+        GREENFIELD_HA_TEST_RULE
+    );
+    assert!(
         ultra_long_filter.contains(GREENFIELD_HA_BINARY_RULE),
         "ultra-long profile must select long greenfield HA binaries via {}: {ultra_long_filter}",
         GREENFIELD_HA_BINARY_RULE
+    );
+    assert!(
+        ultra_long_filter.contains(GREENFIELD_HA_TEST_RULE),
+        "ultra-long profile must select only greenfield HA scenario tests via {}: {ultra_long_filter}",
+        GREENFIELD_HA_TEST_RULE
     );
     assert!(
         !default_filter.contains("test(="),
@@ -87,6 +98,11 @@ fn nextest_config_keeps_parallel_policy_comment_visible() {
         config_text.contains(GREENFIELD_HA_BINARY_RULE),
         "nextest config must document the durable greenfield HA binary rule {}",
         GREENFIELD_HA_BINARY_RULE
+    );
+    assert!(
+        config_text.contains(GREENFIELD_HA_TEST_RULE),
+        "nextest config must document the durable greenfield HA test-name rule {}",
+        GREENFIELD_HA_TEST_RULE
     );
     assert!(
         config_text.contains("[scripts.setup.ha-cucumber-image]"),

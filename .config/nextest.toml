@@ -10,9 +10,9 @@ capture-stderr = true
 
 [profile.default]
 fail-fast = false
-# Default runs keep the greenfield HA binaries out of the normal gate.
+# Default runs keep the greenfield HA test binary out of the normal gate.
 default-filter = '''
-not (kind(test) & binary(ha_*))
+not (kind(test) & binary(ha) & test(/^ha_/))
 '''
 slow-timeout = { period = "120s", terminate-after = 1, grace-period = "15s" }
 
@@ -23,19 +23,19 @@ store-failure-output = true
 
 [profile.ultra-long]
 fail-fast = false
-# The long-running greenfield HA binaries live behind `make test-long` because they
+# The long-running greenfield HA tests live behind `make test-long` because they
 # take longer. Keep routing them by durable binary name rather than exact test lists.
 # These binaries are expected to be parallel-safe. If a scenario only passes in serial,
 # that scenario is buggy and must be fixed instead of protected by serialization.
 default-filter = '''
-kind(test) & binary(ha_*)
+kind(test) & binary(ha) & test(/^ha_/)
 '''
 test-threads = 32
 slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
 
 [[profile.ultra-long.scripts]]
 filter = '''
-kind(test) & binary(ha_*)
+kind(test) & binary(ha) & test(/^ha_/)
 '''
 setup = "ha-cucumber-image"
 
