@@ -4,9 +4,9 @@
 !Cargo.lock
 !src/
 !src/**
-!cucumber_tests/
-!cucumber_tests/docker/
-!cucumber_tests/docker/wrappers/
-!cucumber_tests/docker/wrappers/**
+!tests/
+!tests/docker/
+!tests/docker/wrappers/
+!tests/docker/wrappers/**
 !docker/
 !docker/entrypoint.sh
