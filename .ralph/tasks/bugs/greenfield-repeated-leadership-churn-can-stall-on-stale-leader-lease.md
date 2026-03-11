@@ -1,8 +1,5 @@
 ## Bug: Greenfield Repeated Leadership Churn Can Stall On Stale Leader Lease <status>not_started</status> <passes>false</passes>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
 
 <description>
 The advanced greenfield wrapper `ha_repeated_leadership_changes_preserve_single_primary` can reach a trustworthy repeated-failover product failure where the third leader is never established because a stale leader lease blocks the remaining healthy node.

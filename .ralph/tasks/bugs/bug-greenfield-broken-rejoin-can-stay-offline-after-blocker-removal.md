@@ -1,8 +1,5 @@
 ## Bug: Greenfield broken rejoin can stay offline after blocker removal <status>not_started</status> <passes>false</passes>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
 
 <description>
 The advanced greenfield wrapper `ha_broken_replica_rejoin_does_not_block_healthy_quorum` now reaches a trustworthy product failure after the intended blocker choreography completes: once the broken rejoin blocker is removed and the affected node is restarted, the cluster still never returns to three online nodes.

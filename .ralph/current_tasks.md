@@ -1,12 +1,15 @@
 # Current Tasks Summary
 
-Generated: Wed Mar 11 07:55:55 AM CET 2026
+Generated: Wed Mar 11 08:10:54 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-greenfield-broken-rejoin-can-stay-offline-after-blocker-removal.md`
 
 ```
 ## Bug: Greenfield broken rejoin can stay offline after blocker removal <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_broken_replica_rejoin_does_not_block_healthy_quorum` now reaches a trustworthy product failure after the intended blocker choreography completes: once the broken rejoin blocker is removed and the affected node is restarted, the cluster still never returns to three online nodes.
 ```
 
 ==============
@@ -16,6 +19,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield clone failure can report rejoined replica before it is queryable <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+`ha_clone_failure_recovers_after_blocker_removed` currently reaches a trustworthy failure during the real `make test-long` ultra-long suite.
 ```
 
 ==============
@@ -25,6 +31,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield concurrent failover can leave survivor missing acknowledged writes <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_stress_failover_concurrent_sql` now reaches a trustworthy data-convergence product failure under concurrent writes and primary loss.
 ```
 
 ==============
@@ -34,6 +43,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield full-cluster restore times out under parallel ultra-long suite <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -43,6 +55,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield HA Proof Visibility Stalls On Restarted Replica <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -52,6 +67,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield lagging replica can still win failover <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_lagging_replica_is_not_promoted` now reaches a trustworthy product failure: the degraded replica still appears in the primary history during failover.
 ```
 
 ==============
@@ -61,6 +79,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield lone survivor remains primary after quorum loss <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -70,6 +91,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield majority partition can lose primary without electing survivor <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+Two advanced greenfield partition scenarios expose the same trustworthy product failure: after isolating the old primary onto the 1-side minority, the healthy 2-node majority remains observable but never elects a surviving primary.
 ```
 
 ==============
@@ -79,6 +103,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield mixed-fault heal can end with no resolvable primary <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_mixed_network_faults_heal_converges` exposes a distinct trustworthy post-heal recovery failure: after the intended mixed DCS plus API isolation is healed, the cluster can remain in a state where every observer seed rejects primary resolution because sampled members disagree on the leader.
 ```
 
 ==============
@@ -88,6 +115,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield mixed-fault heal can leave primary unqueryable <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+`ha_mixed_network_faults_heal_converges` still exposes a trustworthy HA/product failure after the harness cleanup fixes removed the stale-Docker resource noise from `make test-long`.
 ```
 
 ==============
@@ -97,6 +127,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield mixed network fault can leave DCS-cut primary authoritative <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_mixed_network_faults_heal_converges` exposes a trustworthy mixed-fault behavior bug: cutting the current primary off from DCS while isolating a different node on observer API access can leave the original primary retaining authority instead of entering fail-safe or losing authority safely.
 ```
 
 ==============
@@ -106,6 +139,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield no quorum fencing can miss fail-safe state <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_no_quorum_fencing_blocks_post_cutoff_commits` now reaches a deeper trustworthy no-quorum product failure after the operator-visible-primary symptom is avoided: at least one running node still never reports fail-safe state after DCS quorum loss.
 ```
 
 ==============
@@ -115,6 +151,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield no quorum still exposes operator-visible primary <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+Two advanced greenfield wrappers now reach the same trustworthy no-quorum product failure: after DCS quorum majority loss, `pgtm primary` still returns an operator-visible primary instead of failing closed.
 ```
 
 ==============
@@ -124,6 +163,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield old primary stays unknown after planned switchover <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -133,6 +175,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield old primary stays unknown after targeted switchover <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -142,6 +187,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield replica flap can finish with restarted replica still unqueryable <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -151,6 +199,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield restarted replica stays unknown after container return <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -160,6 +211,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield storage stall does not trigger primary replacement <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_primary_storage_stall_replaced_by_new_primary` now reaches a trustworthy product failure: wedging the current primary does not cause the cluster to replace it with a different primary.
 ```
 
 ==============
@@ -169,6 +223,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield targeted switchover accepts isolated ineligible target <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_targeted_switchover_rejects_ineligible_member` now reaches a trustworthy product failure: a targeted switchover request is accepted even when the requested replica has been fully isolated from the cluster and observer API.
 ```
 
 ==============
@@ -178,6 +235,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield two-node quorum restore node exits before primary recovers <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -187,6 +247,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Replica Bootstrap Auth Breaks When Runtime Roles Reuse `postgres` <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+
+<description>
 ```
 
 ==============
@@ -196,6 +259,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield Repeated Leadership Churn Can Stall On Stale Leader Lease <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield wrapper `ha_repeated_leadership_changes_preserve_single_primary` can reach a trustworthy repeated-failover product failure where the third leader is never established because a stale leader lease blocks the remaining healthy node.
 ```
 
 ==============
@@ -205,6 +271,9 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ```
 ## Bug: Greenfield Rewind Fallback Scenario Never Attempts Pg Rewind <status>not_started</status> <passes>false</passes>
 <blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
+The advanced greenfield HA wrapper `ha_rewind_failure_falls_back_to_basebackup` now executes to a trustworthy product outcome, but the product never attempts `pg_rewind`.
 ```
 
 ==============
@@ -215,8 +284,7 @@ Generated: Wed Mar 11 07:55:55 AM CET 2026
 ## Task: Produce Post-Greenfield HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
+<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
 ```
 
 ==============

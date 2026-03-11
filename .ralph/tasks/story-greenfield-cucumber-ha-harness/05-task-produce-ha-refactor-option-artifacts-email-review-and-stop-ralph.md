@@ -1,10 +1,6 @@
 ## Task: Produce Post-Greenfield HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/01-task-build-independent-cucumber-docker-ha-harness-and-primary-crash-rejoin.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/02-task-deep-clean-legacy-black-box-test-infrastructure-after-greenfield-migration.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/03-task-add-low-hanging-ha-quorum-and-switchover-cucumber-features-on-greenfield-runner.md</blocked_by>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/04-task-add-advanced-docker-ha-harness-features-and-migrate-remaining-black-box-scenarios.md</blocked_by>
 
 <description>
 **Goal:** This is intentionally a weird task. After the full greenfield HA cucumber story has finished creating the new tests, but before anyone starts fixing the newly exposed bugs, inspect the then-current failing greenfield HA tests and the then-current HA implementation, and produce multiple different refactor-plan artifacts that each aim to fix the entire failing set at once instead of doing bug-by-bug patching. After the plans are written, send the user an email with a natural-language summary, a recommendation for the best and second-best options, and deep questions, then stop the Ralph loop by writing `.ralph/STOP`.
