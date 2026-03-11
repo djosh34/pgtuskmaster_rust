@@ -26,17 +26,41 @@ I had to be elegant, long lasting, make great use of the rust's typesystem guara
 
 Here is the full designed PLAN:
 
+This keeps the same spirit as the first pass:
+- `observe -> decide -> reconcile -> act` remains the whole loop
+- `decide.rs` is still pure
+- `reconcile.rs` is still pure
+- the worker is still thin
+- startup, failover, switchover, rejoin, and quorum-restore are still one unified state machine
+
+The core fix is this: the design must not only choose a local role. It must also choose the operator-visible authority view and the recovery path. The feature suite proved those are first-class state, not side effects we can hand-wave.
+
 ### 1. `types.rs` (The Epistemology)
-*This file contains zero logic. It strictly defines the shapes of knowledge and intent. By avoiding wildcards (`_`) in `match` statements later, the compiler guarantees we never miss a state combination.*
+*This file still contains zero logic. It now models the missing things explicitly: publication, switchover eligibility, recovery fallback, and fencing cutoffs.*
 
 ```rust
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MemberId(pub String);
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WalPosition {
+    pub timeline: u64,
+    pub lsn: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LeaseToken(pub String);
+pub struct LeaseEpoch {
+    pub holder: MemberId,
+    pub generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FenceCutoff {
+    pub epoch: LeaseEpoch,
+    pub committed_lsn: u64,
+}
 
 // --- WHAT IS TRUE (EPISTEMOLOGY) ---
 
@@ -47,85 +71,251 @@ pub struct WorldView {
 
 pub struct LocalKnowledge {
     pub data_dir: DataDirState,
-    pub pg_status: PgStatus,
-    /// If Some(_), a process (Start, Demote, BaseBackup, etc.) is currently running.
-    pub active_job: Option<JobKind>, 
+    pub postgres: PostgresState,
+    pub process: ProcessState,
+    pub storage: StorageState,
+    pub publication: PublicationState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DataDirState {
-    MissingOrEmpty,
-    Initialized,
+    Missing,
+    Initialized(LocalDataState),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SyncState {
-    InSync,
-    RequiresRewind,
+pub enum LocalDataState {
+    BootstrapEmpty,
+    ConsistentReplica,
+    Diverged(DivergenceState),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PgStatus {
-    Stopped,
-    RunningPrimary,
-    RunningReplica { upstream: MemberId, sync: SyncState },
+pub enum DivergenceState {
+    RewindPossible,
+    BasebackupRequired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PostgresState {
+    Offline,
+    Primary { committed_lsn: u64 },
+    Replica {
+        upstream: Option<MemberId>,
+        replication: ReplicationState,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplicationState {
+    Streaming(WalPosition),
+    CatchingUp(WalPosition),
+    Stalled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessState {
+    Idle,
+    Running(JobKind),
+    Failed(JobFailure),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobFailure {
+    pub job: JobKind,
+    pub recovery: FailureRecovery,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FailureRecovery {
+    RetrySameJob,
+    FallbackToBasebackup,
+    WaitForOperator,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StorageState {
+    Healthy,
+    Stalled,
+}
+
+pub struct PublicationState {
+    pub authority: AuthorityView,
+    pub replicas: BTreeSet<MemberId>,
+    pub last_error: Option<OperatorError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthorityView {
+    Primary {
+        member: MemberId,
+        epoch: LeaseEpoch,
+    },
+    NoPrimary(NoPrimaryReason),
+    Unknown,
 }
 
 pub struct GlobalKnowledge {
     pub dcs_trust: DcsTrust,
     pub lease: LeaseState,
-    pub switchover_intent: Option<MemberId>,
-    pub valid_peers: BTreeMap<MemberId, PeerData>,
+    pub switchover: SwitchoverState,
+    pub peers: BTreeMap<MemberId, PeerKnowledge>,
+    pub self_peer: PeerKnowledge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DcsTrust {
-    /// DCS is healthy, we have visibility into the quorum majority.
     FullQuorum,
-    /// DCS partitioned or we are in the minority (e.g., 1/3 nodes).
     Degraded,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeaseState {
-    HeldByMe(LeaseToken),
-    HeldBy(MemberId),
+    HeldByMe(LeaseEpoch),
+    HeldByPeer(LeaseEpoch),
     Unheld,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PeerData {
-    pub is_ready: bool,
-    pub wal_lsn: u64,
-    pub timeline: u64,
+pub enum SwitchoverState {
+    None,
+    Requested(SwitchoverRequest),
 }
 
-// --- WHAT I SHOULD BE (POLICY/GOAL) ---
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwitchoverRequest {
+    pub target: SwitchoverTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SwitchoverTarget {
+    AnyHealthyReplica,
+    Specific(MemberId),
+}
+
+pub struct PeerKnowledge {
+    pub election: ElectionEligibility,
+    pub api: ApiVisibility,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ElectionEligibility {
+    BootstrapEligible,
+    PromoteEligible(WalPosition),
+    Ineligible(IneligibleReason),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IneligibleReason {
+    NotReady,
+    Lagging,
+    Partitioned,
+    ApiUnavailable,
+    StartingUp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApiVisibility {
+    Reachable,
+    Unreachable,
+}
+
+// --- WHAT I SHOULD BE (POLICY OUTPUT) ---
+
+pub struct DesiredState {
+    pub role: TargetRole,
+    pub publication: PublicationGoal,
+    pub operator_error: Option<OperatorError>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetRole {
-    /// Actively serving writes. Must hold the LeaseToken.
-    Leader(LeaseToken),
-    /// Actively attempting to acquire the Lease.
-    Candidate,
-    /// Replicating from a known Leader.
-    Follower(MemberId),
-    /// DCS is healthy, but lease is unheld and we are NOT the best candidate. Wait.
-    WaitingForLeader,
-    /// DCS is Degraded. Replica continues following last known upstream safely.
-    FailSafe(Option<MemberId>),
-    /// Emergency stop. Never serve writes.
+    Leader(LeaseEpoch),
+    Candidate(Candidacy),
+    Follower(FollowGoal),
+    FailSafe(FailSafeGoal),
+    DemotingForSwitchover(MemberId),
     Fenced(FenceReason),
+    Idle(IdleReason),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Candidacy {
+    Bootstrap,
+    Failover,
+    ResumeAfterOutage,
+    TargetedSwitchover(MemberId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FollowGoal {
+    pub leader: MemberId,
+    pub recovery: RecoveryPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryPlan {
+    None,
+    StartStreaming,
+    Rewind,
+    Basebackup,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FailSafeGoal {
+    PrimaryMustStop(FenceCutoff),
+    ReplicaKeepFollowing(Option<MemberId>),
+    WaitForQuorum,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IdleReason {
+    AwaitingLeader,
+    AwaitingTarget(MemberId),
+    SwitchoverRejected(SwitchoverBlocker),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FenceReason {
-    DcsPartitioned,
-    DemotedForSwitchover,
     ForeignLeaderDetected,
+    StorageStalled,
 }
 
-// --- HOW I GET THERE (ACTION) ---
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublicationGoal {
+    KeepCurrent,
+    PublishPrimary {
+        primary: MemberId,
+        replicas: BTreeSet<MemberId>,
+        epoch: LeaseEpoch,
+    },
+    PublishNoPrimary {
+        reason: NoPrimaryReason,
+        replicas: BTreeSet<MemberId>,
+        fence_cutoff: Option<FenceCutoff>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoPrimaryReason {
+    DcsDegraded,
+    LeaseOpen,
+    Recovering,
+    SwitchoverRejected(SwitchoverBlocker),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OperatorError {
+    SwitchoverRejected(SwitchoverBlocker),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SwitchoverBlocker {
+    TargetMissing,
+    TargetIneligible(IneligibleReason),
+}
+
+// --- HOW I GET THERE (ACTION PLAN) ---
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconcileAction {
@@ -136,183 +326,550 @@ pub enum ReconcileAction {
     StartReplica(MemberId),
     Promote,
     Demote(ShutdownMode),
-    AcquireLease,
+    AcquireLease(Candidacy),
     ReleaseLease,
+    Publish(PublicationGoal),
+    RecordOperatorError(OperatorError),
+    ClearOperatorError,
     ClearSwitchover,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShutdownMode {
-    Fast,      // Graceful (Planned Switchover)
-    Immediate, // Crash-stop (Fencing / Split-brain prevention)
+    Fast,
+    Immediate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobKind {
-    InitDb, BaseBackup, PgRewind, Start, Promote, Demote
+    InitDb,
+    BaseBackup,
+    PgRewind,
+    StartPrimary,
+    StartReplica,
+    Promote,
+    Demote,
 }
 ```
 
 ---
 
 ### 2. `decide.rs` (The Pure Policy Engine)
-*This module maps `WorldView` to `TargetRole`. It has no side effects. It contains the logic for elections, failovers, and switchovers.*
+*This module still has no side effects. The important change is that it returns a full `DesiredState`, not just a role. That is what fixes operator-visible primary, switchover rejection, and fencing-cutoff correctness.*
 
 ```rust
 use crate::types::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-pub fn decide(world: &WorldView, self_id: &MemberId) -> TargetRole {
-    // 1. SAFETY BOUNDARY: Quorum Loss
-    // If we are in the minority (1/3), we lose DcsTrust.
+pub fn decide(world: &WorldView, self_id: &MemberId) -> DesiredState {
+    let known_members = known_members(&world.global.peers, self_id);
+
     if world.global.dcs_trust == DcsTrust::Degraded {
-        return match &world.local.pg_status {
-            // A primary in the minority MUST fence itself. 
-            // The 2/3 majority will elect a new leader.
-            PgStatus::RunningPrimary => TargetRole::Fenced(FenceReason::DcsPartitioned),
-            
-            // Replicas in the minority stay up and keep trying to stream (FailSafe).
-            PgStatus::RunningReplica { upstream, .. } => TargetRole::FailSafe(Some(upstream.clone())),
-            PgStatus::Stopped => TargetRole::FailSafe(None),
-        };
+        return decide_degraded(world, known_members);
     }
 
-    // 2. NORMAL OPERATION: We have DCS Quorum (2/3 or 3/3).
+    if world.local.storage == StorageState::Stalled {
+        if let PostgresState::Primary { committed_lsn } = &world.local.postgres {
+            if let LeaseState::HeldByMe(epoch) = &world.global.lease {
+                let cutoff = FenceCutoff {
+                    epoch: epoch.clone(),
+                    committed_lsn: *committed_lsn,
+                };
+
+                return DesiredState {
+                    role: TargetRole::Fenced(FenceReason::StorageStalled),
+                    publication: PublicationGoal::PublishNoPrimary {
+                        reason: NoPrimaryReason::Recovering,
+                        replicas: known_members,
+                        fence_cutoff: Some(cutoff),
+                    },
+                    operator_error: None,
+                };
+            }
+        }
+    }
+
     match &world.global.lease {
-        LeaseState::HeldByMe(token) => {
-            // Check for Planned Switchover
-            if let Some(target_id) = &world.global.switchover_intent {
-                if target_id != self_id {
-                    return TargetRole::Fenced(FenceReason::DemotedForSwitchover);
-                }
-            }
-            TargetRole::Leader(token.clone())
+        LeaseState::HeldByMe(epoch) => {
+            decide_as_lease_holder(world, self_id, epoch.clone(), known_members)
         }
-        
-        LeaseState::HeldBy(leader_id) => {
-            // Split-brain protection: Someone else owns the lease, but I am writing!
-            if world.local.pg_status == PgStatus::RunningPrimary {
-                return TargetRole::Fenced(FenceReason::ForeignLeaderDetected);
-            }
-            TargetRole::Follower(leader_id.clone())
-        }
-        
-        LeaseState::Unheld => {
-            // The lease is open. Do we run for election?
-            let is_targeted = world.global.switchover_intent.as_ref() == Some(self_id);
-            let best_candidate = find_best_candidate(&world.global.valid_peers);
+        LeaseState::HeldByPeer(epoch) => {
+            let publication = PublicationGoal::PublishPrimary {
+                primary: epoch.holder.clone(),
+                replicas: replica_members(&known_members, &epoch.holder),
+                epoch: epoch.clone(),
+            };
 
-            let am_i_best = best_candidate.as_ref() == Some(self_id);
-            let am_i_already_primary = world.local.pg_status == PgStatus::RunningPrimary;
-
-            if is_targeted || am_i_best || am_i_already_primary {
-                TargetRole::Candidate
-            } else {
-                TargetRole::WaitingForLeader
+            match &world.local.postgres {
+                PostgresState::Primary { .. } => DesiredState {
+                    role: TargetRole::Fenced(FenceReason::ForeignLeaderDetected),
+                    publication,
+                    operator_error: None,
+                },
+                PostgresState::Offline | PostgresState::Replica { .. } => DesiredState {
+                    role: TargetRole::Follower(follow_goal(world, epoch.holder.clone())),
+                    publication,
+                    operator_error: None,
+                },
             }
         }
+        LeaseState::Unheld => decide_without_lease(world, self_id, known_members),
     }
 }
 
-/// Pure function to evaluate the healthiest replica for promotion.
-fn find_best_candidate(peers: &BTreeMap<MemberId, PeerData>) -> Option<MemberId> {
-    peers.iter()
-        .filter(|(_, data)| data.is_ready)
-        .max_by(|(_, a), (_, b)| {
-            // Primary sort by Timeline, secondary sort by LSN
-            a.timeline.cmp(&b.timeline)
-                .then(a.wal_lsn.cmp(&b.wal_lsn))
+fn decide_degraded(world: &WorldView, known_members: BTreeSet<MemberId>) -> DesiredState {
+    match &world.local.postgres {
+        PostgresState::Primary { committed_lsn } => match &world.global.lease {
+            LeaseState::HeldByMe(epoch) | LeaseState::HeldByPeer(epoch) => DesiredState {
+                role: TargetRole::FailSafe(FailSafeGoal::PrimaryMustStop(FenceCutoff {
+                    epoch: epoch.clone(),
+                    committed_lsn: *committed_lsn,
+                })),
+                publication: PublicationGoal::PublishNoPrimary {
+                    reason: NoPrimaryReason::DcsDegraded,
+                    replicas: known_members,
+                    fence_cutoff: Some(FenceCutoff {
+                        epoch: epoch.clone(),
+                        committed_lsn: *committed_lsn,
+                    }),
+                },
+                operator_error: None,
+            },
+            LeaseState::Unheld => DesiredState {
+                role: TargetRole::FailSafe(FailSafeGoal::WaitForQuorum),
+                publication: PublicationGoal::PublishNoPrimary {
+                    reason: NoPrimaryReason::DcsDegraded,
+                    replicas: known_members,
+                    fence_cutoff: None,
+                },
+                operator_error: None,
+            },
+        },
+        PostgresState::Replica { upstream, .. } => DesiredState {
+            role: TargetRole::FailSafe(FailSafeGoal::ReplicaKeepFollowing(upstream.clone())),
+            publication: PublicationGoal::PublishNoPrimary {
+                reason: NoPrimaryReason::DcsDegraded,
+                replicas: known_members,
+                fence_cutoff: None,
+            },
+            operator_error: None,
+        },
+        PostgresState::Offline => DesiredState {
+            role: TargetRole::FailSafe(FailSafeGoal::WaitForQuorum),
+            publication: PublicationGoal::PublishNoPrimary {
+                reason: NoPrimaryReason::DcsDegraded,
+                replicas: known_members,
+                fence_cutoff: None,
+            },
+            operator_error: None,
+        },
+    }
+}
+
+fn decide_as_lease_holder(
+    world: &WorldView,
+    self_id: &MemberId,
+    epoch: LeaseEpoch,
+    known_members: BTreeSet<MemberId>,
+) -> DesiredState {
+    match resolve_switchover(world, self_id) {
+        ResolvedSwitchover::NotRequested => DesiredState {
+            role: TargetRole::Leader(epoch.clone()),
+            publication: PublicationGoal::PublishPrimary {
+                primary: self_id.clone(),
+                replicas: replica_members(&known_members, self_id),
+                epoch,
+            },
+            operator_error: None,
+        },
+        ResolvedSwitchover::Proceed(target) if target == *self_id => DesiredState {
+            role: TargetRole::Leader(epoch.clone()),
+            publication: PublicationGoal::PublishPrimary {
+                primary: self_id.clone(),
+                replicas: replica_members(&known_members, self_id),
+                epoch,
+            },
+            operator_error: None,
+        },
+        ResolvedSwitchover::Proceed(target) => DesiredState {
+            role: TargetRole::DemotingForSwitchover(target),
+            publication: PublicationGoal::KeepCurrent,
+            operator_error: None,
+        },
+        ResolvedSwitchover::Rejected(blocker) => DesiredState {
+            role: TargetRole::Leader(epoch.clone()),
+            publication: PublicationGoal::PublishPrimary {
+                primary: self_id.clone(),
+                replicas: replica_members(&known_members, self_id),
+                epoch,
+            },
+            operator_error: Some(OperatorError::SwitchoverRejected(blocker)),
+        },
+    }
+}
+
+fn decide_without_lease(
+    world: &WorldView,
+    self_id: &MemberId,
+    known_members: BTreeSet<MemberId>,
+) -> DesiredState {
+    match resolve_switchover(world, self_id) {
+        ResolvedSwitchover::Proceed(target) if target == *self_id => DesiredState {
+            role: TargetRole::Candidate(Candidacy::TargetedSwitchover(target)),
+            publication: PublicationGoal::PublishNoPrimary {
+                reason: NoPrimaryReason::LeaseOpen,
+                replicas: known_members,
+                fence_cutoff: None,
+            },
+            operator_error: None,
+        },
+        ResolvedSwitchover::Proceed(target) => DesiredState {
+            role: TargetRole::Idle(IdleReason::AwaitingTarget(target)),
+            publication: PublicationGoal::PublishNoPrimary {
+                reason: NoPrimaryReason::LeaseOpen,
+                replicas: known_members,
+                fence_cutoff: None,
+            },
+            operator_error: None,
+        },
+        ResolvedSwitchover::Rejected(blocker) => DesiredState {
+            role: TargetRole::Idle(IdleReason::SwitchoverRejected(blocker.clone())),
+            publication: PublicationGoal::PublishNoPrimary {
+                reason: NoPrimaryReason::SwitchoverRejected(blocker.clone()),
+                replicas: known_members,
+                fence_cutoff: None,
+            },
+            operator_error: Some(OperatorError::SwitchoverRejected(blocker)),
+        },
+        ResolvedSwitchover::NotRequested => match find_best_candidate(
+            &world.global.peers,
+            &world.global.self_peer,
+            self_id,
+        ) {
+            Some(best) if best == *self_id => DesiredState {
+                role: TargetRole::Candidate(candidacy_kind(world)),
+                publication: PublicationGoal::PublishNoPrimary {
+                    reason: NoPrimaryReason::LeaseOpen,
+                    replicas: known_members,
+                    fence_cutoff: None,
+                },
+                operator_error: None,
+            },
+            Some(_) | None => DesiredState {
+                role: TargetRole::Idle(IdleReason::AwaitingLeader),
+                publication: PublicationGoal::PublishNoPrimary {
+                    reason: NoPrimaryReason::LeaseOpen,
+                    replicas: known_members,
+                    fence_cutoff: None,
+                },
+                operator_error: None,
+            },
+        },
+    }
+}
+
+fn follow_goal(world: &WorldView, leader: MemberId) -> FollowGoal {
+    let recovery = match (&world.local.data_dir, &world.local.process) {
+        (DataDirState::Missing, _) => RecoveryPlan::Basebackup,
+        (DataDirState::Initialized(LocalDataState::BootstrapEmpty), _) => RecoveryPlan::Basebackup,
+        (
+            DataDirState::Initialized(LocalDataState::Diverged(DivergenceState::BasebackupRequired)),
+            _,
+        ) => RecoveryPlan::Basebackup,
+        (
+            DataDirState::Initialized(LocalDataState::Diverged(DivergenceState::RewindPossible)),
+            ProcessState::Failed(JobFailure {
+                recovery: FailureRecovery::FallbackToBasebackup,
+                ..
+            }),
+        ) => RecoveryPlan::Basebackup,
+        (
+            DataDirState::Initialized(LocalDataState::Diverged(DivergenceState::RewindPossible)),
+            ProcessState::Failed(JobFailure {
+                recovery: FailureRecovery::WaitForOperator,
+                ..
+            }),
+        ) => RecoveryPlan::None,
+        (
+            DataDirState::Initialized(LocalDataState::Diverged(DivergenceState::RewindPossible)),
+            ProcessState::Idle,
+        ) => RecoveryPlan::Rewind,
+        (
+            DataDirState::Initialized(LocalDataState::Diverged(DivergenceState::RewindPossible)),
+            ProcessState::Failed(JobFailure {
+                recovery: FailureRecovery::RetrySameJob,
+                ..
+            }),
+        ) => RecoveryPlan::Rewind,
+        (DataDirState::Initialized(LocalDataState::ConsistentReplica), _) => RecoveryPlan::StartStreaming,
+    };
+
+    FollowGoal { leader, recovery }
+}
+
+fn candidacy_kind(world: &WorldView) -> Candidacy {
+    match &world.local.data_dir {
+        DataDirState::Missing => Candidacy::Bootstrap,
+        DataDirState::Initialized(LocalDataState::BootstrapEmpty) => Candidacy::Bootstrap,
+        DataDirState::Initialized(LocalDataState::ConsistentReplica) => Candidacy::Failover,
+        DataDirState::Initialized(LocalDataState::Diverged(_)) => Candidacy::ResumeAfterOutage,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ResolvedSwitchover {
+    NotRequested,
+    Proceed(MemberId),
+    Rejected(SwitchoverBlocker),
+}
+
+fn resolve_switchover(world: &WorldView, self_id: &MemberId) -> ResolvedSwitchover {
+    match &world.global.switchover {
+        SwitchoverState::None => ResolvedSwitchover::NotRequested,
+        SwitchoverState::Requested(request) => match &request.target {
+            SwitchoverTarget::Specific(target) => {
+                if target == self_id {
+                    match classify_candidate(&world.global.self_peer) {
+                        Some(()) => ResolvedSwitchover::Proceed(target.clone()),
+                        None => ResolvedSwitchover::Rejected(SwitchoverBlocker::TargetIneligible(
+                            ineligible_reason(&world.global.self_peer),
+                        )),
+                    }
+                } else {
+                    match world.global.peers.get(target) {
+                        Some(peer) => match classify_candidate(peer) {
+                            Some(()) => ResolvedSwitchover::Proceed(target.clone()),
+                            None => ResolvedSwitchover::Rejected(SwitchoverBlocker::TargetIneligible(
+                                ineligible_reason(peer),
+                            )),
+                        },
+                        None => ResolvedSwitchover::Rejected(SwitchoverBlocker::TargetMissing),
+                    }
+                }
+            }
+            SwitchoverTarget::AnyHealthyReplica => match find_best_candidate(
+                &world.global.peers,
+                &world.global.self_peer,
+                self_id,
+            ) {
+                Some(best) => ResolvedSwitchover::Proceed(best),
+                None => ResolvedSwitchover::Rejected(SwitchoverBlocker::TargetMissing),
+            },
+        },
+    }
+}
+
+fn known_members(peers: &BTreeMap<MemberId, PeerKnowledge>, self_id: &MemberId) -> BTreeSet<MemberId> {
+    std::iter::once(self_id.clone())
+        .chain(peers.keys().cloned())
+        .collect()
+}
+
+fn replica_members(all_members: &BTreeSet<MemberId>, primary: &MemberId) -> BTreeSet<MemberId> {
+    all_members.iter()
+        .filter(|member_id| *member_id != primary)
+        .cloned()
+        .collect()
+}
+
+fn find_best_candidate(
+    peers: &BTreeMap<MemberId, PeerKnowledge>,
+    self_peer: &PeerKnowledge,
+    self_id: &MemberId,
+) -> Option<MemberId> {
+    let self_candidate = candidate_rank(self_peer).map(|rank| (self_id.clone(), rank));
+    let peer_candidates = peers.iter().filter_map(|(member_id, peer)| {
+        candidate_rank(peer).map(|rank| (member_id.clone(), rank))
+    });
+
+    self_candidate
+        .into_iter()
+        .chain(peer_candidates)
+        .max_by(|(left_id, left_rank), (right_id, right_rank)| {
+            compare_candidate_rank(left_id, left_rank, right_id, right_rank)
         })
-        .map(|(id, _)| id.clone())
+        .map(|(member_id, _)| member_id)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CandidateRank {
+    Bootstrap,
+    Promote(WalPosition),
+}
+
+fn candidate_rank(peer: &PeerKnowledge) -> Option<CandidateRank> {
+    match &peer.election {
+        ElectionEligibility::BootstrapEligible => Some(CandidateRank::Bootstrap),
+        ElectionEligibility::PromoteEligible(wal) => Some(CandidateRank::Promote(wal.clone())),
+        ElectionEligibility::Ineligible(_) => None,
+    }
+}
+
+fn compare_candidate_rank(
+    left_id: &MemberId,
+    left_rank: &CandidateRank,
+    right_id: &MemberId,
+    right_rank: &CandidateRank,
+) -> std::cmp::Ordering {
+    match (left_rank, right_rank) {
+        (CandidateRank::Promote(left), CandidateRank::Promote(right)) => {
+            left.timeline.cmp(&right.timeline)
+                .then(left.lsn.cmp(&right.lsn))
+                .then(right_id.cmp(left_id))
+        }
+        (CandidateRank::Promote(_), CandidateRank::Bootstrap) => std::cmp::Ordering::Greater,
+        (CandidateRank::Bootstrap, CandidateRank::Promote(_)) => std::cmp::Ordering::Less,
+        (CandidateRank::Bootstrap, CandidateRank::Bootstrap) => right_id.cmp(left_id),
+    }
+}
+
+fn classify_candidate(peer: &PeerKnowledge) -> Option<()> {
+    match &peer.election {
+        ElectionEligibility::BootstrapEligible => Some(()),
+        ElectionEligibility::PromoteEligible(_) => Some(()),
+        ElectionEligibility::Ineligible(_) => None,
+    }
+}
+
+fn ineligible_reason(peer: &PeerKnowledge) -> IneligibleReason {
+    match &peer.election {
+        ElectionEligibility::BootstrapEligible => IneligibleReason::StartingUp,
+        ElectionEligibility::PromoteEligible(_) => IneligibleReason::NotReady,
+        ElectionEligibility::Ineligible(reason) => reason.clone(),
+    }
 }
 ```
 
 ---
 
-### 3. `reconcile.rs` (The State Machine)
-*This function diffs `LocalKnowledge` against `TargetRole`. The compiler forces us to handle all 6 `TargetRole` variants against all 3 `PgStatus` variants.*
+### 3. `reconcile.rs` (The Pure State Machine)
+*This function is still pure. The important change is that it returns an ordered action plan, not one action. That is the minimum needed to keep publication, error recording, and local PG control explicit without smearing them back into the worker.*
 
 ```rust
 use crate::types::*;
 
-pub fn reconcile(local: &LocalKnowledge, target: &TargetRole, world: &WorldView) -> Option<ReconcileAction> {
-    // IDEMPOTENCY LOCK: Do nothing if a process (BaseBackup, Start, etc.) is running.
-    if local.active_job.is_some() {
-        return None;
-    }
+pub fn reconcile(world: &WorldView, desired: &DesiredState) -> Vec<ReconcileAction> {
+    let publication_actions = reconcile_publication(&world.local.publication, desired);
 
+    let role_action = match &world.local.process {
+        ProcessState::Running(_) => None,
+        ProcessState::Idle | ProcessState::Failed(_) => reconcile_role(world, &desired.role),
+    };
+
+    publication_actions
+        .into_iter()
+        .chain(role_action)
+        .collect()
+}
+
+fn reconcile_publication(
+    current: &PublicationState,
+    desired: &DesiredState,
+) -> Vec<ReconcileAction> {
+    let publish_action = match (&current.authority, &desired.publication) {
+        (AuthorityView::Unknown, PublicationGoal::KeepCurrent) => None,
+        (_, PublicationGoal::KeepCurrent) => None,
+        (
+            AuthorityView::Primary {
+                member: current_member,
+                epoch: current_epoch,
+            },
+            PublicationGoal::PublishPrimary {
+                primary,
+                epoch,
+                ..
+            },
+        ) if current_member == primary && current_epoch == epoch => None,
+        (
+            AuthorityView::NoPrimary(current_reason),
+            PublicationGoal::PublishNoPrimary { reason, .. },
+        ) if current_reason == reason => None,
+        (_, publication) => Some(ReconcileAction::Publish(publication.clone())),
+    };
+
+    let error_action = match (&current.last_error, &desired.operator_error) {
+        (None, None) => None,
+        (Some(_), None) => Some(ReconcileAction::ClearOperatorError),
+        (Some(current_error), Some(desired_error)) if current_error == desired_error => None,
+        (None, Some(desired_error)) => Some(ReconcileAction::RecordOperatorError(desired_error.clone())),
+        (Some(_), Some(desired_error)) => Some(ReconcileAction::RecordOperatorError(desired_error.clone())),
+    };
+
+    [publish_action, error_action]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+fn reconcile_role(world: &WorldView, target: &TargetRole) -> Option<ReconcileAction> {
     match target {
-        TargetRole::Leader(_) => {
-            // Clean up switchover intent once we successfully became leader
-            if world.global.switchover_intent.is_some() {
-                return Some(ReconcileAction::ClearSwitchover);
-            }
-
-            match local.data_dir {
-                DataDirState::MissingOrEmpty => Some(ReconcileAction::InitDb),
-                DataDirState::Initialized => match &local.pg_status {
-                    PgStatus::Stopped => Some(ReconcileAction::StartPrimary),
-                    PgStatus::RunningReplica { .. } => Some(ReconcileAction::Promote),
-                    PgStatus::RunningPrimary => None, // GOAL REACHED
-                }
-            }
-        }
-        
-        TargetRole::Follower(leader_id) => match local.data_dir {
-            DataDirState::MissingOrEmpty => Some(ReconcileAction::BaseBackup(leader_id.clone())),
-            DataDirState::Initialized => match &local.pg_status {
-                PgStatus::Stopped => Some(ReconcileAction::StartReplica(leader_id.clone())),
-                PgStatus::RunningPrimary => Some(ReconcileAction::Demote(ShutdownMode::Fast)),
-                PgStatus::RunningReplica { upstream, sync } => {
-                    if *sync == SyncState::RequiresRewind {
-                        Some(ReconcileAction::PgRewind(leader_id.clone()))
-                    } else if upstream != leader_id {
-                        // Pointing to the wrong upstream -> restart
-                        Some(ReconcileAction::Demote(ShutdownMode::Fast))
-                    } else {
-                        None // GOAL REACHED
-                    }
+        TargetRole::Leader(_) => match (&world.local.data_dir, &world.local.postgres) {
+            (DataDirState::Missing, _) => Some(ReconcileAction::InitDb),
+            (DataDirState::Initialized(LocalDataState::BootstrapEmpty), _) => Some(ReconcileAction::InitDb),
+            (DataDirState::Initialized(_), PostgresState::Offline) => Some(ReconcileAction::StartPrimary),
+            (DataDirState::Initialized(_), PostgresState::Replica { .. }) => Some(ReconcileAction::Promote),
+            (DataDirState::Initialized(_), PostgresState::Primary { .. }) => {
+                match &world.global.switchover {
+                    SwitchoverState::None => None,
+                    SwitchoverState::Requested(_) => Some(ReconcileAction::ClearSwitchover),
                 }
             }
         },
 
-        TargetRole::Candidate => {
-            Some(ReconcileAction::AcquireLease)
-        }
+        TargetRole::Candidate(kind) => Some(ReconcileAction::AcquireLease(kind.clone())),
 
-        TargetRole::WaitingForLeader => match &local.pg_status {
-            PgStatus::RunningPrimary => Some(ReconcileAction::Demote(ShutdownMode::Fast)),
-            // If stopped or replica, we just wait. We can't start a replica without knowing the leader.
-            PgStatus::Stopped | PgStatus::RunningReplica { .. } => None, 
+        TargetRole::Follower(goal) => match goal.recovery {
+            RecoveryPlan::None => None,
+            RecoveryPlan::Basebackup => Some(ReconcileAction::BaseBackup(goal.leader.clone())),
+            RecoveryPlan::Rewind => Some(ReconcileAction::PgRewind(goal.leader.clone())),
+            RecoveryPlan::StartStreaming => match &world.local.postgres {
+                PostgresState::Offline => Some(ReconcileAction::StartReplica(goal.leader.clone())),
+                PostgresState::Primary { .. } => Some(ReconcileAction::Demote(ShutdownMode::Fast)),
+                PostgresState::Replica { upstream, .. } => match upstream {
+                    Some(current_upstream) if current_upstream == &goal.leader => None,
+                    Some(_) | None => Some(ReconcileAction::Demote(ShutdownMode::Fast)),
+                },
+            },
         },
 
-        TargetRole::FailSafe(_) => match &local.pg_status {
-            // FailSafe means we protect ourselves. Primary must NEVER be in FailSafe, 
-            // `decide` prevents this, but defensively we crash-stop if it happens.
-            PgStatus::RunningPrimary => Some(ReconcileAction::Demote(ShutdownMode::Immediate)),
-            PgStatus::RunningReplica { .. } | PgStatus::Stopped => None, // Safe. Keep doing what we are doing.
+        TargetRole::FailSafe(fail_safe) => match fail_safe {
+            FailSafeGoal::PrimaryMustStop(_) => Some(ReconcileAction::Demote(ShutdownMode::Immediate)),
+            FailSafeGoal::ReplicaKeepFollowing(_) => None,
+            FailSafeGoal::WaitForQuorum => None,
         },
 
-        TargetRole::Fenced(reason) => match &local.pg_status {
-            PgStatus::RunningPrimary | PgStatus::RunningReplica { .. } => {
-                let mode = match reason {
-                    FenceReason::DemotedForSwitchover => ShutdownMode::Fast, // Planned maintenance
-                    FenceReason::DcsPartitioned | FenceReason::ForeignLeaderDetected => ShutdownMode::Immediate,
-                };
-                Some(ReconcileAction::Demote(mode))
+        TargetRole::DemotingForSwitchover(_) => match &world.local.postgres {
+            PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
+                Some(ReconcileAction::Demote(ShutdownMode::Fast))
             }
-            PgStatus::Stopped => {
-                // IMPORTANT: Switchover Release Logic
-                // If we stopped gracefully because of a switchover, we MUST release the lease 
-                // so the new target can grab it.
-                if *reason == FenceReason::DemotedForSwitchover && 
-                   matches!(world.global.lease, LeaseState::HeldByMe(_)) {
-                    Some(ReconcileAction::ReleaseLease)
-                } else {
-                    None // SAFELY FENCED
+            PostgresState::Offline => match &world.global.lease {
+                LeaseState::HeldByMe(_) => Some(ReconcileAction::ReleaseLease),
+                LeaseState::HeldByPeer(_) | LeaseState::Unheld => None,
+            },
+        },
+
+        TargetRole::Fenced(FenceReason::ForeignLeaderDetected) => {
+            match &world.local.postgres {
+                PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
+                    Some(ReconcileAction::Demote(ShutdownMode::Immediate))
                 }
+                PostgresState::Offline => None,
             }
         }
+
+        TargetRole::Fenced(FenceReason::StorageStalled) => {
+            match &world.local.postgres {
+                PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
+                    Some(ReconcileAction::Demote(ShutdownMode::Immediate))
+                }
+                PostgresState::Offline => None,
+            }
+        }
+
+        TargetRole::Idle(_) => match &world.local.postgres {
+            PostgresState::Primary { .. } => Some(ReconcileAction::Demote(ShutdownMode::Fast)),
+            PostgresState::Offline | PostgresState::Replica { .. } => None,
+        },
     }
 }
 ```
@@ -320,134 +877,102 @@ pub fn reconcile(local: &LocalKnowledge, target: &TargetRole, world: &WorldView)
 ---
 
 ### 4. `worker.rs` (The IO Boundary)
-*This is the orchestrator. It executes exactly three steps: Gather State, Decide/Reconcile, Execute Action. It is vastly smaller than the original codebase because all "if/then" logic was pushed into the pure functional layers.*
+*The worker is still small. It now executes an ordered plan and it refuses to fabricate unknown state. No empty `MemberId`, no fake default job kind, no silent downgrade from malformed runtime state into "probably fine".*
 
 ```rust
-use crate::types::*;
 use crate::decide::decide;
 use crate::reconcile::reconcile;
-use crate::state::WorkerError;
+use crate::types::*;
 use crate::ha::state::HaWorkerCtx;
+use crate::state::WorkerError;
 
-pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> {
-    // 1. OBSERVE (Map dirty system state into clean Epistemological types)
-    let world = WorldView {
-        local: build_local_knowledge(ctx),
-        global: build_global_knowledge(ctx),
-    };
+pub(crate) async fn step_once(ctx: &HaWorkerCtx) -> Result<(), WorkerError> {
+    let world = observe(ctx).await?;
+    let desired = decide(&world, &ctx.self_id);
 
-    // 2. DECIDE (What should I be?)
-    let target_role = decide(&world, &ctx.self_id);
-
-    // Logging state transitions prevents log spam and gives amazing debug trails
-    if ctx.state.target_role != target_role {
-        emit_role_transition_log(&ctx.state.target_role, &target_role);
-        ctx.state.target_role = target_role.clone();
+    if ctx.state.desired != desired {
+        emit_state_transition_log(&ctx.state.desired, &desired);
     }
 
-    // 3. RECONCILE (Diff reality against goal)
-    let next_action = reconcile(&world.local, &target_role, &world);
+    let actions = reconcile(&world, &desired);
 
-    // 4. ACT (Execute the singular step required to reach the goal)
-    if let Some(action) = next_action {
+    for action in actions {
         emit_action_intent_log(&action);
-
-        match action {
-            // DCS Execution
-            ReconcileAction::AcquireLease => {
-                ctx.dcs_store.acquire_leader_lease(&ctx.scope, &ctx.self_id)?;
-            }
-            ReconcileAction::ReleaseLease => {
-                ctx.dcs_store.release_leader_lease(&ctx.scope, &ctx.self_id)?;
-            }
-            ReconcileAction::ClearSwitchover => {
-                ctx.dcs_store.clear_switchover(&ctx.scope)?;
-            }
-
-            // Process Execution (Mapped directly to jobs)
-            process_action => {
-                let job_request = build_process_job_request(process_action, ctx);
-                ctx.process_inbox.send(job_request).map_err(|e| {
-                    WorkerError::Message(format!("Failed to dispatch process job: {e}"))
-                })?;
-            }
-        }
+        execute_action(ctx, action).await?;
     }
 
     Ok(())
 }
 
-// --- Adapters to map from current pginfo/dcs state to the clean types ---
-
-fn build_local_knowledge(ctx: &HaWorkerCtx) -> LocalKnowledge {
-    let pg_state = ctx.pg_subscriber.latest();
-    let process_state = ctx.process_subscriber.latest();
-
-    let data_dir = if ctx.process_defaults.data_dir_exists_and_has_pg_version() {
-        DataDirState::Initialized
-    } else {
-        DataDirState::MissingOrEmpty
-    };
-
-    let pg_status = match &pg_state.value {
-        crate::pginfo::state::PgInfoState::Primary { .. } => PgStatus::RunningPrimary,
-        crate::pginfo::state::PgInfoState::Replica { upstream, follow_lsn, .. } => {
-            // Map raw PG state to strict enum
-            PgStatus::RunningReplica {
-                upstream: upstream.as_ref().map(|u| MemberId(u.member_id.0.clone())).unwrap_or(MemberId("".into())),
-                sync: if follow_lsn.is_none() { SyncState::RequiresRewind } else { SyncState::InSync },
-            }
-        },
-        _ => PgStatus::Stopped,
-    };
-
-    let active_job = process_state.value.running_job_kind().map(|k| match k {
-        crate::process::jobs::ActiveJobKind::BaseBackup => JobKind::BaseBackup,
-        crate::process::jobs::ActiveJobKind::StartPostgres => JobKind::Start,
-        crate::process::jobs::ActiveJobKind::Promote => JobKind::Promote,
-        crate::process::jobs::ActiveJobKind::Demote => JobKind::Demote,
-        crate::process::jobs::ActiveJobKind::PgRewind => JobKind::PgRewind,
-        crate::process::jobs::ActiveJobKind::Bootstrap => JobKind::InitDb,
-        _ => JobKind::Start, // fallback
-    });
-
-    LocalKnowledge { data_dir, pg_status, active_job }
+async fn observe(ctx: &HaWorkerCtx) -> Result<WorldView, WorkerError> {
+    Ok(WorldView {
+        local: build_local_knowledge(ctx).await?,
+        global: build_global_knowledge(ctx).await?,
+    })
 }
 
-fn build_global_knowledge(ctx: &HaWorkerCtx) -> GlobalKnowledge {
-    let dcs = ctx.dcs_subscriber.latest();
-
-    let dcs_trust = match dcs.value.trust {
-        crate::dcs::state::DcsTrust::FullQuorum => DcsTrust::FullQuorum,
-        _ => DcsTrust::Degraded,
-    };
-
-    let lease = match &dcs.value.cache.leader {
-        Some(record) if record.member_id.0 == ctx.self_id.0 => {
-            LeaseState::HeldByMe(LeaseToken(record.member_id.0.clone()))
+async fn execute_action(ctx: &HaWorkerCtx, action: ReconcileAction) -> Result<(), WorkerError> {
+    match action {
+        ReconcileAction::AcquireLease(kind) => {
+            ctx.dcs_store.acquire_leader_lease(&ctx.scope, &ctx.self_id, kind).await
         }
-        Some(record) => LeaseState::HeldBy(MemberId(record.member_id.0.clone())),
-        None => LeaseState::Unheld,
-    };
-
-    let switchover_intent = dcs.value.cache.switchover.as_ref()
-        .and_then(|req| req.switchover_to.as_ref())
-        .map(|m| MemberId(m.0.clone()));
-
-    let mut valid_peers = BTreeMap::new();
-    for (id, record) in &dcs.value.cache.members {
-        valid_peers.insert(MemberId(id.0.clone()), PeerData {
-            is_ready: record.readiness == crate::pginfo::state::Readiness::Ready,
-            wal_lsn: record.write_lsn.map(|l| l.0).unwrap_or(0),
-            timeline: record.timeline.unwrap_or(0),
-        });
+        ReconcileAction::ReleaseLease => {
+            ctx.dcs_store.release_leader_lease(&ctx.scope, &ctx.self_id).await
+        }
+        ReconcileAction::Publish(goal) => {
+            ctx.publisher.publish_cluster_view(&ctx.scope, goal).await
+        }
+        ReconcileAction::RecordOperatorError(error) => {
+            ctx.publisher.publish_operator_error(&ctx.scope, error).await
+        }
+        ReconcileAction::ClearOperatorError => {
+            ctx.publisher.clear_operator_error(&ctx.scope).await
+        }
+        ReconcileAction::ClearSwitchover => {
+            ctx.dcs_store.clear_switchover(&ctx.scope).await
+        }
+        process_action => {
+            let request = build_process_job_request(process_action)?;
+            ctx.process_inbox.send(request).await
+        }
     }
-
-    GlobalKnowledge { dcs_trust, lease, switchover_intent, valid_peers }
 }
+
+// The adapters are strict:
+// - unknown pg/process states become WorkerError::StateMapping
+// - missing upstream is `Option<MemberId>`, never an empty string sentinel
+// - process failures are carried as typed `JobFailure`
+// - publication state is observed just like PG and DCS state, not reconstructed ad hoc
 ```
 
-### Why this is mathematically beautiful:
-1. **The "Start Up" phase vanishes.** If you turn on three empty nodes, `Local: Missing`, `Lease: Unheld`. All three evaluate `Candidate` (or `WaitingForLeader`). One wins the lease, decides `Leader`, and reconciles to `InitDb`. The other two decide `Follower`, and reconcile to `BaseBackup`. No explicit orchestration needed!
-2. **Switchover gracefully flows.** The Leader drops to `Fenced`, gracefully `Demotes`, then gracefully `Releases` the lease. The Target grabs the lease, `Starts` as primary (or `Promotes`), and `Clears` the intent.
-3. **Compiler guarantees safety.** If you add a new `PgStatus` (e.g., `RunningDegraded`), Rust will throw a compile error in `reconcile.rs` until you explicitly decide how a `Leader`, `Follower`, and `Fenced` node should react to it.
+---
+
+### Why this revised design fixes the flaws while keeping the same spirit
+1. **The core architecture still works.** We still have a pure typed kernel with one loop. What changed is not the philosophy. What changed is the shape of the policy output: local role alone was too small.
+2. **Targeted switchover is now exclusive.** When a specific target is valid, only that target can become `Candidate`. Everyone else becomes `Idle(AwaitingTarget(...))`.
+3. **Targeted switchover rejection is now first-class.** An invalid target yields `OperatorError::SwitchoverRejected(...)` and `PublicationGoal::PublishNoPrimary` only where appropriate. The leader no longer blindly demotes for a bad request.
+4. **Bootstrap and restore are now deterministic.** `find_best_candidate` includes `self`, distinguishes `BootstrapEligible` from `PromoteEligible`, and gives deterministic tie-breaking.
+5. **Rejoin fallback is now typed.** `JobFailure` plus `FailureRecovery` makes `pg_rewind -> basebackup` an explicit transition instead of hidden retry folklore.
+6. **Operator-visible primary is now designed, not implied.** `PublicationGoal` is part of the pure decision, so `pgtm` and "no operator-visible primary" are part of the model.
+7. **Fencing cutoff is now explicit.** `FenceCutoff` is carried through fail-safe publication, which is what the concurrent-write features need.
+8. **Wedged primary behavior is now modeled.** `StorageState::Stalled` lets the pure policy fence a hung leader without pretending it is a normal crash.
+
+### What enums and matches changed from the first pass
+- `TargetRole` is larger: `WaitingForLeader` became `Idle(IdleReason)`, `Candidate` is now `Candidate(Candidacy)`, and switchover demotion became its own `DemotingForSwitchover(MemberId)` state.
+- `decide()` no longer returns just `TargetRole`. It returns `DesiredState { role, publication, operator_error }`.
+- `ReconcileAction` gained `Publish`, `RecordOperatorError`, and `ClearOperatorError`.
+- `LeaseToken` became `LeaseEpoch` because generation matters for fencing and publication.
+- `PgStatus` became `PostgresState`, and `SyncState` became `ReplicationState`, so stalled/catching-up replica cases are representable.
+- `LocalKnowledge` gained `ProcessState`, `StorageState`, and `PublicationState`.
+- `GlobalKnowledge` gained `SwitchoverState`, `PeerKnowledge`, and an explicit `self_peer`.
+- `reconcile()` no longer returns one optional action. It returns an ordered `Vec<ReconcileAction>` so publication and local PG actions can both be explicit.
+
+### Final judgement
+Yes, the core of the design absolutely still works.
+
+The correct move is not to abandon the pure-kernel architecture. The correct move is to enlarge the types until the feature suite fits inside them naturally. The first pass had the right shape, but it was still missing three categories of truth:
+- operator-visible authority
+- recovery outcome and fallback
+- explicit switchover eligibility
+
+With those added, the design remains elegant, testable, and compiler-driven, while now matching the real HA scenarios we actually care about.
