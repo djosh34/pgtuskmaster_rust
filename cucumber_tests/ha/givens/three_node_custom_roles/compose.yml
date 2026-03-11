@@ -29,9 +29,7 @@ services:
       - etcd-data:/etcd-data
 
   node-a:
-    build:
-      context: .
-      dockerfile: docker_files/node.Dockerfile
+    image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
     cap_add:
       - NET_ADMIN
     networks:
@@ -65,9 +63,7 @@ services:
       - node-a-logs:/var/log/pgtuskmaster
 
   node-b:
-    build:
-      context: .
-      dockerfile: docker_files/node.Dockerfile
+    image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
     cap_add:
       - NET_ADMIN
     networks:
@@ -101,9 +97,7 @@ services:
       - node-b-logs:/var/log/pgtuskmaster
 
   node-c:
-    build:
-      context: .
-      dockerfile: docker_files/node.Dockerfile
+    image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
     cap_add:
       - NET_ADMIN
     networks:
@@ -137,11 +131,10 @@ services:
       - node-c-logs:/var/log/pgtuskmaster
 
   observer:
-    build:
-      context: .
-      dockerfile: docker_files/observer.Dockerfile
-    command:
+    image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    entrypoint:
       - /usr/bin/tail
+    command:
       - -f
       - /dev/null
     networks:

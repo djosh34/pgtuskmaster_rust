@@ -9,7 +9,6 @@ use std::{
 use cucumber::World;
 
 use crate::support::{
-    binary_paths,
     docker::{cli::DockerCli, ryuk::RyukGuard},
     error::{HarnessError, Result},
     faults::{
@@ -158,6 +157,7 @@ pub struct HarnessShared {
     pub artifacts_dir: PathBuf,
     pub compose_file: PathBuf,
     pub compose_project: String,
+    pub cucumber_test_image_run_id: String,
     pub docker: DockerCli,
     pub ryuk: Option<RyukGuard>,
     pub observer_container: String,
@@ -176,6 +176,7 @@ impl HarnessShared {
         let given_root = given_root(repo_root.as_path(), given_name)?;
         let run_id = build_run_id(feature.feature_name.as_str())?;
         let compose_project = build_compose_project(feature.feature_name.as_str(), run_id.as_str());
+        let cucumber_test_image_run_id = required_env("PGTM_CUCUMBER_TEST_RUN_ID")?;
         let run_dir = repo_root
             .join("cucumber_tests/ha/runs")
             .join(feature.feature_name.as_str())
@@ -186,7 +187,6 @@ impl HarnessShared {
         create_dir_all(source_copy_dir.as_path())?;
         create_dir_all(artifacts_dir.as_path())?;
         copy_directory(given_root.as_path(), source_copy_dir.as_path())?;
-        copy_test_binaries(source_copy_dir.as_path())?;
 
         let compose_file = source_copy_dir.join("compose.yml");
         let timeouts = TimeoutModel::from_runtime_config(
@@ -216,6 +216,7 @@ impl HarnessShared {
             artifacts_dir,
             compose_file,
             compose_project,
+            cucumber_test_image_run_id,
             docker,
             ryuk: Some(ryuk),
             observer_container,
@@ -223,7 +224,13 @@ impl HarnessShared {
             timeline: Mutex::new(Vec::new()),
             cleaned_up: false,
         };
-        harness.record_note("initialize", "created per-feature run workspace")?;
+        harness.record_note(
+            "initialize",
+            format!(
+                "created per-feature run workspace using cucumber image run id `{}`",
+                harness.cucumber_test_image_run_id
+            ),
+        )?;
         if let Err(err) = harness.bootstrap_cluster().await {
             let cleanup_error = harness.cleanup().err();
             return match cleanup_error {
@@ -690,6 +697,7 @@ impl HarnessShared {
                 "source_copy_dir": self.source_copy_dir,
                 "artifacts_dir": self.artifacts_dir,
                 "compose_project": self.compose_project,
+                "cucumber_test_image_run_id": self.cucumber_test_image_run_id,
             }))
             .map_err(|source| HarnessError::Json {
                 context: "serializing run metadata".to_string(),
@@ -766,21 +774,6 @@ fn container_not_running_error(err: &HarnessError) -> bool {
     matches!(err, HarnessError::CommandFailed { stderr, .. } if stderr.contains("is not running"))
 }
 
-fn copy_test_binaries(source_copy_dir: &Path) -> Result<()> {
-    let binaries = binary_paths()?;
-    let destination_root = source_copy_dir.join("docker_files/bin");
-    create_dir_all(destination_root.as_path())?;
-    copy_file(
-        binaries.pgtuskmaster.as_path(),
-        destination_root.join("pgtuskmaster").as_path(),
-    )?;
-    copy_file(
-        binaries.pgtm.as_path(),
-        destination_root.join("pgtm").as_path(),
-    )?;
-    Ok(())
-}
-
 fn build_run_id(feature_name: &str) -> Result<String> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -798,6 +791,14 @@ fn timestamp_millis() -> Result<u128> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .map_err(|err| HarnessError::message(format!("system clock error: {err}")))
+}
+
+fn required_env(key: &str) -> Result<String> {
+    std::env::var(key).map_err(|err| {
+        HarnessError::message(format!(
+            "required environment variable `{key}` is missing: {err}"
+        ))
+    })
 }
 
 fn build_compose_project(feature_name: &str, run_id: &str) -> String {

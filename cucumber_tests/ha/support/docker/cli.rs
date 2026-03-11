@@ -115,7 +115,6 @@ impl DockerCli {
             compose_file.display().to_string(),
             "up".to_string(),
             "--detach".to_string(),
-            "--build".to_string(),
         ];
         args.extend(services.iter().map(|service| (*service).to_string()));
         let _ = self.run_in_dir(
@@ -152,8 +151,6 @@ impl DockerCli {
                 "down".to_string(),
                 "-v".to_string(),
                 "--remove-orphans".to_string(),
-                "--rmi".to_string(),
-                "local".to_string(),
             ],
             "stopping docker compose stack",
         )?;
@@ -456,7 +453,8 @@ impl DockerCli {
         S: Into<String>,
     {
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-        let spec = CommandSpec::new(self.executable.clone(), context.into())
+        let spec = self
+            .apply_forwarded_environment(CommandSpec::new(self.executable.clone(), context.into()))
             .env("PATH", "")
             .args(args);
         process::run(spec)
@@ -482,11 +480,18 @@ impl DockerCli {
         S: Into<String>,
     {
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-        let spec = CommandSpec::new(self.executable.clone(), context.into())
+        let spec = self
+            .apply_forwarded_environment(CommandSpec::new(self.executable.clone(), context.into()))
             .cwd(cwd)
             .env("PATH", "")
             .args(args);
         process::run(spec)
+    }
+
+    fn apply_forwarded_environment(&self, spec: CommandSpec) -> CommandSpec {
+        forwarded_environment()
+            .into_iter()
+            .fold(spec, |current, (key, value)| current.env(key, value))
     }
 
     fn run_text_in_dir<I, S>(
@@ -524,6 +529,26 @@ impl DockerCli {
             source,
         })
     }
+}
+
+fn forwarded_environment() -> Vec<(String, String)> {
+    [
+        "DOCKER_CONFIG",
+        "DOCKER_CONTEXT",
+        "DOCKER_HOST",
+        "HOME",
+        "PGTM_CUCUMBER_TEST_IMAGE",
+        "PGTM_CUCUMBER_TEST_RUN_ID",
+        "XDG_CONFIG_HOME",
+        "XDG_RUNTIME_DIR",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| (key.to_string(), value))
+    })
+    .collect::<Vec<_>>()
 }
 
 fn parse_json_sequence(input: &str, context: String) -> Result<Vec<ComposePsEntry>> {

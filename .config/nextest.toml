@@ -1,4 +1,12 @@
+experimental = ["setup-scripts"]
+
 nextest-version = { recommended = "0.9.100" }
+
+[scripts.setup.ha-cucumber-image]
+command = { command-line = "tools/nextest/setup-ha-cucumber-image.sh", relative-to = "workspace-root" }
+slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
+capture-stdout = true
+capture-stderr = true
 
 [profile.default]
 fail-fast = false
@@ -24,6 +32,12 @@ kind(test) & binary(ha_*)
 '''
 test-threads = 32
 slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
+
+[[profile.ultra-long.scripts]]
+filter = '''
+kind(test) & binary(ha_*)
+'''
+setup = "ha-cucumber-image"
 
 [profile.ultra-long.junit]
 path = "junit.xml"

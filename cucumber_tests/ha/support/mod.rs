@@ -11,10 +11,7 @@ pub mod timeouts;
 pub mod workload;
 pub mod world;
 
-use std::{
-    path::PathBuf,
-    sync::{Mutex, OnceLock},
-};
+use std::sync::{Mutex, OnceLock};
 
 use cucumber::{writer, World as _, WriterExt as _};
 use futures::FutureExt as _;
@@ -29,14 +26,7 @@ pub struct FeatureMetadata {
     pub feature_name: String,
 }
 
-#[derive(Clone, Debug)]
-pub struct BinaryPaths {
-    pub pgtuskmaster: PathBuf,
-    pub pgtm: PathBuf,
-}
-
 static FEATURE_METADATA: OnceLock<FeatureMetadata> = OnceLock::new();
-static BINARY_PATHS: OnceLock<BinaryPaths> = OnceLock::new();
 static CLEANUP_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 // This runner is intentionally independent from the legacy HA harness so the old
@@ -86,24 +76,12 @@ pub fn feature_metadata() -> Result<&'static FeatureMetadata> {
         .ok_or_else(|| HarnessError::message("feature metadata has not been initialized"))
 }
 
-pub fn binary_paths() -> Result<&'static BinaryPaths> {
-    BINARY_PATHS
-        .get()
-        .ok_or_else(|| HarnessError::message("binary paths have not been initialized"))
-}
-
 fn install_context(feature_name: &str, _feature_path: &str) -> Result<()> {
     FEATURE_METADATA
         .set(FeatureMetadata {
             feature_name: feature_name.to_string(),
         })
         .map_err(|_| HarnessError::message("feature metadata was already initialized"))?;
-    BINARY_PATHS
-        .set(BinaryPaths {
-            pgtuskmaster: PathBuf::from(env!("CARGO_BIN_EXE_pgtuskmaster")),
-            pgtm: PathBuf::from(env!("CARGO_BIN_EXE_pgtm")),
-        })
-        .map_err(|_| HarnessError::message("binary paths were already initialized"))?;
     Ok(())
 }
 

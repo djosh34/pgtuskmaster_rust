@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar 11 14:52:04 CET 2026
+Generated: Wed Mar 11 03:29:52 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-greenfield-broken-rejoin-can-stay-offline-after-blocker-removal.md`
 
@@ -238,6 +238,17 @@ The advanced greenfield wrapper `ha_targeted_switchover_rejects_ineligible_membe
 
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-ha-rejoin-step-allows-unknown-role.md`
+
+```
+## Bug: HA rejoin assertion accepts `unknown` role as success <status>not_started</status> <passes>false</passes>
+
+<description>
+The HA cucumber assertion for `the node named "<member>" rejoins as a replica` is too weak.
 ```
 
 ==============
