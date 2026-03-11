@@ -1,4 +1,0 @@
- M .ralph/current_tasks.md
- M .ralph/progress/71.jsonl
- M .ralph/tasks/story-rust-system-harness/33-task-deep-skeptical-verification-of-doc-facts-and-writing-quality.md
-?? .ralph/current_task.txt

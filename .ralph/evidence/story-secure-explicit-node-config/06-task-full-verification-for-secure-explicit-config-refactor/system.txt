@@ -1,1 +1,0 @@
-Linux lima-opencode-vm 5.14.0-611.26.1.el9_7.aarch64 #1 SMP PREEMPT_DYNAMIC Thu Jan 29 15:47:59 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux

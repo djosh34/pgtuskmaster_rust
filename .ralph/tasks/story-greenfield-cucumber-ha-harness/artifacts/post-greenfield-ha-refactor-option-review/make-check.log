@@ -1,5 +1,0 @@
-"/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tools/gate-step.sh" --gate check --step check.cargo_check --run-id "20260311T071721Z-1376078-20719" --evidence-dir "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T071721Z-1376078-20719" --timeout-bin "/usr/bin/timeout" --timeout-secs "300" --kill-after-secs "15" -- cargo check --all-targets --target-dir "/tmp/pgtuskmaster_rust-target" --config "build.incremental=false"
-== gate check step check.cargo_check (run 20260311T071721Z-1376078-20719) ==
-== timeout 300s (kill-after 15s) ==
-    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.28s

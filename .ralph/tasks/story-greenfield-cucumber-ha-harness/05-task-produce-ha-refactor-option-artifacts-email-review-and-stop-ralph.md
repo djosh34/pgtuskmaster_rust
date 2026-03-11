@@ -1,139 +1,162 @@
-## Task: Produce Post-Greenfield HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>completed</status> <passes>false</passes>
+## Task: Produce HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 
 <description>
-**Goal:** This is intentionally a weird task. After the full greenfield HA cucumber story has finished creating the new tests, but before anyone starts fixing the newly exposed bugs, inspect the then-current failing greenfield HA tests and the then-current HA implementation, and produce multiple different refactor-plan artifacts that each aim to fix the entire failing set at once instead of doing bug-by-bug patching. After the plans are written, send the user an email with a natural-language summary, a recommendation for the best and second-best options, and deep questions, then stop the Ralph loop by writing `.ralph/STOP`.
+**Goal:** Produce a design-only refactor study for the HA loop and all surrounding startup/reconciliation logic. This task must not change production code, tests, docs, configuration, or behavior. The only repo outputs are this task file plus comprehensive design artifacts under this greenfield story directory.
 
-**Original user shift / motivation:** The user explicitly does not want this moment in the process to turn into scattered reactive bug fixing against an earlier HA design. The greenfield tests are intentionally raising expectations against an older design shape, so the next step must be a coherent design review stop, not immediate local repairs. This task exists to force a pause between “we now have much better tests” and “we start fixing whatever they found,” so the codebase can choose a whole-system refactor direction instead of accumulating hacks.
+**Non-negotiable clarity on test outcomes:** Green test outcomes are NOT the goal of this task. Passing `make test`, passing `make test-long`, or fixing any failing HA behavior is explicitly NOT the objective here. This task exists only to study, explain, compare, and communicate redesign options. The executor must NOT “helpfully” fix code, patch tests, or chase green gates during this task.
 
-**Higher-order goal:** Keep the HA architecture centered on the current `ha_loop` plus functional `decide` style, while generating credible whole-system refactor options that improve correctness, determinism, and maintainability together. The broader goal is to make later implementation follow a deliberate architectural choice, not an accident of whichever failing test somebody notices first.
+**Original user shift / motivation:** The user wants a full redesign plan for the HA loop because the current architecture drifted away from the intended shape. The desired model is: newest observations first, then a pure decide step, then a typed outcome that lower layers turn into actions. The user explicitly likes the current worker send/receive state style and wants to keep that functional direction, but believes the implementation is now too spread out, startup logic is disconnected from the decide loop, sender-side dedup slipped into the HA worker, and the current quorum/failsafe boundary is wrong.
 
-HARD REQUIREMENT: DO NOT FIX/ALTER ANY CODE WHATSOEVER! ONLY PLAN AND WRITE PLANS!
-This means that if make test and/or make test-long fails, ARE NOT BLOCKING FOR THIS TASK!
+**Higher-order goal:** Prepare ten materially different, self-contained verbose & complete refactor designs that can later guide an implementation which unifies startup and steady-state reconciliation into a clearer typed state machine, keeps side effects outside the HA decider, makes quorum/lease semantics correct, and gives a clean path to passing the HA feature suite.
 
 **Scope:**
-- This task is planning-only. It must not implement the HA refactor itself, and it must not “fix forward” production code or test code just to get through failing scenarios.
-- The task must begin only after all four tasks in `story-greenfield-cucumber-ha-harness` are complete, because its input is the full then-current greenfield failing set after the migration work has landed.
-- Task creation itself intentionally does not inspect the current `src/` and `tests/` state because the migration is still in flight right now. The actual executor of this task must do that investigation later, after the blockers clear.
-- Create one story-local artifact subdirectory under `.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/post-greenfield-ha-refactor-option-review/` and put all plan outputs there. Use that directory for the failure inventory, option documents, comparison matrix, email draft notes if needed, and any command-output evidence.
-- The plans must cover both smaller and larger refactor directions, but the actual option shapes, groupings, and names must be discovered from the then-current failing tests and code rather than predetermined here.
-- Every option must preserve the current `ha_loop` and functional `decide` pattern. Do not propose an imperative rewrite, a `mut`-heavy controller, or a design that spreads weird edge-case branches everywhere.
-- Every option must explicitly remove the deduplication path in `src/ha/worker.rs` and instead explain how the state loop becomes authoritative enough that duplicate suppression is no longer needed there.
-- Every option must move the system toward stronger state-loop integration rather than keeping a pile of differing internal code paths.
-- Use the user-provided workflow requirement that the executor must find the on-host mail reply helper, use `reply.sh` to send the email, and then write `.ralph/STOP`. At task-creation time the known helper directory is `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/` and the known script path is `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`; re-check that path during execution in case it moves.
-- If bug tasks already exist from the greenfield work, use them as evidence only. Do not start fixing them inside this task.
+- Artifact-only work inside `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/`.
+- Create `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/` and write ten `.md` design documents there, one file per design.
+- Run `make test` and `make test-long` as diagnostic inputs only. Failures are expected and must be treated as evidence, not as bugs to fix in this task.
+- Sanity-check the mail reply interface with the absolute-path script `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`.
+- Email every design artifact in full, one email per design, to `user@toffemail.nl`, using `reply.sh` and absolute paths.
+- Send one final email ranking the preferred top three designs and explaining why.
+- Touch `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/STOP` only after all ten design emails and the final ranking email are sent.
+
+**Execution chunking rule:**
+- This task must be worked in very small increments to protect context.
+- After creating just one design artifact, the executor must immediately send that one design by email via `reply.sh` and then `QUIT IMMEDIATELY`.
+- Do not continue to a second design in the same run after the first design email is sent.
+- On later resumptions of this same task, repeat the same pattern: create the next design, email it in full, then `QUIT IMMEDIATELY`.
+- Only after the tenth design has been created and emailed may the executor send the final top-three ranking email and then touch `.ralph/STOP`.
+
+**Important boundaries:**
+- Do not change any files under `src/`, `tests/`, `docs/`, `docker/`, `.config/`, or `Cargo.toml`.
+- Do not fix any bugs, do not implement any design, do not edit existing tests, and do not try to make repo gates pass in this task.
+- DO NOT try to make tests green in this task.
+- DO NOT treat a red `make test` or red `make test-long` outcome as a problem to solve here.
+- DO NOT patch production code or tests in response to any failure you observe.
+- Do not create `add-bug` tasks from findings in this turn. Capture discovered issues inside the design artifacts instead.
+- Do not run `cargo test` anywhere in this repo. If the executor wants diagnostics, use `make test` and `make test-long` exactly as requested by the user.
+- Do not silently collapse multiple design ideas into one file. The user asked for ten different redesigns, not ten restatements of the same proposal.
 
 **Context from research:**
-- Prior Ralph notes already identified likely HA design pressure points to revisit during execution of this task: `src/dcs/state.rs`, `src/ha/decide.rs`, `src/ha/worker.rs`, and `src/runtime/node.rs`.
-- Prior Ralph notes already identified a quorum shortcut in `src/dcs/state.rs` that behaves like “one fresh member if the view is size one, otherwise two fresh members,” which is not a general majority-of-configured-membership rule.
-- Prior Ralph notes already identified a trust-policy boundary in `src/ha/decide.rs` that routes states outside `FullQuorum` into `FailSafe`, which suggests trust and election are still coupled too bluntly.
-- Prior Ralph notes already identified deduplication in `src/ha/worker.rs`, which the user explicitly wants removed in favor of cleaner state-loop integration.
-- Prior Ralph notes already identified startup authority/path-selection concerns in `src/runtime/node.rs`, where startup source selection may still reason differently from the steady-state HA authority checks.
-- The user’s current design concerns that every option must address are: quorum must become a real majority rule over configured cluster membership; trust reduction must not be treated as a blanket reason to stop participating when a healthy majority can still make progress; leader selection must become deterministic and durability-based rather than mostly timing-based; startup authority checks must align with steady-state HA authority checks; and the availability policy under uncertainty must be modeled more precisely than “confidence fell, therefore fail-safe.”
-- Explicit design constraints from the user: keep the current `ha_loop` plus functional `decide` style, prefer functional programming over `mut`, do not use hacks or edge-case spray, integrate more into the state loop instead of adding more side paths, remove `src/ha/worker.rs` deduplication, and show both small and large refactor options.
-- The user also explicitly wants the final email summary written in natural language without bullet points, and wants real questions that go deep into the architecture and tradeoffs.
+- `src/runtime/node.rs` still contains a separate startup planner/executor (`plan_startup(...)`, `plan_startup_with_probe(...)`, `execute_startup(...)`, `build_startup_actions(...)`) that makes important HA/startup decisions before the long-running workers take over. This separation is directly relevant to the user's complaint that startup logic is absent from the decide loop.
+- `src/ha/worker.rs` currently follows `world_snapshot -> decide -> lower -> publish -> apply`, but it also contains sender-side dedup logic via `should_skip_redundant_process_dispatch(...)` and `decision_is_already_active(...)`. The user explicitly wants this deduplication concern moved away from senders and into receivers / effect consumers.
+- `src/ha/decide.rs` immediately routes any non-`DcsTrust::FullQuorum` state into `HaPhase::FailSafe`, and a primary under non-full-quorum returns `HaDecision::EnterFailSafe { release_leader_lease: false }`. The user explicitly called this boundary wrong and wants continued operation in degraded-but-valid quorum situations, such as a three-node cluster still operating with two healthy members and re-electing a leader.
+- `src/ha/decision.rs` centralizes `DecisionFacts`, `HaDecision`, `RecoveryStrategy`, and process-activity interpretation. This is a likely anchor for a future typed redesign and should be discussed in every artifact.
+- `src/ha/lower.rs` already preserves the user-preferred split between pure decision selection and lower-level effect planning (`LeaseEffect`, `ReplicationEffect`, `PostgresEffect`, `SafetyEffect`). The user wants this functional style kept, not replaced with effectful branching.
+- `src/ha/process_dispatch.rs` still derives `StartPostgres` intent from the previous HA decision and contains the authoritative start-intent bridge (`start_intent_from_dcs(...)`, `start_postgres_leader_member_id(...)`, rewind/basebackup source validation). This is part of the startup/rejoin boundary the user wants redesigned.
+- `src/dcs/worker.rs` constructs and publishes the local `MemberRecord` from the latest pginfo snapshot on every DCS step. `src/dcs/state.rs` defines `MemberRecord`, trust evaluation, freshness, and quorum heuristics. The user explicitly wants member keys to always contain the latest obtainable information, including “pginfo failed but pgtuskmaster is up” style partial truth rather than silence.
+- `src/pginfo/state.rs` models partial information already: `PgInfoState::Unknown`, `SqlStatus::{Unknown,Healthy,Unreachable}`, and `Readiness::{Unknown,Ready,NotReady}`. The designs should consider how to preserve and publish these partial facts instead of collapsing them into absence.
+- `tests/ha.rs` enumerates the current HA feature suite. The designs must logically account for, at minimum, `ha_dcs_quorum_lost_enters_failsafe`, `ha_dcs_quorum_lost_fencing_blocks_post_cutoff_writes`, `ha_old_primary_partitioned_from_majority_majority_elects_new_primary`, `ha_old_primary_partitioned_then_healed_rejoins_as_replica_after_majority_failover`, `ha_primary_killed_then_rejoins_as_replica`, `ha_two_replicas_stopped_then_one_replica_restarted_restores_quorum`, `ha_all_nodes_stopped_then_two_nodes_restarted_then_final_node_rejoins`, `ha_rewind_fails_then_basebackup_rejoins_old_primary`, `ha_replica_stopped_primary_stays_primary`, and `ha_broken_replica_rejoin_attempt_does_not_destabilize_quorum`.
+- The mail reply tool is not in this repo root. The correct script is `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`. A sanity check with `--help` currently prints usage text and exits non-zero because the script requires `<to_address>` and `<original_subject>`. For this task, the reply recipient is fixed to `user@toffemail.nl`.
+
+**Approved design requirements that every artifact must address:**
+- Startup must be folded into the same overall HA reconciliation model so that “same newest info + same state => same actions” applies on startup as well as steady state.
+- The HA loop should keep the functional chain `newest info -> decide -> typed outcome -> actions`, with no direct Postgres or etcd side effects inside the pure decider.
+- Only the DCS layer may read/write etcd3 keys. Only the pginfo worker may read Postgres. The HA loop itself may only consume observations and produce typed outcomes/effect plans.
+- Deduplication must move out of sender-side HA logic and into receivers/effect consumers.
+- The no-consensus / no-full-quorum behavior must be redesigned so the system does not blindly drop into the current primary failsafe path when a valid majority can still operate.
+- Lease thinking must be stronger. Leader authority and leader loss should be reasoned about explicitly, including killed-primary / lost-lease situations.
+- On startup the node must first reason about existing cluster state, leader state, and member state before deciding whether it should initialize, follow, promote, rewind, basebackup, or simply continue.
+- Member publication must preserve partial truth. “pginfo failed but pgtuskmaster is up” is still valid information and should remain publishable.
+- Bootstrapping must be reconsidered, including whether bootstrap should have substates and whether existing `pgdata` can still be used when the node wins the init lock.
+- Replica convergence should be simplified into one coherent sequence: healthy follow if already good, tolerate minor lag when acceptable, rewind on wrong timeline when possible, fall back to basebackup when rewind is impossible, and treat previously-primary / previously-replica / freshly-restored nodes as variations of the same convergence path when a valid healthy leader exists.
 
 **Expected outcome:**
-- The greenfield story contains a concrete evidence file for the then-current failing greenfield HA scenarios and the implicated HA code paths.
-- The greenfield story contains multiple materially different refactor-option documents, named by the executor based on the real findings at execution time, and each one is capable of fixing the full then-current failing set as a coherent whole rather than as isolated bug patches.
-- The greenfield story contains a comparison artifact that makes tradeoffs clear across small, medium, and large refactor directions.
-- The user receives an email that explains the options in natural language, recommends the best and second-best directions with reasons, and asks substantive questions that will help choose an implementation path.
-- `.ralph/STOP` exists at the end so Ralph does not keep rolling into bug-fixing work before the design pause has been reviewed by the user.
+- The greenfield story contains ten exhaustive, standalone HA-loop redesign documents that somebody can read without opening the original conversation.
+- Each design explicitly explains the current design problems, the proposed state model, how startup is unified, how quorum/lease boundaries change, where deduplication moves, how DCS/member publication works, how bootstrap works, how replica convergence works, what files and types would later change, and how the proposal would logically satisfy the HA feature tests.
+- The design set makes it unmistakable that diagnosing failing tests was only an input to planning and that no code fixes were part of this task.
+- The task is intentionally incremental: one design per run, one email per run, then `QUIT IMMEDIATELY`.
+- After the tenth design, the executor sends one final ranking email with the preferred top three options and reasons, then touches `.ralph/STOP`.
 </description>
 
 <acceptance_criteria>
-- [x] The task markdown remains blocked by all four tasks in `story-greenfield-cucumber-ha-harness`, so it cannot honestly be started before the full greenfield HA test creation story is done.
-- [x] The executor investigates the then-current greenfield failing set only when this task actually starts, not during task creation, and records that evidence in a story-local artifact file.
-- [x] A story-local artifact subdirectory exists at `.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/post-greenfield-ha-refactor-option-review/` and contains:
-- [x] one evidence/inventory artifact for the then-current failing set and implicated code paths
-- [x] multiple executor-named option artifacts representing materially different solution directions
-- [x] one comparison artifact that maps the failing set across those options
-- [x] Every option document explicitly explains how it fixes all then-current greenfield HA failures as one coherent design, not as an itemized bug patch list.
-- [x] The option set spans meaningfully different sizes of change, including at least one relatively conservative refactor and at least one much larger structural refactor.
-- [x] Every option preserves the `ha_loop` and functional `decide` direction, avoids `mut`-driven architecture, rejects hacks and edge-case spray, and explains how `src/ha/worker.rs` deduplication gets deleted rather than moved elsewhere.
-- [x] Every option explicitly addresses all of the user-named design problems: true majority quorum semantics, less blunt trust-versus-election policy, deterministic durability-based leader ranking, startup versus steady-state authority alignment, and a less coarse uncertainty-versus-availability model.
-- [x] The comparison artifact explicitly maps each then-current failing test or failing scenario class to every option, so it is clear how each plan claims to solve the entire failing set.
-- [x] If existing bug tasks from the greenfield runs are present, the artifacts reference them only as evidence and do not fix them during this task.
-- [x] The executor independently checks the artifacts against the then-current failing greenfield test files and the implicated HA source files, and records that cross-check in the story artifacts.
-- [x] An email is sent with the discovered on-host `reply.sh` helper from the receive_mail or receive_email directory. The known path to verify first is `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`, and the email contains a natural-language summary without bullet points, the best and second-best options with reasons, and substantive architecture questions for the user.
-- [x] `.ralph/STOP` is written after the email is sent and before any further Ralph loop work continues.
-- [x] Docs are updated if this task changes any documented workflow around the design-review stop; otherwise the story artifacts and task markdown are the required written record.
-- [x] `make check` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set and `<passes>true</passes>` remains false.
-- [x] `make test` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set
-- [x] `make test-long` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set
-- [x] `make lint` is run and its then-current result is captured in the story artifacts as evidence for planning; if it fails, the failure is mapped into the option set and `<passes>true</passes>` remains false.
-- [x] `<passes>true</passes>` is set only after every acceptance-criteria item and every required implementation-plan checkbox is complete; if the planning stop intentionally lands before downstream bug fixing, leave `<passes>false</passes>` and say so explicitly in the artifacts instead of pretending the repo is passing.
+- [ ] No files under `src/`, `tests/`, `docs/`, `docker/`, `.config/`, or `Cargo.toml` are modified by this task; the work is artifact-only.
+- [ ] `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/` exists and contains ten design `.md` files, with one comprehensive redesign per file.
+- [ ] Every design file is fully self-contained, exhaustive, and readable without any outside context from chat history or prior task files.
+- [ ] Every design explicitly addresses the user's required themes: unified startup + HA loop, sender-side dedup removal, reduced HA spread / more unified state machine shape, corrected degraded-quorum boundary, stronger lease semantics, authoritative startup observation, partial-truth member publication, bootstrap rethink, and a simplified replica convergence path.
+- [ ] Every design names the concrete future code areas it would affect, including the relevant boundaries in `src/runtime/node.rs`, `src/ha/worker.rs`, `src/ha/decide.rs`, `src/ha/decision.rs`, `src/ha/lower.rs`, `src/ha/process_dispatch.rs`, `src/dcs/worker.rs`, `src/dcs/state.rs`, and the HA feature suite under `tests/ha.rs` / `tests/ha/features/`.
+- [ ] Every design contains a logical feature-test verification section that explains, test by test, how the proposal would make the HA behavior correct without actually implementing code in this task.
+- [ ] The ten designs are materially different from each other; duplicated wording with minor renaming does not satisfy this task.
+- [ ] `make test` and `make test-long` are each run as diagnostic inputs only, their outcomes are recorded inside the design set, and no attempt is made to fix the failures in this task.
+- [ ] The artifacts explicitly state that green test outcomes are NOT the goal of this task and that no production or test-code fixes were allowed here.
+- [ ] The reply script interface is sanity-checked at `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`, and the executor uses the absolute script path plus absolute artifact paths when sending mail.
+- [ ] After each individual design is written, that design is emailed in full to `user@toffemail.nl` using `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`, and the executor then `QUIT IMMEDIATELY`.
+- [ ] After the tenth design has been emailed, one final email is sent ranking the preferred top three designs and explaining why they are preferred.
+- [ ] `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/STOP` is touched only after all ten design emails and the final ranking email are sent.
+- [ ] `<passes>true</passes>` is not set for this task unless a separate follow-up implementation task later makes `make check`, `make test`, `make test-long`, and `make lint` pass; this task itself is explicitly diagnostic and design-only.
 </acceptance_criteria>
 
 ## Detailed implementation plan
 
-### Phase 0: Honor sequencing and preserve the planning-only boundary
-- [x] Do not start this task until all four tasks in `story-greenfield-cucumber-ha-harness` are complete.
-- [x] Re-read this task before starting and keep the boundary clear: this task exists to investigate, compare, recommend, email, and stop, not to implement the chosen refactor.
-- [x] Create the story-local artifact directory `.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/post-greenfield-ha-refactor-option-review/`.
-- [x] Create an artifact note that states this task was intentionally created without inspecting the then-current `src/` and `tests/` state because the migration was still underway at task-creation time.
-- [x] If existing bug tasks from the greenfield story are already present, list them in the artifacts as evidence inputs only and explicitly mark them out of scope for implementation in this task.
+### Phase 1: Reconfirm the design-only contract and collect failure evidence
+- [ ] Re-read this task and preserve the non-goals: no code changes, no bug fixes, no test edits, no docs edits, no `cargo test`, no implementation.
+- [ ] Create `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/`.
+- [ ] Run `make test` from `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust` and capture the failing themes that are relevant to the HA redesign. Treat the failures as evidence only.
+- [ ] Run `make test-long` from `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust` and capture the failing or behavior-mismatch themes that are relevant to the HA redesign. Treat the failures as evidence only.
+- [ ] Do not modify code or tests in response to those failures. The only allowed outputs are the design artifacts under this greenfield story.
+- [ ] Write the first paragraph of the current run's artifact so it explicitly says this is a design task and NOT a code-fixing task, and that green tests are NOT the target outcome.
 
-### Phase 1: Investigate the then-current failing set after the blockers clear
-- [x] Run the then-relevant greenfield HA commands and repo gates needed to expose the current failing set without changing the product to “make progress.”
-- [x] Record the failing scenarios, failing commands, relevant logs, and observed symptoms in an evidence artifact whose exact filename is chosen during execution.
-- [x] Inspect the then-current greenfield HA test files and wrappers under `cucumber_tests/ha/` that correspond to the failing set, and map each failing scenario to the behavior it expects.
-- [x] Inspect the then-current HA source areas implicated by those failures, including at minimum `src/dcs/state.rs`, `src/ha/decide.rs`, `src/ha/worker.rs`, `src/runtime/node.rs`, and any directly adjacent modules that the failing tests actually touch.
-- [x] Record where the current behavior appears to come from, including decision boundaries, state-loop interactions, startup authority paths, election ordering behavior, quorum behavior, and any deduplication or side-path logic that affects the failures.
-- [x] Cross-check the observed failures against any existing greenfield bug tasks and note where the bug tasks do or do not describe the full design issue.
+### Phase 2: Define the ten option set before writing
+- [ ] Decide on ten clearly different redesign directions before drafting any artifact. Each option must have a one-paragraph differentiator that makes it obviously distinct from the others.
+- [ ] Ensure the ten options are not just stylistic variants. They should differ in state-machine structure, startup integration shape, lease/quorum semantics, recovery funneling, or responsibility boundaries while still honoring the user's fixed constraints.
+- [ ] For every option, pre-commit to keeping the functional chain `newest info -> decide -> lower -> actions` and to keeping DCS/Postgres IO out of the pure HA decider.
+- [ ] For every option, pre-commit to relocating deduplication away from sender-side HA worker code and into receivers/effect consumers.
+- [ ] Before writing the first design in any given run, decide which exact single option will be completed in that run. Do not start multiple designs in parallel in one run.
 
-### Phase 2: Generate multiple independent refactor-option artifacts
-- [x] Derive multiple genuinely different solution directions from the actual failing evidence rather than from predetermined labels in this task.
-- [x] Name the option artifacts during execution based on their real design centers after the evidence review is complete.
-- [x] Ensure the option set includes both smaller and larger refactor directions, but let the actual number of options and their names follow from the real design space discovered at execution time.
-- [x] For every option document, include the exact design goal, the expected behavior changes, the concrete code areas that would likely need to change after implementation starts, the likely test files or scenario classes it satisfies, the tradeoffs, the risks, the migration size, and the reasons it remains compatible with the current `ha_loop` plus functional `decide` direction.
-- [x] For every option document, explain explicitly how quorum becomes a real majority rule, how trust-versus-election policy changes, how leader ranking becomes deterministic and durability-driven, how startup authority aligns with steady-state HA authority, how uncertainty is handled without a blunt collapse into `FailSafe`, and how `src/ha/worker.rs` deduplication is removed cleanly.
-- [x] For every option document, explain explicitly how the option avoids `mut`-heavy architecture, avoids unwrap/panic/expect-style design shortcuts, and avoids edge-case spray.
+### Phase 3: Write exactly one comprehensive artifact in the current run
+- [ ] In the current run, write exactly one new design file under `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/`, using a descriptive filename that reflects the option's central idea.
+- [ ] In that design file, include a clear title and a short “why this option exists” differentiator at the top.
+- [ ] In that design file, include a “Current design problems” section that explicitly covers:
+  current startup logic split across `src/runtime/node.rs`
+  sender-side dedup in `src/ha/worker.rs`
+  spread of HA logic across runtime / decide / dispatch boundaries
+  current non-full-quorum -> `FailSafe` shortcut in `src/ha/decide.rs`
+  startup/rejoin ambiguity in `src/ha/process_dispatch.rs`
+  member publication / partial-truth requirements in `src/dcs/worker.rs` and `src/pginfo/state.rs`
+- [ ] In that design file, describe the full proposed control flow from startup through steady-state ticks, including how the same observation/decision model applies before and after process startup.
+- [ ] In that design file, define the proposed typed state machine in detail, including phase names, substate names where relevant, transition triggers, invariants, and any new structs/enums that would later encode the model.
+- [ ] In that design file, explain the redesigned quorum model. Explicitly discuss why degraded-but-valid majority operation should continue, when the node must fence or demote, and how leadership re-election should work in 2-of-3 style cases.
+- [ ] In that design file, explain the lease model. Cover lease acquisition, lease expiry / loss, how a killed primary loses authority, and how lease state interacts with startup and failover.
+- [ ] In that design file, explain startup reasoning. Cover cluster already up, cluster leader already present, existing members already published, empty vs existing `pgdata`, init lock behavior, and when existing local data may still be valid for initialization.
+- [ ] In that design file, explain replica convergence as one coherent path, including healthy follow, tolerable lag, wrong-timeline rewind, and basebackup fallback when rewind cannot succeed.
+- [ ] In that design file, explain how partial information is published to member keys when pginfo is degraded or unavailable but the process is still running.
+- [ ] In that design file, explain where deduplication moves and why the chosen boundary is safer than the current `should_skip_redundant_process_dispatch(...)` sender-side approach.
+- [ ] In that design file, list the concrete repo files, modules, functions, and types that a future implementation would touch.
+- [ ] In that design file, include a migration sketch for how a later implementation could move from the current architecture to that option without silently leaving stale legacy paths behind.
+- [ ] In that design file, include explicit non-goals and tradeoffs so the option can be judged on its own merits.
 
-### Phase 3: Compare the options against the actual failing evidence
-- [x] Write one comparison artifact whose exact filename is chosen during execution.
-- [x] In that comparison artifact, list each then-current failing greenfield scenario or failure class and show how each option resolves it.
-- [x] In that comparison artifact, compare implementation size, conceptual cleanliness, risk of hidden edge cases, likely impact on `src/dcs/state.rs`, `src/ha/decide.rs`, `src/ha/worker.rs`, `src/runtime/node.rs`, and alignment with the user’s functional-programming constraints.
-- [x] In that comparison artifact, state clearly which option is best and which is second-best, but keep a higher-level natural-language version of that recommendation for the email.
-- [x] Re-read every artifact against the then-current failing tests and source files and add a final verification note that the plans were independently checked against real repo evidence instead of being generic architecture essays.
+### Phase 4: Logically verify the current run's design against the HA feature suite
+- [ ] In the current run's design file, add a “Logical feature-test verification” section.
+- [ ] Explicitly map the current option against the key HA scenarios from `tests/ha.rs`, including:
+  `ha_dcs_quorum_lost_enters_failsafe`
+  `ha_dcs_quorum_lost_fencing_blocks_post_cutoff_writes`
+  `ha_old_primary_partitioned_from_majority_majority_elects_new_primary`
+  `ha_old_primary_partitioned_then_healed_rejoins_as_replica_after_majority_failover`
+  `ha_primary_killed_then_rejoins_as_replica`
+  `ha_two_replicas_stopped_then_one_replica_restarted_restores_quorum`
+  `ha_all_nodes_stopped_then_two_nodes_restarted_then_final_node_rejoins`
+  `ha_rewind_fails_then_basebackup_rejoins_old_primary`
+  `ha_replica_stopped_primary_stays_primary`
+  `ha_broken_replica_rejoin_attempt_does_not_destabilize_quorum`
+- [ ] When the design alters the interpretation of an existing scenario, explain the new boundary precisely instead of hand-waving. Be explicit about what should remain “degraded but healthy enough” versus what must still fence or fail safe.
 
-### Phase 4: Send the email review
-- [x] Find the on-host mail reply helper by searching for a `reply.sh` script under a receive-mail or receive-email directory. Check `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh` first. If that location still exists, use it; if not, locate the new path and record it in the artifacts.
-- [x] Draft the email summary in natural language without bullet points.
-- [x] In the email, explain that this is an intentionally weird stop between greenfield test creation and bug fixing, and that the purpose is to choose a whole-system direction before touching the exposed bugs.
-- [x] In the email, summarize the option set, name the best and second-best options with reasons, link or quote the story-local artifact paths, and ask substantive questions that would materially help choose the implementation path.
-- [x] Send the email with `reply.sh` and record the exact command shape or invocation notes in the story artifacts without leaking secrets.
-- [x] Use the reply helper with the same heredoc shape documented in the mail workflow so multiline prose is safe, for example:
-  `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh "<sender_email>" "<original_subject>" << 'EOF_REPLY_EMAIL'`
-  `Natural-language body goes here.`
-  `EOF_REPLY_EMAIL`
-- [x] Note in the artifacts that `reply.sh` adds the `Re:` prefix automatically when needed, accepts the recipient as the first argument, the original subject as the second argument, and either a third inline body argument or stdin from the heredoc body.
+### Phase 5: Email the current run's artifact and stop immediately
+- [ ] Sanity-check the mail script interface with `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh --help` and note that it prints usage text and exits non-zero because it expects `<to_address>` and `<original_subject>`.
+- [ ] Use `user@toffemail.nl` as the reply recipient for every design email and for the final ranking email.
+- [ ] Reuse the exact original subject from the mail thread that requested this work. Do not invent or paraphrase the subject line.
+- [ ] Use the absolute script path and the absolute artifact path when sending mail. The required form is:
+  `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh "user@toffemail.nl" "<original_subject>" < "/absolute/path/to/design.md"`
+- [ ] Send the current run's one completed design artifact as a full-text email body. Do not send a summary instead of the full text.
+- [ ] After sending that one design email, `QUIT IMMEDIATELY`.
 
-### Phase 5: Stop the Ralph loop and close out honestly
-- [x] Write `.ralph/STOP` after the email is sent.
-- [x] Run `/bin/bash .ralph/task_switch.sh` before writing `.ralph/STOP` so Ralph history/current-task state is advanced without violating the stop marker boundary.
-- [x] Update this task markdown and the story artifacts so they accurately describe what was produced, what was recommended, what questions were sent, and whether the repo gates were passing or intentionally left failing.
-- [x] If the worktree has task-artifact changes that should be preserved, commit them, including `.ralph/STOP`, with a message that makes the intentional design-review stop explicit.
-- [x] Push with `git push` if the normal Ralph workflow still expects the story artifacts and stop marker to be shared.
-- [x] For this execution, treat `make check`, `make test`, `make test-long`, and `make lint` as required for final closeout in addition to the planning artifacts. If any gate fails, record that truthfully in the artifacts and task file, but do not pretend the task fully passes.
+### Phase 6: Final completion only after all ten designs exist
+- [ ] Repeat Phases 2 through 5 across later resumptions until ten materially different design files have been created and each one has been emailed in full.
+- [ ] After the tenth design has been emailed, send one more reply email on the same thread that ranks the preferred top three options and explains the preference ordering in concrete architectural terms.
+- [ ] Reconfirm that no code, tests, or docs were changed outside this story directory.
+- [ ] Reconfirm that the ten design files exist and are materially distinct.
+- [ ] Reconfirm that `make test` and `make test-long` were used only for diagnostics and that their outcomes are reflected in the artifact set, and that no code-fixing work was performed.
+- [ ] Reconfirm that every design email and the final top-three email were sent to `user@toffemail.nl` via `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`.
+- [ ] Touch `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/STOP`.
+- [ ] Leave `<passes>false</passes>` unchanged for this task, because it is a no-code research/design task and repo gates are not being made green here.
 
-## Skeptical plan review notes
-
-- Verified that the four prerequisite tasks in `story-greenfield-cucumber-ha-harness` are already marked complete with `<passes>true</passes>`, so this task is no longer sequencing-blocked.
-- Resolved a closeout-order conflict between this task and the higher-level Ralph operator instructions by requiring `/bin/bash .ralph/task_switch.sh` before `.ralph/STOP`, not after it.
-- Tightened the final-closeout interpretation so the planning-only nature of the task does not override the stricter repo-gate requirement for claiming completion in this run.
-
-NOW EXECUTE
-
-## Execution report
-
-- Produced the full story-local artifact set under `.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/post-greenfield-ha-refactor-option-review/`, including the task-creation note, evidence inventory, three materially different refactor-option documents, the comparison matrix, the email draft, and email send notes.
-- Verified the on-host reply helper at `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`, sent the natural-language review email, ran `/bin/bash .ralph/task_switch.sh`, and then wrote `.ralph/STOP`.
-- Gate results for this execution:
-  - `make check`: pass
-  - `make test`: pass
-  - `make test-long`: fail (`26 tests run: 11 passed, 15 failed, 0 skipped`)
-  - `make lint`: pass
-- Preserved the planning-stop state in git and pushed it after the review artifacts, email, `task_switch`, and `.ralph/STOP` were in place.
-- Because `make test-long` is still failing, this task is intentionally closed with `<passes>false</passes>`. The review artifacts are complete, but the repo is not green, and this markdown does not pretend otherwise.
+TO BE VERIFIED
