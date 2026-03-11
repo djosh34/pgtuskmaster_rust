@@ -9,7 +9,7 @@
 
 **Original user shift / motivation:** The user wants a full redesign plan for the HA loop because the current architecture drifted away from the intended shape. The desired model is: newest observations first, then a pure decide step, then a typed outcome that lower layers turn into actions. The user explicitly likes the current worker send/receive state style and wants to keep that functional direction, but believes the implementation is now too spread out, startup logic is disconnected from the decide loop, sender-side dedup slipped into the HA worker, and the current quorum/failsafe boundary is wrong.
 
-**Higher-order goal:** Prepare ten materially different, self-contained verbose & complete refactor designs that can later guide an implementation which unifies startup and steady-state reconciliation into a clearer typed state machine, keeps side effects outside the HA decider, makes quorum/lease semantics correct, and gives a clean path to passing the HA feature suite.
+**Higher-order goal:** Prepare ten materially different, extremely detailed, fully self-contained refactor designs that can later guide an implementation which unifies startup and steady-state reconciliation into a clearer typed state machine, keeps side effects outside the HA decider, makes quorum/lease semantics correct, and gives a clean path to passing the HA feature suite. Every design must be verbose enough that a later implementer can understand the intended architecture, boundaries, transitions, required file/type changes, and operator-visible behavior without opening any chat history, prior task file, or repo documentation.
 
 **Scope:**
 - Artifact-only work inside `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/`.
@@ -29,6 +29,7 @@
 
 **Important boundaries:**
 - Do not change any files under `src/`, `tests/`, `docs/`, `docker/`, `.config/`, or `Cargo.toml`.
+- Do not read anything under `docs/`. Reading `docs/` for this task is strictly forbidden. The designs must stand on code/test/repo evidence and the task context only.
 - Do not fix any bugs, do not implement any design, do not edit existing tests, and do not try to make repo gates pass in this task.
 - DO NOT try to make tests green in this task.
 - DO NOT treat a red `make test` or red `make test-long` outcome as a problem to solve here.
@@ -50,6 +51,8 @@
 - The mail reply tool is not in this repo root. The correct script is `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`. A sanity check with `--help` currently prints usage text and exits non-zero because the script requires `<to_address>` and `<original_subject>`. For this task, the reply recipient is fixed to `user@toffemail.nl`.
 
 **Approved design requirements that every artifact must address:**
+- Every artifact must be VERY complete, verbosely detailed, and literally self-contained. Do not rely on “implied” steps, omitted transitions, or “future implementation can figure this out” shortcuts. Spell out the changed method, changed flow, changed boundaries, changed types, and all required implementation areas in enough detail that the design stands alone.
+- Every artifact must include at least one ASCII diagram that shows the proposed new method / changed control flow / changed responsibility boundary. The diagram must be meaningful, not decorative.
 - Startup must be folded into the same overall HA reconciliation model so that “same newest info + same state => same actions” applies on startup as well as steady state.
 - The HA loop should keep the functional chain `newest info -> decide -> typed outcome -> actions`, with no direct Postgres or etcd side effects inside the pure decider.
 - Only the DCS layer may read/write etcd3 keys. Only the pginfo worker may read Postgres. The HA loop itself may only consume observations and produce typed outcomes/effect plans.
@@ -75,7 +78,11 @@
 - [ ] Every design file is fully self-contained, exhaustive, and readable without any outside context from chat history or prior task files.
 - [ ] Every design explicitly addresses the user's required themes: unified startup + HA loop, sender-side dedup removal, reduced HA spread / more unified state machine shape, corrected degraded-quorum boundary, stronger lease semantics, authoritative startup observation, partial-truth member publication, bootstrap rethink, and a simplified replica convergence path.
 - [ ] Every design names the concrete future code areas it would affect, including the relevant boundaries in `src/runtime/node.rs`, `src/ha/worker.rs`, `src/ha/decide.rs`, `src/ha/decision.rs`, `src/ha/lower.rs`, `src/ha/process_dispatch.rs`, `src/dcs/worker.rs`, `src/dcs/state.rs`, and the HA feature suite under `tests/ha.rs` / `tests/ha/features/`.
+- [ ] Every design explicitly lists all meaningful code-path, type, module, state-transition, and behavior changes needed for that option; hand-wavy “then refactor accordingly” wording does not satisfy this task.
+- [ ] Every design includes at least one meaningful ASCII diagram showing the proposed new method / changed flow / changed boundaries.
+- [ ] No executor work for this task reads from `docs/`; `docs/` is a forbidden input source for this task.
 - [ ] Every design contains a logical feature-test verification section that explains, test by test, how the proposal would make the HA behavior correct without actually implementing code in this task.
+- [ ] Every design contains at least five explicit question sections at the end, using the exact markdown pattern `## Q1 [short question 1]`, `## Q2 ...`, through at least `## Q5 ...`, where each question section includes context, the problem/decision point, and a restatement of the question; ASCII diagrams may be included inside those sections when helpful.
 - [ ] The ten designs are materially different from each other; duplicated wording with minor renaming does not satisfy this task.
 - [ ] `make test` and `make test-long` are each run as diagnostic inputs only, their outcomes are recorded inside the design set, and no attempt is made to fix the failures in this task.
 - [ ] The artifacts explicitly state that green test outcomes are NOT the goal of this task and that no production or test-code fixes were allowed here.
@@ -90,6 +97,7 @@
 
 ### Phase 1: Reconfirm the design-only contract and collect failure evidence
 - [ ] Re-read this task and preserve the non-goals: no code changes, no bug fixes, no test edits, no docs edits, no `cargo test`, no implementation.
+- [ ] Do not read from `docs/` at all while working this task. `docs/` is a strictly forbidden input source here.
 - [ ] Create `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/`.
 - [ ] Run `make test` from `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust` and capture the failing themes that are relevant to the HA redesign. Treat the failures as evidence only.
 - [ ] Run `make test-long` from `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust` and capture the failing or behavior-mismatch themes that are relevant to the HA redesign. Treat the failures as evidence only.
@@ -106,6 +114,7 @@
 ### Phase 3: Write exactly one comprehensive artifact in the current run
 - [ ] In the current run, write exactly one new design file under `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/`, using a descriptive filename that reflects the option's central idea.
 - [ ] In that design file, include a clear title and a short “why this option exists” differentiator at the top.
+- [ ] In that design file, make the writing VERY complete, verbose, and literally self-contained. The file must be able to stand alone as implementation guidance without requiring the reader to inspect chat history, other task files, or anything under `docs/`.
 - [ ] In that design file, include a “Current design problems” section that explicitly covers:
   current startup logic split across `src/runtime/node.rs`
   sender-side dedup in `src/ha/worker.rs`
@@ -114,6 +123,7 @@
   startup/rejoin ambiguity in `src/ha/process_dispatch.rs`
   member publication / partial-truth requirements in `src/dcs/worker.rs` and `src/pginfo/state.rs`
 - [ ] In that design file, describe the full proposed control flow from startup through steady-state ticks, including how the same observation/decision model applies before and after process startup.
+- [ ] In that design file, include at least one meaningful ASCII diagram that shows the proposed new method / changed control flow / changed responsibility boundaries.
 - [ ] In that design file, define the proposed typed state machine in detail, including phase names, substate names where relevant, transition triggers, invariants, and any new structs/enums that would later encode the model.
 - [ ] In that design file, explain the redesigned quorum model. Explicitly discuss why degraded-but-valid majority operation should continue, when the node must fence or demote, and how leadership re-election should work in 2-of-3 style cases.
 - [ ] In that design file, explain the lease model. Cover lease acquisition, lease expiry / loss, how a killed primary loses authority, and how lease state interacts with startup and failover.
@@ -122,8 +132,15 @@
 - [ ] In that design file, explain how partial information is published to member keys when pginfo is degraded or unavailable but the process is still running.
 - [ ] In that design file, explain where deduplication moves and why the chosen boundary is safer than the current `should_skip_redundant_process_dispatch(...)` sender-side approach.
 - [ ] In that design file, list the concrete repo files, modules, functions, and types that a future implementation would touch.
+- [ ] In that design file, list all meaningful changes needed for the option: new types, deleted paths, moved responsibilities, changed transitions, changed effect-lowering boundaries, changed DCS publication behavior, changed startup handling, changed convergence handling, and any required test updates that a later implementation would need.
 - [ ] In that design file, include a migration sketch for how a later implementation could move from the current architecture to that option without silently leaving stale legacy paths behind.
 - [ ] In that design file, include explicit non-goals and tradeoffs so the option can be judged on its own merits.
+- [ ] In that design file, include a final open-questions section containing at least five questions in exactly this form:
+  `## Q1 [short question 1]`
+  `[context for question + potential ascii diagram]`
+  `[problem or decision problem]`
+  `[restating question in different way]`
+  Then continue with `## Q2 ...` through at least `## Q5 ...`.
 
 ### Phase 4: Logically verify the current run's design against the HA feature suite
 - [ ] In the current run's design file, add a “Logical feature-test verification” section.
