@@ -639,18 +639,13 @@ impl HarnessShared {
         }
         let compose_result = self
             .docker
-            .compose_down(self.compose_file.as_path(), self.compose_project.as_str())
-            ;
+            .compose_down(self.compose_file.as_path(), self.compose_project.as_str());
         if let Err(err) = &compose_result {
             failures.push(format!("docker compose down failed: {err}"));
         }
-        let ryuk_result = self
-            .ryuk
-            .as_mut()
-            .map(RyukGuard::close)
-            .transpose();
+        let ryuk_result = self.ryuk.as_mut().map(RyukGuard::close).transpose();
         if let Err(err) = &ryuk_result {
-                failures.push(format!("ryuk cleanup failed: {err}"));
+            failures.push(format!("ryuk cleanup failed: {err}"));
         }
         if compose_result.is_ok() && ryuk_result.is_ok() {
             self.cleaned_up = true;

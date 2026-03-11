@@ -91,7 +91,9 @@ impl DockerCli {
     }
 
     pub fn verify_daemon(&self) -> Result<()> {
-        let _ = self.run(["info"], "checking docker daemon availability")?;
+        let _ = self
+            .run(["info"], "checking docker daemon availability")
+            .map_err(annotate_docker_daemon_error)?;
         let _ = self.run(
             ["compose", "version"],
             "checking docker compose plugin availability",
@@ -288,12 +290,11 @@ impl DockerCli {
             format!("copying marker file into stopped container `{container}`"),
         );
 
-        let remove_result = fs::remove_file(temp_path.as_path()).map_err(|source| {
-            HarnessError::Io {
+        let remove_result =
+            fs::remove_file(temp_path.as_path()).map_err(|source| HarnessError::Io {
                 path: temp_path.clone(),
                 source,
-            }
-        });
+            });
 
         let _ = copy_result?;
         remove_result?;
@@ -513,9 +514,7 @@ impl DockerCli {
             })?
             .as_millis();
         let sanitized_container = container.replace('/', "_");
-        Ok(std::env::temp_dir().join(format!(
-            "pgtm-ha-marker-{sanitized_container}-{millis}"
-        )))
+        Ok(std::env::temp_dir().join(format!("pgtm-ha-marker-{sanitized_container}-{millis}")))
     }
 
     fn inspect_container_entries(&self, container: &str) -> Result<Vec<DockerInspectEntry>> {
@@ -546,4 +545,39 @@ fn parse_json_sequence(input: &str, context: String) -> Result<Vec<ComposePsEntr
             })
         })
         .collect::<Result<Vec<_>>>()
+}
+
+fn annotate_docker_daemon_error(error: HarnessError) -> HarnessError {
+    match error {
+        HarnessError::CommandFailed {
+            executable,
+            context,
+            status,
+            stdout,
+            stderr,
+        } => HarnessError::CommandFailed {
+            executable,
+            context,
+            status,
+            stdout,
+            stderr: docker_socket_permission_hint(stderr.as_str())
+                .map(|hint| format!("{stderr}\nhint: {hint}"))
+                .unwrap_or(stderr),
+        },
+        other => other,
+    }
+}
+
+fn docker_socket_permission_hint(stderr: &str) -> Option<&'static str> {
+    let normalized = stderr.to_ascii_lowercase();
+    let is_permission_denied = normalized.contains("permission denied");
+    let is_docker_socket_failure =
+        normalized.contains("docker api") || normalized.contains("docker.sock");
+    if is_permission_denied && is_docker_socket_failure {
+        Some(
+            "ensure this account can access /var/run/docker.sock (for example through the docker group), or point DOCKER_HOST at a reachable daemon",
+        )
+    } else {
+        None
+    }
 }

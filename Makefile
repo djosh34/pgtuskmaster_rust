@@ -141,7 +141,7 @@ ensure-timeout:
 
 ensure-docker:
 	@command -v docker >/dev/null 2>&1 || (echo "missing docker binary" >&2; exit 1)
-	@docker info >/dev/null 2>&1 || (echo "docker daemon is not reachable" >&2; exit 1)
+	@./tools/docker/check-daemon.sh
 	@docker compose version >/dev/null 2>&1 || (echo "docker compose plugin is not available" >&2; exit 1)
 
 check:

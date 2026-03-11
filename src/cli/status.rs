@@ -638,10 +638,7 @@ pub(crate) fn observed_role(
     member: &HaClusterMemberResponse,
     state: &HaStateResponse,
 ) -> &'static str {
-    if !matches!(
-        state.dcs_trust,
-        crate::api::DcsTrustResponse::FullQuorum
-    ) {
+    if !matches!(state.dcs_trust, crate::api::DcsTrustResponse::FullQuorum) {
         return "unknown";
     }
 

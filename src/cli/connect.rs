@@ -9,8 +9,7 @@ use crate::{
         error::CliError,
         output,
         status::{
-            build_sampled_cluster_snapshot, observed_role, ClusterWarning,
-            SampledClusterSnapshot,
+            build_sampled_cluster_snapshot, observed_role, ClusterWarning, SampledClusterSnapshot,
         },
     },
 };
@@ -513,8 +512,8 @@ mod tests {
     }
 
     #[test]
-    fn primary_resolution_rejects_degraded_trust_even_with_one_sampled_primary()
-    -> Result<(), String> {
+    fn primary_resolution_rejects_degraded_trust_even_with_one_sampled_primary(
+    ) -> Result<(), String> {
         let members = vec![
             sample_member("node-a", Some("http://node-a:8080")),
             sample_member("node-b", Some("http://node-b:8080")),
@@ -914,7 +913,10 @@ mod tests {
             resolve_replicas_view(&snapshot, &tls_paths(), false).map_err(|err| err.to_string())?;
 
         if view.targets.len() != 1 {
-            return Err(format!("expected one replica target, got {}", view.targets.len()));
+            return Err(format!(
+                "expected one replica target, got {}",
+                view.targets.len()
+            ));
         }
         if view.targets[0].member_id != "node-b" {
             return Err(format!(
@@ -962,7 +964,10 @@ mod tests {
             Err(error) => error,
         };
 
-        assert_eq!(error.to_string(), "resolution error: no sampled primary member was observed");
+        assert_eq!(
+            error.to_string(),
+            "resolution error: no sampled primary member was observed"
+        );
     }
 
     #[test]
@@ -1005,6 +1010,9 @@ mod tests {
             Err(error) => error,
         };
 
-        assert_eq!(error.to_string(), "resolution error: no sampled primary member was observed");
+        assert_eq!(
+            error.to_string(),
+            "resolution error: no sampled primary member was observed"
+        );
     }
 }

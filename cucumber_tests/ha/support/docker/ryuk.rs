@@ -61,7 +61,10 @@ impl RyukGuard {
     pub fn close(&mut self) -> Result<()> {
         self.stream.take();
         self.docker.sleep_for_resource_cleanup();
-        match self.docker.remove_container_force(self.container_id.as_str()) {
+        match self
+            .docker
+            .remove_container_force(self.container_id.as_str())
+        {
             Ok(()) => Ok(()),
             Err(HarnessError::CommandFailed { stderr, .. })
                 if ryuk_removal_already_completed(stderr.as_str()) =>
@@ -75,8 +78,7 @@ impl RyukGuard {
 
 fn ryuk_removal_already_completed(stderr: &str) -> bool {
     let normalized = stderr.to_ascii_lowercase();
-    normalized.contains("removal of container")
-        && normalized.contains("already in progress")
+    normalized.contains("removal of container") && normalized.contains("already in progress")
         || normalized.contains("no such container")
 }
 

@@ -41,8 +41,8 @@ use crate::{
         },
         state::{ProcessJobKind, ProcessState, ProcessWorkerCtx},
         worker::{
-            build_command, start_postgres_preflight_is_already_running,
-            system_now_unix_millis, timeout_for_kind, TokioCommandRunner,
+            build_command, start_postgres_preflight_is_already_running, system_now_unix_millis,
+            timeout_for_kind, TokioCommandRunner,
         },
     },
     state::{new_state_channel, MemberId, UnixMillis, WorkerStatus},
@@ -1018,7 +1018,11 @@ async fn run_start_job(
     log: &crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
     if start_postgres_preflight_is_already_running(cfg.postgres.data_dir.as_path()).map_err(
-        |err| RuntimeError::StartupExecution(format!("startup start-postgres preflight failed: {err}")),
+        |err| {
+            RuntimeError::StartupExecution(format!(
+                "startup start-postgres preflight failed: {err}"
+            ))
+        },
     )? {
         emit_startup_phase(
             log,
@@ -2201,7 +2205,9 @@ mod tests {
                     .fields
                     .get("startup.detail")
                     .and_then(serde_json::Value::as_str)
-                    .map(|detail| detail == "postgres already running; startup start_postgres is a noop")
+                    .map(|detail| {
+                        detail == "postgres already running; startup start_postgres is a noop"
+                    })
                     .unwrap_or(false),
                 Err(_) => false,
             }

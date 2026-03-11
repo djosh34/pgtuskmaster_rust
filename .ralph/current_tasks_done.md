@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Wed Mar 11 07:23:57 CET 2026
+Generated: Wed Mar 11 07:55:55 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-docker-helper-ignored-errors.md`
 
@@ -32,6 +32,17 @@ The Docker helper flow currently contains ignored-error patterns that hide real 
 
 <description>
 Runtime-managed PostgreSQL connections can require `sslmode=verify-full`, but the internal conninfo model does not carry an explicit CA-path field. As a result, the current runtime path falls back to ambient libpq environment such as `PGSSLROOTCERT` instead of rendering a complete source-backed conninfo.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/docker-socket-permission-blocks-greenfield-ha-harness-runtime-validation.md`
+
+```
+## Bug: Docker socket permission blocks greenfield HA harness runtime validation <status>completed</status> <passes>true</passes> <priority>high</priority>
+
+<description>
+Greenfield Docker HA cucumber scenarios cannot start in the current execution environment because `docker info` fails with:
 ```
 
 ==============

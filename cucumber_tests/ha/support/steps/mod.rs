@@ -475,24 +475,29 @@ async fn the_remaining_online_non_primary_node_is_a_replica(world: &mut HaWorld)
 async fn the_cluster_is_degraded_but_operational_across_two_running_nodes(
     world: &mut HaWorld,
 ) -> Result<()> {
-    poll_for_status(world, "cluster.degraded_two_node", PollKind::Recovery, |status| {
-        require_sampled_members(status, 2)?;
-        let primary = single_primary(status)?;
-        let non_primary_sampled = status
-            .nodes
-            .iter()
-            .filter(|node| node.sampled && node.member_id != primary)
-            .map(|node| node.member_id.as_str())
-            .collect::<Vec<_>>();
-        if non_primary_sampled.len() == 1 {
-            Ok(())
-        } else {
-            Err(HarnessError::message(format!(
+    poll_for_status(
+        world,
+        "cluster.degraded_two_node",
+        PollKind::Recovery,
+        |status| {
+            require_sampled_members(status, 2)?;
+            let primary = single_primary(status)?;
+            let non_primary_sampled = status
+                .nodes
+                .iter()
+                .filter(|node| node.sampled && node.member_id != primary)
+                .map(|node| node.member_id.as_str())
+                .collect::<Vec<_>>();
+            if non_primary_sampled.len() == 1 {
+                Ok(())
+            } else {
+                Err(HarnessError::message(format!(
                 "expected exactly one sampled non-primary in degraded two-node state, observed {}",
                 non_primary_sampled.join(", ")
             )))
-        }
-    })
+            }
+        },
+    )
     .await
 }
 
@@ -1773,7 +1778,11 @@ async fn the_node_named_is_not_queryable_through_pgtm_connection_helpers(
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     match connection_target_for_member(world.harness()?, member_id.as_str()) {
-        Ok(target) => match world.harness()?.sql().execute(target.dsn.as_str(), "SELECT 1;") {
+        Ok(target) => match world
+            .harness()?
+            .sql()
+            .execute(target.dsn.as_str(), "SELECT 1;")
+        {
             Ok(_) => Err(HarnessError::message(format!(
                 "member `{member_id}` was still queryable via DSN `{}`",
                 target.dsn

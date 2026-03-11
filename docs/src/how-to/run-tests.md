@@ -25,6 +25,7 @@ Make sure these are available in your environment:
 - etcd real binary installed through the repository tooling
 - PostgreSQL 16 real binaries installed through the repository tooling
 - Docker and Docker Compose plugin for the longest validation targets
+- permission to access the Docker daemon, not only a running daemon process
 
 The repository itself points to helper installers for the real-binary prerequisites:
 
@@ -185,8 +186,17 @@ Use the repository installer scripts for etcd and PostgreSQL 16, then rerun the 
 
 Check Docker availability first:
 
-- Docker daemon reachable
+- Docker daemon reachable from your current account
+- permission to access `/var/run/docker.sock` or another configured Docker endpoint
 - Docker Compose plugin installed
+
+If the daemon is running but your account cannot reach it, `make test-long` now prints the raw `docker info` failure before exiting. On Linux, the common failure is:
+
+```text
+permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+```
+
+That means the current account cannot access the socket. Fix the account-to-daemon access first, for example by using the expected Docker group membership or by pointing `DOCKER_HOST` at a reachable daemon, then rerun the target.
 
 ### Lint fails on documentation-only work
 

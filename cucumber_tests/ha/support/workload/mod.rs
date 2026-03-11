@@ -12,10 +12,7 @@ use serde::Serialize;
 
 use crate::support::{
     error::{HarnessError, Result},
-    observer::{
-        pgtm::PgtmObserver,
-        sql::SqlObserver,
-    },
+    observer::{pgtm::PgtmObserver, sql::SqlObserver},
 };
 
 const MAX_ATTEMPTS: usize = 256;
@@ -207,7 +204,9 @@ fn resolve_primary_target(observer: &PgtmObserver) -> Result<(String, String)> {
     let primary = observer.primary_tls_json()?;
     match primary.targets.as_slice() {
         [target] => Ok((target.member_id.clone(), target.dsn.clone())),
-        [] => Err(HarnessError::message("workload primary resolution returned zero targets")),
+        [] => Err(HarnessError::message(
+            "workload primary resolution returned zero targets",
+        )),
         _ => Err(HarnessError::message(format!(
             "workload primary resolution returned multiple targets: {}",
             primary
