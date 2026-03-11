@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar 11 08:10:54 CET 2026
+Generated: Wed Mar 11 08:39:31 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-greenfield-broken-rejoin-can-stay-offline-after-blocker-removal.md`
 
@@ -281,10 +281,11 @@ The advanced greenfield HA wrapper `ha_rewind_failure_falls_back_to_basebackup` 
 # Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md`
 
 ```
-## Task: Produce Post-Greenfield HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>not_started</status> <passes>false</passes>
+## Task: Produce Post-Greenfield HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>completed</status> <passes>false</passes>
 
 <priority>high</priority>
-<blocked_by>.ralph/tasks/story-greenfield-cucumber-ha-harness/*</blocked_by>
+
+<description>
 ```
 
 ==============

@@ -1,0 +1,40 @@
+gate evidence: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T073413Z-1621255-24699
+"/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tools/gate-step.sh" --gate docs-lint --step docs_lint.mermaid --run-id "20260311T073413Z-1621255-24699" --evidence-dir "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T073413Z-1621255-24699" --timeout-bin "/usr/bin/timeout" --timeout-secs "120" --kill-after-secs "15" -- \
+	node ./tools/docs-mermaid-lint.mjs
+== gate docs-lint step docs_lint.mermaid (run 20260311T073413Z-1621255-24699) ==
+== timeout 120s (kill-after 15s) ==
+"/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tools/gate-step.sh" --gate docs-lint --step docs_lint.no_code_guard --run-id "20260311T073413Z-1621255-24699" --evidence-dir "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T073413Z-1621255-24699" --timeout-bin "/usr/bin/timeout" --timeout-secs "120" --kill-after-secs "15" -- \
+	./tools/docs-architecture-no-code-guard.sh
+== gate docs-lint step docs_lint.no_code_guard (run 20260311T073413Z-1621255-24699) ==
+== timeout 120s (kill-after 15s) ==
+"/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tools/gate-step.sh" --gate lint --step lint.no_silent_errors --run-id "20260311T073413Z-1621255-24699" --evidence-dir "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T073413Z-1621255-24699" --timeout-bin "/usr/bin/timeout" --timeout-secs "120" --kill-after-secs "15" -- \
+	./tools/lint-no-silent-errors.sh
+== gate lint step lint.no_silent_errors (run 20260311T073413Z-1621255-24699) ==
+== timeout 120s (kill-after 15s) ==
+"/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tools/gate-step.sh" --gate lint --step lint.clippy.all_targets --run-id "20260311T073413Z-1621255-24699" --evidence-dir "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T073413Z-1621255-24699" --timeout-bin "/usr/bin/timeout" --timeout-secs "1200" --kill-after-secs "30" -- \
+	cargo clippy --all-targets --all-features --target-dir "/tmp/pgtuskmaster_rust-target" --config "build.incremental=false" -- -D warnings
+== gate lint step lint.clippy.all_targets (run 20260311T073413Z-1621255-24699) ==
+== timeout 1200s (kill-after 30s) ==
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.02s
+# Strict restriction-lint pass for runtime library builds.
+"/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tools/gate-step.sh" --gate lint --step lint.clippy.lib_restrictions --run-id "20260311T073413Z-1621255-24699" --evidence-dir "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T073413Z-1621255-24699" --timeout-bin "/usr/bin/timeout" --timeout-secs "1200" --kill-after-secs "30" -- \
+	cargo clippy --lib --all-features --target-dir "/tmp/pgtuskmaster_rust-target" --config "build.incremental=false" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+== gate lint step lint.clippy.lib_restrictions (run 20260311T073413Z-1621255-24699) ==
+== timeout 1200s (kill-after 30s) ==
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.56s
+# Strict restriction-lint pass for test targets.
+"/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tools/gate-step.sh" --gate lint --step lint.clippy.tests_restrictions --run-id "20260311T073413Z-1621255-24699" --evidence-dir "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T073413Z-1621255-24699" --timeout-bin "/usr/bin/timeout" --timeout-secs "1200" --kill-after-secs "30" -- \
+	cargo clippy --tests --all-features --target-dir "/tmp/pgtuskmaster_rust-target" --config "build.incremental=false" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+== gate lint step lint.clippy.tests_restrictions (run 20260311T073413Z-1621255-24699) ==
+== timeout 1200s (kill-after 30s) ==
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.34s
+# Skeptical all-target guard so restrictions are enforced uniformly.
+"/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tools/gate-step.sh" --gate lint --step lint.clippy.all_targets_restrictions --run-id "20260311T073413Z-1621255-24699" --evidence-dir "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/evidence/gates/20260311T073413Z-1621255-24699" --timeout-bin "/usr/bin/timeout" --timeout-secs "1200" --kill-after-secs "30" -- \
+	cargo clippy --all-targets --all-features --target-dir "/tmp/pgtuskmaster_rust-target" --config "build.incremental=false" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+== gate lint step lint.clippy.all_targets_restrictions (run 20260311T073413Z-1621255-24699) ==
+== timeout 1200s (kill-after 30s) ==
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.26s

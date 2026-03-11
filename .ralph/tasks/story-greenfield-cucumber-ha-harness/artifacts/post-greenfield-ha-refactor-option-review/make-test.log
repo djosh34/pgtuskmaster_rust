@@ -1,0 +1,446 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+────────────
+ Nextest run ID 344ef127-fb88-4f21-89dc-da534893a299 with nextest profile: default
+    Starting 440 tests across 8 binaries (26 binaries skipped via profile.default.default-filter)
+        PASS [   0.020s] (  1/440) pgtuskmaster_rust api::controller::tests::delete_switchover_deletes_expected_key
+        PASS [   0.005s] (  2/440) pgtuskmaster_rust api::controller::tests::switchover_input_denies_unknown_fields
+        PASS [   0.029s] (  3/440) pgtuskmaster_rust api::controller::tests::switchover_input_accepts_empty_object
+        PASS [   0.029s] (  4/440) pgtuskmaster_rust api::controller::tests::post_switchover_writes_typed_record_to_expected_key
+        PASS [   0.031s] (  5/440) pgtuskmaster_rust api::controller::tests::switchover_input_accepts_targeted_request
+        PASS [   0.005s] (  6/440) pgtuskmaster_rust api::controller::tests::switchover_input_rejects_stale_replica_target
+        PASS [   0.005s] (  7/440) pgtuskmaster_rust api::controller::tests::switchover_input_rejects_ineligible_target
+        PASS [   0.007s] (  8/440) pgtuskmaster_rust api::controller::tests::switchover_input_rejects_empty_target
+        PASS [   0.006s] (  9/440) pgtuskmaster_rust api::controller::tests::switchover_input_rejects_unknown_target
+        PASS [   0.004s] ( 10/440) pgtuskmaster_rust api::fallback::tests::get_cluster_returns_config_name
+        PASS [   0.005s] ( 11/440) pgtuskmaster_rust api::fallback::tests::heartbeat_rejects_empty_source
+        PASS [   0.006s] ( 12/440) pgtuskmaster_rust api::fallback::tests::heartbeat_denies_unknown_fields
+        PASS [   0.020s] ( 13/440) pgtuskmaster_rust api::worker::tests::debug_snapshot_route_is_kept_for_backward_compatibility
+        PASS [   0.020s] ( 14/440) pgtuskmaster_rust api::worker::tests::debug_ui_route_returns_html_scaffold
+        PASS [   0.023s] ( 15/440) pgtuskmaster_rust api::worker::tests::auth_decision_logs_do_not_leak_bearer_token
+        PASS [   0.024s] ( 16/440) pgtuskmaster_rust api::worker::tests::debug_routes_require_auth_when_tokens_set
+        PASS [   0.007s] ( 17/440) pgtuskmaster_rust api::worker::tests::debug_verbose_route_404_when_debug_disabled
+        PASS [   0.007s] ( 18/440) pgtuskmaster_rust api::worker::tests::debug_verbose_route_503_without_subscriber
+        PASS [   0.009s] ( 19/440) pgtuskmaster_rust api::worker::tests::debug_verbose_route_returns_structured_json_and_since_filter
+        PASS [   0.011s] ( 20/440) pgtuskmaster_rust api::worker::tests::ha_leader_routes_are_not_found_and_do_not_mutate_dcs_keys
+        PASS [   0.009s] ( 21/440) pgtuskmaster_rust api::worker::tests::ha_state_route_returns_503_without_subscriber
+        PASS [   0.009s] ( 22/440) pgtuskmaster_rust api::worker::tests::security_api_tokens_override_legacy_token
+        PASS [   0.014s] ( 23/440) pgtuskmaster_rust api::worker::tests::ha_state_route_returns_typed_json_even_when_debug_disabled
+        PASS [   0.011s] ( 24/440) pgtuskmaster_rust api::worker::tests::security_legacy_auth_token_fallback_protects_ha_routes
+        PASS [   0.008s] ( 25/440) pgtuskmaster_rust api::worker::tests::security_role_permissions_allow_admin
+        PASS [   0.009s] ( 26/440) pgtuskmaster_rust api::worker::tests::security_role_permissions_allow_read_deny_admin
+        PASS [   0.010s] ( 27/440) pgtuskmaster_rust api::worker::tests::security_role_permissions_handle_removed_ha_leader_routes
+        PASS [   0.031s] ( 28/440) pgtuskmaster_rust api::worker::tests::security_mtls_required_works_with_production_tls_builder
+        PASS [   0.035s] ( 29/440) pgtuskmaster_rust api::worker::tests::security_mtls_node_auth_allows_trusted_client_only
+        PASS [   0.011s] ( 30/440) pgtuskmaster_rust api::worker::tests::security_tls_dns_san_rejects_ip_server_name
+        PASS [   0.009s] ( 31/440) pgtuskmaster_rust api::worker::tests::security_tls_expired_server_failure_rejects_handshake
+        PASS [   0.009s] ( 32/440) pgtuskmaster_rust api::worker::tests::security_tls_ip_san_rejects_dns_server_name
+        PASS [   0.010s] ( 33/440) pgtuskmaster_rust api::worker::tests::security_tls_required_accepts_tls_rejects_plain
+        PASS [   0.021s] ( 34/440) pgtuskmaster_rust api::worker::tests::security_tls_mixed_san_accepts_dns_and_loopback_ip_server_names
+        PASS [   0.016s] ( 35/440) pgtuskmaster_rust api::worker::tests::security_tls_optional_accepts_plain_and_tls
+        PASS [   0.007s] ( 36/440) pgtuskmaster_rust api::worker::tests::security_tls_wrong_hostname_failure_rejects_handshake
+        PASS [   0.014s] ( 37/440) pgtuskmaster_rust api::worker::tests::security_tls_required_accepts_tls_with_production_tls_builder
+        PASS [   0.006s] ( 38/440) pgtuskmaster_rust cli::args::tests::parse_bare_command_defaults_to_status_shape
+        PASS [   0.016s] ( 39/440) pgtuskmaster_rust api::worker::tests::security_tls_wrong_ca_failure_rejects_handshake
+        PASS [   0.007s] ( 40/440) pgtuskmaster_rust cli::args::tests::parse_debug_verbose_command
+        PASS [   0.003s] ( 41/440) pgtuskmaster_rust cli::args::tests::parse_env_token_fallbacks
+        PASS [   0.004s] ( 42/440) pgtuskmaster_rust cli::args::tests::parse_debug_verbose_since_command
+        PASS [   0.003s] ( 43/440) pgtuskmaster_rust cli::args::tests::parse_full_switchover_write_command
+        PASS [   0.004s] ( 44/440) pgtuskmaster_rust cli::args::tests::parse_primary_command
+        PASS [   0.004s] ( 45/440) pgtuskmaster_rust cli::args::tests::parse_primary_tls_and_json_command
+        PASS [   0.004s] ( 46/440) pgtuskmaster_rust cli::args::tests::parse_replicas_command
+        PASS [   0.004s] ( 47/440) pgtuskmaster_rust cli::args::tests::parse_replicas_tls_command
+        PASS [   0.003s] ( 48/440) pgtuskmaster_rust cli::args::tests::parse_status_with_json_watch_and_verbose
+        PASS [   0.004s] ( 49/440) pgtuskmaster_rust cli::args::tests::parse_status_flags_without_subcommand
+        PASS [   0.004s] ( 50/440) pgtuskmaster_rust cli::args::tests::parse_switchover_request
+        PASS [   0.003s] ( 51/440) pgtuskmaster_rust cli::args::tests::parse_targeted_switchover_request
+        PASS [   0.008s] ( 52/440) pgtuskmaster_rust cli::client::tests::connection_refused_maps_to_transport_error
+        PASS [   0.004s] ( 53/440) pgtuskmaster_rust cli::client::tests::malformed_json_maps_to_decode_error
+        PASS [   0.010s] ( 54/440) pgtuskmaster_rust cli::client::tests::debug_verbose_since_adds_query_parameter
+        PASS [   0.011s] ( 55/440) pgtuskmaster_rust cli::client::tests::debug_verbose_request_decodes_full_payload
+        PASS [   0.005s] ( 56/440) pgtuskmaster_rust cli::client::tests::non_2xx_maps_to_api_status_error
+        PASS [   0.005s] ( 57/440) pgtuskmaster_rust cli::client::tests::state_request_uses_read_token_when_configured
+        PASS [   0.006s] ( 58/440) pgtuskmaster_rust cli::client::tests::state_request_falls_back_to_admin_token_when_read_missing
+        PASS [   0.006s] ( 59/440) pgtuskmaster_rust cli::client::tests::switchover_request_with_target_posts_member_id
+        PASS [   0.008s] ( 60/440) pgtuskmaster_rust cli::client::tests::switchover_request_without_target_posts_empty_object
+        PASS [   0.010s] ( 61/440) pgtuskmaster_rust cli::client::tests::switchover_clear_uses_delete_endpoint
+        PASS [   0.011s] ( 62/440) pgtuskmaster_rust cli::config::tests::resolve_context_preserves_postgres_tls_paths
+        PASS [   0.011s] ( 63/440) pgtuskmaster_rust cli::config::tests::resolve_context_loads_tokens_and_tls_from_config
+        PASS [   0.014s] ( 64/440) pgtuskmaster_rust cli::config::tests::resolve_context_falls_back_to_api_client_tls_paths
+        PASS [   0.004s] ( 65/440) pgtuskmaster_rust cli::config::tests::resolve_context_uses_cli_overrides_without_config
+        PASS [   0.004s] ( 66/440) pgtuskmaster_rust cli::connect::tests::libpq_escaping_quotes_special_values
+        PASS [   0.109s] ( 67/440) pgtuskmaster_rust api::worker::tests::security_tls_disabled_accepts_plain_rejects_tls
+        PASS [   0.004s] ( 68/440) pgtuskmaster_rust cli::connect::tests::primary_resolution_rejects_degraded_trust_even_with_one_sampled_primary
+        PASS [   0.004s] ( 69/440) pgtuskmaster_rust cli::connect::tests::primary_resolution_allows_partial_sampling_when_one_primary_is_sampled
+        PASS [   0.009s] ( 70/440) pgtuskmaster_rust cli::config::tests::resolve_context_requires_override_for_unspecified_listen_addr
+        PASS [   0.005s] ( 71/440) pgtuskmaster_rust cli::connect::tests::primary_resolution_allows_membership_mismatch_when_one_primary_is_sampled
+        PASS [   0.005s] ( 72/440) pgtuskmaster_rust cli::connect::tests::primary_resolution_rejects_failsafe_primary_from_stale_member_role
+        PASS [   0.004s] ( 73/440) pgtuskmaster_rust cli::connect::tests::replicas_resolution_allows_membership_mismatch_with_healthy_replica_sampling
+        PASS [   0.005s] ( 74/440) pgtuskmaster_rust cli::connect::tests::primary_resolution_rejects_waiting_member_without_full_quorum
+        PASS [   0.008s] ( 75/440) pgtuskmaster_rust cli::connect::tests::primary_resolution_renders_single_dsn
+        PASS [   0.004s] ( 76/440) pgtuskmaster_rust cli::connect::tests::replicas_resolution_allows_partial_sampling
+        PASS [   0.004s] ( 77/440) pgtuskmaster_rust cli::connect::tests::replicas_resolution_prefers_member_role_over_transitional_phase
+        PASS [   0.006s] ( 78/440) pgtuskmaster_rust cli::connect::tests::tls_paths_are_quoted_for_libpq_keyword_values
+        PASS [   0.004s] ( 79/440) pgtuskmaster_rust cli::connect::tests::tls_rendering_requires_path_backed_material
+        PASS [   0.005s] ( 80/440) pgtuskmaster_rust cli::output::tests::debug_verbose_text_output_renders_summary_and_history
+        PASS [   0.006s] ( 81/440) pgtuskmaster_rust cli::output::tests::debug_verbose_json_output_is_raw_payload
+        PASS [   0.004s] ( 82/440) pgtuskmaster_rust cli::output::tests::human_status_output_renders_compact_table
+        PASS [   0.004s] ( 83/440) pgtuskmaster_rust cli::output::tests::json_output_renders_accepted_payload
+        PASS [   0.006s] ( 84/440) pgtuskmaster_rust cli::output::tests::text_primary_output_renders_single_dsn_line
+        PASS [   0.004s] ( 85/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_does_not_surface_failsafe_member_as_primary
+        PASS [   0.006s] ( 86/440) pgtuskmaster_rust cli::output::tests::text_replicas_output_renders_multiple_lines
+        PASS [   0.007s] ( 87/440) pgtuskmaster_rust cli::output::tests::verbose_status_output_extends_table_columns
+        PASS [   0.005s] ( 88/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_does_not_surface_waiting_member_without_full_quorum
+        PASS [   0.003s] ( 89/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_marks_missing_api_targets_as_degraded
+        PASS [   0.006s] ( 90/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_marks_degraded_trust_as_degraded
+        PASS [   0.006s] ( 91/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_includes_debug_payload_summary_when_available
+        PASS [   0.004s] ( 92/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_preserves_verbose_mode_without_debug_payload
+        PASS [   0.008s] ( 93/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_marks_multi_primary_as_degraded
+        PASS [   0.006s] ( 94/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_prefers_member_role_over_transitional_phase
+        PASS [   0.006s] ( 95/440) pgtuskmaster_rust cli::status::tests::assemble_cluster_view_preserves_debug_observation_reasons
+        PASS [   0.005s] ( 96/440) pgtuskmaster_rust config::defaults::tests::default_logging_config_is_deterministic
+        PASS [   0.008s] ( 97/440) pgtuskmaster_rust cli::tests::exit_code_mapping_is_stable
+        PASS [   0.011s] ( 98/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_happy_path_with_safe_defaults
+        PASS [   0.012s] ( 99/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_missing_postgres_roles_block_is_actionable
+        PASS [   0.012s] (100/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_missing_replicator_auth_is_actionable
+        PASS [   0.013s] (101/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_missing_process_binaries_is_actionable
+        PASS [   0.006s] (102/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_missing_replicator_username_is_actionable
+        PASS [   0.008s] (103/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_missing_replicator_role_is_actionable
+        PASS [   0.004s] (104/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_password_auth_missing_password_is_actionable
+        PASS [   0.006s] (105/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_missing_required_sections_is_rejected
+        PASS [   0.006s] (106/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_missing_secure_fields_is_actionable
+        PASS [   0.007s] (107/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_blank_password_secret
+        PASS [   0.006s] (108/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_client_auth_with_tls_disabled
+        PASS [   0.006s] (109/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_conn_identity_role_mismatch
+        PASS [   0.005s] (110/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_duplicate_postgres_role_usernames
+        PASS [   0.006s] (111/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_postgres_role_tls_auth_with_actionable_error
+        PASS [   0.005s] (112/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_tls_required_without_identity
+        PASS [   0.009s] (113/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_inline_conn_identity_ca_cert
+        PASS [   0.007s] (114/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_ssl_mode_requiring_tls_when_postgres_tls_disabled
+        PASS [   0.004s] (115/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_unknown_top_level_version_field
+        PASS [   0.007s] (116/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_unknown_fields
+        PASS [   0.006s] (117/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_accepts_file_sink_enabled_with_path
+        PASS [   0.004s] (118/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_accepts_valid_config
+        PASS [   0.004s] (119/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_bad_timeout
+        PASS [   0.004s] (120/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_blank_api_tokens
+        PASS [   0.012s] (121/440) pgtuskmaster_rust config::parser::tests::load_runtime_config_rejects_verify_full_without_ca_cert
+        PASS [   0.004s] (122/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_blank_env_secret_name
+        PASS [   0.003s] (123/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_file_sink_equal_to_tailed_log_via_dot_segments
+        PASS [   0.004s] (124/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_file_sink_empty_path
+        PASS [   0.005s] (125/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_empty_binary_path
+        PASS [   0.006s] (126/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_file_sink_enabled_without_path
+        PASS [   0.003s] (127/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_file_sink_equal_to_tailed_log_via_parent_segments
+        PASS [   0.003s] (128/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_file_sink_inside_log_dir_via_dot_segments
+        PASS [   0.004s] (129/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_invalid_postgres_runtime_fields
+        PASS [   0.005s] (130/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_missing_dcs_and_ha_invariants
+        PASS [   0.006s] (131/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_local_conn_ssl_mode_requiring_tls_when_postgres_tls_disabled
+        PASS [   0.003s] (132/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_postgres_role_tls_auth
+        PASS [   0.003s] (133/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_replicator_reusing_superuser_username
+        PASS [   0.012s] (134/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_https_pgtm_api_url_when_api_tls_disabled
+        PASS [   0.006s] (135/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_non_absolute_binary_paths
+        PASS [   0.005s] (136/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_rewind_conn_ssl_mode_requiring_tls_when_postgres_tls_disabled
+        PASS [   0.004s] (137/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_rewinder_reusing_superuser_username
+        PASS [   0.004s] (138/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_requires_pgtm_client_key_when_client_cert_present
+        PASS [   0.006s] (139/440) pgtuskmaster_rust config::parser::tests::validate_runtime_config_rejects_rewinder_reusing_replicator_username
+        PASS [   2.733s] (140/440) pgtuskmaster_rust dcs::etcd_store::tests::etcd_store_put_if_absent_claims_only_once_and_does_not_overwrite
+        PASS [   3.294s] (141/440) pgtuskmaster_rust dcs::etcd_store::tests::etcd_store_connect_timeout_returns_and_does_not_hang
+        PASS [   2.493s] (142/440) pgtuskmaster_rust dcs::etcd_store::tests::etcd_store_releases_only_locally_owned_leader_lease
+        PASS [   5.933s] (143/440) pgtuskmaster_rust dcs::etcd_store::tests::etcd_store_leader_lease_expires_after_owner_stops_renewing
+        PASS [   0.007s] (144/440) pgtuskmaster_rust dcs::etcd_store::tests::etcd_store_write_reports_unreachable_endpoint
+        PASS [   3.053s] (145/440) pgtuskmaster_rust dcs::etcd_store::tests::etcd_store_round_trips_write_delete_and_events
+        PASS [   9.137s] (146/440) pgtuskmaster_rust dcs::etcd_store::tests::etcd_store_disconnect_clears_pending_queue_before_reconnect_snapshot
+        PASS [   2.118s] (147/440) pgtuskmaster_rust dcs::etcd_store::tests::step_once_consumes_real_etcd_watch_path_without_mocking
+        PASS [   0.004s] (148/440) pgtuskmaster_rust dcs::keys::tests::parses_supported_paths
+        PASS [   0.004s] (149/440) pgtuskmaster_rust dcs::keys::tests::rejects_missing_member_id
+        PASS [   0.003s] (150/440) pgtuskmaster_rust dcs::keys::tests::rejects_unknown_and_extra_segments
+        PASS [   0.003s] (151/440) pgtuskmaster_rust dcs::keys::tests::rejects_wrong_scope
+        PASS [   0.003s] (152/440) pgtuskmaster_rust dcs::state::tests::build_local_member_record_maps_pg_variants
+        PASS [   0.003s] (153/440) pgtuskmaster_rust dcs::state::tests::evaluate_trust_covers_all_outcomes
+        PASS [   0.003s] (154/440) pgtuskmaster_rust dcs::state::tests::evaluate_trust_keeps_healthy_majority_when_leader_metadata_is_missing_or_stale
+        PASS [   0.003s] (155/440) pgtuskmaster_rust dcs::state::tests::evaluate_trust_stays_fail_safe_without_fresh_quorum
+        PASS [   0.005s] (156/440) pgtuskmaster_rust dcs::store::tests::acquire_leader_lease_rejects_existing_leader
+        PASS [   0.003s] (157/440) pgtuskmaster_rust dcs::store::tests::acquire_leader_lease_writes_leader_path_and_payload
+        PASS [   0.003s] (158/440) pgtuskmaster_rust dcs::store::tests::clear_switchover_deletes_switchover_key
+        PASS [   0.003s] (159/440) pgtuskmaster_rust dcs::store::tests::dcs_value_type_is_exercised_to_keep_contracts_live
+        PASS [   0.004s] (160/440) pgtuskmaster_rust dcs::store::tests::refresh_applies_member_put_and_delete
+        PASS [   0.003s] (161/440) pgtuskmaster_rust dcs::store::tests::refresh_put_then_reset_then_put_keeps_only_post_reset_state
+        PASS [   0.003s] (162/440) pgtuskmaster_rust dcs::store::tests::refresh_reports_decode_error
+        PASS [   0.004s] (163/440) pgtuskmaster_rust dcs::store::tests::refresh_reset_clears_cached_records_but_preserves_config
+        PASS [   0.004s] (164/440) pgtuskmaster_rust dcs::store::tests::refresh_sets_had_errors_for_unknown_keys_and_applies_known_updates
+        PASS [   0.004s] (165/440) pgtuskmaster_rust dcs::store::tests::release_leader_lease_deletes_leader_key
+        PASS [   0.003s] (166/440) pgtuskmaster_rust dcs::store::tests::write_local_member_writes_only_member_path
+        PASS [   0.003s] (167/440) pgtuskmaster_rust dcs::worker::tests::apply_watch_update_handles_put_and_delete_paths
+        PASS [   0.004s] (168/440) pgtuskmaster_rust dcs::worker::tests::step_once_emits_local_member_write_failed_event_for_io_error
+        PASS [   0.006s] (169/440) pgtuskmaster_rust dcs::worker::tests::step_once_marks_store_unhealthy_when_watch_decode_fails
+        PASS [   0.013s] (170/440) pgtuskmaster_rust dcs::worker::tests::step_once_marks_store_unhealthy_when_watch_key_is_unknown
+        PASS [   0.005s] (171/440) pgtuskmaster_rust dcs::worker::tests::step_once_publishes_and_writes_only_self_member
+        PASS [   0.003s] (172/440) pgtuskmaster_rust dcs::worker::tests::step_once_publishes_local_endpoint_instead_of_cached_config_endpoint
+        PASS [   0.029s] (173/440) pgtuskmaster_rust dcs::worker::tests::step_once_republishes_member_after_unhealthy_tick_even_without_pg_change
+        PASS [   0.006s] (174/440) pgtuskmaster_rust dcs::worker::tests::step_once_writes_member_on_every_tick
+        PASS [   0.007s] (175/440) pgtuskmaster_rust debug_api::worker::tests::step_once_does_not_record_ha_tick_only_changes
+        PASS [   0.004s] (176/440) pgtuskmaster_rust debug_api::worker::tests::step_once_history_retention_trims_old_entries
+        PASS [   0.005s] (177/440) pgtuskmaster_rust debug_api::worker::tests::step_once_keeps_history_when_versions_unchanged
+        PASS [   0.004s] (178/440) pgtuskmaster_rust debug_api::worker::tests::step_once_publishes_snapshot
+        PASS [   0.004s] (179/440) pgtuskmaster_rust debug_api::worker::tests::step_once_records_incremental_version_changes
+        PASS [   0.004s] (180/440) pgtuskmaster_rust ha::decide::tests::actions_are_reissued_while_conditions_persist
+        PASS [   0.003s] (181/440) pgtuskmaster_rust ha::decide::tests::bootstrapping_success_waits_for_postgres_before_becoming_replica
+        PASS [   0.004s] (182/440) pgtuskmaster_rust ha::decide::tests::candidate_leader_with_self_lease_and_primary_postgres_skips_promote
+        PASS [   0.003s] (183/440) pgtuskmaster_rust ha::decide::tests::candidate_leader_with_targeted_switchover_attempts_when_self_is_target
+        PASS [   0.003s] (184/440) pgtuskmaster_rust ha::decide::tests::candidate_leader_with_targeted_switchover_waits_when_not_target
+        PASS [   0.004s] (185/440) pgtuskmaster_rust ha::decide::tests::candidate_leader_with_unhealthy_foreign_leader_keeps_attempting
+        PASS [   0.003s] (186/440) pgtuskmaster_rust ha::decide::tests::candidate_leader_without_leader_follows_healthy_primary_member
+        PASS [   0.004s] (187/440) pgtuskmaster_rust ha::decide::tests::decide_is_deterministic_for_identical_inputs
+        PASS [   0.003s] (188/440) pgtuskmaster_rust ha::decide::tests::fail_safe_holds_without_quorum_and_exits_when_restored
+        PASS [   0.006s] (189/440) pgtuskmaster_rust ha::decide::tests::fail_safe_with_restored_quorum_and_stale_self_lease_retries_release_without_refencing
+        PASS [   0.003s] (190/440) pgtuskmaster_rust ha::decide::tests::failsafe_primary_with_full_quorum_returns_to_primary_decision_path
+        PASS [   5.225s] (191/440) pgtuskmaster_rust dcs::etcd_store::tests::leader_expiry_flows_through_watch_cache_trust_and_ha_decision
+        PASS [   0.005s] (192/440) pgtuskmaster_rust ha::decide::tests::lowered_ha_plans_never_encode_contradictory_actions
+        PASS [   0.003s] (193/440) pgtuskmaster_rust ha::decide::tests::non_quorum_trust_always_routes_to_fail_safe
+        PASS [   0.006s] (194/440) pgtuskmaster_rust ha::decide::tests::no_quorum_failsafe_with_stale_self_lease_but_stopped_postgres_stays_quiescent
+        PASS [   0.004s] (195/440) pgtuskmaster_rust ha::decide::tests::primary_outage_with_self_leader_releases_lease_before_rewinding
+        PASS [   0.006s] (196/440) pgtuskmaster_rust ha::decide::tests::primary_outage_without_foreign_leader_waits_in_rewinding_without_self_target
+        PASS [   0.003s] (197/440) pgtuskmaster_rust ha::decide::tests::primary_steps_down_on_foreign_leader_record_before_member_metadata_catches_up
+        PASS [   0.009s] (198/440) pgtuskmaster_rust ha::decide::tests::primary_with_switchover_demotes_and_releases_without_clearing_request
+        PASS [   0.009s] (199/440) pgtuskmaster_rust ha::decide::tests::primary_without_leader_reacquires_lease_without_leaving_primary
+        PASS [   0.003s] (200/440) pgtuskmaster_rust ha::decide::tests::replica_with_promoted_leader_timeline_change_keeps_following
+        PASS [   0.003s] (201/440) pgtuskmaster_rust ha::decide::tests::replica_with_self_leader_and_pending_switchover_does_not_repromote
+        PASS [   0.004s] (202/440) pgtuskmaster_rust ha::decide::tests::replica_with_unhealthy_leader_becomes_candidate
+        PASS [   0.004s] (203/440) pgtuskmaster_rust ha::decide::tests::rewinding_ignores_stale_start_postgres_failure_until_rewind_runs
+        PASS [   0.003s] (204/440) pgtuskmaster_rust ha::decide::tests::rewinding_while_running_emits_nothing
+        PASS [   0.003s] (205/440) pgtuskmaster_rust ha::decide::tests::rewinding_without_foreign_leader_and_no_process_outcome_emits_nothing
+        PASS [   0.003s] (206/440) pgtuskmaster_rust ha::decide::tests::targeted_switchover_completes_only_after_requested_successor_becomes_primary
+        PASS [   0.003s] (207/440) pgtuskmaster_rust ha::decide::tests::transition_matrix_cases
+        PASS [   0.003s] (208/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_after_fencing_uses_stale_foreign_leader_record_for_basebackup
+        PASS [   0.004s] (209/440) pgtuskmaster_rust ha::decide::tests::untargeted_switchover_completes_only_after_new_primary_observes_success
+        PASS [   0.003s] (210/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_after_fencing_without_leader_waits_for_dcs
+        PASS [   0.004s] (211/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_after_fencing_with_known_leader_reenters_basebackup
+        PASS [   0.003s] (212/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_with_dead_leader_but_no_quorum_stays_fail_safe
+        PASS [   0.004s] (213/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_after_successful_start_waits_for_pginfo_refresh
+        PASS [   0.003s] (214/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_with_only_leader_record_waits_for_followable_primary_before_restart
+        PASS [   0.003s] (215/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_with_stale_dead_leader_and_healthy_majority_attempts_leadership
+        PASS [   0.004s] (216/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_without_leader_follows_healthy_primary_member
+        PASS [   0.004s] (217/440) pgtuskmaster_rust ha::decide::tests::waiting_dcs_trusted_with_wait_for_dcs_and_known_leader_retries_postgres
+        PASS [   0.003s] (218/440) pgtuskmaster_rust ha::decide::tests::waiting_postgres_after_failed_start_as_leader_waits_for_dcs
+        PASS [   0.003s] (219/440) pgtuskmaster_rust ha::decide::tests::waiting_postgres_after_failed_start_with_foreign_leader_waits_for_dcs
+        PASS [   0.003s] (220/440) pgtuskmaster_rust ha::decide::tests::waiting_postgres_after_failed_start_without_foreign_leader_waits_for_dcs
+        PASS [   0.003s] (221/440) pgtuskmaster_rust ha::decide::tests::waiting_postgres_after_failed_start_without_leader_uses_healthy_primary_member_waits_for_dcs
+        PASS [   0.003s] (222/440) pgtuskmaster_rust ha::decide::tests::waiting_postgres_after_successful_start_as_leader_waits_for_dcs
+        PASS [   0.004s] (223/440) pgtuskmaster_rust ha::decide::tests::waiting_postgres_after_successful_start_as_follower_waits_for_dcs
+        PASS [   0.003s] (224/440) pgtuskmaster_rust ha::decide::tests::waiting_postgres_does_not_reissue_start_while_start_job_is_running
+        PASS [   0.003s] (225/440) pgtuskmaster_rust ha::decide::tests::waiting_postgres_reachable_with_active_demote_does_not_request_start
+        PASS [   0.003s] (226/440) pgtuskmaster_rust ha::decide::tests::waiting_switchover_successor_does_not_restart_while_demote_runs
+        PASS [   0.003s] (227/440) pgtuskmaster_rust ha::decide::tests::waiting_switchover_successor_follows_new_leader_once_visible
+        PASS [   0.003s] (228/440) pgtuskmaster_rust ha::decide::tests::waiting_switchover_successor_holds_until_new_leader_exists
+        PASS [   0.003s] (229/440) pgtuskmaster_rust ha::decision::tests::decision_facts_do_not_require_rewind_for_replica_timeline_mismatch
+        PASS [   0.003s] (230/440) pgtuskmaster_rust ha::decision::tests::decision_facts_drop_active_leader_when_member_metadata_is_missing
+        PASS [   0.003s] (231/440) pgtuskmaster_rust ha::decision::tests::decision_facts_drop_active_leader_when_member_is_stale
+        PASS [   0.003s] (232/440) pgtuskmaster_rust ha::decision::tests::decision_facts_require_rewind_for_primary_timeline_mismatch
+        PASS [   0.003s] (233/440) pgtuskmaster_rust ha::decision::tests::eligible_switchover_targets_exclude_stale_replicas
+        PASS [   0.003s] (234/440) pgtuskmaster_rust ha::lower::tests::lowers_complete_switchover_into_clear_request_plan
+        PASS [   0.004s] (235/440) pgtuskmaster_rust ha::events::tests::action_intent_event_carries_action_and_leader_metadata
+        PASS [   0.003s] (236/440) pgtuskmaster_rust ha::lower::tests::lowers_composite_step_down_into_bucketed_plan
+        PASS [   0.003s] (237/440) pgtuskmaster_rust ha::lower::tests::lowers_extra_release_variant
+        PASS [   0.003s] (238/440) pgtuskmaster_rust ha::lower::tests::lowers_fail_safe_primary_release_into_fencing_plan
+        PASS [   0.003s] (239/440) pgtuskmaster_rust ha::lower::tests::lowers_fail_safe_without_release_into_fencing_plan
+        PASS [   0.002s] (240/440) pgtuskmaster_rust ha::lower::tests::lowers_recovery_variants
+        PASS [   0.003s] (241/440) pgtuskmaster_rust ha::process_dispatch::tests::start_basebackup_dispatch_rejects_missing_target_member
+        PASS [   0.004s] (242/440) pgtuskmaster_rust ha::process_dispatch::tests::start_basebackup_dispatch_uses_target_member_endpoint_and_replicator_role
+        PASS [   0.018s] (243/440) pgtuskmaster_rust ha::process_dispatch::tests::start_postgres_dispatch_builds_request_with_managed_settings
+        PASS [   0.017s] (244/440) pgtuskmaster_rust ha::process_dispatch::tests::start_postgres_dispatch_preserves_replica_follow_target
+        PASS [   0.006s] (245/440) pgtuskmaster_rust ha::process_dispatch::tests::start_postgres_dispatch_without_replica_target_starts_primary
+        PASS [   0.008s] (246/440) pgtuskmaster_rust ha::process_dispatch::tests::start_postgres_dispatch_rejects_existing_replica_state_without_dcs_leader
+        PASS [   0.003s] (247/440) pgtuskmaster_rust ha::process_dispatch::tests::start_rewind_dispatch_uses_target_member_and_ignores_unrelated_leader_key
+        PASS [   0.004s] (248/440) pgtuskmaster_rust ha::process_dispatch::tests::wipe_data_dir_dispatch_recreates_directory
+        PASS [   0.004s] (249/440) pgtuskmaster_rust ha::worker::tests::apply_effect_plan_clears_switchover_key
+        PASS [   0.008s] (250/440) pgtuskmaster_rust ha::worker::tests::apply_effect_plan_is_best_effort_and_reports_typed_errors
+        PASS [   0.006s] (251/440) pgtuskmaster_rust ha::worker::tests::apply_effect_plan_maps_dcs_and_process_requests
+        PASS [   0.004s] (252/440) pgtuskmaster_rust ha::worker::tests::apply_effect_plan_surfaces_leader_lease_conflict
+        PASS [   0.005s] (253/440) pgtuskmaster_rust ha::worker::tests::integration_primary_split_brain_enters_fencing_and_process_feedback_advances
+        PASS [   0.004s] (254/440) pgtuskmaster_rust ha::worker::tests::integration_primary_unreachable_rewinds_then_returns_replica_on_success
+        PASS [   0.004s] (255/440) pgtuskmaster_rust ha::worker::tests::integration_transitions_replica_candidate_primary_and_failsafe
+        PASS [   0.006s] (256/440) pgtuskmaster_rust ha::worker::tests::integration_start_postgres_dispatch_updates_process_state_versions
+        PASS [   0.011s] (257/440) pgtuskmaster_rust ha::worker::tests::run_initial_buffered_updates_match_explicit_buffered_prefix
+        PASS [   0.011s] (258/440) pgtuskmaster_rust ha::worker::tests::run_reacts_to_interval_tick_and_watcher_change
+        PASS [   0.004s] (259/440) pgtuskmaster_rust ha::worker::tests::step_once_failsafe_primary_with_restored_quorum_attempts_leadership
+        PASS [   0.004s] (260/440) pgtuskmaster_rust ha::worker::tests::step_once_matches_decide_output_for_same_snapshot
+        PASS [   0.004s] (261/440) pgtuskmaster_rust ha::worker::tests::step_once_primary_outage_enqueues_only_recovery_dispatch
+        PASS [   0.004s] (262/440) pgtuskmaster_rust ha::worker::tests::step_once_primary_quorum_loss_enqueues_fencing_without_releasing_lease
+        PASS [   0.004s] (263/440) pgtuskmaster_rust ha::worker::tests::step_once_retries_fence_dispatch_after_demote_finishes
+        PASS [   0.007s] (264/440) pgtuskmaster_rust ha::worker::tests::step_once_suppresses_duplicate_start_postgres_dispatch_while_unreachable
+        PASS [   0.004s] (265/440) pgtuskmaster_rust ha::worker::tests::step_once_uses_subscribers_and_publishes_next_state
+        PASS [   0.004s] (266/440) pgtuskmaster_rust logging::postgres_ingest::tests::cleanup_log_dir_enforces_max_files_and_protects_active_file
+        PASS [   0.006s] (267/440) pgtuskmaster_rust logging::postgres_ingest::tests::cleanup_log_dir_never_deletes_known_active_signals
+        PASS [   0.004s] (268/440) pgtuskmaster_rust logging::postgres_ingest::tests::cleanup_log_dir_surfaces_remove_failures
+        PASS [   0.003s] (269/440) pgtuskmaster_rust logging::postgres_ingest::tests::decode_line_encodes_non_utf8_bytes_as_hex
+        PASS [   0.003s] (270/440) pgtuskmaster_rust logging::postgres_ingest::tests::emit_ingest_step_failure_emits_internal_error_record
+        PASS [   0.003s] (271/440) pgtuskmaster_rust logging::postgres_ingest::tests::emit_postgres_line_emits_parse_failed_record_for_non_utf8
+        PASS [   0.003s] (272/440) pgtuskmaster_rust logging::postgres_ingest::tests::ingest_error_key_parsing_uses_first_stage_kind_path_tokens
+        PASS [   0.003s] (273/440) pgtuskmaster_rust logging::postgres_ingest::tests::ingest_error_rate_limiter_suppresses_and_reemits_with_count
+        PASS [   0.003s] (274/440) pgtuskmaster_rust logging::postgres_ingest::tests::map_pg_severity_maps_known_levels
+        PASS [   0.003s] (275/440) pgtuskmaster_rust logging::postgres_ingest::tests::normalize_postgres_line_parses_jsonlog
+        PASS [   0.003s] (276/440) pgtuskmaster_rust logging::postgres_ingest::tests::normalize_postgres_line_parses_plain
+        PASS [   0.003s] (277/440) pgtuskmaster_rust logging::postgres_ingest::tests::normalize_postgres_line_preserves_raw_on_failure
+        PASS [   0.003s] (278/440) pgtuskmaster_rust logging::postgres_ingest::tests::normalize_postgres_line_preserves_raw_on_non_utf8_failure
+        PASS [   8.689s] (279/440) pgtuskmaster_rust dcs::etcd_store::tests::etcd_store_reconnect_resets_cache_when_snapshot_is_empty
+        PASS [   2.433s] (280/440) pgtuskmaster_rust dcs::etcd_store::tests::step_once_marks_store_unhealthy_on_real_decode_failure
+        PASS [   0.043s] (281/440) pgtuskmaster_rust logging::tailer::tests::file_tailer_reads_appends_and_handles_rotation
+        PASS [   0.047s] (282/440) pgtuskmaster_rust logging::tests::bootstrap_file_enabled_with_path_writes_jsonl
+        PASS [   0.019s] (283/440) pgtuskmaster_rust logging::tests::bootstrap_file_enabled_without_path_returns_misconfigured
+        PASS [   0.020s] (284/440) pgtuskmaster_rust logging::tests::bootstrap_with_all_sinks_disabled_is_non_fatal
+        PASS [   0.020s] (285/440) pgtuskmaster_rust logging::tests::bootstrap_with_stderr_and_file_still_writes_file
+        PASS [   0.033s] (286/440) pgtuskmaster_rust logging::tests::emit_app_event_encodes_typed_headers_and_fields
+        PASS [   0.036s] (287/440) pgtuskmaster_rust logging::tests::emit_app_event_respects_min_severity
+        PASS [   0.028s] (288/440) pgtuskmaster_rust logging::tests::fanout_sink_err_when_all_sinks_fail
+        PASS [   0.024s] (289/440) pgtuskmaster_rust logging::tests::fanout_sink_ok_when_any_sink_succeeds_and_emits_diagnostic
+        PASS [   0.038s] (290/440) pgtuskmaster_rust logging::tests::jsonl_file_sink_append_mode_preserves_existing_content
+        PASS [   0.019s] (291/440) pgtuskmaster_rust logging::tests::jsonl_file_sink_creates_parent_dirs_and_writes_jsonl_line
+        PASS [   0.024s] (292/440) pgtuskmaster_rust logging::tests::jsonl_file_sink_errors_when_parent_is_file
+        PASS [   0.019s] (293/440) pgtuskmaster_rust logging::tests::jsonl_file_sink_truncate_mode_replaces_existing_content
+        PASS [   0.029s] (294/440) pgtuskmaster_rust logging::tests::structured_fields_encode_scalars_and_serialized_values
+        PASS [   0.027s] (295/440) pgtuskmaster_rust logging::tests::subprocess_line_record_builder_encodes_stream_metadata
+        PASS [   0.024s] (296/440) pgtuskmaster_rust logging::tests::tracing_backend_preserves_emit_errors_when_sink_fails
+        PASS [   0.033s] (297/440) pgtuskmaster_rust logging::tests::tracing_backend_preserves_partial_fanout_success
+        PASS [   0.036s] (298/440) pgtuskmaster_rust pginfo::conninfo::tests::render_emits_canonical_key_order
+        PASS [   0.053s] (299/440) pgtuskmaster_rust pginfo::query::tests::parse_wal_lsn_accepts_valid_hex_format
+        PASS [   0.018s] (300/440) pgtuskmaster_rust pginfo::query::tests::parse_wal_lsn_rejects_invalid_formats
+        PASS [   0.028s] (301/440) pgtuskmaster_rust pginfo::query::tests::poll_sql_selects_expected_fields
+        PASS [   0.020s] (302/440) pgtuskmaster_rust pginfo::state::tests::derive_readiness_maps_sql_and_signal
+        PASS [   0.028s] (303/440) pgtuskmaster_rust pginfo::state::tests::to_member_status_maps_primary_snapshot
+        PASS [   0.028s] (304/440) pgtuskmaster_rust pginfo::state::tests::to_member_status_maps_replica_snapshot
+        PASS [   0.027s] (305/440) pgtuskmaster_rust pginfo::state::tests::to_member_status_maps_replica_without_replay_lsn
+        PASS [   2.216s] (306/440) pgtuskmaster_rust logging::postgres_ingest::tests::real_binary::captures_helper_binary_stdout_stderr_on_failure
+        PASS [   3.336s] (307/440) pgtuskmaster_rust logging::postgres_ingest::tests::real_binary::ingests_jsonlog_and_stderr_files_from_real_postgres
+        PASS [   0.005s] (308/440) pgtuskmaster_rust postgres_managed::tests::inspect_managed_recovery_state_rejects_conflicting_signal_files
+        PASS [   0.012s] (309/440) pgtuskmaster_rust postgres_managed::tests::inspect_managed_recovery_state_reports_replica_signal
+        PASS [   0.009s] (310/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_creates_and_removes_standby_signal
+        PASS [   0.008s] (311/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_creates_authoritative_postgresql_conf
+        PASS [   0.007s] (312/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_creates_recovery_signal_and_cleans_standby_signal
+        PASS [   0.006s] (313/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_quarantines_postgresql_auto_conf
+        PASS [   3.444s] (314/440) pgtuskmaster_rust pginfo::worker::tests::step_once_maps_replica_when_polling_standby
+        PASS [   0.019s] (315/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_rejects_reserved_extra_guc
+        PASS [   0.019s] (316/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_removes_stale_standby_passfile_on_primary_start
+        PASS [   0.012s] (317/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_uses_config_file_path_for_startup
+        PASS [   0.007s] (318/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_writes_managed_standby_passfile
+        PASS [   0.009s] (319/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_writes_managed_tls_files_for_user_supplied_identity
+        PASS [   0.006s] (320/440) pgtuskmaster_rust postgres_managed_conf::tests::managed_start_intent_tracks_recovery_signal_state
+        PASS [   0.005s] (321/440) pgtuskmaster_rust postgres_managed_conf::tests::render_managed_postgres_conf_is_deterministic
+        PASS [   0.004s] (322/440) pgtuskmaster_rust postgres_managed_conf::tests::render_managed_postgres_conf_keeps_owned_settings_before_extra_gucs
+        PASS [   0.004s] (323/440) pgtuskmaster_rust postgres_managed_conf::tests::render_managed_postgres_conf_quotes_and_escapes_string_values
+        PASS [   0.004s] (324/440) pgtuskmaster_rust postgres_managed_conf::tests::render_managed_postgres_conf_renders_booleans_and_replica_fields
+        PASS [   0.004s] (325/440) pgtuskmaster_rust postgres_managed_conf::tests::render_managed_postgres_conf_renders_primary_without_replica_only_fields
+        PASS [   0.003s] (326/440) pgtuskmaster_rust postgres_managed_conf::tests::render_managed_postgres_conf_sorts_extra_gucs
+        PASS [   0.003s] (327/440) pgtuskmaster_rust postgres_managed_conf::tests::validate_extra_guc_entry_rejects_control_characters_in_values
+        PASS [   0.003s] (328/440) pgtuskmaster_rust postgres_managed_conf::tests::validate_extra_guc_entry_rejects_invalid_names
+        PASS [   0.003s] (329/440) pgtuskmaster_rust postgres_managed_conf::tests::validate_extra_guc_entry_rejects_recovery_override_keys
+        PASS [   0.003s] (330/440) pgtuskmaster_rust postgres_managed_conf::tests::validate_extra_guc_entry_rejects_reserved_keys
+        PASS [   0.003s] (331/440) pgtuskmaster_rust process::worker::tests::build_command_basebackup_sets_pgpassword_env_for_password_auth
+        PASS [   0.003s] (332/440) pgtuskmaster_rust process::worker::tests::build_command_basebackup_uses_pg_basebackup_binary_and_args
+        PASS [   0.003s] (333/440) pgtuskmaster_rust process::worker::tests::build_command_bootstrap_uses_configured_superuser_username
+        PASS [   0.003s] (334/440) pgtuskmaster_rust process::worker::tests::build_command_pg_rewind_sets_pgpassword_env_for_password_auth
+        PASS [   0.003s] (335/440) pgtuskmaster_rust process::worker::tests::build_command_start_postgres_uses_managed_config_file_override
+        PASS [   0.003s] (336/440) pgtuskmaster_rust process::worker::tests::can_accept_job_is_true_only_when_idle
+        PASS [   2.723s] (337/440) pgtuskmaster_rust pginfo::worker::tests::step_once_transitions_unreachable_to_primary_and_tracks_wal_and_slots
+        PASS [   2.349s] (338/440) pgtuskmaster_rust process::worker::tests::real_bootstrap_job_executes_initdb
+        PASS [   2.650s] (339/440) pgtuskmaster_rust process::worker::tests::real_demote_job_executes_binary_path
+        PASS [   2.623s] (340/440) pgtuskmaster_rust process::worker::tests::real_fencing_job_executes_binary_path
+        PASS [   1.948s] (341/440) pgtuskmaster_rust process::worker::tests::real_pg_rewind_job_executes_binary_path
+        PASS [   0.003s] (342/440) pgtuskmaster_rust process::worker::tests::rejecting_new_job_while_active_records_deterministic_rejection
+        PASS [   0.003s] (343/440) pgtuskmaster_rust process::worker::tests::start_job_returns_channel_closed_when_all_subscribers_are_dropped
+        PASS [   0.003s] (344/440) pgtuskmaster_rust process::worker::tests::start_job_start_postgres_ignores_reused_foreign_pid_and_starts
+        LEAK [   0.256s] (345/440) pgtuskmaster_rust process::worker::tests::start_job_start_postgres_noops_when_pid_file_matches_real_postmaster_shape
+        LEAK [   0.264s] (346/440) pgtuskmaster_rust process::worker::tests::start_job_start_postgres_noops_when_postmaster_is_already_running
+        PASS [   0.005s] (347/440) pgtuskmaster_rust process::worker::tests::start_job_when_idle_transitions_to_running_and_publishes
+        PASS [   0.014s] (348/440) pgtuskmaster_rust process::worker::tests::step_once_emits_request_received_and_job_started
+        PASS [   0.005s] (349/440) pgtuskmaster_rust process::worker::tests::tick_active_job_is_safe_when_no_runtime
+        PASS [   0.055s] (350/440) pgtuskmaster_rust process::worker::tests::tick_active_job_maps_success_failure_and_timeout_outcomes
+        PASS [   0.020s] (351/440) pgtuskmaster_rust runtime::node::tests::advertised_postgres_port_defaults_to_listen_port
+        PASS [   0.003s] (352/440) pgtuskmaster_rust runtime::node::tests::advertised_postgres_port_prefers_explicit_override
+        PASS [   0.008s] (353/440) pgtuskmaster_rust runtime::node::tests::initialize_primary_startup_actions_provision_required_roles
+        PASS [   0.005s] (354/440) pgtuskmaster_rust runtime::node::tests::inspect_data_dir_classifies_missing_empty_and_existing
+        PASS [   0.003s] (355/440) pgtuskmaster_rust runtime::node::tests::inspect_data_dir_rejects_ambiguous_partial_state
+        PASS [   0.003s] (356/440) pgtuskmaster_rust runtime::node::tests::plan_startup_emits_data_dir_and_mode_events_without_network_probe
+        PASS [   0.005s] (357/440) pgtuskmaster_rust runtime::node::tests::render_required_role_sql_uses_distinct_replication_roles
+        LEAK [   0.256s] (358/440) pgtuskmaster_rust runtime::node::tests::run_start_job_noops_when_postmaster_is_already_running
+        PASS [   0.004s] (359/440) pgtuskmaster_rust runtime::node::tests::runtime_uses_role_specific_users_for_dsn_clone_and_rewind
+        PASS [   0.006s] (360/440) pgtuskmaster_rust runtime::node::tests::select_resume_start_intent_prefers_dcs_leader_over_local_auto_conf
+        PASS [   0.005s] (361/440) pgtuskmaster_rust runtime::node::tests::select_resume_start_intent_rejects_local_replica_state_without_dcs_authority
+        PASS [   0.005s] (362/440) pgtuskmaster_rust runtime::node::tests::select_resume_start_intent_uses_leader_record_even_when_not_yet_healthy
+        PASS [   0.003s] (363/440) pgtuskmaster_rust runtime::node::tests::select_startup_mode_prefers_clone_when_foreign_healthy_leader_exists
+        PASS [   0.003s] (364/440) pgtuskmaster_rust runtime::node::tests::select_startup_mode_rejects_initialize_when_init_lock_present
+        PASS [   0.003s] (365/440) pgtuskmaster_rust runtime::node::tests::select_startup_mode_uses_initialize_when_no_leader_evidence
+        PASS [   0.003s] (366/440) pgtuskmaster_rust runtime::node::tests::select_startup_mode_uses_member_records_when_init_lock_present_and_leader_missing
+        PASS [   0.003s] (367/440) pgtuskmaster_rust runtime::node::tests::select_startup_mode_uses_resume_when_pgdata_exists
+        PASS [   0.009s] (368/440) pgtuskmaster_rust state::watch_state::tests::changed_propagates_closed_channel_error
+        PASS [   0.023s] (369/440) pgtuskmaster_rust state::watch_state::tests::changed_returns_latest_after_publish
+        PASS [   0.015s] (370/440) pgtuskmaster_rust state::watch_state::tests::initial_snapshot_has_expected_version_and_time
+        PASS [   0.013s] (371/440) pgtuskmaster_rust state::watch_state::tests::latest_matches_between_publisher_and_subscriber
+        PASS [   0.006s] (372/440) pgtuskmaster_rust state::watch_state::tests::publish_increments_version_and_updates_timestamp
+        PASS [   0.005s] (373/440) pgtuskmaster_rust test_harness::auth::tests::api_role_tokens_formats_bearer_headers
+        PASS [   0.005s] (374/440) pgtuskmaster_rust test_harness::auth::tests::api_role_tokens_rejects_empty_input
+        PASS [   0.004s] (375/440) pgtuskmaster_rust test_harness::binaries::tests::require_binary_missing_path_returns_invalid_input
+        PASS [   0.004s] (376/440) pgtuskmaster_rust test_harness::etcd3::tests::build_initial_cluster_formats_entries
+        PASS [   7.191s] (377/440) pgtuskmaster_rust postgres_managed::tests::materialize_managed_postgres_config_real_clone_start_quarantines_auto_conf_and_stale_signal
+        PASS [   0.004s] (378/440) pgtuskmaster_rust test_harness::etcd3::tests::build_initial_cluster_rejects_empty_member_name
+        PASS [   0.004s] (379/440) pgtuskmaster_rust test_harness::etcd3::tests::prepare_etcd_data_dir_rejects_reuse
+        PASS [   0.004s] (380/440) pgtuskmaster_rust test_harness::etcd3::tests::prepare_etcd_member_data_dir_isolated_per_member
+        PASS [   2.757s] (381/440) pgtuskmaster_rust process::worker::tests::real_promote_job_executes_binary_path
+        PASS [   0.005s] (382/440) pgtuskmaster_rust test_harness::namespace::tests::cleanup_is_idempotent
+        PASS [   0.003s] (383/440) pgtuskmaster_rust test_harness::namespace::tests::create_namespace_is_unique
+        PASS [   0.003s] (384/440) pgtuskmaster_rust test_harness::namespace::tests::guard_cleans_up_on_drop
+        PASS [   0.003s] (385/440) pgtuskmaster_rust test_harness::pg16::tests::prepare_pgdata_dir_rejects_reuse
+        PASS [  13.381s] (386/440) pgtuskmaster_rust logging::postgres_ingest::tests::real_binary::ingests_pg_ctl_log_file_and_captures_pg_tool_output
+        PASS [   0.004s] (387/440) pgtuskmaster_rust test_harness::ports::tests::allocate_ha_topology_ports_rejects_zero_sizes
+        PASS [   2.953s] (388/440) pgtuskmaster_rust test_harness::etcd3::tests::spawn_etcd3_requires_binary_and_spawns
+        PASS [   0.004s] (389/440) pgtuskmaster_rust test_harness::ports::tests::allocate_ports_rejects_zero
+        PASS [   0.088s] (390/440) pgtuskmaster_rust test_harness::ports::tests::allocate_ha_topology_ports_returns_expected_layout
+        PASS [   0.425s] (391/440) pgtuskmaster_rust test_harness::ports::tests::concurrent_allocations_do_not_collide_while_reserved
+        PASS [   0.043s] (392/440) pgtuskmaster_rust test_harness::ports::tests::release_port_errors_for_unknown_port
+        PASS [   0.482s] (393/440) pgtuskmaster_rust test_harness::ports::tests::allocate_ports_returns_unique_ports
+        PASS [   0.027s] (394/440) pgtuskmaster_rust test_harness::ports::tests::release_port_keeps_other_ports_reserved
+        PASS [   0.006s] (395/440) pgtuskmaster_rust test_harness::provenance::tests::provenance_accepts_valid_attested_binary
+        PASS [   0.004s] (396/440) pgtuskmaster_rust test_harness::provenance::tests::provenance_rejects_checksum_mismatch
+        PASS [   0.035s] (397/440) pgtuskmaster_rust test_harness::ports::tests::release_port_succeeds_for_reserved_port
+        PASS [   0.004s] (398/440) pgtuskmaster_rust test_harness::provenance::tests::provenance_rejects_symlink_leaf
+        PASS [   0.003s] (399/440) pgtuskmaster_rust test_harness::provenance::tests::provenance_rejects_symlinked_tools_dir
+        PASS [   0.003s] (400/440) pgtuskmaster_rust test_harness::runtime_config::tests::baseline_builder_output_passes_runtime_validation
+        PASS [   0.004s] (401/440) pgtuskmaster_rust test_harness::runtime_config::tests::builder_can_override_auth_and_dcs_init
+        PASS [   0.005s] (402/440) pgtuskmaster_rust test_harness::runtime_config::tests::leaf_overrides_only_touch_the_intended_fields
+        PASS [   0.003s] (403/440) pgtuskmaster_rust test_harness::runtime_config::tests::sample_helpers_expose_password_and_tls_inputs_when_needed
+        PASS [   0.004s] (404/440) pgtuskmaster_rust test_harness::runtime_config::tests::section_transform_methods_preserve_unmodified_siblings
+        PASS [   0.003s] (405/440) pgtuskmaster_rust test_harness::runtime_config::tests::targeted_override_preserves_required_secure_fields
+        PASS [   0.022s] (406/440) pgtuskmaster_rust test_harness::runtime_config::tests::baseline_builder_works_with_managed_postgres_materialization
+        PASS [   0.008s] (407/440) pgtuskmaster_rust test_harness::tls::tests::adversarial_fixture_publishes_expected_server_san_variants
+        PASS [   0.006s] (408/440) pgtuskmaster_rust test_harness::tls::tests::client_identity_requires_identity_ca
+        PASS [   0.006s] (409/440) pgtuskmaster_rust test_harness::tls::tests::tls_builders_accept_fixture_material
+        PASS [   0.005s] (410/440) pgtuskmaster_rust test_harness::tls::tests::write_tls_material_writes_files_under_namespace
+        PASS [   0.007s] (411/440) pgtuskmaster_rust tls::tests::build_rustls_server_config_accepts_inline_identity_and_optional_client_auth
+        PASS [   0.004s] (412/440) pgtuskmaster_rust tls::tests::build_rustls_server_config_rejects_optional_without_identity
+        PASS [   0.009s] (413/440) pgtuskmaster_rust tls::tests::build_rustls_server_config_reports_io_error_when_cert_path_missing
+        PASS [   0.003s] (414/440) pgtuskmaster_rust tls::tests::build_rustls_server_config_reports_pem_error_for_invalid_cert_chain
+        PASS [   0.004s] (415/440) pgtuskmaster_rust tls::tests::build_rustls_server_config_reports_pem_error_for_invalid_private_key
+        PASS [   0.319s] (416/440) pgtuskmaster_rust test_harness::tests::concurrent_namespace_and_port_allocations_are_isolated
+        PASS [   0.003s] (417/440) pgtuskmaster_rust worker_contract_tests::required_state_types_exist
+        PASS [   0.003s] (418/440) pgtuskmaster_rust worker_contract_tests::snapshot_contract_type_compiles
+        PASS [   0.009s] (419/440) pgtuskmaster_rust worker_contract_tests::step_once_contracts_are_callable
+        PASS [   0.003s] (420/440) pgtuskmaster_rust worker_contract_tests::worker_contract_symbols_exist
+        PASS [   0.021s] (421/440) pgtuskmaster_rust::bdd_api_http bdd_api_auth_token_denies_missing_header
+        PASS [   0.004s] (422/440) pgtuskmaster_rust::bdd_api_http bdd_api_debug_routes_expose_ui_and_verbose_contracts
+        PASS [   0.005s] (423/440) pgtuskmaster_rust::bdd_api_http bdd_api_get_fallback_cluster_returns_name
+        PASS [   0.005s] (424/440) pgtuskmaster_rust::bdd_state_watch bdd_state_watch_channel_flow
+        PASS [   0.022s] (425/440) pgtuskmaster_rust::cli_binary debug_verbose_auth_failure_maps_to_exit_4
+        PASS [   0.012s] (426/440) pgtuskmaster_rust::cli_binary debug_verbose_command_renders_human_summary
+        PASS [   0.014s] (427/440) pgtuskmaster_rust::cli_binary debug_verbose_json_outputs_raw_payload_shape
+        PASS [   0.009s] (428/440) pgtuskmaster_rust::cli_binary debug_verbose_since_emits_query_parameter
+        PASS [   0.005s] (429/440) pgtuskmaster_rust::cli_binary help_exits_success
+        PASS [   0.004s] (430/440) pgtuskmaster_rust::cli_binary missing_required_subcommand_arg_exits_usage_code
+        PASS [   0.010s] (431/440) pgtuskmaster_rust::cli_binary node_help_exits_success
+        PASS [   0.012s] (432/440) pgtuskmaster_rust::cli_binary node_missing_incomplete_config_reports_parse_error
+        PASS [   0.008s] (433/440) pgtuskmaster_rust::cli_binary node_missing_secure_field_prints_stable_field_path
+        PASS [   0.006s] (434/440) pgtuskmaster_rust::cli_binary node_rejects_postgres_role_tls_auth_with_stable_field_path
+        PASS [   0.007s] (435/440) pgtuskmaster_rust::cli_binary node_rejects_ssl_mode_requiring_tls_when_postgres_tls_disabled
+        PASS [   0.005s] (436/440) pgtuskmaster_rust::nextest_config_contract nextest_config_keeps_parallel_policy_comment_visible
+        PASS [   0.015s] (437/440) pgtuskmaster_rust::nextest_config_contract nextest_profiles_route_greenfield_ha_binaries_without_serial_cap
+        PASS [   2.537s] (438/440) pgtuskmaster_rust test_harness::pg16::tests::spawn_pg16_requires_binaries_and_spawns
+        PASS [   5.293s] (439/440) pgtuskmaster_rust test_harness::etcd3::tests::restart_stopped_cluster_member_restores_cluster_readiness
+        PASS [   5.018s] (440/440) pgtuskmaster_rust worker_contract_tests::ha_state_api_stays_responsive_while_ha_attempt_leadership_blocks
+────────────
+     Summary [  30.812s] 440 tests run: 440 passed (3 leaky), 0 skipped
