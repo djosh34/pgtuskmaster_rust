@@ -25,13 +25,18 @@ Skipping tests is one of the worst things you can do, giving extremely false con
 
 We STRONGLY advice against using 'mut', and MOST of the time it can be replaced by pure and functional patterns.
 If you find a place that has a lot of 'mut' and potentially could be refactored, please add a bug using the add-bug skill, that will refactor that entire code block
+Aim for using the Rust Type System as Much as Possible: 
+- Alter/Refactor types into Structs/Enums that make impossible states unrepresentable
+- Aim to Convert everything into Abstract Data Types First, and work on those Types to do all Business logic (Real raw state -> ADT -> (logic -> New ADT)* -> Real world actions rendered)
+- Aim to do as much 'Compiler Driven Development' as possible. Aggressively refactor places that don't do this yet
 
 Also never swallow/ignore any errors. That is a huge anti-pattern, and must be reported as add-bug task.
 
 This is greenfield project with 0 users. 
 We don't have legacy at all. If you find any legacy code/docs, remove it.
 No backwards compatibility allowed!
-You are free and encouraged to make large code/schema changes, if that will improve the codebase.
+You are encouraged to make large code/schema changes (e.g. convert code into more CDD/ADT paradigm), if that will improve the codebase.
+There are no 'versions', no v2/v1 configs, only the current version
 
 Never run `cargo test` in this repo.
 For validation, prefer make targets
