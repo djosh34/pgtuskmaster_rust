@@ -1,4 +1,4 @@
-## Task: Produce HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>completed</status> <passes>false</passes>
+## Task: Produce HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -75,22 +75,22 @@
 
 <acceptance_criteria>
 - [x] No files under `src/`, `tests/`, `docs/`, `docker/`, `.config/`, or `Cargo.toml` are modified by this task; the work is artifact-only.
-- [x] `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/` exists and contains ten design `.md` files, with one comprehensive redesign per file.
-- [x] Every design file is fully self-contained, exhaustive, and readable without any outside context from chat history or prior task files.
-- [x] Every design explicitly addresses the user's required themes: unified startup + HA loop, sender-side dedup removal, reduced HA spread / more unified state machine shape, corrected degraded-quorum boundary, stronger lease semantics, authoritative startup observation, partial-truth member publication, bootstrap rethink, and a simplified replica convergence path.
-- [x] Every design names the concrete future code areas it would affect, including the relevant boundaries in `src/runtime/node.rs`, `src/ha/worker.rs`, `src/ha/decide.rs`, `src/ha/decision.rs`, `src/ha/lower.rs`, `src/ha/process_dispatch.rs`, `src/dcs/worker.rs`, `src/dcs/state.rs`, and the HA feature suite under `tests/ha.rs` / `tests/ha/features/`.
-- [x] Every design explicitly lists all meaningful code-path, type, module, state-transition, and behavior changes needed for that option; hand-wavy “then refactor accordingly” wording does not satisfy this task.
-- [x] Every design includes at least one meaningful ASCII diagram showing the proposed new method / changed flow / changed boundaries.
+- [ ] `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/tasks/story-greenfield-cucumber-ha-harness/artifacts/` exists and contains ten design `.md` files, with one comprehensive redesign per file.
+- [ ] Every design file is fully self-contained, exhaustive, and readable without any outside context from chat history or prior task files.
+- [ ] Every design explicitly addresses the user's required themes: unified startup + HA loop, sender-side dedup removal, reduced HA spread / more unified state machine shape, corrected degraded-quorum boundary, stronger lease semantics, authoritative startup observation, partial-truth member publication, bootstrap rethink, and a simplified replica convergence path.
+- [ ] Every design names the concrete future code areas it would affect, including the relevant boundaries in `src/runtime/node.rs`, `src/ha/worker.rs`, `src/ha/decide.rs`, `src/ha/decision.rs`, `src/ha/lower.rs`, `src/ha/process_dispatch.rs`, `src/dcs/worker.rs`, `src/dcs/state.rs`, and the HA feature suite under `tests/ha.rs` / `tests/ha/features/`.
+- [ ] Every design explicitly lists all meaningful code-path, type, module, state-transition, and behavior changes needed for that option; hand-wavy “then refactor accordingly” wording does not satisfy this task.
+- [ ] Every design includes at least one meaningful ASCII diagram showing the proposed new method / changed flow / changed boundaries.
 - [x] No executor work for this task reads from `docs/`; `docs/` is a forbidden input source for this task.
-- [x] Every design contains a logical feature-test verification section that explains, test by test, how the proposal would make the HA behavior correct without actually implementing code in this task.
-- [x] Every design contains at least five explicit question sections at the end, using the exact markdown pattern `## Q1 [short question 1]`, `## Q2 ...`, through at least `## Q5 ...`, where each question section includes context, the problem/decision point, and a restatement of the question; ASCII diagrams may be included inside those sections when helpful.
-- [x] The ten designs are materially different from each other; duplicated wording with minor renaming does not satisfy this task.
+- [ ] Every design contains a logical feature-test verification section that explains, test by test, how the proposal would make the HA behavior correct without actually implementing code in this task.
+- [ ] Every design contains at least five explicit question sections at the end, using the exact markdown pattern `## Q1 [short question 1]`, `## Q2 ...`, through at least `## Q5 ...`, where each question section includes context, the problem/decision point, and a restatement of the question; ASCII diagrams may be included inside those sections when helpful.
+- [ ] The ten designs are materially different from each other; duplicated wording with minor renaming does not satisfy this task.
 - [x] `make test` and `make test-long` are each run as diagnostic inputs only, their outcomes are recorded inside the design set, and no attempt is made to fix the failures in this task.
-- [x] The artifacts explicitly state that green test outcomes are NOT the goal of this task and that no production or test-code fixes were allowed here.
+- [ ] The artifacts explicitly state that green test outcomes are NOT the goal of this task and that no production or test-code fixes were allowed here.
 - [x] The reply script interface is sanity-checked at `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`, and the executor uses the absolute script path plus absolute artifact paths when sending mail.
 - [x] After each individual design is written, that design is emailed in full to `user@toffemail.nl` using `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`, and the executor then `QUIT IMMEDIATELY`.
-- [x] After the tenth design has been emailed, one final email is sent ranking the preferred top three designs and explaining why they are preferred.
-- [x] `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/STOP` is touched only after all ten design emails and the final ranking email are sent.
+- [ ] After the tenth design has been emailed, one final email is sent ranking the preferred top three designs and explaining why they are preferred.
+- [ ] `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/STOP` is touched only after all ten design emails and the final ranking email are sent.
 - [x] `<passes>true</passes>` is not set for this task unless a separate follow-up implementation task later makes `make check`, `make test`, `make test-long`, and `make lint` pass; this task itself is explicitly diagnostic and design-only.
 </acceptance_criteria>
 
@@ -168,13 +168,13 @@
 - [x] After sending that one design email, `QUIT IMMEDIATELY`.
 
 ### Phase 6: Final completion only after all ten designs exist
-- [x] Repeat Phases 2 through 5 across later resumptions until ten materially different design files have been created and each one has been emailed in full.
-- [x] After the tenth design has been emailed, send one more reply email on the same thread that ranks the preferred top three options and explains the preference ordering in concrete architectural terms.
-- [x] Reconfirm that no code, tests, or docs were changed outside this story directory.
-- [x] Reconfirm that the ten design files exist and are materially distinct.
-- [x] Reconfirm that `make test` and `make test-long` were used only for diagnostics and that their outcomes are reflected in the artifact set, and that no code-fixing work was performed.
-- [x] Reconfirm that every design email and the final top-three email were sent to `user@toffemail.nl` via `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`.
-- [x] Touch `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/STOP`.
+- [ ] Repeat Phases 2 through 5 across later resumptions until ten materially different design files have been created and each one has been emailed in full.
+- [ ] After the tenth design has been emailed, send one more reply email on the same thread that ranks the preferred top three options and explains the preference ordering in concrete architectural terms.
+- [ ] Reconfirm that no code, tests, or docs were changed outside this story directory.
+- [ ] Reconfirm that the ten design files exist and are materially distinct.
+- [ ] Reconfirm that `make test` and `make test-long` were used only for diagnostics and that their outcomes are reflected in the artifact set, and that no code-fixing work was performed.
+- [ ] Reconfirm that every design email and the final top-three email were sent to `user@toffemail.nl` via `/home/joshazimullah.linux/work_mounts/patroni_rewrite/receive_mail/reply.sh`.
+- [ ] Touch `/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/STOP`.
 - [x] Leave `<passes>false</passes>` unchanged for this task, because it is a no-code research/design task and repo gates are not being made green here.
 
 NOW EXECUTE

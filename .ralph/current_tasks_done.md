@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Thu Mar 12 12:37:02 CET 2026
+Generated: Thu Mar 12 09:07:53 PM CET 2026
 
 # Task `.ralph/tasks/story-cluster-startup-friction-improvements/task-smooth-the-local-docker-cluster-startup-experience.md`
 
@@ -162,6 +162,18 @@ Generated: Thu Mar 12 12:37:02 CET 2026
 
 ```
 ## Task: Add Advanced Docker HA Harness Features And Migrate Remaining Black-Box Scenarios <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md`
+
+```
+## Task: Produce HA Refactor Option Artifacts, Email Review, And Stop Ralph <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
