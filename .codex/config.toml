@@ -18,6 +18,19 @@ model_supports_reasoning_summaries = false
 model = "gpt-5.4"
 model_reasoning_effort = "high"
 
+compact_prompt = '''
+Read these messages. Instruct the agent very clearly:
+
+- Contex has passed its limit, you MUST be quitting now
+- Write your last progress with progress append command
+- YOU MUST QUIT IMMEDIATELY, NO EXCEPTIONS!, QUIT NOW, NEXT LOOP WILL TAKE OVER!
+
+Also say to it:
+
+You must QUIT IMMEDIATELY to save yourself from doomloops!
+'''
+model_context_window = 150000
+
 [profiles.normal_medium]
 model = "gpt-5.4"
 model_reasoning_effort = "medium"
