@@ -121,19 +121,21 @@ Use these fields to manage your poller:
 
 The current in-memory retention limit is `300` entries for `changes` and `timeline`, so incremental polling is the safest way to keep event history without missing rollovers.
 
-## Step 6: Watch decision kinds, not only phases
+## Step 6: Watch role and authority, not only trust
 
-`phase` tells you where the node is. `decision` tells you what it wants to do next.
+In the current debug payload:
 
-Useful decision kinds to alert on:
+- `phase` is the local HA role label
+- `decision` is the compact authority projection string
 
-- `enter_fail_safe`
-- `fence_node`
-- `release_leader_lease`
-- `step_down`
-- `recover_replica`
+Useful signals to alert on include:
 
-`pgtm debug verbose` surfaces those decisions directly in human output and preserves the full payload in `debug.json` when you need to inspect the exact field values.
+- `phase=fail_safe(...)`
+- `phase=fenced(...)`
+- `phase=demoting_for_switchover(...)`
+- `decision=no_primary:...`
+
+`pgtm debug verbose` surfaces those values directly in human output and preserves the full payload in `debug.json` when you need to inspect the exact field values.
 
 ## Step 7: Archive recent history during incidents
 

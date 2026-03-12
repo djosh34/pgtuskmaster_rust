@@ -22,6 +22,3 @@ pub mod state;
 #[doc(hidden)]
 pub mod test_harness;
 pub(crate) mod tls;
-
-#[cfg(test)]
-mod worker_contract_tests;

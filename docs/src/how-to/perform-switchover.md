@@ -80,9 +80,9 @@ pgtm -c config.toml status --watch --json
 Observe these source-backed state changes:
 
 1. A `switchover: pending -> ...` line appears while the request is still in force.
-2. The current primary moves through `waiting_switchover_successor`.
+2. The current primary stops publishing itself as primary authority and begins demotion.
 3. A different node becomes the sampled primary.
-4. The former primary converges back to replica behavior.
+4. The former primary converges back to follower or idle behavior.
 5. The pending switchover marker disappears only after the new primary has taken over and observed the switchover as complete.
 
 Generic successor selection is automatic. The HA engine chooses the next primary from observed cluster state and healthy follow targets when no target is supplied. For a targeted switchover, the HA engine keeps non-target nodes from acquiring leadership and waits for the requested eligible replica to take over.
@@ -162,7 +162,7 @@ pgtm -c config.toml status
 
 The normal switchover path depends on `full_quorum` DCS trust and enough peer API reachability to form a confident cluster view. If trust has fallen to `fail_safe` or `not_trusted`, or if nodes are unreachable, resolve cluster and DCS health first.
 
-### Transition stalls in `waiting_switchover_successor`
+### Transition stalls with the old primary demoting but no new primary visible
 
 Use verbose status to see deeper per-node detail:
 
@@ -175,7 +175,7 @@ Look for:
 - degraded trust
 - unreachable nodes
 - a target replica that is not healthy enough to take over
-- disagreement about who the leader is
+- disagreement about who currently has primary authority
 
 If a targeted switchover remains pending, expect untargeted replicas to keep waiting instead of racing for leadership. That is deliberate: the request stays in DCS until the requested successor becomes the observed primary or the operator clears the request.
 

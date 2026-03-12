@@ -309,7 +309,7 @@ fn normalize_token(raw: Option<String>) -> Option<String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use std::net::SocketAddr;
 

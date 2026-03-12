@@ -10,6 +10,8 @@
 - Remove all other shipped operator-facing Docker Compose variants for local onboarding. Keep exactly one canonical compose file for the product quickstart: `docker/compose.yml`.
 - Remove the requirement for `.env.docker` or `.env.docker.example` in the canonical local path.
 - Flatten the shipped runnable asset layout under a shallow repo-owned `docker/` directory. Do not keep the canonical path buried under `docker/configs/cluster/node-a/runtime.toml`-style nesting.
+- Use [`tests/ha/givens/three_node_plain`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tests/ha/givens/three_node_plain) as the source-first structural baseline for the shipped local stack: compose file, file-backed secrets, file-backed TLS, per-node runtime configs, and strict auth/TLS defaults should all look materially like the given unless the product path has a specific reason to differ.
+- Use [`tests/docker/Dockerfile`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/tests/docker/Dockerfile) as the baseline for the shipped local image shape where practical, but do not cargo-cult harness-only behavior into the product path. In particular, the canonical shipped stack must not keep the observer sidecar, harness-only image naming, or test fault-injection wrapper binaries unless a product need is documented explicitly.
 - Ship default local file assets in-repo for the canonical path with this exact target layout unless implementation discovers a hard blocker and updates every touched doc/task consistently:
 
 ```text
@@ -36,6 +38,7 @@ docker/
 **Context from research:**
 - The current README still routes multi-node users through `make docker-up-cluster` or `tools/docker/cluster.sh ... --env-file ...`.
 - `docker/compose/docker-compose.cluster.yml` depends on env-file variables for secrets and ports even though the example values are stable.
+- The current HA givens already demonstrate the simpler shape the product path should move toward: one compose file beside local configs, secrets, and TLS materials with no env-file indirection.
 - The current local cluster uses `18081`, `18082`, `18083` for APIs and `15433`, `15434`, `15435` for PostgreSQL; those values are stable already but not presented as a clean contract.
 - The docs/tutorial flow still splits attention between docker runtime configs, docs-owned operator configs, helper scripts, and make targets.
 - The user explicitly wants "a simple docker compose up with some default config" and wants env-file-centric local setup removed.
@@ -85,6 +88,8 @@ node-c        replica  full_quorum   replica  ok
 - [ ] `docker compose -f docker/compose.yml down -v` works cleanly against the canonical local stack and fully resets the local data volumes.
 - [ ] The canonical local path does not require `.env.docker`, `.env.docker.example`, or any copied env file.
 - [ ] The canonical local deployment assets are flattened under a shallow `docker/` directory rather than a deep nested config tree.
+- [ ] The canonical shipped local stack is materially derived from `tests/ha/givens/three_node_plain` rather than the older env-file-driven `docker/compose/docker-compose.cluster.yml` layout.
+- [ ] The canonical shipped local image setup reuses the good parts of `tests/docker/Dockerfile` where practical, while explicitly excluding harness-only concerns such as the observer sidecar and fault-injection wrapper binaries from the default product path.
 - [ ] The canonical local file layout is exactly or materially equivalent to:
 - `docker/compose.yml`
 - `docker/node-a.toml`

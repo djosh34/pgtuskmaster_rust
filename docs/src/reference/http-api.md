@@ -160,9 +160,11 @@ This is the stable read surface that `pgtm status` uses for cluster discovery. T
     }
   ],
   "dcs_trust": "<trust_variant>",
-  "ha_phase": "<phase_variant>",
+  "authority": "<authority_variant>",
+  "fence_cutoff": "<fence_cutoff_variant>" | null,
+  "ha_role": "<role_variant>",
   "ha_tick": <number>,
-  "ha_decision": <decision_variant>,
+  "planned_actions": ["<reconcile_action_variant>", "..."],
   "snapshot_sequence": <number>
 }
 ```
@@ -177,9 +179,11 @@ This is the stable read surface that `pgtm status` uses for cluster discovery. T
 - `member_count`: Number of members in DCS cache
 - `members`: Stable cluster member discovery data. This is the machine-readable list that `pgtm status` fans out from when it builds a cluster-wide view.
 - `dcs_trust`: Trust level of DCS (see DcsTrustResponse variants)
-- `ha_phase`: Current HA phase (see HaPhaseResponse variants)
+- `authority`: Current operator-facing authority projection (see [HA State Semantics](ha-decisions.md))
+- `fence_cutoff`: Present when the node is publishing a no-primary safety boundary that includes a lease epoch and committed LSN cutoff
+- `ha_role`: Current local HA role intent (see [HA State Semantics](ha-decisions.md))
 - `ha_tick`: HA decision loop counter
-- `ha_decision`: Current HA decision (see HaDecisionResponse variants)
+- `planned_actions`: Ordered reconcile actions the node plans to execute next
 - `snapshot_sequence`: Monotonic snapshot version
 
 Each `members[]` entry includes:
@@ -196,7 +200,7 @@ Each `members[]` entry includes:
 - `updated_at_ms`: Timestamp of the published member record
 - `pg_version`: Published PostgreSQL-state version for that member
 
-When `switchover_to` is omitted, successor choice remains automatic. `POST /switchover` signals intent to switch over, and the HA engine picks the replacement primary from observed cluster state. When `switchover_to` is present, the API accepts only a known, eligible replica and the HA engine holds non-target nodes back from acquiring leadership during that switchover.
+When `switchover_to` is omitted, successor choice remains automatic. `POST /switchover` signals intent to switch over, and the HA engine picks the replacement primary from observed cluster state. When `switchover_to` is present, the API accepts only a known, fresh, healthy, ready replica and the HA engine holds non-target nodes back from acquiring leadership during that switchover.
 
 **Status Codes**
 - `200 OK`: State retrieved successfully
@@ -391,37 +395,48 @@ Enumeration of DCS trust levels:
 - `fail_safe`: Operating in fail-safe mode
 - `not_trusted`: DCS not trusted for HA decisions
 
-### HaPhaseResponse
+### HaAuthorityResponse
 
-Enumeration of HA worker phases:
+Tagged union describing the operator-facing primary authority projection:
 
-- `init`: Initial startup phase
-- `waiting_postgres_reachable`: Waiting for PostgreSQL connectivity
-- `waiting_dcs_trusted`: Waiting for DCS to become trusted
-- `waiting_switchover_successor`: Waiting for switchover successor selection
-- `replica`: Operating as replica
-- `candidate_leader`: Candidate for leader election
-- `primary`: Operating as primary
-- `rewinding`: Rewinding state to align with leader
-- `bootstrapping`: Initial cluster bootstrap
-- `fencing`: Fencing previous primary
-- `fail_safe`: Operating in fail-safe mode
+- `primary`: publishes a `member_id` plus the lease epoch `{ holder, generation }`
+- `no_primary`: publishes a structured reason for withholding primary authority
+- `unknown`: startup placeholder before a stronger projection is available
 
-### HaDecisionResponse
+### FenceCutoffResponse
 
-Tagged union of HA decisions:
+Safety boundary payload:
 
-- `no_change`: No state change required
-- `wait_for_postgres`: Waiting for PostgreSQL with start/leaders fields
-- `wait_for_dcs_trust`: Waiting for DCS trust restoration
-- `attempt_leadership`: Attempting to become leader
-- `follow_leader`: Following specified leader
-- `become_primary`: Promoting to primary role
-- `step_down`: Stepping down with reason and flags
-- `recover_replica`: Recovering replica with strategy
-- `fence_node`: Fencing node
-- `release_leader_lease`: Releasing leader lease with reason
-- `enter_fail_safe`: Entering fail-safe mode
+- `epoch`: the lease epoch the cutoff is tied to
+- `committed_lsn`: the primary commit point the node must not outlive unsafely
+
+### TargetRoleResponse
+
+Tagged union describing local HA intent:
+
+- `leader`
+- `candidate`
+- `follower`
+- `fail_safe`
+- `demoting_for_switchover`
+- `fenced`
+- `idle`
+
+### ReconcileActionResponse
+
+Tagged union describing the ordered next actions for the HA worker:
+
+- `init_db`
+- `base_backup`
+- `pg_rewind`
+- `start_primary`
+- `start_replica`
+- `promote`
+- `demote`
+- `acquire_lease`
+- `release_lease`
+- `publish`
+- `clear_switchover`
 
 ---
 

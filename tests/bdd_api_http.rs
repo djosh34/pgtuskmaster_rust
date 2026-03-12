@@ -39,6 +39,31 @@ impl DcsStore for RecordingStore {
         Ok(guard.get(path).cloned())
     }
 
+    fn snapshot_prefix(&mut self, path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError> {
+        let guard = self
+            .kv
+            .lock()
+            .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?;
+        let mut events = vec![WatchEvent {
+            op: pgtuskmaster_rust::dcs::store::WatchOp::Reset,
+            path: path_prefix.to_string(),
+            value: None,
+            revision: 0,
+        }];
+        events.extend(
+            guard
+                .iter()
+                .filter(|(path, _)| path.starts_with(path_prefix))
+                .map(|(path, value)| WatchEvent {
+                    op: pgtuskmaster_rust::dcs::store::WatchOp::Put,
+                    path: path.clone(),
+                    value: Some(value.clone()),
+                    revision: 0,
+                }),
+        );
+        Ok(events)
+    }
+
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
         {
             let mut guard = self

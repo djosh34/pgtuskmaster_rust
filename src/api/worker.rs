@@ -1255,8 +1255,8 @@ mod tests {
             AppLifecycle, DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot,
         },
         ha::{
-            decision::HaDecision,
-            state::{HaPhase, HaState},
+            state::HaState,
+            types::{IdleReason, NoPrimaryReason, PublicationState, TargetRole},
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
@@ -1310,6 +1310,13 @@ mod tests {
 
         fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
             Ok(None)
+        }
+
+        fn snapshot_prefix(
+            &mut self,
+            _path_prefix: &str,
+        ) -> Result<Vec<WatchEvent>, DcsStoreError> {
+            Ok(Vec::new())
         }
 
         fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
@@ -1380,10 +1387,10 @@ mod tests {
         }
     }
 
-    fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
+    fn sample_dcs_state_with_trust(cfg: RuntimeConfig, trust: DcsTrust) -> DcsState {
         DcsState {
             worker: crate::state::WorkerStatus::Running,
-            trust: DcsTrust::FullQuorum,
+            trust,
             cache: DcsCache {
                 members: BTreeMap::new(),
                 leader: None,
@@ -1393,6 +1400,10 @@ mod tests {
             },
             last_refresh_at: Some(UnixMillis(1)),
         }
+    }
+
+    fn sample_dcs_state(cfg: RuntimeConfig) -> DcsState {
+        sample_dcs_state_with_trust(cfg, DcsTrust::FullQuorum)
     }
 
     fn sample_process_state() -> ProcessState {
@@ -1405,23 +1416,52 @@ mod tests {
     fn sample_ha_state() -> HaState {
         HaState {
             worker: crate::state::WorkerStatus::Running,
-            phase: HaPhase::Replica,
             tick: 7,
-            decision: HaDecision::EnterFailSafe {
-                release_leader_lease: false,
+            publication: PublicationState {
+                authority: crate::ha::types::AuthorityView::NoPrimary(NoPrimaryReason::Recovering),
+                fence_cutoff: None,
             },
+            role: TargetRole::Idle(IdleReason::AwaitingLeader),
+            clear_switchover: false,
+            planned_actions: Vec::new(),
         }
     }
 
-    fn sample_debug_snapshot(auth_token: Option<String>) -> SystemSnapshot {
+    fn sample_authoritative_primary_ha_state() -> HaState {
+        HaState {
+            worker: crate::state::WorkerStatus::Running,
+            tick: 7,
+            publication: PublicationState {
+                authority: crate::ha::types::AuthorityView::Primary {
+                    member: crate::state::MemberId("node-a".to_string()),
+                    epoch: crate::ha::types::LeaseEpoch {
+                        holder: crate::state::MemberId("node-a".to_string()),
+                        generation: 7,
+                    },
+                },
+                fence_cutoff: None,
+            },
+            role: TargetRole::Leader(crate::ha::types::LeaseEpoch {
+                holder: crate::state::MemberId("node-a".to_string()),
+                generation: 7,
+            }),
+            clear_switchover: false,
+            planned_actions: Vec::new(),
+        }
+    }
+
+    fn sample_debug_snapshot_with_states(
+        auth_token: Option<String>,
+        dcs_state: DcsState,
+        ha_state: HaState,
+    ) -> SystemSnapshot {
         let cfg = sample_runtime_config(auth_token);
         let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone(), UnixMillis(1));
         let (_pg_publisher, pg_subscriber) = new_state_channel(sample_pg_state(), UnixMillis(1));
-        let (_dcs_publisher, dcs_subscriber) =
-            new_state_channel(sample_dcs_state(cfg.clone()), UnixMillis(1));
+        let (_dcs_publisher, dcs_subscriber) = new_state_channel(dcs_state, UnixMillis(1));
         let (_process_publisher, process_subscriber) =
             new_state_channel(sample_process_state(), UnixMillis(1));
-        let (_ha_publisher, ha_subscriber) = new_state_channel(sample_ha_state(), UnixMillis(1));
+        let (_ha_publisher, ha_subscriber) = new_state_channel(ha_state, UnixMillis(1));
 
         SystemSnapshot {
             app: AppLifecycle::Running,
@@ -1447,6 +1487,20 @@ mod tests {
                 message: "ha reached replica".to_string(),
             }],
         }
+    }
+
+    fn sample_debug_snapshot(auth_token: Option<String>) -> SystemSnapshot {
+        let cfg = sample_runtime_config(auth_token.clone());
+        sample_debug_snapshot_with_states(auth_token, sample_dcs_state(cfg), sample_ha_state())
+    }
+
+    fn sample_authoritative_primary_snapshot(auth_token: Option<String>) -> SystemSnapshot {
+        let cfg = sample_runtime_config(auth_token.clone());
+        sample_debug_snapshot_with_states(
+            auth_token,
+            sample_dcs_state(cfg),
+            sample_authoritative_primary_ha_state(),
+        )
     }
 
     fn test_log_handle() -> (LogHandle, Arc<TestSink>) {
@@ -1940,7 +1994,7 @@ mod tests {
             Some(roles.read_token.clone()),
             Some(roles.admin_token.clone()),
         )?;
-        let snapshot = sample_debug_snapshot(None);
+        let snapshot = sample_authoritative_primary_snapshot(None);
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
         ctx.set_ha_snapshot_subscriber(debug_subscriber);
 
@@ -1957,6 +2011,54 @@ mod tests {
         .await?;
         assert_eq!(response.status_code, 202);
         assert_eq!(store.write_count()?, 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn switchover_route_rejects_without_full_quorum_trust() -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-switchover-requires-full-quorum")?;
+
+        let (mut ctx, store) = build_ctx(None).await?;
+        let cfg = sample_runtime_config(None);
+        let snapshot = sample_debug_snapshot_with_states(
+            None,
+            sample_dcs_state_with_trust(cfg, DcsTrust::FailSafe),
+            sample_authoritative_primary_ha_state(),
+        );
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+
+        let post_body = br#"{}"#.to_vec();
+        let response = send_plain_request(
+            &mut ctx,
+            format_post("/switchover", None, post_body.as_slice()),
+            Some(post_body),
+        )
+        .await?;
+        assert_eq!(response.status_code, 400);
+        assert_eq!(store.write_count()?, 0);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn switchover_route_rejects_when_node_is_not_authoritative_primary(
+    ) -> Result<(), WorkerError> {
+        let _guard = NamespaceGuard::new("api-switchover-requires-primary-authority")?;
+
+        let (mut ctx, store) = build_ctx(None).await?;
+        let snapshot = sample_debug_snapshot(None);
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
+        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+
+        let post_body = br#"{}"#.to_vec();
+        let response = send_plain_request(
+            &mut ctx,
+            format_post("/switchover", None, post_body.as_slice()),
+            Some(post_body),
+        )
+        .await?;
+        assert_eq!(response.status_code, 400);
+        assert_eq!(store.write_count()?, 0);
         Ok(())
     }
 
@@ -1983,10 +2085,11 @@ mod tests {
         assert_eq!(decoded["switchover_to"], serde_json::Value::Null);
         assert_eq!(decoded["member_count"], 0);
         assert_eq!(decoded["dcs_trust"], "full_quorum");
-        assert_eq!(decoded["ha_phase"], "replica");
+        assert_eq!(decoded["authority"]["kind"], "no_primary");
+        assert_eq!(decoded["authority"]["reason"]["kind"], "recovering");
         assert_eq!(decoded["ha_tick"], 7);
-        assert_eq!(decoded["ha_decision"]["kind"], "enter_fail_safe");
-        assert_eq!(decoded["ha_decision"]["release_leader_lease"], false);
+        assert_eq!(decoded["ha_role"]["kind"], "idle");
+        assert_eq!(decoded["ha_role"]["reason"]["kind"], "awaiting_leader");
         assert_eq!(decoded["snapshot_sequence"], 2);
         Ok(())
     }

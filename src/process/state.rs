@@ -9,7 +9,7 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec,
+    ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, PgRewindSpec,
     ProcessCommandRunner, ProcessError, ProcessHandle, ProcessLogIdentity, PromoteSpec,
     StartPostgresSpec,
 };
@@ -26,16 +26,6 @@ pub(crate) enum ProcessState {
     },
 }
 
-impl ProcessState {
-    #[cfg(test)]
-    pub(crate) fn running_job_id(&self) -> Option<&JobId> {
-        match self {
-            Self::Idle { .. } => None,
-            Self::Running { active, .. } => Some(&active.id),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProcessJobKind {
     Bootstrap(BootstrapSpec),
@@ -44,7 +34,6 @@ pub(crate) enum ProcessJobKind {
     Promote(PromoteSpec),
     Demote(DemoteSpec),
     StartPostgres(StartPostgresSpec),
-    Fencing(FencingSpec),
 }
 
 impl ProcessJobKind {
@@ -56,7 +45,6 @@ impl ProcessJobKind {
             Self::Promote(_) => "promote",
             Self::Demote(_) => "demote",
             Self::StartPostgres(_) => "start_postgres",
-            Self::Fencing(_) => "fencing",
         }
     }
 }
@@ -114,31 +102,4 @@ pub(crate) struct ProcessWorkerCtx {
     pub(crate) active_runtime: Option<ActiveRuntime>,
     pub(crate) last_rejection: Option<ProcessJobRejection>,
     pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
-}
-
-impl ProcessWorkerCtx {
-    #[cfg(test)]
-    pub(crate) fn contract_stub(
-        config: ProcessConfig,
-        publisher: StatePublisher<ProcessState>,
-        inbox: UnboundedReceiver<ProcessJobRequest>,
-    ) -> Self {
-        Self {
-            poll_interval: Duration::from_millis(10),
-            config,
-            log: LogHandle::null(),
-            capture_subprocess_output: false,
-            state: ProcessState::Idle {
-                worker: WorkerStatus::Starting,
-                last_outcome: None,
-            },
-            publisher,
-            inbox,
-            inbox_disconnected_logged: false,
-            command_runner: Box::new(crate::process::jobs::NoopCommandRunner),
-            active_runtime: None,
-            last_rejection: None,
-            now: Box::new(|| Ok(UnixMillis(0))),
-        }
-    }
 }

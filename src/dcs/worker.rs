@@ -6,10 +6,10 @@ use crate::{
 use super::{
     keys::DcsKey,
     state::{
-        build_local_member_record, evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
-        InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest,
+        build_local_member_record, evaluate_trust, prune_stale_members, DcsCache, DcsState,
+        DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest,
     },
-    store::{refresh_from_etcd_watch, write_local_member},
+    store::{leader_path, refresh_from_etcd_watch, write_local_member},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,13 +117,23 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let mut local_member_publish_succeeded = false;
 
     if must_publish_local_member {
+        let primary_observation_stale = matches!(
+            pg_snapshot.value,
+            crate::pginfo::state::PgInfoState::Primary { .. }
+        ) && now.0.saturating_sub(pg_snapshot.updated_at.0)
+            > ctx.cache.config.ha.lease_ttl_ms;
+        let local_member_updated_at = if primary_observation_stale {
+            pg_snapshot.updated_at
+        } else {
+            now
+        };
         let local_member = build_local_member_record(
             &ctx.self_id,
             ctx.local_postgres_host.as_str(),
             ctx.local_postgres_port,
             ctx.local_api_url.as_deref(),
             &pg_snapshot.value,
-            now,
+            local_member_updated_at,
             pg_snapshot.version,
         );
         match write_local_member(ctx.store.as_mut(), &ctx.scope, &local_member) {
@@ -214,6 +224,116 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             )?;
             store_healthy = false;
         }
+    }
+
+    if store_healthy {
+        let scope_prefix = format!("/{}/", ctx.scope.trim_matches('/'));
+        match ctx.store.snapshot_prefix(scope_prefix.as_str()) {
+            Ok(snapshot_events) => {
+                match refresh_from_etcd_watch(&ctx.scope, &mut ctx.cache, snapshot_events) {
+                    Ok(result) => {
+                        if result.had_errors {
+                            let mut event = dcs_event(
+                                SeverityText::Warn,
+                                "dcs snapshot refresh had errors",
+                                "dcs.snapshot.apply_had_errors",
+                                "failed",
+                            );
+                            let fields = event.fields_mut();
+                            dcs_append_base_fields(fields, ctx);
+                            fields.insert("applied", result.applied);
+                            emit_dcs_event(
+                                ctx,
+                                "dcs_worker::step_once",
+                                event,
+                                "dcs snapshot had_errors log emit failed",
+                            )?;
+                            store_healthy = false;
+                        }
+                    }
+                    Err(err) => {
+                        let mut event = dcs_event(
+                            dcs_refresh_error_severity(&err),
+                            "dcs snapshot refresh failed",
+                            "dcs.snapshot.refresh_failed",
+                            "failed",
+                        );
+                        let fields = event.fields_mut();
+                        dcs_append_base_fields(fields, ctx);
+                        fields.insert("error", err.to_string());
+                        emit_dcs_event(
+                            ctx,
+                            "dcs_worker::step_once",
+                            event,
+                            "dcs snapshot refresh log emit failed",
+                        )?;
+                        store_healthy = false;
+                    }
+                }
+            }
+            Err(err) => {
+                let mut event = dcs_event(
+                    dcs_io_error_severity(&err),
+                    "dcs snapshot read failed",
+                    "dcs.snapshot.read_failed",
+                    "failed",
+                );
+                let fields = event.fields_mut();
+                dcs_append_base_fields(fields, ctx);
+                fields.insert("error", err.to_string());
+                emit_dcs_event(
+                    ctx,
+                    "dcs_worker::step_once",
+                    event,
+                    "dcs snapshot read log emit failed",
+                )?;
+                store_healthy = false;
+            }
+        }
+    }
+
+    let stale_leader_holder = ctx.cache.leader.as_ref().and_then(|leader| {
+        let is_stale = ctx
+            .cache
+            .members
+            .get(&leader.member_id)
+            .map(|record| !super::state::member_record_is_fresh(record, &ctx.cache, now))
+            .unwrap_or(true);
+        is_stale.then(|| leader.member_id.clone())
+    });
+    if let Some(member_id) = stale_leader_holder {
+        let leader_key = leader_path(ctx.scope.as_str());
+        match ctx.store.delete_path(leader_key.as_str()) {
+            Ok(()) => {
+                ctx.cache.leader = None;
+            }
+            Err(err) => {
+                let mut event = dcs_event(
+                    dcs_io_error_severity(&err),
+                    "dcs stale leader cleanup failed",
+                    "dcs.leader.cleanup_failed",
+                    "failed",
+                );
+                let fields = event.fields_mut();
+                dcs_append_base_fields(fields, ctx);
+                fields.insert("leader_member_id", member_id.0);
+                fields.insert("error", err.to_string());
+                emit_dcs_event(
+                    ctx,
+                    "dcs_worker::step_once",
+                    event,
+                    "dcs stale leader cleanup log emit failed",
+                )?;
+                store_healthy = false;
+            }
+        }
+    }
+
+    if !matches!(
+        pg_snapshot.value,
+        crate::pginfo::state::PgInfoState::Primary { .. }
+    ) {
+        prune_stale_members(&mut ctx.cache, now);
     }
 
     let trust = if local_member_publish_succeeded {
@@ -330,6 +450,8 @@ mod tests {
         healthy: bool,
         events: Arc<Mutex<VecDeque<WatchEvent>>>,
         writes: Arc<Mutex<Vec<(String, String)>>>,
+        deletes: Arc<Mutex<Vec<String>>>,
+        kv: Arc<Mutex<std::collections::BTreeMap<String, String>>>,
     }
 
     impl RecordingStore {
@@ -338,10 +460,28 @@ mod tests {
                 healthy,
                 events: Arc::new(Mutex::new(VecDeque::new())),
                 writes: Arc::new(Mutex::new(Vec::new())),
+                deletes: Arc::new(Mutex::new(Vec::new())),
+                kv: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             }
         }
 
         fn push_event(&self, event: WatchEvent) {
+            if let Ok(mut kv) = self.kv.lock() {
+                match event.op {
+                    WatchOp::Put => {
+                        if let Some(value) = event.value.as_ref() {
+                            kv.insert(event.path.clone(), value.clone());
+                        }
+                    }
+                    WatchOp::Delete => {
+                        kv.remove(event.path.as_str());
+                    }
+                    WatchOp::Reset => {
+                        let prefix = event.path.trim_end_matches('/').to_string();
+                        kv.retain(|path, _| !path.starts_with(prefix.as_str()));
+                    }
+                }
+            }
             if let Ok(mut guard) = self.events.lock() {
                 guard.push_back(event);
             }
@@ -368,6 +508,27 @@ mod tests {
             }
             None
         }
+
+        fn last_write_value(&self) -> Option<String> {
+            if let Ok(guard) = self.writes.lock() {
+                return guard.last().map(|(_, value)| value.clone());
+            }
+            None
+        }
+
+        fn delete_count(&self) -> usize {
+            if let Ok(guard) = self.deletes.lock() {
+                return guard.len();
+            }
+            0
+        }
+
+        fn first_delete_path(&self) -> Option<String> {
+            if let Ok(guard) = self.deletes.lock() {
+                return guard.first().cloned();
+            }
+            None
+        }
     }
 
     impl DcsStore for RecordingStore {
@@ -375,11 +536,40 @@ mod tests {
             self.healthy
         }
 
-        fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
-            Ok(None)
+        fn read_path(&mut self, path: &str) -> Result<Option<String>, DcsStoreError> {
+            self.kv
+                .lock()
+                .map(|guard| guard.get(path).cloned())
+                .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))
+        }
+
+        fn snapshot_prefix(&mut self, path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError> {
+            let guard = self
+                .kv
+                .lock()
+                .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?;
+            let mut events = vec![WatchEvent {
+                op: WatchOp::Reset,
+                path: path_prefix.to_string(),
+                value: None,
+                revision: 0,
+            }];
+            events.extend(guard.iter().filter_map(|(path, value)| {
+                path.starts_with(path_prefix).then(|| WatchEvent {
+                    op: WatchOp::Put,
+                    path: path.clone(),
+                    value: Some(value.clone()),
+                    revision: 0,
+                })
+            }));
+            Ok(events)
         }
 
         fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
+            self.kv
+                .lock()
+                .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?
+                .insert(path.to_string(), value.clone());
             let mut guard = self
                 .writes
                 .lock()
@@ -389,6 +579,10 @@ mod tests {
         }
 
         fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
+            self.kv
+                .lock()
+                .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?
+                .insert(path.to_string(), value.clone());
             let mut guard = self
                 .writes
                 .lock()
@@ -397,7 +591,16 @@ mod tests {
             Ok(true)
         }
 
-        fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
+        fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError> {
+            self.deletes
+                .lock()
+                .map_err(|_| DcsStoreError::Io("deletes lock poisoned".to_string()))?
+                .push(path.to_string());
+            let _ = self
+                .kv
+                .lock()
+                .map_err(|_| DcsStoreError::Io("kv lock poisoned".to_string()))?
+                .remove(path);
             Ok(())
         }
 
@@ -431,6 +634,13 @@ mod tests {
 
         fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
             Ok(None)
+        }
+
+        fn snapshot_prefix(
+            &mut self,
+            _path_prefix: &str,
+        ) -> Result<Vec<WatchEvent>, DcsStoreError> {
+            Ok(Vec::new())
         }
 
         fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
@@ -476,11 +686,41 @@ mod tests {
                     primary_slot_name: None,
                     extra: BTreeMap::new(),
                 },
-                last_refresh_at: Some(UnixMillis(1)),
+                last_refresh_at: Some(fresh_unix_millis()),
             },
             wal_lsn: crate::state::WalLsn(42),
             slots: Vec::new(),
         }
+    }
+
+    fn sample_replica_pg() -> PgInfoState {
+        PgInfoState::Replica {
+            common: PgInfoCommon {
+                worker: WorkerStatus::Running,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: Some(crate::state::TimelineId(1)),
+                pg_config: PgConfig {
+                    port: None,
+                    hot_standby: Some(true),
+                    primary_conninfo: None,
+                    primary_slot_name: None,
+                    extra: BTreeMap::new(),
+                },
+                last_refresh_at: Some(fresh_unix_millis()),
+            },
+            replay_lsn: crate::state::WalLsn(42),
+            received_lsn: Some(crate::state::WalLsn(42)),
+        }
+    }
+
+    fn fresh_unix_millis() -> UnixMillis {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+            .map(UnixMillis)
+            .unwrap_or(UnixMillis(0))
     }
 
     fn sample_cache(cfg: RuntimeConfig) -> DcsCache {
@@ -525,6 +765,7 @@ mod tests {
                 key: DcsKey::Leader,
                 value: Box::new(DcsValue::Leader(LeaderRecord {
                     member_id: member_id.clone(),
+                    generation: 1,
                 })),
             },
         );
@@ -587,8 +828,9 @@ mod tests {
     async fn step_once_publishes_and_writes_only_self_member(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let initial_pg = sample_pg();
-        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
-        let _ = pg_publisher.publish(sample_pg(), UnixMillis(2));
+        let initial_pg_updated_at = fresh_unix_millis();
+        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, initial_pg_updated_at);
+        let _ = pg_publisher.publish(sample_pg(), fresh_unix_millis());
 
         let initial_dcs = DcsState {
             worker: WorkerStatus::Starting,
@@ -600,6 +842,7 @@ mod tests {
 
         let leader_json = serde_json::to_string(&LeaderRecord {
             member_id: MemberId("node-a".to_string()),
+            generation: 1,
         })?;
         let store = RecordingStore::new(true);
         store.push_event(WatchEvent {
@@ -714,7 +957,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn step_once_writes_member_on_every_tick() {
         let initial_pg = sample_pg();
-        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg.clone(), UnixMillis(1));
+        let (pg_publisher, pg_subscriber) =
+            new_state_channel(initial_pg.clone(), fresh_unix_millis());
         let initial_dcs = DcsState {
             worker: WorkerStatus::Starting,
             trust: DcsTrust::NotTrusted,
@@ -749,10 +993,249 @@ mod tests {
         assert_eq!(second, Ok(()));
         assert_eq!(store_probe.write_count(), 2);
 
-        let _ = pg_publisher.publish(initial_pg, UnixMillis(2));
+        let _ = pg_publisher.publish(initial_pg, fresh_unix_millis());
         let third = step_once(&mut ctx).await;
         assert_eq!(third, Ok(()));
         assert_eq!(store_probe.write_count(), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_refreshes_member_updated_at_even_when_pg_snapshot_is_unchanged(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let initial_pg = sample_replica_pg();
+        let initial_pg_updated_at = fresh_unix_millis();
+        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, initial_pg_updated_at);
+        let _ = pg_publisher.publish(sample_replica_pg(), initial_pg_updated_at);
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let store = RecordingStore::new(true);
+        let store_probe = store.clone();
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
+            local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
+        };
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+        let first_member = store_probe
+            .first_write_value()
+            .ok_or("missing first member write")?;
+        let first_record: MemberRecord = serde_json::from_str(first_member.as_str())?;
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+        let last_member = store_probe
+            .last_write_value()
+            .ok_or("missing second member write")?;
+        let last_record: MemberRecord = serde_json::from_str(last_member.as_str())?;
+
+        assert!(last_record.updated_at.0 > first_record.updated_at.0);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_preserves_stale_primary_observation_timestamp_for_member_freshness(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let initial_pg = sample_pg();
+        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
+        let _ = pg_publisher.publish(sample_pg(), UnixMillis(1));
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let store = RecordingStore::new(true);
+        let store_probe = store.clone();
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
+            local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
+        };
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+
+        let encoded = store_probe
+            .first_write_value()
+            .ok_or("missing primary member write")?;
+        let record: MemberRecord = serde_json::from_str(encoded.as_str())?;
+        assert_eq!(record.updated_at, UnixMillis(1));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_prunes_stale_members_for_replica_before_trust_evaluation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let initial_pg = sample_replica_pg();
+        let initial_pg_updated_at = fresh_unix_millis();
+        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, initial_pg_updated_at);
+        let _ = pg_publisher.publish(sample_replica_pg(), fresh_unix_millis());
+
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let stale_member = MemberRecord {
+            member_id: MemberId("node-b".to_string()),
+            postgres_host: "127.0.0.2".to_string(),
+            postgres_port: 5432,
+            api_url: Some("http://127.0.0.2:8080".to_string()),
+            role: MemberRole::Primary,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            write_lsn: Some(crate::state::WalLsn(42)),
+            replay_lsn: None,
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        };
+        let stale_member_json = serde_json::to_string(&stale_member)?;
+        let stale_leader_json = serde_json::to_string(&LeaderRecord {
+            member_id: MemberId("node-b".to_string()),
+            generation: 1,
+        })?;
+        let store = RecordingStore::new(true);
+        store.push_event(WatchEvent {
+            op: WatchOp::Put,
+            path: "/scope-a/member/node-b".to_string(),
+            value: Some(stale_member_json),
+            revision: 2,
+        });
+        store.push_event(WatchEvent {
+            op: WatchOp::Put,
+            path: "/scope-a/leader".to_string(),
+            value: Some(stale_leader_json),
+            revision: 3,
+        });
+
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
+            local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
+        };
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+
+        let latest = dcs_subscriber.latest();
+        assert_eq!(latest.value.trust, DcsTrust::FullQuorum);
+        assert_eq!(latest.value.cache.members.len(), 1);
+        assert!(latest
+            .value
+            .cache
+            .members
+            .contains_key(&MemberId("node-a".to_string())));
+        assert!(latest.value.cache.leader.is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_keeps_stale_members_for_primary_before_trust_evaluation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let initial_pg = sample_pg();
+        let initial_pg_updated_at = fresh_unix_millis();
+        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, initial_pg_updated_at);
+        let _ = pg_publisher.publish(sample_pg(), fresh_unix_millis());
+
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let stale_member = MemberRecord {
+            member_id: MemberId("node-b".to_string()),
+            postgres_host: "127.0.0.2".to_string(),
+            postgres_port: 5432,
+            api_url: Some("http://127.0.0.2:8080".to_string()),
+            role: MemberRole::Replica,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            write_lsn: None,
+            replay_lsn: Some(crate::state::WalLsn(42)),
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        };
+        let stale_member_json = serde_json::to_string(&stale_member)?;
+        let store = RecordingStore::new(true);
+        store.push_event(WatchEvent {
+            op: WatchOp::Put,
+            path: "/scope-a/member/node-b".to_string(),
+            value: Some(stale_member_json),
+            revision: 2,
+        });
+
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
+            local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
+        };
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+
+        let latest = dcs_subscriber.latest();
+        assert_eq!(latest.value.trust, DcsTrust::FailSafe);
+        assert_eq!(latest.value.cache.members.len(), 2);
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -925,5 +1408,84 @@ mod tests {
             latest.value.worker,
             WorkerStatus::Faulted(WorkerError::Message(_))
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn step_once_deletes_leader_key_when_holder_member_is_stale(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let initial_pg = sample_pg();
+        let initial_pg_updated_at = fresh_unix_millis();
+        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, initial_pg_updated_at);
+        let _ = pg_publisher.publish(sample_pg(), fresh_unix_millis());
+
+        let initial_dcs = DcsState {
+            worker: WorkerStatus::Starting,
+            trust: DcsTrust::NotTrusted,
+            cache: sample_cache(sample_runtime_config()),
+            last_refresh_at: None,
+        };
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+
+        let stale_member = MemberRecord {
+            member_id: MemberId("node-b".to_string()),
+            postgres_host: "127.0.0.2".to_string(),
+            postgres_port: 5432,
+            api_url: Some("http://127.0.0.2:8080".to_string()),
+            role: MemberRole::Primary,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: None,
+            write_lsn: Some(crate::state::WalLsn(42)),
+            replay_lsn: None,
+            updated_at: UnixMillis(1),
+            pg_version: Version(1),
+        };
+        let stale_member_json = serde_json::to_string(&stale_member)?;
+        let stale_leader_json = serde_json::to_string(&LeaderRecord {
+            member_id: MemberId("node-b".to_string()),
+            generation: 1,
+        })?;
+        let store = RecordingStore::new(true);
+        let store_probe = store.clone();
+        store.push_event(WatchEvent {
+            op: WatchOp::Put,
+            path: "/scope-a/member/node-b".to_string(),
+            value: Some(stale_member_json),
+            revision: 2,
+        });
+        store.push_event(WatchEvent {
+            op: WatchOp::Put,
+            path: "/scope-a/leader".to_string(),
+            value: Some(stale_leader_json),
+            revision: 3,
+        });
+
+        let mut ctx = DcsWorkerCtx {
+            self_id: MemberId("node-a".to_string()),
+            scope: "scope-a".to_string(),
+            poll_interval: TEST_DCS_POLL_INTERVAL,
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
+            local_api_url: Some("http://127.0.0.1:8080".to_string()),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            store: Box::new(store),
+            log: crate::logging::LogHandle::null(),
+            cache: sample_cache(sample_runtime_config()),
+            last_published_pg_version: None,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
+        };
+
+        assert_eq!(step_once(&mut ctx).await, Ok(()));
+
+        let latest = dcs_subscriber.latest();
+        assert!(latest.value.cache.leader.is_none());
+        assert_eq!(store_probe.delete_count(), 1);
+        assert_eq!(
+            store_probe.first_delete_path(),
+            Some("/scope-a/leader".to_string())
+        );
+        Ok(())
     }
 }

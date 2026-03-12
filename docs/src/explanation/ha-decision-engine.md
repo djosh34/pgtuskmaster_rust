@@ -1,160 +1,92 @@
 # HA Decision Engine
 
-The HA decision engine turns a world snapshot into a single next HA phase and a single HA decision. Its structure is deliberately layered:
+The HA loop is now organized around four steps:
 
-1. derive `DecisionFacts` from the current world
-2. choose the next phase and semantic decision
-3. lower that decision into effect buckets
-4. dispatch only the effects that need concrete process work
+1. observe the local and global world
+2. decide the desired local role and operator-facing authority
+3. reconcile that desired state into ordered actions
+4. execute those actions
 
-## Trust Gates Everything
+This replaced the older public story about a separately exposed phase machine plus semantic decision enum. Internally, the engine is now easier to reason about because the important outputs are explicit values instead of being split across several layers.
 
-The first branch in `decide_phase(...)` is the trust gate.
+## The Two Core Outputs
 
-If trust is not `FullQuorum`:
+The pure decision step produces a desired state with three parts:
 
-- a local primary enters `FailSafe` with `EnterFailSafe { release_leader_lease: false }`
-- a non-primary also enters the `FailSafe` phase, but with `NoChange`
+- `role`: what this node should try to be locally
+- `publication`: what authority this node should publish for operators
+- `clear_switchover`: whether the switchover request should be removed
 
-That means the engine prefers safety over recovery whenever its view of cluster coordination is degraded.
+Those first two outputs answer different questions:
 
-`DcsTrust` has three variants:
+- local role answers "what should this node do?"
+- publication answers "who should operators currently trust as primary?"
 
-- `FullQuorum`
-- `FailSafe`
-- `NotTrusted`
+That distinction is why the runtime can say "follow node-a" locally while still publishing `no_primary` during lease-open or recovery windows.
 
-`FullQuorum` is the only state that allows the normal phase handlers to run.
+## Trust Still Gates Everything
 
-## Phase-Driven Logic
+The first branch is still the trust gate.
 
-The decision engine handles these phases:
+When DCS trust is not `FullQuorum`, normal leadership logic is bypassed:
 
-- `Init`
-- `WaitingPostgresReachable`
-- `WaitingDcsTrusted`
-- `WaitingSwitchoverSuccessor`
-- `Replica`
-- `CandidateLeader`
-- `Primary`
-- `Rewinding`
-- `Bootstrapping`
-- `Fencing`
-- `FailSafe`
+- a local primary moves into a fail-safe role that may carry a fence cutoff
+- a local replica keeps following or waits for quorum
+- authority publication moves away from `primary` and toward `no_primary`
 
-Each phase handler answers a narrow question:
+Safety wins over availability whenever the node cannot trust the coordination layer.
 
-- should the node wait
-- should it try to lead
-- should it follow a leader
-- should it recover
-- should it demote or fence
+## Role Taxonomy
 
-For switchovers, the decisive fact is only whether a request is pending. The engine does not consume a caller-supplied successor identity; successor choice is derived from observed cluster state.
+The public local-role contract is the `ha_role` field exposed by `/ha/state`:
 
-The engine does not jump directly to process jobs. It first emits a semantic `HaDecision`.
+- `leader`
+- `candidate`
+- `follower`
+- `fail_safe`
+- `demoting_for_switchover`
+- `fenced`
+- `idle`
 
-## Decision Taxonomy
+These roles are enough to cover startup, failover, switchover, degraded-trust handling, and replica recovery without a second public phase enum.
 
-The decision enum includes:
+## Authority Taxonomy
 
-- `NoChange`
-- `WaitForPostgres`
-- `WaitForDcsTrust`
-- `AttemptLeadership`
-- `FollowLeader`
-- `BecomePrimary`
-- `StepDown`
-- `RecoverReplica`
-- `FenceNode`
-- `ReleaseLeaderLease`
-- `EnterFailSafe`
+The public authority contract is the `authority` field exposed by `/ha/state`:
 
-Some decisions are mostly steady-state or observational:
+- `primary`
+- `no_primary`
+- `unknown`
 
-- `NoChange`
-- `WaitForDcsTrust`
-- `FollowLeader`
+`primary` carries a lease epoch with `{ holder, generation }`. That generation matters because leadership is term-based: the same member can regain leadership later, but it should not be confused with an older lease.
 
-Some decisions can repeat while the phase machine waits for progress:
+`no_primary` carries a structured reason such as:
 
-- `AttemptLeadership`
-- `WaitForPostgres`
+- `dcs_degraded`
+- `lease_open`
+- `recovering`
+- `switchover_rejected`
 
-Some decisions are clearly invasive because they lower into process or safety work:
+## Reconcile Turns Intent Into Ordered Work
 
-- `BecomePrimary` when promotion is needed
-- `StepDown`
-- `RecoverReplica`
-- `FenceNode`
-- `ReleaseLeaderLease`
-- `EnterFailSafe`
+The pure reconcile step converts the desired state into an ordered action list such as:
 
-That idempotent-versus-invasive split is an inference from the lowering and dispatch behavior, not a separate public contract.
+- publish authority
+- acquire or release the leader lease
+- start as primary or replica
+- promote
+- demote
+- rewind or base backup
+- clear the switchover request
 
-## Lowering Into Effect Buckets
+This is simpler than the old lowering pipeline because the worker consumes one ordered list instead of merging several effect buckets at execution time.
 
-The lowerer turns a semantic decision into a `HaEffectPlan` with five independent buckets:
+## Why This Shape Matters
 
-- lease
-- switchover
-- replication
-- postgres
-- safety
+This design gives the runtime three practical benefits:
 
-Examples:
+- the stable API now exposes the same concepts operators actually need: authority, local role, and next actions
+- the worker is thinner because it no longer owns a separate semantic-to-effect dedup layer
+- lease epochs and fence cutoffs are first-class values instead of implied side effects
 
-- `AttemptLeadership` lowers to lease acquisition
-- `FollowLeader` lowers to replication follow behavior
-- `BecomePrimary { promote: true }` lowers to PostgreSQL promotion
-- `StepDown(...)` lowers to some combination of demotion, lease release, switchover clearing, and fencing
-- `EnterFailSafe { release_leader_lease: true }` lowers to lease release plus fencing
-
-This layer is what prevents contradictory action mixes from being dispatched as one HA choice.
-
-## When Recovery Is Chosen
-
-Recovery paths only make sense once trust is good enough to rely on DCS-backed membership and leader information.
-
-Under `FullQuorum`, the engine can choose recovery behaviors such as:
-
-- `RecoverReplica { strategy: Rewind { ... } }`
-- `RecoverReplica { strategy: BaseBackup { ... } }`
-- `RecoverReplica { strategy: Bootstrap }`
-
-The requested source files show these broad patterns:
-
-- rewind is attempted when a usable recovery leader exists and rewind is required
-- base backup is used as a fallback after rewind failure when a usable leader still exists
-- trust degradation interrupts ordinary recovery and routes back through `FailSafe`
-
-## Process Dispatch Boundaries
-
-The process dispatcher only handles actions that require concrete process jobs.
-
-It turns lowered HA actions into jobs such as:
-
-- `StartPostgres`
-- `Promote`
-- `Demote`
-- `PgRewind`
-- `BaseBackup`
-- `Bootstrap`
-- `Fencing`
-
-At the same time, the dispatcher explicitly does not treat every HA effect as a process job:
-
-- lease and switchover actions are not process actions there
-- `FollowLeader` and `SignalFailSafe` are skipped at the process-dispatch layer
-
-That separation is important: the decision engine describes intent, the lowerer organizes effects, and only part of that plan becomes spawned process work.
-
-## Why This Design Matters
-
-This architecture gives the runtime three useful properties:
-
-- trust-based safety decisions are centralized
-- phase transitions are explicit and testable
-- invasive work is separated from the semantic decision that requested it
-
-For operators, that explains why the HA API exposes both a phase and a decision: one tells you where the node is in the state machine, and the other tells you what the node wants to do next.
+For operators, the result is a more truthful contract: `/ha/state` tells you both who currently has authority and what the local node intends to do next.

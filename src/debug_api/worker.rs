@@ -7,7 +7,7 @@ use crate::{
         build_snapshot, AppLifecycle, DebugChangeEvent, DebugDomain, DebugSnapshotCtx,
         DebugTimelineEntry, SystemSnapshot,
     },
-    ha::{lower::lower_decision, state::HaState},
+    ha::state::HaState,
     pginfo::state::PgInfoState,
     process::state::ProcessState,
     state::{StatePublisher, StateSubscriber, UnixMillis, Version, WorkerError},
@@ -373,33 +373,35 @@ fn summarize_process(state: &ProcessState) -> String {
 }
 
 fn summarize_ha(state: &HaState) -> String {
-    let decision_detail = state
-        .decision
-        .detail()
-        .unwrap_or_else(|| "<none>".to_string());
     format!(
-        "ha worker={:?} phase={:?} tick={} decision={} detail={} planned_actions={}",
+        "ha worker={:?} role={} tick={} authority={} detail={:?} planned_actions={}",
         state.worker,
-        state.phase,
+        state.role.label(),
         state.tick,
-        state.decision.label(),
-        decision_detail,
-        lower_decision(&state.decision).len()
+        authority_label(&state.publication.authority),
+        state.role,
+        state.planned_actions.len()
     )
 }
 
 fn ha_signature(state: &HaState) -> String {
-    let decision_detail = state
-        .decision
-        .detail()
-        .unwrap_or_else(|| "<none>".to_string());
     format!(
-        "ha worker={:?} phase={:?} decision={} detail={}",
+        "ha worker={:?} role={} authority={} detail={:?}",
         state.worker,
-        state.phase,
-        state.decision.label(),
-        decision_detail
+        state.role.label(),
+        authority_label(&state.publication.authority),
+        state.role
     )
+}
+
+fn authority_label(value: &crate::ha::types::AuthorityView) -> String {
+    match value {
+        crate::ha::types::AuthorityView::Primary { member, epoch } => {
+            format!("primary:{}#{}", member.0, epoch.generation)
+        }
+        crate::ha::types::AuthorityView::NoPrimary(reason) => format!("no_primary:{reason:?}"),
+        crate::ha::types::AuthorityView::Unknown => "unknown".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -410,8 +412,7 @@ mod tests {
         config::{ApiTlsMode, RuntimeConfig},
         dcs::state::{DcsCache, DcsState, DcsTrust},
         debug_api::snapshot::{AppLifecycle, DebugDomain, SystemSnapshot},
-        ha::decision::HaDecision,
-        ha::state::{HaPhase, HaState},
+        ha::state::HaState,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
         state::{new_state_channel, UnixMillis, WorkerError, WorkerStatus},
@@ -465,14 +466,7 @@ mod tests {
     }
 
     fn sample_ha_state() -> HaState {
-        HaState {
-            worker: WorkerStatus::Starting,
-            phase: HaPhase::Init,
-            tick: 0,
-            decision: HaDecision::EnterFailSafe {
-                release_leader_lease: false,
-            },
-        }
+        HaState::initial(WorkerStatus::Starting)
     }
 
     #[tokio::test(flavor = "current_thread")]

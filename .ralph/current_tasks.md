@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 12 12:47:29 AM CET 2026
+Generated: Thu Mar 12 08:18:21 AM CET 2026
 
 # Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md`
 
@@ -77,18 +77,6 @@ Generated: Thu Mar 12 12:47:29 AM CET 2026
 
 ```
 ## Task: Remove Single-Node As A Shipped Product Path <status>not_started</status> <passes>false</passes>
-
-<priority>low</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-operator-ergonomics-reset/06-task-flatten-the-shipped-repo-layout-under-docker-and-delete-deep-config-nesting.md`
-
-```
-## Task: Flatten The Shipped Repo Layout Under `docker/` And Delete Deep Config Nesting <status>not_started</status> <passes>false</passes>
 
 <priority>low</priority>
 

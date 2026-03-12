@@ -129,8 +129,8 @@ Check:
 - `switchover_pending`
 - `switchover_to`
 - `dcs_trust`
-- `ha_phase`
-- `ha_decision`
+- `ha_role`
+- `authority`
 - `leader`
 
 If `switchover_pending=true` but trust is degraded, fix trust first. The runtime will not complete the switchover path safely until it has a healthy cluster view.

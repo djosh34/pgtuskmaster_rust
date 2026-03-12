@@ -88,7 +88,7 @@ pgtm -c docs/examples/docker-single-node-a.toml --json debug verbose > single-no
 The single-node sample is simpler to run, but it still uses the normal runtime model:
 
 - DCS-backed trust
-- the HA phase machine
+- the same HA role/authority loop
 - the same PostgreSQL role credentials
 - the same daemon configuration shape as the multi-node examples
 

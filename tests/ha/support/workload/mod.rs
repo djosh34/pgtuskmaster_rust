@@ -188,11 +188,16 @@ fn run_workload(
                 },
             },
         };
+        let stop_after_event = matches!(event.outcome, WorkloadOutcome::Rejected { .. });
 
         shared_events
             .lock()
             .map_err(|_| "workload event mutex was poisoned".to_string())?
             .push(event);
+
+        if stop_after_event {
+            break;
+        }
 
         thread::sleep(POLL_DELAY);
     }

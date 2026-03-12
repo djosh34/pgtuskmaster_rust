@@ -50,6 +50,13 @@ impl DcsStore for ContractStore {
         Ok(None)
     }
 
+    fn snapshot_prefix(
+        &mut self,
+        _path_prefix: &str,
+    ) -> Result<Vec<WatchEvent>, DcsStoreError> {
+        Ok(Vec::new())
+    }
+
     fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
         Ok(())
     }
@@ -116,6 +123,13 @@ impl DcsStore for BlockingAcquireStore {
 
     fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
         Ok(None)
+    }
+
+    fn snapshot_prefix(
+        &mut self,
+        _path_prefix: &str,
+    ) -> Result<Vec<WatchEvent>, DcsStoreError> {
+        Ok(Vec::new())
     }
 
     fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {

@@ -11,7 +11,8 @@
 - a minimal `pgtm` operator config
 - Keep the "one config per VM" path feasible: on a VM that runs the daemon locally, `pgtm` must still be able to read the node runtime config directly.
 - Keep the "small operator config" path feasible: on a laptop, bastion, or local host, `pgtm` must be able to use a smaller config file that does not contain daemon-only sections.
-- Add or refine explicit operator-facing/public endpoint overrides for both:
+- Preserve the good part of the current model: `pgtm.api_url` already exists and should remain the seed for operator-facing API resolution when the daemon binds an unspecified address.
+- Add the missing general public-endpoint contract so the runtime can publish truthful operator-facing endpoints for both:
 - the API base URL used by `pgtm`
 - the PostgreSQL host/port published into DCS and emitted in DSN output
 - Ensure secret paths are file-based and can reference files mounted inside Docker or present directly on a VM without requiring a separate env indirection layer.
@@ -22,6 +23,7 @@
 - `src/cli/config.rs` currently refuses to derive a base URL from `0.0.0.0:8080` and tells operators to set `pgtm.api_url`.
 - The docs explicitly teach a split between daemon configs and separate operator-facing configs under `docs/examples/`.
 - The current docker runtime configs already contain `[pgtm].api_url`, which means the docs-owned docker operator configs are effectively duplicating shipped config.
+- The runtime already publishes operator-facing API URLs into DCS when `pgtm.api_url` is configured, but PostgreSQL publication still uses the daemon-side listen host plus optional advertised port, which is why host-side DSN output is still not truthful enough outside the container boundary.
 - The user reported a real ergonomics bug: `pgtm primary` DSN output does not work outside the Docker container because the published PostgreSQL host does not model the operator-facing/public endpoint cleanly enough.
 - The user wants one config file per VM to be feasible for a 3-real-VM Docker deployment.
 

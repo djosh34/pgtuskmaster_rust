@@ -49,6 +49,7 @@ pub(crate) struct MemberRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LeaderRecord {
     pub(crate) member_id: MemberId,
+    pub(crate) generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +129,27 @@ pub(crate) fn member_record_is_fresh(
 ) -> bool {
     let max_age_ms = cache.config.ha.lease_ttl_ms;
     now.0.saturating_sub(record.updated_at.0) <= max_age_ms
+}
+
+pub(crate) fn prune_stale_members(cache: &mut DcsCache, now: UnixMillis) {
+    let stale_member_ids = cache
+        .members
+        .iter()
+        .filter(|(_, record)| !member_record_is_fresh(record, cache, now))
+        .map(|(member_id, _)| member_id.clone())
+        .collect::<Vec<_>>();
+
+    stale_member_ids.iter().for_each(|member_id| {
+        cache.members.remove(member_id);
+    });
+
+    if cache
+        .leader
+        .as_ref()
+        .is_some_and(|leader| !cache.members.contains_key(&leader.member_id))
+    {
+        cache.leader = None;
+    }
 }
 
 fn fresh_member_count(cache: &DcsCache, now: UnixMillis) -> usize {
@@ -222,8 +244,8 @@ mod tests {
     };
 
     use super::{
-        build_local_member_record, evaluate_trust, DcsCache, DcsTrust, LeaderRecord, MemberRecord,
-        MemberRole,
+        build_local_member_record, evaluate_trust, prune_stale_members, DcsCache, DcsTrust,
+        LeaderRecord, MemberRecord, MemberRole,
     };
     use crate::{
         pginfo::state::{PgInfoState, Readiness, SqlStatus},
@@ -286,6 +308,7 @@ mod tests {
 
         cache.leader = Some(LeaderRecord {
             member_id: MemberId("node-b".to_string()),
+            generation: 1,
         });
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
@@ -338,6 +361,7 @@ mod tests {
         );
         cache.leader = Some(LeaderRecord {
             member_id: MemberId("node-b".to_string()),
+            generation: 1,
         });
 
         assert_eq!(
@@ -410,11 +434,68 @@ mod tests {
         );
         cache.leader = Some(LeaderRecord {
             member_id: MemberId("node-b".to_string()),
+            generation: 1,
         });
 
         assert_eq!(
             evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
             DcsTrust::FailSafe
+        );
+    }
+
+    #[test]
+    fn prune_stale_members_recovers_single_member_view_when_requested() {
+        let self_id = MemberId("node-a".to_string());
+        let stale_member_id = MemberId("node-b".to_string());
+        let mut cache = sample_cache();
+
+        cache.members.insert(
+            self_id.clone(),
+            MemberRecord {
+                member_id: self_id.clone(),
+                postgres_host: "127.0.0.1".to_string(),
+                postgres_port: 5432,
+                api_url: None,
+                role: MemberRole::Replica,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(100),
+                pg_version: Version(1),
+            },
+        );
+        cache.members.insert(
+            stale_member_id.clone(),
+            MemberRecord {
+                member_id: stale_member_id.clone(),
+                postgres_host: "127.0.0.2".to_string(),
+                postgres_port: 5432,
+                api_url: None,
+                role: MemberRole::Primary,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: None,
+                write_lsn: None,
+                replay_lsn: None,
+                updated_at: UnixMillis(1),
+                pg_version: Version(1),
+            },
+        );
+        cache.leader = Some(LeaderRecord {
+            member_id: stale_member_id,
+            generation: 1,
+        });
+
+        prune_stale_members(&mut cache, UnixMillis(20_000));
+
+        assert_eq!(cache.members.len(), 1);
+        assert!(cache.members.contains_key(&self_id));
+        assert!(cache.leader.is_none());
+        assert_eq!(
+            evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
+            DcsTrust::FullQuorum
         );
     }
 

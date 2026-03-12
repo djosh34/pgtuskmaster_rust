@@ -113,7 +113,7 @@ node-c        unknown  unknown    unknown   ?       ?            ?        ?     
 debug details:
   node-a: debug=available
     dcs: trust=FullQuorum leader=node-a
-    ha: phase=Primary decision=NoChange detail=steady
+    ha: phase=leader decision=primary:node-a#7 detail=Leader(...)
     pginfo: variant=Primary sql=Healthy readiness=Ready summary=primary wal_lsn=7 readiness=Ready
   node-b: debug=disabled
     detail: http 404: debug disabled
@@ -170,7 +170,7 @@ Each `nodes[]` entry includes:
 - `debug`
 - `observation_error`
 
-`pginfo`, `readiness`, `process`, and `debug` are populated only when `-v --json` is used. `debug.status` always records whether the CLI fetched `/debug/verbose` successfully, and `debug.payload` contains the full stable verbose payload when it is available.
+`phase` is the rendered `ha_role` text from `/ha/state`, and `decision` is the rendered `authority` text. `pginfo`, `readiness`, `process`, and `debug` are populated only when `-v --json` is used. `debug.status` always records whether the CLI fetched `/debug/verbose` successfully, and `debug.payload` contains the full stable verbose payload when it is available.
 
 ### `debug verbose`
 
@@ -195,14 +195,14 @@ sequence: 42  schema: v1
 
 pginfo: variant=Primary sql=Healthy readiness=Ready summary=primary wal_lsn=7 readiness=Ready
 dcs: trust=FullQuorum leader=node-a members=3 switchover_request=false
-ha: phase=Primary decision=NoChange detail=steady planned_actions=0
+ha: phase=leader decision=primary:node-a#7 detail=Leader(...) planned_actions=0
 process: state=Idle worker=Running running_job=none last_outcome=Success(job-1)
 debug: history_changes=12 history_timeline=12 last_sequence=42
 
 recent changes:
-  - #41 ha decision updated
+  - #41 ha state updated
 recent timeline:
-  - #42 ha primary steady
+  - #42 ha leader steady
 ```
 
 ### `debug verbose --json`

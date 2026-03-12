@@ -25,9 +25,7 @@ use crate::{
         worker::{DebugApiContractStubInputs, DebugApiCtx},
     },
     ha::source_conn::{basebackup_resume_source_from_member, basebackup_source_from_member},
-    ha::state::{
-        HaPhase, HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults,
-    },
+    ha::state::{HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults},
     logging::{
         AppEvent, AppEventHeader, SeverityText, StructuredFields, SubprocessLineRecord,
         SubprocessStream,
@@ -224,7 +222,6 @@ fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults 
         remote_ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
         remote_ssl_root_cert: cfg.postgres.rewind_conn_identity.ca_cert.clone(),
         connect_timeout_s: cfg.postgres.connect_timeout_s,
-        shutdown_mode: crate::process::jobs::ShutdownMode::Fast,
     }
 }
 
@@ -1017,13 +1014,14 @@ async fn run_start_job(
     start_intent: &ManagedPostgresStartIntent,
     log: &crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
-    if start_postgres_preflight_is_already_running(cfg.postgres.data_dir.as_path()).map_err(
-        |err| {
-            RuntimeError::StartupExecution(format!(
-                "startup start-postgres preflight failed: {err}"
-            ))
-        },
-    )? {
+    if start_postgres_preflight_is_already_running(
+        cfg.postgres.data_dir.as_path(),
+        cfg.postgres.socket_dir.as_path(),
+        cfg.postgres.listen_port,
+    )
+    .map_err(|err| {
+        RuntimeError::StartupExecution(format!("startup start-postgres preflight failed: {err}"))
+    })? {
         emit_startup_phase(
             log,
             "start",
@@ -1043,6 +1041,8 @@ async fn run_start_job(
         cfg,
         ProcessJobKind::StartPostgres(StartPostgresSpec {
             data_dir: cfg.postgres.data_dir.clone(),
+            socket_dir: cfg.postgres.socket_dir.clone(),
+            port: cfg.postgres.listen_port,
             config_file: managed.postgresql_conf_path,
             log_file: process_defaults.log_file.clone(),
             wait_seconds: Some(30),
@@ -1233,12 +1233,7 @@ async fn run_workers(
     };
     let (process_publisher, process_subscriber) = new_state_channel(initial_process.clone(), now);
 
-    let initial_ha = HaState {
-        worker: WorkerStatus::Starting,
-        phase: HaPhase::Init,
-        tick: 0,
-        decision: crate::ha::decision::HaDecision::NoChange,
-    };
+    let initial_ha = HaState::initial(WorkerStatus::Starting);
     let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha, now);
 
     let initial_debug_snapshot = build_snapshot(
@@ -1672,6 +1667,7 @@ mod tests {
             members,
             leader: Some(LeaderRecord {
                 member_id: leader_id.clone(),
+                generation: 1,
             }),
             switchover: None,
             config: cfg.clone(),
@@ -1810,6 +1806,7 @@ mod tests {
             members,
             leader: Some(LeaderRecord {
                 member_id: leader_id.clone(),
+                generation: 1,
             }),
             switchover: None,
             config: runtime_config.clone(),
@@ -1947,6 +1944,7 @@ mod tests {
             members,
             leader: Some(LeaderRecord {
                 member_id: leader_id.clone(),
+                generation: 1,
             }),
             switchover: None,
             config: runtime_config.clone(),

@@ -3,14 +3,7 @@
 set -euo pipefail
 
 readonly BLOCKER_FILE="/var/lib/pgtuskmaster/faults/fail-postgres-start"
-readonly WIPE_FILE="/var/lib/pgtuskmaster/faults/wipe-data-on-start"
 readonly REAL_BIN="/usr/lib/postgresql/16/bin/postgres"
-
-if [[ -f "${WIPE_FILE}" ]]; then
-    printf 'postgres wrapper wiping data directory because flag exists: %s\n' "${WIPE_FILE}" >&2
-    rm -rf /var/lib/postgresql/data
-    rm -f "${WIPE_FILE}"
-fi
 
 if [[ -f "${BLOCKER_FILE}" ]]; then
     printf 'postgres wrapper forced startup failure because blocker exists: %s\n' "${BLOCKER_FILE}" >&2

@@ -1,4 +1,5 @@
 use std::fmt;
+
 use thiserror::Error;
 
 pub(crate) mod controller;
@@ -45,9 +46,11 @@ pub struct HaStateResponse {
     pub member_count: usize,
     pub members: Vec<HaClusterMemberResponse>,
     pub dcs_trust: DcsTrustResponse,
-    pub ha_phase: HaPhaseResponse,
+    pub authority: HaAuthorityResponse,
+    pub fence_cutoff: Option<FenceCutoffResponse>,
+    pub ha_role: TargetRoleResponse,
     pub ha_tick: u64,
-    pub ha_decision: HaDecisionResponse,
+    pub planned_actions: Vec<ReconcileActionResponse>,
     pub snapshot_sequence: u64,
 }
 
@@ -77,75 +80,138 @@ pub enum DcsTrustResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HaPhaseResponse {
-    Init,
-    WaitingPostgresReachable,
-    WaitingDcsTrusted,
-    WaitingSwitchoverSuccessor,
-    Replica,
-    CandidateLeader,
-    Primary,
-    Rewinding,
-    Bootstrapping,
-    Fencing,
-    FailSafe,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HaAuthorityResponse {
+    Primary {
+        member_id: String,
+        epoch: LeaseEpochResponse,
+    },
+    NoPrimary {
+        reason: NoPrimaryReasonResponse,
+    },
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseEpochResponse {
+    pub holder: String,
+    pub generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FenceCutoffResponse {
+    pub epoch: LeaseEpochResponse,
+    pub committed_lsn: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum HaDecisionResponse {
-    NoChange,
-    WaitForPostgres {
-        start_requested: bool,
-        leader_member_id: Option<String>,
-    },
-    WaitForDcsTrust,
-    AttemptLeadership,
-    FollowLeader {
-        leader_member_id: String,
-    },
-    BecomePrimary {
-        promote: bool,
-    },
-    CompleteSwitchover,
-    StepDown {
-        reason: StepDownReasonResponse,
-        release_leader_lease: bool,
-        fence: bool,
-    },
-    RecoverReplica {
-        strategy: RecoveryStrategyResponse,
-    },
-    FenceNode,
-    ReleaseLeaderLease {
-        reason: LeaseReleaseReasonResponse,
-    },
-    EnterFailSafe {
-        release_leader_lease: bool,
-    },
+pub enum NoPrimaryReasonResponse {
+    DcsDegraded,
+    LeaseOpen,
+    Recovering,
+    SwitchoverRejected { blocker: SwitchoverBlockerResponse },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum StepDownReasonResponse {
-    Switchover,
-    ForeignLeaderDetected { leader_member_id: String },
+pub enum SwitchoverBlockerResponse {
+    TargetMissing,
+    TargetIneligible { reason: IneligibleReasonResponse },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RecoveryStrategyResponse {
-    Rewind { leader_member_id: String },
-    BaseBackup { leader_member_id: String },
+pub enum TargetRoleResponse {
+    Leader { epoch: LeaseEpochResponse },
+    Candidate { candidacy: CandidacyResponse },
+    Follower { goal: FollowGoalResponse },
+    FailSafe { goal: FailSafeGoalResponse },
+    DemotingForSwitchover { member_id: String },
+    Fenced { reason: FenceReasonResponse },
+    Idle { reason: IdleReasonResponse },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CandidacyResponse {
     Bootstrap,
+    Failover,
+    ResumeAfterOutage,
+    TargetedSwitchover { member_id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FollowGoalResponse {
+    pub leader: String,
+    pub recovery: RecoveryPlanResponse,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum LeaseReleaseReasonResponse {
-    FencingComplete,
-    PostgresUnreachable,
+pub enum RecoveryPlanResponse {
+    None,
+    StartStreaming,
+    Rewind,
+    Basebackup,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FailSafeGoalResponse {
+    PrimaryMustStop { cutoff: FenceCutoffResponse },
+    ReplicaKeepFollowing { upstream: Option<String> },
+    WaitForQuorum,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IdleReasonResponse {
+    AwaitingLeader,
+    AwaitingTarget { member_id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FenceReasonResponse {
+    ForeignLeaderDetected,
+    StorageStalled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReconcileActionResponse {
+    InitDb,
+    BaseBackup { member_id: String },
+    PgRewind { member_id: String },
+    StartPrimary,
+    StartReplica { member_id: String },
+    Promote,
+    Demote { mode: ShutdownModeResponse },
+    AcquireLease { candidacy: CandidacyResponse },
+    ReleaseLease,
+    Publish { publication: HaAuthorityResponse },
+    ClearSwitchover,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShutdownModeResponse {
+    Fast,
+    Immediate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IneligibleReasonResponse {
+    NotReady,
+    Lagging,
+    Partitioned,
+    ApiUnavailable,
+    StartingUp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -182,116 +248,8 @@ impl DcsTrustResponse {
     }
 }
 
-impl HaPhaseResponse {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Init => "init",
-            Self::WaitingPostgresReachable => "waiting_postgres_reachable",
-            Self::WaitingDcsTrusted => "waiting_dcs_trusted",
-            Self::WaitingSwitchoverSuccessor => "waiting_switchover_successor",
-            Self::Replica => "replica",
-            Self::CandidateLeader => "candidate_leader",
-            Self::Primary => "primary",
-            Self::Rewinding => "rewinding",
-            Self::Bootstrapping => "bootstrapping",
-            Self::Fencing => "fencing",
-            Self::FailSafe => "fail_safe",
-        }
-    }
-
-    fn legacy_label(&self) -> &'static str {
-        match self {
-            Self::Init => "Init",
-            Self::WaitingPostgresReachable => "WaitingPostgresReachable",
-            Self::WaitingDcsTrusted => "WaitingDcsTrusted",
-            Self::WaitingSwitchoverSuccessor => "WaitingSwitchoverSuccessor",
-            Self::Replica => "Replica",
-            Self::CandidateLeader => "CandidateLeader",
-            Self::Primary => "Primary",
-            Self::Rewinding => "Rewinding",
-            Self::Bootstrapping => "Bootstrapping",
-            Self::Fencing => "Fencing",
-            Self::FailSafe => "FailSafe",
-        }
-    }
-}
-
 impl fmt::Display for DcsTrustResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-impl fmt::Display for HaPhaseResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl fmt::Display for StepDownReasonResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Switchover => f.write_str("switchover"),
-            Self::ForeignLeaderDetected { leader_member_id } => {
-                write!(f, "foreign_leader_detected({leader_member_id})")
-            }
-        }
-    }
-}
-
-impl fmt::Display for RecoveryStrategyResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Rewind { leader_member_id } => write!(f, "rewind({leader_member_id})"),
-            Self::BaseBackup { leader_member_id } => {
-                write!(f, "base_backup({leader_member_id})")
-            }
-            Self::Bootstrap => f.write_str("bootstrap"),
-        }
-    }
-}
-
-impl fmt::Display for LeaseReleaseReasonResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::FencingComplete => f.write_str("fencing_complete"),
-            Self::PostgresUnreachable => f.write_str("postgres_unreachable"),
-        }
-    }
-}
-
-impl fmt::Display for MemberRoleResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unknown => f.write_str("unknown"),
-            Self::Primary => f.write_str("primary"),
-            Self::Replica => f.write_str("replica"),
-        }
-    }
-}
-
-impl fmt::Display for SqlStatusResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unknown => f.write_str("unknown"),
-            Self::Healthy => f.write_str("healthy"),
-            Self::Unreachable => f.write_str("unreachable"),
-        }
-    }
-}
-
-impl fmt::Display for ReadinessResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unknown => f.write_str("unknown"),
-            Self::Ready => f.write_str("ready"),
-            Self::NotReady => f.write_str("not_ready"),
-        }
-    }
-}
-
-impl PartialEq<&str> for HaPhaseResponse {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other || self.legacy_label() == *other
     }
 }

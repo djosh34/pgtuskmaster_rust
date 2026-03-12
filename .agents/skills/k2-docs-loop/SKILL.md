@@ -18,6 +18,7 @@ Principles:
 - Do not rewrite structure or content because of your own taste.
 - If K2 chooses a page shape you would not have chosen, leave it alone unless the facts force a change.
 - K2 can take long to complete, and is expected and no reason to worry
+- K2 can fail in its output (e.g. tool instead of text), that's also ok, please try again with k2, do not try to do it yourself.
 - Never run mdbooks directly, instead use the provided make files only!
 
 Commands:

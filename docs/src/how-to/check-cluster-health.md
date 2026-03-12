@@ -133,7 +133,7 @@ For a suspected incident, look for:
 - `health: degraded`
 - warnings about leader mismatch or multiple sampled primaries
 - `TRUST=fail_safe` or `TRUST=not_trusted`
-- members stuck in transition phases such as `candidate_leader`, `rewinding`, `bootstrapping`, `fencing`, or `waiting_switchover_successor`
+- members stuck in transitional HA roles such as `candidate(...)`, `demoting_for_switchover(...)`, `fenced(...)`, or `fail_safe(...)`
 
 ## Resolve connection targets without scraping status output
 

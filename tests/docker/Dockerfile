@@ -64,13 +64,15 @@ RUN apt-get update \
 
 COPY --from=builder /out/pgtuskmaster /usr/local/bin/pgtuskmaster
 COPY --from=builder /out/pgtm /usr/local/bin/pgtm
+COPY tests/docker/entrypoint.sh /usr/local/bin/pgtuskmaster-entrypoint
 COPY tests/docker/wrappers /usr/local/lib/pgtuskmaster/wrappers
 
 RUN chmod 0755 /usr/local/bin/pgtuskmaster /usr/local/bin/pgtm \
+    && chmod 0755 /usr/local/bin/pgtuskmaster-entrypoint \
     && chmod 0755 /usr/local/lib/pgtuskmaster/wrappers/*
 
 USER postgres
 
 WORKDIR /var/lib/postgresql
 
-ENTRYPOINT ["/usr/local/bin/pgtuskmaster", "--config", "/etc/pgtuskmaster/runtime.toml"]
+ENTRYPOINT ["/usr/local/bin/pgtuskmaster-entrypoint"]

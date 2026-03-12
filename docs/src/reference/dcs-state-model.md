@@ -65,6 +65,7 @@ The worker builds member records from the latest PostgreSQL state:
 `LeaderRecord` contains:
 
 - `member_id`
+- `generation`
 
 `/{scope}/leader` is not a plain persistent key. In the etcd-backed store it is attached to an etcd lease whose TTL is derived from `ha.lease_ttl_ms`.
 
@@ -73,6 +74,8 @@ The worker builds member records from the latest PostgreSQL state:
 - if the owner dies hard and stops renewing, etcd expires the lease and deletes the key automatically
 
 That means a missing leader member record does not itself force `FailSafe`. The authoritative signal for dead leadership is the disappearance of the lease-backed leader key from the watched DCS cache.
+
+`generation` turns the leader record into a lease epoch rather than just a member label. Operators and the HA API use that epoch to distinguish one leadership term from the next even when the same member regains leadership.
 
 ### `SwitchoverRequest`
 

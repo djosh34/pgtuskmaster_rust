@@ -6,13 +6,14 @@ pub mod debug;
 pub mod error;
 pub mod output;
 pub mod status;
+pub mod switchover;
 
 use args::{Cli, Command, DebugCommand, SwitchoverCommand};
-use client::CliApiClient;
 use config::resolve_operator_context;
 use connect::{run_primary, run_replicas};
 use debug::run_debug_verbose;
 use error::CliError;
+use switchover::{run_clear as run_switchover_clear, run_request as run_switchover_request};
 
 pub async fn run(cli: Cli) -> Result<String, CliError> {
     let context = resolve_operator_context(&cli)?;
@@ -65,9 +66,7 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
                             .to_string(),
                     ));
                 }
-                let client = CliApiClient::from_config(context.api_client)?;
-                let response = client.delete_switchover().await?;
-                output::render_accepted_output(&response, cli.json)
+                run_switchover_clear(&context, cli.json).await
             }
             SwitchoverCommand::Request(request) => {
                 if status_options.watch || status_options.verbose {
@@ -76,9 +75,7 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
                             .to_string(),
                     ));
                 }
-                let client = CliApiClient::from_config(context.api_client)?;
-                let response = client.post_switchover(request.switchover_to).await?;
-                output::render_accepted_output(&response, cli.json)
+                run_switchover_request(&context, cli.json, request.switchover_to).await
             }
         },
     }

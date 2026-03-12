@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::task::JoinSet;
 
 use crate::{
-    api::{HaClusterMemberResponse, HaDecisionResponse, HaStateResponse},
+    api::{HaAuthorityResponse, HaClusterMemberResponse, HaStateResponse, TargetRoleResponse},
     cli::{
         args::StatusOptions,
         client::{CliApiClient, CliApiClientConfig, DebugVerboseResponse},
@@ -445,10 +445,8 @@ fn collect_warnings(
                 ..
             }) => {
                 sampled_leaders.insert(
-                    sampled
-                        .state
-                        .leader
-                        .clone()
+                    authority_primary_member(&sampled.state)
+                        .or_else(|| sampled.state.leader.clone())
                         .unwrap_or_else(|| "<none>".to_string()),
                 );
                 if observed_role(member, &sampled.state) == "primary" {
@@ -559,9 +557,10 @@ fn build_node_row(
                 api_status: ApiStatus::Ok,
                 role: observed_role(member, &sampled.state).to_string(),
                 trust: sampled.state.dcs_trust.to_string(),
-                phase: sampled.state.ha_phase.to_string(),
-                leader: sampled.state.leader.clone(),
-                decision: Some(render_decision_text(&sampled.state.ha_decision)),
+                phase: render_role_text(&sampled.state.ha_role),
+                leader: authority_primary_member(&sampled.state)
+                    .or_else(|| sampled.state.leader.clone()),
+                decision: Some(render_authority_text(&sampled.state.authority)),
                 pginfo: debug_payload.map(|value| value.pginfo.summary.clone()),
                 readiness: debug_payload.map(|value| value.pginfo.readiness.to_ascii_lowercase()),
                 process: debug_payload.map(|value| value.process.state.to_ascii_lowercase()),
@@ -642,67 +641,53 @@ pub(crate) fn observed_role(
         return "unknown";
     }
 
-    match state.ha_phase {
-        crate::api::HaPhaseResponse::Primary => "primary",
-        crate::api::HaPhaseResponse::Replica => "replica",
-        crate::api::HaPhaseResponse::WaitingDcsTrusted
-        | crate::api::HaPhaseResponse::WaitingPostgresReachable
-        | crate::api::HaPhaseResponse::WaitingSwitchoverSuccessor => match member.role {
-            crate::api::MemberRoleResponse::Primary => "primary",
-            crate::api::MemberRoleResponse::Replica => "replica",
-            crate::api::MemberRoleResponse::Unknown => "unknown",
-        },
-        crate::api::HaPhaseResponse::Init
-        | crate::api::HaPhaseResponse::CandidateLeader
-        | crate::api::HaPhaseResponse::Rewinding
-        | crate::api::HaPhaseResponse::Bootstrapping
-        | crate::api::HaPhaseResponse::Fencing
-        | crate::api::HaPhaseResponse::FailSafe => "unknown",
+    if authority_primary_member(state).as_deref() == Some(member.member_id.as_str()) {
+        return "primary";
+    }
+
+    match member.role {
+        crate::api::MemberRoleResponse::Replica => "replica",
+        crate::api::MemberRoleResponse::Primary | crate::api::MemberRoleResponse::Unknown => {
+            "unknown"
+        }
     }
 }
 
-fn render_decision_text(value: &HaDecisionResponse) -> String {
+fn render_authority_text(value: &HaAuthorityResponse) -> String {
     match value {
-        HaDecisionResponse::NoChange => "no_change".to_string(),
-        HaDecisionResponse::WaitForPostgres {
-            start_requested,
-            leader_member_id,
-        } => {
-            let leader_detail = leader_member_id.as_deref().unwrap_or("none");
+        HaAuthorityResponse::Primary { member_id, epoch } => {
             format!(
-                "wait_for_postgres(start_requested={start_requested}, leader_member_id={leader_detail})"
+                "primary(member_id={member_id}, generation={})",
+                epoch.generation
             )
         }
-        HaDecisionResponse::WaitForDcsTrust => "wait_for_dcs_trust".to_string(),
-        HaDecisionResponse::AttemptLeadership => "attempt_leadership".to_string(),
-        HaDecisionResponse::FollowLeader { leader_member_id } => {
-            format!("follow_leader(leader_member_id={leader_member_id})")
-        }
-        HaDecisionResponse::BecomePrimary { promote } => {
-            format!("become_primary(promote={promote})")
-        }
-        HaDecisionResponse::CompleteSwitchover => "complete_switchover".to_string(),
-        HaDecisionResponse::StepDown {
-            reason,
-            release_leader_lease,
-            fence,
-        } => format!(
-            "step_down(reason={reason}, release_leader_lease={release_leader_lease}, fence={fence})"
-        ),
-        HaDecisionResponse::RecoverReplica { strategy } => {
-            format!("recover_replica(strategy={strategy})")
-        }
-        HaDecisionResponse::FenceNode => "fence_node".to_string(),
-        HaDecisionResponse::ReleaseLeaderLease { reason } => {
-            format!("release_leader_lease(reason={reason})")
-        }
-        HaDecisionResponse::EnterFailSafe {
-            release_leader_lease,
-        } => format!("enter_fail_safe(release_leader_lease={release_leader_lease})"),
+        HaAuthorityResponse::NoPrimary { reason } => format!("no_primary(reason={reason:?})"),
+        HaAuthorityResponse::Unknown => "unknown".to_string(),
     }
 }
 
-#[cfg(test)]
+fn render_role_text(value: &TargetRoleResponse) -> String {
+    match value {
+        TargetRoleResponse::Leader { .. } => "leader".to_string(),
+        TargetRoleResponse::Candidate { candidacy } => format!("candidate({candidacy:?})"),
+        TargetRoleResponse::Follower { goal } => format!("follower({:?})", goal.recovery),
+        TargetRoleResponse::FailSafe { goal } => format!("fail_safe({goal:?})"),
+        TargetRoleResponse::DemotingForSwitchover { member_id } => {
+            format!("demoting_for_switchover({member_id})")
+        }
+        TargetRoleResponse::Fenced { reason } => format!("fenced({reason:?})"),
+        TargetRoleResponse::Idle { reason } => format!("idle({reason:?})"),
+    }
+}
+
+pub(crate) fn authority_primary_member(state: &HaStateResponse) -> Option<String> {
+    match &state.authority {
+        HaAuthorityResponse::Primary { member_id, .. } => Some(member_id.clone()),
+        HaAuthorityResponse::NoPrimary { .. } | HaAuthorityResponse::Unknown => None,
+    }
+}
+
+#[cfg(all(test, any()))]
 mod tests {
     use std::collections::BTreeMap;
 

@@ -972,10 +972,12 @@ The correct move is not to abandon the pure-kernel architecture. The correct mov
 With those added, the design remains elegant, testable, and compiler-driven, while now matching the real HA scenarios we actually care about.
 
 <acceptance_criteria>
+- [ ] Implement the full design as much as stated as possibly, with those structs, those enums, those functions, only altering them slightly to either fit the code or fix edge cases
 - [ ] The implementation remains in the spirit of the original design-based request: strong use of Rust's type system, maintainable structure, conceptual simplicity, and net code reduction rather than more incidental machinery.
-- [ ] All old code, old source paths, old structs, old assumptions, and other stale parallel design leftovers that conflict with this task are fully cleaned out and stripped rather than kept around beside the refactor.
+- [ ] All old code, old source paths, old structs, old assumptions, and other stale ha loop design leftovers that conflict with this task are fully cleaned out and stripped rather than kept around beside the refactor.
 - [ ] All unit tests that assumed the old behavior are updated to align with the `.feature` files first and then with this task's instructions, so the lower-level tests validate the same HA contract as the feature suite.
 - [ ] The whole codebase is verified to follow the new design defined in this task, and any design drift or half-migrated logic discovered during the work is removed or brought into alignment before the task is considered done.
+- [ ] Also clean up stale tests/pieces of code that do not help the task and/or grander goal: making those make test-long bdd tests pass.
 - [ ] The work is executed in the required order: refactor the code first, then only if implementation proves the design is still incomplete, tune the design in the same spirit afterward instead of redesigning first.
 - [ ] `make check` passes cleanly.
 - [ ] `make test` passes cleanly.
@@ -984,4 +986,9 @@ With those added, the design remains elegant, testable, and compiler-driven, whi
 - [ ] `<passes>true</passes>` is not set until every required acceptance criterion is complete and the required verification commands have actually passed.
 </acceptance_criteria>
 
-TO BE VERIFIED
+Plan review notes before execution:
+- Keep external DCS trust compatibility where needed, but the HA policy itself may collapse any non-`FullQuorum` trust into the degraded/fail-safe branch.
+- Add an explicit leader lease generation/epoch to the DCS leader record so fencing cutoffs and operator-facing authority projection can refer to a concrete lease instance instead of only a member id.
+- Replace the operator-facing `/ha/state` contract and matching docs/tests so it reflects the new authority/publication-oriented HA state; keep richer internal decision/action detail in debug surfaces instead of preserving the old public phase/decision shape.
+
+NOW EXECUTE

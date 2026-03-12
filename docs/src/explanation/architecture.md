@@ -1,10 +1,10 @@
 # Architecture
 
-pgtuskmaster is a high-availability orchestrator for PostgreSQL that prioritizes split-brain prevention through a state-driven decision loop, explicit trust modeling, and clear boundaries between DCS state, HA decisions, and API projection.
+pgtuskmaster is a high-availability orchestrator for PostgreSQL that prioritizes split-brain prevention through a state-driven decision loop, explicit trust modeling, and clear boundaries between DCS state, HA intent, and API projection.
 
 ## Core Design Principles
 
-The HA worker is structured as a deterministic state machine. Each decision tick derives `DecisionFacts` from the current world snapshot and emits a single `HaDecision`. The decision logic in [`src/ha/decide.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs) is phase-driven rather than ad hoc, which makes promotion, following, rewinding, fencing, and fail-safe handling explicit.
+The HA worker is structured as a deterministic observe/decide/reconcile loop. Each tick derives a `WorldView`, decides the desired local role plus the operator-facing authority publication, and then reconciles that desired state into an ordered action list. The decision logic in [`src/ha/decide.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs) stays pure, while [`src/ha/reconcile.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/reconcile.rs) turns that intent into concrete work such as demotion, rewind, promotion, or publication changes.
 
 Safety is enforced through trust gating. The DCS trust model in [`src/dcs/state.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs) can downgrade the node to `FailSafe` or `NotTrusted` when etcd health, member freshness, or leader freshness is not good enough for normal HA decisions. That means the system does not treat DCS availability as a convenience layer; it is a prerequisite for leadership behavior.
 
@@ -15,7 +15,7 @@ flowchart LR
     Config[Runtime config]
     DCS[DCS cache and trust]
     PG[PostgreSQL state]
-    HA[HA decide phase machine]
+    HA[HA decide and reconcile loop]
     API[API state and switchover surface]
 
     Config --> DCS
@@ -30,14 +30,11 @@ flowchart LR
 
 The crate root exposes the major public areas: `api`, `cli`, `config`, `dcs`, `pginfo`, `runtime`, and `state`. Internal modules such as `ha`, `logging`, `process`, `postgres_managed`, and `tls` carry the coordination and implementation details.
 
-The HA layer produces decisions such as:
-- `WaitForPostgres`
-- `WaitForDcsTrust`
-- `AttemptLeadership`
-- `FollowLeader`
-- `BecomePrimary`
-- `RecoverReplica`
-- `StepDown`
+The HA layer produces stable outputs such as:
+- `authority = primary` with a lease epoch
+- `authority = no_primary` with a structured reason
+- `ha_role = leader`, `candidate`, `follower`, `fail_safe`, `demoting_for_switchover`, `fenced`, or `idle`
+- ordered reconcile actions such as `promote`, `start_replica`, `pg_rewind`, or `clear_switchover`
 - `FenceNode`
 - `ReleaseLeaderLease`
 - `EnterFailSafe`
@@ -107,9 +104,9 @@ Trust evaluation in [`src/dcs/state.rs`](/home/joshazimullah.linux/work_mounts/p
 
 Freshness is checked against `ha.lease_ttl_ms`, using each member record's `updated_at` timestamp. In multi-member caches, the code requires at least two fresh members before returning `FullQuorum`.
 
-Leader liveness is handled separately from trust. The etcd-backed store writes `/{scope}/leader` under an etcd lease whose TTL is also derived from `ha.lease_ttl_ms`. When the owning node dies hard and keepalive stops, etcd expires the lease and the watch-fed DCS cache drops the leader record automatically. That keeps leader expiry in the DCS/store layer instead of duplicating a second expiry clock inside the HA phase machine.
+Leader liveness is handled separately from trust. The etcd-backed store writes `/{scope}/leader` under an etcd lease whose TTL is also derived from `ha.lease_ttl_ms`. When the owning node dies hard and keepalive stops, etcd expires the lease and the watch-fed DCS cache drops the leader record automatically. The leader record also carries a `generation`, turning it into a lease epoch instead of a bare member label.
 
-The HA decision logic uses that trust result immediately. At the top of `decide_phase`, if trust is not `FullQuorum`, the node enters `FailSafe`; if it is still primary at that moment, the decision carries `EnterFailSafe { release_leader_lease: false }`.
+The HA decision logic uses that trust result immediately. At the top of `decide`, if trust is not `FullQuorum`, the node moves into a fail-safe role; if it is still primary at that moment, the published authority also withdraws from `primary` and may carry a fence cutoff.
 
 ```mermaid
 flowchart TD
@@ -159,8 +156,10 @@ The controller surface in [`src/api/controller.rs`](/home/joshazimullah.linux/wo
 - switchover pending
 - member count
 - DCS trust
-- HA phase
-- HA decision
+- authority
+- fence cutoff
+- HA role
+- planned actions
 - snapshot sequence
 
 The same controller also accepts a generic switchover request and writes it into the DCS namespace. That means operator intent enters through the API, but the HA loop still decides what to do with that request and which member becomes the new primary.
@@ -169,4 +168,4 @@ The current HA surface still treats split-brain avoidance as a first-class invar
 
 ## Summary
 
-The core architectural pattern is: collect state, evaluate trust, run the HA phase machine, then expose the result through the API. The important constraint is that leadership is trust-gated. DCS freshness, member freshness, and explicit phase transitions are the mechanisms that keep high availability behavior explainable and defensive.
+The core architectural pattern is: collect state, evaluate trust, decide local role and published authority, reconcile that into ordered actions, then expose the result through the API. The important constraint is that leadership is trust-gated. DCS freshness, member freshness, lease epochs, and explicit safety publication are the mechanisms that keep high availability behavior explainable and defensive.

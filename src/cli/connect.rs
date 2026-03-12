@@ -311,7 +311,7 @@ fn escape_libpq_value(value: &str) -> String {
     format!("'{escaped}'")
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 

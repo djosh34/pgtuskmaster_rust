@@ -54,6 +54,7 @@ pub enum DcsStoreError {
 pub trait DcsStore: Send {
     fn healthy(&self) -> bool;
     fn read_path(&mut self, path: &str) -> Result<Option<String>, DcsStoreError>;
+    fn snapshot_prefix(&mut self, path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError>;
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError>;
     fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError>;
     fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError>;
@@ -81,10 +82,12 @@ pub(crate) fn leader_path(scope: &str) -> String {
 pub(crate) fn encode_leader_record(
     scope: &str,
     member_id: &MemberId,
+    generation: u64,
 ) -> Result<(String, String), DcsStoreError> {
     let path = leader_path(scope);
     let encoded = serde_json::to_string(&LeaderRecord {
         member_id: member_id.clone(),
+        generation,
     })
     .map_err(|err| DcsStoreError::Decode {
         key: path.clone(),
@@ -252,6 +255,27 @@ impl DcsStore for TestDcsStore {
         Ok(self.kv.get(path).cloned())
     }
 
+    fn snapshot_prefix(&mut self, path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError> {
+        let mut events = vec![WatchEvent {
+            op: WatchOp::Reset,
+            path: path_prefix.to_string(),
+            value: None,
+            revision: 0,
+        }];
+        events.extend(
+            self.kv
+                .iter()
+                .filter(|(path, _)| path.starts_with(path_prefix))
+                .map(|(path, value)| WatchEvent {
+                    op: WatchOp::Put,
+                    path: path.clone(),
+                    value: Some(value.clone()),
+                    revision: 0,
+                }),
+        );
+        Ok(events)
+    }
+
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
         self.kv.insert(path.to_string(), value.clone());
         self.writes.push((path.to_string(), value));
@@ -285,7 +309,8 @@ impl DcsLeaderStore for TestDcsStore {
         scope: &str,
         member_id: &MemberId,
     ) -> Result<(), DcsStoreError> {
-        let (path, encoded) = encode_leader_record(scope, member_id)?;
+        let generation = self.writes.len() as u64 + 1;
+        let (path, encoded) = encode_leader_record(scope, member_id, generation)?;
         if self.put_path_if_absent(path.as_str(), encoded)? {
             Ok(())
         } else {
@@ -433,7 +458,7 @@ mod tests {
                 WatchEvent {
                     op: WatchOp::Put,
                     path: "/scope-a/leader".to_string(),
-                    value: Some("{\"member_id\":\"node-a\"}".to_string()),
+                    value: Some("{\"member_id\":\"node-a\",\"generation\":1}".to_string()),
                     revision: 2,
                 },
             ],
@@ -449,7 +474,8 @@ mod tests {
         assert_eq!(
             cache.leader,
             Some(crate::dcs::state::LeaderRecord {
-                member_id: MemberId("node-a".to_string())
+                member_id: MemberId("node-a".to_string()),
+                generation: 1,
             })
         );
     }
@@ -479,6 +505,7 @@ mod tests {
         );
         cache.leader = Some(crate::dcs::state::LeaderRecord {
             member_id: MemberId("node-stale".to_string()),
+            generation: 1,
         });
         cache.switchover = Some(crate::dcs::state::SwitchoverRequest {
             switchover_to: None,
@@ -521,9 +548,11 @@ mod tests {
 
         let stale_json = serde_json::to_string(&crate::dcs::state::LeaderRecord {
             member_id: MemberId("node-stale".to_string()),
+            generation: 1,
         })?;
         let fresh_json = serde_json::to_string(&crate::dcs::state::LeaderRecord {
             member_id: MemberId("node-fresh".to_string()),
+            generation: 2,
         })?;
 
         let result = refresh_from_etcd_watch(
@@ -561,7 +590,8 @@ mod tests {
         assert_eq!(
             cache.leader,
             Some(crate::dcs::state::LeaderRecord {
-                member_id: MemberId("node-fresh".to_string())
+                member_id: MemberId("node-fresh".to_string()),
+                generation: 2,
             })
         );
 
@@ -572,6 +602,7 @@ mod tests {
     fn dcs_value_type_is_exercised_to_keep_contracts_live() {
         let _value = DcsValue::Leader(crate::dcs::state::LeaderRecord {
             member_id: MemberId("node-a".to_string()),
+            generation: 1,
         });
     }
 
@@ -612,7 +643,9 @@ mod tests {
         assert!(store.writes()[0].1.contains("\"member_id\":\"node-a\""));
         assert_eq!(
             store.read_path("/scope-a/leader"),
-            Ok(Some("{\"member_id\":\"node-a\"}".to_string()))
+            Ok(Some(
+                "{\"member_id\":\"node-a\",\"generation\":1}".to_string()
+            ))
         );
     }
 

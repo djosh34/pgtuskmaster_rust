@@ -48,13 +48,7 @@ Before starting the new node, verify:
 
 Start `pgtuskmaster` using your normal service method for this environment.
 
-The node starts from the HA phase machine defined in the runtime:
-
-- `init`
-- `waiting_postgres_reachable`
-- `waiting_dcs_trusted`
-
-From there, the next phase depends on the observed world state.
+The node starts by observing PostgreSQL and DCS state, then converges into one of the normal HA roles such as `follower`, `candidate`, or `idle` depending on the observed world state.
 
 ## Step 4: Watch the new node through `pgtm`
 

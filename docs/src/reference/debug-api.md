@@ -118,39 +118,29 @@ The debug endpoints run on the same listener as the main HTTP API and inherit it
 | `version` | HA-state channel version |
 | `updated_at_ms` | HA-state publish time |
 | `worker` | Worker status label |
-| `phase` | Current HA phase label |
+| `phase` | Current local HA role label |
 | `tick` | HA loop tick |
-| `decision` | Current HA decision label |
-| `decision_detail` | Optional detail string for the current decision |
-| `planned_actions` | Number of actions after lowering the decision into an effect plan |
+| `decision` | Compact authority projection string |
+| `decision_detail` | Debug-oriented detail string for the current role |
+| `planned_actions` | Number of ordered reconcile actions currently planned |
 
-The response-facing `ha.phase` labels are:
+The response-facing `ha.phase` labels are the current `ha_role` labels from `/ha/state`:
 
-- `init`
-- `waiting_postgres_reachable`
-- `waiting_dcs_trusted`
-- `waiting_switchover_successor`
-- `replica`
-- `candidate_leader`
-- `primary`
-- `rewinding`
-- `bootstrapping`
-- `fencing`
+- `leader`
+- `candidate`
+- `follower`
 - `fail_safe`
+- `demoting_for_switchover`
+- `fenced`
+- `idle`
 
-The response-facing `ha.decision` labels are:
+The response-facing `ha.decision` value is not a tagged enum anymore. It is the authority string projection:
 
-- `no_change`
-- `wait_for_postgres`
-- `wait_for_dcs_trust`
-- `attempt_leadership`
-- `follow_leader`
-- `become_primary`
-- `step_down`
-- `recover_replica`
-- `fence_node`
-- `release_leader_lease`
-- `enter_fail_safe`
+- `primary:<member_id>#<generation>` when primary authority is published
+- `no_primary:<Reason>` when the node deliberately withholds primary authority
+- `unknown` during startup before publication converges
+
+`ha.decision_detail` is the Rust-debug rendering of the current role. Treat it as incident detail, not as a normalized automation contract.
 
 ### `api`
 

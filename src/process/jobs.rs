@@ -56,16 +56,11 @@ pub(crate) struct DemoteSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StartPostgresSpec {
     pub(crate) data_dir: PathBuf,
+    pub(crate) socket_dir: PathBuf,
+    pub(crate) port: u16,
     pub(crate) config_file: PathBuf,
     pub(crate) log_file: PathBuf,
     pub(crate) wait_seconds: Option<u64>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FencingSpec {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) mode: ShutdownMode,
     pub(crate) timeout_ms: Option<u64>,
 }
 
@@ -92,7 +87,6 @@ pub(crate) enum ActiveJobKind {
     Promote,
     Demote,
     StartPostgres,
-    Fencing,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

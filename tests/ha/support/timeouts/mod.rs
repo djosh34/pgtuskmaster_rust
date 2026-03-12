@@ -5,6 +5,7 @@ use pgtuskmaster_rust::config::load_runtime_config;
 use crate::support::error::{HarnessError, Result};
 
 const FAILOVER_SLACK_LOOPS: u64 = 3;
+const DCS_DETECTION_SLACK_LOOPS: u64 = 1;
 const RECOVERY_SLACK_LOOPS: u64 = 10;
 
 #[derive(Clone, Debug)]
@@ -24,7 +25,8 @@ impl TimeoutModel {
             ))
         })?;
         let poll_interval = Duration::from_millis(config.ha.loop_interval_ms);
-        let failover_slack = poll_interval.mul_f64(FAILOVER_SLACK_LOOPS as f64);
+        let failover_slack =
+            poll_interval.mul_f64((FAILOVER_SLACK_LOOPS + DCS_DETECTION_SLACK_LOOPS) as f64);
         let recovery_slack = poll_interval.mul_f64(RECOVERY_SLACK_LOOPS as f64);
         let failover_deadline = Duration::from_millis(config.ha.lease_ttl_ms) + failover_slack;
         let startup_deadline =

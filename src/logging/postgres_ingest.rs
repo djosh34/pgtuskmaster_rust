@@ -1616,6 +1616,8 @@ mod tests {
                 id: start_id.clone(),
                 kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
                     data_dir: data_dir.clone(),
+                    socket_dir: ingest_ctx.cfg.postgres.socket_dir.clone(),
+                    port,
                     config_file: managed.postgresql_conf_path,
                     log_file: log_file.clone(),
                     wait_seconds: Some(30),

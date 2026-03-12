@@ -4,7 +4,7 @@ use crate::{
     config::RuntimeConfig,
     dcs::state::{DcsState, DcsTrust},
     debug_api::snapshot::{DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot},
-    ha::{lower::lower_decision, state::HaState},
+    ha::state::HaState,
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     process::state::{JobOutcome, ProcessState},
     state::{Versioned, WorkerStatus},
@@ -299,17 +299,15 @@ fn to_process_section(process: &Versioned<ProcessState>) -> ProcessSection {
 }
 
 fn to_ha_section(ha: &Versioned<HaState>) -> HaSection {
-    let decision = &ha.value.decision;
-
     HaSection {
         version: ha.version.0,
         updated_at_ms: ha.updated_at.0,
         worker: worker_status_label(&ha.value.worker),
-        phase: format!("{:?}", ha.value.phase),
+        phase: ha.value.role.label().to_string(),
         tick: ha.value.tick,
-        decision: decision.label().to_string(),
-        decision_detail: decision.detail(),
-        planned_actions: lower_decision(decision).len(),
+        decision: authority_label(&ha.value.publication.authority),
+        decision_detail: Some(role_detail(&ha.value.role)),
+        planned_actions: ha.value.planned_actions.len(),
     }
 }
 
@@ -376,6 +374,20 @@ fn debug_domain_label(domain: &DebugDomain) -> &'static str {
         DebugDomain::Process => "process",
         DebugDomain::Ha => "ha",
     }
+}
+
+fn authority_label(value: &crate::ha::types::AuthorityView) -> String {
+    match value {
+        crate::ha::types::AuthorityView::Primary { member, epoch } => {
+            format!("primary:{}#{}", member.0, epoch.generation)
+        }
+        crate::ha::types::AuthorityView::NoPrimary(reason) => format!("no_primary:{reason:?}"),
+        crate::ha::types::AuthorityView::Unknown => "unknown".to_string(),
+    }
+}
+
+fn role_detail(value: &crate::ha::types::TargetRole) -> String {
+    format!("{value:?}")
 }
 
 fn job_outcome_label(outcome: &JobOutcome) -> String {

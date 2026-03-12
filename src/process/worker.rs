@@ -41,8 +41,6 @@ enum ProcessEventKind {
     RequestReceived,
     InboxDisconnected,
     BusyReject,
-    FencingNoop,
-    FencingPreflightFailed,
     StartPostgresNoop,
     StartPostgresPreflightFailed,
     BuildCommandFailed,
@@ -62,8 +60,6 @@ impl ProcessEventKind {
             Self::RequestReceived => "process.worker.request_received",
             Self::InboxDisconnected => "process.worker.inbox_disconnected",
             Self::BusyReject => "process.worker.busy_reject",
-            Self::FencingNoop => "process.job.fencing_noop",
-            Self::FencingPreflightFailed => "process.job.fencing_preflight_failed",
             Self::StartPostgresNoop => "process.job.start_postgres_noop",
             Self::StartPostgresPreflightFailed => "process.job.start_postgres_preflight_failed",
             Self::BuildCommandFailed => "process.job.build_command_failed",
@@ -519,6 +515,42 @@ fn pid_matches_data_dir(pid: u32, data_dir: &Path, pid_file: &Path) -> Result<bo
     }
 }
 
+fn pid_is_postgres_process(pid: u32) -> Result<bool, ProcessError> {
+    if !pid_exists(pid)? {
+        return Ok(false);
+    }
+
+    #[cfg(unix)]
+    {
+        let cmdline_path = std::path::PathBuf::from(format!("/proc/{pid}/cmdline"));
+        let cmdline = match fs::read(&cmdline_path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => {
+                return Err(ProcessError::InvalidSpec(format!(
+                    "read {} failed: {err}",
+                    cmdline_path.display()
+                )));
+            }
+        };
+        Ok(cmdline
+            .split(|byte| *byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .map(|arg| String::from_utf8_lossy(arg))
+            .any(|arg| {
+                std::path::Path::new(arg.as_ref())
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| matches!(name, "postgres" | "postmaster"))
+                    .unwrap_or(false)
+            }))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(true)
+    }
+}
+
 fn remove_file_best_effort(path: &Path) -> Result<(), ProcessError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -530,40 +562,71 @@ fn remove_file_best_effort(path: &Path) -> Result<(), ProcessError> {
     }
 }
 
-fn fencing_preflight_is_already_stopped(data_dir: &Path) -> Result<bool, ProcessError> {
-    let pid_file = data_dir.join("postmaster.pid");
-    if !pid_file.exists() {
-        return Ok(true);
-    }
+fn postgres_socket_paths(socket_dir: &Path, port: u16) -> (std::path::PathBuf, std::path::PathBuf) {
+    let socket_file = socket_dir.join(format!(".s.PGSQL.{port}"));
+    let lock_file = socket_dir.join(format!(".s.PGSQL.{port}.lock"));
+    (socket_file, lock_file)
+}
 
-    let pid = parse_postmaster_pid(&pid_file)?;
-    if pid_matches_data_dir(pid, data_dir, &pid_file)? {
-        return Ok(false);
+fn parse_postgres_socket_lock_pid(lock_file: &Path) -> Result<Option<u32>, ProcessError> {
+    let contents = match fs::read_to_string(lock_file) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(ProcessError::InvalidSpec(format!(
+                "read postgres socket lock {} failed: {err}",
+                lock_file.display()
+            )));
+        }
+    };
+    let Some(first_line) = contents.lines().next() else {
+        return Ok(None);
+    };
+    let trimmed = first_line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
     }
+    trimmed.parse::<u32>().map(Some).map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "parse postgres socket lock pid '{}' in {} failed: {err}",
+            trimmed,
+            lock_file.display()
+        ))
+    })
+}
 
-    // Stale pid file: treat as already fenced to avoid `pg_ctl stop -w` waiting forever.
-    remove_file_best_effort(&pid_file)?;
-    let opts_file = data_dir.join("postmaster.opts");
-    remove_file_best_effort(&opts_file)?;
-    Ok(true)
+fn cleanup_postgres_socket_files(socket_dir: &Path, port: u16) -> Result<(), ProcessError> {
+    let (socket_file, lock_file) = postgres_socket_paths(socket_dir, port);
+    remove_file_best_effort(&socket_file)?;
+    remove_file_best_effort(&lock_file)?;
+    Ok(())
 }
 
 pub(crate) fn start_postgres_preflight_is_already_running(
     data_dir: &Path,
+    socket_dir: &Path,
+    port: u16,
 ) -> Result<bool, ProcessError> {
     let pid_file = data_dir.join("postmaster.pid");
-    if !pid_file.exists() {
-        return Ok(false);
+    if pid_file.exists() {
+        let pid = parse_postmaster_pid(&pid_file)?;
+        if pid_matches_data_dir(pid, data_dir, &pid_file)? {
+            return Ok(true);
+        }
+
+        remove_file_best_effort(&pid_file)?;
+        let opts_file = data_dir.join("postmaster.opts");
+        remove_file_best_effort(&opts_file)?;
     }
 
-    let pid = parse_postmaster_pid(&pid_file)?;
-    if pid_matches_data_dir(pid, data_dir, &pid_file)? {
-        return Ok(true);
+    let (_, lock_file) = postgres_socket_paths(socket_dir, port);
+    if let Some(pid) = parse_postgres_socket_lock_pid(&lock_file)? {
+        if pid_is_postgres_process(pid)? {
+            return Ok(true);
+        }
     }
 
-    remove_file_best_effort(&pid_file)?;
-    let opts_file = data_dir.join("postmaster.opts");
-    remove_file_best_effort(&opts_file)?;
+    cleanup_postgres_socket_files(socket_dir, port)?;
     Ok(false)
 }
 
@@ -604,73 +667,12 @@ pub(crate) async fn start_job(
     let timeout_ms = timeout_for_kind(&request.kind, &ctx.config);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
 
-    if let ProcessJobKind::Fencing(spec) = &request.kind {
-        match fencing_preflight_is_already_stopped(spec.data_dir.as_path()) {
-            Ok(true) => {
-                let mut event = process_event(
-                    ProcessEventKind::FencingNoop,
-                    "ok",
-                    SeverityText::Info,
-                    "fencing preflight: postgres already stopped",
-                );
-                let fields = event.fields_mut();
-                fields.append_json_map(
-                    process_job_fields(&request.id, request.kind.label()).into_attributes(),
-                );
-                fields.insert("data_dir", spec.data_dir.display().to_string());
-                ctx.log
-                    .emit_app_event("process_worker::start_job", event)
-                    .map_err(|err| {
-                        WorkerError::Message(format!("process fencing noop log emit failed: {err}"))
-                    })?;
-                transition_to_idle(
-                    ctx,
-                    JobOutcome::Success {
-                        id: request.id,
-                        job_kind: active_kind(&request.kind),
-                        finished_at: now,
-                    },
-                    now,
-                )?;
-                return Ok(());
-            }
-            Ok(false) => {}
-            Err(error) => {
-                let mut event = process_event(
-                    ProcessEventKind::FencingPreflightFailed,
-                    "failed",
-                    SeverityText::Error,
-                    "fencing preflight failed",
-                );
-                let fields = event.fields_mut();
-                fields.append_json_map(
-                    process_job_fields(&request.id, request.kind.label()).into_attributes(),
-                );
-                fields.insert("error", error.to_string());
-                ctx.log
-                    .emit_app_event("process_worker::start_job", event)
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "process fencing preflight log emit failed: {err}"
-                        ))
-                    })?;
-                transition_to_idle(
-                    ctx,
-                    JobOutcome::Failure {
-                        id: request.id,
-                        job_kind: active_kind(&request.kind),
-                        error,
-                        finished_at: now,
-                    },
-                    now,
-                )?;
-                return Ok(());
-            }
-        }
-    }
-
     if let ProcessJobKind::StartPostgres(spec) = &request.kind {
-        match start_postgres_preflight_is_already_running(spec.data_dir.as_path()) {
+        match start_postgres_preflight_is_already_running(
+            spec.data_dir.as_path(),
+            spec.socket_dir.as_path(),
+            spec.port,
+        ) {
             Ok(true) => {
                 let mut event = process_event(
                     ProcessEventKind::StartPostgresNoop,
@@ -1268,7 +1270,6 @@ pub(crate) fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) ->
         ProcessJobKind::Bootstrap(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
         ProcessJobKind::BaseBackup(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
         ProcessJobKind::PgRewind(spec) => spec.timeout_ms.unwrap_or(config.pg_rewind_timeout_ms),
-        ProcessJobKind::Fencing(spec) => spec.timeout_ms.unwrap_or(config.fencing_timeout_ms),
         ProcessJobKind::Promote(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
         ProcessJobKind::Demote(spec) => spec.timeout_ms.unwrap_or(config.fencing_timeout_ms),
         ProcessJobKind::StartPostgres(spec) => {
@@ -1285,7 +1286,6 @@ fn active_kind(kind: &ProcessJobKind) -> ActiveJobKind {
         ProcessJobKind::Promote(_) => ActiveJobKind::Promote,
         ProcessJobKind::Demote(_) => ActiveJobKind::Demote,
         ProcessJobKind::StartPostgres(_) => ActiveJobKind::StartPostgres,
-        ProcessJobKind::Fencing(_) => ActiveJobKind::Fencing,
     }
 }
 
@@ -1476,28 +1476,6 @@ pub(crate) fn build_command(
                 },
             })
         }
-        ProcessJobKind::Fencing(spec) => {
-            validate_non_empty_path("fencing.data_dir", &spec.data_dir)?;
-            let program = config.binaries.pg_ctl.clone();
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "stop".to_string(),
-                    "-m".to_string(),
-                    spec.mode.as_pg_ctl_arg().to_string(),
-                    "-w".to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
     }
 }
 
@@ -1519,7 +1497,6 @@ fn job_kind_label(kind: &ProcessJobKind) -> &'static str {
         ProcessJobKind::Promote(_) => "promote",
         ProcessJobKind::Demote(_) => "demote",
         ProcessJobKind::StartPostgres(_) => "start_postgres",
-        ProcessJobKind::Fencing(_) => "fencing",
     }
 }
 
@@ -1601,16 +1578,17 @@ mod tests {
         },
         process::{
             jobs::{
-                ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec,
-                NoopCommandRunner, PgRewindSpec, ProcessCommandRunner, ProcessEnvValue,
-                ProcessError, ProcessExit, ProcessHandle, PromoteSpec, ReplicatorSourceConn,
-                RewinderSourceConn, ShutdownMode, StartPostgresSpec,
+                ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, NoopCommandRunner,
+                PgRewindSpec, ProcessCommandRunner, ProcessEnvValue, ProcessError, ProcessExit,
+                ProcessHandle, PromoteSpec, ReplicatorSourceConn, RewinderSourceConn, ShutdownMode,
+                StartPostgresSpec,
             },
             state::{
                 JobOutcome, ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
             },
             worker::{
-                build_command, can_accept_job, start_job, step_once, tick_active_job,
+                build_command, can_accept_job, start_job,
+                start_postgres_preflight_is_already_running, step_once, tick_active_job,
                 TokioCommandRunner,
             },
         },
@@ -1748,6 +1726,8 @@ mod tests {
     fn sample_start_spec() -> StartPostgresSpec {
         StartPostgresSpec {
             data_dir: PathBuf::from("/tmp/node/data"),
+            socket_dir: PathBuf::from("/tmp/node/socket"),
+            port: 5432,
             config_file: PathBuf::from("/tmp/node/data/pgtm.postgresql.conf"),
             log_file: PathBuf::from("/tmp/node/postgres.log"),
             wait_seconds: Some(1),
@@ -1775,6 +1755,81 @@ mod tests {
                 content: secret.to_string(),
             },
         }
+    }
+
+    #[test]
+    fn start_postgres_preflight_accepts_live_socket_lock_when_pid_file_is_absent(
+    ) -> Result<(), WorkerError> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0u128, |duration| duration.as_nanos());
+        let root = std::env::temp_dir().join(format!(
+            "pgtuskmaster-start-preflight-socket-live-{}-{unique}",
+            std::process::id(),
+        ));
+        let data_dir = root.join("data");
+        let socket_dir = root.join("socket");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("create data dir failed: {err}")))?;
+        fs::create_dir_all(&socket_dir)
+            .map_err(|err| WorkerError::Message(format!("create socket dir failed: {err}")))?;
+        let lock_file = socket_dir.join(".s.PGSQL.5432.lock");
+        let fake_postmaster = spawn_fake_postmaster_without_data_dir_arg()?;
+        fs::write(&lock_file, format!("{}\n", fake_postmaster.child.id()))
+            .map_err(|err| WorkerError::Message(format!("write socket lock failed: {err}")))?;
+
+        let result = start_postgres_preflight_is_already_running(
+            data_dir.as_path(),
+            socket_dir.as_path(),
+            5432,
+        )
+        .map_err(|err| WorkerError::Message(format!("preflight failed: {err}")))?;
+
+        if root.exists() {
+            fs::remove_dir_all(&root)
+                .map_err(|err| WorkerError::Message(format!("remove temp root failed: {err}")))?;
+        }
+        assert!(result);
+        Ok(())
+    }
+
+    #[test]
+    fn start_postgres_preflight_cleans_stale_socket_artifacts() -> Result<(), WorkerError> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0u128, |duration| duration.as_nanos());
+        let root = std::env::temp_dir().join(format!(
+            "pgtuskmaster-start-preflight-socket-stale-{}-{unique}",
+            std::process::id(),
+        ));
+        let data_dir = root.join("data");
+        let socket_dir = root.join("socket");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| WorkerError::Message(format!("create data dir failed: {err}")))?;
+        fs::create_dir_all(&socket_dir)
+            .map_err(|err| WorkerError::Message(format!("create socket dir failed: {err}")))?;
+        let socket_file = socket_dir.join(".s.PGSQL.5432");
+        let lock_file = socket_dir.join(".s.PGSQL.5432.lock");
+        fs::write(&socket_file, "")
+            .map_err(|err| WorkerError::Message(format!("write socket file failed: {err}")))?;
+        fs::write(&lock_file, format!("{}\n", std::process::id()))
+            .map_err(|err| WorkerError::Message(format!("write socket lock failed: {err}")))?;
+
+        let result = start_postgres_preflight_is_already_running(
+            data_dir.as_path(),
+            socket_dir.as_path(),
+            5432,
+        )
+        .map_err(|err| WorkerError::Message(format!("preflight failed: {err}")))?;
+
+        assert!(!result);
+        assert!(!socket_file.exists());
+        assert!(!lock_file.exists());
+        if root.exists() {
+            fs::remove_dir_all(&root)
+                .map_err(|err| WorkerError::Message(format!("remove temp root failed: {err}")))?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -2673,6 +2728,8 @@ mod tests {
                         "start",
                         ProcessJobKind::StartPostgres(StartPostgresSpec {
                             data_dir: fixture.data_dir.clone(),
+                            socket_dir: socket_dir.clone(),
+                            port: fixture.port,
                             config_file: managed_config_file,
                             log_file: fixture.log_file.clone(),
                             wait_seconds: Some(45),
@@ -3001,27 +3058,6 @@ mod tests {
             )
             .await?;
         assert_success_outcome("demote", &outcome)?;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn real_fencing_job_executes_binary_path() -> Result<(), WorkerError> {
-        let binaries = pg16_binaries()?;
-        let mut fixture =
-            RealProcessFixture::bootstrap_and_start(binaries, "process-fencing").await?;
-
-        let outcome = fixture
-            .submit_job_and_wait(
-                "fence",
-                ProcessJobKind::Fencing(FencingSpec {
-                    data_dir: fixture.data_dir.clone(),
-                    mode: ShutdownMode::Fast,
-                    timeout_ms: Some(10_000),
-                }),
-                Duration::from_secs(20),
-            )
-            .await?;
-        assert_success_outcome("fence", &outcome)?;
         Ok(())
     }
 

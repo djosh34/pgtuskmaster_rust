@@ -6,6 +6,7 @@
 **Goal:** Stop teaching and shipping single-node mode as if it were a first-class product path. The higher-order goal is to align the repo with its actual value proposition: three-node HA operation, not a one-node pseudo-cluster that adds conceptual noise to onboarding, config, docs, and compose assets.
 
 **Scope:**
+- Treat the new three-node local quickstart from task 01 as the replacement path. This task should remove single-node from the shipped/operator story once the better default exists, not before.
 - Remove single-node Docker compose assets, alternate local compose variants, single-node quickstart/tutorial material, and single-node README positioning from the normal operator journey.
 - Remove single-node-specific public examples and commands that keep the docs split between "toy one-node mode" and "real HA mode".
 - Audit whether single-node-specific runtime or trust behavior remains in public product documentation or tests.
@@ -21,6 +22,7 @@
 **Expected outcome:**
 - The public product story starts at three nodes.
 - The README, tutorial flow, and shipped Docker assets no longer encourage single-node mode.
+- The canonical local product path is the same one-compose, file-based, secure-by-default three-node stack defined by task 01.
 - Any remaining single-node support is either deleted or clearly demoted out of the beginner/operator path with a concrete reason.
 
 </description>

@@ -1,258 +1,257 @@
-# HA Decisions
+# HA State Semantics
 
-This page catalogs the HA decision variants exposed through `GET /ha/state`.
+This page describes the HA-specific fields exposed through `GET /ha/state`.
 
-Use it when you need to interpret the `ha_decision` field without reading the Rust enums directly.
+The current API no longer publishes the old `ha_phase` and `ha_decision` enums. The stable contract is now:
 
-## Where decisions appear
+- `dcs_trust`: whether the node trusts the DCS view enough to run normal HA
+- `authority`: the operator-facing primary-authority projection this node is publishing
+- `fence_cutoff`: the lease epoch and committed LSN cutoff used when the node must stop unsafe primary behavior
+- `ha_role`: the local role the node is trying to hold right now
+- `planned_actions`: the ordered reconcile actions the node intends to execute next
 
-`GET /ha/state` returns:
+That split matters:
 
-- `dcs_trust`
-- `ha_phase`
-- `ha_tick`
-- `ha_decision`
-- `snapshot_sequence`
+- `authority` answers "who should operators currently treat as primary?"
+- `ha_role` answers "what is this node trying to do locally?"
+- `planned_actions` answers "what concrete work is queued from that choice?"
 
-`ha_decision` is a tagged JSON enum. The controller maps internal HA decisions into the response shapes described below.
+## Authority
 
-## Trust gate first
+`authority` is a tagged enum.
 
-The decision engine is trust-gated.
-
-- When DCS trust is not `FullQuorum`, normal phase logic is bypassed.
-- If local PostgreSQL is primary while trust is degraded, the node enters `FailSafe` with `enter_fail_safe`.
-- If local PostgreSQL is not primary while trust is degraded, the node moves into `FailSafe` with `no_change`.
-
-That is why some decisions only appear during healthy DCS trust.
-
-## Decision variants
-
-### `no_change`
+### `primary`
 
 ```text
 {
-  "kind": "no_change"
-}
-```
-
-No new action is requested for this tick.
-
-### `wait_for_postgres`
-
-```text
-{
-  "kind": "wait_for_postgres",
-  "start_requested": true,
-  "leader_member_id": "node-a"
-}
-```
-
-Fields:
-
-- `start_requested`: whether the process layer may request PostgreSQL startup
-- `leader_member_id`: optional leader context for the wait
-
-This decision is used when PostgreSQL is not yet reachable enough for the next HA step.
-
-### `wait_for_dcs_trust`
-
-```text
-{
-  "kind": "wait_for_dcs_trust"
-}
-```
-
-PostgreSQL is reachable enough to continue, but the node is still waiting for trusted DCS state.
-
-### `attempt_leadership`
-
-```text
-{
-  "kind": "attempt_leadership"
-}
-```
-
-The node should try to acquire leadership.
-
-### `follow_leader`
-
-```text
-{
-  "kind": "follow_leader",
-  "leader_member_id": "node-a"
-}
-```
-
-Field:
-
-- `leader_member_id`: the member to follow as a replica
-
-### `become_primary`
-
-```text
-{
-  "kind": "become_primary",
-  "promote": true
-}
-```
-
-Field:
-
-- `promote`: whether the node should run promotion work instead of simply remaining primary
-
-### `complete_switchover`
-
-```text
-{
-  "kind": "complete_switchover"
-}
-```
-
-This decision clears the DCS switchover request after the new primary can safely observe that leadership has already moved away from the old primary.
-
-### `step_down`
-
-```text
-{
-  "kind": "step_down",
-  "reason": {
-    "kind": "switchover"
-  },
-  "release_leader_lease": true,
-  "fence": false
-}
-```
-
-Fields:
-
-- `reason`
-- `release_leader_lease`
-- `fence`
-
-`step_down` is a structured plan, not just a label.
-
-`reason` can be:
-
-- `{"kind":"switchover"}`
-- `{"kind":"foreign_leader_detected","leader_member_id":"node-b"}`
-
-For switchovers, `step_down` demotes the current primary and releases leadership, but it does not clear the switchover request. Cleanup happens later through `complete_switchover`.
-
-### `recover_replica`
-
-```text
-{
-  "kind": "recover_replica",
-  "strategy": {
-    "kind": "rewind",
-    "leader_member_id": "node-a"
+  "kind": "primary",
+  "member_id": "node-a",
+  "epoch": {
+    "holder": "node-a",
+    "generation": 7
   }
 }
 ```
 
-`strategy` can be:
+Use this when the node is publishing a concrete primary authority view.
 
-- `{"kind":"rewind","leader_member_id":"node-a"}`
-- `{"kind":"base_backup","leader_member_id":"node-a"}`
-- `{"kind":"bootstrap"}`
+The embedded lease epoch matters operationally:
 
-### `fence_node`
+- `holder` is the member id for the published authority
+- `generation` distinguishes successive leader leases for the same member
+
+### `no_primary`
 
 ```text
 {
-  "kind": "fence_node"
+  "kind": "no_primary",
+  "reason": {
+    "kind": "recovering"
+  }
 }
 ```
 
-The node should enter fencing behavior to protect against unsafe primary behavior.
+This means the node is deliberately not projecting any primary authority.
 
-### `release_leader_lease`
+`reason.kind` can be:
+
+- `dcs_degraded`: DCS trust is not good enough for normal HA
+- `lease_open`: no trusted primary lease is currently held
+- `recovering`: the node is still converging or restarting and cannot safely publish a primary
+- `switchover_rejected`: a targeted switchover request was invalid, with a blocker payload
+
+When `reason.kind` is `switchover_rejected`, the blocker is:
+
+- `target_missing`
+- `target_ineligible`, with one of:
+  - `not_ready`
+  - `lagging`
+  - `partitioned`
+  - `api_unavailable`
+  - `starting_up`
+
+### `unknown`
 
 ```text
 {
-  "kind": "release_leader_lease",
-  "reason": "postgres_unreachable"
+  "kind": "unknown"
+}
+```
+
+This is the cold-start publication value before the HA worker has produced a stronger authority projection.
+
+## Fence Cutoff
+
+`fence_cutoff` is present when the node must retain enough information to stop an unsafe primary cleanly.
+
+```text
+{
+  "epoch": {
+    "holder": "node-a",
+    "generation": 7
+  },
+  "committed_lsn": 12345678
+}
+```
+
+This payload is emitted together with `authority.kind = "no_primary"` in safety-sensitive situations such as:
+
+- DCS trust degradation while the local node is primary
+- storage-stall fencing while the local node is primary
+
+## Local HA Role
+
+`ha_role` is a tagged enum describing the node's local intent.
+
+### `leader`
+
+```text
+{
+  "kind": "leader",
+  "epoch": {
+    "holder": "node-a",
+    "generation": 7
+  }
+}
+```
+
+The node believes it holds the current leader lease and is acting as the leader-side role.
+
+### `candidate`
+
+```text
+{
+  "kind": "candidate",
+  "candidacy": {
+    "kind": "failover"
+  }
+}
+```
+
+`candidacy.kind` can be:
+
+- `bootstrap`
+- `failover`
+- `resume_after_outage`
+- `targeted_switchover`, with `member_id`
+
+### `follower`
+
+```text
+{
+  "kind": "follower",
+  "goal": {
+    "leader": "node-a",
+    "recovery": "rewind"
+  }
+}
+```
+
+`goal.recovery` can be:
+
+- `none`
+- `start_streaming`
+- `rewind`
+- `basebackup`
+
+### `fail_safe`
+
+```text
+{
+  "kind": "fail_safe",
+  "goal": {
+    "kind": "primary_must_stop",
+    "cutoff": {
+      "epoch": {
+        "holder": "node-a",
+        "generation": 7
+      },
+      "committed_lsn": 12345678
+    }
+  }
+}
+```
+
+`goal.kind` can be:
+
+- `primary_must_stop`
+- `replica_keep_following`, with optional `upstream`
+- `wait_for_quorum`
+
+### `demoting_for_switchover`
+
+```text
+{
+  "kind": "demoting_for_switchover",
+  "member_id": "node-b"
+}
+```
+
+The node is stepping down specifically so the named target can take over.
+
+### `fenced`
+
+```text
+{
+  "kind": "fenced",
+  "reason": "foreign_leader_detected"
 }
 ```
 
 `reason` can be:
 
-- `fencing_complete`
-- `postgres_unreachable`
+- `foreign_leader_detected`
+- `storage_stalled`
 
-### `enter_fail_safe`
+### `idle`
 
 ```text
 {
-  "kind": "enter_fail_safe",
-  "release_leader_lease": false
+  "kind": "idle",
+  "reason": {
+    "kind": "awaiting_leader"
+  }
 }
 ```
 
-Field:
+`reason.kind` can be:
 
-- `release_leader_lease`: whether fail-safe entry also releases the leader lease
+- `awaiting_leader`
+- `awaiting_target`, with `member_id`
 
-## Related HA phases
+## Planned Actions
 
-The phase machine exposes these phases:
+`planned_actions` is the ordered reconcile plan derived from `ha_role` and `authority`.
 
-- `init`
-- `waiting_postgres_reachable`
-- `waiting_dcs_trusted`
-- `waiting_switchover_successor`
-- `replica`
-- `candidate_leader`
-- `primary`
-- `rewinding`
-- `bootstrapping`
-- `fencing`
-- `fail_safe`
+Possible action kinds are:
 
-The decision and phase move together, but they are not the same thing:
+- `init_db`
+- `base_backup`
+- `pg_rewind`
+- `start_primary`
+- `start_replica`
+- `promote`
+- `demote`
+- `acquire_lease`
+- `release_lease`
+- `publish`
+- `clear_switchover`
 
-- the phase tells you where the node is in the HA state machine
-- the decision tells you what action the node wants next
+The action payloads carry the additional information the worker needs:
 
-## How decisions map to work
+- recovery actions name the source member id
+- `demote` includes the shutdown mode
+- `acquire_lease` includes the candidacy kind
+- `publish` embeds the authority projection that should become visible to operators
 
-The HA layer lowers decisions into effect plans. At a high level:
+The list is ordered. The worker executes it in sequence, so this field is the closest stable explanation of what the node plans to do next without reading the debug internals.
 
-- `attempt_leadership` drives lease acquisition
-- `follow_leader` drives replica-follow behavior
-- `become_primary` drives primary behavior and promotion
-- `complete_switchover` clears a completed switchover request from DCS
-- `recover_replica` drives rewind, base-backup, or bootstrap recovery
-- `step_down`, `release_leader_lease`, and `enter_fail_safe` drive safety and lease changes
-- `fence_node` drives fencing
+## Relationship To Debug Output
 
-## Reading decisions during operations
+The debug surface still uses the legacy field names `ha.phase` and `ha.decision`, but they now mean:
 
-Common operator interpretations:
+- `ha.phase`: the string label for `ha_role`
+- `ha.decision`: the compact string form of `authority`
+- `ha.decision_detail`: a debug-oriented detail string for the current role
 
-- `wait_for_postgres`: local PostgreSQL is not ready for the next HA step
-- `wait_for_dcs_trust`: the node is waiting for a trustworthy cluster view
-- `attempt_leadership`: no healthy leader is being followed and this node is trying to lead
-- `follow_leader`: the node has a leader and intends to remain a replica
-- `complete_switchover`: the new primary has taken over and is clearing the now-satisfied switchover request
-- `recover_replica`: replica rejoin or divergence handling is in progress
-- `step_down` or `release_leader_lease`: leadership is being given up deliberately
-- `enter_fail_safe` or `fence_node`: safety behavior is taking precedence over availability
-
-## Diagram
-
-```mermaid
-flowchart TD
-    world[World snapshot]
-    trust{DCS trust}
-    phase[Current HA phase]
-    decision[HA decision]
-    effect[Lowered effect plan]
-
-    world --> trust
-    trust -->|not full quorum| decision
-    trust -->|full quorum| phase
-    phase --> decision
-    decision --> effect
-```
+Use `/ha/state` for automation. Use `/debug/verbose` when you need additional narrative detail while investigating a node.

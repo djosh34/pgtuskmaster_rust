@@ -5,12 +5,10 @@ use thiserror::Error;
 use crate::{
     config::RuntimeConfig,
     dcs::state::MemberRecord,
-    ha::decision::HaDecision,
     postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
     process::{
         jobs::{
-            BaseBackupSpec, BootstrapSpec, DemoteSpec, FencingSpec, PgRewindSpec, PromoteSpec,
-            ShutdownMode, StartPostgresSpec,
+            BaseBackupSpec, BootstrapSpec, DemoteSpec, PgRewindSpec, PromoteSpec, StartPostgresSpec,
         },
         state::{ProcessJobKind, ProcessJobRequest},
     },
@@ -18,122 +16,45 @@ use crate::{
 };
 
 use super::{
-    actions::{ActionId, HaAction},
     source_conn::{basebackup_source_from_member, rewind_source_from_member},
     state::HaWorkerCtx,
+    types::{ReconcileAction, ShutdownMode},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProcessDispatchOutcome {
     Applied,
-    Skipped,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum ProcessDispatchError {
-    #[error("process send failed for action `{action:?}`: {message}")]
-    ProcessSend { action: ActionId, message: String },
-    #[error("managed config materialization failed for action `{action:?}`: {message}")]
-    ManagedConfig { action: ActionId, message: String },
-    #[error("filesystem operation failed for action `{action:?}`: {message}")]
-    Filesystem { action: ActionId, message: String },
-    #[error("remote source selection failed for action `{action:?}`: {message}")]
-    SourceSelection { action: ActionId, message: String },
-    #[error("process dispatch does not support action `{action:?}`")]
-    UnsupportedAction { action: ActionId },
+    #[error("process send failed for action `{action}`: {message}")]
+    ProcessSend { action: String, message: String },
+    #[error("managed config materialization failed for action `{action}`: {message}")]
+    ManagedConfig { action: String, message: String },
+    #[error("filesystem operation failed for action `{action}`: {message}")]
+    Filesystem { action: String, message: String },
+    #[error("remote source selection failed for action `{action}`: {message}")]
+    SourceSelection { action: String, message: String },
+    #[error("process dispatch does not support action `{action}`")]
+    UnsupportedAction { action: String },
 }
 
 pub(crate) fn dispatch_process_action(
     ctx: &mut HaWorkerCtx,
     ha_tick: u64,
     action_index: usize,
-    action: &HaAction,
+    action: &ReconcileAction,
     runtime_config: &RuntimeConfig,
 ) -> Result<ProcessDispatchOutcome, ProcessDispatchError> {
     match action {
-        HaAction::AcquireLeaderLease | HaAction::ReleaseLeaderLease | HaAction::ClearSwitchover => {
-            Err(ProcessDispatchError::UnsupportedAction {
-                action: action.id(),
-            })
-        }
-        HaAction::StartPostgres => {
-            let start_intent = start_intent_from_dcs(
-                ctx,
-                start_postgres_leader_member_id(ctx),
-                runtime_config.postgres.data_dir.as_path(),
-            )?;
-            let managed = crate::postgres_managed::materialize_managed_postgres_config(
-                runtime_config,
-                &start_intent,
-            )
-            .map_err(|err| ProcessDispatchError::ManagedConfig {
-                action: action.id(),
-                message: err.to_string(),
+        ReconcileAction::InitDb => {
+            wipe_data_dir(runtime_config.postgres.data_dir.as_path()).map_err(|message| {
+                ProcessDispatchError::Filesystem {
+                    action: action.label().to_string(),
+                    message,
+                }
             })?;
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
-                    data_dir: runtime_config.postgres.data_dir.clone(),
-                    config_file: managed.postgresql_conf_path,
-                    log_file: ctx.process_defaults.log_file.clone(),
-                    wait_seconds: None,
-                    timeout_ms: None,
-                }),
-            };
-            send_process_request(ctx, action.id(), request)?;
-            Ok(ProcessDispatchOutcome::Applied)
-        }
-        HaAction::PromoteToPrimary => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::Promote(PromoteSpec {
-                    data_dir: runtime_config.postgres.data_dir.clone(),
-                    wait_seconds: None,
-                    timeout_ms: None,
-                }),
-            };
-            send_process_request(ctx, action.id(), request)?;
-            Ok(ProcessDispatchOutcome::Applied)
-        }
-        HaAction::DemoteToReplica => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::Demote(DemoteSpec {
-                    data_dir: runtime_config.postgres.data_dir.clone(),
-                    mode: ctx.process_defaults.shutdown_mode.clone(),
-                    timeout_ms: None,
-                }),
-            };
-            send_process_request(ctx, action.id(), request)?;
-            Ok(ProcessDispatchOutcome::Applied)
-        }
-        HaAction::StartRewind { leader_member_id } => {
-            let source = validate_rewind_source(ctx, action.id(), leader_member_id)?;
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::PgRewind(PgRewindSpec {
-                    target_data_dir: runtime_config.postgres.data_dir.clone(),
-                    source,
-                    timeout_ms: None,
-                }),
-            };
-            send_process_request(ctx, action.id(), request)?;
-            Ok(ProcessDispatchOutcome::Applied)
-        }
-        HaAction::StartBaseBackup { leader_member_id } => {
-            let source = validate_basebackup_source(ctx, action.id(), leader_member_id)?;
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::BaseBackup(BaseBackupSpec {
-                    data_dir: runtime_config.postgres.data_dir.clone(),
-                    source,
-                    timeout_ms: Some(runtime_config.process.bootstrap_timeout_ms),
-                }),
-            };
-            send_process_request(ctx, action.id(), request)?;
-            Ok(ProcessDispatchOutcome::Applied)
-        }
-        HaAction::RunBootstrap => {
             let request = ProcessJobRequest {
                 id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
                 kind: ProcessJobKind::Bootstrap(BootstrapSpec {
@@ -142,45 +63,138 @@ pub(crate) fn dispatch_process_action(
                     timeout_ms: None,
                 }),
             };
-            send_process_request(ctx, action.id(), request)?;
+            send_process_request(ctx, action.label(), request)?;
             Ok(ProcessDispatchOutcome::Applied)
         }
-        HaAction::FenceNode => {
-            let request = ProcessJobRequest {
-                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
-                kind: ProcessJobKind::Fencing(FencingSpec {
-                    data_dir: runtime_config.postgres.data_dir.clone(),
-                    mode: ShutdownMode::Immediate,
-                    timeout_ms: None,
-                }),
-            };
-            send_process_request(ctx, action.id(), request)?;
-            Ok(ProcessDispatchOutcome::Applied)
-        }
-        HaAction::WipeDataDir => {
+        ReconcileAction::BaseBackup(leader_member_id) => {
             wipe_data_dir(runtime_config.postgres.data_dir.as_path()).map_err(|message| {
                 ProcessDispatchError::Filesystem {
-                    action: action.id(),
+                    action: action.label().to_string(),
                     message,
                 }
             })?;
+            let source = validate_basebackup_source(ctx, action.label(), leader_member_id)?;
+            let request = ProcessJobRequest {
+                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+                kind: ProcessJobKind::BaseBackup(BaseBackupSpec {
+                    data_dir: runtime_config.postgres.data_dir.clone(),
+                    source,
+                    timeout_ms: Some(runtime_config.process.bootstrap_timeout_ms),
+                }),
+            };
+            send_process_request(ctx, action.label(), request)?;
             Ok(ProcessDispatchOutcome::Applied)
         }
-        HaAction::FollowLeader { .. } | HaAction::SignalFailSafe => {
-            Ok(ProcessDispatchOutcome::Skipped)
+        ReconcileAction::PgRewind(leader_member_id) => {
+            let source = validate_rewind_source(ctx, action.label(), leader_member_id)?;
+            let request = ProcessJobRequest {
+                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+                kind: ProcessJobKind::PgRewind(PgRewindSpec {
+                    target_data_dir: runtime_config.postgres.data_dir.clone(),
+                    source,
+                    timeout_ms: None,
+                }),
+            };
+            send_process_request(ctx, action.label(), request)?;
+            Ok(ProcessDispatchOutcome::Applied)
         }
+        ReconcileAction::StartPrimary => {
+            let start_intent =
+                start_intent_from_dcs(ctx, None, runtime_config.postgres.data_dir.as_path())?;
+            let managed = crate::postgres_managed::materialize_managed_postgres_config(
+                runtime_config,
+                &start_intent,
+            )
+            .map_err(|err| ProcessDispatchError::ManagedConfig {
+                action: action.label().to_string(),
+                message: err.to_string(),
+            })?;
+            let request = ProcessJobRequest {
+                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+                kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                    data_dir: runtime_config.postgres.data_dir.clone(),
+                    socket_dir: runtime_config.postgres.socket_dir.clone(),
+                    port: runtime_config.postgres.listen_port,
+                    config_file: managed.postgresql_conf_path,
+                    log_file: ctx.process_defaults.log_file.clone(),
+                    wait_seconds: None,
+                    timeout_ms: None,
+                }),
+            };
+            send_process_request(ctx, action.label(), request)?;
+            Ok(ProcessDispatchOutcome::Applied)
+        }
+        ReconcileAction::StartReplica(leader_member_id) => {
+            let start_intent = start_intent_from_dcs(
+                ctx,
+                Some(leader_member_id),
+                runtime_config.postgres.data_dir.as_path(),
+            )?;
+            let managed = crate::postgres_managed::materialize_managed_postgres_config(
+                runtime_config,
+                &start_intent,
+            )
+            .map_err(|err| ProcessDispatchError::ManagedConfig {
+                action: action.label().to_string(),
+                message: err.to_string(),
+            })?;
+            let request = ProcessJobRequest {
+                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+                kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                    data_dir: runtime_config.postgres.data_dir.clone(),
+                    socket_dir: runtime_config.postgres.socket_dir.clone(),
+                    port: runtime_config.postgres.listen_port,
+                    config_file: managed.postgresql_conf_path,
+                    log_file: ctx.process_defaults.log_file.clone(),
+                    wait_seconds: None,
+                    timeout_ms: None,
+                }),
+            };
+            send_process_request(ctx, action.label(), request)?;
+            Ok(ProcessDispatchOutcome::Applied)
+        }
+        ReconcileAction::Promote => {
+            let request = ProcessJobRequest {
+                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+                kind: ProcessJobKind::Promote(PromoteSpec {
+                    data_dir: runtime_config.postgres.data_dir.clone(),
+                    wait_seconds: None,
+                    timeout_ms: None,
+                }),
+            };
+            send_process_request(ctx, action.label(), request)?;
+            Ok(ProcessDispatchOutcome::Applied)
+        }
+        ReconcileAction::Demote(mode) => {
+            let request = ProcessJobRequest {
+                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+                kind: ProcessJobKind::Demote(DemoteSpec {
+                    data_dir: runtime_config.postgres.data_dir.clone(),
+                    mode: shutdown_mode(*mode).to_process_mode(),
+                    timeout_ms: None,
+                }),
+            };
+            send_process_request(ctx, action.label(), request)?;
+            Ok(ProcessDispatchOutcome::Applied)
+        }
+        ReconcileAction::AcquireLease(_)
+        | ReconcileAction::ReleaseLease
+        | ReconcileAction::Publish(_)
+        | ReconcileAction::ClearSwitchover => Err(ProcessDispatchError::UnsupportedAction {
+            action: action.label().to_string(),
+        }),
     }
 }
 
 pub(crate) fn validate_rewind_source(
     ctx: &HaWorkerCtx,
-    action: ActionId,
-    leader_member_id: &crate::state::MemberId,
+    action: &str,
+    leader_member_id: &MemberId,
 ) -> Result<crate::process::jobs::RewinderSourceConn, ProcessDispatchError> {
-    let member = resolve_source_member(ctx, action.clone(), leader_member_id)?;
+    let member = resolve_source_member(ctx, action, leader_member_id)?;
     rewind_source_from_member(&ctx.self_id, &member, &ctx.process_defaults).map_err(|err| {
         ProcessDispatchError::SourceSelection {
-            action,
+            action: action.to_string(),
             message: err.to_string(),
         }
     })
@@ -188,13 +202,13 @@ pub(crate) fn validate_rewind_source(
 
 pub(crate) fn validate_basebackup_source(
     ctx: &HaWorkerCtx,
-    action: ActionId,
-    leader_member_id: &crate::state::MemberId,
+    action: &str,
+    leader_member_id: &MemberId,
 ) -> Result<crate::process::jobs::ReplicatorSourceConn, ProcessDispatchError> {
-    let member = resolve_source_member(ctx, action.clone(), leader_member_id)?;
+    let member = resolve_source_member(ctx, action, leader_member_id)?;
     basebackup_source_from_member(&ctx.self_id, &member, &ctx.process_defaults).map_err(|err| {
         ProcessDispatchError::SourceSelection {
-            action,
+            action: action.to_string(),
             message: err.to_string(),
         }
     })
@@ -202,8 +216,8 @@ pub(crate) fn validate_basebackup_source(
 
 fn resolve_source_member(
     ctx: &HaWorkerCtx,
-    action: ActionId,
-    leader_member_id: &crate::state::MemberId,
+    action: &str,
+    leader_member_id: &MemberId,
 ) -> Result<MemberRecord, ProcessDispatchError> {
     let dcs = ctx.dcs_subscriber.latest();
     dcs.value
@@ -212,7 +226,7 @@ fn resolve_source_member(
         .get(leader_member_id)
         .cloned()
         .ok_or_else(|| ProcessDispatchError::SourceSelection {
-            action,
+            action: action.to_string(),
             message: format!(
                 "target member `{}` not present in DCS cache",
                 leader_member_id.0
@@ -222,24 +236,15 @@ fn resolve_source_member(
 
 fn send_process_request(
     ctx: &mut HaWorkerCtx,
-    action: ActionId,
+    action: &str,
     request: ProcessJobRequest,
 ) -> Result<(), ProcessDispatchError> {
     ctx.process_inbox
         .send(request)
         .map_err(|err| ProcessDispatchError::ProcessSend {
-            action,
+            action: action.to_string(),
             message: err.to_string(),
         })
-}
-
-fn start_postgres_leader_member_id(ctx: &HaWorkerCtx) -> Option<&MemberId> {
-    match &ctx.state.decision {
-        HaDecision::WaitForPostgres {
-            leader_member_id, ..
-        } => leader_member_id.as_ref(),
-        _ => None,
-    }
 }
 
 fn start_intent_from_dcs(
@@ -248,10 +253,10 @@ fn start_intent_from_dcs(
     data_dir: &Path,
 ) -> Result<ManagedPostgresStartIntent, ProcessDispatchError> {
     if let Some(leader_member_id) = replica_leader_member_id {
-        let leader = resolve_source_member(ctx, ActionId::StartPostgres, leader_member_id)?;
+        let leader = resolve_source_member(ctx, "start_replica", leader_member_id)?;
         let source = basebackup_source_from_member(&ctx.self_id, &leader, &ctx.process_defaults)
             .map_err(|err| ProcessDispatchError::SourceSelection {
-                action: ActionId::StartPostgres,
+                action: "start_replica".to_string(),
                 message: err.to_string(),
             })?;
         return Ok(ManagedPostgresStartIntent::replica(
@@ -263,12 +268,12 @@ fn start_intent_from_dcs(
 
     let managed_recovery_state = crate::postgres_managed::inspect_managed_recovery_state(data_dir)
         .map_err(|err| ProcessDispatchError::ManagedConfig {
-            action: ActionId::StartPostgres,
+            action: "start_primary".to_string(),
             message: err.to_string(),
         })?;
     if managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None {
         return Err(ProcessDispatchError::ManagedConfig {
-            action: ActionId::StartPostgres,
+            action: "start_primary".to_string(),
             message:
                 "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config"
                     .to_string(),
@@ -280,8 +285,8 @@ fn start_intent_from_dcs(
 
 fn process_job_id(
     scope: &str,
-    self_id: &crate::state::MemberId,
-    action: &HaAction,
+    self_id: &MemberId,
+    action: &ReconcileAction,
     index: usize,
     tick: u64,
 ) -> JobId {
@@ -291,8 +296,12 @@ fn process_job_id(
         self_id.0,
         tick,
         index,
-        action.id().label(),
+        action.label(),
     ))
+}
+
+fn shutdown_mode(mode: ShutdownMode) -> ShutdownMode {
+    mode
 }
 
 fn wipe_data_dir(data_dir: &Path) -> Result<(), String> {
@@ -300,12 +309,41 @@ fn wipe_data_dir(data_dir: &Path) -> Result<(), String> {
         return Err("wipe_data_dir data_dir must not be empty".to_string());
     }
     if data_dir.exists() {
-        fs::remove_dir_all(data_dir)
-            .map_err(|err| format!("wipe_data_dir remove_dir_all failed: {err}"))?;
+        wipe_data_dir_contents(data_dir)?;
+    } else {
+        fs::create_dir_all(data_dir)
+            .map_err(|err| format!("wipe_data_dir create_dir_all failed: {err}"))?;
     }
-    fs::create_dir_all(data_dir)
-        .map_err(|err| format!("wipe_data_dir create_dir_all failed: {err}"))?;
     set_postgres_data_dir_permissions(data_dir)?;
+    Ok(())
+}
+
+fn wipe_data_dir_contents(data_dir: &Path) -> Result<(), String> {
+    let entries =
+        fs::read_dir(data_dir).map_err(|err| format!("wipe_data_dir read_dir failed: {err}"))?;
+    for entry_result in entries {
+        let entry =
+            entry_result.map_err(|err| format!("wipe_data_dir read_dir entry failed: {err}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("wipe_data_dir file_type failed: {err}"))?;
+        let entry_path = entry.path();
+        if file_type.is_dir() {
+            fs::remove_dir_all(entry_path.as_path()).map_err(|err| {
+                format!(
+                    "wipe_data_dir remove_dir_all failed for {}: {err}",
+                    entry_path.display()
+                )
+            })?;
+        } else {
+            fs::remove_file(entry_path.as_path()).map_err(|err| {
+                format!(
+                    "wipe_data_dir remove_file failed for {}: {err}",
+                    entry_path.display()
+                )
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -328,593 +366,72 @@ fn set_postgres_data_dir_permissions(data_dir: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        fs,
-        path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, path::PathBuf};
 
-    use crate::{
-        config::{RoleAuthConfig, RuntimeConfig, SecretSource},
-        dcs::{
-            state::{DcsCache, DcsState, DcsTrust, MemberRecord, MemberRole},
-            store::{DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent},
-        },
-        ha::{
-            actions::HaAction,
-            decision::HaDecision,
-            process_dispatch::{
-                dispatch_process_action, ProcessDispatchError, ProcessDispatchOutcome,
-            },
-            state::{HaState, HaWorkerContractStubInputs, HaWorkerCtx},
-        },
-        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        postgres_managed_conf::managed_standby_auth_from_role_auth,
-        process::state::{ProcessJobKind, ProcessState},
-        state::{new_state_channel, MemberId, UnixMillis, WorkerError, WorkerStatus},
-    };
+    use super::wipe_data_dir;
 
-    #[derive(Default)]
-    struct NoopStore;
-
-    impl DcsStore for NoopStore {
-        fn healthy(&self) -> bool {
-            true
-        }
-
-        fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
-            Ok(None)
-        }
-
-        fn write_path(&mut self, _path: &str, _value: String) -> Result<(), DcsStoreError> {
-            Ok(())
-        }
-
-        fn put_path_if_absent(
-            &mut self,
-            _path: &str,
-            _value: String,
-        ) -> Result<bool, DcsStoreError> {
-            Ok(true)
-        }
-
-        fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
-            Ok(())
-        }
-
-        fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
-            Ok(Vec::new())
-        }
-    }
-
-    impl DcsLeaderStore for NoopStore {
-        fn acquire_leader_lease(
-            &mut self,
-            _scope: &str,
-            _member_id: &MemberId,
-        ) -> Result<(), DcsStoreError> {
-            Ok(())
-        }
-
-        fn release_leader_lease(
-            &mut self,
-            _scope: &str,
-            _member_id: &MemberId,
-        ) -> Result<(), DcsStoreError> {
-            Ok(())
-        }
-
-        fn clear_switchover(&mut self, _scope: &str) -> Result<(), DcsStoreError> {
-            Ok(())
-        }
-    }
-
-    static TEST_DATA_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn sample_password_auth() -> RoleAuthConfig {
-        RoleAuthConfig::Password {
-            password: SecretSource::Inline {
-                content: "secret-password".to_string(),
-            },
-        }
-    }
-
-    fn unique_test_data_dir(label: &str) -> PathBuf {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_millis());
-        let sequence = TEST_DATA_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "pgtuskmaster-process-dispatch-{label}-{}-{millis}-{sequence}",
+    fn temp_data_dir(label: &str) -> Result<PathBuf, String> {
+        let unique = format!(
+            "{label}-{}-{}",
             std::process::id(),
-        ))
-    }
-
-    fn sample_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
-        crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
-            .build()
-    }
-
-    fn sample_pg_state() -> PgInfoState {
-        PgInfoState::Unknown {
-            common: PgInfoCommon {
-                worker: WorkerStatus::Running,
-                sql: SqlStatus::Healthy,
-                readiness: Readiness::Ready,
-                timeline: None,
-                pg_config: PgConfig {
-                    port: None,
-                    hot_standby: None,
-                    primary_conninfo: None,
-                    primary_slot_name: None,
-                    extra: BTreeMap::new(),
-                },
-                last_refresh_at: Some(UnixMillis(1)),
-            },
-        }
-    }
-
-    fn sample_dcs_state(config: RuntimeConfig) -> DcsState {
-        DcsState {
-            worker: WorkerStatus::Running,
-            trust: DcsTrust::FullQuorum,
-            cache: DcsCache {
-                members: BTreeMap::new(),
-                leader: None,
-                switchover: None,
-                config,
-                init_lock: None,
-            },
-            last_refresh_at: Some(UnixMillis(1)),
-        }
-    }
-
-    fn sample_process_state() -> ProcessState {
-        ProcessState::Idle {
-            worker: WorkerStatus::Running,
-            last_outcome: None,
-        }
-    }
-
-    fn build_context(
-        runtime_config: RuntimeConfig,
-    ) -> (
-        HaWorkerCtx,
-        crate::state::StatePublisher<DcsState>,
-        tokio::sync::mpsc::UnboundedReceiver<crate::process::state::ProcessJobRequest>,
-    ) {
-        let (config_publisher, config_subscriber) =
-            new_state_channel(runtime_config.clone(), UnixMillis(1));
-        let (pg_publisher, pg_subscriber) = new_state_channel(sample_pg_state(), UnixMillis(1));
-        let (dcs_publisher, dcs_subscriber) =
-            new_state_channel(sample_dcs_state(runtime_config.clone()), UnixMillis(1));
-        let (process_publisher, process_subscriber) =
-            new_state_channel(sample_process_state(), UnixMillis(1));
-        let (ha_publisher, _ha_subscriber) = new_state_channel(
-            HaState {
-                worker: WorkerStatus::Starting,
-                phase: crate::ha::state::HaPhase::Init,
-                tick: 0,
-                decision: crate::ha::decision::HaDecision::NoChange,
-            },
-            UnixMillis(1),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| format!("read current time failed: {err}"))?
+                .as_millis()
         );
-        let (process_tx, process_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let _ = config_publisher;
-        let _ = pg_publisher;
-        let _ = dcs_publisher;
-        let _ = process_publisher;
-
-        (
-            HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
-                publisher: ha_publisher,
-                config_subscriber,
-                pg_subscriber,
-                dcs_subscriber,
-                process_subscriber,
-                process_inbox: process_tx,
-                dcs_store: Box::new(NoopStore),
-                scope: "scope-a".to_string(),
-                self_id: MemberId("node-a".to_string()),
-            }),
-            dcs_publisher,
-            process_rx,
-        )
-    }
-
-    fn primary_member(member_id: &str, host: &str, port: u16) -> MemberRecord {
-        MemberRecord {
-            member_id: MemberId(member_id.to_string()),
-            postgres_host: host.to_string(),
-            postgres_port: port,
-            api_url: None,
-            role: MemberRole::Primary,
-            sql: SqlStatus::Healthy,
-            readiness: Readiness::Ready,
-            timeline: None,
-            write_lsn: None,
-            replay_lsn: None,
-            updated_at: UnixMillis(1),
-            pg_version: crate::state::Version(1),
-        }
-    }
-
-    fn remove_dir_if_present(path: &PathBuf) -> Result<(), WorkerError> {
-        if path.exists() {
-            fs::remove_dir_all(path)
-                .map_err(|err| WorkerError::Message(format!("remove temp dir failed: {err}")))?;
-        }
-        Ok(())
+        Ok(std::env::temp_dir().join(format!("pgtuskmaster-process-dispatch-{unique}")))
     }
 
     #[test]
-    fn start_postgres_dispatch_builds_request_with_managed_settings() -> Result<(), WorkerError> {
-        let data_dir = unique_test_data_dir("start");
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let (mut ctx, _dcs_publisher, mut process_rx) = build_context(runtime_config.clone());
+    fn wipe_data_dir_removes_contents_but_preserves_root_directory() -> Result<(), String> {
+        let data_dir = temp_data_dir("wipe-contents")?;
+        let nested_dir = data_dir.join("nested");
+        let nested_file = nested_dir.join("file.txt");
+        let top_level_file = data_dir.join("postgresql.auto.conf");
 
-        let outcome =
-            dispatch_process_action(&mut ctx, 7, 3, &HaAction::StartPostgres, &runtime_config);
-        assert_eq!(outcome, Ok(ProcessDispatchOutcome::Applied));
-
-        let request = process_rx
-            .try_recv()
-            .map_err(|err| WorkerError::Message(format!("process request missing: {err}")))?;
-        assert_eq!(
-            request.id.0,
-            "ha-scope-a-node-a-7-3-start_postgres".to_string()
-        );
-        if let ProcessJobKind::StartPostgres(spec) = request.kind {
-            assert_eq!(spec.data_dir, runtime_config.postgres.data_dir);
-            assert_eq!(
-                spec.config_file,
-                runtime_config
-                    .postgres
-                    .data_dir
-                    .join("pgtm.postgresql.conf")
-            );
-        } else {
-            return Err(WorkerError::Message(
-                "expected start postgres request".to_string(),
-            ));
-        }
-
-        remove_dir_if_present(&data_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn start_postgres_dispatch_preserves_replica_follow_target() -> Result<(), WorkerError> {
-        let data_dir = unique_test_data_dir("start-replica");
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let (mut ctx, dcs_publisher, mut process_rx) = build_context(runtime_config.clone());
-        let mut dcs = sample_dcs_state(runtime_config.clone());
-        dcs.cache.members.insert(
-            MemberId("node-b".to_string()),
-            primary_member("node-b", "10.0.0.20", 5432),
-        );
-        dcs_publisher
-            .publish(dcs, UnixMillis(2))
-            .map_err(|err| WorkerError::Message(format!("publish dcs fixture failed: {err}")))?;
-        ctx.state.decision = HaDecision::WaitForPostgres {
-            start_requested: true,
-            leader_member_id: Some(MemberId("node-b".to_string())),
-        };
-
-        let outcome =
-            dispatch_process_action(&mut ctx, 7, 3, &HaAction::StartPostgres, &runtime_config);
-        assert_eq!(outcome, Ok(ProcessDispatchOutcome::Applied));
-
-        let request = process_rx
-            .try_recv()
-            .map_err(|err| WorkerError::Message(format!("process request missing: {err}")))?;
-        if !matches!(request.kind, ProcessJobKind::StartPostgres(_)) {
-            return Err(WorkerError::Message(
-                "expected start postgres request".to_string(),
-            ));
-        }
-
-        let managed_conf_path = runtime_config
-            .postgres
-            .data_dir
-            .join("pgtm.postgresql.conf");
-        let rendered = fs::read_to_string(&managed_conf_path).map_err(|err| {
-            WorkerError::Message(format!(
-                "read managed postgres conf failed at {}: {err}",
-                managed_conf_path.display()
-            ))
+        fs::create_dir_all(&nested_dir).map_err(|err| {
+            format!(
+                "create nested dir failed for {}: {err}",
+                nested_dir.display()
+            )
         })?;
-        if !rendered.contains("primary_conninfo") {
-            return Err(WorkerError::Message(format!(
-                "expected replica managed config to include primary_conninfo, got:\n{rendered}"
-            )));
-        }
-        if !rendered.contains("passfile=") {
-            return Err(WorkerError::Message(format!(
-                "expected replica managed config to include managed passfile, got:\n{rendered}"
-            )));
-        }
-        let standby_signal = runtime_config.postgres.data_dir.join("standby.signal");
-        if !standby_signal.exists() {
-            return Err(WorkerError::Message(format!(
-                "expected standby.signal to exist at {}",
-                standby_signal.display()
-            )));
-        }
-
-        remove_dir_if_present(&data_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn start_postgres_dispatch_without_replica_target_starts_primary() -> Result<(), WorkerError> {
-        let data_dir = unique_test_data_dir("start-primary");
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let (mut ctx, dcs_publisher, mut process_rx) = build_context(runtime_config.clone());
-        let mut dcs = sample_dcs_state(runtime_config.clone());
-        dcs.cache.members.insert(
-            MemberId("node-b".to_string()),
-            primary_member("node-b", "10.0.0.20", 5432),
-        );
-        dcs_publisher
-            .publish(dcs, UnixMillis(2))
-            .map_err(|err| WorkerError::Message(format!("publish dcs fixture failed: {err}")))?;
-        ctx.state.decision = HaDecision::WaitForPostgres {
-            start_requested: true,
-            leader_member_id: None,
-        };
-
-        let outcome =
-            dispatch_process_action(&mut ctx, 7, 3, &HaAction::StartPostgres, &runtime_config);
-        assert_eq!(outcome, Ok(ProcessDispatchOutcome::Applied));
-
-        let request = process_rx
-            .try_recv()
-            .map_err(|err| WorkerError::Message(format!("process request missing: {err}")))?;
-        if !matches!(request.kind, ProcessJobKind::StartPostgres(_)) {
-            return Err(WorkerError::Message(
-                "expected start postgres request".to_string(),
-            ));
-        }
-
-        let managed_conf_path = runtime_config
-            .postgres
-            .data_dir
-            .join("pgtm.postgresql.conf");
-        let rendered = fs::read_to_string(&managed_conf_path).map_err(|err| {
-            WorkerError::Message(format!(
-                "read managed postgres conf failed at {}: {err}",
-                managed_conf_path.display()
-            ))
+        fs::write(&nested_file, "x").map_err(|err| {
+            format!(
+                "write nested file failed for {}: {err}",
+                nested_file.display()
+            )
         })?;
-        if rendered.contains("primary_conninfo") {
-            return Err(WorkerError::Message(format!(
-                "expected primary managed config without primary_conninfo, got:\n{rendered}"
-            )));
-        }
-        let standby_signal = runtime_config.postgres.data_dir.join("standby.signal");
-        if standby_signal.exists() {
-            return Err(WorkerError::Message(format!(
-                "expected standby.signal to be absent at {}",
-                standby_signal.display()
-            )));
-        }
-
-        remove_dir_if_present(&data_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn start_postgres_dispatch_rejects_existing_replica_state_without_dcs_leader(
-    ) -> Result<(), WorkerError> {
-        let data_dir = unique_test_data_dir("start-existing-replica-without-leader");
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let (mut ctx, _dcs_publisher, mut process_rx) = build_context(runtime_config.clone());
-        let existing_conninfo = crate::pginfo::state::PgConnInfo {
-            host: "10.0.0.20".to_string(),
-            port: 5432,
-            user: "replicator".to_string(),
-            dbname: "postgres".to_string(),
-            application_name: None,
-            connect_timeout_s: Some(2),
-            ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
-            ssl_root_cert: None,
-            options: Some("-c wal_receiver_status_interval=5s".to_string()),
-        };
-        let _ = crate::postgres_managed::materialize_managed_postgres_config(
-            &runtime_config,
-            &crate::postgres_managed_conf::ManagedPostgresStartIntent::replica(
-                existing_conninfo.clone(),
-                managed_standby_auth_from_role_auth(
-                    &runtime_config.postgres.roles.replicator.auth,
-                    runtime_config.postgres.data_dir.as_path(),
-                ),
-                Some("slot_a".to_string()),
-            ),
-        )
-        .map_err(|err| {
-            WorkerError::Message(format!("seed managed replica config failed: {err}"))
+        fs::write(&top_level_file, "y").map_err(|err| {
+            format!(
+                "write top-level file failed for {}: {err}",
+                top_level_file.display()
+            )
         })?;
-        ctx.state.decision = HaDecision::WaitForPostgres {
-            start_requested: true,
-            leader_member_id: None,
-        };
 
-        let outcome =
-            dispatch_process_action(&mut ctx, 7, 3, &HaAction::StartPostgres, &runtime_config);
-        assert!(matches!(
-            outcome,
-            Err(ProcessDispatchError::ManagedConfig { .. })
-        ));
-        assert!(process_rx.try_recv().is_err());
+        wipe_data_dir(&data_dir)?;
 
-        remove_dir_if_present(&data_dir)?;
+        let entries = fs::read_dir(&data_dir)
+            .map_err(|err| format!("read_dir failed for {}: {err}", data_dir.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("collect read_dir entries failed: {err}"))?;
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove data dir failed for {}: {err}", data_dir.display()))?;
+
+        assert!(entries.is_empty());
         Ok(())
     }
 
     #[test]
-    fn wipe_data_dir_dispatch_recreates_directory() -> Result<(), WorkerError> {
-        let base_dir = std::env::temp_dir().join(format!(
-            "pgtuskmaster-process-dispatch-{}",
-            std::process::id()
-        ));
-        let nested_file = base_dir.join("stale.txt");
-        if base_dir.exists() {
-            fs::remove_dir_all(&base_dir).map_err(|err| {
-                WorkerError::Message(format!("cleanup existing temp dir failed: {err}"))
-            })?;
-        }
-        fs::create_dir_all(&base_dir)
-            .and_then(|()| fs::write(&nested_file, b"stale"))
-            .map_err(|err| {
-                WorkerError::Message(format!("create temp dir fixture failed: {err}"))
-            })?;
+    fn wipe_data_dir_creates_missing_directory() -> Result<(), String> {
+        let data_dir = temp_data_dir("wipe-create")?;
 
-        let runtime_config = sample_runtime_config(base_dir.clone());
-        let (mut ctx, _dcs_publisher, _process_rx) = build_context(runtime_config.clone());
-        let outcome =
-            dispatch_process_action(&mut ctx, 2, 0, &HaAction::WipeDataDir, &runtime_config);
-        assert_eq!(outcome, Ok(ProcessDispatchOutcome::Applied));
-        assert!(base_dir.exists());
-        assert!(!nested_file.exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
+        wipe_data_dir(&data_dir)?;
 
-            let mode = fs::metadata(&base_dir)
-                .map_err(|err| {
-                    WorkerError::Message(format!("read recreated data dir metadata failed: {err}"))
-                })?
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o700);
-        }
+        let exists = data_dir.exists();
+        fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("remove data dir failed for {}: {err}", data_dir.display()))?;
 
-        fs::remove_dir_all(&base_dir)
-            .map_err(|err| WorkerError::Message(format!("remove temp dir failed: {err}")))?;
+        assert!(exists);
         Ok(())
-    }
-
-    #[test]
-    fn start_basebackup_dispatch_uses_target_member_endpoint_and_replicator_role(
-    ) -> Result<(), WorkerError> {
-        let data_dir = unique_test_data_dir("basebackup");
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let (mut ctx, dcs_publisher, mut process_rx) = build_context(runtime_config.clone());
-        let leader_member_id = MemberId("node-b".to_string());
-        let mut dcs_state = sample_dcs_state(runtime_config.clone());
-        dcs_state.cache.members.insert(
-            leader_member_id.clone(),
-            primary_member("node-b", "10.0.0.20", 5440),
-        );
-        let _ = dcs_publisher
-            .publish(dcs_state, UnixMillis(2))
-            .map_err(|err| WorkerError::Message(format!("publish dcs state failed: {err}")))?;
-
-        let outcome = dispatch_process_action(
-            &mut ctx,
-            9,
-            0,
-            &HaAction::StartBaseBackup {
-                leader_member_id: leader_member_id.clone(),
-            },
-            &runtime_config,
-        );
-        assert_eq!(outcome, Ok(ProcessDispatchOutcome::Applied));
-
-        let request = process_rx
-            .try_recv()
-            .map_err(|err| WorkerError::Message(format!("process request missing: {err}")))?;
-        if let ProcessJobKind::BaseBackup(spec) = request.kind {
-            assert_eq!(spec.source.conninfo.host, "10.0.0.20".to_string());
-            assert_eq!(spec.source.conninfo.port, 5440);
-            assert_eq!(spec.source.conninfo.user, "replicator".to_string());
-            assert_eq!(spec.source.auth, sample_password_auth());
-        } else {
-            return Err(WorkerError::Message(
-                "expected basebackup request".to_string(),
-            ));
-        }
-
-        remove_dir_if_present(&data_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn start_rewind_dispatch_uses_target_member_and_ignores_unrelated_leader_key(
-    ) -> Result<(), WorkerError> {
-        let data_dir = unique_test_data_dir("rewind");
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let (mut ctx, dcs_publisher, mut process_rx) = build_context(runtime_config.clone());
-        let leader_member_id = MemberId("node-b".to_string());
-        let unrelated_leader_id = MemberId("node-c".to_string());
-        let mut dcs_state = sample_dcs_state(runtime_config.clone());
-        dcs_state.cache.leader = Some(crate::dcs::state::LeaderRecord {
-            member_id: unrelated_leader_id.clone(),
-        });
-        dcs_state.cache.members.insert(
-            leader_member_id.clone(),
-            primary_member("node-b", "10.0.0.21", 5441),
-        );
-        dcs_state.cache.members.insert(
-            unrelated_leader_id.clone(),
-            primary_member("node-c", "10.0.0.99", 5999),
-        );
-        let _ = dcs_publisher
-            .publish(dcs_state, UnixMillis(2))
-            .map_err(|err| WorkerError::Message(format!("publish dcs state failed: {err}")))?;
-
-        let outcome = dispatch_process_action(
-            &mut ctx,
-            10,
-            0,
-            &HaAction::StartRewind {
-                leader_member_id: leader_member_id.clone(),
-            },
-            &runtime_config,
-        );
-        assert_eq!(outcome, Ok(ProcessDispatchOutcome::Applied));
-
-        let request = process_rx
-            .try_recv()
-            .map_err(|err| WorkerError::Message(format!("process request missing: {err}")))?;
-        if let ProcessJobKind::PgRewind(spec) = request.kind {
-            assert_eq!(spec.source.conninfo.host, "10.0.0.21".to_string());
-            assert_eq!(spec.source.conninfo.port, 5441);
-            assert_eq!(spec.source.conninfo.user, "rewinder".to_string());
-            assert_eq!(spec.source.auth, sample_password_auth());
-        } else {
-            return Err(WorkerError::Message("expected rewind request".to_string()));
-        }
-
-        remove_dir_if_present(&data_dir)?;
-        Ok(())
-    }
-
-    #[test]
-    fn start_basebackup_dispatch_rejects_missing_target_member() {
-        let data_dir = unique_test_data_dir("missing-member");
-        let runtime_config = sample_runtime_config(data_dir);
-        let (mut ctx, _dcs_publisher, _process_rx) = build_context(runtime_config.clone());
-
-        let outcome = dispatch_process_action(
-            &mut ctx,
-            11,
-            0,
-            &HaAction::StartBaseBackup {
-                leader_member_id: MemberId("node-missing".to_string()),
-            },
-            &runtime_config,
-        );
-
-        assert!(matches!(
-            outcome,
-            Err(ProcessDispatchError::SourceSelection { .. })
-        ));
     }
 }

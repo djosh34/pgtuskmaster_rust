@@ -6,6 +6,7 @@
 **Goal:** Redesign the first-time documentation and examples around the actual operator journey: install `pgtm`, bring up a 3-node cluster, read status, inspect debug only when needed, and connect to the primary without scraping internals. The higher-order goal is to make the first ten minutes with the repo coherent and self-explanatory.
 
 **Scope:**
+- Treat tasks 01 and 02 as the product-surface prerequisites for this documentation rewrite. This task should explain the chosen shape crisply, not invent a third competing shape inside the docs.
 - Rewrite the README quickstart and the leading docs/tutorial pages around a single canonical first-time flow.
 - Make `cargo install` for `pgtm` explicit, simple, and correct for the current package layout.
 - Add a dedicated quickstart guide that uses only the canonical one-compose local flow and gets the operator from zero to a healthy cluster with no detours.
@@ -54,6 +55,7 @@ pgtm -c /etc/pgtuskmaster/config.toml primary
 - The docs explain the config split with exact wording direction:
 - daemon runtime config: full file because the daemon needs cluster, postgres, DCS, process, logging, API, and debug settings
 - operator config: small file because `pgtm` only needs API target, auth, and TLS/client connection context
+- The docs explicitly say that the canonical local Docker assets were derived from the HA test givens and then simplified for product use, so operators are not told to study test harness internals to get started.
 - New users do not need to understand internal helper scripts, env files, or raw HTTP before they get value.
 
 </description>
@@ -67,11 +69,13 @@ pgtm -c /etc/pgtuskmaster/config.toml primary
 - [ ] The docs contain one explicit "3 real VMs, Docker on each VM, one config file per VM" walkthrough with concrete file paths and commands.
 - [ ] The docs explain `status` versus `debug verbose` clearly and consistently across README, tutorials, and CLI reference material.
 - [ ] The docs explain the daemon-config versus minimal-operator-config split clearly and consistently across README, tutorials, and configuration reference material.
+- [ ] The docs explain why the canonical local path now resembles the HA givens structurally while remaining a product path rather than a harness path.
 - [ ] The docs explain that `/etc/pgtuskmaster/config.toml` is an installation convention for deployed VMs, while the repo itself uses shallow `docker/` paths for shipped runnable assets.
 - [ ] The docs explain the shipped secure-default local posture explicitly: strict `pg_hba`/`pg_ident`, no `trust`, API TLS/auth on, PostgreSQL TLS on, and the chosen local verification mode rationale.
 - [ ] The main onboarding path teaches `pgtm` and `psql "$(pgtm ... primary)"` instead of curl loops or manual DSN assembly.
 - [ ] Local Docker examples use the same canonical config files as the shipped deployment assets rather than separate docs-only operator overlays.
 - [ ] Stale beginner-facing references to env-file copying, docker helper scripts, or non-canonical cluster bring-up commands are removed.
+- [ ] Stale beginner-facing references to `docs/examples/docker-*.toml` as the canonical local operator path are removed.
 - [ ] The final docs make the first ten minutes with the repo possible without reading internal shell scripts.
 - [ ] The documentation work includes a judgment pass on ease of use from a clean checkout, and any hiccups found during that pass are fixed rather than merely noted.
 - [ ] The documentation work verifies that the teardown commands in the quickstart behave exactly as documented.

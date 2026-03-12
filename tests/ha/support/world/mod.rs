@@ -13,8 +13,9 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{
         append_fault_rule_script, clear_fault_rules_script, ensure_fault_plumbing_script,
-        remove_file_script, signal_named_process_script, touch_file_script, BlockerKind,
-        TrafficPath, ALL_CLUSTER_MEMBERS, ETCD_SERVICE, OBSERVER_SERVICE,
+        remove_fault_rule_script, remove_file_script, signal_named_process_script,
+        touch_file_script, BlockerKind, TrafficPath, ALL_CLUSTER_MEMBERS, ETCD_SERVICE,
+        OBSERVER_SERVICE,
     },
     feature_metadata,
     givens::given_root,
@@ -359,6 +360,20 @@ impl HarnessShared {
         Ok(())
     }
 
+    pub fn heal_member_network_faults(&self, member_id: &str) -> Result<()> {
+        self.clear_network_faults(member_id)?;
+        for peer_id in ALL_CLUSTER_MEMBERS.iter().copied() {
+            if peer_id == member_id {
+                continue;
+            }
+            for path in [TrafficPath::Postgres, TrafficPath::Api, TrafficPath::Dcs] {
+                self.unblock_member_path_to_host(peer_id, path, member_id)?;
+            }
+        }
+        self.record_note("fault.heal_member_network", format!("member={member_id}"))?;
+        Ok(())
+    }
+
     pub fn block_member_path_to_host(
         &self,
         member_id: &str,
@@ -374,6 +389,38 @@ impl HarnessShared {
         let _ = self.run_shell_as_root(member_id, script.as_str())?;
         self.record_note(
             "fault.block_path",
+            format!(
+                "member={member_id} path={} peer={peer_service}",
+                path.label()
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn unblock_member_path_to_host(
+        &self,
+        member_id: &str,
+        path: TrafficPath,
+        peer_service: &str,
+    ) -> Result<()> {
+        if !self.service_is_running(member_id)? {
+            self.record_note(
+                "fault.unblock_path",
+                format!(
+                    "member={member_id} path={} peer={peer_service} skipped=container_not_running",
+                    path.label()
+                ),
+            )?;
+            return Ok(());
+        }
+        let peer_container_id = self.service_container_id(peer_service)?;
+        let peer_ip = self
+            .docker
+            .container_ipv4_address(peer_container_id.as_str())?;
+        let script = remove_fault_rule_script(peer_ip.as_str(), path.port());
+        let _ = self.run_shell_as_root(member_id, script.as_str())?;
+        self.record_note(
+            "fault.unblock_path",
             format!(
                 "member={member_id} path={} peer={peer_service}",
                 path.label()
@@ -421,10 +468,20 @@ impl HarnessShared {
         if enabled && !self.service_is_running(member_id)? {
             self.docker
                 .touch_file_in_container(container_id.as_str(), blocker.marker_path())?;
+        } else if !enabled && !self.service_is_running(member_id)? {
+            self.docker.touch_file_in_container(
+                container_id.as_str(),
+                blocker.clear_on_start_marker_path(),
+            )?;
         } else if let Err(err) = self.run_shell_as_root(member_id, script.as_str()) {
             if enabled && container_not_running_error(&err) {
                 self.docker
                     .touch_file_in_container(container_id.as_str(), blocker.marker_path())?;
+            } else if !enabled && container_not_running_error(&err) {
+                self.docker.touch_file_in_container(
+                    container_id.as_str(),
+                    blocker.clear_on_start_marker_path(),
+                )?;
             } else {
                 return Err(err);
             }
@@ -517,6 +574,8 @@ impl HarnessShared {
 
     pub fn assert_member_never_primary_since(&self, member_id: &str, since_ms: u128) -> Result<()> {
         let timeline = self.timeline_entries()?;
+        let mut member_was_primary = false;
+        let mut member_relinquished_primary = false;
         let offending = timeline.iter().find(|entry| {
             let timestamp_ms = entry
                 .get("timestamp_ms")
@@ -525,7 +584,7 @@ impl HarnessShared {
             if timestamp_ms.is_none_or(|value| value < since_ms) {
                 return false;
             }
-            entry
+            let member_is_primary = entry
                 .get("status")
                 .and_then(|status| status.get("nodes"))
                 .and_then(serde_json::Value::as_array)
@@ -537,11 +596,21 @@ impl HarnessShared {
                             && node.get("member_id").and_then(serde_json::Value::as_str)
                                 == Some(member_id)
                     })
-                })
+                });
+            if member_is_primary {
+                let regained_primary = member_was_primary && member_relinquished_primary;
+                member_was_primary = true;
+                regained_primary
+            } else {
+                if member_was_primary {
+                    member_relinquished_primary = true;
+                }
+                false
+            }
         });
         match offending {
             Some(_) => Err(HarnessError::message(format!(
-                "timeline captured `{member_id}` as primary after marker {since_ms}"
+                "timeline captured `{member_id}` regaining primary after marker {since_ms}"
             ))),
             None => Ok(()),
         }

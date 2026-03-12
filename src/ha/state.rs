@@ -1,65 +1,26 @@
 use std::{path::PathBuf, time::Duration};
 
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::{
     config::{RoleAuthConfig, RuntimeConfig},
     dcs::{state::DcsState, store::DcsLeaderStore},
     logging::LogHandle,
     pginfo::state::{PgInfoState, PgSslMode},
-    process::{
-        jobs::ShutdownMode,
-        state::{ProcessJobRequest, ProcessState},
-    },
-    state::{
-        MemberId, StatePublisher, StateSubscriber, UnixMillis, Versioned, WorkerError, WorkerStatus,
-    },
+    process::state::{ProcessJobRequest, ProcessState},
+    state::{MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
-use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::UnboundedSender;
 
-use super::decision::{HaDecision, PhaseOutcome};
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum HaPhase {
-    Init,
-    WaitingPostgresReachable,
-    WaitingDcsTrusted,
-    WaitingSwitchoverSuccessor,
-    Replica,
-    CandidateLeader,
-    Primary,
-    Rewinding,
-    Bootstrapping,
-    Fencing,
-    FailSafe,
-}
+use super::types::{PublicationState, ReconcileAction, TargetRole};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HaState {
     pub(crate) worker: WorkerStatus,
-    pub(crate) phase: HaPhase,
     pub(crate) tick: u64,
-    pub(crate) decision: HaDecision,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorldSnapshot {
-    pub(crate) config: Versioned<RuntimeConfig>,
-    pub(crate) pg: Versioned<PgInfoState>,
-    pub(crate) dcs: Versioned<DcsState>,
-    pub(crate) process: Versioned<ProcessState>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DecideInput {
-    pub(crate) current: HaState,
-    pub(crate) world: WorldSnapshot,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DecideOutput {
-    pub(crate) next: HaState,
-    pub(crate) outcome: PhaseOutcome,
+    pub(crate) publication: PublicationState,
+    pub(crate) role: TargetRole,
+    pub(crate) clear_switchover: bool,
+    pub(crate) planned_actions: Vec<ReconcileAction>,
 }
 
 pub(crate) struct HaWorkerCtx {
@@ -93,7 +54,6 @@ pub(crate) struct ProcessDispatchDefaults {
     pub(crate) remote_ssl_mode: PgSslMode,
     pub(crate) remote_ssl_root_cert: Option<PathBuf>,
     pub(crate) connect_timeout_s: u32,
-    pub(crate) shutdown_mode: ShutdownMode,
 }
 
 impl ProcessDispatchDefaults {
@@ -111,7 +71,6 @@ impl ProcessDispatchDefaults {
             remote_ssl_mode: PgSslMode::Prefer,
             remote_ssl_root_cert: None,
             connect_timeout_s: 5,
-            shutdown_mode: ShutdownMode::Fast,
         }
     }
 }
@@ -136,6 +95,19 @@ pub(crate) struct HaWorkerContractStubInputs {
     pub(crate) self_id: MemberId,
 }
 
+impl HaState {
+    pub(crate) fn initial(worker: WorkerStatus) -> Self {
+        Self {
+            worker,
+            tick: 0,
+            publication: PublicationState::unknown(),
+            role: TargetRole::Idle(super::types::IdleReason::AwaitingLeader),
+            clear_switchover: false,
+            planned_actions: Vec::new(),
+        }
+    }
+}
+
 impl HaWorkerCtx {
     pub(crate) fn contract_stub(inputs: HaWorkerContractStubInputs) -> Self {
         let HaWorkerContractStubInputs {
@@ -152,12 +124,7 @@ impl HaWorkerCtx {
 
         Self {
             poll_interval: Duration::from_millis(10),
-            state: HaState {
-                worker: WorkerStatus::Starting,
-                phase: HaPhase::Init,
-                tick: 0,
-                decision: HaDecision::NoChange,
-            },
+            state: HaState::initial(WorkerStatus::Starting),
             publisher,
             config_subscriber,
             pg_subscriber,

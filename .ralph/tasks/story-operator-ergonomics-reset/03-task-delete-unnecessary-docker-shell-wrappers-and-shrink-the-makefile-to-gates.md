@@ -6,6 +6,7 @@
 **Goal:** Remove shell and make indirection that obscures the operator workflow instead of helping it. The higher-order goal is to make the repo's public surface look intentional: operator commands should be `docker compose`, `pgtm`, and explicit install commands, while Makefile and shell scripts retreat to narrowly justified engineering support roles.
 
 **Scope:**
+- Treat task 01's canonical compose-and-files reset as the prerequisite foundation for this cleanup. This task should not redesign the local asset layout again; it should remove old wrapper and make indirection after the simpler path exists.
 - Audit all current operator-facing shell entrypoints under `tools/docker/` and all operator-facing Make targets.
 - Delete shell wrappers that exist only to smuggle env files, hidden defaults, or status printing around otherwise normal `docker compose` usage.
 - Delete path-depth churn that exists only because scripts grew around the current layout. The public runnable asset tree should be shallow enough that commands naturally look like `docker compose -f docker/compose.yml ...` and `pgtm -c docker/pgtm.toml ...`.
@@ -34,12 +35,14 @@
 - `docker/node-c.toml`
 - `docker/pgtm.toml`
 - Remaining shell scripts are either test harness/support tooling or narrowly justified installers, not the normal operator path.
+- The HA harness keeps its own support scripts if they are genuinely test-only; this task is about shrinking the shipped operator-facing surface, not rewriting harness internals for style points.
 - The Makefile reads like a quality-gates entry point, not a second product CLI.
 
 </description>
 
 <acceptance_criteria>
 - [ ] Every operator-facing shell wrapper under `tools/docker/` is either deleted or justified in-code and in docs as non-canonical support tooling.
+- [ ] The cleanup explicitly preserves or documents test-only harness shell behavior separately from shipped operator UX so that product cleanup does not regress HA test ergonomics.
 - [ ] The canonical README and tutorial flows do not require `tools/docker/*.sh`.
 - [ ] The canonical README and tutorial flows do not require `make` for operator workflows.
 - [ ] The canonical README and tutorial flows use shallow public paths under `docker/` rather than deep nested runtime-config directories.

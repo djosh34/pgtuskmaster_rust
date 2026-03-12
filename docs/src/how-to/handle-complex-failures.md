@@ -73,10 +73,10 @@ flowchart TD
 
 ## Step 3: Know what degraded trust does to HA behavior
 
-At the top of `src/ha/decide.rs`, the HA decision engine checks trust before phase-specific logic:
+At the top of `src/ha/decide.rs`, the HA decision engine checks trust before normal leadership logic:
 
-- if trust is not `FullQuorum` and local PostgreSQL is primary, the node enters `FailSafe` with `EnterFailSafe { release_leader_lease: false }`
-- if trust is not `FullQuorum` and local PostgreSQL is not primary, the node still moves into `FailSafe`, but with `NoChange`
+- if trust is not `FullQuorum` and local PostgreSQL is primary, the node moves into a fail-safe role and withdraws primary authority
+- if trust is not `FullQuorum` and local PostgreSQL is not primary, the node stays in a fail-safe role that preserves safety over recovery
 
 This is the core safety rule for complex failures:
 
