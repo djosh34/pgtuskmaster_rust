@@ -851,7 +851,7 @@ mod tests {
             cache: sample_cache(sample_runtime_config()),
             last_refresh_at: None,
         };
-        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
 
         let leader_json = serde_json::to_string(&LeaderRecord {
             member_id: MemberId("node-a".to_string()),
@@ -913,7 +913,7 @@ mod tests {
             cache: sample_cache(sample_runtime_config()),
             last_refresh_at: None,
         };
-        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
 
         let (log, sink) = test_log_handle();
         let mut ctx = DcsWorkerCtx {
@@ -978,7 +978,7 @@ mod tests {
             cache: sample_cache(sample_runtime_config()),
             last_refresh_at: None,
         };
-        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
 
         let store = RecordingStore::new(true);
         let store_probe = store.clone();
@@ -1025,7 +1025,7 @@ mod tests {
             cache: sample_cache(sample_runtime_config()),
             last_refresh_at: None,
         };
-        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
 
         let store = RecordingStore::new(true);
         let store_probe = store.clone();
@@ -1076,7 +1076,7 @@ mod tests {
             cache: sample_cache(sample_runtime_config()),
             last_refresh_at: None,
         };
-        let (dcs_publisher, _dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, UnixMillis(1));
 
         let store = RecordingStore::new(true);
         let store_probe = store.clone();

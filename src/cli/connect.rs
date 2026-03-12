@@ -9,7 +9,7 @@ use crate::{
         error::CliError,
         output,
         status::{
-            build_sampled_cluster_snapshot, effective_member_view, observed_role, ClusterWarning,
+            build_sampled_cluster_snapshot, observed_role, sampled_self_member, ClusterWarning,
             SampledClusterSnapshot,
         },
     },
@@ -190,16 +190,11 @@ fn find_sampled_members_by_role<'a>(
                 .get(&member.member_id)
                 .and_then(|observation| observation.sampled.as_ref().ok());
             sampled.is_some_and(|value| {
-                observed_role(effective_member_view(member, Some(value)), &value.state) == role
+                sampled_self_member(value)
+                    .is_some_and(|self_member| observed_role(self_member, &value.state) == role)
             })
         })
-        .map(|member| {
-            let sampled = snapshot
-                .observations
-                .get(&member.member_id)
-                .and_then(|observation| observation.sampled.as_ref().ok());
-            effective_member_view(member, sampled)
-        })
+        .filter_map(|member| sampled_member(snapshot, member.member_id.as_str()))
         .collect::<Vec<_>>();
     members.sort_by_key(|member| {
         (
@@ -208,6 +203,17 @@ fn find_sampled_members_by_role<'a>(
         )
     });
     members
+}
+
+fn sampled_member<'a>(
+    snapshot: &'a SampledClusterSnapshot,
+    member_id: &str,
+) -> Option<&'a HaClusterMemberResponse> {
+    snapshot
+        .observations
+        .get(member_id)
+        .and_then(|observation| observation.sampled.as_ref().ok())
+        .and_then(sampled_self_member)
 }
 
 fn build_connection_target(
@@ -319,6 +325,185 @@ fn escape_libpq_value(value: &str) -> String {
         acc
     });
     format!("'{escaped}'")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        api::{
+            DcsTrustResponse, HaAuthorityResponse, HaClusterMemberResponse, HaStateResponse,
+            LeaseEpochResponse, MemberRoleResponse, ReadinessResponse, SqlStatusResponse,
+            TargetRoleResponse,
+        },
+        cli::{
+            client::CliTlsConfig,
+            status::{PeerObservation, QueryOrigin, SampledClusterSnapshot, SampledNodeState},
+        },
+    };
+
+    use super::{resolve_primary_view, resolve_replicas_view};
+
+    fn sample_member(
+        member_id: &str,
+        role: MemberRoleResponse,
+        postgres_host: &str,
+        postgres_port: u16,
+    ) -> HaClusterMemberResponse {
+        HaClusterMemberResponse {
+            member_id: member_id.to_string(),
+            postgres_host: postgres_host.to_string(),
+            postgres_port,
+            api_url: Some(format!("http://{member_id}:8080")),
+            role,
+            sql: SqlStatusResponse::Healthy,
+            readiness: ReadinessResponse::Ready,
+            timeline: Some(7),
+            write_lsn: Some(10),
+            replay_lsn: Some(9),
+            pg_version: 1,
+        }
+    }
+
+    fn sample_state(
+        self_member_id: &str,
+        authority_member_id: Option<&str>,
+        members: Vec<HaClusterMemberResponse>,
+    ) -> HaStateResponse {
+        HaStateResponse {
+            cluster_name: "cluster-a".to_string(),
+            scope: "scope-a".to_string(),
+            self_member_id: self_member_id.to_string(),
+            leader: authority_member_id.map(ToString::to_string),
+            switchover_pending: false,
+            switchover_to: None,
+            member_count: members.len(),
+            members,
+            dcs_trust: DcsTrustResponse::FullQuorum,
+            authority: authority_member_id.map_or(HaAuthorityResponse::Unknown, |member_id| {
+                HaAuthorityResponse::Primary {
+                    member_id: member_id.to_string(),
+                    epoch: LeaseEpochResponse {
+                        holder: member_id.to_string(),
+                        generation: 9,
+                    },
+                }
+            }),
+            fence_cutoff: None,
+            ha_role: TargetRoleResponse::Idle {
+                reason: crate::api::IdleReasonResponse::AwaitingLeader,
+            },
+            ha_tick: 1,
+            planned_actions: Vec::new(),
+            snapshot_sequence: 1,
+        }
+    }
+
+    fn sample_snapshot(
+        seed_state: HaStateResponse,
+        discovered_members: Vec<HaClusterMemberResponse>,
+        observations: BTreeMap<String, PeerObservation>,
+    ) -> SampledClusterSnapshot {
+        SampledClusterSnapshot {
+            seed_state,
+            discovered_members,
+            queried_via: QueryOrigin {
+                member_id: "node-a".to_string(),
+                api_url: "http://node-a:8080".to_string(),
+            },
+            observations,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn primary_resolution_prefers_sampled_primary_endpoint() {
+        let seed_members = vec![
+            sample_member("node-a", MemberRoleResponse::Replica, "node-a.seed", 5432),
+            sample_member("node-b", MemberRoleResponse::Primary, "node-b.seed", 5432),
+        ];
+        let primary_sample = sample_member("node-b", MemberRoleResponse::Primary, "node-b.live", 6543);
+        let seed_state = sample_state("node-a", Some("node-b"), seed_members.clone());
+        let observations = BTreeMap::from([
+            (
+                "node-a".to_string(),
+                PeerObservation {
+                    member_id: "node-a".to_string(),
+                    sampled: Ok(SampledNodeState {
+                        state: seed_state.clone(),
+                        debug: None,
+                    }),
+                },
+            ),
+            (
+                "node-b".to_string(),
+                PeerObservation {
+                    member_id: "node-b".to_string(),
+                    sampled: Ok(SampledNodeState {
+                        state: sample_state("node-b", Some("node-b"), vec![primary_sample.clone()]),
+                        debug: None,
+                    }),
+                },
+            ),
+        ]);
+        let snapshot = sample_snapshot(seed_state, seed_members, observations);
+
+        let view = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
+            .expect("primary should resolve");
+        assert_eq!(view.targets.len(), 1);
+        assert_eq!(view.targets[0].member_id, "node-b");
+        assert_eq!(view.targets[0].postgres_host, "node-b.live");
+        assert_eq!(view.targets[0].postgres_port, 6543);
+    }
+
+    #[test]
+    fn replica_resolution_rejects_sampled_peer_missing_self_record() {
+        let seed_members = vec![
+            sample_member("node-a", MemberRoleResponse::Primary, "node-a.seed", 5432),
+            sample_member("node-b", MemberRoleResponse::Replica, "node-b.seed", 5432),
+        ];
+        let seed_state = sample_state("node-a", Some("node-a"), seed_members.clone());
+        let observations = BTreeMap::from([
+            (
+                "node-a".to_string(),
+                PeerObservation {
+                    member_id: "node-a".to_string(),
+                    sampled: Ok(SampledNodeState {
+                        state: seed_state.clone(),
+                        debug: None,
+                    }),
+                },
+            ),
+            (
+                "node-b".to_string(),
+                PeerObservation {
+                    member_id: "node-b".to_string(),
+                    sampled: Ok(SampledNodeState {
+                        state: sample_state(
+                            "node-b",
+                            Some("node-a"),
+                            vec![sample_member(
+                                "node-a",
+                                MemberRoleResponse::Primary,
+                                "node-a.live",
+                                5432,
+                            )],
+                        ),
+                        debug: None,
+                    }),
+                },
+            ),
+        ]);
+        let snapshot = sample_snapshot(seed_state, seed_members, observations);
+
+        let error = resolve_replicas_view(&snapshot, &CliTlsConfig::default(), false)
+            .expect_err("missing peer self row should fail closed");
+        assert_eq!(
+            error.to_string(),
+            "resolution error: no sampled replica members were observed"
+        );
+    }
 }
 
 #[cfg(all(test, any()))]

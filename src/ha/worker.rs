@@ -2,8 +2,8 @@ use std::path::Path;
 
 use crate::{
     dcs::{state::MemberRole, store::DcsStoreError},
-    postgres_roles,
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
+    postgres_roles,
     process::jobs::ActiveJobKind,
     state::{MemberId, WorkerError, WorkerStatus},
 };

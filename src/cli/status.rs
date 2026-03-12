@@ -444,12 +444,15 @@ fn collect_warnings(
                 sampled: Ok(sampled),
                 ..
             }) => {
+                let sampled_self = sampled_self_member(sampled);
                 sampled_leaders.insert(
                     authority_primary_member(&sampled.state)
                         .or_else(|| sampled.state.leader.clone())
                         .unwrap_or_else(|| "<none>".to_string()),
                 );
-                if observed_role(member, &sampled.state) == "primary" {
+                if sampled_self
+                    .is_some_and(|self_member| observed_role(self_member, &sampled.state) == "primary")
+                {
                     sampled_primary_members.insert(sampled.state.self_member_id.clone());
                 }
                 if sampled.state.dcs_trust != crate::api::DcsTrustResponse::FullQuorum {
@@ -545,18 +548,23 @@ fn build_node_row(
             sampled: Ok(sampled),
             ..
         }) => {
-            let effective_member = effective_member_view(member, Some(sampled));
+            let sampled_self = sampled_self_member(sampled);
+            let role = sampled_self
+                .map(|self_member| observed_role(self_member, &sampled.state).to_string())
+                .unwrap_or_else(|| "unknown".to_string());
             let debug_payload = sampled
                 .debug
                 .as_ref()
                 .and_then(|observation| observation.payload.as_ref());
             ClusterNodeView {
-                member_id: effective_member.member_id.clone(),
-                is_self: effective_member.member_id == queried_member_id,
+                member_id: member.member_id.clone(),
+                is_self: member.member_id == queried_member_id,
                 sampled: true,
-                api_url: effective_member.api_url.clone(),
+                api_url: sampled_self
+                    .and_then(|self_member| self_member.api_url.clone())
+                    .or_else(|| member.api_url.clone()),
                 api_status: ApiStatus::Ok,
-                role: observed_role(effective_member, &sampled.state).to_string(),
+                role,
                 trust: sampled.state.dcs_trust.to_string(),
                 phase: render_role_text(&sampled.state.ha_role),
                 leader: authority_primary_member(&sampled.state)
@@ -613,19 +621,14 @@ fn build_node_row(
     }
 }
 
-pub(crate) fn effective_member_view<'a>(
-    discovered_member: &'a HaClusterMemberResponse,
-    sampled: Option<&'a SampledNodeState>,
-) -> &'a HaClusterMemberResponse {
+pub(crate) fn sampled_self_member(
+    sampled: &SampledNodeState,
+) -> Option<&HaClusterMemberResponse> {
     sampled
-        .and_then(|value| {
-            value
-                .state
-                .members
-                .iter()
-                .find(|member| member.member_id == value.state.self_member_id)
-        })
-        .unwrap_or(discovered_member)
+        .state
+        .members
+        .iter()
+        .find(|member| member.member_id == sampled.state.self_member_id)
 }
 
 fn node_sort_key(left: &ClusterNodeView, right: &ClusterNodeView) -> std::cmp::Ordering {
@@ -700,6 +703,154 @@ pub(crate) fn authority_primary_member(state: &HaStateResponse) -> Option<String
     match &state.authority {
         HaAuthorityResponse::Primary { member_id, .. } => Some(member_id.clone()),
         HaAuthorityResponse::NoPrimary { .. } | HaAuthorityResponse::Unknown => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::api::{
+        DcsTrustResponse, HaAuthorityResponse, HaClusterMemberResponse, HaStateResponse,
+        LeaseEpochResponse, MemberRoleResponse, ReadinessResponse, ReconcileActionResponse,
+        SqlStatusResponse, TargetRoleResponse,
+    };
+
+    use super::{
+        assemble_cluster_view, collect_warnings, sampled_self_member, ApiStatus,
+        ClusterHealth, PeerObservation, QueryOrigin, SampledClusterSnapshot, SampledNodeState,
+    };
+
+    fn sample_member(member_id: &str, role: MemberRoleResponse) -> HaClusterMemberResponse {
+        HaClusterMemberResponse {
+            member_id: member_id.to_string(),
+            postgres_host: format!("{member_id}.db.internal"),
+            postgres_port: 5432,
+            api_url: Some(format!("http://{member_id}:8080")),
+            role,
+            sql: SqlStatusResponse::Healthy,
+            readiness: ReadinessResponse::Ready,
+            timeline: Some(7),
+            write_lsn: Some(10),
+            replay_lsn: Some(9),
+            pg_version: 1,
+        }
+    }
+
+    fn sample_state(
+        self_member_id: &str,
+        authority_member_id: Option<&str>,
+        members: Vec<HaClusterMemberResponse>,
+    ) -> HaStateResponse {
+        HaStateResponse {
+            cluster_name: "cluster-a".to_string(),
+            scope: "scope-a".to_string(),
+            self_member_id: self_member_id.to_string(),
+            leader: authority_member_id.map(ToString::to_string),
+            switchover_pending: false,
+            switchover_to: None,
+            member_count: members.len(),
+            members,
+            dcs_trust: DcsTrustResponse::FullQuorum,
+            authority: authority_member_id.map_or(HaAuthorityResponse::Unknown, |member_id| {
+                HaAuthorityResponse::Primary {
+                    member_id: member_id.to_string(),
+                    epoch: LeaseEpochResponse {
+                        holder: member_id.to_string(),
+                        generation: 42,
+                    },
+                }
+            }),
+            fence_cutoff: None,
+            ha_role: TargetRoleResponse::Idle {
+                reason: crate::api::IdleReasonResponse::AwaitingLeader,
+            },
+            ha_tick: 7,
+            planned_actions: vec![ReconcileActionResponse::Publish {
+                publication: HaAuthorityResponse::Unknown,
+            }],
+            snapshot_sequence: 1,
+        }
+    }
+
+    fn sample_snapshot(
+        seed_state: HaStateResponse,
+        discovered_members: Vec<HaClusterMemberResponse>,
+        observations: BTreeMap<String, PeerObservation>,
+    ) -> SampledClusterSnapshot {
+        let warnings = collect_warnings(&seed_state, &discovered_members, &observations);
+        SampledClusterSnapshot {
+            seed_state,
+            discovered_members,
+            queried_via: QueryOrigin {
+                member_id: "node-a".to_string(),
+                api_url: "http://node-a:8080".to_string(),
+            },
+            observations,
+            warnings,
+        }
+    }
+
+    #[test]
+    fn sampled_self_member_requires_peer_self_row() {
+        let sampled = SampledNodeState {
+            state: sample_state(
+                "node-b",
+                Some("node-a"),
+                vec![sample_member("node-a", MemberRoleResponse::Primary)],
+            ),
+            debug: None,
+        };
+
+        assert!(sampled_self_member(&sampled).is_none());
+    }
+
+    #[test]
+    fn sampled_peer_without_self_row_stays_unknown_in_cluster_view() {
+        let discovered_members = vec![
+            sample_member("node-a", MemberRoleResponse::Primary),
+            sample_member("node-b", MemberRoleResponse::Replica),
+        ];
+        let seed_state = sample_state("node-a", Some("node-a"), discovered_members.clone());
+        let sampled_peer = SampledNodeState {
+            state: sample_state(
+                "node-b",
+                Some("node-a"),
+                vec![sample_member("node-a", MemberRoleResponse::Primary)],
+            ),
+            debug: None,
+        };
+        let observations = BTreeMap::from([
+            (
+                "node-a".to_string(),
+                PeerObservation {
+                    member_id: "node-a".to_string(),
+                    sampled: Ok(SampledNodeState {
+                        state: seed_state.clone(),
+                        debug: None,
+                    }),
+                },
+            ),
+            (
+                "node-b".to_string(),
+                PeerObservation {
+                    member_id: "node-b".to_string(),
+                    sampled: Ok(sampled_peer),
+                },
+            ),
+        ]);
+
+        let snapshot = sample_snapshot(seed_state, discovered_members, observations);
+        let view = assemble_cluster_view(&snapshot, false);
+        let node_b = view
+            .nodes
+            .iter()
+            .find(|node| node.member_id == "node-b")
+            .expect("node-b view missing");
+
+        assert_eq!(view.health, ClusterHealth::Healthy);
+        assert_eq!(node_b.api_status, ApiStatus::Ok);
+        assert_eq!(node_b.role, "unknown");
     }
 }
 

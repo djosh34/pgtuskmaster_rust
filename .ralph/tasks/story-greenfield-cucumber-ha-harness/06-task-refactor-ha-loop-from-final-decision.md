@@ -91,6 +91,10 @@ The current cleanup in `src/dcs/worker.rs` is therefore a defensive invariant re
 - (list them here)
 
 
+Even though many things have been done already, I put the task back into 'TO BE VERIFIED', to make sure CDD/ADT based programming is followed.
+Please remove this and the above line, after setting NOW EXECUTE
+
+
 </po_note>
 
 ### 1. `types.rs` (The Epistemology)
@@ -1052,7 +1056,7 @@ Plan review notes before execution:
 - Add an explicit leader lease generation/epoch to the DCS leader record so fencing cutoffs and operator-facing authority projection can refer to a concrete lease instance instead of only a member id.
 - Replace the operator-facing `/ha/state` contract and matching docs/tests so it reflects the new authority/publication-oriented HA state; keep richer internal decision/action detail in debug surfaces instead of preserving the old public phase/decision shape.
 
-NOW EXECUTE
+TO BE VERIFIED
 
 
 
