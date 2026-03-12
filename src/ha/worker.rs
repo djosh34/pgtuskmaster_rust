@@ -123,6 +123,7 @@ fn next_required_roles_ready(current: &HaState, actions: &[ReconcileAction]) -> 
             action,
             ReconcileAction::InitDb
                 | ReconcileAction::BaseBackup(_)
+                | ReconcileAction::StartDetachedStandby
                 | ReconcileAction::StartReplica(_)
         )
     }) {

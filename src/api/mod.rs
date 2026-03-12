@@ -193,6 +193,7 @@ pub enum HaCommandResponse {
     BaseBackup { member_id: String },
     PgRewind { member_id: String },
     StartPrimary,
+    StartDetachedStandby,
     StartReplica { member_id: String },
     Promote,
     Demote { mode: ShutdownModeResponse },

@@ -208,7 +208,11 @@ fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> Option<Reconc
         PostgresState::Primary { .. } => {
             Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast))
         }
-        PostgresState::Offline | PostgresState::Replica { .. } => None,
+        PostgresState::Offline => match &world.local.data_dir {
+            DataDirState::Initialized(_) => Some(ReconcileAction::StartDetachedStandby),
+            DataDirState::Missing => None,
+        },
+        PostgresState::Replica { .. } => None,
     }
 }
 
@@ -362,6 +366,34 @@ mod tests {
                 reason: super::super::types::NoPrimaryReason::LeaseOpen,
                 fence_cutoff: None,
             },
+            clear_switchover: false,
+        };
+
+        assert_eq!(
+            reconcile(&world, &desired),
+            vec![ReconcileAction::StartDetachedStandby]
+        );
+    }
+
+    #[test]
+    fn idle_missing_data_dir_does_not_start_detached_standby() {
+        let world = world(LocalKnowledge {
+            data_dir: DataDirState::Missing,
+            postgres: PostgresState::Offline,
+            process: ProcessState::Idle,
+            storage: StorageState::Healthy,
+            required_roles_ready: false,
+            publication: PublicationState::unknown(),
+            observation: ObservationState {
+                pg_observed_at: UnixMillis(100),
+                last_start_success_at: None,
+                last_promote_success_at: None,
+                last_demote_success_at: None,
+            },
+        });
+        let desired = DesiredState {
+            role: TargetRole::Idle(IdleReason::AwaitingLeader),
+            publication: PublicationGoal::KeepCurrent,
             clear_switchover: false,
         };
 

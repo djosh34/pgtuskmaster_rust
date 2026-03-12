@@ -469,6 +469,7 @@ fn map_command(value: &ReconcileAction) -> HaCommandResponse {
             member_id: member_id.0.clone(),
         },
         ReconcileAction::StartPrimary => HaCommandResponse::StartPrimary,
+        ReconcileAction::StartDetachedStandby => HaCommandResponse::StartDetachedStandby,
         ReconcileAction::StartReplica(member_id) => HaCommandResponse::StartReplica {
             member_id: member_id.0.clone(),
         },
