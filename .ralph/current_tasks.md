@@ -1,6 +1,17 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 12 09:07:53 PM CET 2026
+Generated: Thu Mar 12 09:42:11 PM CET 2026
+
+# Task `.ralph/tasks/bugs/ha-total-outage-recovery-can-stall-or-diverge-after-final-rejoin.md`
+
+```
+## Bug: HA total-outage recovery can stall leader election or briefly diverge on leader after final rejoin <status>not_started</status> <passes>false</passes>
+
+<description>
+The ultra-long HA feature `ha_all_nodes_stopped_then_two_nodes_restarted_then_final_node_rejoins` has at least two real failure modes after a full cluster outage.
+```
+
+==============
 
 # Task `.ralph/tasks/story-operator-ergonomics-reset/01-task-make-local-three-node-docker-quickstart-one-command-and-file-based.md`
 
