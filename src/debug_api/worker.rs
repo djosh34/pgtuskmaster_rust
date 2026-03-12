@@ -344,14 +344,14 @@ fn summarize_dcs(state: &DcsState) -> String {
         "dcs worker={:?} trust={:?} members={} leader={} switchover={}",
         state.worker,
         state.trust,
-        state.cache.members.len(),
+        state.cache.member_slots.len(),
         state
             .cache
-            .leader
+            .leader_lease
             .as_ref()
-            .map(|leader| leader.member_id.0.clone())
+            .map(|leader| leader.holder.0.clone())
             .unwrap_or_else(|| "none".to_string()),
-        state.cache.switchover.is_some()
+        state.cache.switchover_intent.is_some()
     )
 }
 
@@ -374,13 +374,13 @@ fn summarize_process(state: &ProcessState) -> String {
 
 fn summarize_ha(state: &HaState) -> String {
     format!(
-        "ha worker={:?} role={} tick={} authority={} detail={:?} planned_actions={}",
+        "ha worker={:?} role={} tick={} authority={} detail={:?} planned_commands={}",
         state.worker,
         state.role.label(),
         state.tick,
         authority_label(&state.publication.authority),
         state.role,
-        state.planned_actions.len()
+        state.planned_commands.len()
     )
 }
 
@@ -394,13 +394,15 @@ fn ha_signature(state: &HaState) -> String {
     )
 }
 
-fn authority_label(value: &crate::ha::types::AuthorityView) -> String {
+fn authority_label(value: &crate::ha::types::ProjectedAuthority) -> String {
     match value {
-        crate::ha::types::AuthorityView::Primary { member, epoch } => {
+        crate::ha::types::ProjectedAuthority::Primary { member, epoch } => {
             format!("primary:{}#{}", member.0, epoch.generation)
         }
-        crate::ha::types::AuthorityView::NoPrimary(reason) => format!("no_primary:{reason:?}"),
-        crate::ha::types::AuthorityView::Unknown => "unknown".to_string(),
+        crate::ha::types::ProjectedAuthority::NoPrimary(reason) => {
+            format!("no_primary:{reason:?}")
+        }
+        crate::ha::types::ProjectedAuthority::Unknown => "unknown".to_string(),
     }
 }
 
@@ -448,9 +450,9 @@ mod tests {
             worker: WorkerStatus::Starting,
             trust: DcsTrust::NotTrusted,
             cache: DcsCache {
-                members: BTreeMap::new(),
-                leader: None,
-                switchover: None,
+                member_slots: BTreeMap::new(),
+                leader_lease: None,
+                switchover_intent: None,
                 config: cfg,
                 init_lock: None,
             },

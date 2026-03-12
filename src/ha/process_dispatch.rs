@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     config::RuntimeConfig,
-    dcs::state::MemberRecord,
+    dcs::state::MemberSlot,
     postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
     process::{
         jobs::{
@@ -219,11 +219,11 @@ fn resolve_source_member(
     ctx: &HaWorkerCtx,
     action: &str,
     leader_member_id: &MemberId,
-) -> Result<MemberRecord, ProcessDispatchError> {
+) -> Result<MemberSlot, ProcessDispatchError> {
     let dcs = ctx.dcs_subscriber.latest();
     dcs.value
         .cache
-        .members
+        .member_slots
         .get(leader_member_id)
         .cloned()
         .ok_or_else(|| ProcessDispatchError::SourceSelection {

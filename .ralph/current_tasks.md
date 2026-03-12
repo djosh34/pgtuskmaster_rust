@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 12 09:58:26 AM CET 2026
+Generated: Thu Mar 12 12:37:02 CET 2026
 
 # Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md`
 
@@ -10,17 +10,6 @@ Generated: Thu Mar 12 09:58:26 AM CET 2026
 <priority>high</priority>
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-greenfield-cucumber-ha-harness/06-task-refactor-ha-loop-from-final-decision.md`
-
-```
-
-## Task: Refactor The HA Loop <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
 ```
 
 ==============

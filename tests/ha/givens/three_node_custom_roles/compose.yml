@@ -30,6 +30,7 @@ services:
 
   node-a:
     image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    pull_policy: never
     cap_add:
       - NET_ADMIN
     networks:
@@ -64,6 +65,7 @@ services:
 
   node-b:
     image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    pull_policy: never
     cap_add:
       - NET_ADMIN
     networks:
@@ -98,6 +100,7 @@ services:
 
   node-c:
     image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    pull_policy: never
     cap_add:
       - NET_ADMIN
     networks:
@@ -132,6 +135,7 @@ services:
 
   observer:
     image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    pull_policy: never
     entrypoint:
       - /usr/bin/tail
     command:

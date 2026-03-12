@@ -1,0 +1,7 @@
+usage: make test-long [TESTS="ha_test_one"|TESTS="ha_test_one ha_test_two"]
+make[1]: Entering directory '/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust'
+cargo nextest run --workspace --profile ultra-long --no-tests fail --target-dir "/tmp/pgtuskmaster_rust-target" --config "build.incremental=false" --test ha -- ha_replica_stopped_primary_stays_primary --exact
+make[1]: Leaving directory '/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust'
+make[1]: Entering directory '/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust'
+python3 ./tools/export-nextest-junit-logs.py ./target/nextest/ultra-long/junit.xml ./target/nextest/ultra-long/logs
+make[1]: Leaving directory '/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust'

@@ -54,9 +54,9 @@ fn sample_debug_verbose_json(member_id: &str) -> String {
                 "updated_at_ms":1,
                 "worker":"Running",
                 "trust":"FullQuorum",
-                "member_count":1,
-                "leader":"node-a",
-                "has_switchover_request":false
+                "member_slot_count":1,
+                "leader_lease_holder":"node-a",
+                "has_switchover_intent":false
             }},
             "process":{{
                 "version":1,
@@ -70,11 +70,11 @@ fn sample_debug_verbose_json(member_id: &str) -> String {
                 "version":1,
                 "updated_at_ms":1,
                 "worker":"Running",
-                "phase":"Primary",
+                "role_intent":"leader",
                 "tick":1,
-                "decision":"NoChange",
-                "decision_detail":"steady",
-                "planned_actions":0
+                "authority_projection":"primary",
+                "authority_detail":"steady",
+                "planned_commands":0
             }},
             "api":{{"endpoints":["/debug/verbose"]}},
             "debug":{{"history_changes":1,"history_timeline":1,"last_sequence":42}},

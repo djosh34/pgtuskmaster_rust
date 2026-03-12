@@ -144,18 +144,18 @@ fn render_debug_verbose_text(view: &DebugVerboseView) -> String {
         payload.pginfo.summary
     ));
     lines.push(format!(
-        "dcs: trust={} leader={} members={} switchover_request={}",
+        "dcs: trust={} leader={} members={} switchover_intent={}",
         payload.dcs.trust,
-        payload.dcs.leader.as_deref().unwrap_or("none"),
-        payload.dcs.member_count,
-        payload.dcs.has_switchover_request
+        payload.dcs.leader_lease_holder.as_deref().unwrap_or("none"),
+        payload.dcs.member_slot_count,
+        payload.dcs.has_switchover_intent
     ));
     lines.push(format!(
-        "ha: phase={} decision={} detail={} planned_actions={}",
-        payload.ha.phase,
-        payload.ha.decision,
-        payload.ha.decision_detail.as_deref().unwrap_or("none"),
-        payload.ha.planned_actions
+        "ha: role_intent={} authority={} detail={} planned_commands={}",
+        payload.ha.role_intent,
+        payload.ha.authority_projection,
+        payload.ha.authority_detail.as_deref().unwrap_or("none"),
+        payload.ha.planned_commands
     ));
     lines.push(format!(
         "process: state={} worker={} running_job={} last_outcome={}",
@@ -238,13 +238,13 @@ fn render_status_debug_details(view: &ClusterStatusView) -> Vec<String> {
                 lines.push(format!(
                     "    dcs: trust={} leader={}",
                     payload.dcs.trust,
-                    payload.dcs.leader.as_deref().unwrap_or("none")
+                    payload.dcs.leader_lease_holder.as_deref().unwrap_or("none")
                 ));
                 lines.push(format!(
-                    "    ha: phase={} decision={} detail={}",
-                    payload.ha.phase,
-                    payload.ha.decision,
-                    payload.ha.decision_detail.as_deref().unwrap_or("none")
+                    "    ha: role_intent={} authority={} detail={}",
+                    payload.ha.role_intent,
+                    payload.ha.authority_projection,
+                    payload.ha.authority_detail.as_deref().unwrap_or("none")
                 ));
                 lines.push(format!(
                     "    pginfo: variant={} sql={} readiness={} summary={}",
@@ -423,9 +423,9 @@ mod tests {
                 updated_at_ms: 1,
                 worker: "Running".to_string(),
                 trust: "FullQuorum".to_string(),
-                member_count: 2,
-                leader: Some("node-a".to_string()),
-                has_switchover_request: false,
+                member_slot_count: 2,
+                leader_lease_holder: Some("node-a".to_string()),
+                has_switchover_intent: false,
             },
             process: ProcessSection {
                 version: 1,
@@ -439,11 +439,11 @@ mod tests {
                 version: 1,
                 updated_at_ms: 1,
                 worker: "Running".to_string(),
-                phase: "Primary".to_string(),
+                role_intent: "leader".to_string(),
                 tick: 1,
-                decision: "NoChange".to_string(),
-                decision_detail: Some("already converged".to_string()),
-                planned_actions: 0,
+                authority_projection: "primary:node-a#1".to_string(),
+                authority_detail: Some("already converged".to_string()),
+                planned_commands: 0,
             },
             api: ApiSection {
                 endpoints: vec!["/debug/verbose".to_string()],

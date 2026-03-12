@@ -584,7 +584,7 @@ async fn ha_state_api_stays_responsive_while_ha_attempt_leadership_blocks(
         cfg_subscriber.clone(),
         Box::new(ContractStore),
     );
-    api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
+    api_ctx.set_debug_snapshot_subscriber(debug_subscriber);
     let api_addr = api_ctx.local_addr()?;
 
     let mut debug_ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {

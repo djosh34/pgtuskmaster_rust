@@ -4,7 +4,7 @@ pub const ETCD_SERVICE: &str = "etcd";
 pub const IPTABLES_CHAIN: &str = "PGTM_HA_FAULTS";
 pub const FAULT_DIR: &str = "/var/lib/pgtuskmaster/faults";
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrafficPath {
     Dcs,
     Api,
@@ -29,7 +29,7 @@ impl TrafficPath {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockerKind {
     PgBasebackup,
     PgRewind,

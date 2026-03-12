@@ -35,7 +35,20 @@ for image in "${cucumber_images[@]}"; do
     continue
   fi
   echo "removing older HA cucumber image ${image}" >&2
-  docker image rm "${image}"
+  if ! rm_output="$(docker image rm "${image}" 2>&1)"; then
+    if [[ "${rm_output}" == *"No such image"* ]]; then
+      printf '%s\n' "${rm_output}" >&2
+      continue
+    fi
+    if [[ "${rm_output}" == *"must be forced"* || "${rm_output}" == *"is being used by running container"* ]]; then
+      printf '%s\n' "${rm_output}" >&2
+      echo "skipping removal for HA cucumber image still referenced by a container" >&2
+      continue
+    fi
+    printf '%s\n' "${rm_output}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${rm_output}" >&2
 done
 
 printf 'PGTM_CUCUMBER_TEST_RUN_ID=%s\n' "${image_run_id}" >> "${NEXTEST_ENV}"

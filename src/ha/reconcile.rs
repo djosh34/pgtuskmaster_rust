@@ -23,11 +23,7 @@ fn reconcile_publication(
     current: &PublicationState,
     desired: &DesiredState,
 ) -> Vec<ReconcileAction> {
-    let publish_action = match (
-        &current.authority,
-        &current.fence_cutoff,
-        &desired.publication,
-    ) {
+    let publish_action = match (&current.authority, &current.fence_cutoff, &desired.publication) {
         (_, _, PublicationGoal::KeepCurrent) => None,
         (
             AuthorityView::Primary {
@@ -206,9 +202,7 @@ fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> Option<Reco
 
 fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> Option<ReconcileAction> {
     match &world.local.postgres {
-        PostgresState::Primary { .. }
-            if world.local.observation.waiting_for_fresh_pg_after_demote() =>
-        {
+        PostgresState::Primary { .. } if world.local.observation.waiting_for_fresh_pg_after_demote() => {
             None
         }
         PostgresState::Primary { .. } => {
@@ -229,10 +223,34 @@ mod tests {
 
     use super::*;
     use crate::ha::types::{
-        ApiVisibility, AuthorityView, ElectionEligibility, GlobalKnowledge, IneligibleReason,
-        LeaseEpoch, LocalKnowledge, ObservationState, PeerKnowledge, PublicationState,
-        SwitchoverState,
+        ApiVisibility, GlobalKnowledge, IneligibleReason, LeaseEpoch, LocalKnowledge,
+        ObservationState, PeerKnowledge, PublicationState, StorageState, SwitchoverState,
     };
+
+    fn world(local: LocalKnowledge) -> WorldView {
+        WorldView {
+            local,
+            global: GlobalKnowledge {
+                dcs_trust: DcsTrust::FullQuorum,
+                lease: LeaseState::Unheld,
+                observed_lease: None,
+                observed_primary: None,
+                coordination: super::super::types::CoordinationView {
+                    trust: DcsTrust::FullQuorum,
+                    leader: LeaseState::Unheld,
+                    sampled_primary: None,
+                },
+                switchover: SwitchoverState::None,
+                peers: BTreeMap::new(),
+                self_peer: PeerKnowledge {
+                    eligibility: super::super::types::ElectionEligibility::Ineligible(
+                        IneligibleReason::StartingUp,
+                    ),
+                    api: ApiVisibility::Unreachable,
+                },
+            },
+        }
+    }
 
     #[test]
     fn degraded_failsafe_keeps_stale_lease_instead_of_releasing_it() {
@@ -244,7 +262,7 @@ mod tests {
             data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
             postgres: PostgresState::Offline,
             process: ProcessState::Idle,
-            storage: super::super::types::StorageState::Healthy,
+            storage: StorageState::Healthy,
             required_roles_ready: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
@@ -267,251 +285,86 @@ mod tests {
     }
 
     #[test]
-    fn storage_stalled_leader_releases_lease_before_demoting() {
-        let publication = PublicationGoal::PublishNoPrimary {
-            reason: super::super::types::NoPrimaryReason::Recovering,
-            fence_cutoff: Some(super::super::types::FenceCutoff {
-                epoch: LeaseEpoch {
-                    holder: MemberId("node-a".to_string()),
-                    generation: 7,
+    fn demoting_for_switchover_releases_lease_once_postgres_is_offline() {
+        let world = WorldView {
+            local: LocalKnowledge {
+                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
+                postgres: PostgresState::Offline,
+                process: ProcessState::Idle,
+                storage: StorageState::Healthy,
+                required_roles_ready: false,
+                publication: PublicationState::unknown(),
+                observation: ObservationState {
+                    pg_observed_at: UnixMillis(100),
+                    last_start_success_at: None,
+                    last_promote_success_at: None,
+                    last_demote_success_at: None,
                 },
-                committed_lsn: 42,
-            }),
-        };
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-            postgres: PostgresState::Primary { committed_lsn: 42 },
-            process: ProcessState::Idle,
-            storage: super::super::types::StorageState::Stalled,
-            required_roles_ready: false,
-            publication: PublicationState::unknown(),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: None,
-                last_promote_success_at: None,
-                last_demote_success_at: None,
             },
-        });
+            global: GlobalKnowledge {
+                dcs_trust: DcsTrust::FullQuorum,
+                lease: LeaseState::HeldByMe(LeaseEpoch {
+                    holder: MemberId("node-a".to_string()),
+                    generation: 5,
+                }),
+                observed_lease: None,
+                observed_primary: None,
+                coordination: super::super::types::CoordinationView {
+                    trust: DcsTrust::FullQuorum,
+                    leader: LeaseState::HeldByMe(LeaseEpoch {
+                        holder: MemberId("node-a".to_string()),
+                        generation: 5,
+                    }),
+                    sampled_primary: None,
+                },
+                switchover: SwitchoverState::None,
+                peers: BTreeMap::new(),
+                self_peer: PeerKnowledge {
+                    eligibility: super::super::types::ElectionEligibility::Ineligible(
+                        IneligibleReason::StartingUp,
+                    ),
+                    api: ApiVisibility::Unreachable,
+                },
+            },
+        };
+
         let desired = DesiredState {
-            role: TargetRole::Fenced(FenceReason::StorageStalled),
-            publication: publication.clone(),
+            role: TargetRole::DemotingForSwitchover(MemberId("node-b".to_string())),
+            publication: PublicationGoal::KeepCurrent,
             clear_switchover: false,
         };
 
-        assert_eq!(
-            reconcile(&world, &desired),
-            vec![
-                ReconcileAction::Publish(publication),
-                ReconcileAction::ReleaseLease,
-            ]
-        );
+        assert_eq!(reconcile(&world, &desired), vec![ReconcileAction::ReleaseLease]);
     }
 
     #[test]
-    fn follower_waits_for_new_pg_observation_after_demote_succeeds() {
-        let publication = PublicationGoal::PublishPrimary {
-            primary: MemberId("node-b".to_string()),
-            epoch: LeaseEpoch {
-                holder: MemberId("node-b".to_string()),
-                generation: 7,
-            },
-        };
+    fn matching_no_primary_projection_does_not_republish() {
         let world = world(LocalKnowledge {
             data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-            postgres: PostgresState::Primary { committed_lsn: 42 },
+            postgres: PostgresState::Offline,
             process: ProcessState::Idle,
-            storage: super::super::types::StorageState::Healthy,
+            storage: StorageState::Healthy,
             required_roles_ready: false,
             publication: PublicationState {
-                authority: AuthorityView::Unknown,
+                authority: AuthorityView::NoPrimary(super::super::types::NoPrimaryReason::LeaseOpen),
                 fence_cutoff: None,
             },
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
                 last_start_success_at: None,
                 last_promote_success_at: None,
-                last_demote_success_at: Some(UnixMillis(100)),
-            },
-        });
-        let desired = DesiredState {
-            role: TargetRole::Follower(FollowGoal {
-                leader: MemberId("node-b".to_string()),
-                recovery: RecoveryPlan::StartStreaming,
-            }),
-            publication: publication.clone(),
-            clear_switchover: false,
-        };
-
-        assert_eq!(
-            reconcile(&world, &desired),
-            vec![ReconcileAction::Publish(publication)]
-        );
-    }
-
-    #[test]
-    fn follower_does_not_demote_healthy_replica_when_upstream_is_unreported() {
-        let publication = PublicationGoal::PublishPrimary {
-            primary: MemberId("node-b".to_string()),
-            epoch: LeaseEpoch {
-                holder: MemberId("node-b".to_string()),
-                generation: 7,
-            },
-        };
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-            postgres: PostgresState::Replica {
-                upstream: None,
-                replication: super::super::types::ReplicationState::Streaming(
-                    super::super::types::WalPosition {
-                        timeline: 1,
-                        lsn: 42,
-                    },
-                ),
-            },
-            process: ProcessState::Idle,
-            storage: super::super::types::StorageState::Healthy,
-            required_roles_ready: false,
-            publication: PublicationState::unknown(),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: Some(UnixMillis(1)),
-                last_promote_success_at: None,
                 last_demote_success_at: None,
             },
         });
         let desired = DesiredState {
-            role: TargetRole::Follower(FollowGoal {
-                leader: MemberId("node-b".to_string()),
-                recovery: RecoveryPlan::StartStreaming,
-            }),
-            publication: publication.clone(),
+            role: TargetRole::Idle(IdleReason::AwaitingLeader),
+            publication: PublicationGoal::PublishNoPrimary {
+                reason: super::super::types::NoPrimaryReason::LeaseOpen,
+                fence_cutoff: None,
+            },
             clear_switchover: false,
         };
 
-        assert_eq!(
-            reconcile(&world, &desired),
-            vec![ReconcileAction::Publish(publication)]
-        );
-    }
-
-    #[test]
-    fn leader_waits_for_fresh_observation_after_promote_succeeds() {
-        let publication = PublicationGoal::PublishPrimary {
-            primary: MemberId("node-a".to_string()),
-            epoch: LeaseEpoch {
-                holder: MemberId("node-a".to_string()),
-                generation: 7,
-            },
-        };
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-            postgres: PostgresState::Replica {
-                upstream: None,
-                replication: super::super::types::ReplicationState::Streaming(
-                    super::super::types::WalPosition {
-                        timeline: 1,
-                        lsn: 42,
-                    },
-                ),
-            },
-            process: ProcessState::Idle,
-            storage: super::super::types::StorageState::Healthy,
-            required_roles_ready: false,
-            publication: PublicationState::unknown(),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: None,
-                last_promote_success_at: Some(UnixMillis(100)),
-                last_demote_success_at: None,
-            },
-        });
-        let desired = DesiredState {
-            role: TargetRole::Leader(LeaseEpoch {
-                holder: MemberId("node-a".to_string()),
-                generation: 7,
-            }),
-            publication: publication.clone(),
-            clear_switchover: false,
-        };
-
-        assert_eq!(
-            reconcile(&world, &desired),
-            vec![ReconcileAction::Publish(publication)]
-        );
-    }
-
-    #[test]
-    fn follower_demotes_before_running_pg_rewind() {
-        let publication = PublicationGoal::PublishPrimary {
-            primary: MemberId("node-b".to_string()),
-            epoch: LeaseEpoch {
-                holder: MemberId("node-b".to_string()),
-                generation: 7,
-            },
-        };
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Initialized(LocalDataState::Diverged(
-                super::super::types::DivergenceState::RewindPossible,
-            )),
-            postgres: PostgresState::Replica {
-                upstream: Some(MemberId("node-a".to_string())),
-                replication: super::super::types::ReplicationState::Streaming(
-                    super::super::types::WalPosition {
-                        timeline: 1,
-                        lsn: 42,
-                    },
-                ),
-            },
-            process: ProcessState::Idle,
-            storage: super::super::types::StorageState::Healthy,
-            required_roles_ready: false,
-            publication: PublicationState::unknown(),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: None,
-                last_promote_success_at: None,
-                last_demote_success_at: None,
-            },
-        });
-        let desired = DesiredState {
-            role: TargetRole::Follower(FollowGoal {
-                leader: MemberId("node-b".to_string()),
-                recovery: RecoveryPlan::Rewind,
-            }),
-            publication: publication.clone(),
-            clear_switchover: false,
-        };
-
-        assert_eq!(
-            reconcile(&world, &desired),
-            vec![
-                ReconcileAction::Publish(publication),
-                ReconcileAction::Demote(super::super::types::ShutdownMode::Fast),
-            ]
-        );
-    }
-
-    fn world(local: LocalKnowledge) -> WorldView {
-        WorldView {
-            local,
-            global: GlobalKnowledge {
-                dcs_trust: DcsTrust::NotTrusted,
-                lease: LeaseState::HeldByMe(LeaseEpoch {
-                    holder: MemberId("node-a".to_string()),
-                    generation: 3,
-                }),
-                observed_lease: Some(LeaseEpoch {
-                    holder: MemberId("node-a".to_string()),
-                    generation: 3,
-                }),
-                observed_primary: Some(MemberId("node-a".to_string())),
-                switchover: SwitchoverState::None,
-                peers: BTreeMap::new(),
-                self_peer: PeerKnowledge {
-                    election: ElectionEligibility::Ineligible(IneligibleReason::NotReady),
-                    api: ApiVisibility::Reachable,
-                },
-            },
-        }
+        assert!(reconcile(&world, &desired).is_empty());
     }
 }

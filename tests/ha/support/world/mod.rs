@@ -42,6 +42,8 @@ pub struct ScenarioState {
     pub markers: BTreeMap<String, u128>,
     pub unsampled_nodes: BTreeSet<String>,
     pub stopped_nodes: BTreeSet<String>,
+    pub wedged_nodes: BTreeSet<String>,
+    pub proof_convergence_blocked_nodes: BTreeSet<String>,
     pub proof_rows: Vec<String>,
     pub proof_table: Option<String>,
     pub observed_primaries: Vec<String>,
@@ -105,8 +107,34 @@ impl HaWorld {
         let _ = self.scenario.unsampled_nodes.remove(member_id);
     }
 
+    pub fn add_wedged_node(&mut self, member_id: &str) {
+        let _ = self.scenario.wedged_nodes.insert(member_id.to_string());
+    }
+
+    pub fn remove_wedged_node(&mut self, member_id: &str) {
+        let _ = self.scenario.wedged_nodes.remove(member_id);
+    }
+
+    pub fn add_proof_convergence_blocker(&mut self, member_id: &str) {
+        let _ = self
+            .scenario
+            .proof_convergence_blocked_nodes
+            .insert(member_id.to_string());
+    }
+
+    pub fn remove_proof_convergence_blocker(&mut self, member_id: &str) {
+        let _ = self
+            .scenario
+            .proof_convergence_blocked_nodes
+            .remove(member_id);
+    }
+
     pub fn clear_unsampled_nodes(&mut self) {
         self.scenario.unsampled_nodes.clear();
+    }
+
+    pub fn clear_proof_convergence_blockers(&mut self) {
+        self.scenario.proof_convergence_blocked_nodes.clear();
     }
 
     pub fn clear_primary_history(&mut self) {

@@ -211,9 +211,9 @@ async fn run_workers(
         worker: WorkerStatus::Starting,
         trust: DcsTrust::NotTrusted,
         cache: DcsCache {
-            members: BTreeMap::new(),
-            leader: None,
-            switchover: None,
+            member_slots: BTreeMap::new(),
+            leader_lease: None,
+            switchover_intent: None,
             config: cfg.clone(),
             init_lock: None,
         },
@@ -277,9 +277,9 @@ async fn run_workers(
         store: Box::new(dcs_store),
         log: log.clone(),
         cache: DcsCache {
-            members: BTreeMap::new(),
-            leader: None,
-            switchover: None,
+            member_slots: BTreeMap::new(),
+            leader_lease: None,
+            switchover_intent: None,
             config: cfg.clone(),
             init_lock: None,
         },
@@ -347,7 +347,8 @@ async fn run_workers(
             message: err.to_string(),
         })?;
     let mut api_ctx = ApiWorkerCtx::new(listener, cfg_subscriber, Box::new(api_store), log.clone());
-    api_ctx.set_ha_snapshot_subscriber(debug_subscriber);
+    api_ctx.set_debug_snapshot_subscriber(debug_subscriber);
+    api_ctx.set_live_state_subscribers(dcs_subscriber.clone(), ha_subscriber.clone());
     let server_tls = crate::tls::build_rustls_server_config(&cfg.api.security.tls)
         .map_err(|err| RuntimeError::Worker(format!("api tls config build failed: {err}")))?;
     api_ctx
@@ -508,9 +509,18 @@ mod tests {
 
     impl Drop for FakePostmaster {
         fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            let _ = fs::remove_file(&self.script_path);
+            if let Err(err) = self.child.kill() {
+                eprintln!("fake postmaster kill failed: {err}");
+            }
+            if let Err(err) = self.child.wait() {
+                eprintln!("fake postmaster wait failed: {err}");
+            }
+            if let Err(err) = fs::remove_file(&self.script_path) {
+                eprintln!(
+                    "fake postmaster script cleanup failed for {}: {err}",
+                    self.script_path.display()
+                );
+            }
         }
     }
 

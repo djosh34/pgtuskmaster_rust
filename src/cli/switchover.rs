@@ -67,7 +67,7 @@ fn validate_switchover_request(
 
     let target_member = target_sample
         .state
-        .members
+        .member_slots
         .iter()
         .find(|member| member.member_id == target_member_id)
         .ok_or_else(|| {
@@ -162,22 +162,21 @@ mod tests {
             cluster_name: "cluster-a".to_string(),
             scope: "scope-a".to_string(),
             self_member_id: self_member_id.to_string(),
-            leader: authority_primary_member_for_test(&authority),
-            switchover_pending: false,
-            switchover_to: None,
-            member_count: members.len(),
-            members,
+            leader_lease_holder: authority_primary_member_for_test(&authority),
+            switchover: None,
+            member_slot_count: members.len(),
+            member_slots: members,
             dcs_trust: trust,
-            authority,
+            authority_projection: authority,
             fence_cutoff: None,
-            ha_role: TargetRoleResponse::Leader {
+            role_intent: TargetRoleResponse::Leader {
                 epoch: LeaseEpochResponse {
                     holder: self_member_id.to_string(),
                     generation: 42,
                 },
             },
             ha_tick: 7,
-            planned_actions: Vec::new(),
+            planned_commands: Vec::new(),
             snapshot_sequence: 1,
         }
     }
@@ -208,7 +207,7 @@ mod tests {
                 member_id: seed_state.self_member_id.clone(),
                 api_url: format!("https://{}:8443", seed_state.self_member_id),
             },
-            discovered_members: seed_state.members.clone(),
+            discovered_members: seed_state.member_slots.clone(),
             warnings: Vec::new(),
             observations: observations
                 .into_iter()
@@ -245,12 +244,10 @@ mod tests {
         );
 
         let result = validate_switchover_request(&snapshot, Some("node-b"));
-        match result {
-            Err(CliError::Resolution(message)) => {
-                assert!(message.contains("could not reach"));
-            }
-            other => panic!("expected resolution error, got {other:?}"),
-        }
+        assert!(matches!(
+            result,
+            Err(CliError::Resolution(message)) if message.contains("could not reach")
+        ));
     }
 
     #[test]
@@ -315,11 +312,10 @@ mod tests {
         );
 
         let result = validate_switchover_request(&snapshot, None);
-        match result {
-            Err(CliError::Resolution(message)) => {
-                assert!(message.contains("not the authoritative primary"));
-            }
-            other => panic!("expected resolution error, got {other:?}"),
-        }
+        assert!(matches!(
+            result,
+            Err(CliError::Resolution(message))
+                if message.contains("not the authoritative primary")
+        ));
     }
 }

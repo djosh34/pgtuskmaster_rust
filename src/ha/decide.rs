@@ -3,10 +3,11 @@ use std::cmp::Ordering;
 use crate::{dcs::state::DcsTrust, state::MemberId};
 
 use super::types::{
-    ApiVisibility, Candidacy, DesiredState, ElectionEligibility, FailSafeGoal, FailureRecovery,
-    FenceCutoff, FenceReason, FollowGoal, IdleReason, LeaseEpoch, LeaseState, LocalDataState,
-    NoPrimaryReason, PeerKnowledge, PostgresState, ProcessState, PublicationGoal, RecoveryPlan,
-    StorageState, SwitchoverState, SwitchoverTarget, TargetRole, WalPosition, WorldView,
+    ApiVisibility, AuthorityView, Candidacy, DesiredState, ElectionEligibility, FailSafeGoal,
+    FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeaseEpoch, LeaseState,
+    LocalDataState, NoPrimaryReason, PeerKnowledge, PostgresState, ProcessState, PublicationGoal,
+    RecoveryPlan, StorageState, SwitchoverState, SwitchoverTarget, TargetRole, WalPosition,
+    WorldView,
 };
 
 pub(crate) fn decide(world: &WorldView, self_id: &MemberId) -> DesiredState {
@@ -15,18 +16,16 @@ pub(crate) fn decide(world: &WorldView, self_id: &MemberId) -> DesiredState {
     }
 
     if world.local.storage == StorageState::Stalled {
-        if let (PostgresState::Primary { committed_lsn }, Some(epoch)) =
-            (&world.local.postgres, active_or_observed_epoch(world))
-        {
-            let cutoff = FenceCutoff {
+        if let PostgresState::Primary { committed_lsn } = &world.local.postgres {
+            let cutoff = active_or_observed_epoch(world).map(|epoch| FenceCutoff {
                 epoch,
                 committed_lsn: *committed_lsn,
-            };
+            });
             return DesiredState {
                 role: TargetRole::Fenced(FenceReason::StorageStalled),
                 publication: PublicationGoal::PublishNoPrimary {
                     reason: NoPrimaryReason::Recovering,
-                    fence_cutoff: Some(cutoff),
+                    fence_cutoff: cutoff,
                 },
                 clear_switchover: false,
             };
@@ -174,22 +173,6 @@ fn decide_as_lease_holder(
 }
 
 fn decide_without_lease(world: &WorldView, self_id: &MemberId) -> DesiredState {
-    if let Some(leader) = world
-        .global
-        .observed_primary
-        .clone()
-        .filter(|leader| leader != self_id)
-    {
-        return DesiredState {
-            role: TargetRole::Follower(follow_goal(world, leader)),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::LeaseOpen,
-                fence_cutoff: None,
-            },
-            clear_switchover: false,
-        };
-    }
-
     match resolve_switchover(world, self_id, true) {
         ResolvedSwitchover::Proceed(target) if target == *self_id => DesiredState {
             role: TargetRole::Candidate(Candidacy::TargetedSwitchover(target)),
@@ -314,7 +297,7 @@ fn candidacy_kind(world: &WorldView) -> Candidacy {
         _ => {
             if matches!(
                 world.local.publication.authority,
-                super::types::AuthorityView::NoPrimary(NoPrimaryReason::DcsDegraded)
+                AuthorityView::NoPrimary(NoPrimaryReason::DcsDegraded)
             ) {
                 Candidacy::ResumeAfterOutage
             } else {
@@ -398,20 +381,19 @@ fn best_switchover_target(
         .map(|(member_id, _)| member_id);
 
     if allow_self_target && switchover_target_is_valid(self_peer) {
-        let self_candidate = Some(self_id.clone());
-        return match (peer_candidate, self_candidate) {
-            (Some(peer_id), Some(self_id)) => {
-                if compare_self_to_peer(self_peer, &self_id, peers.get(&peer_id), &peer_id)
-                    == Ordering::Greater
-                {
-                    Some(self_id)
+        return match peer_candidate {
+            Some(peer_id) => {
+                let ordering = peers
+                    .get(&peer_id)
+                    .map(|peer| compare_switchover_candidates(self_id, self_peer, &peer_id, peer))
+                    .unwrap_or(Ordering::Greater);
+                if ordering == Ordering::Greater {
+                    Some(self_id.clone())
                 } else {
                     Some(peer_id)
                 }
             }
-            (Some(peer_id), None) => Some(peer_id),
-            (None, Some(self_id)) => Some(self_id),
-            (None, None) => None,
+            None => Some(self_id.clone()),
         };
     }
 
@@ -429,9 +411,9 @@ fn best_failover_candidate(
         .map(|(member_id, peer)| (member_id.clone(), peer))
         .max_by(|(left_id, left_peer), (right_id, right_peer)| {
             compare_candidate_rank(
-                candidate_rank(&left_peer.election),
+                candidate_rank(&left_peer.eligibility),
                 left_id,
-                candidate_rank(&right_peer.election),
+                candidate_rank(&right_peer.eligibility),
                 right_id,
             )
         })
@@ -445,9 +427,9 @@ fn best_failover_candidate(
         Some(peer_id) => {
             let peer_rank = peers
                 .get(&peer_id)
-                .map(|peer| candidate_rank(&peer.election));
+                .map(|peer| candidate_rank(&peer.eligibility));
             if compare_candidate_rank(
-                candidate_rank(&self_peer.election),
+                candidate_rank(&self_peer.eligibility),
                 self_id,
                 peer_rank.flatten(),
                 &peer_id,
@@ -462,21 +444,9 @@ fn best_failover_candidate(
     }
 }
 
-fn compare_self_to_peer(
-    self_peer: &PeerKnowledge,
-    self_id: &MemberId,
-    peer: Option<&PeerKnowledge>,
-    peer_id: &MemberId,
-) -> Ordering {
-    match peer {
-        Some(peer) => compare_switchover_candidates(self_id, self_peer, peer_id, peer),
-        None => Ordering::Greater,
-    }
-}
-
 fn switchover_target_is_valid(peer: &PeerKnowledge) -> bool {
     matches!(peer.api, ApiVisibility::Reachable)
-        && matches!(peer.election, ElectionEligibility::PromoteEligible(_))
+        && matches!(peer.eligibility, ElectionEligibility::PromoteEligible(_))
 }
 
 fn compare_switchover_candidates(
@@ -486,9 +456,9 @@ fn compare_switchover_candidates(
     right_peer: &PeerKnowledge,
 ) -> Ordering {
     compare_candidate_rank(
-        candidate_rank(&left_peer.election),
+        candidate_rank(&left_peer.eligibility),
         left_id,
-        candidate_rank(&right_peer.election),
+        candidate_rank(&right_peer.eligibility),
         right_id,
     )
 }
@@ -529,7 +499,7 @@ fn compare_candidate_rank(
 }
 
 fn classify_candidate(peer: &PeerKnowledge) -> Option<()> {
-    match &peer.election {
+    match &peer.eligibility {
         ElectionEligibility::BootstrapEligible | ElectionEligibility::PromoteEligible(_) => {
             Some(())
         }
@@ -548,24 +518,44 @@ mod tests {
     };
 
     use super::super::types::{
-        ApiVisibility, AuthorityView, Candidacy, DataDirState, DesiredState, ElectionEligibility,
-        GlobalKnowledge, LocalDataState, LocalKnowledge, NoPrimaryReason, ObservationState,
-        PeerKnowledge, PostgresState, ProcessState, PublicationState, ReplicationState,
-        StorageState, SwitchoverState, TargetRole, WalPosition, WorldView,
+        ApiVisibility, AuthorityView, Candidacy, CoordinationView, DataDirState, DesiredState,
+        ElectionEligibility, GlobalKnowledge, IdleReason, LeaseEpoch, LeaseState, LocalDataState,
+        LocalKnowledge, NoPrimaryReason, ObservationState, PeerKnowledge, PostgresState,
+        ProcessState, PublicationGoal, PublicationState, ReplicationState, StorageState,
+        SwitchoverState, TargetRole, WalPosition, WorldView,
     };
 
     fn promote_peer(lsn: u64) -> PeerKnowledge {
         PeerKnowledge {
-            election: ElectionEligibility::PromoteEligible(WalPosition { timeline: 1, lsn }),
+            eligibility: ElectionEligibility::PromoteEligible(WalPosition { timeline: 1, lsn }),
             api: ApiVisibility::Reachable,
+        }
+    }
+
+    fn world(local: LocalKnowledge, self_peer: PeerKnowledge) -> WorldView {
+        WorldView {
+            local,
+            global: GlobalKnowledge {
+                dcs_trust: DcsTrust::FullQuorum,
+                lease: LeaseState::Unheld,
+                observed_lease: None,
+                observed_primary: None,
+                coordination: CoordinationView {
+                    trust: DcsTrust::FullQuorum,
+                    leader: LeaseState::Unheld,
+                    sampled_primary: None,
+                },
+                switchover: SwitchoverState::None,
+                peers: BTreeMap::new(),
+                self_peer,
+            },
         }
     }
 
     #[test]
     fn best_failover_candidate_includes_self_in_ranking() {
         let self_id = MemberId("node-a".to_string());
-        let mut peers = BTreeMap::new();
-        peers.insert(MemberId("node-b".to_string()), promote_peer(10));
+        let peers = BTreeMap::from([(MemberId("node-b".to_string()), promote_peer(10))]);
 
         assert_eq!(
             best_failover_candidate(&peers, &promote_peer(20), &self_id),
@@ -577,8 +567,7 @@ mod tests {
     fn best_failover_candidate_prefers_higher_ranked_peer() {
         let self_id = MemberId("node-a".to_string());
         let peer_id = MemberId("node-b".to_string());
-        let mut peers = BTreeMap::new();
-        peers.insert(peer_id.clone(), promote_peer(20));
+        let peers = BTreeMap::from([(peer_id.clone(), promote_peer(20))]);
 
         assert_eq!(
             best_failover_candidate(&peers, &promote_peer(10), &self_id),
@@ -589,12 +578,12 @@ mod tests {
     #[test]
     fn stale_observed_lease_does_not_block_failover_candidacy() {
         let self_id = MemberId("node-a".to_string());
-        let stale_epoch = super::super::types::LeaseEpoch {
+        let stale_epoch = LeaseEpoch {
             holder: MemberId("node-b".to_string()),
             generation: 7,
         };
-        let world = WorldView {
-            local: LocalKnowledge {
+        let mut world = world(
+            LocalKnowledge {
                 data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
                 postgres: PostgresState::Replica {
                     upstream: Some(MemberId("node-b".to_string())),
@@ -617,27 +606,81 @@ mod tests {
                     last_demote_success_at: None,
                 },
             },
-            global: GlobalKnowledge {
-                dcs_trust: DcsTrust::FullQuorum,
-                lease: super::super::types::LeaseState::Unheld,
-                observed_lease: Some(stale_epoch),
-                observed_primary: None,
-                switchover: SwitchoverState::None,
-                peers: BTreeMap::new(),
-                self_peer: promote_peer(42),
-            },
-        };
+            promote_peer(42),
+        );
+        world.global.observed_lease = Some(stale_epoch);
 
         assert_eq!(
             decide(&world, &self_id),
             DesiredState {
                 role: TargetRole::Candidate(Candidacy::Failover),
-                publication: super::super::types::PublicationGoal::PublishNoPrimary {
+                publication: PublicationGoal::PublishNoPrimary {
                     reason: NoPrimaryReason::LeaseOpen,
                     fence_cutoff: None,
                 },
                 clear_switchover: false,
             }
+        );
+    }
+
+    #[test]
+    fn sampled_primary_without_lease_promotes_best_candidate() {
+        let self_id = MemberId("node-a".to_string());
+        let mut world = world(
+            LocalKnowledge {
+                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
+                postgres: PostgresState::Offline,
+                process: ProcessState::Idle,
+                storage: StorageState::Healthy,
+                required_roles_ready: false,
+                publication: PublicationState::unknown(),
+                observation: ObservationState {
+                    pg_observed_at: UnixMillis(0),
+                    last_start_success_at: None,
+                    last_promote_success_at: None,
+                    last_demote_success_at: None,
+                },
+            },
+            promote_peer(42),
+        );
+        world.global.observed_primary = Some(MemberId("node-b".to_string()));
+        world.global.coordination.sampled_primary = Some(MemberId("node-b".to_string()));
+
+        assert_eq!(
+            decide(&world, &self_id).role,
+            TargetRole::Candidate(Candidacy::Failover)
+        );
+    }
+
+    #[test]
+    fn idle_when_no_leader_no_candidate_and_no_switchover() {
+        let self_id = MemberId("node-a".to_string());
+        let world = world(
+            LocalKnowledge {
+                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
+                postgres: PostgresState::Offline,
+                process: ProcessState::Idle,
+                storage: StorageState::Healthy,
+                required_roles_ready: false,
+                publication: PublicationState::unknown(),
+                observation: ObservationState {
+                    pg_observed_at: UnixMillis(0),
+                    last_start_success_at: None,
+                    last_promote_success_at: None,
+                    last_demote_success_at: None,
+                },
+            },
+            PeerKnowledge {
+                eligibility: ElectionEligibility::Ineligible(
+                    super::super::types::IneligibleReason::StartingUp,
+                ),
+                api: ApiVisibility::Unreachable,
+            },
+        );
+
+        assert_eq!(
+            decide(&world, &self_id).role,
+            TargetRole::Idle(IdleReason::AwaitingLeader)
         );
     }
 }

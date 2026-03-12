@@ -1509,8 +1509,10 @@ mod tests {
         dcs::{
             etcd_store::EtcdDcsStore,
             state::{
-                DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderRecord,
-                MemberRecord, MemberRole, SwitchoverRequest,
+                DcsCache, DcsState, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderLeaseRecord,
+                MemberApiEndpoint, MemberEndpoint, MemberLease, MemberPostgresView, MemberRouting,
+                MemberSlot, PrimaryObservation, SwitchoverIntentRecord, SwitchoverTargetRecord,
+                WalVector,
             },
             store::{
                 refresh_from_etcd_watch, DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent,
@@ -1519,7 +1521,7 @@ mod tests {
             worker::step_once,
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        state::{new_state_channel, MemberId, UnixMillis, WorkerError, WorkerStatus},
+        state::{new_state_channel, MemberId, TimelineId, UnixMillis, Version, WorkerError, WorkerStatus, WalLsn},
         test_harness::{
             binaries::require_etcd_bin_for_real_tests,
             etcd3::{prepare_etcd_data_dir, spawn_etcd3, EtcdHandle, EtcdInstanceSpec},
@@ -1672,11 +1674,59 @@ mod tests {
 
     fn sample_cache(scope: &str) -> DcsCache {
         DcsCache {
-            members: BTreeMap::new(),
-            leader: None,
-            switchover: None,
+            member_slots: BTreeMap::new(),
+            leader_lease: None,
+            switchover_intent: None,
             config: sample_runtime_config(scope),
             init_lock: None,
+        }
+    }
+
+    fn sample_member_slot(owner: &str, host: &str, role: &str) -> MemberSlot {
+        let postgres = match role {
+            "primary" => MemberPostgresView::Primary(PrimaryObservation {
+                readiness: Readiness::Ready,
+                committed_wal: WalVector {
+                    timeline: Some(TimelineId(1)),
+                    lsn: WalLsn(10),
+                },
+                pg_version: Version(1),
+            }),
+            "replica" => MemberPostgresView::Replica(crate::dcs::state::ReplicaObservation {
+                readiness: Readiness::Ready,
+                upstream: Some(MemberId("node-a".to_string())),
+                replay_wal: Some(WalVector {
+                    timeline: Some(TimelineId(1)),
+                    lsn: WalLsn(9),
+                }),
+                follow_wal: Some(WalVector {
+                    timeline: Some(TimelineId(1)),
+                    lsn: WalLsn(10),
+                }),
+                pg_version: Version(1),
+            }),
+            _ => MemberPostgresView::Unknown(crate::dcs::state::UnknownPostgresObservation {
+                readiness: Readiness::Unknown,
+                timeline: None,
+                pg_version: Version(1),
+            }),
+        };
+
+        MemberSlot {
+            lease: MemberLease {
+                owner: MemberId(owner.to_string()),
+                ttl_ms: 1_000,
+            },
+            routing: MemberRouting {
+                postgres: MemberEndpoint {
+                    host: host.to_string(),
+                    port: 5432,
+                },
+                api: Some(MemberApiEndpoint {
+                    url: format!("http://{owner}:8080"),
+                }),
+            },
+            postgres,
         }
     }
 
@@ -1694,11 +1744,20 @@ mod tests {
                     primary_slot_name: None,
                     extra: BTreeMap::new(),
                 },
-                last_refresh_at: Some(UnixMillis(1)),
+                last_refresh_at: Some(fresh_unix_millis()),
             },
             wal_lsn: crate::state::WalLsn(42),
             slots: Vec::new(),
         }
+    }
+
+    fn fresh_unix_millis() -> UnixMillis {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+            .map(UnixMillis)
+            .unwrap_or(UnixMillis(0))
     }
 
     fn build_worker_ctx(
@@ -1707,7 +1766,9 @@ mod tests {
     ) -> (DcsWorkerCtx, crate::state::StateSubscriber<DcsState>) {
         let self_id = MemberId("node-a".to_string());
         let initial_pg = sample_pg();
-        let (_pg_publisher, pg_subscriber) = new_state_channel(initial_pg, UnixMillis(1));
+        let initial_pg_updated_at = fresh_unix_millis();
+        let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg, initial_pg_updated_at);
+        let _ = pg_publisher.publish(sample_pg(), fresh_unix_millis());
 
         let initial_dcs = DcsState {
             worker: WorkerStatus::Starting,
@@ -1825,36 +1886,24 @@ mod tests {
             let mut store = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
             let mut cache = sample_cache(&fixture.scope);
 
-            cache.members.insert(
+            cache.member_slots.insert(
                 MemberId("node-stale".to_string()),
-                MemberRecord {
-                    member_id: MemberId("node-stale".to_string()),
-                    postgres_host: "10.0.0.10".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Primary,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-                    pg_version: crate::state::Version(1),
-                },
+                sample_member_slot("node-stale", "10.0.0.10", "primary"),
             );
-            cache.switchover = Some(SwitchoverRequest {
-                switchover_to: None,
+            cache.switchover_intent = Some(SwitchoverIntentRecord {
+                target: SwitchoverTargetRecord::AnyHealthyReplica,
             });
             cache.init_lock = Some(InitLockRecord {
                 holder: MemberId("node-stale".to_string()),
             });
 
-            cache.leader = Some(LeaderRecord {
-                member_id: MemberId("node-stale".to_string()),
+            cache.leader_lease = Some(LeaderLeaseRecord {
+                holder: MemberId("node-stale".to_string()),
                 generation: 1,
             });
 
-            let stale_leader = serde_json::to_string(&LeaderRecord {
-                member_id: MemberId("node-stale".to_string()),
+            let stale_leader = serde_json::to_string(&LeaderLeaseRecord {
+                holder: MemberId("node-stale".to_string()),
                 generation: 1,
             })
             .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
@@ -1915,17 +1964,17 @@ mod tests {
                 ));
             }
 
-            if cache.leader.is_some() {
+            if cache.leader_lease.is_some() {
                 return Err(boxed_error(
                     "expected leader record to be cleared by reconnect reset",
                 ));
             }
-            if !cache.members.is_empty() {
+            if !cache.member_slots.is_empty() {
                 return Err(boxed_error(
                     "expected members to be cleared by reconnect reset",
                 ));
             }
-            if cache.switchover.is_some() {
+            if cache.switchover_intent.is_some() {
                 return Err(boxed_error(
                     "expected switchover record to be cleared by reconnect reset",
                 ));
@@ -1955,8 +2004,8 @@ mod tests {
         let result: TestResult = async {
             let mut store = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
 
-            let stale_leader = serde_json::to_string(&LeaderRecord {
-                member_id: MemberId("node-stale".to_string()),
+            let stale_leader = serde_json::to_string(&LeaderLeaseRecord {
+                holder: MemberId("node-stale".to_string()),
                 generation: 1,
             })
             .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
@@ -2228,50 +2277,14 @@ mod tests {
             let mut writer = EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
 
             for record in [
-                MemberRecord {
-                    member_id: MemberId("node-a".to_string()),
-                    postgres_host: "127.0.0.1".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Primary,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-                    pg_version: Version(1),
-                },
-                MemberRecord {
-                    member_id: MemberId("node-b".to_string()),
-                    postgres_host: "127.0.0.2".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Primary,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-                    pg_version: Version(1),
-                },
-                MemberRecord {
-                    member_id: MemberId("node-c".to_string()),
-                    postgres_host: "127.0.0.3".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Replica,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-                    pg_version: Version(1),
-                },
+                sample_member_slot("node-a", "127.0.0.1", "primary"),
+                sample_member_slot("node-b", "127.0.0.2", "primary"),
+                sample_member_slot("node-c", "127.0.0.3", "replica"),
             ] {
                 let encoded = serde_json::to_string(&record)
                     .map_err(|err| boxed_error(format!("encode member record failed: {err}")))?;
                 writer.write_path(
-                    format!("/{}/member/{}", fixture.scope, record.member_id.0).as_str(),
+                    format!("/{}/member/{}", fixture.scope, record.lease.owner.0).as_str(),
                     encoded,
                 )?;
             }
@@ -2301,23 +2314,23 @@ mod tests {
             let mut snapshot_store =
                 EtcdDcsStore::connect(vec![fixture.endpoint_model()?], &fixture.scope)?;
             let mut cache = DcsCache {
-                members: BTreeMap::new(),
-                leader: None,
-                switchover: None,
+                member_slots: BTreeMap::new(),
+                leader_lease: None,
+                switchover_intent: None,
                 config: sample_runtime_config(&fixture.scope),
                 init_lock: None,
             };
             let events = snapshot_store.drain_watch_events()?;
             refresh_from_etcd_watch(&fixture.scope, &mut cache, events)?;
 
-            if cache.leader.is_some() {
+            if cache.leader_lease.is_some() {
                 return Err(boxed_error(
                     "expected DCS-visible cache to drop leader record after lease expiry",
                 ));
             }
 
             let now = UnixMillis(20_000);
-            let trust = evaluate_trust(true, &cache, &MemberId("node-b".to_string()), now);
+            let trust = evaluate_trust(true, &cache, &MemberId("node-b".to_string()));
             if trust != DcsTrust::FullQuorum {
                 return Err(boxed_error(format!(
                     "expected healthy majority to remain full quorum after leader expiry, got {trust:?}"
@@ -2412,16 +2425,27 @@ mod tests {
                 .map_err(|err| boxed_error(format!("etcd client connect failed: {err}")))?;
 
             let leader_path = format!("/{}/leader", fixture.scope);
-            let leader_json = serde_json::to_string(&LeaderRecord {
-                member_id: MemberId("node-b".to_string()),
+            let leader_json = serde_json::to_string(&LeaderLeaseRecord {
+                holder: MemberId("node-b".to_string()),
                 generation: 1,
             })
             .map_err(|err| boxed_error(format!("encode leader json failed: {err}")))?;
+            let peer_member_json =
+                serde_json::to_string(&sample_member_slot("node-b", "127.0.0.2", "primary"))
+                    .map_err(|err| boxed_error(format!("encode member json failed: {err}")))?;
 
             client
                 .put(leader_path.as_str(), leader_json, None)
                 .await
                 .map_err(|err| boxed_error(format!("put leader key failed: {err}")))?;
+            client
+                .put(
+                    format!("/{}/member/node-b", fixture.scope).as_str(),
+                    peer_member_json,
+                    None,
+                )
+                .await
+                .map_err(|err| boxed_error(format!("put peer member key failed: {err}")))?;
 
             let (mut ctx, dcs_subscriber) = build_worker_ctx(&fixture.scope, store);
             let self_member = MemberId("node-a".to_string());
@@ -2438,11 +2462,12 @@ mod tests {
                 let leader_matches = latest
                     .value
                     .cache
-                    .leader
+                    .leader_lease
                     .as_ref()
-                    .map(|leader| leader.member_id.clone())
+                    .map(|leader| leader.holder.clone())
                     == Some(expected_leader.clone());
-                let self_member_written = latest.value.cache.members.contains_key(&self_member);
+                let self_member_written =
+                    latest.value.cache.member_slots.contains_key(&self_member);
                 if leader_matches && self_member_written {
                     observed = true;
                     break;

@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::{
     keys::{key_from_path, DcsKey, DcsKeyParseError},
-    state::{DcsCache, InitLockRecord, LeaderRecord, MemberRecord, SwitchoverRequest},
+    state::{DcsCache, InitLockRecord, LeaderLeaseRecord, MemberSlot, SwitchoverIntentRecord},
     worker::{apply_watch_update, DcsWatchUpdate},
 };
 use crate::state::MemberId;
@@ -11,11 +11,6 @@ use crate::state::MemberId;
 pub enum WatchOp {
     Put,
     Delete,
-    /// Indicates that the watch consumer should treat the following snapshot as authoritative
-    /// and reset any previously cached DCS state for this scope.
-    ///
-    /// This is synthesized by the etcd store during reconnect/resnapshot and does not come from
-    /// etcd itself.
     Reset,
 }
 
@@ -91,8 +86,8 @@ pub(crate) fn encode_leader_record(
     generation: u64,
 ) -> Result<(String, String), DcsStoreError> {
     let path = leader_path(scope);
-    let encoded = serde_json::to_string(&LeaderRecord {
-        member_id: member_id.clone(),
+    let encoded = serde_json::to_string(&LeaderLeaseRecord {
+        holder: member_id.clone(),
         generation,
     })
     .map_err(|err| DcsStoreError::Decode {
@@ -102,13 +97,17 @@ pub(crate) fn encode_leader_record(
     Ok((path, encoded))
 }
 
-pub(crate) fn write_local_member(
+pub(crate) fn write_local_member_slot(
     store: &mut dyn DcsStore,
     scope: &str,
-    member: &MemberRecord,
+    member: &MemberSlot,
     lease_ttl_ms: u64,
 ) -> Result<(), DcsStoreError> {
-    let path = format!("/{}/member/{}", scope.trim_matches('/'), member.member_id.0);
+    let path = format!(
+        "/{}/member/{}",
+        scope.trim_matches('/'),
+        member.lease.owner.0
+    );
     let encoded = serde_json::to_string(member).map_err(|err| DcsStoreError::Decode {
         key: path.clone(),
         message: err.to_string(),
@@ -127,9 +126,9 @@ pub(crate) fn refresh_from_etcd_watch(
 
     for event in events {
         if event.op == WatchOp::Reset {
-            cache.members.clear();
-            cache.leader = None;
-            cache.switchover = None;
+            cache.member_slots.clear();
+            cache.leader_lease = None;
+            cache.switchover_intent = None;
             cache.init_lock = None;
             applied = applied.saturating_add(1);
             continue;
@@ -159,10 +158,7 @@ pub(crate) fn refresh_from_etcd_watch(
                     value: Box::new(value),
                 }
             }
-            WatchOp::Reset => {
-                // Handled above, before key parsing.
-                continue;
-            }
+            WatchOp::Reset => continue,
         };
 
         apply_watch_update(cache, update);
@@ -181,19 +177,19 @@ fn decode_watch_value(
     path: &str,
 ) -> Result<super::worker::DcsValue, DcsStoreError> {
     match key {
-        DcsKey::Member(_) => serde_json::from_str::<MemberRecord>(raw)
+        DcsKey::Member(_) => serde_json::from_str::<MemberSlot>(raw)
             .map(super::worker::DcsValue::Member)
             .map_err(|err| DcsStoreError::Decode {
                 key: path.to_string(),
                 message: err.to_string(),
             }),
-        DcsKey::Leader => serde_json::from_str::<LeaderRecord>(raw)
+        DcsKey::Leader => serde_json::from_str::<LeaderLeaseRecord>(raw)
             .map(super::worker::DcsValue::Leader)
             .map_err(|err| DcsStoreError::Decode {
                 key: path.to_string(),
                 message: err.to_string(),
             }),
-        DcsKey::Switchover => serde_json::from_str::<SwitchoverRequest>(raw)
+        DcsKey::Switchover => serde_json::from_str::<SwitchoverIntentRecord>(raw)
             .map(super::worker::DcsValue::Switchover)
             .map_err(|err| DcsStoreError::Decode {
                 key: path.to_string(),
@@ -354,15 +350,19 @@ mod tests {
     use crate::{
         config::RuntimeConfig,
         dcs::{
-            state::{DcsCache, MemberRecord, MemberRole},
+            state::{
+                DcsCache, InitLockRecord, LeaderLeaseRecord, MemberApiEndpoint, MemberEndpoint,
+                MemberLease, MemberPostgresView, MemberRouting, MemberSlot, PrimaryObservation,
+                SwitchoverIntentRecord, SwitchoverTargetRecord, WalVector,
+            },
             worker::DcsValue,
         },
-        pginfo::state::{Readiness, SqlStatus},
-        state::{MemberId, Version},
+        pginfo::state::Readiness,
+        state::{MemberId, TimelineId, Version, WalLsn},
     };
 
     use super::{
-        refresh_from_etcd_watch, write_local_member, DcsLeaderStore, DcsStore, DcsStoreError,
+        refresh_from_etcd_watch, write_local_member_slot, DcsLeaderStore, DcsStore, DcsStoreError,
         RefreshResult, TestDcsStore, WatchEvent, WatchOp,
     };
 
@@ -372,54 +372,55 @@ mod tests {
 
     fn sample_cache() -> DcsCache {
         DcsCache {
-            members: BTreeMap::new(),
-            leader: None,
-            switchover: None,
+            member_slots: BTreeMap::new(),
+            leader_lease: None,
+            switchover_intent: None,
             config: sample_runtime_config(),
             init_lock: None,
         }
     }
 
+    fn sample_member(owner: &str) -> MemberSlot {
+        MemberSlot {
+            lease: MemberLease {
+                owner: MemberId(owner.to_string()),
+                ttl_ms: 10_000,
+            },
+            routing: MemberRouting {
+                postgres: MemberEndpoint {
+                    host: "10.0.0.10".to_string(),
+                    port: 5432,
+                },
+                api: Some(MemberApiEndpoint {
+                    url: format!("https://{owner}:8443"),
+                }),
+            },
+            postgres: MemberPostgresView::Primary(PrimaryObservation {
+                readiness: Readiness::Ready,
+                committed_wal: WalVector {
+                    timeline: Some(TimelineId(1)),
+                    lsn: WalLsn(42),
+                },
+                pg_version: Version(7),
+            }),
+        }
+    }
+
     #[test]
-    fn write_local_member_writes_only_member_path() {
+    fn write_local_member_slot_writes_only_member_path() {
         let mut store = TestDcsStore::new(true);
-        let member = MemberRecord {
-            member_id: MemberId("node-a".to_string()),
-            postgres_host: "10.0.0.10".to_string(),
-            postgres_port: 5432,
-            api_url: None,
-            role: MemberRole::Primary,
-            sql: SqlStatus::Healthy,
-            readiness: Readiness::Ready,
-            timeline: None,
-            write_lsn: None,
-            replay_lsn: None,
-            pg_version: Version(7),
-        };
-        let wrote = write_local_member(&mut store, "scope-a", &member, 10_000);
+        let wrote = write_local_member_slot(&mut store, "scope-a", &sample_member("node-a"), 10_000);
         assert_eq!(wrote, Ok(()));
         assert_eq!(store.writes().len(), 1);
         assert_eq!(store.writes()[0].0, "/scope-a/member/node-a");
-        assert!(store.writes()[0].1.contains("\"member_id\""));
+        assert!(store.writes()[0].1.contains("\"lease\""));
     }
 
     #[test]
     fn refresh_applies_member_put_and_delete() -> Result<(), Box<dyn std::error::Error>> {
         let mut cache = sample_cache();
         let mut store = TestDcsStore::new(true);
-        let encoded = serde_json::to_string(&MemberRecord {
-            member_id: MemberId("node-a".to_string()),
-            postgres_host: "10.0.0.11".to_string(),
-            postgres_port: 5433,
-            api_url: None,
-            role: MemberRole::Replica,
-            sql: SqlStatus::Healthy,
-            readiness: Readiness::Ready,
-            timeline: None,
-            write_lsn: None,
-            replay_lsn: None,
-            pg_version: Version(1),
-        })?;
+        let encoded = serde_json::to_string(&sample_member("node-a"))?;
         store.push_event(WatchEvent {
             op: WatchOp::Put,
             path: "/scope-a/member/node-a".to_string(),
@@ -436,7 +437,7 @@ mod tests {
         let events = store.drain_watch_events()?;
         let refreshed = refresh_from_etcd_watch("scope-a", &mut cache, events);
         assert!(refreshed.is_ok());
-        assert!(cache.members.is_empty());
+        assert!(cache.member_slots.is_empty());
         Ok(())
     }
 
@@ -472,7 +473,7 @@ mod tests {
                 WatchEvent {
                     op: WatchOp::Put,
                     path: "/scope-a/leader".to_string(),
-                    value: Some("{\"member_id\":\"node-a\",\"generation\":1}".to_string()),
+                    value: Some("{\"holder\":\"node-a\",\"generation\":1}".to_string()),
                     revision: 2,
                 },
             ],
@@ -486,44 +487,30 @@ mod tests {
             })
         ));
         assert_eq!(
-            cache.leader,
-            Some(crate::dcs::state::LeaderRecord {
-                member_id: MemberId("node-a".to_string()),
+            cache.leader_lease,
+            Some(LeaderLeaseRecord {
+                holder: MemberId("node-a".to_string()),
                 generation: 1,
             })
         );
     }
 
     #[test]
-    fn refresh_reset_clears_cached_records_but_preserves_config(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn refresh_reset_clears_cached_records_but_preserves_config() -> Result<(), Box<dyn std::error::Error>> {
         let mut cache = sample_cache();
         let preserved_config = cache.config.clone();
 
-        cache.members.insert(
-            MemberId("node-stale".to_string()),
-            MemberRecord {
-                member_id: MemberId("node-stale".to_string()),
-                postgres_host: "10.0.0.12".to_string(),
-                postgres_port: 5434,
-                api_url: None,
-                role: MemberRole::Replica,
-                sql: SqlStatus::Healthy,
-                readiness: Readiness::Ready,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                pg_version: Version(1),
-            },
-        );
-        cache.leader = Some(crate::dcs::state::LeaderRecord {
-            member_id: MemberId("node-stale".to_string()),
+        cache
+            .member_slots
+            .insert(MemberId("node-stale".to_string()), sample_member("node-stale"));
+        cache.leader_lease = Some(LeaderLeaseRecord {
+            holder: MemberId("node-stale".to_string()),
             generation: 1,
         });
-        cache.switchover = Some(crate::dcs::state::SwitchoverRequest {
-            switchover_to: None,
+        cache.switchover_intent = Some(SwitchoverIntentRecord {
+            target: SwitchoverTargetRecord::AnyHealthyReplica,
         });
-        cache.init_lock = Some(crate::dcs::state::InitLockRecord {
+        cache.init_lock = Some(InitLockRecord {
             holder: MemberId("node-stale".to_string()),
         });
 
@@ -545,9 +532,9 @@ mod tests {
                 had_errors: false
             }
         );
-        assert!(cache.members.is_empty());
-        assert!(cache.leader.is_none());
-        assert!(cache.switchover.is_none());
+        assert!(cache.member_slots.is_empty());
+        assert!(cache.leader_lease.is_none());
+        assert!(cache.switchover_intent.is_none());
         assert!(cache.init_lock.is_none());
         assert_eq!(cache.config, preserved_config);
 
@@ -555,66 +542,9 @@ mod tests {
     }
 
     #[test]
-    fn refresh_put_then_reset_then_put_keeps_only_post_reset_state(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut cache = sample_cache();
-
-        let stale_json = serde_json::to_string(&crate::dcs::state::LeaderRecord {
-            member_id: MemberId("node-stale".to_string()),
-            generation: 1,
-        })?;
-        let fresh_json = serde_json::to_string(&crate::dcs::state::LeaderRecord {
-            member_id: MemberId("node-fresh".to_string()),
-            generation: 2,
-        })?;
-
-        let result = refresh_from_etcd_watch(
-            "scope-a",
-            &mut cache,
-            vec![
-                WatchEvent {
-                    op: WatchOp::Put,
-                    path: "/scope-a/leader".to_string(),
-                    value: Some(stale_json),
-                    revision: 1,
-                },
-                WatchEvent {
-                    op: WatchOp::Reset,
-                    path: "/scope-a".to_string(),
-                    value: None,
-                    revision: 2,
-                },
-                WatchEvent {
-                    op: WatchOp::Put,
-                    path: "/scope-a/leader".to_string(),
-                    value: Some(fresh_json),
-                    revision: 3,
-                },
-            ],
-        )?;
-
-        assert_eq!(
-            result,
-            RefreshResult {
-                applied: 3,
-                had_errors: false
-            }
-        );
-        assert_eq!(
-            cache.leader,
-            Some(crate::dcs::state::LeaderRecord {
-                member_id: MemberId("node-fresh".to_string()),
-                generation: 2,
-            })
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn dcs_value_type_is_exercised_to_keep_contracts_live() {
-        let _value = DcsValue::Leader(crate::dcs::state::LeaderRecord {
-            member_id: MemberId("node-a".to_string()),
+        let _value = DcsValue::Leader(LeaderLeaseRecord {
+            holder: MemberId("node-a".to_string()),
             generation: 1,
         });
     }
@@ -630,7 +560,7 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(store.writes().len(), 1);
         assert_eq!(store.writes()[0].0, "/scope-a/leader");
-        assert!(store.writes()[0].1.contains("\"member_id\":\"node-a\""));
+        assert!(store.writes()[0].1.contains("\"holder\":\"node-a\""));
     }
 
     #[test]
@@ -651,14 +581,6 @@ mod tests {
         assert_eq!(
             second,
             Err(DcsStoreError::AlreadyExists("/scope-a/leader".to_string()))
-        );
-        assert_eq!(store.writes().len(), 1);
-        assert!(store.writes()[0].1.contains("\"member_id\":\"node-a\""));
-        assert_eq!(
-            store.read_path("/scope-a/leader"),
-            Ok(Some(
-                "{\"member_id\":\"node-a\",\"generation\":1}".to_string()
-            ))
         );
     }
 

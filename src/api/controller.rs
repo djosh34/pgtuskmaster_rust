@@ -2,25 +2,32 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{
-        AcceptedResponse, ApiError, ApiResult, CandidacyResponse, DcsTrustResponse,
-        FailSafeGoalResponse, FenceCutoffResponse, FenceReasonResponse, FollowGoalResponse,
-        HaAuthorityResponse, HaClusterMemberResponse, HaStateResponse, IdleReasonResponse,
-        IneligibleReasonResponse, LeaseEpochResponse, MemberRoleResponse, NoPrimaryReasonResponse,
-        ReadinessResponse, ReconcileActionResponse, RecoveryPlanResponse, ShutdownModeResponse,
-        SqlStatusResponse, SwitchoverBlockerResponse, TargetRoleResponse,
+        AcceptedResponse, ApiError, ApiResult, AuthorityProjectionResponse, CandidacyResponse,
+        DcsTrustResponse, FailSafeGoalResponse, FenceCutoffResponse, FenceReasonResponse,
+        FollowGoalResponse, HaClusterMemberResponse, HaCommandResponse, HaStateResponse,
+        IdleReasonResponse, IneligibleReasonResponse, LeaseEpochResponse, MemberRoleResponse,
+        NoPrimaryReasonResponse, ReadinessResponse, RecoveryPlanResponse, RoleIntentResponse,
+        ShutdownModeResponse, SqlStatusResponse, SwitchoverBlockerResponse,
+        SwitchoverIntentResponse,
     },
+    config::RuntimeConfig,
     dcs::{
-        state::{DcsTrust, MemberRecord, MemberRole, SwitchoverRequest},
+        state::{
+            DcsState, DcsTrust, MemberPostgresView, MemberSlot, SwitchoverIntentRecord,
+            SwitchoverTargetRecord,
+        },
         store::DcsStore,
     },
-    debug_api::snapshot::SystemSnapshot,
-    ha::types::{
-        Candidacy, FailSafeGoal, FenceCutoff, FenceReason, FollowGoal, IdleReason,
-        IneligibleReason, NoPrimaryReason, PublicationGoal, ReconcileAction, ShutdownMode,
-        SwitchoverBlocker, TargetRole,
+    ha::{
+        state::HaState,
+        types::{
+            AuthorityView, Candidacy, FailSafeGoal, FenceCutoff, FenceReason, FollowGoal,
+            IdleReason, IneligibleReason, NoPrimaryReason, PublicationGoal, ReconcileAction,
+            ShutdownMode, SwitchoverBlocker, TargetRole,
+        },
     },
-    pginfo::state::{Readiness, SqlStatus},
-    state::Versioned,
+    pginfo::state::Readiness,
+    state::{MemberId, Versioned},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,14 +39,15 @@ pub(crate) struct SwitchoverRequestInput {
 
 pub(crate) fn post_switchover(
     scope: &str,
+    self_id: &MemberId,
     store: &mut dyn DcsStore,
-    snapshot: Option<&SystemSnapshot>,
+    dcs: &DcsState,
+    ha: &HaState,
     input: SwitchoverRequestInput,
 ) -> ApiResult<AcceptedResponse> {
-    let request = validate_switchover_request(snapshot, input)?;
+    let request = validate_switchover_request(self_id, dcs, ha, input)?;
     let encoded = serde_json::to_string(&request)
         .map_err(|err| ApiError::internal(format!("switchover encode failed: {err}")))?;
-
     let path = format!("/{}/switchover", scope.trim_matches('/'));
     store
         .write_path(&path, encoded)
@@ -58,78 +66,84 @@ pub(crate) fn delete_switchover(
     Ok(AcceptedResponse { accepted: true })
 }
 
-pub(crate) fn get_ha_state(snapshot: &Versioned<SystemSnapshot>) -> HaStateResponse {
+pub(crate) fn get_ha_state(
+    cfg: &RuntimeConfig,
+    dcs: &Versioned<DcsState>,
+    ha: &Versioned<HaState>,
+) -> HaStateResponse {
     HaStateResponse {
-        cluster_name: snapshot.value.config.value.cluster.name.clone(),
-        scope: snapshot.value.config.value.dcs.scope.clone(),
-        self_member_id: snapshot.value.config.value.cluster.member_id.clone(),
-        leader: snapshot
-            .value
-            .dcs
+        cluster_name: cfg.cluster.name.clone(),
+        scope: cfg.dcs.scope.clone(),
+        self_member_id: cfg.cluster.member_id.clone(),
+        leader_lease_holder: dcs
             .value
             .cache
-            .leader
+            .leader_lease
             .as_ref()
-            .map(|leader| leader.member_id.0.clone()),
-        switchover_pending: snapshot.value.dcs.value.cache.switchover.is_some(),
-        switchover_to: snapshot
-            .value
-            .dcs
+            .map(|leader| leader.holder.0.clone()),
+        switchover: dcs
             .value
             .cache
-            .switchover
+            .switchover_intent
             .as_ref()
-            .and_then(|request| {
-                request
-                    .switchover_to
-                    .as_ref()
-                    .map(|member_id| member_id.0.clone())
-            }),
-        member_count: snapshot.value.dcs.value.cache.members.len(),
-        members: snapshot
-            .value
-            .dcs
+            .map(map_switchover_intent),
+        member_slot_count: dcs.value.cache.member_slots.len(),
+        member_slots: dcs
             .value
             .cache
-            .members
+            .member_slots
             .values()
-            .map(map_member_record)
+            .map(map_member_slot)
             .collect(),
-        dcs_trust: map_dcs_trust(&snapshot.value.dcs.value.trust),
-        authority: map_authority(&snapshot.value.ha.value.publication.authority),
-        fence_cutoff: snapshot
-            .value
-            .ha
+        dcs_trust: map_dcs_trust(&dcs.value.trust),
+        authority_projection: map_authority(&ha.value.publication.authority),
+        fence_cutoff: ha
             .value
             .publication
             .fence_cutoff
             .as_ref()
             .map(map_fence_cutoff),
-        ha_role: map_target_role(&snapshot.value.ha.value.role),
-        ha_tick: snapshot.value.ha.value.tick,
-        planned_actions: snapshot
+        role_intent: map_role(&ha.value.role),
+        ha_tick: ha.value.tick,
+        planned_commands: ha
             .value
-            .ha
-            .value
-            .planned_actions
+            .planned_commands
             .iter()
-            .map(map_action)
+            .map(map_command)
             .collect(),
-        snapshot_sequence: snapshot.value.sequence,
+        snapshot_sequence: dcs.version.0.max(ha.version.0),
     }
 }
 
 fn validate_switchover_request(
-    snapshot: Option<&SystemSnapshot>,
+    self_id: &MemberId,
+    dcs: &DcsState,
+    ha: &HaState,
     input: SwitchoverRequestInput,
-) -> ApiResult<SwitchoverRequest> {
-    let snapshot =
-        snapshot.ok_or_else(|| ApiError::DcsStore("snapshot unavailable".to_string()))?;
-    validate_switchover_source(snapshot)?;
+) -> ApiResult<SwitchoverIntentRecord> {
+    if dcs.trust != DcsTrust::FullQuorum {
+        return Err(ApiError::bad_request(
+            "switchover requests require full quorum DCS trust".to_string(),
+        ));
+    }
+
+    match &ha.publication.authority {
+        AuthorityView::Primary { member, .. } if member == self_id => {}
+        _ => {
+            return Err(ApiError::bad_request(
+                "switchover requests must be sent to the authoritative primary".to_string(),
+            ));
+        }
+    }
 
     let Some(raw_target) = input.switchover_to else {
-        return Ok(SwitchoverRequest {
-            switchover_to: None,
+        let target_member_id = select_generic_switchover_target(self_id, dcs).ok_or_else(|| {
+            ApiError::bad_request(
+                "no eligible switchover target is currently available".to_string(),
+            )
+        })?;
+        return Ok(SwitchoverIntentRecord {
+            target: SwitchoverTargetRecord::Specific(target_member_id),
         });
     };
 
@@ -140,93 +154,185 @@ fn validate_switchover_request(
         ));
     }
 
-    let target_member_id = crate::state::MemberId(target.to_string());
-    let members = &snapshot.dcs.value.cache.members;
-    let target_member = members
-        .get(&target_member_id)
-        .ok_or_else(|| ApiError::bad_request(format!("unknown switchover_to member `{target}`")))?;
-    if target_member.role == MemberRole::Unknown
-        || target_member.sql != SqlStatus::Healthy
-        || target_member.readiness != Readiness::Ready
-    {
-        return Err(ApiError::bad_request(format!(
-            "switchover_to member `{target}` is not an eligible switchover target"
-        )));
-    }
-
-    if snapshot
-        .dcs
-        .value
-        .cache
-        .leader
-        .as_ref()
-        .map(|leader| leader.member_id == target_member_id)
-        .unwrap_or(false)
-    {
+    let target_member_id = MemberId(target.to_string());
+    if &target_member_id == self_id {
         return Err(ApiError::bad_request(format!(
             "switchover_to member `{target}` is already the leader"
         )));
     }
 
-    Ok(SwitchoverRequest {
-        switchover_to: Some(target_member_id),
+    let target_member = dcs
+        .cache
+        .member_slots
+        .get(&target_member_id)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown switchover_to member `{target}`")))?;
+    if !member_slot_is_eligible_target(target_member) {
+        return Err(ApiError::bad_request(format!(
+            "switchover_to member `{target}` is not an eligible switchover target"
+        )));
+    }
+
+    Ok(SwitchoverIntentRecord {
+        target: SwitchoverTargetRecord::Specific(target_member_id),
     })
 }
 
-fn validate_switchover_source(snapshot: &SystemSnapshot) -> ApiResult<()> {
-    if snapshot.dcs.value.trust != DcsTrust::FullQuorum {
-        return Err(ApiError::bad_request(
-            "switchover requests require full quorum DCS trust".to_string(),
-        ));
+fn member_slot_is_eligible_target(value: &MemberSlot) -> bool {
+    match &value.postgres {
+        MemberPostgresView::Unknown(observation) => observation.readiness == Readiness::Ready,
+        MemberPostgresView::Primary(_) => false,
+        MemberPostgresView::Replica(observation) => observation.readiness == Readiness::Ready,
     }
+}
 
-    let self_member_id = crate::state::MemberId(snapshot.config.value.cluster.member_id.clone());
-    match &snapshot.ha.value.publication.authority {
-        crate::ha::types::AuthorityView::Primary { member, .. } if *member == self_member_id => {
-            Ok(())
+fn select_generic_switchover_target(self_id: &MemberId, dcs: &DcsState) -> Option<MemberId> {
+    dcs.cache
+        .member_slots
+        .iter()
+        .filter(|(member_id, member)| *member_id != self_id && member_slot_is_eligible_target(member))
+        .max_by(|(left_id, left_member), (right_id, right_member)| {
+            compare_switchover_target_slots(left_id, left_member, right_id, right_member)
+        })
+        .map(|(member_id, _)| member_id.clone())
+}
+
+fn compare_switchover_target_slots(
+    left_id: &MemberId,
+    left_member: &MemberSlot,
+    right_id: &MemberId,
+    right_member: &MemberSlot,
+) -> std::cmp::Ordering {
+    target_rank(left_member)
+        .cmp(&target_rank(right_member))
+        .then_with(|| right_id.cmp(left_id))
+}
+
+fn target_rank(member: &MemberSlot) -> (u8, u64, u64) {
+    match &member.postgres {
+        MemberPostgresView::Replica(observation) => observation
+            .replay_wal
+            .as_ref()
+            .or(observation.follow_wal.as_ref())
+            .map(|wal| (1, wal.timeline.map_or(0, |value| u64::from(value.0)), wal.lsn.0))
+            .unwrap_or((0, 0, 0)),
+        MemberPostgresView::Unknown(observation) => {
+            (0, observation.timeline.map_or(0, |value| u64::from(value.0)), 0)
         }
-        _ => Err(ApiError::bad_request(
-            "switchover requests must be sent to the authoritative primary".to_string(),
-        )),
+        MemberPostgresView::Primary(_) => (0, 0, 0),
     }
 }
 
 fn map_dcs_trust(value: &DcsTrust) -> DcsTrustResponse {
     match value {
         DcsTrust::FullQuorum => DcsTrustResponse::FullQuorum,
-        DcsTrust::FailSafe => DcsTrustResponse::FailSafe,
+        DcsTrust::Degraded => DcsTrustResponse::Degraded,
         DcsTrust::NotTrusted => DcsTrustResponse::NotTrusted,
     }
 }
 
-fn map_member_record(value: &MemberRecord) -> HaClusterMemberResponse {
-    HaClusterMemberResponse {
-        member_id: value.member_id.0.clone(),
-        postgres_host: value.postgres_host.clone(),
-        postgres_port: value.postgres_port,
-        api_url: value.api_url.clone(),
-        role: map_member_role(&value.role),
-        sql: map_sql_status(&value.sql),
-        readiness: map_readiness(&value.readiness),
-        timeline: value.timeline.map(|timeline| u64::from(timeline.0)),
-        write_lsn: value.write_lsn.map(|lsn| lsn.0),
-        replay_lsn: value.replay_lsn.map(|lsn| lsn.0),
-        pg_version: value.pg_version.0,
+fn map_switchover_intent(value: &SwitchoverIntentRecord) -> SwitchoverIntentResponse {
+    match &value.target {
+        SwitchoverTargetRecord::AnyHealthyReplica => SwitchoverIntentResponse::AnyHealthyReplica,
+        SwitchoverTargetRecord::Specific(member_id) => SwitchoverIntentResponse::Specific {
+            member_id: member_id.0.clone(),
+        },
     }
 }
 
-fn map_authority(value: &crate::ha::types::AuthorityView) -> HaAuthorityResponse {
-    match value {
-        crate::ha::types::AuthorityView::Primary { member, epoch } => {
-            HaAuthorityResponse::Primary {
-                member_id: member.0.clone(),
-                epoch: map_epoch(epoch),
-            }
+fn map_member_slot(value: &MemberSlot) -> HaClusterMemberResponse {
+    HaClusterMemberResponse {
+        member_id: value.lease.owner.0.clone(),
+        postgres_host: value.routing.postgres.host.clone(),
+        postgres_port: value.routing.postgres.port,
+        api_url: value.routing.api.as_ref().map(|endpoint| endpoint.url.clone()),
+        role: map_member_role(&value.postgres),
+        sql: map_sql_status(&value.postgres),
+        readiness: map_readiness(&value.postgres),
+        timeline: member_timeline(value),
+        write_lsn: member_write_lsn(value),
+        replay_lsn: member_replay_lsn(value),
+        pg_version: member_pg_version(value).0,
+    }
+}
+
+fn member_timeline(value: &MemberSlot) -> Option<u64> {
+    match &value.postgres {
+        MemberPostgresView::Unknown(observation) => observation.timeline.map(|value| u64::from(value.0)),
+        MemberPostgresView::Primary(observation) => {
+            observation.committed_wal.timeline.map(|value| u64::from(value.0))
         }
-        crate::ha::types::AuthorityView::NoPrimary(reason) => HaAuthorityResponse::NoPrimary {
+        MemberPostgresView::Replica(observation) => observation
+            .replay_wal
+            .as_ref()
+            .and_then(|wal| wal.timeline.map(|value| u64::from(value.0))),
+    }
+}
+
+fn member_write_lsn(value: &MemberSlot) -> Option<u64> {
+    match &value.postgres {
+        MemberPostgresView::Primary(observation) => Some(observation.committed_wal.lsn.0),
+        MemberPostgresView::Unknown(_) | MemberPostgresView::Replica(_) => None,
+    }
+}
+
+fn member_replay_lsn(value: &MemberSlot) -> Option<u64> {
+    match &value.postgres {
+        MemberPostgresView::Replica(observation) => {
+            observation.replay_wal.as_ref().map(|wal| wal.lsn.0)
+        }
+        MemberPostgresView::Unknown(_) | MemberPostgresView::Primary(_) => None,
+    }
+}
+
+fn member_pg_version(value: &MemberSlot) -> crate::state::Version {
+    match &value.postgres {
+        MemberPostgresView::Unknown(observation) => observation.pg_version,
+        MemberPostgresView::Primary(observation) => observation.pg_version,
+        MemberPostgresView::Replica(observation) => observation.pg_version,
+    }
+}
+
+fn map_member_role(value: &MemberPostgresView) -> MemberRoleResponse {
+    match value {
+        MemberPostgresView::Unknown(_) => MemberRoleResponse::Unknown,
+        MemberPostgresView::Primary(_) => MemberRoleResponse::Primary,
+        MemberPostgresView::Replica(_) => MemberRoleResponse::Replica,
+    }
+}
+
+fn map_sql_status(value: &MemberPostgresView) -> SqlStatusResponse {
+    match value {
+        MemberPostgresView::Unknown(_) => SqlStatusResponse::Unknown,
+        MemberPostgresView::Primary(_) | MemberPostgresView::Replica(_) => SqlStatusResponse::Healthy,
+    }
+}
+
+fn map_readiness(value: &MemberPostgresView) -> ReadinessResponse {
+    match value {
+        MemberPostgresView::Unknown(observation) => map_readiness_value(&observation.readiness),
+        MemberPostgresView::Primary(observation) => map_readiness_value(&observation.readiness),
+        MemberPostgresView::Replica(observation) => map_readiness_value(&observation.readiness),
+    }
+}
+
+fn map_readiness_value(value: &Readiness) -> ReadinessResponse {
+    match value {
+        Readiness::Unknown => ReadinessResponse::Unknown,
+        Readiness::Ready => ReadinessResponse::Ready,
+        Readiness::NotReady => ReadinessResponse::NotReady,
+    }
+}
+
+fn map_authority(value: &AuthorityView) -> AuthorityProjectionResponse {
+    match value {
+        AuthorityView::Primary { member, epoch } => AuthorityProjectionResponse::Primary {
+            member_id: member.0.clone(),
+            epoch: map_epoch(epoch),
+        },
+        AuthorityView::NoPrimary(reason) => AuthorityProjectionResponse::NoPrimary {
             reason: map_no_primary_reason(reason),
         },
-        crate::ha::types::AuthorityView::Unknown => HaAuthorityResponse::Unknown,
+        AuthorityView::Unknown => AuthorityProjectionResponse::Unknown,
     }
 }
 
@@ -268,27 +374,29 @@ fn map_switchover_blocker(value: &SwitchoverBlocker) -> SwitchoverBlockerRespons
     }
 }
 
-fn map_target_role(value: &TargetRole) -> TargetRoleResponse {
+fn map_role(value: &TargetRole) -> RoleIntentResponse {
     match value {
-        TargetRole::Leader(epoch) => TargetRoleResponse::Leader {
+        TargetRole::Leader(epoch) => RoleIntentResponse::Leader {
             epoch: map_epoch(epoch),
         },
-        TargetRole::Candidate(candidacy) => TargetRoleResponse::Candidate {
+        TargetRole::Candidate(candidacy) => RoleIntentResponse::Candidate {
             candidacy: map_candidacy(candidacy),
         },
-        TargetRole::Follower(goal) => TargetRoleResponse::Follower {
+        TargetRole::Follower(goal) => RoleIntentResponse::Follower {
             goal: map_follow_goal(goal),
         },
-        TargetRole::FailSafe(goal) => TargetRoleResponse::FailSafe {
-            goal: map_failsafe_goal(goal),
+        TargetRole::FailSafe(goal) => RoleIntentResponse::FailSafe {
+            goal: map_fail_safe_goal(goal),
         },
-        TargetRole::DemotingForSwitchover(member_id) => TargetRoleResponse::DemotingForSwitchover {
-            member_id: member_id.0.clone(),
-        },
-        TargetRole::Fenced(reason) => TargetRoleResponse::Fenced {
+        TargetRole::DemotingForSwitchover(member_id) => {
+            RoleIntentResponse::DemotingForSwitchover {
+                member_id: member_id.0.clone(),
+            }
+        }
+        TargetRole::Fenced(reason) => RoleIntentResponse::Fenced {
             reason: map_fence_reason(reason),
         },
-        TargetRole::Idle(reason) => TargetRoleResponse::Idle {
+        TargetRole::Idle(reason) => RoleIntentResponse::Idle {
             reason: map_idle_reason(reason),
         },
     }
@@ -321,14 +429,14 @@ fn map_recovery_plan(value: &crate::ha::types::RecoveryPlan) -> RecoveryPlanResp
     }
 }
 
-fn map_failsafe_goal(value: &FailSafeGoal) -> FailSafeGoalResponse {
+fn map_fail_safe_goal(value: &FailSafeGoal) -> FailSafeGoalResponse {
     match value {
         FailSafeGoal::PrimaryMustStop(cutoff) => FailSafeGoalResponse::PrimaryMustStop {
             cutoff: map_fence_cutoff(cutoff),
         },
         FailSafeGoal::ReplicaKeepFollowing(upstream) => {
             FailSafeGoalResponse::ReplicaKeepFollowing {
-                upstream: upstream.as_ref().map(|member_id| member_id.0.clone()),
+                upstream: upstream.as_ref().map(|value| value.0.clone()),
             }
         }
         FailSafeGoal::WaitForQuorum => FailSafeGoalResponse::WaitForQuorum,
@@ -351,49 +459,49 @@ fn map_fence_reason(value: &FenceReason) -> FenceReasonResponse {
     }
 }
 
-fn map_action(value: &ReconcileAction) -> ReconcileActionResponse {
+fn map_command(value: &ReconcileAction) -> HaCommandResponse {
     match value {
-        ReconcileAction::InitDb => ReconcileActionResponse::InitDb,
-        ReconcileAction::BaseBackup(member_id) => ReconcileActionResponse::BaseBackup {
+        ReconcileAction::InitDb => HaCommandResponse::InitDb,
+        ReconcileAction::BaseBackup(member_id) => HaCommandResponse::BaseBackup {
             member_id: member_id.0.clone(),
         },
-        ReconcileAction::PgRewind(member_id) => ReconcileActionResponse::PgRewind {
+        ReconcileAction::PgRewind(member_id) => HaCommandResponse::PgRewind {
             member_id: member_id.0.clone(),
         },
-        ReconcileAction::StartPrimary => ReconcileActionResponse::StartPrimary,
-        ReconcileAction::StartReplica(member_id) => ReconcileActionResponse::StartReplica {
+        ReconcileAction::StartPrimary => HaCommandResponse::StartPrimary,
+        ReconcileAction::StartReplica(member_id) => HaCommandResponse::StartReplica {
             member_id: member_id.0.clone(),
         },
-        ReconcileAction::Promote => ReconcileActionResponse::Promote,
-        ReconcileAction::Demote(mode) => ReconcileActionResponse::Demote {
-            mode: map_shutdown_mode(*mode),
+        ReconcileAction::Promote => HaCommandResponse::Promote,
+        ReconcileAction::Demote(mode) => HaCommandResponse::Demote {
+            mode: map_shutdown_mode(mode),
         },
-        ReconcileAction::AcquireLease(candidacy) => ReconcileActionResponse::AcquireLease {
+        ReconcileAction::AcquireLease(candidacy) => HaCommandResponse::AcquireLease {
             candidacy: map_candidacy(candidacy),
         },
-        ReconcileAction::ReleaseLease => ReconcileActionResponse::ReleaseLease,
-        ReconcileAction::EnsureRequiredRoles => ReconcileActionResponse::EnsureRequiredRoles,
-        ReconcileAction::Publish(publication) => ReconcileActionResponse::Publish {
-            publication: map_publication_goal(publication),
+        ReconcileAction::ReleaseLease => HaCommandResponse::ReleaseLease,
+        ReconcileAction::EnsureRequiredRoles => HaCommandResponse::EnsureRequiredRoles,
+        ReconcileAction::Publish(publication) => HaCommandResponse::Publish {
+            projection: map_publication_goal(publication),
         },
-        ReconcileAction::ClearSwitchover => ReconcileActionResponse::ClearSwitchover,
+        ReconcileAction::ClearSwitchover => HaCommandResponse::ClearSwitchover,
     }
 }
 
-fn map_publication_goal(value: &PublicationGoal) -> HaAuthorityResponse {
+fn map_publication_goal(value: &PublicationGoal) -> AuthorityProjectionResponse {
     match value {
-        PublicationGoal::KeepCurrent => HaAuthorityResponse::Unknown,
-        PublicationGoal::PublishPrimary { primary, epoch } => HaAuthorityResponse::Primary {
+        PublicationGoal::KeepCurrent => AuthorityProjectionResponse::Unknown,
+        PublicationGoal::PublishPrimary { primary, epoch } => AuthorityProjectionResponse::Primary {
             member_id: primary.0.clone(),
             epoch: map_epoch(epoch),
         },
-        PublicationGoal::PublishNoPrimary { reason, .. } => HaAuthorityResponse::NoPrimary {
+        PublicationGoal::PublishNoPrimary { reason, .. } => AuthorityProjectionResponse::NoPrimary {
             reason: map_no_primary_reason(reason),
         },
     }
 }
 
-fn map_shutdown_mode(value: ShutdownMode) -> ShutdownModeResponse {
+fn map_shutdown_mode(value: &ShutdownMode) -> ShutdownModeResponse {
     match value {
         ShutdownMode::Fast => ShutdownModeResponse::Fast,
         ShutdownMode::Immediate => ShutdownModeResponse::Immediate,
@@ -407,265 +515,5 @@ fn map_ineligible_reason(value: &IneligibleReason) -> IneligibleReasonResponse {
         IneligibleReason::Partitioned => IneligibleReasonResponse::Partitioned,
         IneligibleReason::ApiUnavailable => IneligibleReasonResponse::ApiUnavailable,
         IneligibleReason::StartingUp => IneligibleReasonResponse::StartingUp,
-    }
-}
-
-fn map_member_role(value: &MemberRole) -> MemberRoleResponse {
-    match value {
-        MemberRole::Unknown => MemberRoleResponse::Unknown,
-        MemberRole::Primary => MemberRoleResponse::Primary,
-        MemberRole::Replica => MemberRoleResponse::Replica,
-    }
-}
-
-fn map_sql_status(value: &crate::pginfo::state::SqlStatus) -> SqlStatusResponse {
-    match value {
-        crate::pginfo::state::SqlStatus::Unknown => SqlStatusResponse::Unknown,
-        crate::pginfo::state::SqlStatus::Healthy => SqlStatusResponse::Healthy,
-        crate::pginfo::state::SqlStatus::Unreachable => SqlStatusResponse::Unreachable,
-    }
-}
-
-fn map_readiness(value: &crate::pginfo::state::Readiness) -> ReadinessResponse {
-    match value {
-        crate::pginfo::state::Readiness::Unknown => ReadinessResponse::Unknown,
-        crate::pginfo::state::Readiness::Ready => ReadinessResponse::Ready,
-        crate::pginfo::state::Readiness::NotReady => ReadinessResponse::NotReady,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use crate::{
-        api::ApiError,
-        config::RuntimeConfig,
-        dcs::state::{DcsCache, DcsState, DcsTrust, LeaderRecord, MemberRecord, MemberRole},
-        debug_api::snapshot::{AppLifecycle, SystemSnapshot},
-        ha::{
-            state::HaState,
-            types::{AuthorityView, LeaseEpoch, PublicationState, TargetRole},
-        },
-        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        process::state::ProcessState,
-        state::{MemberId, UnixMillis, Version, Versioned, WorkerStatus},
-    };
-
-    use super::{validate_switchover_request, SwitchoverRequestInput};
-
-    fn sample_runtime_config() -> RuntimeConfig {
-        crate::test_harness::runtime_config::sample_runtime_config()
-    }
-
-    fn sample_member(
-        member_id: &str,
-        role: MemberRole,
-        sql: SqlStatus,
-        readiness: Readiness,
-    ) -> MemberRecord {
-        MemberRecord {
-            member_id: MemberId(member_id.to_string()),
-            postgres_host: member_id.to_string(),
-            postgres_port: 5432,
-            api_url: Some(format!("https://{member_id}:8443")),
-            role,
-            sql,
-            readiness,
-            timeline: Some(crate::state::TimelineId(1)),
-            write_lsn: Some(crate::state::WalLsn(10)),
-            replay_lsn: Some(crate::state::WalLsn(10)),
-            pg_version: Version(1),
-        }
-    }
-
-    fn sample_snapshot(target_member: MemberRecord) -> SystemSnapshot {
-        let config = sample_runtime_config();
-        let self_id = MemberId("node-a".to_string());
-        let self_epoch = LeaseEpoch {
-            holder: self_id.clone(),
-            generation: 7,
-        };
-        let self_member = sample_member(
-            "node-a",
-            MemberRole::Primary,
-            SqlStatus::Healthy,
-            Readiness::Ready,
-        );
-        let members = BTreeMap::from([
-            (self_member.member_id.clone(), self_member),
-            (target_member.member_id.clone(), target_member),
-        ]);
-
-        SystemSnapshot {
-            app: AppLifecycle::Running,
-            config: Versioned::new(Version(1), UnixMillis(100), config.clone()),
-            pg: Versioned::new(
-                Version(1),
-                UnixMillis(100),
-                PgInfoState::Unknown {
-                    common: PgInfoCommon {
-                        worker: WorkerStatus::Running,
-                        sql: SqlStatus::Healthy,
-                        readiness: Readiness::Ready,
-                        timeline: None,
-                        pg_config: PgConfig {
-                            port: Some(5432),
-                            hot_standby: Some(false),
-                            primary_conninfo: None,
-                            primary_slot_name: None,
-                            extra: BTreeMap::new(),
-                        },
-                        last_refresh_at: Some(UnixMillis(100)),
-                    },
-                },
-            ),
-            dcs: Versioned::new(
-                Version(1),
-                UnixMillis(100),
-                DcsState {
-                    worker: WorkerStatus::Running,
-                    trust: DcsTrust::FullQuorum,
-                    cache: DcsCache {
-                        members,
-                        leader: Some(LeaderRecord {
-                            member_id: self_id.clone(),
-                            generation: self_epoch.generation,
-                        }),
-                        switchover: None,
-                        config,
-                        init_lock: None,
-                    },
-                    last_refresh_at: Some(UnixMillis(100)),
-                },
-            ),
-            process: Versioned::new(
-                Version(1),
-                UnixMillis(100),
-                ProcessState::Idle {
-                    worker: WorkerStatus::Running,
-                    last_outcome: None,
-                },
-            ),
-            ha: Versioned::new(
-                Version(1),
-                UnixMillis(100),
-                HaState {
-                    worker: WorkerStatus::Running,
-                    tick: 7,
-                    required_roles_ready: false,
-                    publication: PublicationState {
-                        authority: AuthorityView::Primary {
-                            member: self_id.clone(),
-                            epoch: self_epoch.clone(),
-                        },
-                        fence_cutoff: None,
-                    },
-                    role: TargetRole::Leader(self_epoch),
-                    clear_switchover: false,
-                    planned_actions: Vec::new(),
-                },
-            ),
-            generated_at: UnixMillis(100),
-            sequence: 1,
-            changes: Vec::new(),
-            timeline: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn validate_switchover_request_rejects_ineligible_target() {
-        let snapshot = sample_snapshot(sample_member(
-            "node-c",
-            MemberRole::Unknown,
-            SqlStatus::Unknown,
-            Readiness::Unknown,
-        ));
-
-        let result = validate_switchover_request(
-            Some(&snapshot),
-            SwitchoverRequestInput {
-                switchover_to: Some("node-c".to_string()),
-            },
-        );
-
-        assert_eq!(
-            result,
-            Err(ApiError::bad_request(
-                "switchover_to member `node-c` is not an eligible switchover target".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn validate_switchover_request_rejects_unknown_target() {
-        let snapshot = sample_snapshot(sample_member(
-            "node-c",
-            MemberRole::Replica,
-            SqlStatus::Healthy,
-            Readiness::Ready,
-        ));
-
-        let result = validate_switchover_request(
-            Some(&snapshot),
-            SwitchoverRequestInput {
-                switchover_to: Some("node-z".to_string()),
-            },
-        );
-
-        assert_eq!(
-            result,
-            Err(ApiError::bad_request(
-                "unknown switchover_to member `node-z`".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn validate_switchover_request_rejects_current_leader_target() {
-        let snapshot = sample_snapshot(sample_member(
-            "node-c",
-            MemberRole::Replica,
-            SqlStatus::Healthy,
-            Readiness::Ready,
-        ));
-
-        let result = validate_switchover_request(
-            Some(&snapshot),
-            SwitchoverRequestInput {
-                switchover_to: Some("node-a".to_string()),
-            },
-        );
-
-        assert_eq!(
-            result,
-            Err(ApiError::bad_request(
-                "switchover_to member `node-a` is already the leader".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn validate_switchover_request_accepts_healthy_non_leader_target() {
-        let snapshot = sample_snapshot(sample_member(
-            "node-c",
-            MemberRole::Replica,
-            SqlStatus::Healthy,
-            Readiness::Ready,
-        ));
-
-        let result = validate_switchover_request(
-            Some(&snapshot),
-            SwitchoverRequestInput {
-                switchover_to: Some("node-c".to_string()),
-            },
-        );
-
-        assert_eq!(
-            result,
-            Ok(crate::dcs::state::SwitchoverRequest {
-                switchover_to: Some(MemberId("node-c".to_string())),
-            })
-        );
     }
 }

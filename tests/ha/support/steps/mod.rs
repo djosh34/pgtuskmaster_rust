@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    hash::{DefaultHasher, Hash, Hasher},
     time::{Duration, Instant},
 };
 
@@ -665,14 +666,23 @@ async fn insert_proof_row(world: &mut HaWorld, row_value: &str, member_ref: &str
     let table_name = ensure_proof_table(world)?;
     let member_id = resolve_member_reference(world, member_ref)?;
     let target = sql_target_for_member(world.harness()?, member_id.as_str())?;
+    let create_sql = format!("CREATE TABLE IF NOT EXISTS {table_name} (token TEXT PRIMARY KEY);");
     let insert_sql = format!(
         "INSERT INTO {table_name} (token) VALUES ('{}') ON CONFLICT (token) DO NOTHING;",
         sql_quote_literal(row_value)
     );
     let harness = world.harness()?;
-    let _ = harness
-        .sql()
-        .execute(target.dsn.as_str(), insert_sql.as_str())?;
+    if let Err(err) = harness.sql().execute(target.dsn.as_str(), insert_sql.as_str()) {
+        if !err.to_string().contains("does not exist") {
+            return Err(err);
+        }
+        let _ = harness
+            .sql()
+            .execute(target.dsn.as_str(), create_sql.as_str())?;
+        let _ = harness
+            .sql()
+            .execute(target.dsn.as_str(), insert_sql.as_str())?;
+    }
     harness.record_note(
         "sql.insert_proof_row",
         format!("member={member_id} row={row_value}"),
@@ -684,6 +694,14 @@ async fn insert_proof_row(world: &mut HaWorld, row_value: &str, member_ref: &str
         .any(|existing| existing == row_value)
     {
         world.scenario.proof_rows.push(row_value.to_string());
+    }
+    if world.scenario.stopped_nodes.is_empty()
+        && world.scenario.unsampled_nodes.is_empty()
+        && world.scenario.wedged_nodes.is_empty()
+        && world.scenario.proof_convergence_blocked_nodes.is_empty()
+    {
+        let expected_online = online_expected_count(world);
+        return wait_for_recorded_proof_rows(world, expected_online).await;
     }
     Ok(())
 }
@@ -1493,9 +1511,24 @@ fn parse_count(raw_value: &str) -> Result<usize> {
 }
 
 fn proof_table_name(harness: &HarnessShared) -> String {
+    const MAX_SQL_IDENTIFIER_BYTES: usize = 63;
+    const PROOF_TABLE_PREFIX: &str = "ha_cucumber_proof_";
+
     let suffix =
         sanitize_sql_identifier(format!("{}_{}", harness.feature_name, harness.run_id).as_str());
-    format!("ha_cucumber_proof_{suffix}")
+    let candidate = format!("{PROOF_TABLE_PREFIX}{suffix}");
+    if candidate.len() <= MAX_SQL_IDENTIFIER_BYTES {
+        return candidate;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    candidate.hash(&mut hasher);
+    let digest = format!("{:016x}", hasher.finish());
+    let keep = MAX_SQL_IDENTIFIER_BYTES
+        .saturating_sub(digest.len())
+        .saturating_sub(1);
+    let truncated = &candidate[..keep];
+    format!("{truncated}_{digest}")
 }
 
 fn sanitize_sql_identifier(raw_value: &str) -> String {
@@ -1707,6 +1740,7 @@ async fn there_is_no_dual_primary_evidence_and_no_split_brain_write_evidence_dur
 async fn i_wedge_the_node_named(world: &mut HaWorld, member_ref: String) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     world.harness()?.wedge_member_postgres(member_id.as_str())?;
+    world.add_wedged_node(member_id.as_str());
     Ok(())
 }
 
@@ -1716,6 +1750,7 @@ async fn i_unwedge_the_node_named(world: &mut HaWorld, member_ref: String) -> Re
     world
         .harness()?
         .unwedge_member_postgres(member_id.as_str())?;
+    world.remove_wedged_node(member_id.as_str());
     Ok(())
 }
 
@@ -1748,10 +1783,14 @@ async fn i_isolate_the_node_named_from_all_peers_on_the_path(
     path_name: String,
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
-    world.harness()?.isolate_member_from_all_peers_on_path(
-        member_id.as_str(),
-        parse_traffic_path(path_name.as_str())?,
-    )
+    let path = parse_traffic_path(path_name.as_str())?;
+    world
+        .harness()?
+        .isolate_member_from_all_peers_on_path(member_id.as_str(), path)?;
+    if path == TrafficPath::Postgres {
+        world.add_proof_convergence_blocker(member_id.as_str());
+    }
+    Ok(())
 }
 
 #[when(regex = r#"^I isolate the nodes named "([^"]+)" and "([^"]+)" on the "([^"]+)" path$"#)]
@@ -1763,11 +1802,15 @@ async fn i_isolate_the_nodes_named_and_on_the_path(
 ) -> Result<()> {
     let member_a = resolve_member_reference(world, member_ref_a.as_str())?;
     let member_b = resolve_member_reference(world, member_ref_b.as_str())?;
-    world.harness()?.isolate_member_from_peer_on_path(
-        member_a.as_str(),
-        member_b.as_str(),
-        parse_traffic_path(path_name.as_str())?,
-    )
+    let path = parse_traffic_path(path_name.as_str())?;
+    world
+        .harness()?
+        .isolate_member_from_peer_on_path(member_a.as_str(), member_b.as_str(), path)?;
+    if path == TrafficPath::Postgres {
+        world.add_proof_convergence_blocker(member_a.as_str());
+        world.add_proof_convergence_blocker(member_b.as_str());
+    }
+    Ok(())
 }
 
 #[when(regex = r#"^I fully isolate the node named "([^"]+)" from the cluster$"#)]
@@ -1815,6 +1858,7 @@ async fn i_heal_network_faults_on_the_node_named(
         .harness()?
         .heal_member_network_faults(member_id.as_str())?;
     world.remove_unsampled_node(member_id.as_str());
+    world.remove_proof_convergence_blocker(member_id.as_str());
     Ok(())
 }
 
@@ -1822,6 +1866,7 @@ async fn i_heal_network_faults_on_the_node_named(
 async fn i_heal_all_network_faults(world: &mut HaWorld) -> Result<()> {
     world.harness()?.clear_all_network_faults()?;
     world.clear_unsampled_nodes();
+    world.clear_proof_convergence_blockers();
     Ok(())
 }
 
@@ -1834,11 +1879,16 @@ async fn i_enable_the_blocker_on_the_node_named(
     member_ref: String,
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let blocker = parse_blocker_kind(blocker_name.as_str())?;
     world.harness()?.set_blocker(
         member_id.as_str(),
-        parse_blocker_kind(blocker_name.as_str())?,
+        blocker,
         true,
-    )
+    )?;
+    if blocker == BlockerKind::PgBasebackup {
+        world.add_proof_convergence_blocker(member_id.as_str());
+    }
+    Ok(())
 }
 
 #[given(regex = r#"^I disable the "([^"]+)" blocker on the node named "([^"]+)"$"#)]
@@ -1850,11 +1900,16 @@ async fn i_disable_the_blocker_on_the_node_named(
     member_ref: String,
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let blocker = parse_blocker_kind(blocker_name.as_str())?;
     world.harness()?.set_blocker(
         member_id.as_str(),
-        parse_blocker_kind(blocker_name.as_str())?,
+        blocker,
         false,
-    )
+    )?;
+    if blocker == BlockerKind::PgBasebackup {
+        world.remove_proof_convergence_blocker(member_id.as_str());
+    }
+    Ok(())
 }
 
 #[when(regex = r#"^I wipe the data directory on the node named "([^"]+)"$"#)]

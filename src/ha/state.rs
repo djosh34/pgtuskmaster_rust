@@ -11,17 +11,17 @@ use crate::{
     state::{MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
-use super::types::{PublicationState, ReconcileAction, TargetRole};
+use super::types::{AuthorityProjectionState, IdleReason, ReconcileAction, TargetRole};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HaState {
     pub(crate) worker: WorkerStatus,
     pub(crate) tick: u64,
     pub(crate) required_roles_ready: bool,
-    pub(crate) publication: PublicationState,
+    pub(crate) publication: AuthorityProjectionState,
     pub(crate) role: TargetRole,
     pub(crate) clear_switchover: bool,
-    pub(crate) planned_actions: Vec<ReconcileAction>,
+    pub(crate) planned_commands: Vec<ReconcileAction>,
 }
 
 pub(crate) struct HaWorkerCtx {
@@ -102,10 +102,10 @@ impl HaState {
             worker,
             tick: 0,
             required_roles_ready: false,
-            publication: PublicationState::unknown(),
-            role: TargetRole::Idle(super::types::IdleReason::AwaitingLeader),
+            publication: AuthorityProjectionState::unknown(),
+            role: TargetRole::Idle(IdleReason::AwaitingLeader),
             clear_switchover: false,
-            planned_actions: Vec::new(),
+            planned_commands: Vec::new(),
         }
     }
 }

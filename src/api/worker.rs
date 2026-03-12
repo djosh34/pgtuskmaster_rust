@@ -13,7 +13,9 @@ use crate::{
     },
     config::{ApiAuthConfig, ApiTlsMode, RuntimeConfig},
     dcs::store::DcsStore,
+    dcs::state::DcsState,
     debug_api::{snapshot::SystemSnapshot, view::build_verbose_payload},
+    ha::state::HaState,
     logging::{AppEvent, AppEventHeader, LogHandle, SeverityText, StructuredFields},
     state::{StateSubscriber, WorkerError},
 };
@@ -79,6 +81,8 @@ pub struct ApiWorkerCtx {
     member_id: String,
     config_subscriber: StateSubscriber<RuntimeConfig>,
     dcs_store: Box<dyn DcsStore>,
+    dcs_subscriber: Option<StateSubscriber<DcsState>>,
+    ha_subscriber: Option<StateSubscriber<HaState>>,
     debug_snapshot_subscriber: Option<StateSubscriber<SystemSnapshot>>,
     tls_mode_override: Option<ApiTlsMode>,
     tls_acceptor: Option<TlsAcceptor>,
@@ -116,6 +120,8 @@ impl ApiWorkerCtx {
             member_id,
             config_subscriber,
             dcs_store,
+            dcs_subscriber: None,
+            ha_subscriber: None,
             debug_snapshot_subscriber: None,
             tls_mode_override: None,
             tls_acceptor: None,
@@ -179,11 +185,20 @@ impl ApiWorkerCtx {
         self.require_client_cert = required;
     }
 
-    pub(crate) fn set_ha_snapshot_subscriber(
+    pub(crate) fn set_debug_snapshot_subscriber(
         &mut self,
         subscriber: StateSubscriber<SystemSnapshot>,
     ) {
         self.debug_snapshot_subscriber = Some(subscriber);
+    }
+
+    pub(crate) fn set_live_state_subscribers(
+        &mut self,
+        dcs_subscriber: StateSubscriber<DcsState>,
+        ha_subscriber: StateSubscriber<HaState>,
+    ) {
+        self.dcs_subscriber = Some(dcs_subscriber);
+        self.ha_subscriber = Some(ha_subscriber);
     }
 }
 
@@ -405,14 +420,20 @@ fn route_request(
                     return HttpResponse::text(400, "Bad Request", format!("invalid json: {err}"));
                 }
             };
-            let snapshot = ctx
-                .debug_snapshot_subscriber
-                .as_ref()
-                .map(|subscriber| subscriber.latest());
+            let Some(dcs_subscriber) = ctx.dcs_subscriber.as_ref() else {
+                return HttpResponse::text(503, "Service Unavailable", "dcs state unavailable");
+            };
+            let Some(ha_subscriber) = ctx.ha_subscriber.as_ref() else {
+                return HttpResponse::text(503, "Service Unavailable", "ha state unavailable");
+            };
+            let dcs = dcs_subscriber.latest();
+            let ha = ha_subscriber.latest();
             match post_switchover(
                 &ctx.scope,
+                &crate::state::MemberId(ctx.member_id.clone()),
                 &mut *ctx.dcs_store,
-                snapshot.as_ref().map(|value| &value.value),
+                &dcs.value,
+                &ha.value,
                 input,
             ) {
                 Ok(value) => HttpResponse::json(202, "Accepted", &value),
@@ -424,11 +445,15 @@ fn route_request(
             Err(err) => api_error_to_http(err),
         },
         ("GET", "/ha/state") => {
-            let Some(subscriber) = ctx.debug_snapshot_subscriber.as_ref() else {
-                return HttpResponse::text(503, "Service Unavailable", "snapshot unavailable");
+            let Some(dcs_subscriber) = ctx.dcs_subscriber.as_ref() else {
+                return HttpResponse::text(503, "Service Unavailable", "dcs state unavailable");
             };
-            let snapshot = subscriber.latest();
-            let response = get_ha_state(&snapshot);
+            let Some(ha_subscriber) = ctx.ha_subscriber.as_ref() else {
+                return HttpResponse::text(503, "Service Unavailable", "ha state unavailable");
+            };
+            let dcs = dcs_subscriber.latest();
+            let ha = ha_subscriber.latest();
+            let response = get_ha_state(cfg, &dcs, &ha);
             HttpResponse::json(200, "OK", &response)
         }
         ("GET", "/fallback/cluster") => {
@@ -679,9 +704,9 @@ fn debug_ui_html() -> &'static str {
       renderKeyValue("dcs-body", [
         ["worker", payload.dcs.worker],
         ["trust", payload.dcs.trust],
-        ["members", payload.dcs.member_count],
-        ["leader", payload.dcs.leader],
-        ["switchover", payload.dcs.has_switchover_request]
+        ["members", payload.dcs.member_slot_count],
+        ["leader", payload.dcs.leader_lease_holder],
+        ["switchover", payload.dcs.has_switchover_intent]
       ]);
       renderKeyValue("process-body", [
         ["worker", payload.process.worker],
@@ -1249,7 +1274,11 @@ mod tests {
             HTTP_REQUEST_SCRATCH_BUFFER_BYTES,
         },
         config::{ApiAuthConfig, ApiRoleTokensConfig, ApiTlsMode, InlineOrPath, RuntimeConfig},
-        dcs::state::{DcsCache, DcsState, DcsTrust},
+        dcs::state::{
+            DcsCache, DcsState, DcsTrust, MemberApiEndpoint, MemberEndpoint, MemberLease,
+            MemberPostgresView, MemberRouting, MemberSlot, PrimaryObservation,
+            ReplicaObservation, WalVector,
+        },
         dcs::store::{DcsStore, DcsStoreError, WatchEvent},
         debug_api::snapshot::{
             AppLifecycle, DebugChangeEvent, DebugDomain, DebugTimelineEntry, SystemSnapshot,
@@ -1260,7 +1289,7 @@ mod tests {
         },
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
-        state::{new_state_channel, UnixMillis, WorkerError},
+        state::{new_state_channel, MemberId, TimelineId, UnixMillis, Version, WalLsn, WorkerError},
         test_harness::{
             auth::ApiRoleTokens,
             namespace::NamespaceGuard,
@@ -1401,9 +1430,9 @@ mod tests {
             worker: crate::state::WorkerStatus::Running,
             trust,
             cache: DcsCache {
-                members: BTreeMap::new(),
-                leader: None,
-                switchover: None,
+                member_slots: BTreeMap::new(),
+                leader_lease: None,
+                switchover_intent: None,
                 config: cfg,
                 init_lock: None,
             },
@@ -1433,7 +1462,7 @@ mod tests {
             },
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
             clear_switchover: false,
-            planned_actions: Vec::new(),
+            planned_commands: Vec::new(),
         }
     }
 
@@ -1457,7 +1486,7 @@ mod tests {
                 generation: 7,
             }),
             clear_switchover: false,
-            planned_actions: Vec::new(),
+            planned_commands: Vec::new(),
         }
     }
 
@@ -1505,13 +1534,86 @@ mod tests {
         sample_debug_snapshot_with_states(auth_token, sample_dcs_state(cfg), sample_ha_state())
     }
 
-    fn sample_authoritative_primary_snapshot(auth_token: Option<String>) -> SystemSnapshot {
+    fn sample_authoritative_primary_snapshot_with_replica(
+        auth_token: Option<String>,
+    ) -> SystemSnapshot {
         let cfg = sample_runtime_config(auth_token.clone());
-        sample_debug_snapshot_with_states(
-            auth_token,
-            sample_dcs_state(cfg),
-            sample_authoritative_primary_ha_state(),
-        )
+        let mut dcs = sample_dcs_state(cfg);
+        dcs.cache.member_slots = BTreeMap::from([
+            (
+                MemberId("node-a".to_string()),
+                MemberSlot {
+                    lease: MemberLease {
+                        owner: MemberId("node-a".to_string()),
+                        ttl_ms: 10_000,
+                    },
+                    routing: MemberRouting {
+                        postgres: MemberEndpoint {
+                            host: "node-a".to_string(),
+                            port: 5432,
+                        },
+                        api: Some(MemberApiEndpoint {
+                            url: "https://node-a:8443".to_string(),
+                        }),
+                    },
+                    postgres: MemberPostgresView::Primary(PrimaryObservation {
+                        readiness: Readiness::Ready,
+                        committed_wal: WalVector {
+                            timeline: Some(TimelineId(1)),
+                            lsn: WalLsn(100),
+                        },
+                        pg_version: Version(1),
+                    }),
+                },
+            ),
+            (
+                MemberId("node-b".to_string()),
+                MemberSlot {
+                    lease: MemberLease {
+                        owner: MemberId("node-b".to_string()),
+                        ttl_ms: 10_000,
+                    },
+                    routing: MemberRouting {
+                        postgres: MemberEndpoint {
+                            host: "node-b".to_string(),
+                            port: 5432,
+                        },
+                        api: Some(MemberApiEndpoint {
+                            url: "https://node-b:8443".to_string(),
+                        }),
+                    },
+                    postgres: MemberPostgresView::Replica(ReplicaObservation {
+                        readiness: Readiness::Ready,
+                        upstream: Some(MemberId("node-a".to_string())),
+                        replay_wal: Some(WalVector {
+                            timeline: Some(TimelineId(1)),
+                            lsn: WalLsn(99),
+                        }),
+                        follow_wal: Some(WalVector {
+                            timeline: Some(TimelineId(1)),
+                            lsn: WalLsn(100),
+                        }),
+                        pg_version: Version(1),
+                    }),
+                },
+            ),
+        ]);
+        sample_debug_snapshot_with_states(auth_token, dcs, sample_authoritative_primary_ha_state())
+    }
+
+    fn attach_snapshot_subscribers(ctx: &mut ApiWorkerCtx, snapshot: SystemSnapshot) {
+        let snapshot_now = snapshot.generated_at;
+        let dcs_now = snapshot.dcs.updated_at;
+        let dcs_state = snapshot.dcs.value.clone();
+        let ha_now = snapshot.ha.updated_at;
+        let ha_state = snapshot.ha.value.clone();
+
+        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, snapshot_now);
+        let (_dcs_publisher, dcs_subscriber) = new_state_channel(dcs_state, dcs_now);
+        let (_ha_publisher, ha_subscriber) = new_state_channel(ha_state, ha_now);
+
+        ctx.set_debug_snapshot_subscriber(debug_subscriber);
+        ctx.set_live_state_subscribers(dcs_subscriber, ha_subscriber);
     }
 
     fn test_log_handle() -> (LogHandle, Arc<TestSink>) {
@@ -2005,9 +2107,8 @@ mod tests {
             Some(roles.read_token.clone()),
             Some(roles.admin_token.clone()),
         )?;
-        let snapshot = sample_authoritative_primary_snapshot(None);
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        let snapshot = sample_authoritative_primary_snapshot_with_replica(None);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let post_body = br#"{}"#.to_vec();
         let response = send_plain_request(
@@ -2033,11 +2134,10 @@ mod tests {
         let cfg = sample_runtime_config(None);
         let snapshot = sample_debug_snapshot_with_states(
             None,
-            sample_dcs_state_with_trust(cfg, DcsTrust::FailSafe),
+            sample_dcs_state_with_trust(cfg, DcsTrust::Degraded),
             sample_authoritative_primary_ha_state(),
         );
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let post_body = br#"{}"#.to_vec();
         let response = send_plain_request(
@@ -2058,8 +2158,7 @@ mod tests {
 
         let (mut ctx, store) = build_ctx(None).await?;
         let snapshot = sample_debug_snapshot(None);
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let post_body = br#"{}"#.to_vec();
         let response = send_plain_request(
@@ -2081,8 +2180,7 @@ mod tests {
         cfg.debug.enabled = false;
         let (mut ctx, _store) = build_ctx_with_config(cfg).await?;
         let snapshot = sample_debug_snapshot(None);
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let response = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
         assert_eq!(response.status_code, 200);
@@ -2091,17 +2189,21 @@ mod tests {
         assert_eq!(decoded["cluster_name"], "cluster-a");
         assert_eq!(decoded["scope"], "scope-a");
         assert_eq!(decoded["self_member_id"], "node-a");
-        assert_eq!(decoded["leader"], serde_json::Value::Null);
-        assert_eq!(decoded["switchover_pending"], false);
-        assert_eq!(decoded["switchover_to"], serde_json::Value::Null);
-        assert_eq!(decoded["member_count"], 0);
+        assert_eq!(decoded["leader_lease_holder"], serde_json::Value::Null);
+        assert_eq!(decoded["switchover"], serde_json::Value::Null);
+        assert_eq!(decoded["member_slot_count"], 0);
+        assert_eq!(decoded["member_slots"], serde_json::Value::Array(Vec::new()));
         assert_eq!(decoded["dcs_trust"], "full_quorum");
-        assert_eq!(decoded["authority"]["kind"], "no_primary");
-        assert_eq!(decoded["authority"]["reason"]["kind"], "recovering");
+        assert_eq!(decoded["authority_projection"]["kind"], "no_primary");
+        assert_eq!(
+            decoded["authority_projection"]["reason"]["kind"],
+            "recovering"
+        );
         assert_eq!(decoded["ha_tick"], 7);
-        assert_eq!(decoded["ha_role"]["kind"], "idle");
-        assert_eq!(decoded["ha_role"]["reason"]["kind"], "awaiting_leader");
-        assert_eq!(decoded["snapshot_sequence"], 2);
+        assert_eq!(decoded["role_intent"]["kind"], "idle");
+        assert_eq!(decoded["role_intent"]["reason"]["kind"], "awaiting_leader");
+        assert_eq!(decoded["planned_commands"], serde_json::Value::Array(Vec::new()));
+        assert_eq!(decoded["snapshot_sequence"], 0);
         Ok(())
     }
 
@@ -2157,8 +2259,7 @@ mod tests {
         )?;
 
         let snapshot = sample_debug_snapshot(None);
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let response = send_plain_request(
             &mut ctx,
@@ -2201,8 +2302,7 @@ mod tests {
         let _guard = NamespaceGuard::new("api-ha-authz-legacy-fallback")?;
         let (mut ctx, _store) = build_ctx(Some("legacy-token".to_string())).await?;
         let snapshot = sample_debug_snapshot(None);
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let response = send_plain_request(&mut ctx, format_get("/ha/state", None), None).await?;
         assert_eq!(response.status_code, 401);
@@ -2231,8 +2331,7 @@ mod tests {
         });
         let (mut ctx, _store) = build_ctx_with_config(cfg).await?;
         let snapshot = sample_debug_snapshot(None);
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let response = send_plain_request(
             &mut ctx,
@@ -2259,8 +2358,7 @@ mod tests {
         let (mut ctx, _store) = build_ctx(None).await?;
 
         let snapshot = sample_debug_snapshot(None);
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let response =
             send_plain_request(&mut ctx, format_get("/debug/verbose?since=1", None), None).await?;
@@ -2296,8 +2394,7 @@ mod tests {
         let (mut ctx, _store) = build_ctx(None).await?;
 
         let snapshot = sample_debug_snapshot(None);
-        let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        attach_snapshot_subscribers(&mut ctx, snapshot);
 
         let response =
             send_plain_request(&mut ctx, format_get("/debug/snapshot", None), None).await?;
@@ -2356,7 +2453,7 @@ mod tests {
 
         let snapshot = sample_debug_snapshot(None);
         let (_debug_publisher, debug_subscriber) = new_state_channel(snapshot, UnixMillis(1));
-        ctx.set_ha_snapshot_subscriber(debug_subscriber);
+        ctx.set_debug_snapshot_subscriber(debug_subscriber);
 
         let response =
             send_plain_request(&mut ctx, format_get("/debug/verbose", None), None).await?;

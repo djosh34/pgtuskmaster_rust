@@ -63,9 +63,9 @@ pub struct DcsSection {
     pub(crate) updated_at_ms: u64,
     pub(crate) worker: String,
     pub(crate) trust: String,
-    pub(crate) member_count: usize,
-    pub(crate) leader: Option<String>,
-    pub(crate) has_switchover_request: bool,
+    pub(crate) member_slot_count: usize,
+    pub(crate) leader_lease_holder: Option<String>,
+    pub(crate) has_switchover_intent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,11 +83,11 @@ pub struct HaSection {
     pub(crate) version: u64,
     pub(crate) updated_at_ms: u64,
     pub(crate) worker: String,
-    pub(crate) phase: String,
+    pub(crate) role_intent: String,
     pub(crate) tick: u64,
-    pub(crate) decision: String,
-    pub(crate) decision_detail: Option<String>,
-    pub(crate) planned_actions: usize,
+    pub(crate) authority_projection: String,
+    pub(crate) authority_detail: Option<String>,
+    pub(crate) planned_commands: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,14 +263,14 @@ fn to_dcs_section(dcs: &Versioned<DcsState>) -> DcsSection {
         updated_at_ms: dcs.updated_at.0,
         worker: worker_status_label(&dcs.value.worker),
         trust: dcs_trust_label(&dcs.value.trust),
-        member_count: dcs.value.cache.members.len(),
-        leader: dcs
+        member_slot_count: dcs.value.cache.member_slots.len(),
+        leader_lease_holder: dcs
             .value
             .cache
-            .leader
+            .leader_lease
             .as_ref()
-            .map(|leader| leader.member_id.0.clone()),
-        has_switchover_request: dcs.value.cache.switchover.is_some(),
+            .map(|leader| leader.holder.0.clone()),
+        has_switchover_intent: dcs.value.cache.switchover_intent.is_some(),
     }
 }
 
@@ -303,11 +303,11 @@ fn to_ha_section(ha: &Versioned<HaState>) -> HaSection {
         version: ha.version.0,
         updated_at_ms: ha.updated_at.0,
         worker: worker_status_label(&ha.value.worker),
-        phase: ha.value.role.label().to_string(),
+        role_intent: ha.value.role.label().to_string(),
         tick: ha.value.tick,
-        decision: authority_label(&ha.value.publication.authority),
-        decision_detail: Some(role_detail(&ha.value.role)),
-        planned_actions: ha.value.planned_actions.len(),
+        authority_projection: authority_label(&ha.value.publication.authority),
+        authority_detail: Some(role_detail(&ha.value.role)),
+        planned_commands: ha.value.planned_commands.len(),
     }
 }
 
@@ -360,7 +360,7 @@ fn readiness_label(readiness: &Readiness) -> String {
 fn dcs_trust_label(trust: &DcsTrust) -> String {
     match trust {
         DcsTrust::FullQuorum => "FullQuorum".to_string(),
-        DcsTrust::FailSafe => "FailSafe".to_string(),
+        DcsTrust::Degraded => "Degraded".to_string(),
         DcsTrust::NotTrusted => "NotTrusted".to_string(),
     }
 }
@@ -376,13 +376,15 @@ fn debug_domain_label(domain: &DebugDomain) -> &'static str {
     }
 }
 
-fn authority_label(value: &crate::ha::types::AuthorityView) -> String {
+fn authority_label(value: &crate::ha::types::ProjectedAuthority) -> String {
     match value {
-        crate::ha::types::AuthorityView::Primary { member, epoch } => {
+        crate::ha::types::ProjectedAuthority::Primary { member, epoch } => {
             format!("primary:{}#{}", member.0, epoch.generation)
         }
-        crate::ha::types::AuthorityView::NoPrimary(reason) => format!("no_primary:{reason:?}"),
-        crate::ha::types::AuthorityView::Unknown => "unknown".to_string(),
+        crate::ha::types::ProjectedAuthority::NoPrimary(reason) => {
+            format!("no_primary:{reason:?}")
+        }
+        crate::ha::types::ProjectedAuthority::Unknown => "unknown".to_string(),
     }
 }
 

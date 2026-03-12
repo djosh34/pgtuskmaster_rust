@@ -78,13 +78,23 @@ pub(crate) fn resolve_primary_view(
         [] => Err(CliError::Resolution(
             "no sampled primary member was observed".to_string(),
         )),
-        [member] => Ok(build_connection_view(
-            snapshot,
-            tls,
-            emit_tls,
-            ConnectionCommandKind::Primary,
-            vec![build_connection_target(member, tls, emit_tls)?],
-        )),
+        [member] => {
+            if insufficient_sampling_blocks_primary(snapshot) {
+                let message = insufficient_sampling_message(snapshot)
+                    .unwrap_or_else(|| "insufficient sampling".to_string());
+                return Err(CliError::Resolution(format!(
+                    "cannot resolve primary from sampled cluster state: {message}"
+                )));
+            }
+
+            Ok(build_connection_view(
+                snapshot,
+                tls,
+                emit_tls,
+                ConnectionCommandKind::Primary,
+                vec![build_connection_target(member, tls, emit_tls)?],
+            ))
+        }
         members => Err(CliError::Resolution(format!(
             "multiple sampled primaries were observed: {}",
             members
@@ -159,6 +169,22 @@ fn blocking_primary_warnings(snapshot: &SampledClusterSnapshot) -> Vec<&ClusterW
             )
         })
         .collect()
+}
+
+fn insufficient_sampling_blocks_primary(snapshot: &SampledClusterSnapshot) -> bool {
+    snapshot
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "insufficient_sampling")
+        && snapshot.sampled_member_count() < 2
+}
+
+fn insufficient_sampling_message(snapshot: &SampledClusterSnapshot) -> Option<String> {
+    snapshot
+        .warnings
+        .iter()
+        .find(|warning| warning.code == "insufficient_sampling")
+        .map(|warning| warning.message.clone())
 }
 
 fn blocking_replica_warnings(snapshot: &SampledClusterSnapshot) -> Vec<&ClusterWarning> {
@@ -371,31 +397,39 @@ mod tests {
         authority_member_id: Option<&str>,
         members: Vec<HaClusterMemberResponse>,
     ) -> HaStateResponse {
+        let leader_epoch = authority_member_id.map(|member_id| LeaseEpochResponse {
+            holder: member_id.to_string(),
+            generation: 9,
+        });
         HaStateResponse {
             cluster_name: "cluster-a".to_string(),
             scope: "scope-a".to_string(),
             self_member_id: self_member_id.to_string(),
-            leader: authority_member_id.map(ToString::to_string),
-            switchover_pending: false,
-            switchover_to: None,
-            member_count: members.len(),
-            members,
+            leader_lease_holder: authority_member_id.map(ToString::to_string),
+            switchover: None,
+            member_slot_count: members.len(),
+            member_slots: members,
             dcs_trust: DcsTrustResponse::FullQuorum,
-            authority: authority_member_id.map_or(HaAuthorityResponse::Unknown, |member_id| {
+            authority_projection: authority_member_id.map_or(HaAuthorityResponse::Unknown, |member_id| {
                 HaAuthorityResponse::Primary {
                     member_id: member_id.to_string(),
-                    epoch: LeaseEpochResponse {
+                    epoch: leader_epoch.clone().unwrap_or(LeaseEpochResponse {
                         holder: member_id.to_string(),
                         generation: 9,
-                    },
+                    }),
                 }
             }),
             fence_cutoff: None,
-            ha_role: TargetRoleResponse::Idle {
-                reason: crate::api::IdleReasonResponse::AwaitingLeader,
+            role_intent: match leader_epoch {
+                Some(epoch) if authority_member_id == Some(self_member_id) => {
+                    TargetRoleResponse::Leader { epoch }
+                }
+                _ => TargetRoleResponse::Idle {
+                    reason: crate::api::IdleReasonResponse::AwaitingLeader,
+                },
             },
             ha_tick: 1,
-            planned_actions: Vec::new(),
+            planned_commands: Vec::new(),
             snapshot_sequence: 1,
         }
     }
@@ -418,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_resolution_prefers_sampled_primary_endpoint() {
+    fn primary_resolution_prefers_sampled_primary_endpoint() -> Result<(), String> {
         let seed_members = vec![
             sample_member("node-a", MemberRoleResponse::Replica, "node-a.seed", 5432),
             sample_member("node-b", MemberRoleResponse::Primary, "node-b.seed", 5432),
@@ -450,15 +484,27 @@ mod tests {
         let snapshot = sample_snapshot(seed_state, seed_members, observations);
 
         let view = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
-            .expect("primary should resolve");
+            .map_err(|err| format!("primary should resolve: {err}"))?;
         assert_eq!(view.targets.len(), 1);
-        assert_eq!(view.targets[0].member_id, "node-b");
-        assert_eq!(view.targets[0].postgres_host, "node-b.live");
-        assert_eq!(view.targets[0].postgres_port, 6543);
+        assert_eq!(
+            view.targets.first().map(|target| target.member_id.as_str()),
+            Some("node-b")
+        );
+        assert_eq!(
+            view.targets
+                .first()
+                .map(|target| target.postgres_host.as_str()),
+            Some("node-b.live")
+        );
+        assert_eq!(
+            view.targets.first().map(|target| target.postgres_port),
+            Some(6543)
+        );
+        Ok(())
     }
 
     #[test]
-    fn replica_resolution_rejects_sampled_peer_missing_self_record() {
+    fn replica_resolution_rejects_sampled_peer_missing_self_record() -> Result<(), String> {
         let seed_members = vec![
             sample_member("node-a", MemberRoleResponse::Primary, "node-a.seed", 5432),
             sample_member("node-b", MemberRoleResponse::Replica, "node-b.seed", 5432),
@@ -497,12 +543,19 @@ mod tests {
         ]);
         let snapshot = sample_snapshot(seed_state, seed_members, observations);
 
-        let error = resolve_replicas_view(&snapshot, &CliTlsConfig::default(), false)
-            .expect_err("missing peer self row should fail closed");
+        let error = match resolve_replicas_view(&snapshot, &CliTlsConfig::default(), false) {
+            Ok(view) => {
+                return Err(format!(
+                    "missing peer self row should fail closed: {view:?}"
+                ));
+            }
+            Err(err) => err,
+        };
         assert_eq!(
             error.to_string(),
             "resolution error: no sampled replica members were observed"
         );
+        Ok(())
     }
 }
 
@@ -649,8 +702,8 @@ mod tests {
     }
 
     #[test]
-    fn primary_resolution_allows_partial_sampling_when_one_primary_is_sampled() -> Result<(), String>
-    {
+    fn primary_resolution_rejects_partial_sampling_when_cluster_is_not_fully_sampled(
+    ) -> Result<(), String> {
         let members = vec![
             sample_member("node-a", Some("http://node-a:8080")),
             sample_member("node-b", Some("http://node-b:8080")),
@@ -692,15 +745,16 @@ mod tests {
         ];
         let snapshot = sample_snapshot(seed_state, members, observations, warnings);
 
-        let view = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
-            .map_err(|err| err.to_string())?;
-        if view.targets.len() != 1 {
-            return Err("expected exactly one primary target".to_string());
-        }
-        if view.targets[0].member_id != "node-a" {
+        let error = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
+            .err()
+            .map(|err| err.to_string());
+        if error
+            != Some(
+                "resolution error: cannot resolve primary from sampled cluster state: sampled 1/2 discovered members".to_string(),
+            )
+        {
             return Err(format!(
-                "expected node-a primary target, got {}",
-                view.targets[0].member_id
+                "expected insufficient sampling resolution error, got {error:?}"
             ));
         }
         Ok(())

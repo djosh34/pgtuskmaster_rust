@@ -131,9 +131,17 @@ pub(crate) struct GlobalKnowledge {
     pub(crate) lease: LeaseState,
     pub(crate) observed_lease: Option<LeaseEpoch>,
     pub(crate) observed_primary: Option<MemberId>,
+    pub(crate) coordination: CoordinationView,
     pub(crate) switchover: SwitchoverState,
     pub(crate) peers: BTreeMap<MemberId, PeerKnowledge>,
     pub(crate) self_peer: PeerKnowledge,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CoordinationView {
+    pub(crate) trust: DcsTrust,
+    pub(crate) leader: LeaseState,
+    pub(crate) sampled_primary: Option<MemberId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,7 +170,7 @@ pub(crate) enum SwitchoverTarget {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PeerKnowledge {
-    pub(crate) election: ElectionEligibility,
+    pub(crate) eligibility: ElectionEligibility,
     pub(crate) api: ApiVisibility,
 }
 
@@ -312,6 +320,9 @@ pub(crate) struct WalPosition {
     pub(crate) timeline: u64,
     pub(crate) lsn: u64,
 }
+
+pub(crate) type AuthorityProjectionState = PublicationState;
+pub(crate) type ProjectedAuthority = AuthorityView;
 
 impl ObservationState {
     pub(crate) fn waiting_for_fresh_pg_after_start(&self) -> bool {

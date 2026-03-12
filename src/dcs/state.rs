@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::RuntimeConfig,
     logging::LogHandle,
-    pginfo::state::{PgInfoState, Readiness, SqlStatus},
+    pginfo::state::{PgInfoState, Readiness},
     state::{
         MemberId, StatePublisher, StateSubscriber, TimelineId, UnixMillis, Version, WalLsn,
         WorkerStatus,
@@ -19,43 +19,93 @@ use super::store::DcsStore;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DcsTrust {
     FullQuorum,
-    FailSafe,
+    Degraded,
     NotTrusted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum MemberRole {
-    Unknown,
-    Primary,
-    Replica,
+pub(crate) struct MemberLease {
+    pub(crate) owner: MemberId,
+    pub(crate) ttl_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberRecord {
-    pub(crate) member_id: MemberId,
-    pub(crate) postgres_host: String,
-    pub(crate) postgres_port: u16,
-    pub(crate) api_url: Option<String>,
-    pub(crate) role: MemberRole,
-    pub(crate) sql: SqlStatus,
+pub(crate) struct MemberSlot {
+    pub(crate) lease: MemberLease,
+    pub(crate) routing: MemberRouting,
+    pub(crate) postgres: MemberPostgresView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MemberRouting {
+    pub(crate) postgres: MemberEndpoint,
+    pub(crate) api: Option<MemberApiEndpoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MemberEndpoint {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MemberApiEndpoint {
+    pub(crate) url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WalVector {
+    pub(crate) timeline: Option<TimelineId>,
+    pub(crate) lsn: WalLsn,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct UnknownPostgresObservation {
     pub(crate) readiness: Readiness,
     pub(crate) timeline: Option<TimelineId>,
-    pub(crate) write_lsn: Option<WalLsn>,
-    pub(crate) replay_lsn: Option<WalLsn>,
     pub(crate) pg_version: Version,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LeaderRecord {
-    pub(crate) member_id: MemberId,
+pub(crate) struct PrimaryObservation {
+    pub(crate) readiness: Readiness,
+    pub(crate) committed_wal: WalVector,
+    pub(crate) pg_version: Version,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReplicaObservation {
+    pub(crate) readiness: Readiness,
+    pub(crate) upstream: Option<MemberId>,
+    pub(crate) replay_wal: Option<WalVector>,
+    pub(crate) follow_wal: Option<WalVector>,
+    pub(crate) pg_version: Version,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum MemberPostgresView {
+    Unknown(UnknownPostgresObservation),
+    Primary(PrimaryObservation),
+    Replica(ReplicaObservation),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LeaderLeaseRecord {
+    pub(crate) holder: MemberId,
     pub(crate) generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SwitchoverRequest {
-    #[serde(default)]
-    pub(crate) switchover_to: Option<MemberId>,
+pub(crate) struct SwitchoverIntentRecord {
+    pub(crate) target: SwitchoverTargetRecord,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SwitchoverTargetRecord {
+    AnyHealthyReplica,
+    Specific(MemberId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,9 +115,9 @@ pub(crate) struct InitLockRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DcsCache {
-    pub(crate) members: BTreeMap<MemberId, MemberRecord>,
-    pub(crate) leader: Option<LeaderRecord>,
-    pub(crate) switchover: Option<SwitchoverRequest>,
+    pub(crate) member_slots: BTreeMap<MemberId, MemberSlot>,
+    pub(crate) leader_lease: Option<LeaderLeaseRecord>,
+    pub(crate) switchover_intent: Option<SwitchoverIntentRecord>,
     pub(crate) config: RuntimeConfig,
     pub(crate) init_lock: Option<InitLockRecord>,
 }
@@ -97,342 +147,102 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) last_emitted_trust: Option<DcsTrust>,
 }
 
-pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &MemberId) -> DcsTrust {
+pub(crate) fn evaluate_trust(
+    etcd_healthy: bool,
+    cache: &DcsCache,
+    self_id: &MemberId,
+) -> DcsTrust {
     if !etcd_healthy {
         return DcsTrust::NotTrusted;
     }
 
-    if !cache.members.contains_key(self_id) {
-        return DcsTrust::FailSafe;
+    if !cache.member_slots.contains_key(self_id) {
+        return DcsTrust::Degraded;
     }
 
     if !has_member_quorum(cache) {
-        return DcsTrust::FailSafe;
+        return DcsTrust::Degraded;
     }
 
     DcsTrust::FullQuorum
 }
 
 fn has_member_quorum(cache: &DcsCache) -> bool {
-    if cache.members.len() <= 1 {
-        cache.members.len() == 1
+    if cache.member_slots.len() <= 1 {
+        cache.member_slots.len() == 1
     } else {
-        cache.members.len() >= 2
+        cache.member_slots.len() >= 2
     }
 }
 
-pub(crate) fn build_local_member_record(
+pub(crate) fn build_local_member_slot(
     self_id: &MemberId,
     postgres_host: &str,
     postgres_port: u16,
     api_url: Option<&str>,
+    lease_ttl_ms: u64,
     pg_state: &PgInfoState,
     pg_version: Version,
-) -> MemberRecord {
+) -> MemberSlot {
+    let lease = MemberLease {
+        owner: self_id.clone(),
+        ttl_ms: lease_ttl_ms,
+    };
+    let routing = MemberRouting {
+        postgres: MemberEndpoint {
+            host: postgres_host.to_string(),
+            port: postgres_port,
+        },
+        api: api_url.map(|url| MemberApiEndpoint {
+            url: url.to_string(),
+        }),
+    };
+
     match pg_state {
-        PgInfoState::Unknown { common } => MemberRecord {
-            member_id: self_id.clone(),
-            postgres_host: postgres_host.to_string(),
-            postgres_port,
-            api_url: api_url.map(ToString::to_string),
-            role: MemberRole::Unknown,
-            sql: common.sql.clone(),
-            readiness: common.readiness.clone(),
-            timeline: common.timeline,
-            write_lsn: None,
-            replay_lsn: None,
-            pg_version,
+        PgInfoState::Unknown { common } => MemberSlot {
+            lease,
+            routing,
+            postgres: MemberPostgresView::Unknown(UnknownPostgresObservation {
+                readiness: common.readiness.clone(),
+                timeline: common.timeline,
+                pg_version,
+            }),
         },
         PgInfoState::Primary {
             common, wal_lsn, ..
-        } => MemberRecord {
-            member_id: self_id.clone(),
-            postgres_host: postgres_host.to_string(),
-            postgres_port,
-            api_url: api_url.map(ToString::to_string),
-            role: MemberRole::Primary,
-            sql: common.sql.clone(),
-            readiness: common.readiness.clone(),
-            timeline: common.timeline,
-            write_lsn: Some(*wal_lsn),
-            replay_lsn: None,
-            pg_version,
+        } => MemberSlot {
+            lease,
+            routing,
+            postgres: MemberPostgresView::Primary(PrimaryObservation {
+                readiness: common.readiness.clone(),
+                committed_wal: WalVector {
+                    timeline: common.timeline,
+                    lsn: *wal_lsn,
+                },
+                pg_version,
+            }),
         },
         PgInfoState::Replica {
-            common, replay_lsn, ..
-        } => MemberRecord {
-            member_id: self_id.clone(),
-            postgres_host: postgres_host.to_string(),
-            postgres_port,
-            api_url: api_url.map(ToString::to_string),
-            role: MemberRole::Replica,
-            sql: common.sql.clone(),
-            readiness: common.readiness.clone(),
-            timeline: common.timeline,
-            write_lsn: None,
-            replay_lsn: Some(*replay_lsn),
-            pg_version,
+            common,
+            replay_lsn,
+            follow_lsn,
+            upstream,
+        } => MemberSlot {
+            lease,
+            routing,
+            postgres: MemberPostgresView::Replica(ReplicaObservation {
+                readiness: common.readiness.clone(),
+                upstream: upstream.as_ref().map(|value| value.member_id.clone()),
+                replay_wal: Some(WalVector {
+                    timeline: common.timeline,
+                    lsn: *replay_lsn,
+                }),
+                follow_wal: follow_lsn.map(|lsn| WalVector {
+                    timeline: common.timeline,
+                    lsn,
+                }),
+                pg_version,
+            }),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use crate::{
-        config::RuntimeConfig,
-        pginfo::state::{PgConfig, PgInfoCommon, ReplicationSlotInfo},
-        state::{Version, WorkerStatus},
-    };
-
-    use super::{
-        build_local_member_record, evaluate_trust, DcsCache, DcsTrust, LeaderRecord, MemberRecord,
-        MemberRole,
-    };
-    use crate::{
-        pginfo::state::{PgInfoState, Readiness, SqlStatus},
-        state::{MemberId, TimelineId, UnixMillis, WalLsn},
-    };
-
-    fn sample_runtime_config() -> RuntimeConfig {
-        crate::test_harness::runtime_config::sample_runtime_config()
-    }
-
-    fn sample_cache() -> DcsCache {
-        DcsCache {
-            members: BTreeMap::new(),
-            leader: None,
-            switchover: None,
-            config: sample_runtime_config(),
-            init_lock: None,
-        }
-    }
-
-    #[test]
-    fn evaluate_trust_covers_all_outcomes() {
-        let self_id = MemberId("node-a".to_string());
-        let mut cache = sample_cache();
-
-        assert_eq!(
-            evaluate_trust(false, &cache, &self_id),
-            DcsTrust::NotTrusted
-        );
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FailSafe);
-
-        cache.members.insert(
-            self_id.clone(),
-            MemberRecord {
-                member_id: self_id.clone(),
-                postgres_host: "127.0.0.1".to_string(),
-                postgres_port: 5432,
-                api_url: None,
-                role: MemberRole::Unknown,
-                sql: SqlStatus::Unknown,
-                readiness: Readiness::Unknown,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                pg_version: Version(1),
-            },
-        );
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
-
-        cache.leader = Some(LeaderRecord {
-            member_id: MemberId("node-b".to_string()),
-            generation: 1,
-        });
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
-    }
-
-    #[test]
-    fn evaluate_trust_keeps_healthy_majority_when_leader_metadata_is_missing_or_stale() {
-        let self_id = MemberId("node-a".to_string());
-        let mut cache = sample_cache();
-        for member_id in ["node-a", "node-c"] {
-            let member_id = MemberId(member_id.to_string());
-            cache.members.insert(
-                member_id.clone(),
-                MemberRecord {
-                    member_id,
-                    postgres_host: "127.0.0.1".to_string(),
-                    postgres_port: 5432,
-                    api_url: None,
-                    role: MemberRole::Replica,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: None,
-                    write_lsn: None,
-                    replay_lsn: None,
-                    pg_version: Version(1),
-                },
-            );
-        }
-        cache.members.insert(
-            MemberId("node-b".to_string()),
-            MemberRecord {
-                member_id: MemberId("node-b".to_string()),
-                postgres_host: "127.0.0.2".to_string(),
-                postgres_port: 5432,
-                api_url: None,
-                role: MemberRole::Primary,
-                sql: SqlStatus::Healthy,
-                readiness: Readiness::Ready,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                pg_version: Version(1),
-            },
-        );
-        cache.leader = Some(LeaderRecord {
-            member_id: MemberId("node-b".to_string()),
-            generation: 1,
-        });
-
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
-
-        cache.members.remove(&MemberId("node-b".to_string()));
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
-    }
-
-    #[test]
-    fn evaluate_trust_stays_fail_safe_without_member_quorum() {
-        let self_id = MemberId("node-a".to_string());
-        let mut cache = sample_cache();
-
-        cache.members.insert(
-            self_id.clone(),
-            MemberRecord {
-                member_id: self_id.clone(),
-                postgres_host: "127.0.0.1".to_string(),
-                postgres_port: 5432,
-                api_url: None,
-                role: MemberRole::Replica,
-                sql: SqlStatus::Healthy,
-                readiness: Readiness::Ready,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                pg_version: Version(1),
-            },
-        );
-        cache.members.insert(
-            MemberId("node-b".to_string()),
-            MemberRecord {
-                member_id: MemberId("node-b".to_string()),
-                postgres_host: "127.0.0.2".to_string(),
-                postgres_port: 5432,
-                api_url: None,
-                role: MemberRole::Primary,
-                sql: SqlStatus::Healthy,
-                readiness: Readiness::Ready,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                pg_version: Version(1),
-            },
-        );
-        cache.members.insert(
-            MemberId("node-c".to_string()),
-            MemberRecord {
-                member_id: MemberId("node-c".to_string()),
-                postgres_host: "127.0.0.3".to_string(),
-                postgres_port: 5432,
-                api_url: None,
-                role: MemberRole::Replica,
-                sql: SqlStatus::Healthy,
-                readiness: Readiness::Ready,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                pg_version: Version(1),
-            },
-        );
-        cache.leader = Some(LeaderRecord {
-            member_id: MemberId("node-b".to_string()),
-            generation: 1,
-        });
-
-        cache.members.remove(&MemberId("node-b".to_string()));
-        cache.members.remove(&MemberId("node-c".to_string()));
-        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
-    }
-
-    fn common(sql: SqlStatus, readiness: Readiness) -> PgInfoCommon {
-        PgInfoCommon {
-            worker: WorkerStatus::Running,
-            sql,
-            readiness,
-            timeline: Some(TimelineId(4)),
-            pg_config: PgConfig {
-                port: None,
-                hot_standby: None,
-                primary_conninfo: None,
-                primary_slot_name: None,
-                extra: BTreeMap::new(),
-            },
-            last_refresh_at: Some(UnixMillis(9)),
-        }
-    }
-
-    #[test]
-    fn build_local_member_record_maps_pg_variants() {
-        let self_id = MemberId("node-a".to_string());
-        let unknown = PgInfoState::Unknown {
-            common: common(SqlStatus::Unknown, Readiness::Unknown),
-        };
-        let unknown_record = build_local_member_record(
-            &self_id,
-            "10.0.0.11",
-            5433,
-            Some("http://node-a:8080"),
-            &unknown,
-            Version(11),
-        );
-        assert_eq!(unknown_record.postgres_host, "10.0.0.11".to_string());
-        assert_eq!(unknown_record.postgres_port, 5433);
-        assert_eq!(
-            unknown_record.api_url.as_deref(),
-            Some("http://node-a:8080")
-        );
-        assert_eq!(unknown_record.role, MemberRole::Unknown);
-        assert_eq!(unknown_record.write_lsn, None);
-        assert_eq!(unknown_record.replay_lsn, None);
-
-        let primary = PgInfoState::Primary {
-            common: common(SqlStatus::Healthy, Readiness::Ready),
-            wal_lsn: WalLsn(101),
-            slots: vec![ReplicationSlotInfo {
-                name: "slot-a".to_string(),
-            }],
-        };
-        let primary_record = build_local_member_record(
-            &self_id,
-            "10.0.0.12",
-            5434,
-            Some("http://node-a:8081"),
-            &primary,
-            Version(13),
-        );
-        assert_eq!(primary_record.postgres_host, "10.0.0.12".to_string());
-        assert_eq!(primary_record.postgres_port, 5434);
-        assert_eq!(primary_record.role, MemberRole::Primary);
-        assert_eq!(primary_record.write_lsn, Some(WalLsn(101)));
-        assert_eq!(primary_record.replay_lsn, None);
-
-        let replica = PgInfoState::Replica {
-            common: common(SqlStatus::Healthy, Readiness::Ready),
-            replay_lsn: WalLsn(22),
-            follow_lsn: Some(WalLsn(23)),
-            upstream: None,
-        };
-        let replica_record =
-            build_local_member_record(&self_id, "10.0.0.13", 5435, None, &replica, Version(15));
-        assert_eq!(replica_record.postgres_host, "10.0.0.13".to_string());
-        assert_eq!(replica_record.postgres_port, 5435);
-        assert_eq!(replica_record.api_url, None);
-        assert_eq!(replica_record.role, MemberRole::Replica);
-        assert_eq!(replica_record.write_lsn, None);
-        assert_eq!(replica_record.replay_lsn, Some(WalLsn(22)));
     }
 }

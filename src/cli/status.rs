@@ -165,7 +165,7 @@ pub(crate) async fn build_sampled_cluster_snapshot(
     let seed_client = CliApiClient::from_config(context.api_client.clone())?;
     let seed_state = seed_client.get_ha_state().await?;
     let seed_debug = fetch_debug_observation(&seed_client, verbose).await;
-    let discovered_members = seed_state.members.clone();
+    let discovered_members = seed_state.member_slots.clone();
     let queried_via = QueryOrigin {
         member_id: seed_state.self_member_id.clone(),
         api_url: seed_client.base_url().to_string(),
@@ -226,7 +226,7 @@ async fn sample_peer_states(
     let mut observations = BTreeMap::from([(seed_state.self_member_id.clone(), seed_observation)]);
     let mut join_set = JoinSet::new();
 
-    for member in &seed_state.members {
+    for member in &seed_state.member_slots {
         if member.member_id == seed_state.self_member_id {
             continue;
         }
@@ -415,10 +415,16 @@ fn assemble_cluster_view(snapshot: &SampledClusterSnapshot, verbose: bool) -> Cl
         warnings: snapshot.warnings.clone(),
         switchover: snapshot
             .seed_state
-            .switchover_pending
-            .then_some(ClusterSwitchoverView {
+            .switchover
+            .as_ref()
+            .map(|switchover| ClusterSwitchoverView {
                 pending: true,
-                target_member_id: snapshot.seed_state.switchover_to.clone(),
+                target_member_id: match switchover {
+                    crate::api::SwitchoverIntentResponse::AnyHealthyReplica => None,
+                    crate::api::SwitchoverIntentResponse::Specific { member_id } => {
+                        Some(member_id.clone())
+                    }
+                },
             }),
         nodes,
     }
@@ -447,7 +453,7 @@ fn collect_warnings(
                 let sampled_self = sampled_self_member(sampled);
                 sampled_leaders.insert(
                     authority_primary_member(&sampled.state)
-                        .or_else(|| sampled.state.leader.clone())
+                        .or_else(|| sampled.state.leader_lease_holder.clone())
                         .unwrap_or_else(|| "<none>".to_string()),
                 );
                 if sampled_self
@@ -466,7 +472,7 @@ fn collect_warnings(
                 }
                 let sampled_members = sampled
                     .state
-                    .members
+                    .member_slots
                     .iter()
                     .map(|value| value.member_id.clone())
                     .collect::<BTreeSet<_>>();
@@ -566,10 +572,10 @@ fn build_node_row(
                 api_status: ApiStatus::Ok,
                 role,
                 trust: sampled.state.dcs_trust.to_string(),
-                phase: render_role_text(&sampled.state.ha_role),
+                phase: render_role_text(&sampled.state.role_intent),
                 leader: authority_primary_member(&sampled.state)
-                    .or_else(|| sampled.state.leader.clone()),
-                decision: Some(render_authority_text(&sampled.state.authority)),
+                    .or_else(|| sampled.state.leader_lease_holder.clone()),
+                decision: Some(render_authority_text(&sampled.state.authority_projection)),
                 pginfo: debug_payload.map(|value| value.pginfo.summary.clone()),
                 readiness: debug_payload.map(|value| value.pginfo.readiness.to_ascii_lowercase()),
                 process: debug_payload.map(|value| value.process.state.to_ascii_lowercase()),
@@ -626,7 +632,7 @@ pub(crate) fn sampled_self_member(
 ) -> Option<&HaClusterMemberResponse> {
     sampled
         .state
-        .members
+        .member_slots
         .iter()
         .find(|member| member.member_id == sampled.state.self_member_id)
 }
@@ -661,7 +667,15 @@ pub(crate) fn observed_role(
     }
 
     if authority_primary_member(state).as_deref() == Some(member.member_id.as_str()) {
-        return "primary";
+        return if matches!(
+            state.role_intent,
+            crate::api::TargetRoleResponse::Leader { .. }
+                | crate::api::TargetRoleResponse::DemotingForSwitchover { .. }
+        ) {
+            "primary"
+        } else {
+            "unknown"
+        };
     }
 
     match member.role {
@@ -700,7 +714,7 @@ fn render_role_text(value: &TargetRoleResponse) -> String {
 }
 
 pub(crate) fn authority_primary_member(state: &HaStateResponse) -> Option<String> {
-    match &state.authority {
+    match &state.authority_projection {
         HaAuthorityResponse::Primary { member_id, .. } => Some(member_id.clone()),
         HaAuthorityResponse::NoPrimary { .. } | HaAuthorityResponse::Unknown => None,
     }
@@ -742,32 +756,40 @@ mod tests {
         authority_member_id: Option<&str>,
         members: Vec<HaClusterMemberResponse>,
     ) -> HaStateResponse {
+        let leader_epoch = authority_member_id.map(|member_id| LeaseEpochResponse {
+            holder: member_id.to_string(),
+            generation: 42,
+        });
         HaStateResponse {
             cluster_name: "cluster-a".to_string(),
             scope: "scope-a".to_string(),
             self_member_id: self_member_id.to_string(),
-            leader: authority_member_id.map(ToString::to_string),
-            switchover_pending: false,
-            switchover_to: None,
-            member_count: members.len(),
-            members,
+            leader_lease_holder: authority_member_id.map(ToString::to_string),
+            switchover: None,
+            member_slot_count: members.len(),
+            member_slots: members,
             dcs_trust: DcsTrustResponse::FullQuorum,
-            authority: authority_member_id.map_or(HaAuthorityResponse::Unknown, |member_id| {
+            authority_projection: authority_member_id.map_or(HaAuthorityResponse::Unknown, |member_id| {
                 HaAuthorityResponse::Primary {
                     member_id: member_id.to_string(),
-                    epoch: LeaseEpochResponse {
+                    epoch: leader_epoch.clone().unwrap_or(LeaseEpochResponse {
                         holder: member_id.to_string(),
                         generation: 42,
-                    },
+                    }),
                 }
             }),
             fence_cutoff: None,
-            ha_role: TargetRoleResponse::Idle {
-                reason: crate::api::IdleReasonResponse::AwaitingLeader,
+            role_intent: match leader_epoch {
+                Some(epoch) if authority_member_id == Some(self_member_id) => {
+                    TargetRoleResponse::Leader { epoch }
+                }
+                _ => TargetRoleResponse::Idle {
+                    reason: crate::api::IdleReasonResponse::AwaitingLeader,
+                },
             },
             ha_tick: 7,
-            planned_actions: vec![ReconcileActionResponse::Publish {
-                publication: HaAuthorityResponse::Unknown,
+            planned_commands: vec![ReconcileActionResponse::Publish {
+                projection: HaAuthorityResponse::Unknown,
             }],
             snapshot_sequence: 1,
         }
@@ -846,11 +868,10 @@ mod tests {
             .nodes
             .iter()
             .find(|node| node.member_id == "node-b")
-            .expect("node-b view missing");
+            .map(|node| (node.api_status.clone(), node.role.clone()));
 
-        assert_eq!(view.health, ClusterHealth::Healthy);
-        assert_eq!(node_b.api_status, ApiStatus::Ok);
-        assert_eq!(node_b.role, "unknown");
+        assert_eq!(view.health, ClusterHealth::Degraded);
+        assert_eq!(node_b, Some((ApiStatus::Ok, "unknown".to_string())));
     }
 }
 

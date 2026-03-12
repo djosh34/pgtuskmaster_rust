@@ -40,17 +40,16 @@ pub struct HaStateResponse {
     pub cluster_name: String,
     pub scope: String,
     pub self_member_id: String,
-    pub leader: Option<String>,
-    pub switchover_pending: bool,
-    pub switchover_to: Option<String>,
-    pub member_count: usize,
-    pub members: Vec<HaClusterMemberResponse>,
+    pub leader_lease_holder: Option<String>,
+    pub switchover: Option<SwitchoverIntentResponse>,
+    pub member_slot_count: usize,
+    pub member_slots: Vec<HaClusterMemberResponse>,
     pub dcs_trust: DcsTrustResponse,
-    pub authority: HaAuthorityResponse,
+    pub authority_projection: AuthorityProjectionResponse,
     pub fence_cutoff: Option<FenceCutoffResponse>,
-    pub ha_role: TargetRoleResponse,
+    pub role_intent: RoleIntentResponse,
     pub ha_tick: u64,
-    pub planned_actions: Vec<ReconcileActionResponse>,
+    pub planned_commands: Vec<HaCommandResponse>,
     pub snapshot_sequence: u64,
 }
 
@@ -74,13 +73,13 @@ pub struct HaClusterMemberResponse {
 #[serde(rename_all = "snake_case")]
 pub enum DcsTrustResponse {
     FullQuorum,
-    FailSafe,
+    Degraded,
     NotTrusted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum HaAuthorityResponse {
+pub enum AuthorityProjectionResponse {
     Primary {
         member_id: String,
         epoch: LeaseEpochResponse,
@@ -107,6 +106,13 @@ pub struct FenceCutoffResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SwitchoverIntentResponse {
+    AnyHealthyReplica,
+    Specific { member_id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NoPrimaryReasonResponse {
     DcsDegraded,
     LeaseOpen,
@@ -123,7 +129,7 @@ pub enum SwitchoverBlockerResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TargetRoleResponse {
+pub enum RoleIntentResponse {
     Leader { epoch: LeaseEpochResponse },
     Candidate { candidacy: CandidacyResponse },
     Follower { goal: FollowGoalResponse },
@@ -182,7 +188,7 @@ pub enum FenceReasonResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ReconcileActionResponse {
+pub enum HaCommandResponse {
     InitDb,
     BaseBackup { member_id: String },
     PgRewind { member_id: String },
@@ -193,7 +199,7 @@ pub enum ReconcileActionResponse {
     AcquireLease { candidacy: CandidacyResponse },
     ReleaseLease,
     EnsureRequiredRoles,
-    Publish { publication: HaAuthorityResponse },
+    Publish { projection: AuthorityProjectionResponse },
     ClearSwitchover,
 }
 
@@ -230,6 +236,10 @@ pub enum SqlStatusResponse {
     Unreachable,
 }
 
+pub type HaAuthorityResponse = AuthorityProjectionResponse;
+pub type TargetRoleResponse = RoleIntentResponse;
+pub type ReconcileActionResponse = HaCommandResponse;
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadinessResponse {
@@ -242,7 +252,7 @@ impl DcsTrustResponse {
     fn as_str(&self) -> &'static str {
         match self {
             Self::FullQuorum => "full_quorum",
-            Self::FailSafe => "fail_safe",
+            Self::Degraded => "degraded",
             Self::NotTrusted => "not_trusted",
         }
     }
