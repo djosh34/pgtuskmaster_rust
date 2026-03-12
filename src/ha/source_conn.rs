@@ -31,18 +31,6 @@ pub(crate) fn basebackup_source_from_member(
     })
 }
 
-pub(crate) fn basebackup_resume_source_from_member(
-    self_id: &MemberId,
-    member: &MemberRecord,
-    defaults: &ProcessDispatchDefaults,
-) -> Result<ReplicatorSourceConn, SourceConnError> {
-    validate_remote_source_member_resume(self_id, member)?;
-    Ok(ReplicatorSourceConn {
-        conninfo: remote_conninfo(member, defaults.replicator_username.as_str(), defaults),
-        auth: defaults.replicator_auth.clone(),
-    })
-}
-
 pub(crate) fn rewind_source_from_member(
     self_id: &MemberId,
     member: &MemberRecord,

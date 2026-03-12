@@ -1,10 +1,8 @@
 use std::path::Path;
 
 use crate::{
-    dcs::{
-        state::{member_record_is_fresh, MemberRole},
-        store::DcsStoreError,
-    },
+    dcs::{state::MemberRole, store::DcsStoreError},
+    postgres_roles,
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     process::jobs::ActiveJobKind,
     state::{MemberId, WorkerError, WorkerStatus},
@@ -89,6 +87,7 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
         postgres: build_postgres_state(&pg.value),
         process: ProcessState::from(&process.value),
         storage: build_storage_state(&dcs.value, &pg, &ctx.self_id, now),
+        required_roles_ready: ctx.state.required_roles_ready,
         publication: ctx.state.publication.clone(),
         observation: ObservationState {
             pg_observed_at: pg.updated_at,
@@ -110,11 +109,27 @@ fn build_next_state(
     HaState {
         worker: WorkerStatus::Running,
         tick: current.tick.saturating_add(1),
+        required_roles_ready: next_required_roles_ready(current, actions),
         publication: apply_publication_goal(&current.publication, &desired.publication),
         role: desired.role.clone(),
         clear_switchover: desired.clear_switchover,
         planned_actions: actions.to_vec(),
     }
+}
+
+fn next_required_roles_ready(current: &HaState, actions: &[ReconcileAction]) -> bool {
+    if actions.iter().any(|action| {
+        matches!(
+            action,
+            ReconcileAction::InitDb
+                | ReconcileAction::BaseBackup(_)
+                | ReconcileAction::StartReplica(_)
+        )
+    }) {
+        return false;
+    }
+
+    current.required_roles_ready
 }
 
 fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) -> PublicationState {
@@ -166,6 +181,22 @@ async fn execute_action(
                     "ha clear switchover failed at tick {ha_tick} index {action_index}: {err}"
                 ))
             })
+        }
+        ReconcileAction::EnsureRequiredRoles => {
+            let runtime_config = ctx.config_subscriber.latest().value;
+            postgres_roles::ensure_required_roles(
+                &runtime_config,
+                ctx.process_defaults.socket_dir.as_path(),
+                ctx.process_defaults.postgres_port,
+            )
+            .await
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "ha ensure required roles failed at tick {ha_tick} index {action_index}: {err}"
+                ))
+            })?;
+            ctx.state.required_roles_ready = true;
+            Ok(())
         }
         ReconcileAction::Publish(_) => Ok(()),
         process_action => {
@@ -264,14 +295,10 @@ fn build_storage_state(
     let self_member = dcs.cache.members.get(self_id);
     let pg_observation_stale =
         now.0.saturating_sub(pg.updated_at.0) > dcs.cache.config.ha.lease_ttl_ms;
-    if matches!(build_postgres_state(&pg.value), PostgresState::Primary { .. })
-        && self_member.is_some_and(|record| {
-            !member_record_is_fresh(
-                record,
-                &dcs.cache,
-                dcs.last_refresh_at.unwrap_or(crate::state::UnixMillis(0)),
-            )
-        } || pg_observation_stale)
+    if matches!(
+        build_postgres_state(&pg.value),
+        PostgresState::Primary { .. }
+    ) && (self_member.is_none() || pg_observation_stale)
     {
         StorageState::Stalled
     } else {
@@ -306,12 +333,7 @@ fn build_global_knowledge(
         .members
         .iter()
         .filter(|(member_id, _)| *member_id != self_id)
-        .map(|(member_id, member)| {
-            (
-                member_id.clone(),
-                build_peer_knowledge_from_member(dcs, member),
-            )
-        })
+        .map(|(member_id, member)| (member_id.clone(), build_peer_knowledge_from_member(member)))
         .collect();
 
     GlobalKnowledge {
@@ -339,22 +361,13 @@ fn build_global_knowledge(
     }
 }
 
-fn build_peer_knowledge_from_member(
-    dcs: &crate::dcs::state::DcsState,
-    member: &crate::dcs::state::MemberRecord,
-) -> PeerKnowledge {
+fn build_peer_knowledge_from_member(member: &crate::dcs::state::MemberRecord) -> PeerKnowledge {
     let api = if member.api_url.is_some() {
         ApiVisibility::Reachable
     } else {
         ApiVisibility::Unreachable
     };
-    let election = if !member_record_is_fresh(
-        member,
-        &dcs.cache,
-        dcs.last_refresh_at.unwrap_or(crate::state::UnixMillis(0)),
-    ) {
-        ElectionEligibility::Ineligible(IneligibleReason::Partitioned)
-    } else if api == ApiVisibility::Unreachable {
+    let election = if api == ApiVisibility::Unreachable {
         ElectionEligibility::Ineligible(IneligibleReason::ApiUnavailable)
     } else if member.sql != SqlStatus::Healthy || member.readiness != Readiness::Ready {
         ElectionEligibility::Ineligible(IneligibleReason::NotReady)
@@ -406,11 +419,7 @@ fn leader_is_available(dcs: &crate::dcs::state::DcsState, leader_member_id: &Mem
         .members
         .get(leader_member_id)
         .is_some_and(|member| {
-            member_record_is_fresh(
-                member,
-                &dcs.cache,
-                dcs.last_refresh_at.unwrap_or(crate::state::UnixMillis(0)),
-            ) && member.role == MemberRole::Primary
+            member.role == MemberRole::Primary
                 && member.sql == SqlStatus::Healthy
                 && member.readiness == Readiness::Ready
         })
@@ -425,11 +434,6 @@ fn observed_primary_member(
         .values()
         .find(|member| {
             member.member_id != *self_id
-                && member_record_is_fresh(
-                    member,
-                    &dcs.cache,
-                    dcs.last_refresh_at.unwrap_or(crate::state::UnixMillis(0)),
-                )
                 && member.role == MemberRole::Primary
                 && member.sql == SqlStatus::Healthy
                 && member.readiness == Readiness::Ready
@@ -551,7 +555,6 @@ mod tests {
                         timeline: Some(TimelineId(1)),
                         write_lsn: Some(crate::state::WalLsn(42)),
                         replay_lsn: None,
-                        updated_at: UnixMillis(100),
                         pg_version: Version(1),
                     },
                 )]),

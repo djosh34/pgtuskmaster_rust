@@ -77,7 +77,9 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> Option<ReconcileAct
             (DataDirState::Initialized(_), PostgresState::Replica { .. }) => {
                 Some(ReconcileAction::Promote)
             }
-            (DataDirState::Initialized(_), PostgresState::Primary { .. }) => None,
+            (DataDirState::Initialized(_), PostgresState::Primary { .. }) => {
+                (!world.local.required_roles_ready).then_some(ReconcileAction::EnsureRequiredRoles)
+            }
         },
         TargetRole::Candidate(kind) => Some(ReconcileAction::AcquireLease(kind.clone())),
         TargetRole::Follower(goal) => reconcile_follow_role(world, goal),
@@ -243,6 +245,7 @@ mod tests {
             postgres: PostgresState::Offline,
             process: ProcessState::Idle,
             storage: super::super::types::StorageState::Healthy,
+            required_roles_ready: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
@@ -280,6 +283,7 @@ mod tests {
             postgres: PostgresState::Primary { committed_lsn: 42 },
             process: ProcessState::Idle,
             storage: super::super::types::StorageState::Stalled,
+            required_roles_ready: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
@@ -317,6 +321,7 @@ mod tests {
             postgres: PostgresState::Primary { committed_lsn: 42 },
             process: ProcessState::Idle,
             storage: super::super::types::StorageState::Healthy,
+            required_roles_ready: false,
             publication: PublicationState {
                 authority: AuthorityView::Unknown,
                 fence_cutoff: None,
@@ -365,6 +370,7 @@ mod tests {
             },
             process: ProcessState::Idle,
             storage: super::super::types::StorageState::Healthy,
+            required_roles_ready: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
@@ -410,6 +416,7 @@ mod tests {
             },
             process: ProcessState::Idle,
             storage: super::super::types::StorageState::Healthy,
+            required_roles_ready: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
@@ -457,6 +464,7 @@ mod tests {
             },
             process: ProcessState::Idle,
             storage: super::super::types::StorageState::Healthy,
+            required_roles_ready: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),

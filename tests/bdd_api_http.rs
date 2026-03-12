@@ -80,6 +80,15 @@ impl DcsStore for RecordingStore {
         Ok(())
     }
 
+    fn write_path_with_lease(
+        &mut self,
+        path: &str,
+        value: String,
+        _lease_ttl_ms: u64,
+    ) -> Result<(), DcsStoreError> {
+        self.write_path(path, value)
+    }
+
     fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
         {
             let mut guard = self

@@ -10,7 +10,7 @@ use crate::{
         SqlStatusResponse, SwitchoverBlockerResponse, TargetRoleResponse,
     },
     dcs::{
-        state::{member_record_is_fresh, DcsTrust, MemberRecord, MemberRole, SwitchoverRequest},
+        state::{DcsTrust, MemberRecord, MemberRole, SwitchoverRequest},
         store::DcsStore,
     },
     debug_api::snapshot::SystemSnapshot,
@@ -19,6 +19,7 @@ use crate::{
         IneligibleReason, NoPrimaryReason, PublicationGoal, ReconcileAction, ShutdownMode,
         SwitchoverBlocker, TargetRole,
     },
+    pginfo::state::{Readiness, SqlStatus},
     state::Versioned,
 };
 
@@ -144,6 +145,14 @@ fn validate_switchover_request(
     let target_member = members
         .get(&target_member_id)
         .ok_or_else(|| ApiError::bad_request(format!("unknown switchover_to member `{target}`")))?;
+    if target_member.role == MemberRole::Unknown
+        || target_member.sql != SqlStatus::Healthy
+        || target_member.readiness != Readiness::Ready
+    {
+        return Err(ApiError::bad_request(format!(
+            "switchover_to member `{target}` is not an eligible switchover target"
+        )));
+    }
 
     if snapshot
         .dcs
@@ -156,14 +165,6 @@ fn validate_switchover_request(
     {
         return Err(ApiError::bad_request(format!(
             "switchover_to member `{target}` is already the leader"
-        )));
-    }
-
-    let now = crate::process::worker::system_now_unix_millis()
-        .map_err(|err| ApiError::internal(format!("switchover current-time read failed: {err}")))?;
-    if !member_record_is_fresh(target_member, &snapshot.dcs.value.cache, now) {
-        return Err(ApiError::bad_request(format!(
-            "switchover_to member `{target}` is not an eligible switchover target"
         )));
     }
 
@@ -210,7 +211,6 @@ fn map_member_record(value: &MemberRecord) -> HaClusterMemberResponse {
         timeline: value.timeline.map(|timeline| u64::from(timeline.0)),
         write_lsn: value.write_lsn.map(|lsn| lsn.0),
         replay_lsn: value.replay_lsn.map(|lsn| lsn.0),
-        updated_at_ms: value.updated_at.0,
         pg_version: value.pg_version.0,
     }
 }
@@ -372,6 +372,7 @@ fn map_action(value: &ReconcileAction) -> ReconcileActionResponse {
             candidacy: map_candidacy(candidacy),
         },
         ReconcileAction::ReleaseLease => ReconcileActionResponse::ReleaseLease,
+        ReconcileAction::EnsureRequiredRoles => ReconcileActionResponse::EnsureRequiredRoles,
         ReconcileAction::Publish(publication) => ReconcileActionResponse::Publish {
             publication: map_publication_goal(publication),
         },
@@ -462,7 +463,6 @@ mod tests {
         role: MemberRole,
         sql: SqlStatus,
         readiness: Readiness,
-        updated_at: UnixMillis,
     ) -> MemberRecord {
         MemberRecord {
             member_id: MemberId(member_id.to_string()),
@@ -475,7 +475,6 @@ mod tests {
             timeline: Some(crate::state::TimelineId(1)),
             write_lsn: Some(crate::state::WalLsn(10)),
             replay_lsn: Some(crate::state::WalLsn(10)),
-            updated_at,
             pg_version: Version(1),
         }
     }
@@ -492,7 +491,6 @@ mod tests {
             MemberRole::Primary,
             SqlStatus::Healthy,
             Readiness::Ready,
-            UnixMillis(100),
         );
         let members = BTreeMap::from([
             (self_member.member_id.clone(), self_member),
@@ -555,6 +553,7 @@ mod tests {
                 HaState {
                     worker: WorkerStatus::Running,
                     tick: 7,
+                    required_roles_ready: false,
                     publication: PublicationState {
                         authority: AuthorityView::Primary {
                             member: self_id.clone(),
@@ -575,13 +574,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_switchover_request_accepts_known_non_leader_target_despite_lagging_cache() {
+    fn validate_switchover_request_rejects_ineligible_target() {
         let snapshot = sample_snapshot(sample_member(
             "node-c",
             MemberRole::Unknown,
             SqlStatus::Unknown,
             Readiness::Unknown,
-            UnixMillis(100),
         ));
 
         let result = validate_switchover_request(
@@ -593,9 +591,9 @@ mod tests {
 
         assert_eq!(
             result,
-            Ok(crate::dcs::state::SwitchoverRequest {
-                switchover_to: Some(MemberId("node-c".to_string())),
-            })
+            Err(ApiError::bad_request(
+                "switchover_to member `node-c` is not an eligible switchover target".to_string()
+            ))
         );
     }
 
@@ -606,7 +604,6 @@ mod tests {
             MemberRole::Replica,
             SqlStatus::Healthy,
             Readiness::Ready,
-            UnixMillis(100),
         ));
 
         let result = validate_switchover_request(
@@ -631,7 +628,6 @@ mod tests {
             MemberRole::Replica,
             SqlStatus::Healthy,
             Readiness::Ready,
-            UnixMillis(100),
         ));
 
         let result = validate_switchover_request(
@@ -650,13 +646,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_switchover_request_rejects_stale_target() {
+    fn validate_switchover_request_accepts_healthy_non_leader_target() {
         let snapshot = sample_snapshot(sample_member(
             "node-c",
             MemberRole::Replica,
             SqlStatus::Healthy,
             Readiness::Ready,
-            UnixMillis(1),
         ));
 
         let result = validate_switchover_request(
@@ -668,9 +663,9 @@ mod tests {
 
         assert_eq!(
             result,
-            Err(ApiError::bad_request(
-                "switchover_to member `node-c` is not an eligible switchover target".to_string()
-            ))
+            Ok(crate::dcs::state::SwitchoverRequest {
+                switchover_to: Some(MemberId("node-c".to_string())),
+            })
         );
     }
 }

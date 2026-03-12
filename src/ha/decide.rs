@@ -605,6 +605,7 @@ mod tests {
                 },
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
+                required_roles_ready: false,
                 publication: PublicationState {
                     authority: AuthorityView::NoPrimary(NoPrimaryReason::LeaseOpen),
                     fence_cutoff: None,

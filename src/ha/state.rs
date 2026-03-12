@@ -17,6 +17,7 @@ use super::types::{PublicationState, ReconcileAction, TargetRole};
 pub(crate) struct HaState {
     pub(crate) worker: WorkerStatus,
     pub(crate) tick: u64,
+    pub(crate) required_roles_ready: bool,
     pub(crate) publication: PublicationState,
     pub(crate) role: TargetRole,
     pub(crate) clear_switchover: bool,
@@ -100,6 +101,7 @@ impl HaState {
         Self {
             worker,
             tick: 0,
+            required_roles_ready: false,
             publication: PublicationState::unknown(),
             role: TargetRole::Idle(super::types::IdleReason::AwaitingLeader),
             clear_switchover: false,

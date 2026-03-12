@@ -56,6 +56,12 @@ pub trait DcsStore: Send {
     fn read_path(&mut self, path: &str) -> Result<Option<String>, DcsStoreError>;
     fn snapshot_prefix(&mut self, path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError>;
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError>;
+    fn write_path_with_lease(
+        &mut self,
+        path: &str,
+        value: String,
+        lease_ttl_ms: u64,
+    ) -> Result<(), DcsStoreError>;
     fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError>;
     fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError>;
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError>;
@@ -100,13 +106,14 @@ pub(crate) fn write_local_member(
     store: &mut dyn DcsStore,
     scope: &str,
     member: &MemberRecord,
+    lease_ttl_ms: u64,
 ) -> Result<(), DcsStoreError> {
     let path = format!("/{}/member/{}", scope.trim_matches('/'), member.member_id.0);
     let encoded = serde_json::to_string(member).map_err(|err| DcsStoreError::Decode {
         key: path.clone(),
         message: err.to_string(),
     })?;
-    store.write_path(&path, encoded)?;
+    store.write_path_with_lease(&path, encoded, lease_ttl_ms)?;
     Ok(())
 }
 
@@ -282,6 +289,15 @@ impl DcsStore for TestDcsStore {
         Ok(())
     }
 
+    fn write_path_with_lease(
+        &mut self,
+        path: &str,
+        value: String,
+        _lease_ttl_ms: u64,
+    ) -> Result<(), DcsStoreError> {
+        self.write_path(path, value)
+    }
+
     fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
         if self.kv.contains_key(path) {
             return Ok(false);
@@ -342,7 +358,7 @@ mod tests {
             worker::DcsValue,
         },
         pginfo::state::{Readiness, SqlStatus},
-        state::{MemberId, UnixMillis, Version},
+        state::{MemberId, Version},
     };
 
     use super::{
@@ -378,10 +394,9 @@ mod tests {
             timeline: None,
             write_lsn: None,
             replay_lsn: None,
-            updated_at: UnixMillis(10),
             pg_version: Version(7),
         };
-        let wrote = write_local_member(&mut store, "scope-a", &member);
+        let wrote = write_local_member(&mut store, "scope-a", &member, 10_000);
         assert_eq!(wrote, Ok(()));
         assert_eq!(store.writes().len(), 1);
         assert_eq!(store.writes()[0].0, "/scope-a/member/node-a");
@@ -403,7 +418,6 @@ mod tests {
             timeline: None,
             write_lsn: None,
             replay_lsn: None,
-            updated_at: UnixMillis(10),
             pg_version: Version(1),
         })?;
         store.push_event(WatchEvent {
@@ -499,7 +513,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                updated_at: UnixMillis(10),
                 pg_version: Version(1),
             },
         );

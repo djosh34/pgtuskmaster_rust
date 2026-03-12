@@ -42,7 +42,6 @@ pub(crate) struct MemberRecord {
     pub(crate) timeline: Option<TimelineId>,
     pub(crate) write_lsn: Option<WalLsn>,
     pub(crate) replay_lsn: Option<WalLsn>,
-    pub(crate) updated_at: UnixMillis,
     pub(crate) pg_version: Version,
 }
 
@@ -98,79 +97,27 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) last_emitted_trust: Option<DcsTrust>,
 }
 
-pub(crate) fn evaluate_trust(
-    etcd_healthy: bool,
-    cache: &DcsCache,
-    self_id: &MemberId,
-    now: UnixMillis,
-) -> DcsTrust {
+pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &MemberId) -> DcsTrust {
     if !etcd_healthy {
         return DcsTrust::NotTrusted;
     }
 
-    let Some(self_member) = cache.members.get(self_id) else {
-        return DcsTrust::FailSafe;
-    };
-    if !member_record_is_fresh(self_member, cache, now) {
+    if !cache.members.contains_key(self_id) {
         return DcsTrust::FailSafe;
     }
 
-    if !has_fresh_quorum(cache, now) {
+    if !has_member_quorum(cache) {
         return DcsTrust::FailSafe;
     }
 
     DcsTrust::FullQuorum
 }
 
-pub(crate) fn member_record_is_fresh(
-    record: &MemberRecord,
-    cache: &DcsCache,
-    now: UnixMillis,
-) -> bool {
-    let max_age_ms = cache.config.ha.lease_ttl_ms;
-    now.0.saturating_sub(record.updated_at.0) <= max_age_ms
-}
-
-pub(crate) fn prune_stale_members(cache: &mut DcsCache, now: UnixMillis) {
-    let stale_member_ids = cache
-        .members
-        .iter()
-        .filter(|(_, record)| !member_record_is_fresh(record, cache, now))
-        .map(|(member_id, _)| member_id.clone())
-        .collect::<Vec<_>>();
-
-    stale_member_ids.iter().for_each(|member_id| {
-        cache.members.remove(member_id);
-    });
-
-    if cache
-        .leader
-        .as_ref()
-        .is_some_and(|leader| !cache.members.contains_key(&leader.member_id))
-    {
-        cache.leader = None;
-    }
-}
-
-fn fresh_member_count(cache: &DcsCache, now: UnixMillis) -> usize {
-    cache
-        .members
-        .values()
-        .filter(|record| member_record_is_fresh(record, cache, now))
-        .count()
-}
-
-fn has_fresh_quorum(cache: &DcsCache, now: UnixMillis) -> bool {
-    let fresh_members = fresh_member_count(cache, now);
-
-    // The current runtime only knows the observed DCS member set. Until there is an explicit
-    // configured membership source, multi-member quorum stays conservative: one fresh member is
-    // only trusted in a single-member view, and any larger observed view requires at least two
-    // fresh members.
+fn has_member_quorum(cache: &DcsCache) -> bool {
     if cache.members.len() <= 1 {
-        fresh_members == 1
+        cache.members.len() == 1
     } else {
-        fresh_members >= 2
+        cache.members.len() >= 2
     }
 }
 
@@ -180,7 +127,6 @@ pub(crate) fn build_local_member_record(
     postgres_port: u16,
     api_url: Option<&str>,
     pg_state: &PgInfoState,
-    now: UnixMillis,
     pg_version: Version,
 ) -> MemberRecord {
     match pg_state {
@@ -195,7 +141,6 @@ pub(crate) fn build_local_member_record(
             timeline: common.timeline,
             write_lsn: None,
             replay_lsn: None,
-            updated_at: now,
             pg_version,
         },
         PgInfoState::Primary {
@@ -211,7 +156,6 @@ pub(crate) fn build_local_member_record(
             timeline: common.timeline,
             write_lsn: Some(*wal_lsn),
             replay_lsn: None,
-            updated_at: now,
             pg_version,
         },
         PgInfoState::Replica {
@@ -227,7 +171,6 @@ pub(crate) fn build_local_member_record(
             timeline: common.timeline,
             write_lsn: None,
             replay_lsn: Some(*replay_lsn),
-            updated_at: now,
             pg_version,
         },
     }
@@ -244,8 +187,8 @@ mod tests {
     };
 
     use super::{
-        build_local_member_record, evaluate_trust, prune_stale_members, DcsCache, DcsTrust,
-        LeaderRecord, MemberRecord, MemberRole,
+        build_local_member_record, evaluate_trust, DcsCache, DcsTrust, LeaderRecord, MemberRecord,
+        MemberRole,
     };
     use crate::{
         pginfo::state::{PgInfoState, Readiness, SqlStatus},
@@ -272,13 +215,10 @@ mod tests {
         let mut cache = sample_cache();
 
         assert_eq!(
-            evaluate_trust(false, &cache, &self_id, UnixMillis(1)),
+            evaluate_trust(false, &cache, &self_id),
             DcsTrust::NotTrusted
         );
-        assert_eq!(
-            evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
-            DcsTrust::FailSafe
-        );
+        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FailSafe);
 
         cache.members.insert(
             self_id.clone(),
@@ -293,35 +233,22 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
         );
-        assert_eq!(
-            evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
-            DcsTrust::FullQuorum
-        );
-        assert_eq!(
-            evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
-            DcsTrust::FailSafe
-        );
+        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
 
         cache.leader = Some(LeaderRecord {
             member_id: MemberId("node-b".to_string()),
             generation: 1,
         });
-        assert_eq!(
-            evaluate_trust(true, &cache, &self_id, UnixMillis(1)),
-            DcsTrust::FullQuorum
-        );
+        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
     }
 
     #[test]
     fn evaluate_trust_keeps_healthy_majority_when_leader_metadata_is_missing_or_stale() {
         let self_id = MemberId("node-a".to_string());
         let mut cache = sample_cache();
-        let fresh_time = UnixMillis(100);
-
         for member_id in ["node-a", "node-c"] {
             let member_id = MemberId(member_id.to_string());
             cache.members.insert(
@@ -337,7 +264,6 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    updated_at: fresh_time,
                     pg_version: Version(1),
                 },
             );
@@ -355,7 +281,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
         );
@@ -364,20 +289,14 @@ mod tests {
             generation: 1,
         });
 
-        assert_eq!(
-            evaluate_trust(true, &cache, &self_id, UnixMillis(5_000)),
-            DcsTrust::FullQuorum
-        );
+        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
 
         cache.members.remove(&MemberId("node-b".to_string()));
-        assert_eq!(
-            evaluate_trust(true, &cache, &self_id, UnixMillis(5_000)),
-            DcsTrust::FullQuorum
-        );
+        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
     }
 
     #[test]
-    fn evaluate_trust_stays_fail_safe_without_fresh_quorum() {
+    fn evaluate_trust_stays_fail_safe_without_member_quorum() {
         let self_id = MemberId("node-a".to_string());
         let mut cache = sample_cache();
 
@@ -394,7 +313,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                updated_at: UnixMillis(100),
                 pg_version: Version(1),
             },
         );
@@ -411,7 +329,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
         );
@@ -428,7 +345,6 @@ mod tests {
                 timeline: None,
                 write_lsn: None,
                 replay_lsn: None,
-                updated_at: UnixMillis(1),
                 pg_version: Version(1),
             },
         );
@@ -437,66 +353,9 @@ mod tests {
             generation: 1,
         });
 
-        assert_eq!(
-            evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
-            DcsTrust::FailSafe
-        );
-    }
-
-    #[test]
-    fn prune_stale_members_recovers_single_member_view_when_requested() {
-        let self_id = MemberId("node-a".to_string());
-        let stale_member_id = MemberId("node-b".to_string());
-        let mut cache = sample_cache();
-
-        cache.members.insert(
-            self_id.clone(),
-            MemberRecord {
-                member_id: self_id.clone(),
-                postgres_host: "127.0.0.1".to_string(),
-                postgres_port: 5432,
-                api_url: None,
-                role: MemberRole::Replica,
-                sql: SqlStatus::Healthy,
-                readiness: Readiness::Ready,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                updated_at: UnixMillis(100),
-                pg_version: Version(1),
-            },
-        );
-        cache.members.insert(
-            stale_member_id.clone(),
-            MemberRecord {
-                member_id: stale_member_id.clone(),
-                postgres_host: "127.0.0.2".to_string(),
-                postgres_port: 5432,
-                api_url: None,
-                role: MemberRole::Primary,
-                sql: SqlStatus::Healthy,
-                readiness: Readiness::Ready,
-                timeline: None,
-                write_lsn: None,
-                replay_lsn: None,
-                updated_at: UnixMillis(1),
-                pg_version: Version(1),
-            },
-        );
-        cache.leader = Some(LeaderRecord {
-            member_id: stale_member_id,
-            generation: 1,
-        });
-
-        prune_stale_members(&mut cache, UnixMillis(20_000));
-
-        assert_eq!(cache.members.len(), 1);
-        assert!(cache.members.contains_key(&self_id));
-        assert!(cache.leader.is_none());
-        assert_eq!(
-            evaluate_trust(true, &cache, &self_id, UnixMillis(20_000)),
-            DcsTrust::FullQuorum
-        );
+        cache.members.remove(&MemberId("node-b".to_string()));
+        cache.members.remove(&MemberId("node-c".to_string()));
+        assert_eq!(evaluate_trust(true, &cache, &self_id), DcsTrust::FullQuorum);
     }
 
     fn common(sql: SqlStatus, readiness: Readiness) -> PgInfoCommon {
@@ -528,7 +387,6 @@ mod tests {
             5433,
             Some("http://node-a:8080"),
             &unknown,
-            UnixMillis(10),
             Version(11),
         );
         assert_eq!(unknown_record.postgres_host, "10.0.0.11".to_string());
@@ -554,7 +412,6 @@ mod tests {
             5434,
             Some("http://node-a:8081"),
             &primary,
-            UnixMillis(12),
             Version(13),
         );
         assert_eq!(primary_record.postgres_host, "10.0.0.12".to_string());
@@ -569,15 +426,8 @@ mod tests {
             follow_lsn: Some(WalLsn(23)),
             upstream: None,
         };
-        let replica_record = build_local_member_record(
-            &self_id,
-            "10.0.0.13",
-            5435,
-            None,
-            &replica,
-            UnixMillis(14),
-            Version(15),
-        );
+        let replica_record =
+            build_local_member_record(&self_id, "10.0.0.13", 5435, None, &replica, Version(15));
         assert_eq!(replica_record.postgres_host, "10.0.0.13".to_string());
         assert_eq!(replica_record.postgres_port, 5435);
         assert_eq!(replica_record.api_url, None);

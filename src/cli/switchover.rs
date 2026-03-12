@@ -148,7 +148,6 @@ mod tests {
             timeline: Some(if member_id == "node-a" { 2 } else { 1 }),
             write_lsn: Some(20),
             replay_lsn: Some(10),
-            updated_at_ms: 1,
             pg_version: 1,
         }
     }

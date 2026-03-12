@@ -545,17 +545,18 @@ fn build_node_row(
             sampled: Ok(sampled),
             ..
         }) => {
+            let effective_member = effective_member_view(member, Some(sampled));
             let debug_payload = sampled
                 .debug
                 .as_ref()
                 .and_then(|observation| observation.payload.as_ref());
             ClusterNodeView {
-                member_id: member.member_id.clone(),
-                is_self: member.member_id == queried_member_id,
+                member_id: effective_member.member_id.clone(),
+                is_self: effective_member.member_id == queried_member_id,
                 sampled: true,
-                api_url: member.api_url.clone(),
+                api_url: effective_member.api_url.clone(),
                 api_status: ApiStatus::Ok,
-                role: observed_role(member, &sampled.state).to_string(),
+                role: observed_role(effective_member, &sampled.state).to_string(),
                 trust: sampled.state.dcs_trust.to_string(),
                 phase: render_role_text(&sampled.state.ha_role),
                 leader: authority_primary_member(&sampled.state)
@@ -610,6 +611,21 @@ fn build_node_row(
             observation_error: Some("no observation recorded".to_string()),
         },
     }
+}
+
+pub(crate) fn effective_member_view<'a>(
+    discovered_member: &'a HaClusterMemberResponse,
+    sampled: Option<&'a SampledNodeState>,
+) -> &'a HaClusterMemberResponse {
+    sampled
+        .and_then(|value| {
+            value
+                .state
+                .members
+                .iter()
+                .find(|member| member.member_id == value.state.self_member_id)
+        })
+        .unwrap_or(discovered_member)
 }
 
 fn node_sort_key(left: &ClusterNodeView, right: &ClusterNodeView) -> std::cmp::Ordering {

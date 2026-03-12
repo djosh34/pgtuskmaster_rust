@@ -35,6 +35,7 @@ pub(crate) struct LocalKnowledge {
     pub(crate) postgres: PostgresState,
     pub(crate) process: ProcessState,
     pub(crate) storage: StorageState,
+    pub(crate) required_roles_ready: bool,
     pub(crate) publication: PublicationState,
     pub(crate) observation: ObservationState,
 }
@@ -284,6 +285,7 @@ pub(crate) enum ReconcileAction {
     Demote(ShutdownMode),
     AcquireLease(Candidacy),
     ReleaseLease,
+    EnsureRequiredRoles,
     Publish(PublicationGoal),
     ClearSwitchover,
 }
@@ -366,6 +368,7 @@ impl ReconcileAction {
             Self::Demote(_) => "demote",
             Self::AcquireLease(_) => "acquire_lease",
             Self::ReleaseLease => "release_lease",
+            Self::EnsureRequiredRoles => "ensure_required_roles",
             Self::Publish(_) => "publish",
             Self::ClearSwitchover => "clear_switchover",
         }

@@ -1328,6 +1328,15 @@ mod tests {
             Ok(())
         }
 
+        fn write_path_with_lease(
+            &mut self,
+            path: &str,
+            value: String,
+            _lease_ttl_ms: u64,
+        ) -> Result<(), DcsStoreError> {
+            self.write_path(path, value)
+        }
+
         fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
             let mut guard = self
                 .writes
@@ -1417,6 +1426,7 @@ mod tests {
         HaState {
             worker: crate::state::WorkerStatus::Running,
             tick: 7,
+            required_roles_ready: false,
             publication: PublicationState {
                 authority: crate::ha::types::AuthorityView::NoPrimary(NoPrimaryReason::Recovering),
                 fence_cutoff: None,
@@ -1431,6 +1441,7 @@ mod tests {
         HaState {
             worker: crate::state::WorkerStatus::Running,
             tick: 7,
+            required_roles_ready: false,
             publication: PublicationState {
                 authority: crate::ha::types::AuthorityView::Primary {
                     member: crate::state::MemberId("node-a".to_string()),

@@ -9,7 +9,8 @@ use crate::{
         error::CliError,
         output,
         status::{
-            build_sampled_cluster_snapshot, observed_role, ClusterWarning, SampledClusterSnapshot,
+            build_sampled_cluster_snapshot, effective_member_view, observed_role, ClusterWarning,
+            SampledClusterSnapshot,
         },
     },
 };
@@ -184,11 +185,20 @@ fn find_sampled_members_by_role<'a>(
         .discovered_members
         .iter()
         .filter(|member| {
-            snapshot
+            let sampled = snapshot
                 .observations
                 .get(&member.member_id)
-                .and_then(|observation| observation.sampled.as_ref().ok())
-                .is_some_and(|sampled| observed_role(member, &sampled.state) == role)
+                .and_then(|observation| observation.sampled.as_ref().ok());
+            sampled.is_some_and(|value| {
+                observed_role(effective_member_view(member, Some(value)), &value.state) == role
+            })
+        })
+        .map(|member| {
+            let sampled = snapshot
+                .observations
+                .get(&member.member_id)
+                .and_then(|observation| observation.sampled.as_ref().ok());
+            effective_member_view(member, sampled)
         })
         .collect::<Vec<_>>();
     members.sort_by_key(|member| {

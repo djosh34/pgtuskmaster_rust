@@ -67,7 +67,6 @@ pub struct HaClusterMemberResponse {
     pub timeline: Option<u64>,
     pub write_lsn: Option<u64>,
     pub replay_lsn: Option<u64>,
-    pub updated_at_ms: u64,
     pub pg_version: u64,
 }
 
@@ -193,6 +192,7 @@ pub enum ReconcileActionResponse {
     Demote { mode: ShutdownModeResponse },
     AcquireLease { candidacy: CandidacyResponse },
     ReleaseLease,
+    EnsureRequiredRoles,
     Publish { publication: HaAuthorityResponse },
     ClearSwitchover,
 }

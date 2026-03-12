@@ -179,6 +179,7 @@ pub(crate) fn dispatch_process_action(
         }
         ReconcileAction::AcquireLease(_)
         | ReconcileAction::ReleaseLease
+        | ReconcileAction::EnsureRequiredRoles
         | ReconcileAction::Publish(_)
         | ReconcileAction::ClearSwitchover => Err(ProcessDispatchError::UnsupportedAction {
             action: action.label().to_string(),

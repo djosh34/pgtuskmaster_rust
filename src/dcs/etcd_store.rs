@@ -56,6 +56,12 @@ enum WorkerCommand {
         value: String,
         response_tx: mpsc::Sender<Result<(), DcsStoreError>>,
     },
+    WriteWithLease {
+        path: String,
+        value: String,
+        lease_ttl_ms: u64,
+        response_tx: mpsc::Sender<Result<(), DcsStoreError>>,
+    },
     PutIfAbsent {
         path: String,
         value: String,
@@ -440,6 +446,35 @@ impl WorkerCommandCtx<'_> {
             } => {
                 let result =
                     execute_write(self.endpoints, self.client, self.healthy, &path, value).await;
+                let invalidate_result = if should_invalidate_on_error(&result) {
+                    invalidate_watch_session(
+                        self.healthy,
+                        self.events,
+                        self.client,
+                        self.watcher,
+                        self.watch_stream,
+                    )
+                } else {
+                    Ok(())
+                };
+                let _ = response_tx.send(result);
+                invalidate_result.is_ok()
+            }
+            WorkerCommand::WriteWithLease {
+                path,
+                value,
+                lease_ttl_ms,
+                response_tx,
+            } => {
+                let result = execute_write_with_lease(
+                    self.endpoints,
+                    self.client,
+                    self.healthy,
+                    &path,
+                    value,
+                    lease_ttl_ms,
+                )
+                .await;
                 let invalidate_result = if should_invalidate_on_error(&result) {
                     invalidate_watch_session(
                         self.healthy,
@@ -903,6 +938,45 @@ async fn execute_write(
     }
 }
 
+async fn execute_write_with_lease(
+    endpoints: &[DcsEndpoint],
+    client: &mut Option<Client>,
+    healthy: &Arc<AtomicBool>,
+    path: &str,
+    value: String,
+    lease_ttl_ms: u64,
+) -> Result<(), DcsStoreError> {
+    if client.is_none() {
+        *client = Some(connect_client(endpoints).await?);
+    }
+
+    let Some(active_client) = client.as_mut() else {
+        healthy.store(false, Ordering::SeqCst);
+        return Err(DcsStoreError::Io(
+            "etcd client unavailable for leased write".to_string(),
+        ));
+    };
+
+    let lease_config = leader_lease_config_from_ttl_ms(lease_ttl_ms)?;
+    let lease_response = timeout_etcd(
+        "etcd lease grant",
+        active_client.lease_grant(lease_config.ttl_seconds, None),
+    )
+    .await?;
+    let options = PutOptions::new().with_lease(lease_response.id());
+    match timeout_etcd("etcd put", active_client.put(path, value, Some(options))).await {
+        Ok(_) => {
+            healthy.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        Err(err) => {
+            healthy.store(false, Ordering::SeqCst);
+            *client = None;
+            Err(err)
+        }
+    }
+}
+
 async fn execute_delete(
     endpoints: &[DcsEndpoint],
     client: &mut Option<Client>,
@@ -1247,6 +1321,7 @@ fn worker_command_label(command: &WorkerCommand) -> &'static str {
         WorkerCommand::Read { .. } => "read",
         WorkerCommand::SnapshotPrefix { .. } => "snapshot_prefix",
         WorkerCommand::Write { .. } => "write",
+        WorkerCommand::WriteWithLease { .. } => "write_with_lease",
         WorkerCommand::PutIfAbsent { .. } => "put_if_absent",
         WorkerCommand::Delete { .. } => "delete",
         WorkerCommand::AcquireLeaderLease { .. } => "acquire_leader_lease",
@@ -1314,6 +1389,31 @@ impl DcsStore for EtcdDcsStore {
         response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
             self.mark_unhealthy();
             DcsStoreError::Io(format!("timed out waiting for write command: {err}"))
+        })?
+    }
+
+    fn write_path_with_lease(
+        &mut self,
+        path: &str,
+        value: String,
+        lease_ttl_ms: u64,
+    ) -> Result<(), DcsStoreError> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.command_tx
+            .send(WorkerCommand::WriteWithLease {
+                path: path.to_string(),
+                value,
+                lease_ttl_ms,
+                response_tx,
+            })
+            .map_err(|err| {
+                self.mark_unhealthy();
+                DcsStoreError::Io(format!("send leased-write command failed: {err}"))
+            })?;
+
+        response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
+            self.mark_unhealthy();
+            DcsStoreError::Io(format!("timed out waiting for leased-write command: {err}"))
         })?
     }
 
@@ -1738,7 +1838,6 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    updated_at: UnixMillis(1),
                     pg_version: crate::state::Version(1),
                 },
             );
@@ -2140,7 +2239,6 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    updated_at: UnixMillis(1),
                     pg_version: Version(1),
                 },
                 MemberRecord {
@@ -2154,7 +2252,6 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    updated_at: UnixMillis(15_000),
                     pg_version: Version(1),
                 },
                 MemberRecord {
@@ -2168,7 +2265,6 @@ mod tests {
                     timeline: None,
                     write_lsn: None,
                     replay_lsn: None,
-                    updated_at: UnixMillis(15_000),
                     pg_version: Version(1),
                 },
             ] {
