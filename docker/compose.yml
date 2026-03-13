@@ -31,6 +31,7 @@ services:
       - etcd-data:/etcd-data
 
   node-a:
+    hostname: node-a
     extends:
       file: ./docker-compose.node.yml
       service: node
@@ -50,6 +51,7 @@ services:
 
 
   node-b:
+    hostname: node-b
     extends:
       file: ./docker-compose.node.yml
       service: node
@@ -68,6 +70,7 @@ services:
       - node-b-data:/var/lib/postgresql
 
   node-c:
+    hostname: node-c
     extends:
       file: ./docker-compose.node.yml
       service: node
