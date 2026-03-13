@@ -1,80 +1,3 @@
-x-pgtuskmaster-build: &pgtuskmaster-build
-  context: ..
-  dockerfile: docker/Dockerfile
-  target: runtime
-
-x-pgtuskmaster-command: &pgtuskmaster-command
-  - --config
-  - /etc/pgtuskmaster/runtime.toml
-
-x-pgtuskmaster-healthcheck-primary: &pgtuskmaster-healthcheck-primary
-  test:
-    [
-      "CMD-SHELL",
-      "pgtm -c /etc/pgtuskmaster/runtime.toml --base-url https://127.0.0.1:8443 primary >/dev/null 2>&1",
-    ]
-  interval: 5s
-  timeout: 5s
-  retries: 60
-  start_period: 10s
-
-x-pgtuskmaster-healthcheck-status: &pgtuskmaster-healthcheck-status
-  test:
-    [
-      "CMD-SHELL",
-      "pgtm -c /etc/pgtuskmaster/runtime.toml --base-url https://127.0.0.1:8443 status >/dev/null 2>&1",
-    ]
-  interval: 5s
-  timeout: 5s
-  retries: 60
-  start_period: 10s
-
-x-pgtuskmaster-config-pg-hba: &pgtuskmaster-config-pg-hba
-  source: pg-hba
-  target: /etc/pgtuskmaster/pg/pg_hba.conf
-
-x-pgtuskmaster-config-pg-ident: &pgtuskmaster-config-pg-ident
-  source: pg-ident
-  target: /etc/pgtuskmaster/pg/pg_ident.conf
-
-x-pgtuskmaster-config-ca-cert: &pgtuskmaster-config-ca-cert
-  source: ca-cert
-  target: /etc/pgtuskmaster/certs/ca.crt
-
-x-pgtuskmaster-config-pgtm-client-cert: &pgtuskmaster-config-pgtm-client-cert
-  source: pgtm-client-cert
-  target: /etc/pgtuskmaster/certs/pgtm-client/tls.crt
-
-x-pgtuskmaster-secret-pgtm-client-key: &pgtuskmaster-secret-pgtm-client-key
-  source: pgtm-client-key
-  target: /etc/pgtuskmaster/certs/pgtm-client/tls.key
-
-x-pgtuskmaster-secret-api-admin-token: &pgtuskmaster-secret-api-admin-token
-  source: api-admin-token
-  target: /etc/pgtuskmaster/secrets/api-admin-token
-
-x-pgtuskmaster-secret-api-read-token: &pgtuskmaster-secret-api-read-token
-  source: api-read-token
-  target: /etc/pgtuskmaster/secrets/api-read-token
-
-x-pgtuskmaster-secret-postgres-superuser-password: &pgtuskmaster-secret-postgres-superuser-password
-  source: postgres-superuser-password
-  target: /etc/pgtuskmaster/secrets/postgres-superuser-password
-
-x-pgtuskmaster-secret-replicator-password: &pgtuskmaster-secret-replicator-password
-  source: replicator-password
-  target: /etc/pgtuskmaster/secrets/replicator-password
-
-x-pgtuskmaster-secret-rewinder-password: &pgtuskmaster-secret-rewinder-password
-  source: rewinder-password
-  target: /etc/pgtuskmaster/secrets/rewinder-password
-
-x-pgtuskmaster-service: &pgtuskmaster-service
-  build: *pgtuskmaster-build
-  image: pgtuskmaster-local:compose
-  restart: unless-stopped
-  networks:
-    - ha
 
 services:
   etcd:
@@ -107,96 +30,49 @@ services:
     volumes:
       - etcd-data:/etcd-data
 
-  node-b:
-    <<: *pgtuskmaster-service
-    depends_on:
-      etcd:
-        condition: service_healthy
-    command: *pgtuskmaster-command
-    healthcheck: *pgtuskmaster-healthcheck-primary
-    ports:
-      - "18082:8443"
-      - "15002:5432"
-    configs:
-      - source: node-b-runtime
-        target: /etc/pgtuskmaster/runtime.toml
-      - *pgtuskmaster-config-pg-hba
-      - *pgtuskmaster-config-pg-ident
-      - *pgtuskmaster-config-ca-cert
-      - source: node-b-cert
-        target: /etc/pgtuskmaster/certs/node-b/tls.crt
-      - *pgtuskmaster-config-pgtm-client-cert
-    secrets:
-      - source: node-b-key
-        target: /etc/pgtuskmaster/certs/node-b/tls.key
-      - *pgtuskmaster-secret-pgtm-client-key
-      - *pgtuskmaster-secret-api-admin-token
-      - *pgtuskmaster-secret-api-read-token
-      - *pgtuskmaster-secret-postgres-superuser-password
-      - *pgtuskmaster-secret-replicator-password
-      - *pgtuskmaster-secret-rewinder-password
-    volumes:
-      - node-b-data:/var/lib/postgresql
-
   node-a:
-    <<: *pgtuskmaster-service
-    depends_on:
-      node-b:
-        condition: service_healthy
-    command: *pgtuskmaster-command
-    healthcheck: *pgtuskmaster-healthcheck-status
     ports:
       - "18081:8443"
       - "15001:5432"
     configs:
       - source: node-a-runtime
         target: /etc/pgtuskmaster/runtime.toml
-      - *pgtuskmaster-config-pg-hba
-      - *pgtuskmaster-config-pg-ident
-      - *pgtuskmaster-config-ca-cert
       - source: node-a-cert
         target: /etc/pgtuskmaster/certs/node-a/tls.crt
-      - *pgtuskmaster-config-pgtm-client-cert
     secrets:
       - source: node-a-key
         target: /etc/pgtuskmaster/certs/node-a/tls.key
-      - *pgtuskmaster-secret-pgtm-client-key
-      - *pgtuskmaster-secret-api-admin-token
-      - *pgtuskmaster-secret-api-read-token
-      - *pgtuskmaster-secret-postgres-superuser-password
-      - *pgtuskmaster-secret-replicator-password
-      - *pgtuskmaster-secret-rewinder-password
     volumes:
       - node-a-data:/var/lib/postgresql
 
+
+  node-b:
+    ports:
+      - "18082:8443"
+      - "15002:5432"
+    configs:
+      - source: node-b-runtime
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: node-b-cert
+        target: /etc/pgtuskmaster/certs/node-b/tls.crt
+    secrets:
+      - source: node-b-key
+        target: /etc/pgtuskmaster/certs/node-b/tls.key
+    volumes:
+      - node-b-data:/var/lib/postgresql
+
   node-c:
-    <<: *pgtuskmaster-service
-    depends_on:
-      node-b:
-        condition: service_healthy
-    command: *pgtuskmaster-command
-    healthcheck: *pgtuskmaster-healthcheck-status
     ports:
       - "18083:8443"
       - "15003:5432"
     configs:
       - source: node-c-runtime
         target: /etc/pgtuskmaster/runtime.toml
-      - *pgtuskmaster-config-pg-hba
-      - *pgtuskmaster-config-pg-ident
-      - *pgtuskmaster-config-ca-cert
       - source: node-c-cert
         target: /etc/pgtuskmaster/certs/node-c/tls.crt
-      - *pgtuskmaster-config-pgtm-client-cert
     secrets:
       - source: node-c-key
         target: /etc/pgtuskmaster/certs/node-c/tls.key
-      - *pgtuskmaster-secret-pgtm-client-key
-      - *pgtuskmaster-secret-api-admin-token
-      - *pgtuskmaster-secret-api-read-token
-      - *pgtuskmaster-secret-postgres-superuser-password
-      - *pgtuskmaster-secret-replicator-password
-      - *pgtuskmaster-secret-rewinder-password
     volumes:
       - node-c-data:/var/lib/postgresql
 

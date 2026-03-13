@@ -1,0 +1,97 @@
+#x-pgtuskmaster-command: &pgtuskmaster-command
+#  - --config
+#  - /etc/pgtuskmaster/runtime.toml
+#
+#x-pgtuskmaster-healthcheck-primary: &pgtuskmaster-healthcheck-primary
+#  test:
+#    [
+#      "CMD-SHELL",
+#      "pgtm -c /etc/pgtuskmaster/runtime.toml --base-url https://127.0.0.1:8443 primary >/dev/null 2>&1",
+#    ]
+#  interval: 5s
+#  timeout: 5s
+#  retries: 60
+#  start_period: 10s
+#
+#x-pgtuskmaster-healthcheck-status: &pgtuskmaster-healthcheck-status
+#  test:
+#    [
+#      "CMD-SHELL",
+#      "pgtm -c /etc/pgtuskmaster/runtime.toml --base-url https://127.0.0.1:8443 status >/dev/null 2>&1",
+#    ]
+#  interval: 5s
+#  timeout: 5s
+#  retries: 60
+#  start_period: 10s
+#
+#x-pgtuskmaster-config-pg-hba: &pgtuskmaster-config-pg-hba
+#  source: pg-hba
+#  target: /etc/pgtuskmaster/pg/pg_hba.conf
+#
+#x-pgtuskmaster-config-pg-ident: &pgtuskmaster-config-pg-ident
+#  source: pg-ident
+#  target: /etc/pgtuskmaster/pg/pg_ident.conf
+#
+#x-pgtuskmaster-config-ca-cert: &pgtuskmaster-config-ca-cert
+#  source: ca-cert
+#  target: /etc/pgtuskmaster/certs/ca.crt
+#
+#x-pgtuskmaster-config-pgtm-client-cert: &pgtuskmaster-config-pgtm-client-cert
+#  source: pgtm-client-cert
+#  target: /etc/pgtuskmaster/certs/pgtm-client/tls.crt
+#
+#x-pgtuskmaster-secret-pgtm-client-key: &pgtuskmaster-secret-pgtm-client-key
+#  source: pgtm-client-key
+#  target: /etc/pgtuskmaster/certs/pgtm-client/tls.key
+#
+#x-pgtuskmaster-secret-api-admin-token: &pgtuskmaster-secret-api-admin-token
+#  source: api-admin-token
+#  target: /etc/pgtuskmaster/secrets/api-admin-token
+#
+#x-pgtuskmaster-secret-api-read-token: &pgtuskmaster-secret-api-read-token
+#  source: api-read-token
+#  target: /etc/pgtuskmaster/secrets/api-read-token
+#
+#x-pgtuskmaster-secret-postgres-superuser-password: &pgtuskmaster-secret-postgres-superuser-password
+#  source: postgres-superuser-password
+#  target: /etc/pgtuskmaster/secrets/postgres-superuser-password
+#
+#x-pgtuskmaster-secret-replicator-password: &pgtuskmaster-secret-replicator-password
+#  source: replicator-password
+#  target: /etc/pgtuskmaster/secrets/replicator-password
+#
+#x-pgtuskmaster-secret-rewinder-password: &pgtuskmaster-secret-rewinder-password
+#  source: rewinder-password
+#  target: /etc/pgtuskmaster/secrets/rewinder-password
+
+services:
+  node:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: pgtuskmaster-local:compose
+    restart: unless-stopped
+    depends_on:
+      etcd:
+        condition: service_healthy
+    command: *pgtuskmaster-command
+    healthcheck: *pgtuskmaster-healthcheck-primary
+    configs:
+      - source: node-b-runtime
+        target: /etc/pgtuskmaster/runtime.toml
+      - *pgtuskmaster-config-pg-hba
+      - *pgtuskmaster-config-pg-ident
+      - *pgtuskmaster-config-ca-cert
+      - source: node-b-cert
+        target: /etc/pgtuskmaster/certs/node-b/tls.crt
+      - *pgtuskmaster-config-pgtm-client-cert
+    secrets:
+      - *pgtuskmaster-secret-pgtm-client-key
+      - *pgtuskmaster-secret-api-admin-token
+      - *pgtuskmaster-secret-api-read-token
+      - *pgtuskmaster-secret-postgres-superuser-password
+      - *pgtuskmaster-secret-replicator-password
+      - *pgtuskmaster-secret-rewinder-password
+    networks:
+      - ha
