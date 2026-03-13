@@ -1,1 +1,0 @@
-<|tool_calls_section_begin|> <|tool_call_begin|> functions.ReadFile:0 <|tool_call_argument_begin|> {"file_path": "/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/bootstrapping-new-cluster.md"} <|tool_call_end|> <|tool_calls_section_end|>

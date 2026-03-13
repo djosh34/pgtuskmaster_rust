@@ -1,6 +1,12 @@
 # HTTP API Reference
 
-The PGTuskmaster HTTP API provides programmatic access to cluster state, high-availability operations, and diagnostic information. The API server listens on a TCP address configured in the runtime configuration.
+The node API now exposes one read surface and one control noun:
+
+- `GET /state`
+- `POST /switchover`
+- `DELETE /switchover`
+
+This is the entire public route surface.
 
 ## Base URL
 
@@ -8,459 +14,119 @@ The PGTuskmaster HTTP API provides programmatic access to cluster state, high-av
 http(s)://<listen_addr>
 ```
 
-The protocol depends on TLS configuration.
+The exact scheme depends on the node's TLS configuration.
 
-## Authentication and Authorization
+## Authentication
 
-### Bearer Token Authentication
-
-When role tokens are configured, all requests must include an `Authorization` header with a Bearer token.
+When API tokens are configured, every request must send:
 
 ```text
 Authorization: Bearer <token>
 ```
 
-### Role-Based Access Control
+Read operations accept a read token or an admin token. Switchover operations require an admin token.
 
-The API distinguishes two authorization levels:
+Authorization outcomes:
 
-- **Read**: Grants access to state observation endpoints
-- **Admin**: Grants access to control-plane endpoints
+- missing token: `401 Unauthorized`
+- insufficient role: `403 Forbidden`
+- valid token: route-specific success or validation status
 
-If no role tokens are configured, all requests are allowed.
+## `GET /state`
 
-#### Token Configuration
-- **read_token**: Grants read access
-- **admin_token**: Grants admin access (also grants read access)
+Returns one serializable `NodeState` document built from the node's current runtime state plus its DCS-backed cluster cache.
 
-#### Endpoint Roles
+Authorization: read
 
-**Admin Endpoints**
-- `POST /switchover`
-- `POST /fallback/heartbeat`
-- `DELETE /ha/switchover`
+Success status: `200 OK`
 
-**Read Endpoints**
-- All other endpoints listed in this reference
+Unavailable status: `503 Service Unavailable`
+The node has not finished wiring the required live state subscribers yet.
 
-#### Authorization Outcomes
+### Response shape
 
-- Missing token when tokens are configured: `401 Unauthorized`
-- Read token accessing admin endpoint: `403 Forbidden`
-- Valid token for required role: `200 OK` or other appropriate status
-
-### TLS Security
-
-TLS mode is configured independently of authorization:
-
-- **Disabled**: Plain HTTP only
-- **Optional**: Accepts plain HTTP or HTTPS
-- **Required**: HTTPS only
-
-Optional client certificate verification can be enforced when TLS is enabled.
-
----
-
-## Endpoints
-
-### High Availability Control
-
-#### Request Switchover
-
-```text
-POST /switchover
-```
-
-Initiates a planned leader switchover.
-
-**Authorization**: Admin
-
-**Request Body** (`SwitchoverRequestInput`)
 ```text
 {
-  "switchover_to": "<string>" | null
+  "cluster_name": "cluster-a",
+  "scope": "cluster-a",
+  "self_member_id": "node-a",
+  "pg": {},
+  "process": {},
+  "dcs": {},
+  "ha": {}
 }
 ```
 
-The request body may be empty for a generic switchover, or it may set `switchover_to` to request a specific eligible replica. Unknown fields are rejected.
+Top-level fields:
 
-**Response** (`AcceptedResponse`)
+- `cluster_name`: configured cluster name
+- `scope`: configured DCS scope
+- `self_member_id`: local member identifier
+- `pg`: current local PostgreSQL observation
+- `process`: current local process-worker state
+- `dcs`: current DCS trust plus cached leader, switchover, and member-slot records
+- `ha`: current HA publication, target role, worldview, and planned commands
+
+### What `GET /state` is for
+
+`GET /state` is intentionally verbose. It is the single raw observation surface for operators, tests, and `pgtm`.
+
+The payload includes both facts and interpretation:
+
+- raw local PostgreSQL state in `pg`
+- raw DCS-backed cluster state in `dcs`
+- the HA engine's derived understanding in `ha.world`
+- the operator-facing authority projection in `ha.publication`
+
+`pgtm status`, `pgtm primary`, and `pgtm replicas` all start from this single document. They do not fan out to peer APIs.
+
+## `POST /switchover`
+
+Requests a planned switchover by writing the intent into DCS.
+
+Authorization: admin
+
+Request body:
+
 ```text
 {
-  "accepted": true
+  "switchover_to": "node-b"
 }
 ```
 
-**Status Codes**
-- `202 Accepted`: Switchover request accepted and written to DCS
-- `400 Bad Request`: Invalid JSON, unknown request fields, empty target, unknown target member, or ineligible target member
-- `401 Unauthorized`: Missing or invalid token
-- `403 Forbidden`: Read token used for admin endpoint
-- `503 Service Unavailable`: DCS store error, or targeted validation could not load the current cluster snapshot
+`switchover_to` is optional. When omitted, the API selects the best currently eligible replica from the DCS member slots.
 
-#### Cancel Switchover Request
+Success status: `202 Accepted`
 
-```text
-DELETE /ha/switchover
-```
-
-Removes a pending switchover request from DCS.
-
-**Authorization**: Admin
-
-**Response** (`AcceptedResponse`)
 ```text
 {
   "accepted": true
 }
 ```
 
-**Status Codes**
-- `202 Accepted`: Switchover request cleared
-- `401 Unauthorized`: Missing or invalid token
-- `403 Forbidden`: Read token used for admin endpoint
-- `503 Service Unavailable`: DCS store error
+Validation and failure statuses:
 
-#### Get HA State
+- `400 Bad Request`: malformed JSON, unknown target, self-target, degraded trust, request sent to a non-authoritative node, or ineligible target
+- `401 Unauthorized`: missing or invalid token
+- `403 Forbidden`: read token used for an admin route
+- `503 Service Unavailable`: DCS store write failed
 
-```text
-GET /ha/state
-```
+## `DELETE /switchover`
 
-Retrieves current high-availability state.
+Clears any pending switchover intent from DCS.
 
-**Authorization**: Read
+Authorization: admin
 
-This is the stable read surface that `pgtm status` uses for cluster discovery. The response now includes a stable member list with advertised peer API URLs so operators and automation can build a cluster-wide view without scraping debug endpoints or manually looping over nodes.
+Success status: `202 Accepted`
 
-**Response** (`HaStateResponse`)
-```text
-{
-  "cluster_name": "<string>",
-  "scope": "<string>",
-  "self_member_id": "<string>",
-  "leader": "<string>" | null,
-  "switchover_pending": <bool>,
-  "switchover_to": "<string>" | null,
-  "member_count": <number>,
-  "members": [
-    {
-      "member_id": "<string>",
-      "postgres_host": "<string>",
-      "postgres_port": <number>,
-      "api_url": "<string>" | null,
-      "role": "<member_role_variant>",
-      "sql": "<sql_status_variant>",
-      "readiness": "<readiness_variant>",
-      "timeline": <number> | null,
-      "write_lsn": <number> | null,
-      "replay_lsn": <number> | null,
-      "updated_at_ms": <number>,
-      "pg_version": <number>
-    }
-  ],
-  "dcs_trust": "<trust_variant>",
-  "authority": "<authority_variant>",
-  "fence_cutoff": "<fence_cutoff_variant>" | null,
-  "ha_role": "<role_variant>",
-  "ha_tick": <number>,
-  "planned_actions": ["<reconcile_action_variant>", "..."],
-  "snapshot_sequence": <number>
-}
-```
-
-**Field Details**
-- `cluster_name`: Configured cluster name
-- `scope`: DCS scope for this cluster
-- `self_member_id`: Local member identifier
-- `leader`: Current leader member ID if one exists
-- `switchover_pending`: Whether a switchover request is currently pending
-- `switchover_to`: Requested switchover target when the pending request is explicit, otherwise `null`
-- `member_count`: Number of members in DCS cache
-- `members`: Stable cluster member discovery data. This is the machine-readable list that `pgtm status` fans out from when it builds a cluster-wide view.
-- `dcs_trust`: Trust level of DCS (see DcsTrustResponse variants)
-- `authority`: Current operator-facing authority projection (see [HA State Semantics](ha-decisions.md))
-- `fence_cutoff`: Present when the node is publishing a no-primary safety boundary that includes a lease epoch and committed LSN cutoff
-- `ha_role`: Current local HA role intent (see [HA State Semantics](ha-decisions.md))
-- `ha_tick`: HA decision loop counter
-- `planned_actions`: Ordered reconcile actions the node plans to execute next
-- `snapshot_sequence`: Monotonic snapshot version
-
-Each `members[]` entry includes:
-
-- `member_id`: DCS member identifier
-- `postgres_host` and `postgres_port`: PostgreSQL endpoint currently published for that member
-- `api_url`: Operator-reachable node API URL published by that member, or `null` when none is available
-- `role`: Current DCS member role (`unknown`, `primary`, or `replica`)
-- `sql`: Current SQL reachability (`unknown`, `healthy`, or `unreachable`)
-- `readiness`: Current readiness state (`unknown`, `ready`, or `not_ready`)
-- `timeline`: Current PostgreSQL timeline when known
-- `write_lsn`: Current write LSN for a primary when known
-- `replay_lsn`: Current replay LSN for a replica when known
-- `updated_at_ms`: Timestamp of the published member record
-- `pg_version`: Published PostgreSQL-state version for that member
-
-When `switchover_to` is omitted, successor choice remains automatic. `POST /switchover` signals intent to switch over, and the HA engine picks the replacement primary from observed cluster state. When `switchover_to` is present, the API accepts only a known, fresh, healthy, ready replica and the HA engine holds non-target nodes back from acquiring leadership during that switchover.
-
-**Status Codes**
-- `200 OK`: State retrieved successfully
-- `401 Unauthorized`: Missing or invalid token
-- `503 Service Unavailable`: Snapshot subscriber unavailable
-
----
-
-### Fallback Cluster
-
-#### Get Fallback Cluster Name
-
-```text
-GET /fallback/cluster
-```
-
-Retrieves the configured fallback cluster name.
-
-**Authorization**: Read
-
-**Response**
-```text
-{
-  "name": "<cluster_name>"
-}
-```
-
-**Status Codes**
-- `200 OK`: Cluster name returned
-- `401 Unauthorized`: Missing or invalid token
-
-#### Send Fallback Heartbeat
-
-```text
-POST /fallback/heartbeat
-```
-
-Records a heartbeat from a fallback cluster member.
-
-**Authorization**: Admin
-
-**Request Body** (`FallbackHeartbeatInput`)
-```text
-{
-  "source": "<member_id>"
-}
-```
-
-- `source`: Non-empty string identifying the heartbeat source
-
-**Response** (`AcceptedResponse`)
 ```text
 {
   "accepted": true
 }
 ```
 
-**Status Codes**
-- `202 Accepted`: Heartbeat accepted
-- `400 Bad Request`: Invalid JSON or empty `source` field
-- `401 Unauthorized`: Missing or invalid token
-- `403 Forbidden`: Read token used for admin endpoint
+Failure statuses:
 
----
-
-### Debug and Diagnostics
-
-#### Get System Snapshot (Debug)
-
-```text
-GET /debug/snapshot
-```
-
-Returns a debug-formatted snapshot of all system state.
-
-**Authorization**: Read
-
-**Availability**: Only when `debug.enabled` is true in runtime configuration
-
-**Response**: Plain text debug dump (not stable JSON)
-
-**Status Codes**
-- `200 OK`: Snapshot returned
-- `401 Unauthorized`: Missing or invalid token
-- `404 Not Found`: Debug endpoints disabled
-- `503 Service Unavailable`: Snapshot subscriber unavailable
-
-#### Get Verbose Debug Data
-
-```text
-GET /debug/verbose[?since=<sequence>]
-```
-
-Returns structured system state and recent changes.
-
-**Authorization**: Read
-
-**Availability**: Only when `debug.enabled` is true in runtime configuration
-
-**Query Parameters**
-- `since` (optional): Sequence number to filter changes/timeline events
-
-**Response** (`DebugVerbosePayload`)
-```text
-{
-  "meta": {
-    "schema_version": "v1",
-    "generated_at_ms": <number>,
-    "channel_updated_at_ms": <number>,
-    "channel_version": <number>,
-    "app_lifecycle": "<string>",
-    "sequence": <number>
-  },
-  "config": {
-    "version": <number>,
-    "updated_at_ms": <number>,
-    "cluster_name": "<string>",
-    "member_id": "<string>",
-    "scope": "<string>",
-    "debug_enabled": <boolean>,
-    "tls_enabled": <boolean>
-  },
-  "pginfo": { "..." : "see field list below" },
-  "dcs": { "..." : "see field list below" },
-  "process": { "..." : "see field list below" },
-  "ha": { "..." : "see field list below" },
-  "api": {
-    "endpoints": [
-      "/debug/snapshot",
-      "/debug/verbose",
-      "/debug/ui",
-      "/fallback/cluster",
-      "/switchover",
-      "/ha/state",
-      "/ha/switchover"
-    ]
-  },
-  "debug": {
-    "history_changes": <number>,
-    "history_timeline": <number>,
-    "last_sequence": <number>
-  },
-  "changes": [],
-  "timeline": []
-}
-```
-
-The structured sections are:
-
-- `pginfo`: `version`, `updated_at_ms`, `variant`, `worker`, `sql`, `readiness`, `timeline`, `summary`
-- `dcs`: `version`, `updated_at_ms`, `worker`, `trust`, `member_count`, `leader`, `has_switchover_request`
-- `process`: `version`, `updated_at_ms`, `worker`, `state`, `running_job_id`, `last_outcome`
-- `ha`: `version`, `updated_at_ms`, `worker`, `phase`, `tick`, `decision`, `decision_detail`, `planned_actions`
-- `changes[]`: `sequence`, `at_ms`, `domain`, `previous_version`, `current_version`, `summary`
-- `timeline[]`: `sequence`, `at_ms`, `category`, `message`
-
-**Status Codes**
-- `200 OK`: Verbose data returned
-- `400 Bad Request`: Invalid `since` parameter
-- `401 Unauthorized`: Missing or invalid token
-- `404 Not Found`: Debug endpoints disabled
-- `503 Service Unavailable`: Snapshot subscriber unavailable
-
-#### Debug Web UI
-
-```text
-GET /debug/ui
-```
-
-Returns HTML for an interactive debug dashboard.
-
-**Authorization**: Read
-
-**Availability**: Only when `debug.enabled` is true in runtime configuration
-
-**Response**: HTML content
-
-**Status Codes**
-- `200 OK`: UI page returned
-- `401 Unauthorized`: Missing or invalid token
-- `404 Not Found`: Debug endpoints disabled
-
----
-
-## Data Types Reference
-
-### DcsTrustResponse
-
-Enumeration of DCS trust levels:
-
-- `full_quorum`: Full member quorum established
-- `fail_safe`: Operating in fail-safe mode
-- `not_trusted`: DCS not trusted for HA decisions
-
-### HaAuthorityResponse
-
-Tagged union describing the operator-facing primary authority projection:
-
-- `primary`: publishes a `member_id` plus the lease epoch `{ holder, generation }`
-- `no_primary`: publishes a structured reason for withholding primary authority
-- `unknown`: startup placeholder before a stronger projection is available
-
-### FenceCutoffResponse
-
-Safety boundary payload:
-
-- `epoch`: the lease epoch the cutoff is tied to
-- `committed_lsn`: the primary commit point the node must not outlive unsafely
-
-### TargetRoleResponse
-
-Tagged union describing local HA intent:
-
-- `leader`
-- `candidate`
-- `follower`
-- `fail_safe`
-- `demoting_for_switchover`
-- `fenced`
-- `idle`
-
-### ReconcileActionResponse
-
-Tagged union describing the ordered next actions for the HA worker:
-
-- `init_db`
-- `base_backup`
-- `pg_rewind`
-- `start_primary`
-- `start_replica`
-- `promote`
-- `demote`
-- `acquire_lease`
-- `release_lease`
-- `publish`
-- `clear_switchover`
-
----
-
-## Error Responses
-
-All endpoints may return error responses with consistent status codes:
-
-| Status Code | Meaning | When Returned |
-|--------------|---------|---------------|
-| `400 Bad Request` | Invalid request format | Malformed JSON, invalid fields, bad query parameters |
-| `401 Unauthorized` | Missing authentication | No bearer token when tokens are configured |
-| `403 Forbidden` | Insufficient privileges | Read token accessing admin endpoint |
-| `404 Not Found` | Endpoint not found | Unknown path or debug endpoints disabled |
-| `500 Internal Server Error` | Internal failure | Unexpected processing errors |
-| `503 Service Unavailable` | Dependency unavailable | DCS store error or snapshot subscriber missing |
-
-Error response bodies contain plain text descriptions of the failure cause.
-
-## TLS Configuration
-
-TLS mode determines connection requirements:
-
-- **Disabled**: Plain HTTP only; TLS handshake attempts fail
-- **Optional**: Accepts both plain HTTP and HTTPS on same port
-- **Required**: HTTPS only; plain HTTP connections are rejected
-
-When TLS is enabled, client certificates can be required for mutual TLS authentication.
+- `401 Unauthorized`: missing or invalid token
+- `403 Forbidden`: read token used for an admin route
+- `503 Service Unavailable`: DCS store delete failed
