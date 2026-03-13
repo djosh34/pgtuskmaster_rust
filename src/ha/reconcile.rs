@@ -23,7 +23,11 @@ fn reconcile_publication(
     current: &PublicationState,
     desired: &DesiredState,
 ) -> Vec<ReconcileAction> {
-    let publish_action = match (&current.authority, &current.fence_cutoff, &desired.publication) {
+    let publish_action = match (
+        &current.authority,
+        &current.fence_cutoff,
+        &desired.publication,
+    ) {
         (_, _, PublicationGoal::KeepCurrent) => None,
         (
             AuthorityView::Primary {
@@ -202,13 +206,19 @@ fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> Option<Reco
 
 fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> Option<ReconcileAction> {
     match &world.local.postgres {
-        PostgresState::Primary { .. } if world.local.observation.waiting_for_fresh_pg_after_demote() => {
+        PostgresState::Primary { .. }
+            if world.local.observation.waiting_for_fresh_pg_after_demote() =>
+        {
             None
         }
         PostgresState::Primary { .. } => {
             Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast))
         }
-        PostgresState::Offline | PostgresState::Replica { .. } => None,
+        PostgresState::Offline => match &world.local.data_dir {
+            DataDirState::Initialized(_) => Some(ReconcileAction::StartDetachedStandby),
+            DataDirState::Missing => None,
+        },
+        PostgresState::Replica { .. } => None,
     }
 }
 
@@ -334,7 +344,10 @@ mod tests {
             clear_switchover: false,
         };
 
-        assert_eq!(reconcile(&world, &desired), vec![ReconcileAction::ReleaseLease]);
+        assert_eq!(
+            reconcile(&world, &desired),
+            vec![ReconcileAction::ReleaseLease]
+        );
     }
 
     #[test]
@@ -346,7 +359,9 @@ mod tests {
             storage: StorageState::Healthy,
             required_roles_ready: false,
             publication: PublicationState {
-                authority: AuthorityView::NoPrimary(super::super::types::NoPrimaryReason::LeaseOpen),
+                authority: AuthorityView::NoPrimary(
+                    super::super::types::NoPrimaryReason::LeaseOpen,
+                ),
                 fence_cutoff: None,
             },
             observation: ObservationState {
@@ -362,6 +377,34 @@ mod tests {
                 reason: super::super::types::NoPrimaryReason::LeaseOpen,
                 fence_cutoff: None,
             },
+            clear_switchover: false,
+        };
+
+        assert_eq!(
+            reconcile(&world, &desired),
+            vec![ReconcileAction::StartDetachedStandby]
+        );
+    }
+
+    #[test]
+    fn idle_missing_data_dir_does_not_start_detached_standby() {
+        let world = world(LocalKnowledge {
+            data_dir: DataDirState::Missing,
+            postgres: PostgresState::Offline,
+            process: ProcessState::Idle,
+            storage: StorageState::Healthy,
+            required_roles_ready: false,
+            publication: PublicationState::unknown(),
+            observation: ObservationState {
+                pg_observed_at: UnixMillis(100),
+                last_start_success_at: None,
+                last_promote_success_at: None,
+                last_demote_success_at: None,
+            },
+        });
+        let desired = DesiredState {
+            role: TargetRole::Idle(IdleReason::AwaitingLeader),
+            publication: PublicationGoal::KeepCurrent,
             clear_switchover: false,
         };
 

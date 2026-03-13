@@ -15,7 +15,7 @@ pub(crate) const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
 # Production TLS material must be supplied by the operator; pgtuskmaster only copies managed runtime files.\n";
 pub(crate) const MANAGED_STANDBY_SIGNAL_NAME: &str = "standby.signal";
 pub(crate) const MANAGED_RECOVERY_SIGNAL_NAME: &str = "recovery.signal";
-pub(crate) const MANAGED_STANDBY_PASSFILE_NAME: &str = "pgtm.standby.passfile";
+const MANAGED_STANDBY_PASSFILE_NAME: &str = "pgtm.standby.passfile";
 
 const RESERVED_EXTRA_GUC_KEYS: &[&str] = &[
     "archive_cleanup_command",
@@ -63,6 +63,7 @@ pub(crate) enum ManagedStandbyAuth {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ManagedPostgresStartIntent {
     Primary,
+    DetachedStandby,
     Replica {
         primary_conninfo: PgConnInfo,
         standby_auth: ManagedStandbyAuth,
@@ -78,6 +79,10 @@ pub(crate) enum ManagedPostgresStartIntent {
 impl ManagedPostgresStartIntent {
     pub(crate) fn primary() -> Self {
         Self::Primary
+    }
+
+    pub(crate) fn detached_standby() -> Self {
+        Self::DetachedStandby
     }
 
     pub(crate) fn replica(
@@ -107,7 +112,7 @@ impl ManagedPostgresStartIntent {
     pub(crate) fn recovery_signal(&self) -> ManagedRecoverySignal {
         match self {
             Self::Primary => ManagedRecoverySignal::None,
-            Self::Replica { .. } => ManagedRecoverySignal::Standby,
+            Self::DetachedStandby | Self::Replica { .. } => ManagedRecoverySignal::Standby,
             Self::Recovery { .. } => ManagedRecoverySignal::Recovery,
         }
     }
@@ -186,6 +191,9 @@ pub(crate) fn render_managed_postgres_conf(
         ManagedPostgresStartIntent::Primary => {
             push_bool_setting(&mut rendered, "hot_standby", false);
         }
+        ManagedPostgresStartIntent::DetachedStandby => {
+            push_bool_setting(&mut rendered, "hot_standby", true);
+        }
         ManagedPostgresStartIntent::Replica {
             primary_conninfo,
             standby_auth,
@@ -242,7 +250,7 @@ pub(crate) fn managed_standby_auth_from_role_auth(
     }
 }
 
-pub(crate) fn render_managed_primary_conninfo(
+fn render_managed_primary_conninfo(
     conninfo: &PgConnInfo,
     standby_auth: &ManagedStandbyAuth,
 ) -> String {
@@ -255,7 +263,7 @@ pub(crate) fn render_managed_primary_conninfo(
     rendered
 }
 
-pub(crate) fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresConfError> {
+fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresConfError> {
     if key.is_empty() {
         return Err(ManagedPostgresConfError::InvalidExtraGuc {
             key: key.to_string(),
@@ -560,10 +568,32 @@ mod tests {
     }
 
     #[test]
+    fn render_managed_postgres_conf_renders_detached_standby_without_source_fields(
+    ) -> Result<(), String> {
+        let mut conf = sample_conf();
+        conf.start_intent = ManagedPostgresStartIntent::detached_standby();
+        let rendered =
+            render_managed_postgres_conf(&conf).map_err(|err| format!("render failed: {err}"))?;
+        if !rendered.contains("hot_standby = on") {
+            return Err(format!("missing hot_standby=on: {rendered}"));
+        }
+        if rendered.contains("primary_conninfo") || rendered.contains("primary_slot_name") {
+            return Err(format!(
+                "detached standby config unexpectedly rendered replica source fields: {rendered}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn managed_start_intent_tracks_recovery_signal_state() {
         assert_eq!(
             ManagedPostgresStartIntent::primary().recovery_signal(),
             ManagedRecoverySignal::None
+        );
+        assert_eq!(
+            ManagedPostgresStartIntent::detached_standby().recovery_signal(),
+            ManagedRecoverySignal::Standby
         );
         assert_eq!(
             sample_conf().start_intent.recovery_signal(),

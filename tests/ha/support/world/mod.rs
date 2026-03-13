@@ -7,6 +7,11 @@ use std::{
 };
 
 use cucumber::World;
+use pgtuskmaster_rust::{
+    api::NodeState,
+    dcs::state::MemberPostgresView,
+    ha::types::AuthorityView,
+};
 
 use crate::support::{
     docker::{cli::DockerCli, ryuk::RyukGuard},
@@ -20,7 +25,7 @@ use crate::support::{
     feature_metadata,
     givens::given_root,
     observer::{
-        pgtm::{ClusterStatusView, PgtmObserver},
+        pgtm::PgtmObserver,
         sql::SqlObserver,
     },
     timeouts::TimeoutModel,
@@ -301,7 +306,7 @@ impl HarnessShared {
         }))
     }
 
-    pub fn record_status_snapshot(&self, phase: &str, status: &ClusterStatusView) -> Result<()> {
+    pub fn record_status_snapshot(&self, phase: &str, status: &NodeState) -> Result<()> {
         self.push_timeline_entry(serde_json::json!({
             "kind": "status",
             "phase": phase,
@@ -570,21 +575,8 @@ impl HarnessShared {
             if since_ms.is_some_and(|threshold| timestamp_ms < threshold) {
                 return None;
             }
-            let status = entry.get("status")?;
-            let nodes = status.get("nodes")?.as_array()?;
-            let primaries = nodes
-                .iter()
-                .filter(|node| {
-                    node.get("sampled").and_then(serde_json::Value::as_bool) == Some(true)
-                        && node.get("role").and_then(serde_json::Value::as_str) == Some("primary")
-                })
-                .map(|node| {
-                    node.get("member_id")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("<unknown>")
-                        .to_string()
-                })
-                .collect::<Vec<_>>();
+            let status = serde_json::from_value::<NodeState>(entry.get("status")?.clone()).ok()?;
+            let primaries = dcs_primary_members(&status);
             if primaries.len() > 1 {
                 Some(primaries)
             } else {
@@ -614,17 +606,10 @@ impl HarnessShared {
             }
             let member_is_primary = entry
                 .get("status")
-                .and_then(|status| status.get("nodes"))
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|nodes| {
-                    nodes.iter().any(|node| {
-                        node.get("sampled").and_then(serde_json::Value::as_bool) == Some(true)
-                            && node.get("role").and_then(serde_json::Value::as_str)
-                                == Some("primary")
-                            && node.get("member_id").and_then(serde_json::Value::as_str)
-                                == Some(member_id)
-                    })
-                });
+                .cloned()
+                .and_then(|status| serde_json::from_value::<NodeState>(status).ok())
+                .and_then(|status| operator_visible_primary(&status))
+                .is_some_and(|primary| primary == member_id);
             if member_is_primary {
                 let regained_primary = member_was_primary && member_relinquished_primary;
                 member_was_primary = true;
@@ -711,7 +696,7 @@ impl HarnessShared {
         let deadline = Instant::now() + self.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
-            let result = match self.observer().status() {
+            let result = match self.observer().state() {
                 Ok(status) => {
                     self.record_status_snapshot("bootstrap.seed_primary", &status)?;
                     validate_seed_primary(&status)
@@ -812,19 +797,17 @@ impl HarnessShared {
                 })?
                 .as_str(),
         )?;
-        match self.observer().debug_verbose() {
-            Ok(debug) => write_text_file(
-                self.artifacts_dir
-                    .join("observer-debug-verbose.json")
-                    .as_path(),
-                serde_json::to_string_pretty(&debug)
+        match self.observer().state() {
+            Ok(state) => write_text_file(
+                self.artifacts_dir.join("observer-state.json").as_path(),
+                serde_json::to_string_pretty(&state)
                     .map_err(|source| HarnessError::Json {
-                        context: "serializing observer debug verbose payload".to_string(),
+                        context: "serializing observer state payload".to_string(),
                         source,
                     })?
                     .as_str(),
             )?,
-            Err(err) => failures.push(format!("observer debug verbose capture failed: {err}")),
+            Err(err) => failures.push(format!("observer state capture failed: {err}")),
         }
 
         for service in ["observer", "node-a", "node-b", "node-c", "etcd"] {
@@ -971,47 +954,57 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_seed_primary(status: &ClusterStatusView) -> Result<()> {
-    if status.sampled_member_count != 1 {
+fn validate_seed_primary(status: &NodeState) -> Result<()> {
+    let discovered_member_count = status.dcs.cache.member_slots.len();
+    if discovered_member_count != 1 {
         return Err(HarnessError::message(format!(
-            "expected exactly one sampled member during bootstrap, observed {}; warnings={}",
-            status.sampled_member_count,
+            "expected exactly one discovered member during bootstrap, observed {}; warnings={}",
+            discovered_member_count,
             format_bootstrap_warnings(status),
         )));
     }
 
-    let primaries = status
-        .nodes
-        .iter()
-        .filter(|node| node.sampled && node.role == "primary")
-        .map(|node| node.member_id.as_str())
-        .collect::<Vec<_>>();
-    match primaries.as_slice() {
-        ["node-b"] => Ok(()),
-        [] => Err(HarnessError::message(format!(
-            "bootstrap status has no sampled primary; queried via {} and warnings={}",
-            status.queried_via.member_id,
-            format_bootstrap_warnings(status),
-        ))),
-        [primary] => Err(HarnessError::message(format!(
+    match operator_visible_primary(status).as_deref() {
+        Some("node-b") => Ok(()),
+        Some(primary) => Err(HarnessError::message(format!(
             "expected node-b to bootstrap as the seed primary, observed `{primary}`"
         ))),
-        many => Err(HarnessError::message(format!(
-            "bootstrap status has multiple sampled primaries: {}",
-            many.join(", ")
+        None => Err(HarnessError::message(format!(
+            "bootstrap state has no authoritative primary; warnings={}",
+            format_bootstrap_warnings(status),
         ))),
     }
 }
 
-fn format_bootstrap_warnings(status: &ClusterStatusView) -> String {
-    if status.warnings.is_empty() {
+fn format_bootstrap_warnings(status: &NodeState) -> String {
+    let mut warnings = Vec::new();
+    if operator_visible_primary(status).is_none() {
+        warnings.push("no_primary".to_string());
+    }
+    if status.dcs.cache.member_slots.is_empty() {
+        warnings.push("no_members".to_string());
+    }
+    if warnings.is_empty() {
         "none".to_string()
     } else {
-        status
-            .warnings
-            .iter()
-            .map(|warning| format!("{}:{}", warning.code, warning.message))
-            .collect::<Vec<_>>()
-            .join(" | ")
+        warnings.join(" | ")
     }
+}
+
+fn operator_visible_primary(status: &NodeState) -> Option<String> {
+    match &status.ha.publication.authority {
+        AuthorityView::Primary { member, .. } => Some(member.0.clone()),
+        AuthorityView::NoPrimary(_) | AuthorityView::Unknown => None,
+    }
+}
+
+fn dcs_primary_members(status: &NodeState) -> Vec<String> {
+    status
+        .dcs
+        .cache
+        .member_slots
+        .iter()
+        .filter(|(_member_id, slot)| matches!(slot.postgres, MemberPostgresView::Primary(_)))
+        .map(|(member_id, _slot)| member_id.0.clone())
+        .collect::<Vec<_>>()
 }

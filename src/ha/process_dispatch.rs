@@ -124,6 +124,30 @@ pub(crate) fn dispatch_process_action(
             send_process_request(ctx, action.label(), request)?;
             Ok(ProcessDispatchOutcome::Applied)
         }
+        ReconcileAction::StartDetachedStandby => {
+            let managed = crate::postgres_managed::materialize_managed_postgres_config(
+                runtime_config,
+                &ManagedPostgresStartIntent::detached_standby(),
+            )
+            .map_err(|err| ProcessDispatchError::ManagedConfig {
+                action: action.label().to_string(),
+                message: err.to_string(),
+            })?;
+            let request = ProcessJobRequest {
+                id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+                kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
+                    data_dir: runtime_config.postgres.data_dir.clone(),
+                    socket_dir: runtime_config.postgres.socket_dir.clone(),
+                    port: runtime_config.postgres.listen_port,
+                    config_file: managed.postgresql_conf_path,
+                    log_file: ctx.process_defaults.log_file.clone(),
+                    wait_seconds: None,
+                    timeout_ms: None,
+                }),
+            };
+            send_process_request(ctx, action.label(), request)?;
+            Ok(ProcessDispatchOutcome::Applied)
+        }
         ReconcileAction::StartReplica(leader_member_id) => {
             let start_intent = start_intent_from_dcs(
                 ctx,
@@ -187,7 +211,7 @@ pub(crate) fn dispatch_process_action(
     }
 }
 
-pub(crate) fn validate_rewind_source(
+fn validate_rewind_source(
     ctx: &HaWorkerCtx,
     action: &str,
     leader_member_id: &MemberId,
@@ -201,7 +225,7 @@ pub(crate) fn validate_rewind_source(
     })
 }
 
-pub(crate) fn validate_basebackup_source(
+fn validate_basebackup_source(
     ctx: &HaWorkerCtx,
     action: &str,
     leader_member_id: &MemberId,
@@ -221,8 +245,7 @@ fn resolve_source_member(
     leader_member_id: &MemberId,
 ) -> Result<MemberSlot, ProcessDispatchError> {
     let dcs = ctx.dcs_subscriber.latest();
-    dcs.value
-        .cache
+    dcs.cache
         .member_slots
         .get(leader_member_id)
         .cloned()

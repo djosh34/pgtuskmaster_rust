@@ -215,6 +215,9 @@ fn normalize_standby_auth_paths(
 ) -> ManagedPostgresStartIntent {
     match start_intent {
         ManagedPostgresStartIntent::Primary => ManagedPostgresStartIntent::primary(),
+        ManagedPostgresStartIntent::DetachedStandby => {
+            ManagedPostgresStartIntent::detached_standby()
+        }
         ManagedPostgresStartIntent::Replica {
             primary_conninfo,
             standby_auth,
@@ -254,7 +257,7 @@ fn materialize_managed_standby_passfile(
     managed_passfile_path: &Path,
 ) -> Result<Option<PathBuf>, ManagedPostgresError> {
     let standby_details = match start_intent {
-        ManagedPostgresStartIntent::Primary => None,
+        ManagedPostgresStartIntent::Primary | ManagedPostgresStartIntent::DetachedStandby => None,
         ManagedPostgresStartIntent::Replica {
             primary_conninfo,
             standby_auth,

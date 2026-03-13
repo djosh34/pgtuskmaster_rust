@@ -3,20 +3,22 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 use crate::{
     config::{
         ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
-        DcsConfig, DcsEndpoint, DcsInitConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
-        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
-        PgIdentConfig, PgtmConfig, PostgresConfig, PostgresConnIdentityConfig,
-        PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
-        RoleAuthConfig, RuntimeConfig, SecretSource, StderrSinkConfig, TlsClientAuthConfig,
-        TlsServerConfig, TlsServerIdentityConfig,
+        DcsConfig, DcsEndpoint, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig, InlineOrPath,
+        LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig, PgIdentConfig,
+        PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
+        PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, SecretSource,
+        StderrSinkConfig, TlsServerConfig,
     },
     pginfo::conninfo::PgSslMode,
 };
 
 const SAMPLE_PG_HBA_CONTENTS: &str = "local all all trust\n";
 const SAMPLE_PG_IDENT_CONTENTS: &str = "# empty\n";
+#[cfg(test)]
 const SAMPLE_TLS_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+#[cfg(test)]
 const SAMPLE_TLS_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n";
+#[cfg(test)]
 const SAMPLE_TLS_CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBCA\n-----END CERTIFICATE-----\n";
 const SAMPLE_HA_LOOP_INTERVAL_MS: u64 = 1000;
 const SAMPLE_HA_LEASE_TTL_MS: u64 = 10_000;
@@ -31,7 +33,7 @@ const SAMPLE_POSTGRES_LISTEN_PORT: u16 = 5432;
 #[cfg(test)]
 const SAMPLE_DCS_INIT_PAYLOAD_JSON: &str = "{\"ttl\":30}";
 
-pub fn sample_cluster_config() -> ClusterConfig {
+fn sample_cluster_config() -> ClusterConfig {
     ClusterConfig {
         name: "cluster-a".to_string(),
         member_id: "node-a".to_string(),
@@ -49,7 +51,7 @@ pub fn sample_binary_paths() -> BinaryPaths {
     }
 }
 
-pub fn sample_local_conn_identity() -> PostgresConnIdentityConfig {
+fn sample_local_conn_identity() -> PostgresConnIdentityConfig {
     PostgresConnIdentityConfig {
         user: "postgres".to_string(),
         dbname: "postgres".to_string(),
@@ -58,7 +60,7 @@ pub fn sample_local_conn_identity() -> PostgresConnIdentityConfig {
     }
 }
 
-pub fn sample_rewind_conn_identity() -> PostgresConnIdentityConfig {
+fn sample_rewind_conn_identity() -> PostgresConnIdentityConfig {
     PostgresConnIdentityConfig {
         user: "rewinder".to_string(),
         dbname: "postgres".to_string(),
@@ -67,13 +69,13 @@ pub fn sample_rewind_conn_identity() -> PostgresConnIdentityConfig {
     }
 }
 
-pub fn sample_password_secret() -> SecretSource {
+fn sample_password_secret() -> SecretSource {
     SecretSource::Inline {
         content: "secret-password".to_string(),
     }
 }
 
-pub fn sample_postgres_roles_config() -> PostgresRolesConfig {
+fn sample_postgres_roles_config() -> PostgresRolesConfig {
     PostgresRolesConfig {
         superuser: PostgresRoleConfig {
             username: "postgres".to_string(),
@@ -96,7 +98,7 @@ pub fn sample_postgres_roles_config() -> PostgresRolesConfig {
     }
 }
 
-pub fn sample_postgres_tls_config_disabled() -> TlsServerConfig {
+fn sample_postgres_tls_config_disabled() -> TlsServerConfig {
     TlsServerConfig {
         mode: ApiTlsMode::Disabled,
         identity: None,
@@ -104,10 +106,11 @@ pub fn sample_postgres_tls_config_disabled() -> TlsServerConfig {
     }
 }
 
-pub fn sample_postgres_tls_config_enabled(mode: ApiTlsMode) -> TlsServerConfig {
+#[cfg(test)]
+fn sample_postgres_tls_config_enabled(mode: ApiTlsMode) -> TlsServerConfig {
     TlsServerConfig {
         mode,
-        identity: Some(TlsServerIdentityConfig {
+        identity: Some(crate::config::TlsServerIdentityConfig {
             cert_chain: InlineOrPath::Inline {
                 content: SAMPLE_TLS_CERT_PEM.to_string(),
             },
@@ -115,7 +118,7 @@ pub fn sample_postgres_tls_config_enabled(mode: ApiTlsMode) -> TlsServerConfig {
                 content: SAMPLE_TLS_KEY_PEM.to_string(),
             },
         }),
-        client_auth: Some(TlsClientAuthConfig {
+        client_auth: Some(crate::config::TlsClientAuthConfig {
             client_ca: InlineOrPath::Inline {
                 content: SAMPLE_TLS_CA_PEM.to_string(),
             },
@@ -124,7 +127,7 @@ pub fn sample_postgres_tls_config_enabled(mode: ApiTlsMode) -> TlsServerConfig {
     }
 }
 
-pub fn sample_pg_hba_config() -> PgHbaConfig {
+fn sample_pg_hba_config() -> PgHbaConfig {
     PgHbaConfig {
         source: InlineOrPath::Inline {
             content: SAMPLE_PG_HBA_CONTENTS.to_string(),
@@ -132,7 +135,7 @@ pub fn sample_pg_hba_config() -> PgHbaConfig {
     }
 }
 
-pub fn sample_pg_ident_config() -> PgIdentConfig {
+fn sample_pg_ident_config() -> PgIdentConfig {
     PgIdentConfig {
         source: InlineOrPath::Inline {
             content: SAMPLE_PG_IDENT_CONTENTS.to_string(),
@@ -171,7 +174,7 @@ pub fn sample_logging_config() -> LoggingConfig {
     }
 }
 
-pub fn sample_dcs_config() -> DcsConfig {
+fn sample_dcs_config() -> DcsConfig {
     DcsConfig {
         endpoints: vec![sample_dcs_endpoint()],
         scope: "scope-a".to_string(),
@@ -179,14 +182,14 @@ pub fn sample_dcs_config() -> DcsConfig {
     }
 }
 
-pub fn sample_ha_config() -> HaConfig {
+fn sample_ha_config() -> HaConfig {
     HaConfig {
         loop_interval_ms: SAMPLE_HA_LOOP_INTERVAL_MS,
         lease_ttl_ms: SAMPLE_HA_LEASE_TTL_MS,
     }
 }
 
-pub fn sample_process_config() -> ProcessConfig {
+fn sample_process_config() -> ProcessConfig {
     ProcessConfig {
         pg_rewind_timeout_ms: SAMPLE_PROCESS_TIMEOUT_MS,
         bootstrap_timeout_ms: SAMPLE_PROCESS_TIMEOUT_MS,
@@ -195,37 +198,37 @@ pub fn sample_process_config() -> ProcessConfig {
     }
 }
 
-pub fn sample_api_auth_disabled() -> ApiAuthConfig {
+fn sample_api_auth_disabled() -> ApiAuthConfig {
     ApiAuthConfig::Disabled
 }
 
-pub fn sample_api_security_config() -> ApiSecurityConfig {
+fn sample_api_security_config() -> ApiSecurityConfig {
     ApiSecurityConfig {
         tls: sample_postgres_tls_config_disabled(),
         auth: sample_api_auth_disabled(),
     }
 }
 
-pub fn sample_api_config() -> ApiConfig {
+fn sample_api_config() -> ApiConfig {
     ApiConfig {
         listen_addr: sample_api_listen_addr(),
         security: sample_api_security_config(),
     }
 }
 
-pub fn sample_dcs_endpoint() -> DcsEndpoint {
+fn sample_dcs_endpoint() -> DcsEndpoint {
     DcsEndpoint::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 2379)))
 }
 
-pub fn sample_api_listen_addr() -> SocketAddr {
+fn sample_api_listen_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 8080))
 }
 
-pub fn sample_debug_config() -> DebugConfig {
+fn sample_debug_config() -> DebugConfig {
     DebugConfig { enabled: true }
 }
 
-pub fn sample_postgres_config() -> PostgresConfig {
+fn sample_postgres_config() -> PostgresConfig {
     PostgresConfig {
         data_dir: "/tmp/pgdata".into(),
         connect_timeout_s: SAMPLE_POSTGRES_CONNECT_TIMEOUT_S,
@@ -244,7 +247,8 @@ pub fn sample_postgres_config() -> PostgresConfig {
     }
 }
 
-pub fn sample_runtime_config() -> RuntimeConfig {
+#[cfg(test)]
+fn sample_runtime_config() -> RuntimeConfig {
     RuntimeConfigBuilder::new().build()
 }
 
@@ -280,38 +284,18 @@ impl RuntimeConfigBuilder {
         self.config
     }
 
-    pub fn with_cluster_name(self, name: impl Into<String>) -> Self {
-        let name = name.into();
-        self.transform_cluster(move |cluster| ClusterConfig { name, ..cluster })
-    }
-
-    pub fn with_member_id(self, member_id: impl Into<String>) -> Self {
-        let member_id = member_id.into();
-        self.transform_cluster(move |cluster| ClusterConfig {
-            member_id,
-            ..cluster
-        })
-    }
-
     pub fn with_dcs_scope(self, scope: impl Into<String>) -> Self {
         let scope = scope.into();
         self.transform_dcs(move |dcs| DcsConfig { scope, ..dcs })
     }
 
-    pub fn with_dcs_endpoints(self, endpoints: Vec<DcsEndpoint>) -> Self {
-        self.transform_dcs(move |dcs| DcsConfig { endpoints, ..dcs })
-    }
-
-    pub fn with_dcs_init(self, init: Option<DcsInitConfig>) -> Self {
+    #[cfg(test)]
+    fn with_dcs_init(self, init: Option<crate::config::DcsInitConfig>) -> Self {
         self.transform_dcs(move |dcs| DcsConfig { init, ..dcs })
     }
 
     pub fn with_api_listen_addr(self, listen_addr: SocketAddr) -> Self {
         self.transform_api(move |api| ApiConfig { listen_addr, ..api })
-    }
-
-    pub fn with_api_config(self, api: ApiConfig) -> Self {
-        self.transform(move |config| RuntimeConfig { api, ..config })
     }
 
     pub fn with_api_auth(self, auth: ApiAuthConfig) -> Self {
@@ -324,14 +308,6 @@ impl RuntimeConfigBuilder {
         })
     }
 
-    pub fn with_api_security(self, security: ApiSecurityConfig) -> Self {
-        self.transform_api(move |api| ApiConfig { security, ..api })
-    }
-
-    pub fn with_pgtm_config(self, pgtm: Option<PgtmConfig>) -> Self {
-        self.transform(move |config| RuntimeConfig { pgtm, ..config })
-    }
-
     pub fn with_postgres_data_dir(self, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
         self.transform_postgres(move |postgres| PostgresConfig {
@@ -340,22 +316,8 @@ impl RuntimeConfigBuilder {
         })
     }
 
-    pub fn with_postgres_connect_timeout_s(self, connect_timeout_s: u32) -> Self {
-        self.transform_postgres(move |postgres| PostgresConfig {
-            connect_timeout_s,
-            ..postgres
-        })
-    }
-
-    pub fn with_postgres_listen_host(self, listen_host: impl Into<String>) -> Self {
-        let listen_host = listen_host.into();
-        self.transform_postgres(move |postgres| PostgresConfig {
-            listen_host,
-            ..postgres
-        })
-    }
-
-    pub fn with_postgres_listen_port(self, listen_port: u16) -> Self {
+    #[cfg(test)]
+    fn with_postgres_listen_port(self, listen_port: u16) -> Self {
         self.transform_postgres(move |postgres| PostgresConfig {
             listen_port,
             ..postgres
@@ -369,42 +331,8 @@ impl RuntimeConfigBuilder {
         })
     }
 
-    pub fn with_postgres_socket_dir(self, socket_dir: impl Into<PathBuf>) -> Self {
-        let socket_dir = socket_dir.into();
-        self.transform_postgres(move |postgres| PostgresConfig {
-            socket_dir,
-            ..postgres
-        })
-    }
-
-    pub fn with_postgres_log_file(self, log_file: impl Into<PathBuf>) -> Self {
-        let log_file = log_file.into();
-        self.transform_postgres(move |postgres| PostgresConfig {
-            log_file,
-            ..postgres
-        })
-    }
-
-    pub fn with_postgres_tls(self, tls: TlsServerConfig) -> Self {
-        self.transform_postgres(move |postgres| PostgresConfig { tls, ..postgres })
-    }
-
-    pub fn with_postgres_extra_gucs(self, extra_gucs: BTreeMap<String, String>) -> Self {
-        self.transform_postgres(move |postgres| PostgresConfig {
-            extra_gucs,
-            ..postgres
-        })
-    }
-
     pub fn with_pg_hba(self, pg_hba: PgHbaConfig) -> Self {
         self.transform_postgres(move |postgres| PostgresConfig { pg_hba, ..postgres })
-    }
-
-    pub fn with_pg_ident(self, pg_ident: PgIdentConfig) -> Self {
-        self.transform_postgres(move |postgres| PostgresConfig {
-            pg_ident,
-            ..postgres
-        })
     }
 
     pub fn with_logging(self, logging: LoggingConfig) -> Self {
@@ -415,24 +343,8 @@ impl RuntimeConfigBuilder {
         self.transform_process(move |_| process)
     }
 
-    pub fn with_cluster(self, cluster: ClusterConfig) -> Self {
-        self.transform_cluster(move |_| cluster)
-    }
-
-    pub fn with_postgres(self, postgres: PostgresConfig) -> Self {
-        self.transform_postgres(move |_| postgres)
-    }
-
-    pub fn with_dcs(self, dcs: DcsConfig) -> Self {
-        self.transform_dcs(move |_| dcs)
-    }
-
     pub fn with_ha(self, ha: HaConfig) -> Self {
         self.transform_ha(move |_| ha)
-    }
-
-    pub fn with_api(self, api: ApiConfig) -> Self {
-        self.transform_api(move |_| api)
     }
 
     pub fn with_debug(self, debug: DebugConfig) -> Self {
@@ -449,19 +361,6 @@ impl RuntimeConfigBuilder {
         }
     }
 
-    pub fn transform_cluster<F>(self, transform: F) -> Self
-    where
-        F: FnOnce(ClusterConfig) -> ClusterConfig,
-    {
-        let RuntimeConfigBuilder { config } = self;
-        Self {
-            config: RuntimeConfig {
-                cluster: transform(config.cluster),
-                ..config
-            },
-        }
-    }
-
     pub fn transform_postgres<F>(self, transform: F) -> Self
     where
         F: FnOnce(PostgresConfig) -> PostgresConfig,
@@ -475,7 +374,7 @@ impl RuntimeConfigBuilder {
         }
     }
 
-    pub fn transform_dcs<F>(self, transform: F) -> Self
+    fn transform_dcs<F>(self, transform: F) -> Self
     where
         F: FnOnce(DcsConfig) -> DcsConfig,
     {
@@ -488,7 +387,7 @@ impl RuntimeConfigBuilder {
         }
     }
 
-    pub fn transform_ha<F>(self, transform: F) -> Self
+    fn transform_ha<F>(self, transform: F) -> Self
     where
         F: FnOnce(HaConfig) -> HaConfig,
     {
@@ -501,7 +400,7 @@ impl RuntimeConfigBuilder {
         }
     }
 
-    pub fn transform_process<F>(self, transform: F) -> Self
+    fn transform_process<F>(self, transform: F) -> Self
     where
         F: FnOnce(ProcessConfig) -> ProcessConfig,
     {
@@ -514,7 +413,7 @@ impl RuntimeConfigBuilder {
         }
     }
 
-    pub fn transform_logging<F>(self, transform: F) -> Self
+    fn transform_logging<F>(self, transform: F) -> Self
     where
         F: FnOnce(LoggingConfig) -> LoggingConfig,
     {
@@ -540,7 +439,7 @@ impl RuntimeConfigBuilder {
         }
     }
 
-    pub fn transform_debug<F>(self, transform: F) -> Self
+    fn transform_debug<F>(self, transform: F) -> Self
     where
         F: FnOnce(DebugConfig) -> DebugConfig,
     {

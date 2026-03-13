@@ -14,7 +14,7 @@ const ATTESTATION_REL_PATH: &str = ".tools/real-binaries-attestation.json";
 
 #[derive(Debug, Deserialize)]
 struct RealBinariesPolicy {
-    schema_version: u32,
+    format: u32,
     required_binaries: Vec<PolicyBinary>,
 }
 
@@ -57,7 +57,7 @@ struct PinnedArchive {
 
 #[derive(Debug, Deserialize)]
 struct RealBinariesAttestation {
-    schema_version: u32,
+    format: u32,
     generated_by: Option<String>,
     entries: Vec<AttestedBinary>,
 }
@@ -112,16 +112,16 @@ pub fn verify_real_binaries_from_repo_root(
     let policy = load_policy(policy_path.as_path())?;
     let attestation = load_attestation(attestation_path.as_path())?;
 
-    if policy.schema_version != 1 {
+    if policy.format != 1 {
         return Err(HarnessError::InvalidInput(format!(
-            "unsupported real-binaries policy schema_version={} (expected 1)",
-            policy.schema_version
+            "unsupported real-binaries policy format={} (expected 1)",
+            policy.format
         )));
     }
-    if attestation.schema_version != 1 {
+    if attestation.format != 1 {
         return Err(HarnessError::InvalidInput(format!(
-            "unsupported real-binaries attestation schema_version={} (expected 1); regenerate by running ./tools/install-etcd.sh and ./tools/install-postgres16.sh",
-            attestation.schema_version
+            "unsupported real-binaries attestation format={} (expected 1); regenerate by running ./tools/install-etcd.sh and ./tools/install-postgres16.sh",
+            attestation.format
         )));
     }
 
@@ -738,7 +738,7 @@ mod tests {
 
         let policy = r#"
 {
-  "schema_version": 1,
+  "format": 1,
   "required_binaries": [
     {
       "label": "postgres",
@@ -763,7 +763,7 @@ mod tests {
 
         let attestation = format!(
             r#"{{
-  "schema_version": 1,
+  "format": 1,
   "generated_by": "unit-test",
   "entries": [
     {{
@@ -801,7 +801,7 @@ mod tests {
 
         let policy = r#"
 {
-  "schema_version": 1,
+  "format": 1,
   "required_binaries": [
     {
       "label": "postgres",
@@ -816,7 +816,7 @@ mod tests {
         // Wrong sha256 on purpose.
         let attestation = r#"
 {
-  "schema_version": 1,
+  "format": 1,
   "generated_by": "unit-test",
   "entries": [
     {
@@ -854,7 +854,7 @@ mod tests {
 
         let policy = r#"
 {
-  "schema_version": 1,
+  "format": 1,
   "required_binaries": [
     {
       "label": "postgres",
@@ -868,7 +868,7 @@ mod tests {
 
         let attestation = r#"
 {
-  "schema_version": 1,
+  "format": 1,
   "generated_by": "unit-test",
   "entries": [
     {
@@ -914,7 +914,7 @@ mod tests {
 
         let policy = r#"
 {
-  "schema_version": 1,
+  "format": 1,
   "required_binaries": [
     {
       "label": "postgres",
@@ -928,7 +928,7 @@ mod tests {
 
         let attestation = r#"
 {
-  "schema_version": 1,
+  "format": 1,
   "generated_by": "unit-test",
   "entries": [
     {

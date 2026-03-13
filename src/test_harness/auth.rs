@@ -29,11 +29,13 @@ impl ApiRoleTokens {
         })
     }
 
-    pub fn read_bearer_header(&self) -> String {
+    #[cfg(test)]
+    fn read_bearer_header(&self) -> String {
         format!("Bearer {}", self.read_token)
     }
 
-    pub fn admin_bearer_header(&self) -> String {
+    #[cfg(test)]
+    fn admin_bearer_header(&self) -> String {
         format!("Bearer {}", self.admin_token)
     }
 }
