@@ -14,14 +14,6 @@ impl From<crate::test_harness::HarnessError> for WorkerError {
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum StatePublishError {
-    #[error("state channel is closed")]
-    ChannelClosed,
-    #[error("state version overflow")]
-    VersionOverflow,
-}
-
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum StateRecvError {
     #[error("state channel is closed")]
     ChannelClosed,

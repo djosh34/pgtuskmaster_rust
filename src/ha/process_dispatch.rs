@@ -211,7 +211,7 @@ pub(crate) fn dispatch_process_action(
     }
 }
 
-pub(crate) fn validate_rewind_source(
+fn validate_rewind_source(
     ctx: &HaWorkerCtx,
     action: &str,
     leader_member_id: &MemberId,
@@ -225,7 +225,7 @@ pub(crate) fn validate_rewind_source(
     })
 }
 
-pub(crate) fn validate_basebackup_source(
+fn validate_basebackup_source(
     ctx: &HaWorkerCtx,
     action: &str,
     leader_member_id: &MemberId,

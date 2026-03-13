@@ -245,7 +245,7 @@ pub(crate) fn authority_primary_member(state: &NodeState) -> Option<String> {
     }
 }
 
-pub(crate) fn member_role_label(member: &MemberPostgresView) -> &'static str {
+fn member_role_label(member: &MemberPostgresView) -> &'static str {
     match member {
         MemberPostgresView::Unknown(_) => "unknown",
         MemberPostgresView::Primary(_) => "primary",
@@ -253,7 +253,7 @@ pub(crate) fn member_role_label(member: &MemberPostgresView) -> &'static str {
     }
 }
 
-pub(crate) fn member_readiness_label(member: &MemberPostgresView) -> &'static str {
+fn member_readiness_label(member: &MemberPostgresView) -> &'static str {
     let readiness = match member {
         MemberPostgresView::Unknown(observation) => &observation.readiness,
         MemberPostgresView::Primary(observation) => &observation.readiness,

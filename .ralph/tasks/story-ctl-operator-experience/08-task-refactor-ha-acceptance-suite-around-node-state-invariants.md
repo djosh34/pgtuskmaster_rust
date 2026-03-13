@@ -13,10 +13,13 @@
 - Mid-scenario assertions are still required. This is not a "setup, do many actions, assert once at the end" redesign. Some invariants must be asserted during the transition window, immediately after a fault, before healing, or before a stopped node is restarted. The new design must preserve those checkpoints.
 - `NodeState` must be the sole source of truth for cluster-state assertions. If the suite expects a node to have known state and `NodeState` still reports `Unknown`, that must fail. Do not fall back to SQL or `pgtm` helper behavior to "recover" from an unknown `NodeState` role.
 - SQL is the source of truth for data-plane assertions only: write success/rejection, proof-row visibility, replication convergence, fencing cutoffs, and split-brain write evidence.
+- When a scenario intentionally checks a node's published authority or writability, add a separate SQL corroboration step that confirms the data plane agrees with the published `NodeState`. This corroboration is a second explicit assertion, not a fallback and not a reinterpretation of `NodeState` when `NodeState` is wrong.
 - `pgtm primary` / `pgtm replicas` are not a second cluster-state oracle. They are product-surface checks. They should remain covered, but by a smaller set of explicit product-surface assertions or tests rather than being repeated everywhere as though they independently establish who the primary is.
+- Log scraping is not an acceptable correctness oracle for the HA acceptance suite. Logs may still be captured as artifacts for debugging, but pass/fail assertions must be based on current typed state or real observation surfaces (`NodeState`, SQL, explicit CLI/API result surfaces).
 - A replica is not "never primary" in the absolute sense. Any replica that is part of the healthy majority and eligible for leadership may become primary when the prior primary loses authority or disappears. The actual invariant is: a node that is isolated into the minority, ineligible, or explicitly degraded must never become authoritative primary; an eligible majority-side replica may and should race to become primary when liveness requires it.
 - The suite should prefer semantic role aliases over physical node names. Physical names like `node-a` / `node-b` / `node-c` should appear only when a scenario truly depends on fixed identities, fixed configs, or a specific given. Otherwise, scenarios should name the relevant participants at the beginning in semantic terms such as `old_primary`, `target_replica`, `healthy_replica`, `isolated_node`, `majority_primary`, etc.
 - There should not be magic "default aliases" silently assumed by the harness. If a scenario wants semantic names, it should declare them explicitly near the top. That keeps the feature text honest and avoids hidden state. The one exception is that the harness can still expose fixed topology constants internally; the feature DSL itself should remain explicit.
+- Recovery-path scenarios must assert the typed recovery policy rather than merely eventual success: if a node can simply resume following/streaming, that path should be chosen before destructive recovery; if divergence is rewind-eligible, `pg_rewind` must be tried before `pg_basebackup`; `pg_basebackup` is only correct when the typed state says it is required or after an explicit rewind failure that marks fallback to basebackup.
 
 **Target invariant model for the HA suite:**
 
@@ -27,6 +30,7 @@ Safety invariants that must hold whenever applicable:
 - If DCS quorum is lost, the cluster must not expose an operator-visible writable primary until quorum and authority are properly restored.
 - After a fencing cutoff is observed, no later writes may commit.
 - `pgtm primary` / `pgtm replicas` must never contradict the authoritative information derived from the same seed `NodeState` when those product-surface commands are explicitly tested.
+- When a scenario claims a node is authoritative, non-authoritative, writable, or non-writable, the separately asserted SQL behavior must agree with the published `NodeState`; disagreement is a failure, not a cue to reinterpret one surface through the other.
 
 Liveness invariants that must eventually hold under the required preconditions:
 - With DCS quorum and enough healthy members, the cluster eventually converges to exactly one authoritative primary.
@@ -38,7 +42,9 @@ Liveness invariants that must eventually hold under the required preconditions:
 **Required conceptual split between truth surfaces:**
 - `NodeState`: cluster-state / authority / role / quorum / fail-safe / visible-member assertions.
 - SQL: proof rows, replication convergence, write success/failure, split-brain evidence, fencing cutoff evidence.
+- Typed `ha` / `process` state exposed through `NodeState`: recovery-path assertions such as follow/start-streaming vs rewind vs basebackup, and explicit process-failure recovery semantics.
 - `pgtm primary` and `pgtm replicas`: narrow product-surface validation only, in their own assertions or smaller dedicated tests, not as a fallback and not as a pervasive co-assertion in every HA scenario.
+- Cross-surface corroboration: explicit separate checks that SQL behavior agrees with the published `NodeState` for authority/writability claims. These corroboration checks must never be used to "repair" or reinterpret incorrect `NodeState`.
 
 **Scope:**
 - Redesign the structure of `tests/ha/support/steps/`, `tests/ha/support/world/`, and adjacent support modules so step files become thin adapters over typed harness/query/assertion layers rather than giant mixed-concern modules.
@@ -48,6 +54,7 @@ Liveness invariants that must eventually hold under the required preconditions:
 - Centralize cluster topology, member names, and observer config selection instead of hardcoding topology in multiple places.
 - Keep the suite black-box and end-to-end. This is not a rewrite into unit tests. The harness must still start real Docker stacks, inject real faults, and validate eventual behavior through black-box observation surfaces.
 - It is acceptable and preferred to reduce total feature count if several current files are thin variants of the same invariant class and can be merged without losing coverage.
+- Remove log-content assertions from HA correctness checks. If a scenario currently proves behavior only by matching log text, rewrite it to assert typed current state and real external behavior instead.
 
 **Out of scope:**
 - Do not weaken the suite by deleting hard scenarios solely because they are difficult. If a scenario proves a distinct invariant or fault class, keep that coverage even if the file layout changes.
@@ -94,6 +101,7 @@ Liveness invariants that must eventually hold under the required preconditions:
   - during replication isolation, assert replicas do not yet contain a new row
   - during switchover window, assert no dual-primary evidence
 - Product-surface assertions for `pgtm primary` / `pgtm replicas` should be kept only where the product surface itself is what is being tested. Cluster-authority assertions should come from `NodeState`.
+- Recovery-path scenarios should assert the typed `ha` / `process` state that is already exposed via `NodeState`, instead of using compose-log snippets as proof that `pg_rewind`, `pg_basebackup`, or follower/start-streaming recovery happened.
 
 **Concrete canonical step set to end up with:**
 
@@ -142,9 +150,15 @@ Cluster-state assertion steps, all driven by `NodeState` only:
 - `the lone reachable node is not a writable primary`
 - `the cluster is degraded but operational across <n> reachable members`
 
+Recovery-path assertion steps, driven by typed `ha` / `process` state exposed through `NodeState`:
+- `eventually "<alias>" follows "<leader>" with recovery plan "<none|start_streaming|rewind|basebackup>"`
+- `eventually "<alias>" records process failure "<pg_rewind|pg_basebackup|postgres_start>" with recovery "<retry_same_job|fallback_to_basebackup|wait_for_operator>"`
+
 Data-plane assertion steps, all driven by SQL/workload evidence only:
 - `the healthy members contain exactly the recorded proof tokens`
 - `"<alias>" does not yet contain proof token "<token>"`
+- `proof writes through "<alias>" succeed`
+- `proof writes through "<alias>" are rejected`
 - `the workload records at least one commit`
 - `the workload establishes a fencing cutoff with no later commits`
 - `there is no split-brain write evidence during window "<marker>"`
@@ -154,7 +168,6 @@ Explicit product-surface assertion steps, used narrowly and intentionally:
 - `pgtm replicas resolves to every healthy replica except "<alias>"`
 - `direct API observation to "<alias>" fails`
 - `the last operator-visible error is recorded`
-- `logs for "<alias>" contain "<text>"`
 
 **Concrete step merges from the current suite into that canonical set:**
 - Merge `the current primary container crashes` and `I kill the node named "..."` into `I kill "<alias>"`. The scenario must label the primary explicitly first.
@@ -179,11 +192,12 @@ Explicit product-surface assertion steps, used narrowly and intentionally:
 - `the node named "..." is not queryable through pgtm connection helpers` / `the node named "..." is not queryable` as a generic cluster-state assertion. Replace with explicit API failure or SQL failure steps only where that surface is what the scenario actually intends to prove.
 - Any assertion that decides cluster role by combining `NodeState` with direct SQL fallback when `NodeState` says `Unknown`.
 - Hidden arithmetic such as `online_expected_count(...)` derived from mutable `unsampled_nodes` state.
+- Any assertion that proves HA behavior by matching log text such as blocker evidence or recovery-path snippets. Logs remain debug artifacts only and are not a pass/fail correctness surface.
 
 **Concrete target feature/scenario inventory after the refactor:**
 
 1. `ha_primary_failover_and_rejoin.feature`
-- Scenario: killed primary fails over and later rejoins as replica
+- Scenario: killed primary fails over and later rejoins as replica via follow/start-streaming when its state is still reusable
 - Scenario: killed primary under concurrent writes preserves single-primary and data safety
 - Scenario: wedged primary loses authority, a new primary is elected, and the old primary never regains leadership
 
@@ -194,37 +208,42 @@ Explicit product-surface assertion steps, used narrowly and intentionally:
 - Scenario: full cluster outage followed by two fixed-node returns restores service before the final node rejoins
 - Scenario: one healthy return restores service even while another node remains broken
 
-3. `ha_dcs_quorum_and_fencing.feature`
+3. `ha_repeated_failovers.feature`
+- Scenario: repeated failovers preserve single-primary safety and distinct leaders when topology still allows a new eligible majority-side leader
+
+4. `ha_dcs_quorum_and_fencing.feature`
 - Scenario: losing DCS quorum removes authoritative primary visibility and exposes fail-safe behavior
 - Scenario: losing DCS quorum fences writes until quorum is restored
 - Scenario: mixed DCS loss and observer-API isolation heals back to one healthy primary
 
-4. `ha_majority_minority_partitions.feature`
+5. `ha_majority_minority_partitions.feature`
 - Scenario: old primary isolated into the minority loses authority, the majority elects a new primary, and the healed old primary rejoins only as a replica
 - Scenario: isolated replica in the minority never self-promotes while the majority preserves one primary
 - Scenario: non-primary observer-API isolation does not change authority
 
-5. `ha_replication_degradation_and_catchup.feature`
+6. `ha_replication_degradation_and_catchup.feature`
 - Scenario: replication-path isolation delays proof-token visibility and healed replicas catch up
 - Scenario: a lagging or degraded replica is not promoted during failover
 
-6. `ha_switchover.feature`
+7. `ha_switchover.feature`
 - Scenario: planned switchover moves leadership cleanly to a different primary
 - Scenario: planned switchover under concurrent writes preserves single-primary safety
 - Scenario: targeted switchover promotes the requested eligible replica and not the other one
 - Scenario: targeted switchover to an ineligible or degraded replica is rejected without authority change
 
-7. `ha_rejoin_recovery_paths.feature`
-- Scenario: blocked basebackup clone recovers after the blocker is removed
-- Scenario: rewind failure falls back to basebackup and the old primary rejoins as a replica
+8. `ha_rejoin_recovery_paths.feature`
+- Scenario: blocked basebackup clone recovers after the blocker is removed when basebackup is actually required
+- Scenario: rewind-eligible rejoin attempts `pg_rewind` before any `pg_basebackup` fallback, and only falls back to basebackup after an explicit rewind failure
 - Scenario: a broken rejoin attempt does not destabilize quorum or steal leadership
 
-8. `ha_custom_roles.feature`
+9. `ha_custom_roles.feature`
 - Scenario: non-default replicator and rewinder roles survive failover and rejoin
 
 **Explicit current-to-target feature merge plan:**
 - Merge current `ha_primary_killed_then_rejoins_as_replica`, `ha_primary_killed_with_concurrent_writes`, and `ha_primary_storage_stalled_then_new_primary_takes_over` into `ha_primary_failover_and_rejoin.feature` as three scenarios.
+- The `ha_primary_killed_then_rejoins_as_replica` rewrite must explicitly assert that the restarted old primary returns by follower/start-streaming recovery when the typed state says destructive recovery is unnecessary, rather than merely asserting that it eventually becomes a replica.
 - Merge current `ha_replica_stopped_primary_stays_primary`, `ha_replica_flapped_primary_stays_primary`, `ha_two_replicas_stopped_then_one_replica_restarted_restores_quorum`, `ha_all_nodes_stopped_then_two_nodes_restarted_then_final_node_rejoins`, and `ha_two_nodes_stopped_then_one_healthy_node_restarted_restores_service_while_other_stays_broken` into `ha_replica_outage_and_recovery.feature`.
+- Keep current `ha_repeated_failovers_preserve_single_primary` as `ha_repeated_failovers.feature`, rewritten around semantic aliases and the explicit invariant that an ineligible former leader never regains authority during the second failover window.
 - Merge current `ha_dcs_quorum_lost_enters_failsafe`, `ha_dcs_quorum_lost_fencing_blocks_post_cutoff_writes`, and `ha_dcs_and_api_faults_then_healed_cluster_converges` into `ha_dcs_quorum_and_fencing.feature`.
 - Merge current `ha_old_primary_partitioned_from_majority_majority_elects_new_primary` and `ha_old_primary_partitioned_then_healed_rejoins_as_replica_after_majority_failover` into one stronger old-primary-minority scenario inside `ha_majority_minority_partitions.feature`.
 - Keep current `ha_replica_partitioned_from_majority_primary_stays_primary` and `ha_non_primary_api_isolated_primary_stays_primary` as the other two scenarios in `ha_majority_minority_partitions.feature`.
@@ -239,7 +258,9 @@ Kept and strengthened:
 - Single-primary safety checks remain, but are always `NodeState`-based.
 - Fail-safe and no-primary checks remain, but are always `NodeState`-based.
 - Replica rejoin checks remain, but must fail if `NodeState` still reports `Unknown` where the suite expects a known replica role.
+- Recovery-path checks remain, but must now assert typed `ha` / `process` state for follow/start-streaming vs rewind vs basebackup instead of merely checking eventual replica state.
 - Proof-token and workload checks remain, but are strictly SQL/workload-based.
+- SQL corroboration remains separate and explicit where a scenario claims a node is writable or non-writable; these checks must agree with the published `NodeState` without becoming a fallback truth source.
 - Mid-scenario transition-window assertions remain, especially for:
   - no dual-primary
   - no-primary/fail-safe
@@ -249,13 +270,13 @@ Kept and strengthened:
 Narrowed:
 - `pgtm primary` and `pgtm replicas` assertions remain only in the scenarios where the product surface is intentionally under test, mainly selected switchover and connection-surface scenarios.
 - API reachability assertions remain only where the scenario is specifically about observer/API isolation, not as a general proxy for cluster health.
-- Log-content assertions remain only for blocker/recovery-path scenarios where the log evidence is the product behavior under test.
 
 Thrown away:
 - Any role or authority inference that falls back from `NodeState` to SQL or `pgtm` helper behavior.
 - Any use of `MemberPostgresView::Unknown(_)` as a reason to probe a second surface and still accept the result as a successful role assertion.
 - Any hidden "online expected count" math based on `unsampled_nodes`.
 - The idea that `pgtm primary` and `NodeState` independently assert the same cluster truth in the same HA scenario by default.
+- Any log-snippet/blocker-evidence assertion as a proof of correctness. The suite must assert current state and external behavior directly instead.
 
 **Expected outcome:**
 - The HA suite expresses a smaller, clearer language centered on invariant classes instead of one-off step phrasing.
@@ -275,11 +296,14 @@ Thrown away:
 - [ ] The feature corpus is rewritten to the concrete target feature/scenario inventory described in this task, including the specified merges of current scenario files into scenario-family feature files
 - [ ] `NodeState` is the sole truth source for cluster-role / authority / quorum / fail-safe assertions; no step or assertion helper falls back to SQL or `pgtm` connection behavior to reinterpret `Unknown` cluster state
 - [ ] SQL remains the sole truth source for data-plane assertions such as proof-row visibility, replication convergence, write rejection, fencing cutoff, and split-brain evidence
+- [ ] Where a scenario claims a node is authoritative, non-authoritative, writable, or non-writable, the suite also performs a separate SQL corroboration check that agrees with the published `NodeState`; this corroboration must remain a separate assertion and must never be used as fallback role inference
 - [ ] `pgtm primary` / `pgtm replicas` checks are reduced to explicit product-surface assertions or dedicated tests and are no longer used as a pervasive co-assertion of cluster authority
 - [ ] `unsampled_nodes` is removed entirely, and all assertions that previously depended on it are replaced by explicit, typed reachability or scope expectations
 - [ ] The new feature DSL uses explicit semantic aliases declared near scenario start and no hidden "default alias" behavior; physical node names are used only where the scenario truly depends on fixed identities or configs
 - [ ] Mid-scenario assertions remain present where they are semantically necessary; the refactor does not collapse the suite into end-only assertions
 - [ ] Current fallback behavior that masks `NodeState` bugs is removed, including the `MemberPostgresView::Unknown(_)` fallback path in HA assertions unless a scenario explicitly asserts that state should remain unknown
+- [ ] Recovery-path scenarios assert typed `ha` / `process` state exposed through `NodeState`, including the ordering policy that follower/start-streaming recovery is preferred when valid, `pg_rewind` is tried before `pg_basebackup` when rewind is possible, and `pg_basebackup` is only used when the typed state requires it or after explicit rewind failure with fallback-to-basebackup semantics
+- [ ] Log-based HA assertions are removed. Compose logs and process logs may be captured for debugging artifacts, but no HA scenario passes or fails based on matching log text
 - [ ] Repetitive feature files are merged where possible without losing coverage of a distinct invariant or fault class
 - [ ] The resulting feature set is organized around explicit invariant classes and scenario families, with clear naming and without preserving current file count or wording just for continuity
 - [ ] `make check` — passes cleanly
@@ -299,6 +323,10 @@ Thrown away:
   - unique and must remain
   - repetitive variants that should be merged
   - currently over-asserting the same fact through multiple truth surfaces
+- [ ] Extend the invariant catalog with explicit cross-surface corroboration rules:
+  - `NodeState` remains authoritative for cluster-role assertions
+  - SQL corroboration is a separate required check where the scenario claims client-visible writability or non-writability
+  - disagreement between `NodeState` and SQL is a test failure, not a cue to reinterpret one surface through the other
 - [ ] Make the invariant vocabulary explicit in code comments and/or docs for the new assertion layer so a future maintainer understands why some assertions are `always`-style transition checks and others are `eventually`-style convergence checks.
 
 ### Phase 2: Introduce typed topology and typed scenario state
@@ -325,11 +353,13 @@ Thrown away:
 - [ ] Move DSN resolution, row-fetch logic, and proof-table helpers out of step files into dedicated SQL/data modules.
 - [ ] Keep `tests/ha/support/faults/mod.rs` typed and focused; move only the higher-level orchestration around it, not the fault ADTs themselves.
 - [ ] Consider introducing a typed Compose context or wrapper around the repeated Compose command plumbing in `tests/ha/support/docker/cli.rs`.
+- [ ] Remove log-scraping assertion helpers from the HA pass/fail path. If logs are still collected, they should live only in artifact/debug helpers and not in the assertion DSL.
 
 ### Phase 4: Remove fallback-based role inference
 - [ ] Delete the current cluster-role fallback behavior where `NodeState` `Unknown` is treated as acceptable if a direct SQL check suggests the node is in recovery.
 - [ ] Rewrite replica/primary assertions so they fail if `NodeState` is unknown at a point where the suite expects the node to have known state.
 - [ ] Keep direct SQL checks only for data assertions, and keep `pgtm` helper checks only for explicit product-surface assertions.
+- [ ] Add explicit paired-but-separate SQL corroboration helpers for the scenarios that claim a node is writable or non-writable, so the suite checks that the data plane agrees with the published `NodeState` without using SQL as fallback role inference.
 - [ ] Audit all usages of:
   - `assert_member_is_replica_via_member(...)`
   - `sql_target_for_member(...)`
@@ -369,6 +399,7 @@ Thrown away:
 - [ ] Preserve or improve coverage for these scenario families:
   - primary loss and old-primary rejoin
   - replica outage / flapping replica
+  - repeated failovers with distinct leaders when topology still allows them
   - majority restoration after losing two nodes
   - DCS quorum loss and recovery
   - workload fencing under quorum loss
@@ -379,6 +410,10 @@ Thrown away:
   - targeted switchover accepted
   - targeted switchover rejected
   - blocked rejoin / blocked basebackup / blocked rewind
+- [ ] Preserve or improve coverage for recovery-path policy itself:
+  - a reusable replica/old-primary rejoin prefers follower/start-streaming recovery instead of destructive recovery
+  - rewind-eligible divergence plans `pg_rewind` before `pg_basebackup`
+  - `pg_basebackup` is used only when typed state requires it or after explicit rewind failure marked as fallback-to-basebackup
 - [ ] For each scenario family, decide which assertions are:
   - immediate post-action assertions
   - transition-window safety assertions
@@ -396,7 +431,7 @@ Thrown away:
 
 ### Phase 9: Validation and cleanup
 - [ ] Run repo-wide searches to ensure stale concepts have actually been removed or narrowed:
-  - `rg -n "unsampled_nodes|sampled|debug output|primary history never included|direct_connection_target|sql_target_for_member" tests/ha`
+  - `rg -n "unsampled_nodes|sampled|debug output|primary history never included|direct_connection_target|sql_target_for_member|emitted blocker evidence|compose logs did not contain|logs for .* contain" tests/ha`
   - keep only the concepts that are still intentionally part of the new design
 - [ ] Run repo-wide searches to ensure topology duplication is reduced:
   - `rg -n "(node-a|node-b|node-c|observer/node-a.toml|observer/node-b.toml|observer/node-c.toml)" tests/ha/support`
@@ -406,5 +441,3 @@ Thrown away:
 - [ ] Run `make lint`
 - [ ] Run `make test-long`
 - [ ] Update task status and `<passes>true</passes>` only after all acceptance criteria and implementation-plan checkboxes are complete.
-
-</description>

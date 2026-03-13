@@ -322,7 +322,7 @@ async fn drain_one_stream(
     }
 }
 
-pub(crate) fn can_accept_job(state: &ProcessState) -> bool {
+fn can_accept_job(state: &ProcessState) -> bool {
     matches!(state, ProcessState::Idle { .. })
 }
 
@@ -602,7 +602,7 @@ fn cleanup_postgres_socket_files(socket_dir: &Path, port: u16) -> Result<(), Pro
     Ok(())
 }
 
-pub(crate) fn start_postgres_preflight_is_already_running(
+fn start_postgres_preflight_is_already_running(
     data_dir: &Path,
     socket_dir: &Path,
     port: u16,
@@ -1265,7 +1265,7 @@ pub(crate) fn system_now_unix_millis() -> Result<UnixMillis, WorkerError> {
     Ok(UnixMillis(millis))
 }
 
-pub(crate) fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) -> u64 {
+fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) -> u64 {
     match kind {
         ProcessJobKind::Bootstrap(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
         ProcessJobKind::BaseBackup(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
@@ -1289,7 +1289,7 @@ fn active_kind(kind: &ProcessJobKind) -> ActiveJobKind {
     }
 }
 
-pub(crate) fn build_command(
+fn build_command(
     config: &ProcessConfig,
     job_id: &JobId,
     kind: &ProcessJobKind,

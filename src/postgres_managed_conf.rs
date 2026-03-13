@@ -15,7 +15,7 @@ pub(crate) const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
 # Production TLS material must be supplied by the operator; pgtuskmaster only copies managed runtime files.\n";
 pub(crate) const MANAGED_STANDBY_SIGNAL_NAME: &str = "standby.signal";
 pub(crate) const MANAGED_RECOVERY_SIGNAL_NAME: &str = "recovery.signal";
-pub(crate) const MANAGED_STANDBY_PASSFILE_NAME: &str = "pgtm.standby.passfile";
+const MANAGED_STANDBY_PASSFILE_NAME: &str = "pgtm.standby.passfile";
 
 const RESERVED_EXTRA_GUC_KEYS: &[&str] = &[
     "archive_cleanup_command",
@@ -250,7 +250,7 @@ pub(crate) fn managed_standby_auth_from_role_auth(
     }
 }
 
-pub(crate) fn render_managed_primary_conninfo(
+fn render_managed_primary_conninfo(
     conninfo: &PgConnInfo,
     standby_auth: &ManagedStandbyAuth,
 ) -> String {
@@ -263,7 +263,7 @@ pub(crate) fn render_managed_primary_conninfo(
     rendered
 }
 
-pub(crate) fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresConfError> {
+fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresConfError> {
     if key.is_empty() {
         return Err(ManagedPostgresConfError::InvalidExtraGuc {
             key: key.to_string(),

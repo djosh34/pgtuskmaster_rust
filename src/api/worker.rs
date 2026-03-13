@@ -166,26 +166,6 @@ impl ApiWorkerCtx {
         }
     }
 
-    pub fn configure_role_tokens(
-        &mut self,
-        read_token: Option<String>,
-        admin_token: Option<String>,
-    ) -> Result<(), WorkerError> {
-        let read = normalize_optional_token(read_token)?;
-        let admin = normalize_optional_token(admin_token)?;
-
-        if read.is_none() && admin.is_none() {
-            self.role_tokens = None;
-            return Ok(());
-        }
-
-        self.role_tokens = Some(ApiRoleTokens {
-            read_token: read,
-            admin_token: admin,
-        });
-        Ok(())
-    }
-
     pub fn set_require_client_cert(&mut self, required: bool) {
         self.require_client_cert = required;
     }
@@ -569,22 +549,6 @@ fn endpoint_role(request: &HttpRequest) -> EndpointRole {
     match (request.method.as_str(), path) {
         ("POST", "/switchover") | ("DELETE", "/switchover") => EndpointRole::Admin,
         _ => EndpointRole::Read,
-    }
-}
-
-fn normalize_optional_token(raw: Option<String>) -> Result<Option<String>, WorkerError> {
-    match raw {
-        Some(value) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                Err(WorkerError::Message(
-                    "role token must not be empty when configured".to_string(),
-                ))
-            } else {
-                Ok(Some(trimmed.to_string()))
-            }
-        }
-        None => Ok(None),
     }
 }
 

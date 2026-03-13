@@ -1349,10 +1349,10 @@ fn replica_members(status: &NodeState) -> Vec<String> {
         .cache
         .member_slots
         .iter()
-        .filter_map(|(member_id, member)| {
+        .filter(|(_member_id, member)| {
             matches!(&member.postgres, MemberPostgresView::Replica(_))
-                .then(|| member_id.0.clone())
         })
+        .map(|(member_id, _member)| member_id.0.clone())
         .collect::<Vec<_>>()
 }
 

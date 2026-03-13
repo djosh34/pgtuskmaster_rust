@@ -1004,9 +1004,7 @@ fn dcs_primary_members(status: &NodeState) -> Vec<String> {
         .cache
         .member_slots
         .iter()
-        .filter_map(|(member_id, slot)| {
-            matches!(slot.postgres, MemberPostgresView::Primary(_))
-                .then(|| member_id.0.clone())
-        })
+        .filter(|(_member_id, slot)| matches!(slot.postgres, MemberPostgresView::Primary(_)))
+        .map(|(member_id, _slot)| member_id.0.clone())
         .collect::<Vec<_>>()
 }

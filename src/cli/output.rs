@@ -114,24 +114,11 @@ fn render_status_text(view: &ClusterStatusView) -> String {
 }
 
 fn render_connection_text(view: &ConnectionView) -> String {
-    let mut lines = vec![
-        format!("cluster: {}", view.cluster_name),
-        format!("kind: {:?}", view.kind).to_lowercase(),
-    ];
-
-    for warning in &view.warnings {
-        lines.push(format!("warning: {}", warning.message));
-    }
-
-    if !view.warnings.is_empty() {
-        lines.push(String::new());
-    }
-
-    for target in &view.targets {
-        lines.push(format!("{} {}", target.member_id, target.dsn));
-    }
-
-    lines.join("\n")
+    view.targets
+        .iter()
+        .map(|target| target.dsn.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_table_line(values: &[impl AsRef<str>], widths: &[usize]) -> String {
