@@ -137,7 +137,6 @@ The requested source files give a good picture of the suite layout:
 - `tests/bdd_state_watch.rs`: state-channel behavior contracts
 - `tests/cli_binary.rs`: generic CLI help, debug, and node-config validation contracts
 - `tests/nextest_config_contract.rs`: nextest profile routing expectations
-- `src/worker_contract_tests.rs`: contract-style runtime and debug API expectations
 
 The repository ships its supported HA end-to-end surface under `tests/ha/`, with the Rust integration-test entrypoint in `tests/ha.rs`. That HA harness remains intentionally independent from the ordinary API/CLI integration-test surface.
 

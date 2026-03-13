@@ -53,7 +53,6 @@ This runs `cargo nextest run` with:
 The test harness allocates isolated network namespaces and dynamic ports, enabling parallel execution. Tests include:
 - API behavior tests (`tests/bdd_api_http.rs`)
 - Multi-node HA failover scenarios (`tests/ha_multi_node_failover.rs`)
-- Contract tests (`src/worker_contract_tests.rs`)
 
 ## Run Extended Validation
 

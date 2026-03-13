@@ -771,12 +771,7 @@ src/debug_api/mod.rs
 src/debug_api/snapshot.rs
 src/debug_api/view.rs
 src/debug_api/worker.rs
-src/ha/actions.rs
-src/ha/apply.rs
 src/ha/decide.rs
-src/ha/decision.rs
-src/ha/events.rs
-src/ha/lower.rs
 src/ha/mod.rs
 src/ha/process_dispatch.rs
 src/ha/source_conn.rs
@@ -818,7 +813,6 @@ src/test_harness/runtime_config.rs
 src/test_harness/signals.rs
 src/test_harness/tls.rs
 src/tls.rs
-src/worker_contract_tests.rs
 tests/bdd_api_http.rs
 tests/bdd_state_watch.rs
 tests/cli_binary.rs

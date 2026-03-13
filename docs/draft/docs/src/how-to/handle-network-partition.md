@@ -48,9 +48,9 @@ Let me start by reading the relevant source files to extract the necessary facts
 - Tests ensure no split-brain occurs
 - Tests verify recovery and convergence after partitions heal
 
-**Reading src/ha/decision.rs:**
-- Contains all decision types like `EnterFailSafe`, `FenceNode`, `ReleaseLeaderLease`, `StepDown`, `FollowLeader`, `RecoverReplica`
-- Trust evaluation is the top-level gate for HA decisions
+**Reading src/ha/decide.rs and src/ha/reconcile.rs:**
+- `decide.rs` trust-gates HA behavior and chooses the node's target role and authority view
+- `reconcile.rs` turns that desired state into ordered local actions like promote, demote, rewind, or base backup
 
 **Reading src/dcs/worker.rs:**
 - DCS worker publishes local member state and processes watch events
