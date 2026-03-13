@@ -1,6 +1,18 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 12 09:42:11 PM CET 2026
+Generated: Thu Mar 12 11:38:17 PM CET 2026
+
+# Task `.ralph/tasks/bugs/ha-compose-should-self-bootstrap-with-plain-docker-compose-up.md`
+
+```
+## Bug: HA compose should self-bootstrap with plain docker compose up <status>not_started</status> <passes>false</passes>
+
+<description>
+The HA docker assets under `tests/ha/givens/three_node_plain/compose.yml` do not currently behave like a self-contained docker-compose environment. A plain `docker compose up` for all services caused the three node containers to start before the seed-primary bootstrap sequence had been established, and each node exited early with DCS startup errors. The stack only became usable when it was started in the same staged order as the Rust HA harness:
+- start `etcd`
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/ha-total-outage-recovery-can-stall-or-diverge-after-final-rejoin.md`
 
@@ -9,6 +21,28 @@ Generated: Thu Mar 12 09:42:11 PM CET 2026
 
 <description>
 The ultra-long HA feature `ha_all_nodes_stopped_then_two_nodes_restarted_then_final_node_rejoins` has at least two real failure modes after a full cluster outage.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/lone-survivor-can-regain-full-quorum-and-stay-writable-after-peers-age-out.md`
+
+```
+## Bug: Lone survivor can regain full quorum and stay writable after peers age out <status>not_started</status> <passes>false</passes>
+
+<description>
+The HA system currently allows a single surviving node from a multi-node cluster to degrade into a one-member `FullQuorum` cluster after the stopped peers age out of DCS membership.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/restarted-former-primary-rejoins-via-basebackup-instead-of-streaming-or-pg-rewind.md`
+
+```
+## Bug: Restarted former primary rejoins via basebackup instead of streaming or pg_rewind <status>not_started</status> <passes>false</passes>
+
+<description>
+During a live manual HA exercise against `tests/ha/givens/three_node_plain/compose.yml`, the old primary was killed, a new primary was elected, and then the old primary container was restarted with its volume still present. The restarted node rejoined as a replica, but `pgtm status` showed it going through `follower(Basebackup)` before eventually reaching `follower(StartStreaming)`.
 ```
 
 ==============

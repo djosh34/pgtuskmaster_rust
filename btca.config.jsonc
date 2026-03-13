@@ -30,6 +30,11 @@
       "type": "local",
       "name": "postgres16",
       "path": "/tmp/postgres16_cloned"
+    },
+    {
+      "type": "local",
+      "name": "patroni-local",
+      "path": "/tmp/patroni_btca_2184550"
     }
   ],
   "model": "claude-haiku-4.5",
