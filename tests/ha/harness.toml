@@ -1,0 +1,5 @@
+[docker]
+executable_candidates = [
+  "/usr/bin/docker",
+  "/usr/local/bin/docker",
+]

@@ -1,0 +1,236 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-cluster-state=new
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/etcdctl",
+          "--endpoints=http://127.0.0.1:2379",
+          "endpoint",
+          "health",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - ha
+    volumes:
+      - etcd-data:/etcd-data
+
+  node-a:
+    image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    pull_policy: never
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - ha
+    configs:
+      - source: node_a_runtime
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: pg_hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: pg_ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+      - source: tls_ca
+        target: /etc/pgtuskmaster/tls/ca.crt
+      - source: tls_node_a_crt
+        target: /etc/pgtuskmaster/tls/node-a.crt
+      - source: tls_node_a_key
+        target: /etc/pgtuskmaster/tls/node-a.key
+    secrets:
+      - source: postgres_superuser_password
+        target: postgres-superuser-password
+      - source: api_admin_token
+        target: api-admin-token
+      - source: api_read_token
+        target: api-read-token
+      - source: replicator_password
+        target: replicator-password
+      - source: rewinder_password
+        target: rewinder-password
+    volumes:
+      - node-a-data:/var/lib/postgresql
+      - node-a-logs:/var/log/pgtuskmaster
+
+  node-b:
+    image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    pull_policy: never
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - ha
+    configs:
+      - source: node_b_runtime
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: pg_hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: pg_ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+      - source: tls_ca
+        target: /etc/pgtuskmaster/tls/ca.crt
+      - source: tls_node_b_crt
+        target: /etc/pgtuskmaster/tls/node-b.crt
+      - source: tls_node_b_key
+        target: /etc/pgtuskmaster/tls/node-b.key
+    secrets:
+      - source: postgres_superuser_password
+        target: postgres-superuser-password
+      - source: api_admin_token
+        target: api-admin-token
+      - source: api_read_token
+        target: api-read-token
+      - source: replicator_password
+        target: replicator-password
+      - source: rewinder_password
+        target: rewinder-password
+    volumes:
+      - node-b-data:/var/lib/postgresql
+      - node-b-logs:/var/log/pgtuskmaster
+
+  node-c:
+    image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    pull_policy: never
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - ha
+    configs:
+      - source: node_c_runtime
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: pg_hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: pg_ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+      - source: tls_ca
+        target: /etc/pgtuskmaster/tls/ca.crt
+      - source: tls_node_c_crt
+        target: /etc/pgtuskmaster/tls/node-c.crt
+      - source: tls_node_c_key
+        target: /etc/pgtuskmaster/tls/node-c.key
+    secrets:
+      - source: postgres_superuser_password
+        target: postgres-superuser-password
+      - source: api_admin_token
+        target: api-admin-token
+      - source: api_read_token
+        target: api-read-token
+      - source: replicator_password
+        target: replicator-password
+      - source: rewinder_password
+        target: rewinder-password
+    volumes:
+      - node-c-data:/var/lib/postgresql
+      - node-c-logs:/var/log/pgtuskmaster
+
+  observer:
+    image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
+    pull_policy: never
+    entrypoint:
+      - /usr/bin/tail
+    command:
+      - -f
+      - /dev/null
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - ha
+    configs:
+      - source: observer_node_a
+        target: /etc/pgtuskmaster/observer/node-a.toml
+      - source: observer_node_b
+        target: /etc/pgtuskmaster/observer/node-b.toml
+      - source: observer_node_c
+        target: /etc/pgtuskmaster/observer/node-c.toml
+      - source: pg_hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: pg_ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+      - source: tls_ca
+        target: /etc/pgtuskmaster/tls/ca.crt
+      - source: tls_observer_crt
+        target: /etc/pgtuskmaster/tls/observer.crt
+      - source: tls_observer_key
+        target: /etc/pgtuskmaster/tls/observer.key
+    secrets:
+      - source: postgres_superuser_password
+        target: postgres-superuser-password
+      - source: api_admin_token
+        target: api-admin-token
+      - source: api_read_token
+        target: api-read-token
+      - source: replicator_password
+        target: replicator-password
+      - source: rewinder_password
+        target: rewinder-password
+
+networks:
+  ha:
+    driver: bridge
+
+volumes:
+  etcd-data:
+  node-a-data:
+  node-a-logs:
+  node-b-data:
+  node-b-logs:
+  node-c-data:
+  node-c-logs:
+
+configs:
+  node_a_runtime:
+    file: ./configs/node-a/runtime.toml
+  node_b_runtime:
+    file: ./configs/node-b/runtime.toml
+  node_c_runtime:
+    file: ./configs/node-c/runtime.toml
+  observer_node_a:
+    file: ./configs/observer/node-a.toml
+  observer_node_b:
+    file: ./configs/observer/node-b.toml
+  observer_node_c:
+    file: ./configs/observer/node-c.toml
+  pg_hba:
+    file: ./configs/pg_hba.conf
+  pg_ident:
+    file: ./configs/pg_ident.conf
+  tls_ca:
+    file: ./configs/tls/ca.crt
+  tls_node_a_crt:
+    file: ./configs/tls/node-a.crt
+  tls_node_a_key:
+    file: ./configs/tls/node-a.key
+  tls_node_b_crt:
+    file: ./configs/tls/node-b.crt
+  tls_node_b_key:
+    file: ./configs/tls/node-b.key
+  tls_node_c_crt:
+    file: ./configs/tls/node-c.crt
+  tls_node_c_key:
+    file: ./configs/tls/node-c.key
+  tls_observer_crt:
+    file: ./configs/tls/observer.crt
+  tls_observer_key:
+    file: ./configs/tls/observer.key
+
+secrets:
+  postgres_superuser_password:
+    file: ./secrets/postgres-superuser-password
+  api_admin_token:
+    file: ./secrets/api-admin-token
+  api_read_token:
+    file: ./secrets/api-read-token
+  replicator_password:
+    file: ./secrets/replicator-password
+  rewinder_password:
+    file: ./secrets/rewinder-password
