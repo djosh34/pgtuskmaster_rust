@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 13 10:04:45 PM CET 2026
+Generated: Fri Mar 13 11:49:25 PM CET 2026
 
 # Task `.ralph/tasks/story-config-simplification/01-task-rewrite-config-around-typed-toml-serde-and-remove-the-hand-rolled-parser.md`
 
@@ -41,6 +41,18 @@ Generated: Fri Mar 13 10:04:45 PM CET 2026
 
 ```
 ## Task: Add A Three-ETCD HA Given And Design Real DCS-Majority Features <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`
+
+```
+## Task: Collapse DCS Behind A Single Private Component And A Read-Only `DcsView` <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 
