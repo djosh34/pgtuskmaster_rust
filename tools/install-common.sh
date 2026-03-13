@@ -141,7 +141,7 @@ try:
 except Exception as e:
     raise SystemExit(f"invalid ENTRY_JSON: {e}")
 
-data = {"schema_version": 1, "generated_by": generated_by, "entries": []}
+data = {"format": 1, "generated_by": generated_by, "entries": []}
 if os.path.exists(attestation_path):
     try:
         with open(attestation_path, "r", encoding="utf-8") as f:
@@ -168,7 +168,7 @@ by_path[str(entry.get("path"))] = entry
 merged = list(by_path.values())
 merged.sort(key=lambda e: str(e.get("path", "")))
 
-data["schema_version"] = 1
+data["format"] = 1
 data["generated_by"] = generated_by
 data["entries"] = merged
 

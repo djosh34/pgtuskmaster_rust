@@ -37,6 +37,7 @@ We don't have legacy at all. If you find any legacy code/docs, remove it.
 No backwards compatibility allowed!
 You are encouraged to make large code/schema changes (e.g. convert code into more CDD/ADT paradigm), if that will improve the codebase.
 There are no 'versions', no v2/v1 configs, only the current version
+Always aim for code reduction refactors when possible. Can I reuse the same types? Can I merge types with multiple uses?
 
 Never run `cargo test` in this repo.
 For validation, prefer make targets

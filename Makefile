@@ -1,14 +1,9 @@
 MDBOOK := .tools/mdbook/bin/mdbook
 MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
-DOCKER_SINGLE_COMPOSE_FILE := docker/compose/docker-compose.single.yml
-DOCKER_CLUSTER_COMPOSE_FILE := docker/compose/docker-compose.cluster.yml
-DOCKER_ENV_FILE ?= .env.docker
-DOCKER_SINGLE_PROJECT ?= pgtuskmaster-single
-DOCKER_CLUSTER_PROJECT ?= pgtuskmaster-cluster
 
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-docker ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest docker-compose-config docker-up docker-down docker-up-cluster docker-status-cluster docker-down-cluster docker-smoke-single docker-smoke-cluster
+.PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors lint.orphan_rust_files docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest install-pgtm install-pgtuskmaster
 
 # The workspace mount this repo typically lives on can exhibit intermittent
 # linker/archive flake with incremental artifacts. Disable incremental builds by
@@ -41,10 +36,11 @@ ensure-docs-node-deps: ensure-node
 ensure-nextest:
 	@command -v cargo-nextest >/dev/null 2>&1 || (echo "missing cargo-nextest binary: run ./tools/install-cargo-nextest.sh" >&2; exit 1)
 
-ensure-docker:
-	@command -v docker >/dev/null 2>&1 || (echo "missing docker binary" >&2; exit 1)
-	@./tools/docker/check-daemon.sh
-	@docker compose version >/dev/null 2>&1 || (echo "docker compose plugin is not available" >&2; exit 1)
+install-pgtm:
+	cargo install --path . --bin pgtm --force
+
+install-pgtuskmaster:
+	cargo install --path . --bin pgtuskmaster --force
 
 check:
 	cargo check --all-targets --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
@@ -83,7 +79,12 @@ docs-lint: ensure-docs-node-deps
 lint.no_silent_errors:
 	./tools/lint-no-silent-errors.sh
 
-lint: docs-lint lint.no_silent_errors
+lint.orphan_rust_files:
+	rm -rf "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files"
+	cargo check --all-targets --target-dir "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
+	python3 ./tools/check-orphan-rust-files.py --target-dir "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files"
+
+lint: docs-lint lint.no_silent_errors lint.orphan_rust_files
 	cargo clippy --all-targets --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings
 	cargo clippy --lib --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 	cargo clippy --tests --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
@@ -103,29 +104,3 @@ docs-hygiene:
 		echo "$${tracked}" >&2; \
 		exit 1; \
 	fi
-
-docker-compose-config: ensure-docker
-	./tools/docker/compose-config-check.sh
-
-docker-up: ensure-docker
-	@test -f "$(DOCKER_ENV_FILE)" || (echo "missing $(DOCKER_ENV_FILE); copy .env.docker.example and point it at real secret files first" >&2; exit 1)
-	docker compose --project-name "$(DOCKER_SINGLE_PROJECT)" --env-file "$(DOCKER_ENV_FILE)" -f "$(DOCKER_SINGLE_COMPOSE_FILE)" up -d --build
-
-docker-down: ensure-docker
-	@test -f "$(DOCKER_ENV_FILE)" || (echo "missing $(DOCKER_ENV_FILE); nothing to tear down" >&2; exit 1)
-	docker compose --project-name "$(DOCKER_SINGLE_PROJECT)" --env-file "$(DOCKER_ENV_FILE)" -f "$(DOCKER_SINGLE_COMPOSE_FILE)" down -v --remove-orphans
-
-docker-up-cluster: ensure-docker
-	./tools/docker/cluster.sh up --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
-
-docker-status-cluster: ensure-docker
-	./tools/docker/cluster.sh status --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
-
-docker-down-cluster: ensure-docker
-	./tools/docker/cluster.sh down --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
-
-docker-smoke-single: ensure-docker
-	./tools/docker/smoke-single.sh
-
-docker-smoke-cluster: ensure-docker
-	./tools/docker/smoke-cluster.sh

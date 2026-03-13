@@ -189,3 +189,4 @@ NONE
 NONE
 .ralph/tasks/story-greenfield-cucumber-ha-harness/06-task-refactor-ha-loop-from-final-decision.md
 .ralph/tasks/story-greenfield-cucumber-ha-harness/06-task-refactor-ha-loop-from-final-decision.md
+.ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md

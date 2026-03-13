@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "format": 1,
   "required_binaries": [
     {
       "label": "etcd",
