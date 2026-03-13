@@ -1,14 +1,9 @@
 MDBOOK := .tools/mdbook/bin/mdbook
 MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
-DOCKER_SINGLE_COMPOSE_FILE := docker/compose/docker-compose.single.yml
-DOCKER_CLUSTER_COMPOSE_FILE := docker/compose/docker-compose.cluster.yml
-DOCKER_ENV_FILE ?= .env.docker
-DOCKER_SINGLE_PROJECT ?= pgtuskmaster-single
-DOCKER_CLUSTER_PROJECT ?= pgtuskmaster-cluster
 
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-docker ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest docker-compose-config docker-up docker-down docker-up-cluster docker-status-cluster docker-down-cluster docker-smoke-single docker-smoke-cluster
+.PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest
 
 # The workspace mount this repo typically lives on can exhibit intermittent
 # linker/archive flake with incremental artifacts. Disable incremental builds by
@@ -40,11 +35,6 @@ ensure-docs-node-deps: ensure-node
 
 ensure-nextest:
 	@command -v cargo-nextest >/dev/null 2>&1 || (echo "missing cargo-nextest binary: run ./tools/install-cargo-nextest.sh" >&2; exit 1)
-
-ensure-docker:
-	@command -v docker >/dev/null 2>&1 || (echo "missing docker binary" >&2; exit 1)
-	@./tools/docker/check-daemon.sh
-	@docker compose version >/dev/null 2>&1 || (echo "docker compose plugin is not available" >&2; exit 1)
 
 check:
 	cargo check --all-targets --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
@@ -103,29 +93,3 @@ docs-hygiene:
 		echo "$${tracked}" >&2; \
 		exit 1; \
 	fi
-
-docker-compose-config: ensure-docker
-	./tools/docker/compose-config-check.sh
-
-docker-up: ensure-docker
-	@test -f "$(DOCKER_ENV_FILE)" || (echo "missing $(DOCKER_ENV_FILE); copy .env.docker.example and point it at real secret files first" >&2; exit 1)
-	docker compose --project-name "$(DOCKER_SINGLE_PROJECT)" --env-file "$(DOCKER_ENV_FILE)" -f "$(DOCKER_SINGLE_COMPOSE_FILE)" up -d --build
-
-docker-down: ensure-docker
-	@test -f "$(DOCKER_ENV_FILE)" || (echo "missing $(DOCKER_ENV_FILE); nothing to tear down" >&2; exit 1)
-	docker compose --project-name "$(DOCKER_SINGLE_PROJECT)" --env-file "$(DOCKER_ENV_FILE)" -f "$(DOCKER_SINGLE_COMPOSE_FILE)" down -v --remove-orphans
-
-docker-up-cluster: ensure-docker
-	./tools/docker/cluster.sh up --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
-
-docker-status-cluster: ensure-docker
-	./tools/docker/cluster.sh status --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
-
-docker-down-cluster: ensure-docker
-	./tools/docker/cluster.sh down --env-file "$(DOCKER_ENV_FILE)" --project-name "$(DOCKER_CLUSTER_PROJECT)"
-
-docker-smoke-single: ensure-docker
-	./tools/docker/smoke-single.sh
-
-docker-smoke-cluster: ensure-docker
-	./tools/docker/smoke-cluster.sh

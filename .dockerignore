@@ -9,4 +9,4 @@
 !tests/docker/wrappers/
 !tests/docker/wrappers/**
 !docker/
-!docker/entrypoint.sh
+!docker/**

@@ -1,0 +1,146 @@
+x-pgtuskmaster-build: &pgtuskmaster-build
+  context: .
+  dockerfile: docker/Dockerfile
+  target: runtime
+
+x-pgtuskmaster-service: &pgtuskmaster-service
+  build: *pgtuskmaster-build
+  image: pgtuskmaster-local:compose
+  restart: unless-stopped
+  networks:
+    - ha
+  volumes:
+    - ./docker/pg:/etc/pgtuskmaster/pg:ro
+    - ./docker/certs:/etc/pgtuskmaster/certs:ro
+    - ./docker/secrets:/etc/pgtuskmaster/secrets:ro
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-cluster-state=new
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/etcdctl",
+          "--endpoints=http://127.0.0.1:2379",
+          "endpoint",
+          "health",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - ha
+    volumes:
+      - etcd-data:/etcd-data
+
+  node-b:
+    <<: *pgtuskmaster-service
+    depends_on:
+      etcd:
+        condition: service_healthy
+    command:
+      - --config
+      - /etc/pgtuskmaster/runtime.toml
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pgtm -c /etc/pgtuskmaster/runtime.toml --base-url https://127.0.0.1:8443 primary >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    ports:
+      - "18082:8443"
+      - "15002:5432"
+    volumes:
+      - ./docker/node-b.toml:/etc/pgtuskmaster/runtime.toml:ro
+      - ./docker/pg:/etc/pgtuskmaster/pg:ro
+      - ./docker/certs:/etc/pgtuskmaster/certs:ro
+      - ./docker/secrets:/etc/pgtuskmaster/secrets:ro
+      - node-b-data:/var/lib/postgresql
+      - node-b-logs:/var/log/pgtuskmaster
+
+  node-a:
+    <<: *pgtuskmaster-service
+    depends_on:
+      node-b:
+        condition: service_healthy
+    command:
+      - --config
+      - /etc/pgtuskmaster/runtime.toml
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pgtm -c /etc/pgtuskmaster/runtime.toml --base-url https://127.0.0.1:8443 status >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    ports:
+      - "18081:8443"
+      - "15001:5432"
+    volumes:
+      - ./docker/node-a.toml:/etc/pgtuskmaster/runtime.toml:ro
+      - ./docker/pg:/etc/pgtuskmaster/pg:ro
+      - ./docker/certs:/etc/pgtuskmaster/certs:ro
+      - ./docker/secrets:/etc/pgtuskmaster/secrets:ro
+      - node-a-data:/var/lib/postgresql
+      - node-a-logs:/var/log/pgtuskmaster
+
+  node-c:
+    <<: *pgtuskmaster-service
+    depends_on:
+      node-b:
+        condition: service_healthy
+    command:
+      - --config
+      - /etc/pgtuskmaster/runtime.toml
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pgtm -c /etc/pgtuskmaster/runtime.toml --base-url https://127.0.0.1:8443 status >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    ports:
+      - "18083:8443"
+      - "15003:5432"
+    volumes:
+      - ./docker/node-c.toml:/etc/pgtuskmaster/runtime.toml:ro
+      - ./docker/pg:/etc/pgtuskmaster/pg:ro
+      - ./docker/certs:/etc/pgtuskmaster/certs:ro
+      - ./docker/secrets:/etc/pgtuskmaster/secrets:ro
+      - node-c-data:/var/lib/postgresql
+      - node-c-logs:/var/log/pgtuskmaster
+
+networks:
+  ha:
+    driver: bridge
+
+volumes:
+  etcd-data:
+  node-a-data:
+  node-a-logs:
+  node-b-data:
+  node-b-logs:
+  node-c-data:
+  node-c-logs:

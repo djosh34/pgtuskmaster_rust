@@ -19,7 +19,8 @@ readonly cucumber_test_label="io.pgtuskmaster.cucumber-test=true"
 
 echo "building shared HA cucumber image ${image_ref}" >&2
 docker build \
-  --file "${repo_root}/tests/docker/Dockerfile" \
+  --file "${repo_root}/docker/Dockerfile" \
+  --target ha-test \
   --label "${cucumber_test_label}" \
   --tag "${image_ref}" \
   "${repo_root}"
