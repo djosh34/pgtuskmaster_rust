@@ -15,113 +15,113 @@ use super::store::DcsStore;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum DcsTrust {
+pub enum DcsTrust {
     FullQuorum,
     Degraded,
     NotTrusted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberLease {
-    pub(crate) owner: MemberId,
-    pub(crate) ttl_ms: u64,
+pub struct MemberLease {
+    pub owner: MemberId,
+    pub ttl_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberSlot {
-    pub(crate) lease: MemberLease,
-    pub(crate) routing: MemberRouting,
-    pub(crate) postgres: MemberPostgresView,
+pub struct MemberSlot {
+    pub lease: MemberLease,
+    pub routing: MemberRouting,
+    pub postgres: MemberPostgresView,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberRouting {
-    pub(crate) postgres: MemberEndpoint,
-    pub(crate) api: Option<MemberApiEndpoint>,
+pub struct MemberRouting {
+    pub postgres: MemberEndpoint,
+    pub api: Option<MemberApiEndpoint>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberEndpoint {
-    pub(crate) host: String,
-    pub(crate) port: u16,
+pub struct MemberEndpoint {
+    pub host: String,
+    pub port: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberApiEndpoint {
-    pub(crate) url: String,
+pub struct MemberApiEndpoint {
+    pub url: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct WalVector {
-    pub(crate) timeline: Option<TimelineId>,
-    pub(crate) lsn: WalLsn,
+pub struct WalVector {
+    pub timeline: Option<TimelineId>,
+    pub lsn: WalLsn,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct UnknownPostgresObservation {
-    pub(crate) readiness: Readiness,
-    pub(crate) timeline: Option<TimelineId>,
+pub struct UnknownPostgresObservation {
+    pub readiness: Readiness,
+    pub timeline: Option<TimelineId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PrimaryObservation {
-    pub(crate) readiness: Readiness,
-    pub(crate) committed_wal: WalVector,
+pub struct PrimaryObservation {
+    pub readiness: Readiness,
+    pub committed_wal: WalVector,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ReplicaObservation {
-    pub(crate) readiness: Readiness,
-    pub(crate) upstream: Option<MemberId>,
-    pub(crate) replay_wal: Option<WalVector>,
-    pub(crate) follow_wal: Option<WalVector>,
+pub struct ReplicaObservation {
+    pub readiness: Readiness,
+    pub upstream: Option<MemberId>,
+    pub replay_wal: Option<WalVector>,
+    pub follow_wal: Option<WalVector>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum MemberPostgresView {
+pub enum MemberPostgresView {
     Unknown(UnknownPostgresObservation),
     Primary(PrimaryObservation),
     Replica(ReplicaObservation),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LeaderLeaseRecord {
-    pub(crate) holder: MemberId,
-    pub(crate) generation: u64,
+pub struct LeaderLeaseRecord {
+    pub holder: MemberId,
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SwitchoverIntentRecord {
-    pub(crate) target: SwitchoverTargetRecord,
+pub struct SwitchoverIntentRecord {
+    pub target: SwitchoverTargetRecord,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum SwitchoverTargetRecord {
+pub enum SwitchoverTargetRecord {
     AnyHealthyReplica,
     Specific(MemberId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct InitLockRecord {
-    pub(crate) holder: MemberId,
+pub struct InitLockRecord {
+    pub holder: MemberId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DcsCache {
-    pub(crate) member_slots: BTreeMap<MemberId, MemberSlot>,
-    pub(crate) leader_lease: Option<LeaderLeaseRecord>,
-    pub(crate) switchover_intent: Option<SwitchoverIntentRecord>,
-    pub(crate) init_lock: Option<InitLockRecord>,
+pub struct DcsCache {
+    pub member_slots: BTreeMap<MemberId, MemberSlot>,
+    pub leader_lease: Option<LeaderLeaseRecord>,
+    pub switchover_intent: Option<SwitchoverIntentRecord>,
+    pub init_lock: Option<InitLockRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DcsState {
-    pub(crate) worker: WorkerStatus,
-    pub(crate) trust: DcsTrust,
-    pub(crate) cache: DcsCache,
-    pub(crate) last_refresh_at: Option<UnixMillis>,
+pub struct DcsState {
+    pub worker: WorkerStatus,
+    pub trust: DcsTrust,
+    pub cache: DcsCache,
+    pub last_refresh_at: Option<UnixMillis>,
 }
 
 pub(crate) struct DcsWorkerCtx {

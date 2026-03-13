@@ -2,57 +2,58 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use super::conninfo::{render_pg_conninfo, PgConnInfo, PgSslMode};
+pub(crate) use super::conninfo::render_pg_conninfo;
+pub use super::conninfo::{PgConnInfo, PgSslMode};
 use super::query::PgPollData;
 use crate::logging::LogHandle;
 use crate::state::StatePublisher;
 use crate::state::{MemberId, TimelineId, UnixMillis, WalLsn, WorkerStatus};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum SqlStatus {
+pub enum SqlStatus {
     Unknown,
     Healthy,
     Unreachable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Readiness {
+pub enum Readiness {
     Unknown,
     Ready,
     NotReady,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PgConfig {
-    pub(crate) port: Option<u16>,
-    pub(crate) hot_standby: Option<bool>,
-    pub(crate) primary_conninfo: Option<PgConnInfo>,
-    pub(crate) primary_slot_name: Option<String>,
-    pub(crate) extra: std::collections::BTreeMap<String, String>,
+pub struct PgConfig {
+    pub port: Option<u16>,
+    pub hot_standby: Option<bool>,
+    pub primary_conninfo: Option<PgConnInfo>,
+    pub primary_slot_name: Option<String>,
+    pub extra: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ReplicationSlotInfo {
-    pub(crate) name: String,
+pub struct ReplicationSlotInfo {
+    pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct UpstreamInfo {
-    pub(crate) member_id: MemberId,
+pub struct UpstreamInfo {
+    pub member_id: MemberId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PgInfoCommon {
-    pub(crate) worker: WorkerStatus,
-    pub(crate) sql: SqlStatus,
-    pub(crate) readiness: Readiness,
-    pub(crate) timeline: Option<TimelineId>,
-    pub(crate) pg_config: PgConfig,
-    pub(crate) last_refresh_at: Option<UnixMillis>,
+pub struct PgInfoCommon {
+    pub worker: WorkerStatus,
+    pub sql: SqlStatus,
+    pub readiness: Readiness,
+    pub timeline: Option<TimelineId>,
+    pub pg_config: PgConfig,
+    pub last_refresh_at: Option<UnixMillis>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum PgInfoState {
+pub enum PgInfoState {
     Unknown {
         common: PgInfoCommon,
     },

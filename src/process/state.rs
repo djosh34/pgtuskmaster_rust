@@ -16,7 +16,7 @@ use super::jobs::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ProcessState {
+pub enum ProcessState {
     Idle {
         worker: WorkerStatus,
         last_outcome: Option<JobOutcome>,
@@ -64,7 +64,7 @@ pub(crate) struct ProcessJobRejection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum JobOutcome {
+pub enum JobOutcome {
     Success {
         id: JobId,
         job_kind: ActiveJobKind,

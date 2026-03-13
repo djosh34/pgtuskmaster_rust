@@ -12,63 +12,63 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LeaseEpoch {
-    pub(crate) holder: MemberId,
-    pub(crate) generation: u64,
+pub struct LeaseEpoch {
+    pub holder: MemberId,
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FenceCutoff {
-    pub(crate) epoch: LeaseEpoch,
-    pub(crate) committed_lsn: u64,
+pub struct FenceCutoff {
+    pub epoch: LeaseEpoch,
+    pub committed_lsn: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct WorldView {
-    pub(crate) local: LocalKnowledge,
-    pub(crate) global: GlobalKnowledge,
+pub struct WorldView {
+    pub local: LocalKnowledge,
+    pub global: GlobalKnowledge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LocalKnowledge {
-    pub(crate) data_dir: DataDirState,
-    pub(crate) postgres: PostgresState,
-    pub(crate) process: ProcessState,
-    pub(crate) storage: StorageState,
-    pub(crate) required_roles_ready: bool,
-    pub(crate) publication: PublicationState,
-    pub(crate) observation: ObservationState,
+pub struct LocalKnowledge {
+    pub data_dir: DataDirState,
+    pub postgres: PostgresState,
+    pub process: ProcessState,
+    pub storage: StorageState,
+    pub required_roles_ready: bool,
+    pub publication: PublicationState,
+    pub observation: ObservationState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ObservationState {
-    pub(crate) pg_observed_at: UnixMillis,
-    pub(crate) last_start_success_at: Option<UnixMillis>,
-    pub(crate) last_promote_success_at: Option<UnixMillis>,
-    pub(crate) last_demote_success_at: Option<UnixMillis>,
+pub struct ObservationState {
+    pub pg_observed_at: UnixMillis,
+    pub last_start_success_at: Option<UnixMillis>,
+    pub last_promote_success_at: Option<UnixMillis>,
+    pub last_demote_success_at: Option<UnixMillis>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum DataDirState {
+pub enum DataDirState {
     Missing,
     Initialized(LocalDataState),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum LocalDataState {
+pub enum LocalDataState {
     BootstrapEmpty,
     ConsistentReplica,
     Diverged(DivergenceState),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum DivergenceState {
+pub enum DivergenceState {
     RewindPossible,
     BasebackupRequired,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum PostgresState {
+pub enum PostgresState {
     Offline,
     Primary {
         committed_lsn: u64,
@@ -80,109 +80,109 @@ pub(crate) enum PostgresState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ReplicationState {
+pub enum ReplicationState {
     Streaming(WalPosition),
     CatchingUp(WalPosition),
     Stalled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ProcessState {
+pub enum ProcessState {
     Idle,
     Running(JobKind),
     Failed(JobFailure),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct JobFailure {
-    pub(crate) job: JobKind,
-    pub(crate) recovery: FailureRecovery,
+pub struct JobFailure {
+    pub job: JobKind,
+    pub recovery: FailureRecovery,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum FailureRecovery {
+pub enum FailureRecovery {
     RetrySameJob,
     FallbackToBasebackup,
     WaitForOperator,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum StorageState {
+pub enum StorageState {
     Healthy,
     Stalled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PublicationState {
-    pub(crate) authority: AuthorityView,
-    pub(crate) fence_cutoff: Option<FenceCutoff>,
+pub struct PublicationState {
+    pub authority: AuthorityView,
+    pub fence_cutoff: Option<FenceCutoff>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum AuthorityView {
+pub enum AuthorityView {
     Primary { member: MemberId, epoch: LeaseEpoch },
     NoPrimary(NoPrimaryReason),
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct GlobalKnowledge {
-    pub(crate) dcs_trust: DcsTrust,
-    pub(crate) lease: LeaseState,
-    pub(crate) observed_lease: Option<LeaseEpoch>,
-    pub(crate) observed_primary: Option<MemberId>,
-    pub(crate) coordination: CoordinationView,
-    pub(crate) switchover: SwitchoverState,
-    pub(crate) peers: BTreeMap<MemberId, PeerKnowledge>,
-    pub(crate) self_peer: PeerKnowledge,
+pub struct GlobalKnowledge {
+    pub dcs_trust: DcsTrust,
+    pub lease: LeaseState,
+    pub observed_lease: Option<LeaseEpoch>,
+    pub observed_primary: Option<MemberId>,
+    pub coordination: CoordinationView,
+    pub switchover: SwitchoverState,
+    pub peers: BTreeMap<MemberId, PeerKnowledge>,
+    pub self_peer: PeerKnowledge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CoordinationView {
-    pub(crate) trust: DcsTrust,
-    pub(crate) leader: LeaseState,
-    pub(crate) sampled_primary: Option<MemberId>,
+pub struct CoordinationView {
+    pub trust: DcsTrust,
+    pub leader: LeaseState,
+    pub sampled_primary: Option<MemberId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum LeaseState {
+pub enum LeaseState {
     HeldByMe(LeaseEpoch),
     HeldByPeer(LeaseEpoch),
     Unheld,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum SwitchoverState {
+pub enum SwitchoverState {
     None,
     Requested(SwitchoverRequest),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SwitchoverRequest {
-    pub(crate) target: SwitchoverTarget,
+pub struct SwitchoverRequest {
+    pub target: SwitchoverTarget,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum SwitchoverTarget {
+pub enum SwitchoverTarget {
     AnyHealthyReplica,
     Specific(MemberId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PeerKnowledge {
-    pub(crate) eligibility: ElectionEligibility,
-    pub(crate) api: ApiVisibility,
+pub struct PeerKnowledge {
+    pub eligibility: ElectionEligibility,
+    pub api: ApiVisibility,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ElectionEligibility {
+pub enum ElectionEligibility {
     BootstrapEligible,
     PromoteEligible(WalPosition),
     Ineligible(IneligibleReason),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum IneligibleReason {
+pub enum IneligibleReason {
     NotReady,
     Lagging,
     Partitioned,
@@ -191,20 +191,20 @@ pub(crate) enum IneligibleReason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ApiVisibility {
+pub enum ApiVisibility {
     Reachable,
     Unreachable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DesiredState {
-    pub(crate) role: TargetRole,
-    pub(crate) publication: PublicationGoal,
-    pub(crate) clear_switchover: bool,
+pub struct DesiredState {
+    pub role: TargetRole,
+    pub publication: PublicationGoal,
+    pub clear_switchover: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum TargetRole {
+pub enum TargetRole {
     Leader(LeaseEpoch),
     Candidate(Candidacy),
     Follower(FollowGoal),
@@ -215,7 +215,7 @@ pub(crate) enum TargetRole {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Candidacy {
+pub enum Candidacy {
     Bootstrap,
     Failover,
     ResumeAfterOutage,
@@ -223,13 +223,13 @@ pub(crate) enum Candidacy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FollowGoal {
-    pub(crate) leader: MemberId,
-    pub(crate) recovery: RecoveryPlan,
+pub struct FollowGoal {
+    pub leader: MemberId,
+    pub recovery: RecoveryPlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum RecoveryPlan {
+pub enum RecoveryPlan {
     None,
     StartStreaming,
     Rewind,
@@ -237,26 +237,26 @@ pub(crate) enum RecoveryPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum FailSafeGoal {
+pub enum FailSafeGoal {
     PrimaryMustStop(FenceCutoff),
     ReplicaKeepFollowing(Option<MemberId>),
     WaitForQuorum,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum IdleReason {
+pub enum IdleReason {
     AwaitingLeader,
     AwaitingTarget(MemberId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum FenceReason {
+pub enum FenceReason {
     ForeignLeaderDetected,
     StorageStalled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum PublicationGoal {
+pub enum PublicationGoal {
     KeepCurrent,
     PublishPrimary {
         primary: MemberId,
@@ -269,7 +269,7 @@ pub(crate) enum PublicationGoal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum NoPrimaryReason {
+pub enum NoPrimaryReason {
     DcsDegraded,
     LeaseOpen,
     Recovering,
@@ -277,13 +277,13 @@ pub(crate) enum NoPrimaryReason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum SwitchoverBlocker {
+pub enum SwitchoverBlocker {
     TargetMissing,
     TargetIneligible(IneligibleReason),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ReconcileAction {
+pub enum ReconcileAction {
     InitDb,
     BaseBackup(MemberId),
     PgRewind(MemberId),
@@ -300,13 +300,13 @@ pub(crate) enum ReconcileAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ShutdownMode {
+pub enum ShutdownMode {
     Fast,
     Immediate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum JobKind {
+pub enum JobKind {
     InitDb,
     BaseBackup,
     PgRewind,
@@ -317,12 +317,12 @@ pub(crate) enum JobKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(crate) struct WalPosition {
-    pub(crate) timeline: u64,
-    pub(crate) lsn: u64,
+pub struct WalPosition {
+    pub timeline: u64,
+    pub lsn: u64,
 }
 
-pub(crate) type AuthorityProjectionState = PublicationState;
+pub type AuthorityProjectionState = PublicationState;
 
 impl WorldView {
     pub(crate) fn initial() -> Self {

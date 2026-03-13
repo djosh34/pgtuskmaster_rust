@@ -1,6 +1,6 @@
 use std::{io::Write, time::Duration};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     api::NodeState,
@@ -12,38 +12,38 @@ use crate::{
     pginfo::state::Readiness,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClusterHealth {
     Healthy,
     Degraded,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiStatus {
     Ok,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterWarning {
     pub code: String,
     pub message: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryOrigin {
     pub member_id: String,
     pub api_url: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterSwitchoverView {
     pub pending: bool,
     pub target_member_id: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterNodeView {
     pub member_id: String,
     pub is_self: bool,
@@ -60,7 +60,7 @@ pub struct ClusterNodeView {
     pub process: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterStatusView {
     pub cluster_name: String,
     pub scope: String,
@@ -79,9 +79,11 @@ pub(crate) async fn run_status(
 ) -> Result<String, CliError> {
     if options.watch {
         run_watch(context, options).await
+    } else if options.json {
+        render_state_json(context).await
     } else {
         let view = build_cluster_status_view(context, options).await?;
-        output::render_status_view(&view, options.json)
+        output::render_status_view(&view, false)
     }
 }
 
@@ -110,12 +112,13 @@ async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<
     let interval = Duration::from_secs(2);
 
     loop {
-        let view = build_cluster_status_view(context, options).await?;
-        let rendered = output::render_status_view(&view, options.json)?;
         if options.json {
+            let rendered = render_state_json(context).await?;
             writeln!(stdout, "{rendered}")
                 .map_err(|err| CliError::Output(format!("watch write failed: {err}")))?;
         } else {
+            let view = build_cluster_status_view(context, options).await?;
+            let rendered = output::render_status_view(&view, false)?;
             writeln!(stdout, "\x1B[2J\x1B[H{rendered}")
                 .map_err(|err| CliError::Output(format!("watch write failed: {err}")))?;
         }
@@ -128,6 +131,12 @@ async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<
             _ = tokio::time::sleep(interval) => {}
         }
     }
+}
+
+async fn render_state_json(context: &OperatorContext) -> Result<String, CliError> {
+    let (state, _queried_via) = fetch_seed_state(context).await?;
+    serde_json::to_string_pretty(&state)
+        .map_err(|err| CliError::Output(format!("json encode failed: {err}")))
 }
 
 fn assemble_cluster_view(

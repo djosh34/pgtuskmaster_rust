@@ -5,11 +5,17 @@ use std::{
 };
 
 use cucumber::{given, then, when};
+use pgtuskmaster_rust::{
+    api::NodeState,
+    dcs::state::{DcsTrust, MemberPostgresView},
+    ha::types::{AuthorityView, TargetRole},
+    state::MemberId,
+};
 
 use crate::support::{
     error::{HarnessError, Result},
     faults::{BlockerKind, TrafficPath, ALL_CLUSTER_MEMBERS},
-    observer::pgtm::{ClusterStatusView, ConnectionTarget},
+    observer::pgtm::ConnectionTarget,
     world::{HaWorld, HarnessShared},
 };
 
@@ -366,36 +372,15 @@ async fn exactly_one_primary_exists_across_running_nodes_as(
         format!("primary.across.{expected_online}.{alias}").as_str(),
         PollKind::Recovery,
         |status| {
-            let relevant_nodes = status
-                .nodes
-                .iter()
-                .filter(|node| {
+            require_visible_members(status, expected_online)?;
+            let primary = single_primary(status)?;
+            if intended_online.iter().any(|member_id| member_id == &primary) {
+                Ok(primary)
+            } else {
+                Err(HarnessError::message(format!(
+                    "expected operator-visible primary within {:?}, observed `{primary}`",
                     intended_online
-                        .iter()
-                        .any(|member_id| member_id == &node.member_id)
-                        && node.sampled
-                })
-                .collect::<Vec<_>>();
-            let primaries = relevant_nodes
-                .iter()
-                .filter(|node| node.role == "primary")
-                .map(|node| node.member_id.clone())
-                .collect::<Vec<_>>();
-            match primaries.as_slice() {
-                [primary] => Ok(primary.clone()),
-                [] => Err(HarnessError::message(format!(
-                    "expected one sampled primary across the intended online nodes, observed none; sampled_relevant={} warnings={}",
-                    relevant_nodes
-                        .iter()
-                        .map(|node| format!("{}:{}", node.member_id, node.role))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    format_warnings(status),
-                ))),
-                _ => Err(HarnessError::message(format!(
-                    "expected one sampled primary across the intended online nodes, observed {}",
-                    primaries.join(", ")
-                ))),
+                )))
             }
         },
     )
@@ -473,18 +458,17 @@ async fn i_wait_for_the_primary_named_to_become_the_only_primary(
 #[then("the remaining online non-primary node is a replica")]
 async fn the_remaining_online_non_primary_node_is_a_replica(world: &mut HaWorld) -> Result<()> {
     let status = current_status(world)?;
-    require_sampled_members(&status, online_expected_count(world))?;
+    require_visible_members(&status, online_expected_count(world))?;
     let primary = single_primary(&status)?;
-    let replicas = status
-        .nodes
-        .iter()
-        .filter(|node| node.sampled && node.member_id != primary && node.role == "replica")
+    let replicas = replica_members(&status)
+        .into_iter()
+        .filter(|member_id| member_id != &primary)
         .count();
     if replicas == 1 {
         Ok(())
     } else {
         Err(HarnessError::message(format!(
-            "expected one remaining sampled replica, observed {replicas}"
+            "expected one remaining replica, observed {replicas}"
         )))
     }
 }
@@ -499,49 +483,27 @@ async fn the_cluster_is_degraded_but_operational_across_two_running_nodes(
         "cluster.degraded_two_node",
         PollKind::Recovery,
         |status| {
-            require_sampled_members(status, 2)?;
-            let relevant_nodes = status
-                .nodes
-                .iter()
-                .filter(|node| {
+            require_visible_members(status, 2)?;
+            let primary = single_primary(status)?;
+            if !intended_online.iter().any(|member_id| member_id == &primary) {
+                return Err(HarnessError::message(format!(
+                    "expected operator-visible primary within {:?}, observed `{primary}`",
                     intended_online
-                        .iter()
-                        .any(|member_id| member_id == &node.member_id)
+                )));
+            }
+            let non_primary_members = operator_visible_member_ids(status)
+                .into_iter()
+                .filter(|member_id| {
+                    member_id != &primary
+                        && intended_online.iter().any(|expected| expected == member_id)
                 })
                 .collect::<Vec<_>>();
-            let primaries = relevant_nodes
-                .iter()
-                .filter(|node| node.sampled && node.role == "primary")
-                .map(|node| node.member_id.as_str())
-                .collect::<Vec<_>>();
-            let primary = match primaries.as_slice() {
-                [member_id] => *member_id,
-                [] => Err(HarnessError::message(
-                    "expected one sampled primary across the intended online nodes, observed none",
-                ))?,
-                _ => Err(HarnessError::message(format!(
-                    "expected one sampled primary across the intended online nodes, observed {}",
-                    primaries.join(", ")
-                )))?,
-            };
-            let non_primary_sampled = status
-                .nodes
-                .iter()
-                .filter(|node| {
-                    node.sampled
-                        && node.member_id != primary
-                        && intended_online
-                            .iter()
-                            .any(|member_id| member_id == &node.member_id)
-                })
-                .map(|node| node.member_id.as_str())
-                .collect::<Vec<_>>();
-            if non_primary_sampled.len() == 1 {
+            if non_primary_members.len() == 1 {
                 Ok(())
             } else {
                 Err(HarnessError::message(format!(
-                "expected exactly one sampled non-primary in degraded two-node state, observed {}",
-                non_primary_sampled.join(", ")
+                "expected exactly one non-primary in degraded two-node state, observed {}",
+                non_primary_members.join(", ")
             )))
             }
         },
@@ -602,7 +564,7 @@ async fn the_proof_row_is_visible_from_the_restarted_node(world: &mut HaWorld) -
 #[then("the cluster still has exactly one primary")]
 async fn the_cluster_still_has_exactly_one_primary(world: &mut HaWorld) -> Result<()> {
     let status = current_status(world)?;
-    require_sampled_members(&status, online_expected_count(world))?;
+    require_visible_members(&status, online_expected_count(world))?;
     let _ = single_primary(&status)?;
     Ok(())
 }
@@ -826,7 +788,7 @@ async fn wait_for_single_primary(
     let expected_primary = exact_primary.map(str::to_string);
     let previous_primary = different_from.map(str::to_string);
     poll_for_status(world, phase, kind, |status| {
-        require_sampled_members(status, expected_online)?;
+        require_visible_members(status, expected_online)?;
         let primary = single_primary(status)?;
         if let Some(expected_primary) = expected_primary.as_ref() {
             if primary != *expected_primary {
@@ -871,13 +833,12 @@ async fn wait_for_authoritative_single_primary(
         let attempt: Result<String> = (|| {
             let status = {
                 let harness = world.harness()?;
-                let status = harness.observer().status()?;
+                let status = harness.observer().state()?;
                 harness.record_status_snapshot(phase, &status)?;
                 status
             };
-            require_sampled_members(&status, expected_online)?;
+            require_visible_members(&status, expected_online)?;
             let primary = single_primary(&status)?;
-            world.record_primary_observation(primary.as_str());
             if let Some(expected_primary) = expected_primary.as_ref() {
                 if primary != *expected_primary {
                     Err(HarnessError::message(format!(
@@ -900,7 +861,7 @@ async fn wait_for_authoritative_single_primary(
             };
             if target.member_id != primary {
                 Err(HarnessError::message(format!(
-                    "sampled cluster primary was `{primary}`, but authoritative pgtm primary resolved to `{}`",
+                    "DCS-reported primary was `{primary}`, but authoritative pgtm primary resolved to `{}`",
                     target.member_id
                 )))?;
             }
@@ -945,10 +906,10 @@ async fn wait_for_no_operator_primary(world: &mut HaWorld, expected_online: usiz
         let attempt: Result<()> = (|| {
             let harness = world.harness()?;
             for member_id in online_member_ids(world) {
-                let status = harness.observer().status_via_member(member_id.as_str())?;
+                let status = harness.observer().state_via_member(member_id.as_str())?;
                 let snapshot_label = format!("primary.none.{member_id}");
                 harness.record_status_snapshot(snapshot_label.as_str(), &status)?;
-                require_sampled_members(&status, expected_online)?;
+                require_visible_members(&status, expected_online)?;
                 if let Ok(primary) = harness
                     .observer()
                     .primary_tls_json_via_member(member_id.as_str())
@@ -1060,13 +1021,13 @@ async fn wait_for_replicas(
 ) -> Result<Vec<String>> {
     let expected_online = online_expected_count(world);
     poll_for_status(world, phase, PollKind::Startup, |status| {
-        require_sampled_members(status, expected_online)?;
+        require_visible_members(status, expected_online)?;
         let replicas = replica_members(status);
         if replicas.len() == expected_replicas {
             Ok(replicas)
         } else {
             Err(HarnessError::message(format!(
-                "expected {expected_replicas} sampled replicas, observed {}",
+                "expected {expected_replicas} visible replicas, observed {}",
                 replicas.len()
             )))
         }
@@ -1081,13 +1042,13 @@ async fn wait_for_minimum_replicas(
 ) -> Result<Vec<String>> {
     let expected_online = online_expected_count(world);
     poll_for_status(world, phase, PollKind::Startup, |status| {
-        require_sampled_members(status, expected_online)?;
+        require_visible_members(status, expected_online)?;
         let replicas = replica_members(status);
         if replicas.len() >= minimum_replicas {
             Ok(replicas)
         } else {
             Err(HarnessError::message(format!(
-                "expected at least {minimum_replicas} sampled replicas, observed {}",
+                "expected at least {minimum_replicas} visible replicas, observed {}",
                 replicas.len()
             )))
         }
@@ -1095,10 +1056,10 @@ async fn wait_for_minimum_replicas(
     .await
 }
 
-async fn wait_for_status_snapshot(world: &mut HaWorld, phase: &str) -> Result<ClusterStatusView> {
+async fn wait_for_status_snapshot(world: &mut HaWorld, phase: &str) -> Result<NodeState> {
     let expected_online = online_expected_count(world);
     poll_for_status(world, phase, PollKind::Startup, |status| {
-        require_sampled_members(status, expected_online)?;
+        require_visible_members(status, expected_online)?;
         Ok(status.clone())
     })
     .await
@@ -1122,19 +1083,23 @@ async fn wait_for_primary_resolution_for_member(
 
     while Instant::now() < deadline {
         let attempt: Result<ConnectionTarget> = (|| {
-            let harness = world.harness()?;
-            let status = harness.observer().status()?;
-            harness.record_status_snapshot(phase, &status)?;
-            let target = current_primary_target(harness)?;
-            if let Some(expected_member_id) = expected_member_id {
-                if target.member_id != expected_member_id {
-                    Err(HarnessError::message(format!(
-                        "pgtm primary resolved to `{}` instead of expected `{expected_member_id}`",
-                        target.member_id
-                    )))?;
+            let target = {
+                let harness = world.harness()?;
+                let status = harness.observer().state()?;
+                harness.record_status_snapshot(phase, &status)?;
+                let target = current_primary_target(harness)?;
+                if let Some(expected_member_id) = expected_member_id {
+                    if target.member_id != expected_member_id {
+                        Err(HarnessError::message(format!(
+                            "pgtm primary resolved to `{}` instead of expected `{expected_member_id}`",
+                            target.member_id
+                        )))?;
+                    }
                 }
-            }
-            let _ = harness.sql().execute(target.dsn.as_str(), "SELECT 1;")?;
+                let _ = harness.sql().execute(target.dsn.as_str(), "SELECT 1;")?;
+                target
+            };
+            world.record_primary_observation(target.member_id.as_str());
             Ok(target)
         })();
         match attempt {
@@ -1158,7 +1123,7 @@ async fn poll_for_status<T, F>(
     mut check: F,
 ) -> Result<T>
 where
-    F: FnMut(&ClusterStatusView) -> Result<T>,
+    F: FnMut(&NodeState) -> Result<T>,
 {
     let deadline = {
         let harness = world.harness()?;
@@ -1173,13 +1138,10 @@ where
     while Instant::now() < deadline {
         let status_result = {
             let harness = world.harness()?;
-            harness.observer().status()
+            harness.observer().state()
         };
         match status_result {
             Ok(status) => {
-                if let Ok(primary) = single_primary(&status) {
-                    world.record_primary_observation(primary.as_str());
-                }
                 {
                     let harness = world.harness()?;
                     harness.record_status_snapshot(phase, &status)?;
@@ -1211,9 +1173,9 @@ where
     )))
 }
 
-fn current_status(world: &HaWorld) -> Result<ClusterStatusView> {
+fn current_status(world: &HaWorld) -> Result<NodeState> {
     let harness = world.harness()?;
-    let status = harness.observer().status()?;
+    let status = harness.observer().state()?;
     harness.record_status_snapshot("status.instant", &status)?;
     Ok(status)
 }
@@ -1252,6 +1214,8 @@ fn current_connection_targets(harness: &HarnessShared) -> Result<Vec<ConnectionT
 fn direct_connection_target(member_id: &str) -> ConnectionTarget {
     ConnectionTarget {
         member_id: member_id.to_string(),
+        postgres_host: member_id.to_string(),
+        postgres_port: 5432,
         dsn: format!(
             "host={member_id} port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert=/etc/pgtuskmaster/tls/ca.crt sslcert=/etc/pgtuskmaster/tls/observer.crt sslkey=/etc/pgtuskmaster/tls/observer.key"
         ),
@@ -1368,34 +1332,37 @@ fn resolve_member_reference(world: &HaWorld, member_ref: &str) -> Result<String>
     }
 }
 
-fn single_primary(status: &ClusterStatusView) -> Result<String> {
-    let primaries = status
-        .nodes
-        .iter()
-        .filter(|node| node.sampled && node.role == "primary")
-        .map(|node| node.member_id.clone())
-        .collect::<Vec<_>>();
-    match primaries.as_slice() {
-        [primary] => Ok(primary.clone()),
-        [] => Err(HarnessError::message(format!(
-            "cluster has no sampled primary; queried via {} {} and warnings={}",
-            status.queried_via.member_id,
-            status.queried_via.api_url,
-            format_warnings(status)
-        ))),
-        _ => Err(HarnessError::message(format!(
-            "cluster has multiple primaries: {}",
-            primaries.join(", ")
+fn single_primary(status: &NodeState) -> Result<String> {
+    match authoritative_primary(status) {
+        Some(primary) => Ok(primary),
+        None => Err(HarnessError::message(format!(
+            "cluster has no authoritative primary; authority={} warnings={}",
+            format_authority(status),
+            format_warnings(status),
         ))),
     }
 }
 
-fn replica_members(status: &ClusterStatusView) -> Vec<String> {
+fn replica_members(status: &NodeState) -> Vec<String> {
     status
-        .nodes
+        .dcs
+        .cache
+        .member_slots
         .iter()
-        .filter(|node| node.sampled && node.role == "replica")
-        .map(|node| node.member_id.clone())
+        .filter_map(|(member_id, member)| {
+            matches!(&member.postgres, MemberPostgresView::Replica(_))
+                .then(|| member_id.0.clone())
+        })
+        .collect::<Vec<_>>()
+}
+
+fn operator_visible_member_ids(status: &NodeState) -> Vec<String> {
+    status
+        .dcs
+        .cache
+        .member_slots
+        .keys()
+        .map(|member_id| member_id.0.clone())
         .collect::<Vec<_>>()
 }
 
@@ -1404,69 +1371,92 @@ fn assert_member_is_replica_via_member(
     member_id: &str,
     expected_online: usize,
 ) -> Result<()> {
-    let status = harness.observer().status_via_member(member_id)?;
+    let status = harness.observer().state_via_member(member_id)?;
     let snapshot_label = format!("status.replica.{member_id}");
     harness.record_status_snapshot(snapshot_label.as_str(), &status)?;
-    require_sampled_members(&status, expected_online)?;
+    require_visible_members(&status, expected_online)?;
     let primary = single_primary(&status)?;
     let member = status
-        .nodes
-        .iter()
-        .find(|node| node.member_id == member_id)
+        .dcs
+        .cache
+        .member_slots
+        .get(&MemberId(member_id.to_string()))
         .ok_or_else(|| {
             HarnessError::message(format!("member `{member_id}` is not present in status"))
         })?;
-    if !member.sampled {
-        return Err(HarnessError::message(format!(
-            "member `{member_id}` is present but not sampled"
-        )));
-    }
-    if member.member_id == primary {
+    if member_id == primary {
         return Err(HarnessError::message(format!(
             "member `{member_id}` is still the primary instead of a replica"
         )));
     }
-    if member.role == "replica" {
-        return Ok(());
-    }
-    if member.role == "unknown" {
-        let target = sql_target_for_member(harness, member_id)?;
-        let recovery = harness
-            .sql()
-            .execute(target.dsn.as_str(), "SELECT pg_is_in_recovery();")?;
-        if target.member_id == member_id && recovery.trim() == "t" {
-            return Ok(());
+    match &member.postgres {
+        MemberPostgresView::Replica(_) => Ok(()),
+        MemberPostgresView::Unknown(_) => {
+            let target = sql_target_for_member(harness, member_id)?;
+            let recovery = harness
+                .sql()
+                .execute(target.dsn.as_str(), "SELECT pg_is_in_recovery();")?;
+            if target.member_id == member_id && recovery.trim() == "t" {
+                Ok(())
+            } else {
+                Err(HarnessError::message(format!(
+                    "member `{member_id}` is unknown in DCS and did not confirm pg_is_in_recovery()"
+                )))
+            }
         }
+        MemberPostgresView::Primary(_) => Err(HarnessError::message(format!(
+            "member `{member_id}` role is `primary` instead of `replica`"
+        ))),
     }
-    Err(HarnessError::message(format!(
-        "member `{member_id}` role is `{}` instead of `replica`",
-        member.role
-    )))
 }
 
-fn require_sampled_members(status: &ClusterStatusView, expected: usize) -> Result<()> {
-    let sampled = status.sampled_member_count;
-    if sampled >= expected {
+fn require_visible_members(status: &NodeState, expected: usize) -> Result<()> {
+    let visible = status.dcs.cache.member_slots.len();
+    if visible >= expected {
         return Ok(());
     }
 
     Err(HarnessError::message(format!(
-        "expected at least {expected} sampled members, observed {sampled} sampled out of {} discovered; warnings={}",
-        status.discovered_member_count,
+        "expected at least {expected} visible members, observed {visible}; warnings={}",
         format_warnings(status)
     )))
 }
 
-fn format_warnings(status: &ClusterStatusView) -> String {
-    if status.warnings.is_empty() {
-        return "none".to_string();
+fn format_warnings(status: &NodeState) -> String {
+    let mut warnings = Vec::new();
+    if status.dcs.trust != DcsTrust::FullQuorum {
+        warnings.push(format!("dcs_trust={:?}", status.dcs.trust).to_lowercase());
     }
-    status
-        .warnings
-        .iter()
-        .map(|warning| format!("{}={}", warning.code, warning.message))
-        .collect::<Vec<_>>()
-        .join("; ")
+    if !matches!(status.ha.publication.authority, AuthorityView::Primary { .. }) {
+        warnings.push(format!("authority={}", format_authority(status)));
+    }
+    if status.dcs.cache.member_slots.is_empty() {
+        warnings.push("no_members".to_string());
+    }
+    if warnings.is_empty() {
+        "none".to_string()
+    } else {
+        warnings.join("; ")
+    }
+}
+
+fn format_authority(status: &NodeState) -> String {
+    match &status.ha.publication.authority {
+        AuthorityView::Primary { member, .. } => format!("primary({})", member.0),
+        AuthorityView::NoPrimary(reason) => format!("no_primary({reason:?})").to_lowercase(),
+        AuthorityView::Unknown => "unknown".to_string(),
+    }
+}
+
+fn authoritative_primary(status: &NodeState) -> Option<String> {
+    match &status.ha.publication.authority {
+        AuthorityView::Primary { member, .. } => Some(member.0.clone()),
+        AuthorityView::NoPrimary(_) | AuthorityView::Unknown => None,
+    }
+}
+
+fn self_is_fail_safe(status: &NodeState, member_id: &str) -> bool {
+    status.self_member_id == member_id && matches!(status.ha.role, TargetRole::FailSafe(_))
 }
 
 fn terminal_container_failure(
@@ -1849,7 +1839,6 @@ async fn i_isolate_the_node_named_from_observer_api_access(
     world
         .harness()?
         .isolate_member_from_observer_on_api(member_id.as_str())?;
-    world.add_unsampled_node(member_id.as_str());
     Ok(())
 }
 
@@ -1987,11 +1976,11 @@ async fn direct_api_observation_to_fails(world: &mut HaWorld, member_ref: String
     match world
         .harness()?
         .observer()
-        .status_via_member(member_id.as_str())
+        .state_via_member(member_id.as_str())
     {
         Ok(status) => Err(HarnessError::message(format!(
-            "direct API observation to `{member_id}` unexpectedly succeeded via {}",
-            status.queried_via.api_url
+            "direct API observation to `{member_id}` unexpectedly succeeded via self_member_id `{}`",
+            status.self_member_id
         ))),
         Err(_) => Ok(()),
     }
@@ -2131,33 +2120,16 @@ async fn every_running_node_reports_fail_safe_in_debug_output(world: &mut HaWorl
                 if stopped.contains(member_id) {
                     continue;
                 }
-                let debug = world
+                let status = world
                     .harness()?
                     .observer()
-                    .debug_verbose_via_member(member_id)?;
-                let rendered =
-                    serde_json::to_string(&debug).map_err(|source| HarnessError::Json {
-                        context: format!("serializing debug verbose for `{member_id}`"),
-                        source,
-                    })?;
-                if !rendered.contains("fail_safe") {
-                    let ha_phase = debug
-                        .get("ha")
-                        .and_then(|value| value.get("phase"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("missing");
-                    let ha_decision = debug
-                        .get("ha")
-                        .and_then(|value| value.get("decision"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("missing");
-                    let dcs_trust = debug
-                        .get("dcs")
-                        .and_then(|value| value.get("trust"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("missing");
+                    .state_via_member(member_id)?;
+                if !self_is_fail_safe(&status, member_id) {
                     Err(HarnessError::message(format!(
-                        "member `{member_id}` debug output did not contain fail_safe (ha.phase={ha_phase}, ha.decision={ha_decision}, dcs.trust={dcs_trust})"
+                        "member `{member_id}` did not report fail_safe (self_member_id={} authority={} warnings={})",
+                        status.self_member_id,
+                        format_authority(&status),
+                        format_warnings(&status)
                     )))?;
                 }
             }
@@ -2194,24 +2166,19 @@ async fn the_node_named_enters_fail_safe_or_loses_primary_authority_safely(
 
     while Instant::now() < deadline {
         let attempt: Result<()> = (|| {
-            let debug = world
+            let member_status = world
                 .harness()?
                 .observer()
-                .debug_verbose_via_member(member_id.as_str())?;
-            let rendered = serde_json::to_string(&debug).map_err(|source| HarnessError::Json {
-                context: format!("serializing debug verbose for `{member_id}`"),
-                source,
-            })?;
-            if rendered.contains("fail_safe") {
+                .state_via_member(member_id.as_str())?;
+            if self_is_fail_safe(&member_status, member_id.as_str()) {
                 return Ok(());
             }
             let status = current_status(world)?;
-            match single_primary(&status) {
-                Ok(primary) if primary != member_id => Ok(()),
-                Ok(primary) => Err(HarnessError::message(format!(
+            match authoritative_primary(&status) {
+                Some(primary) if primary == member_id => Err(HarnessError::message(format!(
                     "member `{member_id}` still held primary authority as `{primary}`"
                 ))),
-                Err(_) => Ok(()),
+                Some(_) | None => Ok(()),
             }
         })();
         match attempt {

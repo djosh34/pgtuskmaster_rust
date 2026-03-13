@@ -66,7 +66,7 @@ pub(crate) struct StartPostgresSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ShutdownMode {
+pub enum ShutdownMode {
     Fast,
     Immediate,
 }
@@ -81,7 +81,7 @@ impl ShutdownMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ActiveJobKind {
+pub enum ActiveJobKind {
     Bootstrap,
     BaseBackup,
     PgRewind,
@@ -91,11 +91,11 @@ pub(crate) enum ActiveJobKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ActiveJob {
-    pub(crate) id: JobId,
-    pub(crate) kind: ActiveJobKind,
-    pub(crate) started_at: UnixMillis,
-    pub(crate) deadline_at: UnixMillis,
+pub struct ActiveJob {
+    pub id: JobId,
+    pub kind: ActiveJobKind,
+    pub started_at: UnixMillis,
+    pub deadline_at: UnixMillis,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,7 +167,7 @@ pub(crate) trait ProcessCommandRunner: Send {
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ProcessError {
+pub enum ProcessError {
     #[error("process worker operation failed")]
     OperationFailed,
     #[error("job rejected because another job is active")]

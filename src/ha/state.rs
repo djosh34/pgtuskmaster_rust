@@ -15,15 +15,15 @@ use crate::{
 use super::types::{AuthorityProjectionState, IdleReason, ReconcileAction, TargetRole, WorldView};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct HaState {
-    pub(crate) worker: WorkerStatus,
-    pub(crate) tick: u64,
-    pub(crate) required_roles_ready: bool,
-    pub(crate) publication: AuthorityProjectionState,
-    pub(crate) role: TargetRole,
-    pub(crate) world: WorldView,
-    pub(crate) clear_switchover: bool,
-    pub(crate) planned_commands: Vec<ReconcileAction>,
+pub struct HaState {
+    pub worker: WorkerStatus,
+    pub tick: u64,
+    pub required_roles_ready: bool,
+    pub publication: AuthorityProjectionState,
+    pub role: TargetRole,
+    pub world: WorldView,
+    pub clear_switchover: bool,
+    pub planned_commands: Vec<ReconcileAction>,
 }
 
 pub(crate) struct HaWorkerCtx {

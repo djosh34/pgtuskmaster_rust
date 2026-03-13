@@ -38,7 +38,7 @@ pub struct AcceptedResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct NodeState {
+pub struct NodeState {
     pub cluster_name: String,
     pub scope: String,
     pub self_member_id: String,

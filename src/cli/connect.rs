@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     api::NodeState,
@@ -15,14 +15,14 @@ use crate::{
     dcs::state::MemberSlot,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionCommandKind {
     Primary,
     Replicas,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionTarget {
     pub member_id: String,
     pub postgres_host: String,
@@ -30,7 +30,7 @@ pub struct ConnectionTarget {
     pub dsn: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionView {
     pub cluster_name: String,
     pub scope: String,
