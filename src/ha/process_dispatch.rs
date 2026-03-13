@@ -245,8 +245,7 @@ fn resolve_source_member(
     leader_member_id: &MemberId,
 ) -> Result<MemberSlot, ProcessDispatchError> {
     let dcs = ctx.dcs_subscriber.latest();
-    dcs.value
-        .cache
+    dcs.cache
         .member_slots
         .get(leader_member_id)
         .cloned()

@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::{
-    api::HaClusterMemberResponse,
+    api::NodeState,
     cli::{
         args::ConnectionOptions,
         client::CliTlsConfig,
@@ -9,10 +9,10 @@ use crate::{
         error::CliError,
         output,
         status::{
-            build_sampled_cluster_snapshot, observed_role, sampled_self_member, ClusterWarning,
-            SampledClusterSnapshot,
+            authority_primary_member, fetch_seed_state, member_is_ready_replica, ClusterWarning,
         },
     },
+    dcs::state::MemberSlot,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -36,7 +36,6 @@ pub struct ConnectionView {
     pub scope: String,
     pub kind: ConnectionCommandKind,
     pub tls: bool,
-    pub sampled_member_count: usize,
     pub discovered_member_count: usize,
     pub warnings: Vec<ClusterWarning>,
     pub targets: Vec<ConnectionTarget>,
@@ -46,8 +45,8 @@ pub(crate) async fn run_primary(
     context: &OperatorContext,
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
-    let snapshot = build_sampled_cluster_snapshot(context, false).await?;
-    let view = resolve_primary_view(&snapshot, &context.postgres_client_tls, options.tls)?;
+    let (state, _queried_via) = fetch_seed_state(context).await?;
+    let view = resolve_primary_view(&state, &context.postgres_client_tls, options.tls)?;
     output::render_connection_view(&view, options.json)
 }
 
@@ -55,211 +54,103 @@ pub(crate) async fn run_replicas(
     context: &OperatorContext,
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
-    let snapshot = build_sampled_cluster_snapshot(context, false).await?;
-    let view = resolve_replicas_view(&snapshot, &context.postgres_client_tls, options.tls)?;
+    let (state, _queried_via) = fetch_seed_state(context).await?;
+    let view = resolve_replicas_view(&state, &context.postgres_client_tls, options.tls)?;
     output::render_connection_view(&view, options.json)
 }
 
-pub(crate) fn resolve_primary_view(
-    snapshot: &SampledClusterSnapshot,
+fn resolve_primary_view(
+    state: &NodeState,
     tls: &CliTlsConfig,
     emit_tls: bool,
 ) -> Result<ConnectionView, CliError> {
-    let blocking_warnings = blocking_primary_warnings(snapshot);
-    if !blocking_warnings.is_empty() {
-        return Err(CliError::Resolution(format!(
-            "cannot resolve primary from sampled cluster state: {}",
-            join_warning_messages(blocking_warnings)
-        )));
-    }
-
-    let primary_members = find_sampled_members_by_role(snapshot, "primary");
-    match primary_members.as_slice() {
-        [] => Err(CliError::Resolution(
-            "no sampled primary member was observed".to_string(),
-        )),
-        [member] => {
-            if insufficient_sampling_blocks_primary(snapshot) {
-                let message = insufficient_sampling_message(snapshot)
-                    .unwrap_or_else(|| "insufficient sampling".to_string());
-                return Err(CliError::Resolution(format!(
-                    "cannot resolve primary from sampled cluster state: {message}"
-                )));
-            }
-
-            Ok(build_connection_view(
-                snapshot,
-                tls,
-                emit_tls,
-                ConnectionCommandKind::Primary,
-                vec![build_connection_target(member, tls, emit_tls)?],
+    let primary_id = authority_primary_member(state).ok_or_else(|| {
+        CliError::Resolution(
+            "seed state does not currently expose an authoritative primary".to_string(),
+        )
+    })?;
+    let member = state
+        .dcs
+        .cache
+        .member_slots
+        .get(&crate::state::MemberId(primary_id.clone()))
+        .ok_or_else(|| {
+            CliError::Resolution(format!(
+                "authoritative primary `{primary_id}` is not present in the DCS member slots"
             ))
-        }
-        members => Err(CliError::Resolution(format!(
-            "multiple sampled primaries were observed: {}",
-            members
-                .iter()
-                .map(|member| member.member_id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
+        })?;
+
+    Ok(build_connection_view(
+        state,
+        emit_tls,
+        ConnectionCommandKind::Primary,
+        vec![build_connection_target(member, tls, emit_tls)?],
+    ))
 }
 
-pub(crate) fn resolve_replicas_view(
-    snapshot: &SampledClusterSnapshot,
+fn resolve_replicas_view(
+    state: &NodeState,
     tls: &CliTlsConfig,
     emit_tls: bool,
 ) -> Result<ConnectionView, CliError> {
-    let blocking_warnings = blocking_replica_warnings(snapshot);
-    if !blocking_warnings.is_empty() {
-        return Err(CliError::Resolution(format!(
-            "cannot resolve replicas from sampled cluster state: {}",
-            join_warning_messages(blocking_warnings)
-        )));
-    }
-
-    let replica_targets = find_sampled_members_by_role(snapshot, "replica")
-        .into_iter()
+    let targets = state
+        .dcs
+        .cache
+        .member_slots
+        .values()
+        .filter(|member| member_is_ready_replica(member))
         .map(|member| build_connection_target(member, tls, emit_tls))
         .collect::<Result<Vec<_>, _>>()?;
 
-    if replica_targets.is_empty() {
+    if targets.is_empty() {
         return Err(CliError::Resolution(
-            "no sampled replica members were observed".to_string(),
+            "seed state does not currently expose any ready replica members".to_string(),
         ));
     }
 
     Ok(build_connection_view(
-        snapshot,
-        tls,
+        state,
         emit_tls,
         ConnectionCommandKind::Replicas,
-        replica_targets,
+        targets,
     ))
 }
 
 fn build_connection_view(
-    snapshot: &SampledClusterSnapshot,
-    _tls: &CliTlsConfig,
+    state: &NodeState,
     emit_tls: bool,
     kind: ConnectionCommandKind,
     targets: Vec<ConnectionTarget>,
 ) -> ConnectionView {
     ConnectionView {
-        cluster_name: snapshot.seed_state.cluster_name.clone(),
-        scope: snapshot.seed_state.scope.clone(),
+        cluster_name: state.cluster_name.clone(),
+        scope: state.scope.clone(),
         kind,
         tls: emit_tls,
-        sampled_member_count: snapshot.sampled_member_count(),
-        discovered_member_count: snapshot.discovered_member_count(),
-        warnings: snapshot.warnings.clone(),
+        discovered_member_count: state.dcs.cache.member_slots.len(),
+        warnings: Vec::new(),
         targets,
     }
 }
 
-fn blocking_primary_warnings(snapshot: &SampledClusterSnapshot) -> Vec<&ClusterWarning> {
-    snapshot
-        .warnings
-        .iter()
-        .filter(|warning| {
-            matches!(
-                warning.code.as_str(),
-                "degraded_trust" | "leader_mismatch" | "multi_primary"
-            )
-        })
-        .collect()
-}
-
-fn insufficient_sampling_blocks_primary(snapshot: &SampledClusterSnapshot) -> bool {
-    snapshot
-        .warnings
-        .iter()
-        .any(|warning| warning.code == "insufficient_sampling")
-        && snapshot.sampled_member_count() < 2
-}
-
-fn insufficient_sampling_message(snapshot: &SampledClusterSnapshot) -> Option<String> {
-    snapshot
-        .warnings
-        .iter()
-        .find(|warning| warning.code == "insufficient_sampling")
-        .map(|warning| warning.message.clone())
-}
-
-fn blocking_replica_warnings(snapshot: &SampledClusterSnapshot) -> Vec<&ClusterWarning> {
-    snapshot
-        .warnings
-        .iter()
-        .filter(|warning| matches!(warning.code.as_str(), "leader_mismatch" | "multi_primary"))
-        .collect()
-}
-
-fn join_warning_messages(warnings: Vec<&ClusterWarning>) -> String {
-    warnings
-        .iter()
-        .map(|warning| warning.message.as_str())
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn find_sampled_members_by_role<'a>(
-    snapshot: &'a SampledClusterSnapshot,
-    role: &str,
-) -> Vec<&'a HaClusterMemberResponse> {
-    let mut members = snapshot
-        .discovered_members
-        .iter()
-        .filter(|member| {
-            let sampled = snapshot
-                .observations
-                .get(&member.member_id)
-                .and_then(|observation| observation.sampled.as_ref().ok());
-            sampled.is_some_and(|value| {
-                sampled_self_member(value)
-                    .is_some_and(|self_member| observed_role(self_member, &value.state) == role)
-            })
-        })
-        .filter_map(|member| sampled_member(snapshot, member.member_id.as_str()))
-        .collect::<Vec<_>>();
-    members.sort_by_key(|member| {
-        (
-            member.member_id != snapshot.queried_via.member_id,
-            member.member_id.as_str(),
-        )
-    });
-    members
-}
-
-fn sampled_member<'a>(
-    snapshot: &'a SampledClusterSnapshot,
-    member_id: &str,
-) -> Option<&'a HaClusterMemberResponse> {
-    snapshot
-        .observations
-        .get(member_id)
-        .and_then(|observation| observation.sampled.as_ref().ok())
-        .and_then(sampled_self_member)
-}
-
 fn build_connection_target(
-    member: &HaClusterMemberResponse,
+    member: &MemberSlot,
     tls: &CliTlsConfig,
     emit_tls: bool,
 ) -> Result<ConnectionTarget, CliError> {
-    let postgres_host = member.postgres_host.trim();
-    if postgres_host.is_empty() || member.postgres_port == 0 {
+    let postgres_host = member.routing.postgres.host.trim();
+    if postgres_host.is_empty() || member.routing.postgres.port == 0 {
         return Err(CliError::Resolution(format!(
             "member {} does not advertise PostgreSQL host/port",
-            member.member_id
+            member.lease.owner.0
         )));
     }
 
-    let dsn = render_connection_dsn(postgres_host, member.postgres_port, tls, emit_tls)?;
+    let dsn = render_connection_dsn(postgres_host, member.routing.postgres.port, tls, emit_tls)?;
     Ok(ConnectionTarget {
-        member_id: member.member_id.clone(),
+        member_id: member.lease.owner.0.clone(),
         postgres_host: postgres_host.to_string(),
-        postgres_port: member.postgres_port,
+        postgres_port: member.routing.postgres.port,
         dsn,
     })
 }
@@ -316,11 +207,7 @@ fn maybe_push_tls_path_field(
     path: Option<&std::path::PathBuf>,
 ) -> Result<(), CliError> {
     match (pem, path) {
-        (Some(_), Some(path)) => {
-            fields.push((dsn_key, path.to_string_lossy().into_owned()));
-            Ok(())
-        }
-        (None, Some(path)) => {
+        (Some(_), Some(path)) | (None, Some(path)) => {
             fields.push((dsn_key, path.to_string_lossy().into_owned()));
             Ok(())
         }
@@ -351,917 +238,4 @@ fn escape_libpq_value(value: &str) -> String {
         acc
     });
     format!("'{escaped}'")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use crate::{
-        api::{
-            DcsTrustResponse, HaAuthorityResponse, HaClusterMemberResponse, HaStateResponse,
-            LeaseEpochResponse, MemberRoleResponse, ReadinessResponse, SqlStatusResponse,
-            TargetRoleResponse,
-        },
-        cli::{
-            client::CliTlsConfig,
-            status::{PeerObservation, QueryOrigin, SampledClusterSnapshot, SampledNodeState},
-        },
-    };
-
-    use super::{resolve_primary_view, resolve_replicas_view};
-
-    fn sample_member(
-        member_id: &str,
-        role: MemberRoleResponse,
-        postgres_host: &str,
-        postgres_port: u16,
-    ) -> HaClusterMemberResponse {
-        HaClusterMemberResponse {
-            member_id: member_id.to_string(),
-            postgres_host: postgres_host.to_string(),
-            postgres_port,
-            api_url: Some(format!("http://{member_id}:8080")),
-            role,
-            sql: SqlStatusResponse::Healthy,
-            readiness: ReadinessResponse::Ready,
-            timeline: Some(7),
-            write_lsn: Some(10),
-            replay_lsn: Some(9),
-            pg_version: 1,
-        }
-    }
-
-    fn sample_state(
-        self_member_id: &str,
-        authority_member_id: Option<&str>,
-        members: Vec<HaClusterMemberResponse>,
-    ) -> HaStateResponse {
-        let leader_epoch = authority_member_id.map(|member_id| LeaseEpochResponse {
-            holder: member_id.to_string(),
-            generation: 9,
-        });
-        HaStateResponse {
-            cluster_name: "cluster-a".to_string(),
-            scope: "scope-a".to_string(),
-            self_member_id: self_member_id.to_string(),
-            leader_lease_holder: authority_member_id.map(ToString::to_string),
-            switchover: None,
-            member_slot_count: members.len(),
-            member_slots: members,
-            dcs_trust: DcsTrustResponse::FullQuorum,
-            authority_projection: authority_member_id.map_or(HaAuthorityResponse::Unknown, |member_id| {
-                HaAuthorityResponse::Primary {
-                    member_id: member_id.to_string(),
-                    epoch: leader_epoch.clone().unwrap_or(LeaseEpochResponse {
-                        holder: member_id.to_string(),
-                        generation: 9,
-                    }),
-                }
-            }),
-            fence_cutoff: None,
-            role_intent: match leader_epoch {
-                Some(epoch) if authority_member_id == Some(self_member_id) => {
-                    TargetRoleResponse::Leader { epoch }
-                }
-                _ => TargetRoleResponse::Idle {
-                    reason: crate::api::IdleReasonResponse::AwaitingLeader,
-                },
-            },
-            ha_tick: 1,
-            planned_commands: Vec::new(),
-            snapshot_sequence: 1,
-        }
-    }
-
-    fn sample_snapshot(
-        seed_state: HaStateResponse,
-        discovered_members: Vec<HaClusterMemberResponse>,
-        observations: BTreeMap<String, PeerObservation>,
-    ) -> SampledClusterSnapshot {
-        SampledClusterSnapshot {
-            seed_state,
-            discovered_members,
-            queried_via: QueryOrigin {
-                member_id: "node-a".to_string(),
-                api_url: "http://node-a:8080".to_string(),
-            },
-            observations,
-            warnings: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn primary_resolution_prefers_sampled_primary_endpoint() -> Result<(), String> {
-        let seed_members = vec![
-            sample_member("node-a", MemberRoleResponse::Replica, "node-a.seed", 5432),
-            sample_member("node-b", MemberRoleResponse::Primary, "node-b.seed", 5432),
-        ];
-        let primary_sample = sample_member("node-b", MemberRoleResponse::Primary, "node-b.live", 6543);
-        let seed_state = sample_state("node-a", Some("node-b"), seed_members.clone());
-        let observations = BTreeMap::from([
-            (
-                "node-a".to_string(),
-                PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(SampledNodeState {
-                        state: seed_state.clone(),
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-b".to_string(),
-                PeerObservation {
-                    member_id: "node-b".to_string(),
-                    sampled: Ok(SampledNodeState {
-                        state: sample_state("node-b", Some("node-b"), vec![primary_sample.clone()]),
-                        debug: None,
-                    }),
-                },
-            ),
-        ]);
-        let snapshot = sample_snapshot(seed_state, seed_members, observations);
-
-        let view = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
-            .map_err(|err| format!("primary should resolve: {err}"))?;
-        assert_eq!(view.targets.len(), 1);
-        assert_eq!(
-            view.targets.first().map(|target| target.member_id.as_str()),
-            Some("node-b")
-        );
-        assert_eq!(
-            view.targets
-                .first()
-                .map(|target| target.postgres_host.as_str()),
-            Some("node-b.live")
-        );
-        assert_eq!(
-            view.targets.first().map(|target| target.postgres_port),
-            Some(6543)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn replica_resolution_rejects_sampled_peer_missing_self_record() -> Result<(), String> {
-        let seed_members = vec![
-            sample_member("node-a", MemberRoleResponse::Primary, "node-a.seed", 5432),
-            sample_member("node-b", MemberRoleResponse::Replica, "node-b.seed", 5432),
-        ];
-        let seed_state = sample_state("node-a", Some("node-a"), seed_members.clone());
-        let observations = BTreeMap::from([
-            (
-                "node-a".to_string(),
-                PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(SampledNodeState {
-                        state: seed_state.clone(),
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-b".to_string(),
-                PeerObservation {
-                    member_id: "node-b".to_string(),
-                    sampled: Ok(SampledNodeState {
-                        state: sample_state(
-                            "node-b",
-                            Some("node-a"),
-                            vec![sample_member(
-                                "node-a",
-                                MemberRoleResponse::Primary,
-                                "node-a.live",
-                                5432,
-                            )],
-                        ),
-                        debug: None,
-                    }),
-                },
-            ),
-        ]);
-        let snapshot = sample_snapshot(seed_state, seed_members, observations);
-
-        let error = match resolve_replicas_view(&snapshot, &CliTlsConfig::default(), false) {
-            Ok(view) => {
-                return Err(format!(
-                    "missing peer self row should fail closed: {view:?}"
-                ));
-            }
-            Err(err) => err,
-        };
-        assert_eq!(
-            error.to_string(),
-            "resolution error: no sampled replica members were observed"
-        );
-        Ok(())
-    }
-}
-
-#[cfg(all(test, any()))]
-mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
-
-    use crate::{
-        api::{
-            DcsTrustResponse, HaClusterMemberResponse, HaDecisionResponse, HaPhaseResponse,
-            HaStateResponse, MemberRoleResponse, ReadinessResponse, SqlStatusResponse,
-        },
-        cli::{
-            client::CliTlsConfig,
-            status::{ClusterWarning, QueryOrigin, SampledClusterSnapshot},
-        },
-    };
-
-    use super::{escape_libpq_value, resolve_primary_view, resolve_replicas_view};
-
-    fn sample_member(member_id: &str, api_url: Option<&str>) -> HaClusterMemberResponse {
-        HaClusterMemberResponse {
-            member_id: member_id.to_string(),
-            postgres_host: format!("{member_id}.db.example.com"),
-            postgres_port: 5432,
-            api_url: api_url.map(ToString::to_string),
-            role: MemberRoleResponse::Unknown,
-            sql: SqlStatusResponse::Healthy,
-            readiness: ReadinessResponse::Ready,
-            timeline: Some(7),
-            write_lsn: None,
-            replay_lsn: Some(5),
-            updated_at_ms: 1,
-            pg_version: 1,
-        }
-    }
-
-    fn sample_state(
-        self_member_id: &str,
-        phase: HaPhaseResponse,
-        leader: Option<&str>,
-        members: Vec<HaClusterMemberResponse>,
-    ) -> HaStateResponse {
-        HaStateResponse {
-            cluster_name: "cluster-a".to_string(),
-            scope: "scope-a".to_string(),
-            self_member_id: self_member_id.to_string(),
-            leader: leader.map(ToString::to_string),
-            switchover_pending: false,
-            switchover_to: None,
-            member_count: members.len(),
-            members,
-            dcs_trust: DcsTrustResponse::FullQuorum,
-            ha_phase: phase,
-            ha_tick: 1,
-            ha_decision: HaDecisionResponse::NoChange,
-            snapshot_sequence: 10,
-        }
-    }
-
-    fn sample_snapshot(
-        seed_state: HaStateResponse,
-        discovered_members: Vec<HaClusterMemberResponse>,
-        observations: BTreeMap<String, crate::cli::status::PeerObservation>,
-        warnings: Vec<ClusterWarning>,
-    ) -> SampledClusterSnapshot {
-        SampledClusterSnapshot {
-            seed_state,
-            discovered_members,
-            queried_via: QueryOrigin {
-                member_id: "node-a".to_string(),
-                api_url: "http://node-a:8080".to_string(),
-            },
-            observations,
-            warnings,
-        }
-    }
-
-    fn tls_paths() -> CliTlsConfig {
-        CliTlsConfig {
-            ca_cert_path: Some(PathBuf::from("/etc/pgtm/postgres ca.pem")),
-            client_cert_path: Some(PathBuf::from("/etc/pgtm/postgres.crt")),
-            client_key_path: Some(PathBuf::from("/run/secrets/postgres.key")),
-            ca_cert_pem: Some(b"ca".to_vec()),
-            client_cert_pem: Some(b"cert".to_vec()),
-            client_key_pem: Some(b"key".to_vec()),
-        }
-    }
-
-    #[test]
-    fn primary_resolution_renders_single_dsn() -> Result<(), String> {
-        let members = vec![
-            sample_member("node-a", Some("http://node-a:8080")),
-            sample_member("node-b", Some("http://node-b:8080")),
-        ];
-        let seed_state = sample_state(
-            "node-a",
-            HaPhaseResponse::Primary,
-            Some("node-a"),
-            members.clone(),
-        );
-        let replica_state = sample_state(
-            "node-b",
-            HaPhaseResponse::Replica,
-            Some("node-a"),
-            members.clone(),
-        );
-        let observations = BTreeMap::from([
-            (
-                "node-a".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: seed_state.clone(),
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-b".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-b".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: replica_state,
-                        debug: None,
-                    }),
-                },
-            ),
-        ]);
-        let snapshot = sample_snapshot(seed_state, members, observations, Vec::new());
-
-        let view = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
-            .map_err(|err| err.to_string())?;
-
-        if view.targets.len() != 1 {
-            return Err("expected exactly one primary target".to_string());
-        }
-        if view.targets[0].dsn
-            != "host=node-a.db.example.com port=5432 user=postgres dbname=postgres"
-        {
-            return Err(format!("unexpected dsn {}", view.targets[0].dsn));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn primary_resolution_rejects_partial_sampling_when_cluster_is_not_fully_sampled(
-    ) -> Result<(), String> {
-        let members = vec![
-            sample_member("node-a", Some("http://node-a:8080")),
-            sample_member("node-b", Some("http://node-b:8080")),
-        ];
-        let seed_state = sample_state(
-            "node-a",
-            HaPhaseResponse::Primary,
-            Some("node-a"),
-            members.clone(),
-        );
-        let observations = BTreeMap::from([
-            (
-                "node-a".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: seed_state.clone(),
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-b".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-b".to_string(),
-                    sampled: Err("timed out".to_string()),
-                },
-            ),
-        ]);
-        let warnings = vec![
-            ClusterWarning {
-                code: "unreachable_node".to_string(),
-                message: "node node-b could not be sampled: timed out".to_string(),
-            },
-            ClusterWarning {
-                code: "insufficient_sampling".to_string(),
-                message: "sampled 1/2 discovered members".to_string(),
-            },
-        ];
-        let snapshot = sample_snapshot(seed_state, members, observations, warnings);
-
-        let error = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
-            .err()
-            .map(|err| err.to_string());
-        if error
-            != Some(
-                "resolution error: cannot resolve primary from sampled cluster state: sampled 1/2 discovered members".to_string(),
-            )
-        {
-            return Err(format!(
-                "expected insufficient sampling resolution error, got {error:?}"
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn primary_resolution_rejects_degraded_trust_even_with_one_sampled_primary(
-    ) -> Result<(), String> {
-        let members = vec![
-            sample_member("node-a", Some("http://node-a:8080")),
-            sample_member("node-b", Some("http://node-b:8080")),
-            sample_member("node-c", Some("http://node-c:8080")),
-        ];
-        let seed_state = sample_state(
-            "node-a",
-            HaPhaseResponse::Primary,
-            Some("node-a"),
-            members.clone(),
-        );
-        let observations = BTreeMap::from([(
-            "node-a".to_string(),
-            crate::cli::status::PeerObservation {
-                member_id: "node-a".to_string(),
-                sampled: Ok(crate::cli::status::SampledNodeState {
-                    state: seed_state.clone(),
-                    debug: None,
-                }),
-            },
-        )]);
-        let warnings = vec![ClusterWarning {
-            code: "degraded_trust".to_string(),
-            message: "node node-a reports trust nottrusted".to_string(),
-        }];
-        let snapshot = sample_snapshot(seed_state, members, observations, warnings);
-
-        match resolve_primary_view(&snapshot, &CliTlsConfig::default(), false) {
-            Ok(view) => Err(format!(
-                "expected degraded trust to block primary resolution, got {:?}",
-                view.targets
-            )),
-            Err(err) => {
-                let rendered = err.to_string();
-                if rendered.contains("node node-a reports trust nottrusted") {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "expected degraded trust message in resolution error, got {rendered}"
-                    ))
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn replicas_resolution_allows_partial_sampling() -> Result<(), String> {
-        let members = vec![
-            sample_member("node-a", Some("http://node-a:8080")),
-            sample_member("node-b", Some("http://node-b:8080")),
-            sample_member("node-c", Some("http://node-c:8080")),
-        ];
-        let seed_state = sample_state(
-            "node-a",
-            HaPhaseResponse::Primary,
-            Some("node-a"),
-            members.clone(),
-        );
-        let replica_state = sample_state(
-            "node-b",
-            HaPhaseResponse::Replica,
-            Some("node-a"),
-            members.clone(),
-        );
-        let observations = BTreeMap::from([
-            (
-                "node-a".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: seed_state.clone(),
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-b".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-b".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: replica_state,
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-c".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-c".to_string(),
-                    sampled: Err("timed out".to_string()),
-                },
-            ),
-        ]);
-        let warnings = vec![
-            ClusterWarning {
-                code: "unreachable_node".to_string(),
-                message: "node node-c could not be sampled: timed out".to_string(),
-            },
-            ClusterWarning {
-                code: "insufficient_sampling".to_string(),
-                message: "sampled 2/3 discovered members".to_string(),
-            },
-        ];
-        let snapshot = sample_snapshot(seed_state, members, observations, warnings);
-
-        let view = resolve_replicas_view(&snapshot, &CliTlsConfig::default(), false)
-            .map_err(|err| err.to_string())?;
-        if view.targets.len() != 1 {
-            return Err("expected one reachable replica".to_string());
-        }
-        if view.targets[0].member_id != "node-b" {
-            return Err(format!(
-                "expected node-b replica target, got {}",
-                view.targets[0].member_id
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn primary_resolution_allows_membership_mismatch_when_one_primary_is_sampled(
-    ) -> Result<(), String> {
-        let members = vec![
-            sample_member("node-a", Some("http://node-a:8080")),
-            sample_member("node-b", Some("http://node-b:8080")),
-            sample_member("node-c", Some("http://node-c:8080")),
-        ];
-        let seed_state = sample_state(
-            "node-a",
-            HaPhaseResponse::Replica,
-            Some("node-b"),
-            members.clone(),
-        );
-        let replica_state = sample_state(
-            "node-c",
-            HaPhaseResponse::Replica,
-            Some("node-b"),
-            vec![members[0].clone(), members[1].clone()],
-        );
-        let primary_state = sample_state(
-            "node-b",
-            HaPhaseResponse::Primary,
-            Some("node-b"),
-            members.clone(),
-        );
-        let observations = BTreeMap::from([
-            (
-                "node-a".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: seed_state,
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-b".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-b".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: primary_state,
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-c".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-c".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: replica_state,
-                        debug: None,
-                    }),
-                },
-            ),
-        ]);
-        let warnings = vec![ClusterWarning {
-            code: "membership_mismatch".to_string(),
-            message: "node node-c reports a different member set than queried_via node-a"
-                .to_string(),
-        }];
-        let snapshot = sample_snapshot(
-            sample_state(
-                "node-a",
-                HaPhaseResponse::Replica,
-                Some("node-b"),
-                members.clone(),
-            ),
-            members,
-            observations,
-            warnings,
-        );
-
-        let view = resolve_primary_view(&snapshot, &CliTlsConfig::default(), false)
-            .map_err(|err| err.to_string())?;
-        if view.targets.len() != 1 {
-            return Err("expected exactly one primary target".to_string());
-        }
-        if view.targets[0].member_id != "node-b" {
-            return Err(format!(
-                "expected node-b primary target, got {}",
-                view.targets[0].member_id
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn replicas_resolution_allows_membership_mismatch_with_healthy_replica_sampling(
-    ) -> Result<(), String> {
-        let members = vec![
-            sample_member("node-a", Some("http://node-a:8080")),
-            sample_member("node-b", Some("http://node-b:8080")),
-            sample_member("node-c", Some("http://node-c:8080")),
-        ];
-        let seed_state = sample_state(
-            "node-a",
-            HaPhaseResponse::Primary,
-            Some("node-b"),
-            members.clone(),
-        );
-        let primary_state = sample_state(
-            "node-b",
-            HaPhaseResponse::Primary,
-            Some("node-b"),
-            members.clone(),
-        );
-        let replica_state = sample_state(
-            "node-c",
-            HaPhaseResponse::Replica,
-            Some("node-b"),
-            vec![members[0].clone(), members[1].clone()],
-        );
-        let observations = BTreeMap::from([
-            (
-                "node-a".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: seed_state,
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-b".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-b".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: primary_state,
-                        debug: None,
-                    }),
-                },
-            ),
-            (
-                "node-c".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-c".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: replica_state,
-                        debug: None,
-                    }),
-                },
-            ),
-        ]);
-        let warnings = vec![ClusterWarning {
-            code: "membership_mismatch".to_string(),
-            message: "node node-c reports a different member set than queried_via node-a"
-                .to_string(),
-        }];
-        let snapshot = sample_snapshot(
-            sample_state(
-                "node-a",
-                HaPhaseResponse::Primary,
-                Some("node-b"),
-                members.clone(),
-            ),
-            members,
-            observations,
-            warnings,
-        );
-
-        let view = resolve_replicas_view(&snapshot, &CliTlsConfig::default(), false)
-            .map_err(|err| err.to_string())?;
-        if view.targets.len() != 1 {
-            return Err("expected one replica target".to_string());
-        }
-        if view.targets[0].member_id != "node-c" {
-            return Err(format!(
-                "expected node-c replica target, got {}",
-                view.targets[0].member_id
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn tls_rendering_requires_path_backed_material() {
-        let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
-        let seed_state = sample_state(
-            "node-a",
-            HaPhaseResponse::Primary,
-            Some("node-a"),
-            members.clone(),
-        );
-        let observations = BTreeMap::from([(
-            "node-a".to_string(),
-            crate::cli::status::PeerObservation {
-                member_id: "node-a".to_string(),
-                sampled: Ok(crate::cli::status::SampledNodeState {
-                    state: seed_state.clone(),
-                    debug: None,
-                }),
-            },
-        )]);
-        let snapshot = sample_snapshot(seed_state, members, observations, Vec::new());
-        let tls = CliTlsConfig {
-            ca_cert_pem: Some(b"inline".to_vec()),
-            ..CliTlsConfig::default()
-        };
-
-        let result = resolve_primary_view(&snapshot, &tls, true);
-        assert!(
-            result.is_err(),
-            "inline-only TLS material should not be rendered into DSN output"
-        );
-    }
-
-    #[test]
-    fn tls_paths_are_quoted_for_libpq_keyword_values() -> Result<(), String> {
-        let members = vec![sample_member("node-a", Some("http://node-a:8080"))];
-        let seed_state = sample_state(
-            "node-a",
-            HaPhaseResponse::Primary,
-            Some("node-a"),
-            members.clone(),
-        );
-        let observations = BTreeMap::from([(
-            "node-a".to_string(),
-            crate::cli::status::PeerObservation {
-                member_id: "node-a".to_string(),
-                sampled: Ok(crate::cli::status::SampledNodeState {
-                    state: seed_state.clone(),
-                    debug: None,
-                }),
-            },
-        )]);
-        let snapshot = sample_snapshot(seed_state, members, observations, Vec::new());
-
-        let view =
-            resolve_primary_view(&snapshot, &tls_paths(), true).map_err(|err| err.to_string())?;
-        if !view.targets[0]
-            .dsn
-            .contains("sslrootcert='/etc/pgtm/postgres ca.pem'")
-        {
-            return Err(format!("unexpected tls dsn {}", view.targets[0].dsn));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn libpq_escaping_quotes_special_values() {
-        assert_eq!(escape_libpq_value("simple"), "simple");
-        assert_eq!(escape_libpq_value("/tmp/a b"), "'/tmp/a b'");
-        assert_eq!(escape_libpq_value("a'b"), "'a\\'b'");
-        assert_eq!(escape_libpq_value(r"a\b"), r"'a\\b'");
-    }
-
-    #[test]
-    fn replicas_resolution_prefers_member_role_over_transitional_phase() -> Result<(), String> {
-        let mut members = vec![sample_member("node-b", Some("http://node-b:8080"))];
-        members[0].role = MemberRoleResponse::Replica;
-        let transitional_state = sample_state(
-            "node-b",
-            HaPhaseResponse::WaitingDcsTrusted,
-            Some("node-a"),
-            members.clone(),
-        );
-        let snapshot = sample_snapshot(
-            transitional_state.clone(),
-            members,
-            BTreeMap::from([(
-                "node-b".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-b".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: transitional_state,
-                        debug: None,
-                    }),
-                },
-            )]),
-            Vec::new(),
-        );
-
-        let view =
-            resolve_replicas_view(&snapshot, &tls_paths(), false).map_err(|err| err.to_string())?;
-
-        if view.targets.len() != 1 {
-            return Err(format!(
-                "expected one replica target, got {}",
-                view.targets.len()
-            ));
-        }
-        if view.targets[0].member_id != "node-b" {
-            return Err(format!(
-                "expected node-b replica target, got {}",
-                view.targets[0].member_id
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn primary_resolution_rejects_failsafe_primary_from_stale_member_role() {
-        let mut members = vec![sample_member("node-a", Some("http://node-a:8080"))];
-        members[0].role = MemberRoleResponse::Primary;
-        let failsafe_state = sample_state(
-            "node-a",
-            HaPhaseResponse::FailSafe,
-            Some("node-a"),
-            members.clone(),
-        );
-        let snapshot = sample_snapshot(
-            failsafe_state.clone(),
-            members,
-            BTreeMap::from([(
-                "node-a".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(crate::cli::status::SampledNodeState {
-                        state: failsafe_state,
-                        debug: None,
-                    }),
-                },
-            )]),
-            Vec::new(),
-        );
-
-        let result = resolve_primary_view(&snapshot, &tls_paths(), false);
-        assert!(
-            result.is_err(),
-            "fail_safe should not resolve to an operator-visible primary, got {:?}",
-            result.as_ref().ok().map(|view| &view.targets)
-        );
-        let error = match result {
-            Ok(_) => return,
-            Err(error) => error,
-        };
-
-        assert_eq!(
-            error.to_string(),
-            "resolution error: no sampled primary member was observed"
-        );
-    }
-
-    #[test]
-    fn primary_resolution_rejects_waiting_member_without_full_quorum() {
-        let mut members = vec![sample_member("node-a", Some("http://node-a:8080"))];
-        members[0].role = MemberRoleResponse::Primary;
-        let waiting_state = crate::cli::status::SampledNodeState {
-            state: crate::api::HaStateResponse {
-                dcs_trust: crate::api::DcsTrustResponse::FailSafe,
-                ..sample_state(
-                    "node-a",
-                    HaPhaseResponse::WaitingDcsTrusted,
-                    Some("node-a"),
-                    members.clone(),
-                )
-            },
-            debug: None,
-        };
-        let snapshot = sample_snapshot(
-            waiting_state.state.clone(),
-            members,
-            BTreeMap::from([(
-                "node-a".to_string(),
-                crate::cli::status::PeerObservation {
-                    member_id: "node-a".to_string(),
-                    sampled: Ok(waiting_state),
-                },
-            )]),
-            Vec::new(),
-        );
-
-        let result = resolve_primary_view(&snapshot, &tls_paths(), false);
-        assert!(
-            result.is_err(),
-            "waiting node without full quorum should not resolve to primary, got {:?}",
-            result.as_ref().ok().map(|view| &view.targets)
-        );
-        let error = match result {
-            Ok(_) => return,
-            Err(error) => error,
-        };
-
-        assert_eq!(
-            error.to_string(),
-            "resolution error: no sampled primary member was observed"
-        );
-    }
 }

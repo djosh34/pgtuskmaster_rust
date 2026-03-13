@@ -1,5 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
@@ -11,15 +12,16 @@ use crate::{
     state::{MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
-use super::types::{AuthorityProjectionState, IdleReason, ReconcileAction, TargetRole};
+use super::types::{AuthorityProjectionState, IdleReason, ReconcileAction, TargetRole, WorldView};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct HaState {
     pub(crate) worker: WorkerStatus,
     pub(crate) tick: u64,
     pub(crate) required_roles_ready: bool,
     pub(crate) publication: AuthorityProjectionState,
     pub(crate) role: TargetRole,
+    pub(crate) world: WorldView,
     pub(crate) clear_switchover: bool,
     pub(crate) planned_commands: Vec<ReconcileAction>,
 }
@@ -104,6 +106,7 @@ impl HaState {
             required_roles_ready: false,
             publication: AuthorityProjectionState::unknown(),
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
+            world: WorldView::initial(),
             clear_switchover: false,
             planned_commands: Vec::new(),
         }

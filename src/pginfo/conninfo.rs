@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum PgSslMode {
     Disable,
     Allow,
@@ -48,7 +48,7 @@ impl<'de> Deserialize<'de> for PgSslMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PgConnInfo {
     pub(crate) host: String,
     pub(crate) port: u16,

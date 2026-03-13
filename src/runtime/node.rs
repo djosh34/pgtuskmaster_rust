@@ -15,10 +15,6 @@ use crate::{
         etcd_store::EtcdDcsStore,
         state::{DcsCache, DcsState, DcsTrust, DcsWorkerCtx},
     },
-    debug_api::{
-        snapshot::{build_snapshot, AppLifecycle, DebugSnapshotCtx},
-        worker::{DebugApiContractStubInputs, DebugApiCtx},
-    },
     ha::state::{HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults},
     logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
@@ -202,10 +198,8 @@ async fn run_workers(
     process_defaults: ProcessDispatchDefaults,
     log: crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
-    let now = now_unix_millis()?;
-
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone(), now);
-    let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg_state(), now);
+    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone());
+    let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg_state());
 
     let initial_dcs = DcsState {
         worker: WorkerStatus::Starting,
@@ -214,37 +208,20 @@ async fn run_workers(
             member_slots: BTreeMap::new(),
             leader_lease: None,
             switchover_intent: None,
-            config: cfg.clone(),
             init_lock: None,
         },
         last_refresh_at: None,
     };
-    let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs, now);
+    let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs);
 
     let initial_process = ProcessState::Idle {
         worker: WorkerStatus::Starting,
         last_outcome: None,
     };
-    let (process_publisher, process_subscriber) = new_state_channel(initial_process.clone(), now);
+    let (process_publisher, process_subscriber) = new_state_channel(initial_process.clone());
 
     let initial_ha = HaState::initial(WorkerStatus::Starting);
-    let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha, now);
-
-    let initial_debug_snapshot = build_snapshot(
-        &DebugSnapshotCtx {
-            app: AppLifecycle::Running,
-            config: cfg_subscriber.latest(),
-            pg: pg_subscriber.latest(),
-            dcs: dcs_subscriber.latest(),
-            process: process_subscriber.latest(),
-            ha: ha_subscriber.latest(),
-        },
-        now,
-        0,
-        &[],
-        &[],
-    );
-    let (debug_publisher, debug_subscriber) = new_state_channel(initial_debug_snapshot, now);
+    let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha);
 
     let self_id = MemberId(cfg.cluster.member_id.clone());
     let scope = cfg.dcs.scope.clone();
@@ -280,10 +257,9 @@ async fn run_workers(
             member_slots: BTreeMap::new(),
             leader_lease: None,
             switchover_intent: None,
-            config: cfg.clone(),
             init_lock: None,
         },
-        last_published_pg_version: None,
+        member_ttl_ms: cfg.ha.lease_ttl_ms,
         last_emitted_store_healthy: None,
         last_emitted_trust: None,
     };
@@ -326,18 +302,6 @@ async fn run_workers(
     ha_ctx.process_defaults = process_defaults;
     ha_ctx.log = log.clone();
 
-    let mut debug_ctx = DebugApiCtx::contract_stub(DebugApiContractStubInputs {
-        publisher: debug_publisher,
-        config_subscriber: cfg_subscriber.clone(),
-        pg_subscriber: pg_subscriber.clone(),
-        dcs_subscriber: dcs_subscriber.clone(),
-        process_subscriber: process_subscriber.clone(),
-        ha_subscriber: ha_subscriber.clone(),
-    });
-    debug_ctx.app = AppLifecycle::Running;
-    debug_ctx.poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
-    debug_ctx.now = Box::new(system_now_unix_millis);
-
     let api_store = EtcdDcsStore::connect(cfg.dcs.endpoints.clone(), &scope)
         .map_err(|err| RuntimeError::Worker(format!("api store connect failed: {err}")))?;
     let listener = TcpListener::bind(cfg.api.listen_addr)
@@ -347,8 +311,12 @@ async fn run_workers(
             message: err.to_string(),
         })?;
     let mut api_ctx = ApiWorkerCtx::new(listener, cfg_subscriber, Box::new(api_store), log.clone());
-    api_ctx.set_debug_snapshot_subscriber(debug_subscriber);
-    api_ctx.set_live_state_subscribers(dcs_subscriber.clone(), ha_subscriber.clone());
+    api_ctx.set_live_state_subscribers(
+        pg_subscriber.clone(),
+        process_subscriber.clone(),
+        dcs_subscriber.clone(),
+        ha_subscriber.clone(),
+    );
     let server_tls = crate::tls::build_rustls_server_config(&cfg.api.security.tls)
         .map_err(|err| RuntimeError::Worker(format!("api tls config build failed: {err}")))?;
     api_ctx
@@ -369,7 +337,6 @@ async fn run_workers(
             log.clone(),
         )),
         crate::ha::worker::run(ha_ctx),
-        crate::debug_api::worker::run(debug_ctx),
         crate::api::worker::run(api_ctx),
     )
     .map_err(|err| RuntimeError::Worker(err.to_string()))?;
@@ -431,7 +398,7 @@ fn initial_pg_state() -> PgInfoState {
     }
 }
 
-fn now_unix_millis() -> Result<UnixMillis, RuntimeError> {
+fn _now_unix_millis() -> Result<UnixMillis, RuntimeError> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| RuntimeError::Time(format!("system time before epoch: {err}")))?;

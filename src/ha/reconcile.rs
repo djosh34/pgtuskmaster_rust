@@ -23,7 +23,11 @@ fn reconcile_publication(
     current: &PublicationState,
     desired: &DesiredState,
 ) -> Vec<ReconcileAction> {
-    let publish_action = match (&current.authority, &current.fence_cutoff, &desired.publication) {
+    let publish_action = match (
+        &current.authority,
+        &current.fence_cutoff,
+        &desired.publication,
+    ) {
         (_, _, PublicationGoal::KeepCurrent) => None,
         (
             AuthorityView::Primary {
@@ -202,7 +206,9 @@ fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> Option<Reco
 
 fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> Option<ReconcileAction> {
     match &world.local.postgres {
-        PostgresState::Primary { .. } if world.local.observation.waiting_for_fresh_pg_after_demote() => {
+        PostgresState::Primary { .. }
+            if world.local.observation.waiting_for_fresh_pg_after_demote() =>
+        {
             None
         }
         PostgresState::Primary { .. } => {
@@ -338,7 +344,10 @@ mod tests {
             clear_switchover: false,
         };
 
-        assert_eq!(reconcile(&world, &desired), vec![ReconcileAction::ReleaseLease]);
+        assert_eq!(
+            reconcile(&world, &desired),
+            vec![ReconcileAction::ReleaseLease]
+        );
     }
 
     #[test]
@@ -350,7 +359,9 @@ mod tests {
             storage: StorageState::Healthy,
             required_roles_ready: false,
             publication: PublicationState {
-                authority: AuthorityView::NoPrimary(super::super::types::NoPrimaryReason::LeaseOpen),
+                authority: AuthorityView::NoPrimary(
+                    super::super::types::NoPrimaryReason::LeaseOpen,
+                ),
                 fence_cutoff: None,
             },
             observation: ObservationState {

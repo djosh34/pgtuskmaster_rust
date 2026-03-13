@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
@@ -14,7 +15,7 @@ use super::jobs::{
     StartPostgresSpec,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ProcessState {
     Idle {
         worker: WorkerStatus,
@@ -62,7 +63,7 @@ pub(crate) struct ProcessJobRejection {
     pub(crate) rejected_at: UnixMillis,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum JobOutcome {
     Success {
         id: JobId,

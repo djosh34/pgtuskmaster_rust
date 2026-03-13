@@ -23,13 +23,13 @@ pub(crate) struct FenceCutoff {
     pub(crate) committed_lsn: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WorldView {
     pub(crate) local: LocalKnowledge,
     pub(crate) global: GlobalKnowledge,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LocalKnowledge {
     pub(crate) data_dir: DataDirState,
     pub(crate) postgres: PostgresState,
@@ -40,7 +40,7 @@ pub(crate) struct LocalKnowledge {
     pub(crate) observation: ObservationState,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ObservationState {
     pub(crate) pg_observed_at: UnixMillis,
     pub(crate) last_start_success_at: Option<UnixMillis>,
@@ -125,7 +125,7 @@ pub(crate) enum AuthorityView {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GlobalKnowledge {
     pub(crate) dcs_trust: DcsTrust,
     pub(crate) lease: LeaseState,
@@ -137,7 +137,7 @@ pub(crate) struct GlobalKnowledge {
     pub(crate) self_peer: PeerKnowledge,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CoordinationView {
     pub(crate) trust: DcsTrust,
     pub(crate) leader: LeaseState,
@@ -168,7 +168,7 @@ pub(crate) enum SwitchoverTarget {
     Specific(MemberId),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PeerKnowledge {
     pub(crate) eligibility: ElectionEligibility,
     pub(crate) api: ApiVisibility,
@@ -323,7 +323,44 @@ pub(crate) struct WalPosition {
 }
 
 pub(crate) type AuthorityProjectionState = PublicationState;
-pub(crate) type ProjectedAuthority = AuthorityView;
+
+impl WorldView {
+    pub(crate) fn initial() -> Self {
+        Self {
+            local: LocalKnowledge {
+                data_dir: DataDirState::Missing,
+                postgres: PostgresState::Offline,
+                process: ProcessState::Idle,
+                storage: StorageState::Healthy,
+                required_roles_ready: false,
+                publication: PublicationState::unknown(),
+                observation: ObservationState {
+                    pg_observed_at: UnixMillis(0),
+                    last_start_success_at: None,
+                    last_promote_success_at: None,
+                    last_demote_success_at: None,
+                },
+            },
+            global: GlobalKnowledge {
+                dcs_trust: DcsTrust::NotTrusted,
+                lease: LeaseState::Unheld,
+                observed_lease: None,
+                observed_primary: None,
+                coordination: CoordinationView {
+                    trust: DcsTrust::NotTrusted,
+                    leader: LeaseState::Unheld,
+                    sampled_primary: None,
+                },
+                switchover: SwitchoverState::None,
+                peers: BTreeMap::new(),
+                self_peer: PeerKnowledge {
+                    eligibility: ElectionEligibility::Ineligible(IneligibleReason::StartingUp),
+                    api: ApiVisibility::Reachable,
+                },
+            },
+        }
+    }
+}
 
 impl ObservationState {
     pub(crate) fn waiting_for_fresh_pg_after_start(&self) -> bool {

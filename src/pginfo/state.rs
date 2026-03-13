@@ -22,7 +22,7 @@ pub(crate) enum Readiness {
     NotReady,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PgConfig {
     pub(crate) port: Option<u16>,
     pub(crate) hot_standby: Option<bool>,
@@ -31,17 +31,17 @@ pub(crate) struct PgConfig {
     pub(crate) extra: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ReplicationSlotInfo {
     pub(crate) name: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct UpstreamInfo {
     pub(crate) member_id: MemberId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PgInfoCommon {
     pub(crate) worker: WorkerStatus,
     pub(crate) sql: SqlStatus,
@@ -51,7 +51,7 @@ pub(crate) struct PgInfoCommon {
     pub(crate) last_refresh_at: Option<UnixMillis>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum PgInfoState {
     Unknown {
         common: PgInfoCommon,
@@ -67,6 +67,20 @@ pub(crate) enum PgInfoState {
         follow_lsn: Option<WalLsn>,
         upstream: Option<UpstreamInfo>,
     },
+}
+
+impl PgInfoState {
+    pub(crate) fn common(&self) -> &PgInfoCommon {
+        match self {
+            Self::Unknown { common }
+            | Self::Primary { common, .. }
+            | Self::Replica { common, .. } => common,
+        }
+    }
+
+    pub(crate) fn last_refresh_at(&self) -> Option<UnixMillis> {
+        self.common().last_refresh_at
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -3,7 +3,7 @@ MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest install-pgtm install-pgtuskmaster
+.PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors lint.orphan_rust_files docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest install-pgtm install-pgtuskmaster
 
 # The workspace mount this repo typically lives on can exhibit intermittent
 # linker/archive flake with incremental artifacts. Disable incremental builds by
@@ -79,7 +79,12 @@ docs-lint: ensure-docs-node-deps
 lint.no_silent_errors:
 	./tools/lint-no-silent-errors.sh
 
-lint: docs-lint lint.no_silent_errors
+lint.orphan_rust_files:
+	rm -rf "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files"
+	cargo check --all-targets --target-dir "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
+	python3 ./tools/check-orphan-rust-files.py --target-dir "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files"
+
+lint: docs-lint lint.no_silent_errors lint.orphan_rust_files
 	cargo clippy --all-targets --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings
 	cargo clippy --lib --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 	cargo clippy --tests --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented

@@ -1,154 +1,76 @@
 # Monitor via CLI Signals
 
-This guide shows how to monitor a running cluster with `pgtm` as the primary observability surface. The CLI already exposes the operator signals you normally need: cluster health, trust, leadership, debug availability, and retained debug history.
+This guide shows how to monitor a running cluster with `pgtm` and the raw `/state` endpoint.
 
 ## Goal
 
 Track:
 
-- leader changes
+- primary authority changes
 - trust degradation
-- fail-safe entry
-- recovery and fencing activity
-- recent state-change history
-
-## Prerequisites
-
-- access to each node's API listener
-- `pgtm`
-- `jq` if you want to extract `meta.sequence` from saved JSON exactly as shown below
-- `[debug] enabled = true` on the nodes where you want richer debug history
+- switchover intent
+- replica readiness
+- local process activity
 
 ## Step 1: Poll `pgtm status`
-
-Start with the cluster summary:
 
 ```bash
 pgtm -c config.toml status
 ```
 
-When you want structured output for a poller or incident artifact, save the JSON form:
+For structured output:
 
 ```bash
 pgtm -c config.toml --json status > status.json
 ```
 
-The synthesized status view includes:
+The status view exposes:
 
-- `leader`
-- `trust`
-- `phase`
-- `decision`
-- peer-sampling warnings
-- the seed node recorded in `queried_via`
+- `health`
+- `warnings`
+- `switchover`
+- `nodes`
 
-When you want richer per-node investigation without leaving the CLI, use:
-
-```bash
-pgtm -c config.toml status -v
-```
-
-That adds:
-
-- `PGINFO`
-- `READINESS`
-- `PROCESS`
-- explicit `DEBUG` availability
-- per-node debug detail blocks
-
-## Step 2: Watch the cluster continuously
-
-For a live operator console, use watch mode:
+## Step 2: Watch continuously
 
 ```bash
 pgtm -c config.toml status --watch
 ```
 
-For a noisier but deeper view during an incident, use:
+Use `-v --watch` during an incident when you want the seed node's local phase, decision, and process fields on every refresh.
+
+## Step 3: Alert on high-signal conditions
+
+Useful alerts include:
+
+- `health=degraded`
+- warnings containing `degraded_trust`
+- warnings containing `no_primary`
+- replicas that are not `ready`
+- a pending switchover that does not clear
+
+## Step 4: Read `/state` directly for deeper polling
 
 ```bash
-pgtm -c config.toml status -v --watch
+curl --fail --silent http://node-a:8080/state | jq .
 ```
 
-## Step 3: Alert on leadership and trust anomalies
+Useful fields for machine polling:
 
-The fastest high-signal checks are:
+- `dcs.trust`
+- `dcs.cache.leader_lease`
+- `dcs.cache.switchover_intent`
+- `dcs.cache.member_slots`
+- `ha.publication.authority`
+- `ha.role`
+- `ha.planned_commands`
+- `process`
 
-- `health: degraded`
-- warning lines about peer sampling failures or disagreement
-- more than one sampled `ROLE=primary`
-- any sampled `TRUST=fail_safe` or `TRUST=not_trusted`
-
-If you need machine-readable checks, read the saved `status.json` artifact rather than scraping the table output.
-
-## Step 4: Collect rich state with `pgtm debug verbose`
-
-For one node, the stable rich inspection surface is:
-
-```bash
-pgtm -c config.toml debug verbose
-```
-
-Use it when you need more than the coarse cluster summary:
-
-- PostgreSQL role and readiness via `pginfo`
-- DCS trust and leader cache via `dcs`
-- background job activity via `process`
-- decision detail and planned action count via `ha`
-- recent history via `changes` and `timeline`
-
-If you want the raw stable payload, save the JSON form:
-
-```bash
-pgtm -c config.toml --json debug verbose > debug.json
-```
-
-## Step 5: Poll incrementally with `--since`
-
-The CLI preserves the debug endpoint's incremental history model:
-
-```bash
-seq=$(jq -r '.meta.sequence' debug.json)
-pgtm -c config.toml --json debug verbose --since "${seq}" > debug-since.json
-```
-
-Use these fields to manage your poller:
-
-- `meta.sequence`
-- `debug.last_sequence`
-- `debug.history_changes`
-- `debug.history_timeline`
-
-The current in-memory retention limit is `300` entries for `changes` and `timeline`, so incremental polling is the safest way to keep event history without missing rollovers.
-
-## Step 6: Watch role and authority, not only trust
-
-In the current debug payload:
-
-- `phase` is the local HA role label
-- `decision` is the compact authority projection string
-
-Useful signals to alert on include:
-
-- `phase=fail_safe(...)`
-- `phase=fenced(...)`
-- `phase=demoting_for_switchover(...)`
-- `decision=no_primary:...`
-
-`pgtm debug verbose` surfaces those values directly in human output and preserves the full payload in `debug.json` when you need to inspect the exact field values.
-
-## Step 7: Archive recent history during incidents
-
-When an incident starts, capture the raw verbose payload for later analysis:
+## Step 5: Archive the current node state during incidents
 
 ```bash
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-pgtm -c config.toml --json debug verbose > "/var/log/pgtuskmaster/debug-${stamp}.json"
+curl --fail --silent http://node-a:8080/state > "/var/log/pgtuskmaster/state-${stamp}.json"
 ```
 
-The retained `timeline` and `changes` sections are especially useful for reconstructing:
-
-- when trust degraded
-- when leadership changed
-- when recovery started
-- when fencing or fail-safe behavior appeared
+That file is the complete current observation surface for the node. There is no separate debug-history payload to capture anymore.

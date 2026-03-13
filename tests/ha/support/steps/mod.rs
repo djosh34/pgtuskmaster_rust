@@ -672,7 +672,10 @@ async fn insert_proof_row(world: &mut HaWorld, row_value: &str, member_ref: &str
         sql_quote_literal(row_value)
     );
     let harness = world.harness()?;
-    if let Err(err) = harness.sql().execute(target.dsn.as_str(), insert_sql.as_str()) {
+    if let Err(err) = harness
+        .sql()
+        .execute(target.dsn.as_str(), insert_sql.as_str())
+    {
         if !err.to_string().contains("does not exist") {
             return Err(err);
         }
@@ -1803,9 +1806,11 @@ async fn i_isolate_the_nodes_named_and_on_the_path(
     let member_a = resolve_member_reference(world, member_ref_a.as_str())?;
     let member_b = resolve_member_reference(world, member_ref_b.as_str())?;
     let path = parse_traffic_path(path_name.as_str())?;
-    world
-        .harness()?
-        .isolate_member_from_peer_on_path(member_a.as_str(), member_b.as_str(), path)?;
+    world.harness()?.isolate_member_from_peer_on_path(
+        member_a.as_str(),
+        member_b.as_str(),
+        path,
+    )?;
     if path == TrafficPath::Postgres {
         world.add_proof_convergence_blocker(member_a.as_str());
         world.add_proof_convergence_blocker(member_b.as_str());
@@ -1880,11 +1885,9 @@ async fn i_enable_the_blocker_on_the_node_named(
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     let blocker = parse_blocker_kind(blocker_name.as_str())?;
-    world.harness()?.set_blocker(
-        member_id.as_str(),
-        blocker,
-        true,
-    )?;
+    world
+        .harness()?
+        .set_blocker(member_id.as_str(), blocker, true)?;
     if blocker == BlockerKind::PgBasebackup {
         world.add_proof_convergence_blocker(member_id.as_str());
     }
@@ -1901,11 +1904,9 @@ async fn i_disable_the_blocker_on_the_node_named(
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     let blocker = parse_blocker_kind(blocker_name.as_str())?;
-    world.harness()?.set_blocker(
-        member_id.as_str(),
-        blocker,
-        false,
-    )?;
+    world
+        .harness()?
+        .set_blocker(member_id.as_str(), blocker, false)?;
     if blocker == BlockerKind::PgBasebackup {
         world.remove_proof_convergence_blocker(member_id.as_str());
     }

@@ -521,6 +521,7 @@ impl LogHandle {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn null() -> Self {
         Self {
             hostname: "unknown".to_string(),
@@ -658,6 +659,7 @@ impl TestSink {
         std::mem::take(&mut *locked)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn snapshot(&self) -> Result<Vec<LogRecord>, LogError> {
         let locked = self
             .records
@@ -666,6 +668,7 @@ impl TestSink {
         Ok(locked.clone())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn collect_matching(
         &self,
         matcher: impl Fn(&LogRecord) -> bool,

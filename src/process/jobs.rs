@@ -1,5 +1,6 @@
 use std::{future::Future, path::PathBuf, pin::Pin};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config::{resolve_secret_string, RoleAuthConfig, SecretSource};
@@ -64,7 +65,7 @@ pub(crate) struct StartPostgresSpec {
     pub(crate) timeout_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ShutdownMode {
     Fast,
     Immediate,
@@ -79,7 +80,7 @@ impl ShutdownMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ActiveJobKind {
     Bootstrap,
     BaseBackup,
@@ -89,7 +90,7 @@ pub(crate) enum ActiveJobKind {
     StartPostgres,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ActiveJob {
     pub(crate) id: JobId,
     pub(crate) kind: ActiveJobKind,
@@ -165,19 +166,7 @@ pub(crate) trait ProcessCommandRunner: Send {
     fn spawn(&mut self, spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError>;
 }
 
-#[cfg(test)]
-pub(crate) struct NoopCommandRunner;
-
-#[cfg(test)]
-impl ProcessCommandRunner for NoopCommandRunner {
-    fn spawn(&mut self, _spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError> {
-        Err(ProcessError::InvalidSpec(
-            "noop runner cannot spawn commands".to_string(),
-        ))
-    }
-}
-
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ProcessError {
     #[error("process worker operation failed")]
     OperationFailed,

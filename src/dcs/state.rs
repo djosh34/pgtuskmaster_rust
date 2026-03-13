@@ -4,12 +4,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::RuntimeConfig,
     logging::LogHandle,
     pginfo::state::{PgInfoState, Readiness},
     state::{
-        MemberId, StatePublisher, StateSubscriber, TimelineId, UnixMillis, Version, WalLsn,
-        WorkerStatus,
+        MemberId, StatePublisher, StateSubscriber, TimelineId, UnixMillis, WalLsn, WorkerStatus,
     },
 };
 
@@ -63,14 +61,12 @@ pub(crate) struct WalVector {
 pub(crate) struct UnknownPostgresObservation {
     pub(crate) readiness: Readiness,
     pub(crate) timeline: Option<TimelineId>,
-    pub(crate) pg_version: Version,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PrimaryObservation {
     pub(crate) readiness: Readiness,
     pub(crate) committed_wal: WalVector,
-    pub(crate) pg_version: Version,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +75,6 @@ pub(crate) struct ReplicaObservation {
     pub(crate) upstream: Option<MemberId>,
     pub(crate) replay_wal: Option<WalVector>,
     pub(crate) follow_wal: Option<WalVector>,
-    pub(crate) pg_version: Version,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,16 +108,15 @@ pub(crate) struct InitLockRecord {
     pub(crate) holder: MemberId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DcsCache {
     pub(crate) member_slots: BTreeMap<MemberId, MemberSlot>,
     pub(crate) leader_lease: Option<LeaderLeaseRecord>,
     pub(crate) switchover_intent: Option<SwitchoverIntentRecord>,
-    pub(crate) config: RuntimeConfig,
     pub(crate) init_lock: Option<InitLockRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DcsState {
     pub(crate) worker: WorkerStatus,
     pub(crate) trust: DcsTrust,
@@ -142,16 +136,12 @@ pub(crate) struct DcsWorkerCtx {
     pub(crate) store: Box<dyn DcsStore>,
     pub(crate) log: LogHandle,
     pub(crate) cache: DcsCache,
-    pub(crate) last_published_pg_version: Option<Version>,
+    pub(crate) member_ttl_ms: u64,
     pub(crate) last_emitted_store_healthy: Option<bool>,
     pub(crate) last_emitted_trust: Option<DcsTrust>,
 }
 
-pub(crate) fn evaluate_trust(
-    etcd_healthy: bool,
-    cache: &DcsCache,
-    self_id: &MemberId,
-) -> DcsTrust {
+pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &MemberId) -> DcsTrust {
     if !etcd_healthy {
         return DcsTrust::NotTrusted;
     }
@@ -182,7 +172,6 @@ pub(crate) fn build_local_member_slot(
     api_url: Option<&str>,
     lease_ttl_ms: u64,
     pg_state: &PgInfoState,
-    pg_version: Version,
 ) -> MemberSlot {
     let lease = MemberLease {
         owner: self_id.clone(),
@@ -205,7 +194,6 @@ pub(crate) fn build_local_member_slot(
             postgres: MemberPostgresView::Unknown(UnknownPostgresObservation {
                 readiness: common.readiness.clone(),
                 timeline: common.timeline,
-                pg_version,
             }),
         },
         PgInfoState::Primary {
@@ -219,7 +207,6 @@ pub(crate) fn build_local_member_slot(
                     timeline: common.timeline,
                     lsn: *wal_lsn,
                 },
-                pg_version,
             }),
         },
         PgInfoState::Replica {
@@ -241,7 +228,6 @@ pub(crate) fn build_local_member_slot(
                     timeline: common.timeline,
                     lsn,
                 }),
-                pg_version,
             }),
         },
     }

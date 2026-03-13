@@ -1,20 +1,16 @@
-use pgtuskmaster_rust::state::{new_state_channel, StateRecvError, UnixMillis, Version};
+use pgtuskmaster_rust::state::{new_state_channel, StateRecvError};
 
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_state_watch_channel_flow() -> Result<(), Box<dyn std::error::Error>> {
-    let (publisher, mut subscriber) = new_state_channel("starting".to_string(), UnixMillis(1));
+    let (publisher, mut subscriber) = new_state_channel("starting".to_string());
 
     let initial = subscriber.latest();
-    assert_eq!(initial.version, Version(0));
-    assert_eq!(initial.value, "starting");
+    assert_eq!(initial, "starting");
 
-    let next_version = publisher.publish("running".to_string(), UnixMillis(2))?;
-    assert_eq!(next_version, Version(1));
+    publisher.publish("running".to_string())?;
 
     let changed = subscriber.changed().await?;
-    assert_eq!(changed.version, Version(1));
-    assert_eq!(changed.updated_at, UnixMillis(2));
-    assert_eq!(changed.value, "running");
+    assert_eq!(changed, "running");
 
     drop(publisher);
     let closed = subscriber.changed().await;

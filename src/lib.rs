@@ -10,7 +10,6 @@ pub mod api;
 pub mod cli;
 pub mod config;
 pub mod dcs;
-pub(crate) mod debug_api;
 pub(crate) mod ha;
 pub(crate) mod logging;
 pub mod pginfo;

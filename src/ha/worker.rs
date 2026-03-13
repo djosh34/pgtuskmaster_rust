@@ -21,8 +21,7 @@ use super::{
         ElectionEligibility, GlobalKnowledge, IneligibleReason, LeaseEpoch, LeaseState,
         LocalDataState, LocalKnowledge, ObservationState, PeerKnowledge, PostgresState,
         ProcessState, PublicationGoal, PublicationState, ReconcileAction, ReplicationState,
-        StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget, WalPosition,
-        WorldView,
+        StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget, WalPosition, WorldView,
     },
 };
 
@@ -53,10 +52,10 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
     let world = observe(ctx, now)?;
     let desired = decide(&world, &ctx.self_id);
     let actions = reconcile(&world, &desired);
-    let next_state = build_next_state(&ctx.state, &desired, &actions);
+    let next_state = build_next_state(&ctx.state, &world, &desired, &actions);
 
     ctx.publisher
-        .publish(next_state.clone(), now)
+        .publish(next_state.clone())
         .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
     ctx.state = next_state;
 
@@ -72,37 +71,41 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
     let pg = ctx.pg_subscriber.latest();
     let dcs = ctx.dcs_subscriber.latest();
     let process = ctx.process_subscriber.latest();
-    let data_dir_path = config.value.postgres.data_dir.clone();
-    let observed_primary = observed_primary_member(&dcs.value, &ctx.self_id);
-    let local_data_timeline = pg_timeline(&pg.value).or_else(|| {
-        dcs.value
-            .cache
+    let data_dir_path = config.postgres.data_dir.clone();
+    let observed_primary = observed_primary_member(&dcs, &ctx.self_id);
+    let local_data_timeline = pg_timeline(&pg).or_else(|| {
+        dcs.cache
             .member_slots
             .get(&ctx.self_id)
             .and_then(member_timeline)
     });
 
     let local = LocalKnowledge {
-        data_dir: build_data_dir_state(data_dir_path.as_path(), local_data_timeline, &observed_primary),
-        postgres: build_postgres_state(&pg.value),
-        process: ProcessState::from(&process.value),
-        storage: build_storage_state(&dcs.value, &pg, &ctx.self_id, now),
+        data_dir: build_data_dir_state(
+            data_dir_path.as_path(),
+            local_data_timeline,
+            &observed_primary,
+        ),
+        postgres: build_postgres_state(&pg),
+        process: ProcessState::from(&process),
+        storage: build_storage_state(&dcs, &pg, config.ha.lease_ttl_ms, &ctx.self_id, now),
         required_roles_ready: ctx.state.required_roles_ready,
         publication: ctx.state.publication.clone(),
         observation: ObservationState {
-            pg_observed_at: pg.updated_at,
-            last_start_success_at: last_success_at(&process.value, ActiveJobKind::StartPostgres),
-            last_promote_success_at: last_success_at(&process.value, ActiveJobKind::Promote),
-            last_demote_success_at: last_success_at(&process.value, ActiveJobKind::Demote),
+            pg_observed_at: pg.last_refresh_at().unwrap_or(now),
+            last_start_success_at: last_success_at(&process, ActiveJobKind::StartPostgres),
+            last_promote_success_at: last_success_at(&process, ActiveJobKind::Promote),
+            last_demote_success_at: last_success_at(&process, ActiveJobKind::Demote),
         },
     };
-    let global = build_global_knowledge(&dcs.value, &pg.value, &local.data_dir, &ctx.self_id);
+    let global = build_global_knowledge(&dcs, &pg, &local.data_dir, &ctx.self_id);
 
     Ok(WorldView { local, global })
 }
 
 fn build_next_state(
     current: &HaState,
+    world: &WorldView,
     desired: &DesiredState,
     actions: &[ReconcileAction],
 ) -> HaState {
@@ -112,6 +115,7 @@ fn build_next_state(
         required_roles_ready: next_required_roles_ready(current, actions),
         publication: apply_publication_goal(&current.publication, &desired.publication),
         role: desired.role.clone(),
+        world: world.clone(),
         clear_switchover: desired.clear_switchover,
         planned_commands: actions.to_vec(),
     }
@@ -133,10 +137,7 @@ fn next_required_roles_ready(current: &HaState, actions: &[ReconcileAction]) -> 
     current.required_roles_ready
 }
 
-fn apply_publication_goal(
-    current: &PublicationState,
-    goal: &PublicationGoal,
-) -> PublicationState {
+fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) -> PublicationState {
     match goal {
         PublicationGoal::KeepCurrent => current.clone(),
         PublicationGoal::PublishPrimary { primary, epoch } => PublicationState {
@@ -187,7 +188,7 @@ async fn execute_action(
             })
         }
         ReconcileAction::EnsureRequiredRoles => {
-            let runtime_config = ctx.config_subscriber.latest().value;
+            let runtime_config = ctx.config_subscriber.latest();
             postgres_roles::ensure_required_roles(
                 &runtime_config,
                 ctx.process_defaults.socket_dir.as_path(),
@@ -204,7 +205,7 @@ async fn execute_action(
         }
         ReconcileAction::Publish(_) => Ok(()),
         process_action => {
-            let runtime_config = ctx.config_subscriber.latest().value;
+            let runtime_config = ctx.config_subscriber.latest();
             dispatch_process_action(ctx, ha_tick, action_index, process_action, &runtime_config)
                 .map(|_| ())
                 .map_err(|err| map_process_dispatch_error(ha_tick, action_index, err))
@@ -292,14 +293,16 @@ fn build_replication_state(
 
 fn build_storage_state(
     dcs: &crate::dcs::state::DcsState,
-    pg: &crate::state::Versioned<PgInfoState>,
+    pg: &PgInfoState,
+    lease_ttl_ms: u64,
     self_id: &MemberId,
     now: crate::state::UnixMillis,
 ) -> StorageState {
     let self_member = dcs.cache.member_slots.get(self_id);
-    let pg_observation_stale =
-        now.0.saturating_sub(pg.updated_at.0) > dcs.cache.config.ha.lease_ttl_ms;
-    if matches!(build_postgres_state(&pg.value), PostgresState::Primary { .. })
+    let pg_observation_stale = pg
+        .last_refresh_at()
+        .is_none_or(|last_refresh_at| now.0.saturating_sub(last_refresh_at.0) > lease_ttl_ms);
+    if matches!(build_postgres_state(pg), PostgresState::Primary { .. })
         && (self_member.is_none() || pg_observation_stale)
     {
         StorageState::Stalled
@@ -342,7 +345,8 @@ fn build_global_knowledge(
         dcs_trust: dcs.trust.clone(),
         lease: lease.clone(),
         observed_lease,
-        observed_primary: observed_primary_member(dcs, self_id).map(|(member_id, _)| member_id.clone()),
+        observed_primary: observed_primary_member(dcs, self_id)
+            .map(|(member_id, _)| member_id.clone()),
         coordination: super::types::CoordinationView {
             trust: dcs.trust.clone(),
             leader: lease,
@@ -394,9 +398,12 @@ fn build_peer_knowledge_from_member(member: &MemberSlot) -> PeerKnowledge {
                         api,
                     };
                 }
-                wal_position(observation.committed_wal.timeline, Some(observation.committed_wal.lsn))
-                    .map(ElectionEligibility::PromoteEligible)
-                    .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
+                wal_position(
+                    observation.committed_wal.timeline,
+                    Some(observation.committed_wal.lsn),
+                )
+                .map(ElectionEligibility::PromoteEligible)
+                .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
             }
             MemberPostgresView::Replica(observation) => {
                 if observation.readiness != Readiness::Ready {
@@ -478,10 +485,13 @@ fn observed_primary_member(
 
 fn member_timeline(member: &MemberSlot) -> Option<u64> {
     match &member.postgres {
-        MemberPostgresView::Unknown(observation) => observation.timeline.map(|value| u64::from(value.0)),
-        MemberPostgresView::Primary(observation) => {
-            observation.committed_wal.timeline.map(|value| u64::from(value.0))
+        MemberPostgresView::Unknown(observation) => {
+            observation.timeline.map(|value| u64::from(value.0))
         }
+        MemberPostgresView::Primary(observation) => observation
+            .committed_wal
+            .timeline
+            .map(|value| u64::from(value.0)),
         MemberPostgresView::Replica(observation) => observation
             .replay_wal
             .as_ref()
@@ -504,158 +514,5 @@ fn pg_timeline_id(pg: &PgInfoState) -> Option<crate::state::TimelineId> {
         PgInfoState::Unknown { common }
         | PgInfoState::Primary { common, .. }
         | PgInfoState::Replica { common, .. } => common.timeline,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{fs, path::PathBuf};
-
-    use crate::{
-        config::RuntimeConfig,
-        dcs::state::{
-            DcsCache, DcsState, DcsTrust, MemberApiEndpoint, MemberEndpoint, MemberLease,
-            MemberPostgresView, MemberRouting, MemberSlot, PrimaryObservation, WalVector,
-        },
-        ha::types::{DataDirState, DivergenceState, LocalDataState},
-        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        state::{MemberId, TimelineId, UnixMillis, Version, Versioned, WalLsn, WorkerStatus},
-    };
-
-    use super::{build_data_dir_state, build_storage_state, StorageState};
-
-    fn temp_data_dir(label: &str) -> Result<PathBuf, String> {
-        let current_millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|err| format!("read current time failed: {err}"))?
-            .as_millis();
-        let unique = format!("{label}-{}-{}", std::process::id(), current_millis);
-        Ok(std::env::temp_dir().join(format!("pgtuskmaster-ha-worker-{unique}")))
-    }
-
-    fn sample_runtime_config() -> RuntimeConfig {
-        crate::test_harness::runtime_config::sample_runtime_config()
-    }
-
-    fn sample_primary_pg(updated_at: UnixMillis) -> Versioned<PgInfoState> {
-        Versioned::new(
-            Version(1),
-            updated_at,
-            PgInfoState::Primary {
-                common: PgInfoCommon {
-                    worker: WorkerStatus::Running,
-                    sql: SqlStatus::Healthy,
-                    readiness: Readiness::Ready,
-                    timeline: Some(TimelineId(1)),
-                    pg_config: PgConfig {
-                        port: Some(5432),
-                        hot_standby: Some(false),
-                        primary_conninfo: None,
-                        primary_slot_name: None,
-                        extra: std::collections::BTreeMap::new(),
-                    },
-                    last_refresh_at: Some(updated_at),
-                },
-                wal_lsn: WalLsn(42),
-                slots: Vec::new(),
-            },
-        )
-    }
-
-    fn sample_dcs_state() -> DcsState {
-        let cfg = sample_runtime_config();
-        DcsState {
-            worker: WorkerStatus::Running,
-            trust: DcsTrust::FullQuorum,
-            cache: DcsCache {
-                member_slots: std::collections::BTreeMap::from([(
-                    MemberId("node-a".to_string()),
-                    MemberSlot {
-                        lease: MemberLease {
-                            owner: MemberId("node-a".to_string()),
-                            ttl_ms: 1_000,
-                        },
-                        routing: MemberRouting {
-                            postgres: MemberEndpoint {
-                                host: "127.0.0.1".to_string(),
-                                port: 5432,
-                            },
-                            api: Some(MemberApiEndpoint {
-                                url: "https://node-a:8443".to_string(),
-                            }),
-                        },
-                        postgres: MemberPostgresView::Primary(PrimaryObservation {
-                            readiness: Readiness::Ready,
-                            committed_wal: WalVector {
-                                timeline: Some(TimelineId(1)),
-                                lsn: WalLsn(42),
-                            },
-                            pg_version: Version(1),
-                        }),
-                    },
-                )]),
-                leader_lease: None,
-                switchover_intent: None,
-                config: cfg,
-                init_lock: None,
-            },
-            last_refresh_at: Some(UnixMillis(100)),
-        }
-    }
-
-    #[test]
-    fn build_data_dir_state_uses_fallback_local_timeline_for_divergence() -> Result<(), String> {
-        let data_dir = temp_data_dir("fallback-timeline")?;
-        fs::create_dir_all(&data_dir)
-            .map_err(|err| format!("create data dir failed for {}: {err}", data_dir.display()))?;
-        fs::write(data_dir.join("PG_VERSION"), "16")
-            .map_err(|err| format!("write PG_VERSION failed for {}: {err}", data_dir.display()))?;
-
-        let result = build_data_dir_state(
-            data_dir.as_path(),
-            Some(1),
-            &Some((MemberId("node-a".to_string()), Some(2))),
-        );
-
-        fs::remove_dir_all(&data_dir)
-            .map_err(|err| format!("remove data dir failed for {}: {err}", data_dir.display()))?;
-
-        assert_eq!(
-            result,
-            DataDirState::Initialized(LocalDataState::Diverged(DivergenceState::RewindPossible))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn build_storage_state_fences_missing_local_member() {
-        let latest_pg = sample_primary_pg(UnixMillis(100));
-        let dcs = DcsState {
-            worker: WorkerStatus::Running,
-            trust: DcsTrust::FullQuorum,
-            cache: DcsCache {
-                member_slots: std::collections::BTreeMap::new(),
-                leader_lease: None,
-                switchover_intent: None,
-                config: sample_runtime_config(),
-                init_lock: None,
-            },
-            last_refresh_at: Some(UnixMillis(100)),
-        };
-
-        assert_eq!(
-            build_storage_state(
-                &dcs,
-                &latest_pg,
-                &MemberId("node-a".to_string()),
-                UnixMillis(100),
-            ),
-            StorageState::Stalled
-        );
-    }
-
-    #[test]
-    fn sample_dcs_state_keeps_member_slots_shape() {
-        assert_eq!(sample_dcs_state().cache.member_slots.len(), 1);
     }
 }

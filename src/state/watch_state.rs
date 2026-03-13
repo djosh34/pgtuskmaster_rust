@@ -1,13 +1,10 @@
 use tokio::sync::watch;
 
-use super::{
-    errors::{StatePublishError, StateRecvError},
-    time::{UnixMillis, Version, Versioned},
-};
+use super::errors::StateRecvError;
 
 #[derive(Debug)]
 pub struct StatePublisher<T: Clone> {
-    tx: watch::Sender<Versioned<T>>,
+    tx: watch::Sender<T>,
 }
 
 impl<T: Clone> Clone for StatePublisher<T> {
@@ -20,7 +17,7 @@ impl<T: Clone> Clone for StatePublisher<T> {
 
 #[derive(Debug)]
 pub struct StateSubscriber<T: Clone> {
-    rx: watch::Receiver<Versioned<T>>,
+    rx: watch::Receiver<T>,
 }
 
 impl<T: Clone> Clone for StateSubscriber<T> {
@@ -31,43 +28,29 @@ impl<T: Clone> Clone for StateSubscriber<T> {
     }
 }
 
-pub fn new_state_channel<T: Clone>(
-    initial: T,
-    now: UnixMillis,
-) -> (StatePublisher<T>, StateSubscriber<T>) {
-    let initial_snapshot = Versioned::new(Version(0), now, initial);
-    let (tx, rx) = watch::channel(initial_snapshot);
+pub fn new_state_channel<T: Clone>(initial: T) -> (StatePublisher<T>, StateSubscriber<T>) {
+    let (tx, rx) = watch::channel(initial);
     (StatePublisher { tx }, StateSubscriber { rx })
 }
 
 impl<T: Clone> StatePublisher<T> {
-    pub fn publish(&self, next: T, now: UnixMillis) -> Result<Version, StatePublishError> {
-        let current = self.tx.borrow().version;
-        // Checked increment preserves strict +1 semantics and reports overflow explicitly.
-        let next_version = Version(
-            current
-                .0
-                .checked_add(1)
-                .ok_or(StatePublishError::VersionOverflow)?,
-        );
-        let updated = Versioned::new(next_version, now, next);
+    pub fn publish(&self, next: T) -> Result<(), StateRecvError> {
         self.tx
-            .send(updated)
-            .map_err(|_| StatePublishError::ChannelClosed)?;
-        Ok(next_version)
+            .send(next)
+            .map_err(|_| StateRecvError::ChannelClosed)
     }
 
-    pub fn latest(&self) -> Versioned<T> {
+    pub fn latest(&self) -> T {
         self.tx.borrow().clone()
     }
 }
 
 impl<T: Clone> StateSubscriber<T> {
-    pub fn latest(&self) -> Versioned<T> {
+    pub fn latest(&self) -> T {
         self.rx.borrow().clone()
     }
 
-    pub async fn changed(&mut self) -> Result<Versioned<T>, StateRecvError> {
+    pub async fn changed(&mut self) -> Result<T, StateRecvError> {
         self.rx
             .changed()
             .await
@@ -81,50 +64,39 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]
-    async fn initial_snapshot_has_expected_version_and_time() {
-        let (_publisher, subscriber) = new_state_channel("booting".to_string(), UnixMillis(123));
+    async fn initial_snapshot_matches_input() {
+        let (_publisher, subscriber) = new_state_channel("booting".to_string());
         let latest = subscriber.latest();
-        assert_eq!(latest.version, Version(0));
-        assert_eq!(latest.updated_at, UnixMillis(123));
-        assert_eq!(latest.value, "booting");
+        assert_eq!(latest, "booting");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn publish_increments_version_and_updates_timestamp(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let (publisher, subscriber) = new_state_channel("a".to_string(), UnixMillis(100));
+    async fn publish_replaces_value() -> Result<(), Box<dyn std::error::Error>> {
+        let (publisher, subscriber) = new_state_channel("a".to_string());
 
-        let v1 = publisher.publish("b".to_string(), UnixMillis(200))?;
-        assert_eq!(v1, Version(1));
+        publisher.publish("b".to_string())?;
         let latest = subscriber.latest();
-        assert_eq!(latest.version, Version(1));
-        assert_eq!(latest.updated_at, UnixMillis(200));
-        assert_eq!(latest.value, "b");
+        assert_eq!(latest, "b");
 
-        let second_version = publisher.publish("c".to_string(), UnixMillis(300))?;
-        assert_eq!(second_version, Version(2));
+        publisher.publish("c".to_string())?;
         let latest = subscriber.latest();
-        assert_eq!(latest.version, Version(2));
-        assert_eq!(latest.updated_at, UnixMillis(300));
-        assert_eq!(latest.value, "c");
+        assert_eq!(latest, "c");
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn changed_returns_latest_after_publish() -> Result<(), Box<dyn std::error::Error>> {
-        let (publisher, mut subscriber) = new_state_channel("ready".to_string(), UnixMillis(10));
-        publisher.publish("running".to_string(), UnixMillis(20))?;
+        let (publisher, mut subscriber) = new_state_channel("ready".to_string());
+        publisher.publish("running".to_string())?;
 
         let changed = subscriber.changed().await?;
-        assert_eq!(changed.version, Version(1));
-        assert_eq!(changed.updated_at, UnixMillis(20));
-        assert_eq!(changed.value, "running");
+        assert_eq!(changed, "running");
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn changed_propagates_closed_channel_error() {
-        let (publisher, mut subscriber) = new_state_channel("ready".to_string(), UnixMillis(10));
+        let (publisher, mut subscriber) = new_state_channel("ready".to_string());
         drop(publisher);
 
         let changed = subscriber.changed().await;
@@ -134,8 +106,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn latest_matches_between_publisher_and_subscriber(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (publisher, subscriber) = new_state_channel("ready".to_string(), UnixMillis(10));
-        publisher.publish("running".to_string(), UnixMillis(20))?;
+        let (publisher, subscriber) = new_state_channel("ready".to_string());
+        publisher.publish("running".to_string())?;
 
         assert_eq!(publisher.latest(), subscriber.latest());
         Ok(())
