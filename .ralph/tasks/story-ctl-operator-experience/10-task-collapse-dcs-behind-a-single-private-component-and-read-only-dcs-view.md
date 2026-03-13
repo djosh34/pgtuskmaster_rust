@@ -33,6 +33,34 @@
   - HA-domain types in `src/ha/types.rs` such as `LeaseEpoch`, `LeaseState`, and `SwitchoverRequest`
   Some duplication between storage and domain can be legitimate, but the current code leaks storage types outward and then rebuilds overlapping higher-level meaning elsewhere.
 - `src/runtime/node.rs` contains dead disabled legacy test code under `#[cfg(all(test, any()))]` with old DCS type names and shapes. That dead code should be removed during this cleanup instead of left around as archaeological noise.
+- `src/dcs/etcd_store.rs` does use the real `etcd-client` crate directly, but it currently wraps that library in a large amount of extra machinery:
+  - a dedicated OS thread for the store worker
+  - a second dedicated keepalive thread for leader lease maintenance
+  - an `Arc<AtomicBool>` health flag
+  - an `Arc<Mutex<VecDeque<WatchEvent>>>` event queue
+  - command channels and per-request response channels to emulate a synchronous store trait over an async etcd client
+  This task must not assume all of that machinery is inherently necessary just because it exists today.
+
+**Explicit simplification requirement, not optional cleanup:**
+- This task must aggressively reduce DCS complexity, not merely move the same complexity behind a private wall.
+- The implementer must actively challenge whether each of the following is still needed in the final design:
+  - private store traits that only exist to emulate raw KV access
+  - dedicated OS threads for DCS worker and lease keepalive when a simpler async task model would work
+  - `Arc`, `Mutex`, `AtomicBool`, and queued watch-event plumbing used only because the current design splits ownership awkwardly
+  - path-string CRUD command wrappers that exist only to preserve the old store API
+  - duplicate snapshot + event-drain + cache-refresh plumbing that can be collapsed once DCS is a single owner
+- The desired outcome is less code, fewer moving parts, fewer synchronization primitives, and fewer representations of the same facts.
+- If some internal cache or channel remains necessary after the refactor, that is acceptable only when it has a clear architectural reason and a much smaller footprint than today.
+
+**Explicit guidance on the internal cache question:**
+- The task must reconsider why DCS has an internal cache at all and document the final answer in code structure.
+- A small internal cache/read model is acceptable if it is the single DCS-owned source for publishing the latest `DcsView` to HA/API/CLI consumers and for handling watch-driven updates coherently.
+- What is not acceptable is the current combination of:
+  - one internal cache shape leaked outside DCS
+  - separate watch event queues
+  - separate direct RPC success health semantics
+  - multiple external store clients doing their own reads/writes around that cache
+- The final design should prefer one coherent internal read model if a cache is still needed, or remove internal layers entirely if they are not justified. The task must not preserve the current cache/event/store layering out of inertia.
 
 **Required architectural target:**
 - DCS becomes a real component with:
@@ -168,6 +196,14 @@ The exact final file names may differ, but the privacy outcome is required. If i
 - CLI owns:
   - consuming the public `NodeState` / `DcsView` surface only
 
+**Explicit implementation-quality expectations for the DCS rewrite:**
+- Prefer one async DCS component/task model over thread-plus-sync-bridge machinery unless the code can justify a specific exception.
+- Prefer direct typed command handling over generic raw store command enums carrying path strings.
+- Prefer one internal source of truth for the current DCS view rather than separate mutable event buffers and later cache replay layers.
+- Prefer removing synchronization primitives entirely where ownership can make them unnecessary.
+- If `Arc`, `Mutex`, atomics, extra channels, or extra worker threads remain in the final DCS implementation, they must exist for a clear reason tied to the final single-owner architecture, not as leftovers from the current multi-client bridge design.
+- The refactor should measurably reduce DCS code size and conceptual surface area. Do not accept a result that merely privatizes the current complexity without shrinking it.
+
 **Important behavior note to preserve while simplifying architecture:**
 - The current HA loop releases leader lease for more than switchovers. Research showed release is currently requested in `src/ha/reconcile.rs` not only during switchover demotion but also when the node is fenced or has already demoted/offlined after detecting foreign leadership or storage-stall fencing. The intent is to withdraw authority immediately instead of waiting only for TTL expiry. That behavioral intent may still be valid, but the actual release operation must become a DCS-owned internal action triggered by one explicit DCS command from the local node, not a direct external store call and never a foreign-node raw key delete.
 
@@ -201,16 +237,19 @@ The exact final file names may differ, but the privacy outcome is required. If i
   - Keep etcd-specific code private to DCS.
   - Ensure the one etcd client / watch owner lives only here, behind DCS.
   - Remove any assumptions needed only because HA/API held separate stores.
+  - Simplify the current thread/channel/queue/atomic structure aggressively; do not preserve it by default.
 - `src/dcs/state.rs`
   - Split internal cache/storage/worker state from public read-only state.
   - Introduce or move the public read-only `DcsView` here or in a dedicated `view.rs`.
   - Make internal cache structures and internal records private or crate-private.
   - Rename leaked persisted/internal types to `*Record` where clarity is needed.
+  - Minimize the number of state representations; do not keep parallel shapes unless they are materially different boundary models.
 - `src/dcs/worker.rs`
   - Turn this into the single owner of DCS mutation side effects.
   - Consume typed DCS commands from HA/API/startup instead of assuming all writes originate locally in raw store callers.
   - Remove foreign raw `/leader` deletion behavior. Leader-key changes must follow the DCS-owned lease semantics, not cache-based foreign cleanup.
   - Re-evaluate whether stale leader cleanup should become lease-expiry-driven only, locally owned release only, or some stricter DCS-owned reconciliation rule.
+  - Re-evaluate whether the current watch-event draining and refresh layering should exist at all in the final structure.
 - `src/runtime/node.rs`
   - Replace the three-store wiring with one DCS component instance total.
   - HA and API should receive DCS command handles plus a subscriber/read-only view, not separate etcd stores.
@@ -269,6 +308,7 @@ The exact final file names may differ, but the privacy outcome is required. If i
 - `NodeState` still exposes DCS state, but only through one read-only typed `DcsView`.
 - The `/leader` key cannot be deleted by arbitrary non-owner code paths outside the DCS-owned boundary.
 - The repo is easier to reason about because DCS has one owner, one command surface, one read model, and much less leaked storage detail.
+- The DCS implementation itself is substantially smaller and simpler than before, with unnecessary `Arc`/`Mutex`/thread/channel/store-bridge machinery removed rather than merely hidden.
 
 </description>
 
@@ -279,6 +319,8 @@ The exact final file names may differ, but the privacy outcome is required. If i
 - [ ] `src/dcs/store.rs` low-level raw path-based mutation APIs are no longer part of the external DCS boundary
 - [ ] `src/dcs/etcd_store.rs` remains an internal adapter and is not used directly by HA, API, CLI, or other non-DCS modules
 - [ ] `src/dcs/state.rs` and/or a new DCS view module define one public read-only typed `DcsView` surface while keeping internal cache/storage/worker types private or crate-private
+- [ ] The final DCS implementation explicitly simplifies the current concurrency and plumbing model instead of preserving it wholesale behind a private boundary
+- [ ] Any remaining internal cache, channels, worker threads, `Arc`, `Mutex`, or atomics in DCS are justified by the final single-owner architecture and are materially fewer/smaller than today
 - [ ] `src/api/mod.rs` `NodeState` keeps a `dcs` field, but that field contains the public read-only DCS view type rather than leaked internal DCS worker/cache state
 - [ ] `src/ha/state.rs` no longer holds `Box<dyn DcsLeaderStore>`; HA uses a DCS command handle instead
 - [ ] `src/api/worker.rs` no longer holds `Box<dyn DcsStore>`; API uses DCS command handle(s) instead
