@@ -1,6 +1,18 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 13 08:27:05 PM CET 2026
+Generated: Fri Mar 13 08:36:11 PM CET 2026
+
+# Task `.ralph/tasks/story-ctl-operator-experience/07-task-replace-hand-rolled-api-server-with-axum-axum-server-and-tower.md`
+
+```
+## Task: Replace The Hand-Rolled API Server With `axum` + `axum-server` + `tower` <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
 
 # Task `.ralph/tasks/story-ctl-operator-experience/08-task-refactor-ha-acceptance-suite-around-node-state-invariants.md`
 
