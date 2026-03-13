@@ -1,6 +1,17 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 13 03:40:56 PM CET 2026
+Generated: Fri Mar 13 03:55:55 PM CET 2026
+
+# Task `.ralph/tasks/bugs/detached-standby-does-not-reattach-to-leader.md`
+
+```
+## Bug: Detached standby does not reattach to leader after HA discovers one <status>not_started</status> <passes>false</passes>
+
+<description>
+The active HA loop starts an initialized offline node in detached standby mode when it is idle and awaiting a leader, but it does not appear to convert that running detached standby into a leader-following replica later.
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/ha-compose-should-self-bootstrap-with-plain-docker-compose-up.md`
 
@@ -10,6 +21,17 @@ Generated: Fri Mar 13 03:40:56 PM CET 2026
 <description>
 The HA docker assets under `tests/ha/givens/three_node_plain/compose.yml` do not currently behave like a self-contained docker-compose environment. A plain `docker compose up` for all services caused the three node containers to start before the seed-primary bootstrap sequence had been established, and each node exited early with DCS startup errors. The stack only became usable when it was started in the same staged order as the Rust HA harness:
 - start `etcd`
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/ha-detached-standby-does-not-transition-to-leader-following-replica.md`
+
+```
+## Bug: Detached standby does not transition to leader-following replica after leader appears <status>not_started</status> <passes>false</passes>
+
+<description>
+The HA loop appears unable to distinguish an in-recovery node that is already following a leader from an in-recovery node that is detached and has no authoritative upstream. That likely prevents a node started in readonly detached-standby mode without leader conninfo from later reconfiguring itself into a leader-following replica after another member becomes leader.
 ```
 
 ==============
