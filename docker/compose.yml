@@ -31,6 +31,9 @@ services:
       - etcd-data:/etcd-data
 
   node-a:
+    extends:
+      file: ./docker-compose.node.yml
+      service: node
     ports:
       - "18081:8443"
       - "15001:5432"
@@ -47,6 +50,9 @@ services:
 
 
   node-b:
+    extends:
+      file: ./docker-compose.node.yml
+      service: node
     ports:
       - "18082:8443"
       - "15002:5432"
@@ -62,6 +68,9 @@ services:
       - node-b-data:/var/lib/postgresql
 
   node-c:
+    extends:
+      file: ./docker-compose.node.yml
+      service: node
     ports:
       - "18083:8443"
       - "15003:5432"
