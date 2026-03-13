@@ -1,6 +1,17 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 13 09:19:58 PM CET 2026
+Generated: Fri Mar 13 09:47:09 PM CET 2026
+
+# Task `.ralph/tasks/story-config-simplification/01-task-rewrite-config-around-typed-toml-serde-and-remove-the-hand-rolled-parser.md`
+
+```
+## Task: Rewrite Config Around Typed TOML + `serde` And Remove The Hand-Rolled Parser <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+<blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/`</blocked_by>
+```
+
+==============
 
 # Task `.ralph/tasks/story-ctl-operator-experience/07-task-refactor-ha-acceptance-suite-around-node-state-invariants.md`
 
