@@ -1,6 +1,4 @@
-## Task: Add A Three-ETCD HA Given And Design Real DCS-Majority Features <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
+## Task: Add A Three-ETCD HA Given And Design Real DCS-Majority Features <status>not_started</status> <passes>false</passes> <priority>low</priority>
 
 <description>
 **Goal:** Add a new HA compose given that uses a real three-member `etcd` cluster instead of the current single-`etcd` shortcut, and design the HA feature families that are only valid when DCS majority semantics are real. In this new topology, each `pgtuskmaster` node must talk only to its own colocated `etcd` member, not to a shared list of all `etcd` endpoints. The observer configs for node-specific observations must mirror that same locality so that observing `node-a` means observing the DCS view that `node-a` itself has through its own `etcd`.

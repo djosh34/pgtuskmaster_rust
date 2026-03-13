@@ -1,6 +1,6 @@
 ## Task: Rewrite Config Around Typed TOML + `serde` And Remove The Hand-Rolled Parser <status>not_started</status> <passes>false</passes>
 
-<priority>high</priority>
+<priority>medium</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/`</blocked_by>
 
 <description>
