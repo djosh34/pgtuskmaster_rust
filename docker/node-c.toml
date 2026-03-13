@@ -72,7 +72,7 @@ listen_addr = "0.0.0.0:8443"
 security = { tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/certs/node-c/tls.crt" }, private_key = { path = "/etc/pgtuskmaster/certs/node-c/tls.key" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/certs/ca.crt" }, require_client_cert = true } }, auth = { type = "role_tokens", read_token = { path = "/etc/pgtuskmaster/secrets/api-read-token" }, admin_token = { path = "/etc/pgtuskmaster/secrets/api-admin-token" } } }
 
 [pgtm]
-api_url = "https://127.0.0.1:8443"
+api_url = "https://node-c:8443"
 
 [pgtm.api_client]
 ca_cert = { path = "/etc/pgtuskmaster/certs/ca.crt" }
