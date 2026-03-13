@@ -57,20 +57,6 @@ impl PortReservation {
         Ok(())
     }
 
-    pub fn take_listener(&mut self, port: u16) -> Result<TcpListener, HarnessError> {
-        let index = self
-            .ports
-            .iter()
-            .position(|candidate| *candidate == port)
-            .ok_or_else(|| {
-                HarnessError::InvalidInput(format!(
-                    "attempted to take listener for unknown reserved port: {port}"
-                ))
-            })?;
-        self.ports.remove(index);
-        Ok(self.listeners.remove(index))
-    }
-
     pub fn len(&self) -> usize {
         self.listeners.len()
     }

@@ -1,6 +1,13 @@
 use std::{collections::BTreeMap, path::Path};
 
-use serde::{Deserialize, Serialize};
+use pgtuskmaster_rust::{
+    api::NodeState,
+    dcs::state::{DcsTrust, MemberPostgresView},
+    ha::types::AuthorityView,
+};
+use serde::de::DeserializeOwned;
+
+pub use pgtuskmaster_rust::cli::connect::{ConnectionTarget, ConnectionView};
 
 use crate::support::{
     docker::cli::DockerCli,
@@ -9,49 +16,12 @@ use crate::support::{
 
 const PGTM_BIN: &str = "/usr/local/bin/pgtm";
 
+pub type ClusterStatusView = NodeState;
+
 #[derive(Clone, Debug)]
 pub struct PgtmObserver {
     docker: DockerCli,
     observer_container: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ClusterStatusView {
-    pub queried_via: QueryOrigin,
-    pub sampled_member_count: usize,
-    pub discovered_member_count: usize,
-    pub warnings: Vec<ClusterWarning>,
-    pub nodes: Vec<ClusterNodeView>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct QueryOrigin {
-    pub member_id: String,
-    pub api_url: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ClusterWarning {
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ClusterNodeView {
-    pub member_id: String,
-    pub sampled: bool,
-    pub role: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ConnectionView {
-    pub targets: Vec<ConnectionTarget>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ConnectionTarget {
-    pub member_id: String,
-    pub dsn: String,
 }
 
 impl PgtmObserver {
@@ -62,7 +32,7 @@ impl PgtmObserver {
         }
     }
 
-    pub fn status(&self) -> Result<ClusterStatusView> {
+    pub fn state(&self) -> Result<ClusterStatusView> {
         let (statuses, errors) = self.collect_from_configs(|config| {
             let output = self.run(config, &["status", "--json"])?;
             parse_json(
@@ -76,31 +46,12 @@ impl PgtmObserver {
             .ok_or_else(|| aggregate_seed_failure("pgtm status", &errors))
     }
 
-    pub fn status_via_member(&self, member_id: &str) -> Result<ClusterStatusView> {
+    pub fn state_via_member(&self, member_id: &str) -> Result<ClusterStatusView> {
         let config = config_path(member_id)?;
         let output = self.run(config, &["status", "--json"])?;
         parse_json(
             output.as_str(),
             format!("pgtm status via {}", config.display()),
-        )
-    }
-
-    pub fn debug_verbose(&self) -> Result<serde_json::Value> {
-        self.try_configs(|config| {
-            let output = self.run(config, &["debug", "verbose", "--json"])?;
-            parse_json(
-                output.as_str(),
-                format!("pgtm debug verbose via {}", config.display()),
-            )
-        })
-    }
-
-    pub fn debug_verbose_via_member(&self, member_id: &str) -> Result<serde_json::Value> {
-        let config = config_path(member_id)?;
-        let output = self.run(config, &["debug", "verbose", "--json"])?;
-        parse_json(
-            output.as_str(),
-            format!("pgtm debug verbose via {}", config.display()),
         )
     }
 
@@ -172,17 +123,6 @@ impl PgtmObserver {
         )
     }
 
-    fn try_configs<T, F>(&self, attempt: F) -> Result<T>
-    where
-        F: FnMut(&Path) -> Result<T>,
-    {
-        let (values, errors) = self.collect_from_configs(attempt);
-        match values.into_iter().next() {
-            Some(value) => Ok(value),
-            None => Err(aggregate_seed_failure("observer request", &errors)),
-        }
-    }
-
     fn collect_from_configs<T, F>(&self, mut attempt: F) -> (Vec<T>, Vec<String>)
     where
         F: FnMut(&Path) -> Result<T>,
@@ -220,7 +160,7 @@ fn config_path(member_id: &str) -> Result<&'static Path> {
 
 fn parse_json<T>(input: &str, context: impl Into<String>) -> Result<T>
 where
-    T: for<'de> Deserialize<'de>,
+    T: DeserializeOwned,
 {
     serde_json::from_str(input).map_err(|source| HarnessError::Json {
         context: context.into(),
@@ -240,35 +180,42 @@ fn aggregate_connection_views(
     views: Vec<ConnectionView>,
     errors: &[String],
 ) -> Result<ConnectionView> {
-    if views.is_empty() {
-        return Err(aggregate_seed_failure(operation, errors));
-    }
-
+    let mut view_iter = views.into_iter();
+    let first_view = view_iter
+        .next()
+        .ok_or_else(|| aggregate_seed_failure(operation, errors))?;
     let mut targets = BTreeMap::new();
-    for view in views {
+    for view in std::iter::once(first_view.clone()).chain(view_iter) {
         for target in view.targets {
             targets.insert(target.member_id.clone(), target);
         }
     }
     Ok(ConnectionView {
+        cluster_name: first_view.cluster_name,
+        scope: first_view.scope,
+        kind: first_view.kind,
+        tls: first_view.tls,
+        discovered_member_count: first_view.discovered_member_count,
+        warnings: first_view.warnings,
         targets: targets.into_values().collect::<Vec<_>>(),
     })
 }
 
-fn status_score(status: &ClusterStatusView) -> (usize, usize, usize) {
-    let sampled_primaries = status
-        .nodes
-        .iter()
-        .filter(|node| node.sampled && node.role == "primary")
-        .count();
-    let known_roles = status
-        .nodes
-        .iter()
-        .filter(|node| node.sampled && node.role != "unknown")
+fn status_score(status: &ClusterStatusView) -> (usize, usize, usize, usize) {
+    let reported_primary_count = status
+        .dcs
+        .cache
+        .member_slots
+        .values()
+        .filter(|member| matches!(&member.postgres, MemberPostgresView::Primary(_)))
         .count();
     (
-        status.sampled_member_count,
-        usize::from(sampled_primaries == 1),
-        known_roles,
+        status.dcs.cache.member_slots.len(),
+        usize::from(status.dcs.trust == DcsTrust::FullQuorum),
+        usize::from(matches!(
+            &status.ha.publication.authority,
+            AuthorityView::Primary { .. }
+        )),
+        usize::from(reported_primary_count == 1),
     )
 }

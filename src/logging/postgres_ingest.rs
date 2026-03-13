@@ -1250,7 +1250,7 @@ mod tests {
             ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
-        use crate::state::{new_state_channel, JobId, UnixMillis, WorkerError, WorkerStatus};
+        use crate::state::{new_state_channel, JobId, WorkerError, WorkerStatus};
         use crate::test_harness::binaries::{
             require_pg16_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
         };
@@ -1555,13 +1555,10 @@ mod tests {
 
             let (log_handle, sink) = test_log_handle();
 
-            let (publisher, _subscriber) = new_state_channel(
-                ProcessState::Idle {
-                    worker: WorkerStatus::Starting,
-                    last_outcome: None,
-                },
-                UnixMillis(0),
-            );
+            let (publisher, _subscriber) = new_state_channel(ProcessState::Idle {
+                worker: WorkerStatus::Starting,
+                last_outcome: None,
+            });
             let (tx, rx) = mpsc::unbounded_channel();
             let mut process_ctx = ProcessWorkerCtx {
                 poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
@@ -1831,7 +1828,7 @@ mod tests {
                 worker: WorkerStatus::Starting,
                 last_outcome: None,
             };
-            let (publisher, _subscriber) = new_state_channel(initial.clone(), UnixMillis(0));
+            let (publisher, _subscriber) = new_state_channel(initial.clone());
             let (tx, rx) = mpsc::unbounded_channel();
             let mut ctx = ProcessWorkerCtx {
                 poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,

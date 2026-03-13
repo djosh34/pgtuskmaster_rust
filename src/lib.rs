@@ -10,14 +10,13 @@ pub mod api;
 pub mod cli;
 pub mod config;
 pub mod dcs;
-pub(crate) mod debug_api;
-pub(crate) mod ha;
+pub mod ha;
 pub(crate) mod logging;
 pub mod pginfo;
 pub(crate) mod postgres_managed;
 pub(crate) mod postgres_managed_conf;
 pub(crate) mod postgres_roles;
-pub(crate) mod process;
+pub mod process;
 pub mod runtime;
 pub mod state;
 #[doc(hidden)]

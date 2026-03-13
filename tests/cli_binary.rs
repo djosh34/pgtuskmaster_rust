@@ -19,79 +19,6 @@ fn write_temp_config(label: &str, toml: &str) -> Result<std::path::PathBuf, Stri
     Ok(path)
 }
 
-fn sample_debug_verbose_json(member_id: &str) -> String {
-    format!(
-        r#"{{
-            "meta":{{
-                "schema_version":"v1",
-                "generated_at_ms":1,
-                "channel_updated_at_ms":1,
-                "channel_version":1,
-                "app_lifecycle":"Running",
-                "sequence":42
-            }},
-            "config":{{
-                "version":1,
-                "updated_at_ms":1,
-                "cluster_name":"cluster-a",
-                "member_id":"{member_id}",
-                "scope":"scope-a",
-                "debug_enabled":true,
-                "tls_enabled":false
-            }},
-            "pginfo":{{
-                "version":1,
-                "updated_at_ms":1,
-                "variant":"Primary",
-                "worker":"Running",
-                "sql":"Healthy",
-                "readiness":"Ready",
-                "timeline":7,
-                "summary":"primary wal_lsn=7 readiness=Ready"
-            }},
-            "dcs":{{
-                "version":1,
-                "updated_at_ms":1,
-                "worker":"Running",
-                "trust":"FullQuorum",
-                "member_slot_count":1,
-                "leader_lease_holder":"node-a",
-                "has_switchover_intent":false
-            }},
-            "process":{{
-                "version":1,
-                "updated_at_ms":1,
-                "worker":"Running",
-                "state":"Idle",
-                "running_job_id":null,
-                "last_outcome":"Success(job-1)"
-            }},
-            "ha":{{
-                "version":1,
-                "updated_at_ms":1,
-                "worker":"Running",
-                "role_intent":"leader",
-                "tick":1,
-                "authority_projection":"primary",
-                "authority_detail":"steady",
-                "planned_commands":0
-            }},
-            "api":{{"endpoints":["/debug/verbose"]}},
-            "debug":{{"history_changes":1,"history_timeline":1,"last_sequence":42}},
-            "changes":[{{"sequence":41,"at_ms":1,"domain":"ha","previous_version":1,"current_version":2,"summary":"decision updated"}}],
-            "timeline":[{{"sequence":42,"at_ms":1,"category":"ha","message":"primary steady"}}]
-        }}"#
-    )
-}
-
-fn http_json_ok(body: &str) -> String {
-    format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-        body.len(),
-        body
-    )
-}
-
 fn spawn_single_request_server(
     response: &str,
 ) -> Result<(std::net::SocketAddr, mpsc::Receiver<String>), String> {
@@ -190,8 +117,8 @@ fn help_exits_success() -> Result<(), String> {
         "help output should include status command"
     );
     assert!(
-        stdout.contains("primary") && stdout.contains("replicas") && stdout.contains("debug"),
-        "help output should include connection helper and debug commands"
+        stdout.contains("primary") && stdout.contains("replicas") && stdout.contains("switchover"),
+        "help output should include connection helper and switchover commands"
     );
     assert!(
         stdout.contains("--config") && stdout.contains("-c"),
@@ -217,108 +144,65 @@ fn missing_required_subcommand_arg_exits_usage_code() -> Result<(), String> {
 }
 
 #[test]
-fn debug_verbose_command_renders_human_summary() -> Result<(), String> {
+fn status_command_uses_state_endpoint() -> Result<(), String> {
     let bin = cli_bin_path()?;
     let (addr, rx) = spawn_single_request_server(
-        http_json_ok(sample_debug_verbose_json("node-a").as_str()).as_str(),
+        "HTTP/1.1 503 Service Unavailable\r\ncontent-type: text/plain\r\ncontent-length: 7\r\n\r\nunready",
     )?;
 
     let output = Command::new(&bin)
-        .args(["--base-url", &format!("http://{addr}"), "debug", "verbose"])
+        .args(["--base-url", &format!("http://{addr}"), "status"])
         .output()
-        .map_err(|err| format!("failed to run debug verbose command: {err}"))?;
+        .map_err(|err| format!("failed to run status command: {err}"))?;
 
-    assert!(
-        output.status.success(),
-        "debug verbose should succeed, got {:?}",
-        output.status.code()
-    );
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
-    assert!(stdout.contains("member: node-a  cluster: cluster-a  scope: scope-a"));
-    assert!(stdout.contains("recent changes:"));
-    assert!(stdout.contains("recent timeline:"));
-
+    assert_eq!(output.status.code(), Some(4));
     let request = rx
         .recv_timeout(std::time::Duration::from_secs(2))
         .map_err(|err| format!("failed to receive request: {err}"))?;
-    assert!(request.starts_with("GET /debug/verbose HTTP/1.1"));
+    assert!(request.starts_with("GET /state HTTP/1.1"));
     Ok(())
 }
 
 #[test]
-fn debug_verbose_since_emits_query_parameter() -> Result<(), String> {
+fn switchover_clear_uses_delete_switchover_endpoint() -> Result<(), String> {
     let bin = cli_bin_path()?;
     let (addr, rx) = spawn_single_request_server(
-        http_json_ok(sample_debug_verbose_json("node-a").as_str()).as_str(),
+        "HTTP/1.1 202 Accepted\r\ncontent-type: application/json\r\ncontent-length: 17\r\n\r\n{\"accepted\":true}",
     )?;
 
     let output = Command::new(&bin)
         .args([
             "--base-url",
             &format!("http://{addr}"),
-            "debug",
-            "verbose",
-            "--since",
-            "99",
+            "switchover",
+            "clear",
         ])
         .output()
-        .map_err(|err| format!("failed to run debug verbose --since: {err}"))?;
+        .map_err(|err| format!("failed to run switchover clear: {err}"))?;
 
     assert!(
         output.status.success(),
-        "debug verbose --since should succeed, got {:?}",
+        "switchover clear should succeed, got {:?}",
         output.status.code()
     );
     let request = rx
         .recv_timeout(std::time::Duration::from_secs(2))
         .map_err(|err| format!("failed to receive request: {err}"))?;
-    assert!(request.starts_with("GET /debug/verbose?since=99 HTTP/1.1"));
+    assert!(request.starts_with("DELETE /switchover HTTP/1.1"));
     Ok(())
 }
 
 #[test]
-fn debug_verbose_json_outputs_raw_payload_shape() -> Result<(), String> {
-    let bin = cli_bin_path()?;
-    let (addr, _rx) = spawn_single_request_server(
-        http_json_ok(sample_debug_verbose_json("node-a").as_str()).as_str(),
-    )?;
-
-    let output = Command::new(&bin)
-        .args([
-            "--base-url",
-            &format!("http://{addr}"),
-            "--json",
-            "debug",
-            "verbose",
-        ])
-        .output()
-        .map_err(|err| format!("failed to run debug verbose --json: {err}"))?;
-
-    assert!(
-        output.status.success(),
-        "debug verbose --json should succeed, got {:?}",
-        output.status.code()
-    );
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|err| format!("stdout utf8 decode failed: {err}"))?;
-    assert!(stdout.contains("\"schema_version\": \"v1\""));
-    assert!(!stdout.contains("\"api_url\""));
-    assert!(!stdout.contains("\"since\""));
-    Ok(())
-}
-
-#[test]
-fn debug_verbose_auth_failure_maps_to_exit_4() -> Result<(), String> {
+fn status_auth_failure_maps_to_exit_4() -> Result<(), String> {
     let bin = cli_bin_path()?;
     let (addr, _rx) = spawn_single_request_server(
         "HTTP/1.1 401 Unauthorized\r\ncontent-type: text/plain\r\ncontent-length: 13\r\n\r\nmissing token",
     )?;
 
     let output = Command::new(&bin)
-        .args(["--base-url", &format!("http://{addr}"), "debug", "verbose"])
+        .args(["--base-url", &format!("http://{addr}"), "status"])
         .output()
-        .map_err(|err| format!("failed to run debug verbose auth failure: {err}"))?;
+        .map_err(|err| format!("failed to run status auth failure: {err}"))?;
 
     assert_eq!(output.status.code(), Some(4));
     let stderr = String::from_utf8(output.stderr)

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum PgSslMode {
     Disable,
     Allow,
@@ -48,17 +48,17 @@ impl<'de> Deserialize<'de> for PgSslMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgConnInfo {
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) user: String,
-    pub(crate) dbname: String,
-    pub(crate) application_name: Option<String>,
-    pub(crate) connect_timeout_s: Option<u32>,
-    pub(crate) ssl_mode: PgSslMode,
-    pub(crate) ssl_root_cert: Option<PathBuf>,
-    pub(crate) options: Option<String>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PgConnInfo {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub dbname: String,
+    pub application_name: Option<String>,
+    pub connect_timeout_s: Option<u32>,
+    pub ssl_mode: PgSslMode,
+    pub ssl_root_cert: Option<PathBuf>,
+    pub options: Option<String>,
 }
 
 pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {

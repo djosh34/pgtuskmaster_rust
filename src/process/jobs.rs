@@ -1,5 +1,6 @@
 use std::{future::Future, path::PathBuf, pin::Pin};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config::{resolve_secret_string, RoleAuthConfig, SecretSource};
@@ -64,8 +65,8 @@ pub(crate) struct StartPostgresSpec {
     pub(crate) timeout_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ShutdownMode {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShutdownMode {
     Fast,
     Immediate,
 }
@@ -79,8 +80,8 @@ impl ShutdownMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ActiveJobKind {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActiveJobKind {
     Bootstrap,
     BaseBackup,
     PgRewind,
@@ -89,12 +90,12 @@ pub(crate) enum ActiveJobKind {
     StartPostgres,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ActiveJob {
-    pub(crate) id: JobId,
-    pub(crate) kind: ActiveJobKind,
-    pub(crate) started_at: UnixMillis,
-    pub(crate) deadline_at: UnixMillis,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveJob {
+    pub id: JobId,
+    pub kind: ActiveJobKind,
+    pub started_at: UnixMillis,
+    pub deadline_at: UnixMillis,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,20 +166,8 @@ pub(crate) trait ProcessCommandRunner: Send {
     fn spawn(&mut self, spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError>;
 }
 
-#[cfg(test)]
-pub(crate) struct NoopCommandRunner;
-
-#[cfg(test)]
-impl ProcessCommandRunner for NoopCommandRunner {
-    fn spawn(&mut self, _spec: ProcessCommandSpec) -> Result<Box<dyn ProcessHandle>, ProcessError> {
-        Err(ProcessError::InvalidSpec(
-            "noop runner cannot spawn commands".to_string(),
-        ))
-    }
-}
-
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub(crate) enum ProcessError {
+#[derive(Clone, Debug, Error, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProcessError {
     #[error("process worker operation failed")]
     OperationFailed,
     #[error("job rejected because another job is active")]

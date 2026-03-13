@@ -52,8 +52,6 @@ pub enum ApiTlsMode {
     Required,
 }
 
-pub type TlsMode = ApiTlsMode;
-
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsServerIdentityConfig {
@@ -71,7 +69,7 @@ pub struct TlsClientAuthConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsServerConfig {
-    pub mode: TlsMode,
+    pub mode: ApiTlsMode,
     pub identity: Option<TlsServerIdentityConfig>,
     pub client_auth: Option<TlsClientAuthConfig>,
 }
@@ -482,7 +480,7 @@ pub enum RoleAuthConfigInput {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsServerConfigInput {
-    pub mode: Option<TlsMode>,
+    pub mode: Option<ApiTlsMode>,
     pub identity: Option<TlsServerIdentityConfigInput>,
     pub client_auth: Option<TlsClientAuthConfig>,
 }

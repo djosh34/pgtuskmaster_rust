@@ -520,15 +520,6 @@ impl LogHandle {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn null() -> Self {
-        Self {
-            hostname: "unknown".to_string(),
-            backend: Arc::new(TracingBackend::new(Arc::new(NullSink))),
-            min_app_severity_number: SeverityText::Trace.number(),
-        }
-    }
-
     pub(crate) fn disabled() -> Self {
         Self {
             hostname: "unknown".to_string(),
@@ -590,7 +581,7 @@ pub(crate) fn system_now_unix_millis() -> u64 {
     }
 }
 
-pub(crate) fn detect_hostname() -> String {
+fn detect_hostname() -> String {
     match std::env::var("HOSTNAME") {
         Ok(value) if !value.trim().is_empty() => value,
         _ => "unknown".to_string(),
@@ -656,21 +647,6 @@ impl TestSink {
             Err(poisoned) => poisoned.into_inner(),
         };
         std::mem::take(&mut *locked)
-    }
-
-    pub(crate) fn snapshot(&self) -> Result<Vec<LogRecord>, LogError> {
-        let locked = self
-            .records
-            .lock()
-            .map_err(|_| LogError::SinkIo("test sink lock poisoned".to_string()))?;
-        Ok(locked.clone())
-    }
-
-    pub(crate) fn collect_matching(
-        &self,
-        matcher: impl Fn(&LogRecord) -> bool,
-    ) -> Result<Vec<LogRecord>, LogError> {
-        Ok(self.snapshot()?.into_iter().filter(matcher).collect())
     }
 }
 
