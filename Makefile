@@ -3,7 +3,7 @@ MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 
 SHELL := /usr/bin/env bash
 
-.PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest
+.PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest install-pgtm install-pgtuskmaster
 
 # The workspace mount this repo typically lives on can exhibit intermittent
 # linker/archive flake with incremental artifacts. Disable incremental builds by
@@ -35,6 +35,12 @@ ensure-docs-node-deps: ensure-node
 
 ensure-nextest:
 	@command -v cargo-nextest >/dev/null 2>&1 || (echo "missing cargo-nextest binary: run ./tools/install-cargo-nextest.sh" >&2; exit 1)
+
+install-pgtm:
+	cargo install --path . --bin pgtm --force
+
+install-pgtuskmaster:
+	cargo install --path . --bin pgtuskmaster --force
 
 check:
 	cargo check --all-targets --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
