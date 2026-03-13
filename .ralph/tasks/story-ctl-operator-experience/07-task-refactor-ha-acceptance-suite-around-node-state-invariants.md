@@ -16,7 +16,9 @@
 - When a scenario intentionally checks a node's published authority or writability, add a separate SQL corroboration step that confirms the data plane agrees with the published `NodeState`. This corroboration is a second explicit assertion, not a fallback and not a reinterpretation of `NodeState` when `NodeState` is wrong.
 - `pgtm primary` / `pgtm replicas` are not a second cluster-state oracle. They are product-surface checks. They should remain covered, but by a smaller set of explicit product-surface assertions or tests rather than being repeated everywhere as though they independently establish who the primary is.
 - Log scraping is not an acceptable correctness oracle for the HA acceptance suite. Logs may still be captured as artifacts for debugging, but pass/fail assertions must be based on current typed state or real observation surfaces (`NodeState`, SQL, explicit CLI/API result surfaces).
+- Fault injection itself is part of the refactor contract. The suite must stop relying on ad hoc marker-file copying into stopped containers. Replace that mechanism with one clean, typed fault-control path, such as a dedicated bind-mounted fault volume or an equivalently explicit harness-controlled mechanism that works the same way for running and stopped nodes.
 - A replica is not "never primary" in the absolute sense. Any replica that is part of the healthy majority and eligible for leadership may become primary when the prior primary loses authority or disappears. The actual invariant is: a node that is isolated into the minority, ineligible, or explicitly degraded must never become authoritative primary; an eligible majority-side replica may and should race to become primary when liveness requires it.
+- Switchover eligibility must not be a weaker, parallel concept. Planned and targeted switchover admission must use the exact same typed eligibility contract that HA failover uses to decide whether a node may become authoritative primary.
 - The suite should prefer semantic role aliases over physical node names. Physical names like `node-a` / `node-b` / `node-c` should appear only when a scenario truly depends on fixed identities, fixed configs, or a specific given. Otherwise, scenarios should name the relevant participants at the beginning in semantic terms such as `old_primary`, `target_replica`, `healthy_replica`, `isolated_node`, `majority_primary`, etc.
 - There should not be magic "default aliases" silently assumed by the harness. If a scenario wants semantic names, it should declare them explicitly near the top. That keeps the feature text honest and avoids hidden state. The one exception is that the harness can still expose fixed topology constants internally; the feature DSL itself should remain explicit.
 - Recovery-path scenarios must assert the typed recovery policy rather than merely eventual success: if a node can simply resume following/streaming, that path should be chosen before destructive recovery; if divergence is rewind-eligible, `pg_rewind` must be tried before `pg_basebackup`; `pg_basebackup` is only correct when the typed state says it is required or after an explicit rewind failure that marks fallback to basebackup.
@@ -49,9 +51,11 @@ Liveness invariants that must eventually hold under the required preconditions:
 **Scope:**
 - Redesign the structure of `tests/ha/support/steps/`, `tests/ha/support/world/`, and adjacent support modules so step files become thin adapters over typed harness/query/assertion layers rather than giant mixed-concern modules.
 - Rewrite or merge the `.feature` files under `tests/ha/features/` around a smaller invariant-oriented DSL. Preserve scenario coverage, but change scenario wording, grouping, and assertions wherever that simplifies the suite while still proving the intended invariants.
+- Replace the current stopped-container fault-marker mechanism with a cleaner harness-level fault-control design. The refactor must not keep `docker cp`-style direct file injection into stopped container filesystems as the way blockers and restart-time faults are expressed.
 - Remove fallback role/state behavior from the step/assertion layer. In particular, eliminate the current behavior where `NodeState::Unknown` can be masked by checking direct SQL connectivity or other helper surfaces to decide whether a node "is really a replica anyway".
 - Remove stale or misleading scenario bookkeeping such as `unsampled_nodes` if the new assertion model can express reachability and observer scope explicitly.
 - Centralize cluster topology, member names, and observer config selection instead of hardcoding topology in multiple places.
+- Unify switchover-target admission with failover eligibility. The acceptance suite, helper layers, and scenario expectations must encode one typed notion of "promotion-eligible", not separate weaker API-admission and stronger HA-execution predicates.
 - Keep the suite black-box and end-to-end. This is not a rewrite into unit tests. The harness must still start real Docker stacks, inject real faults, and validate eventual behavior through black-box observation surfaces.
 - It is acceptable and preferred to reduce total feature count if several current files are thin variants of the same invariant class and can be merged without losing coverage.
 - Remove log-content assertions from HA correctness checks. If a scenario currently proves behavior only by matching log text, rewrite it to assert typed current state and real external behavior instead.
@@ -66,6 +70,7 @@ Liveness invariants that must eventually hold under the required preconditions:
 - `tests/ha/support/world/mod.rs` is currently about 1k lines and combines per-scenario state, harness bootstrap, Docker actions, network fault injection, artifact capture, timeline recording, and helper functions.
 - `tests/ha/support/docker/cli.rs` is a justified layer because it provides the real control plane for multi-container HA tests, but it repeats Compose plumbing and should likely be split or wrapped by a typed Compose context.
 - `tests/ha/support/faults/mod.rs` is one of the cleaner parts of the suite because it models failure modes with enums such as `TrafficPath` and `BlockerKind`; keep that typed direction.
+- The current fault-marker plumbing for blocked rejoin and blocked basebackup scenarios is not acceptable as the long-term mechanism. It currently depends on copying marker files into stopped containers and on restart-time cleanup behavior that can drift by ownership or permissions.
 - `tests/ha/support/observer/pgtm.rs` already uses `NodeState` directly as the cluster status view and reuses production connection DTOs from `src/cli/connect.rs`. The current problem is no longer duplicated local status DTOs; it is the orchestration, fallback, and DSL layers around them.
 - `tests/ha/support/steps/mod.rs` still contains current fallback behavior that undermines `NodeState` as truth. Example: `assert_member_is_replica_via_member(...)` in `tests/ha/support/steps/mod.rs` accepts `MemberPostgresView::Unknown(_)` and then falls back to `pg_is_in_recovery()` via SQL. This masks bugs where `NodeState` should have already reported a known role.
 - `tests/ha/support/steps/mod.rs` also contains DSN fallback behavior in `sql_target_for_member(...)`, where `pgtm` connection helper failures are replaced with direct member DSNs. This can remain only for SQL/data-plane assertions if explicitly justified, but it must not be used to infer cluster role when `NodeState` is unknown.
@@ -101,6 +106,7 @@ Liveness invariants that must eventually hold under the required preconditions:
   - during replication isolation, assert replicas do not yet contain a new row
   - during switchover window, assert no dual-primary evidence
 - Product-surface assertions for `pgtm primary` / `pgtm replicas` should be kept only where the product surface itself is what is being tested. Cluster-authority assertions should come from `NodeState`.
+- Switchover scenarios must encode failover-grade eligibility directly. If a target would be ineligible for failover because it is isolated, lagging, API-unreachable, or otherwise not promotion-eligible, the switchover path must reject it under the same contract instead of using a weaker admission check.
 - Recovery-path scenarios should assert the typed `ha` / `process` state that is already exposed via `NodeState`, instead of using compose-log snippets as proof that `pg_rewind`, `pg_basebackup`, or follower/start-streaming recovery happened.
 
 **Concrete canonical step set to end up with:**
@@ -177,6 +183,7 @@ Explicit product-surface assertion steps, used narrowly and intentionally:
 - Merge `there is no operator-visible primary across ...`, `the lone online node is not treated as a writable primary`, and the DCS fail-safe expectations into the `eventually no authoritative primary exists`, `the lone reachable node is not a writable primary`, and `every reachable node reports fail-safe` steps.
 - Merge `the node named "..." rejoins as a replica`, `the node named "..." remains online as a replica`, and the recovery-deadline variants into `eventually "<alias>" is a replica`.
 - Merge `I enable the "..." blocker on the node named "..."` and `I disable the "..." blocker on the node named "..."` into the blocker on/off pair with typed blocker parameters.
+- Rebuild the blocker on/off implementation around the new harness-level fault-control mechanism so the same typed operation works for running nodes, stopped nodes, and repeated restart sequences without ownership or cleanup drift.
 - Merge all path-specific isolation wording into `I isolate "<alias>" on "<path>"` and `I isolate "<alias_a>" and "<alias_b>" on "<path>"`.
 - Merge `I heal all network faults` and `I heal network faults on the node named "..."` into `I heal the cluster` and `I heal "<alias>"`.
 - Merge `I wedge the node named "..."` and `I unwedge the node named "..."` into `I wedge postgres on "<alias>"` and `I unwedge postgres on "<alias>"`.
@@ -223,13 +230,13 @@ Explicit product-surface assertion steps, used narrowly and intentionally:
 
 6. `ha_replication_degradation_and_catchup.feature`
 - Scenario: replication-path isolation delays proof-token visibility and healed replicas catch up
-- Scenario: a lagging or degraded replica is not promoted during failover
+- Scenario: a minority-side or otherwise ineligible degraded replica is not promoted during failover
 
 7. `ha_switchover.feature`
 - Scenario: planned switchover moves leadership cleanly to a different primary
 - Scenario: planned switchover under concurrent writes preserves single-primary safety
 - Scenario: targeted switchover promotes the requested eligible replica and not the other one
-- Scenario: targeted switchover to an ineligible or degraded replica is rejected without authority change
+- Scenario: targeted switchover to an ineligible or degraded replica is rejected under the exact same eligibility contract as failover, without authority change
 
 8. `ha_rejoin_recovery_paths.feature`
 - Scenario: blocked basebackup clone recovers after the blocker is removed when basebackup is actually required
@@ -243,12 +250,12 @@ Explicit product-surface assertion steps, used narrowly and intentionally:
 - Merge current `ha_primary_killed_then_rejoins_as_replica`, `ha_primary_killed_with_concurrent_writes`, and `ha_primary_storage_stalled_then_new_primary_takes_over` into `ha_primary_failover_and_rejoin.feature` as three scenarios.
 - The `ha_primary_killed_then_rejoins_as_replica` rewrite must explicitly assert that the restarted old primary returns by follower/start-streaming recovery when the typed state says destructive recovery is unnecessary, rather than merely asserting that it eventually becomes a replica.
 - Merge current `ha_replica_stopped_primary_stays_primary`, `ha_replica_flapped_primary_stays_primary`, `ha_two_replicas_stopped_then_one_replica_restarted_restores_quorum`, `ha_all_nodes_stopped_then_two_nodes_restarted_then_final_node_rejoins`, and `ha_two_nodes_stopped_then_one_healthy_node_restarted_restores_service_while_other_stays_broken` into `ha_replica_outage_and_recovery.feature`.
-- Keep current `ha_repeated_failovers_preserve_single_primary` as `ha_repeated_failovers.feature`, rewritten around semantic aliases and the explicit invariant that an ineligible former leader never regains authority during the second failover window.
+- Keep current `ha_repeated_failovers_preserve_single_primary` as `ha_repeated_failovers.feature`, rewritten around semantic aliases and the explicit invariant that an ineligible former leader never regains authority during the second failover window. Do not spin this out into a separate bug task; `make test-long` remains the regression detector for this scenario family.
 - Merge current `ha_dcs_quorum_lost_enters_failsafe`, `ha_dcs_quorum_lost_fencing_blocks_post_cutoff_writes`, and `ha_dcs_and_api_faults_then_healed_cluster_converges` into `ha_dcs_quorum_and_fencing.feature`.
 - Merge current `ha_old_primary_partitioned_from_majority_majority_elects_new_primary` and `ha_old_primary_partitioned_then_healed_rejoins_as_replica_after_majority_failover` into one stronger old-primary-minority scenario inside `ha_majority_minority_partitions.feature`.
 - Keep current `ha_replica_partitioned_from_majority_primary_stays_primary` and `ha_non_primary_api_isolated_primary_stays_primary` as the other two scenarios in `ha_majority_minority_partitions.feature`.
-- Merge current `ha_replication_path_isolated_then_healed_replicas_catch_up` and `ha_lagging_replica_is_not_promoted_during_failover` into `ha_replication_degradation_and_catchup.feature`.
-- Merge current `ha_planned_switchover_changes_primary_cleanly`, `ha_planned_switchover_with_concurrent_writes`, `ha_targeted_switchover_promotes_requested_replica`, and `ha_targeted_switchover_to_degraded_replica_is_rejected` into `ha_switchover.feature`.
+- Merge current `ha_replication_path_isolated_then_healed_replicas_catch_up` and a rewritten replacement for `ha_lagging_replica_is_not_promoted_during_failover` into `ha_replication_degradation_and_catchup.feature`. The current lagging-replica expectation is wrong and must not be preserved as-is; the rewritten scenario must make the non-promoted node actually minority-side or otherwise promotion-ineligible.
+- Merge current `ha_planned_switchover_changes_primary_cleanly`, `ha_planned_switchover_with_concurrent_writes`, `ha_targeted_switchover_promotes_requested_replica`, and `ha_targeted_switchover_to_degraded_replica_is_rejected` into `ha_switchover.feature`, with targeted-switchover rejection and acceptance both driven by the exact same typed eligibility predicate used for failover.
 - Merge current `ha_basebackup_clone_blocked_then_unblocked_replica_recovers`, `ha_rewind_fails_then_basebackup_rejoins_old_primary`, and `ha_broken_replica_rejoin_attempt_does_not_destabilize_quorum` into `ha_rejoin_recovery_paths.feature`.
 - Keep current `ha_primary_killed_custom_roles_survive_rejoin` as `ha_custom_roles.feature`.
 
@@ -270,6 +277,7 @@ Kept and strengthened:
 Narrowed:
 - `pgtm primary` and `pgtm replicas` assertions remain only in the scenarios where the product surface is intentionally under test, mainly selected switchover and connection-surface scenarios.
 - API reachability assertions remain only where the scenario is specifically about observer/API isolation, not as a general proxy for cluster health.
+- Fault-control assertions remain only as black-box behavior checks over the new fault mechanism. No scenario should depend on direct marker-file lifecycle, stopped-container file copying, or log text as the proof that a blocker was applied or cleared.
 
 Thrown away:
 - Any role or authority inference that falls back from `NodeState` to SQL or `pgtm` helper behavior.
@@ -291,6 +299,7 @@ Thrown away:
 
 <acceptance_criteria>
 - [ ] `tests/ha/support/steps/mod.rs` is fully replaced by a split step-module tree, and no replacement step file becomes a new god module with mixed harness/assertion/SQL/polling responsibilities
+- [ ] The suite-structure cleanup is fully landed in this task: no mixed-concern god module remains in `tests/ha/support`, no hidden fallback-based role inference remains, and no stale mutable bookkeeping like `unsampled_nodes` survives under a new name
 - [ ] A typed shared topology source exists and removes duplicated hardcoded member/service/config knowledge from `tests/ha/support/faults/mod.rs`, `tests/ha/support/observer/pgtm.rs`, and step files
 - [ ] The refactor lands the concrete canonical step set described in this task, and each surviving step maps to one typed underlying harness/assertion operation rather than a large mixed-concern branch
 - [ ] The feature corpus is rewritten to the concrete target feature/scenario inventory described in this task, including the specified merges of current scenario files into scenario-family feature files
@@ -298,6 +307,8 @@ Thrown away:
 - [ ] SQL remains the sole truth source for data-plane assertions such as proof-row visibility, replication convergence, write rejection, fencing cutoff, and split-brain evidence
 - [ ] Where a scenario claims a node is authoritative, non-authoritative, writable, or non-writable, the suite also performs a separate SQL corroboration check that agrees with the published `NodeState`; this corroboration must remain a separate assertion and must never be used as fallback role inference
 - [ ] `pgtm primary` / `pgtm replicas` checks are reduced to explicit product-surface assertions or dedicated tests and are no longer used as a pervasive co-assertion of cluster authority
+- [ ] Fault injection is rebuilt around one clean harness-controlled mechanism that works for running nodes, stopped nodes, and repeated restart sequences without direct stopped-container file copying or permission-sensitive cleanup behavior
+- [ ] Switchover admission and failover promotion use the exact same typed eligibility contract; the suite explicitly covers both accepted and rejected targeted switchover cases against that one shared predicate
 - [ ] `unsampled_nodes` is removed entirely, and all assertions that previously depended on it are replaced by explicit, typed reachability or scope expectations
 - [ ] The new feature DSL uses explicit semantic aliases declared near scenario start and no hidden "default alias" behavior; physical node names are used only where the scenario truly depends on fixed identities or configs
 - [ ] Mid-scenario assertions remain present where they are semantically necessary; the refactor does not collapse the suite into end-only assertions
@@ -354,6 +365,7 @@ Thrown away:
 - [ ] Keep `tests/ha/support/faults/mod.rs` typed and focused; move only the higher-level orchestration around it, not the fault ADTs themselves.
 - [ ] Consider introducing a typed Compose context or wrapper around the repeated Compose command plumbing in `tests/ha/support/docker/cli.rs`.
 - [ ] Remove log-scraping assertion helpers from the HA pass/fail path. If logs are still collected, they should live only in artifact/debug helpers and not in the assertion DSL.
+- [ ] Redesign fault injection under `tests/ha/support/faults/` and adjacent harness code so blocker/restart-time faults are expressed through one explicit harness-controlled channel, preferably a dedicated bind-mounted fault-control directory or an equivalently clean mechanism, instead of direct marker-file copying into stopped containers.
 
 ### Phase 4: Remove fallback-based role inference
 - [ ] Delete the current cluster-role fallback behavior where `NodeState` `Unknown` is treated as acceptable if a direct SQL check suggests the node is in recovery.
@@ -406,6 +418,7 @@ Thrown away:
   - minority partition of old primary
   - minority partition of replica
   - replication-path isolation and later convergence
+  - degraded-replica failover rejection only when that replica is actually minority-side or otherwise promotion-ineligible
   - planned switchover
   - targeted switchover accepted
   - targeted switchover rejected
@@ -419,6 +432,7 @@ Thrown away:
   - transition-window safety assertions
   - eventual convergence assertions after heal/recovery
 - [ ] Make sure the new feature files remain readable and declarative. The target is a smaller, cleaner DSL, not hidden complexity inside helper wording.
+- [ ] Rewrite the current lagging-replica failover scenario so it asserts a correct invariant. Do not preserve the current "lagging replica is not promoted" expectation unless the scenario topology actually makes that replica ineligible under the same typed rules used by failover and switchover.
 
 ### Phase 8: Narrow and isolate `pgtm` product-surface validation
 - [ ] Audit every current `pgtm primary points to ...` and `pgtm replicas list ...` assertion in feature files and step code.
@@ -426,7 +440,7 @@ Thrown away:
 - [ ] Keep a smaller explicit set of product-surface validations that prove:
   - `pgtm primary` resolves the authoritative primary when one exists
   - `pgtm replicas` resolves the expected replica set when replicas are healthy
-  - switchover user-visible behavior returns the correct surface result
+  - switchover user-visible behavior returns the correct surface result under the same typed eligibility predicate used by failover
 - [ ] Where appropriate, move some of this coverage to narrower CLI/integration tests instead of repeating it inside large HA fault scenarios.
 
 ### Phase 9: Validation and cleanup
