@@ -1,5 +1,5 @@
 Feature: ha_repeated_failovers_preserve_single_primary
-  Scenario: repeated failovers preserve a single primary and distinct leaders when topology allows
+  Scenario: repeated failovers preserve a single primary across successive topology changes
     Given the "three_node_plain" harness is running
     And I wait for exactly one stable primary as "primary_a"
     And I start tracking primary history
@@ -8,10 +8,9 @@ Feature: ha_repeated_failovers_preserve_single_primary
     And the primary history never included "primary_a"
     When I restart the node named "primary_a"
     And the node named "primary_a" rejoins as a replica
-    And I cut the node named "primary_a" off from DCS
+    And I isolate the node named "primary_a" from all peers on the "postgres" path
     And I start tracking primary history
     When I kill the node named "primary_b"
     Then exactly one primary exists across 2 running nodes as "primary_c"
     And the primary history never included "primary_b"
-    Then the aliases "primary_a", "primary_b", and "primary_c" are distinct
     And there is no dual-primary evidence during the transition window

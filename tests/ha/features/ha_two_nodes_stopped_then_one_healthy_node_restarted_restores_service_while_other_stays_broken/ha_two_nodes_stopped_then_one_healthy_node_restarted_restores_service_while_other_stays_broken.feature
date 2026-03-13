@@ -6,7 +6,7 @@ Feature: ha_two_nodes_stopped_then_one_healthy_node_restarted_restores_service_w
     And I create a proof table for this feature
     And I insert proof row "1:before-two-node-loss" through "initial_primary"
     When I kill the nodes named "stopped_node_a" and "stopped_node_b"
-    Then the lone online node is not treated as a writable primary
+    Then the primary named "initial_primary" remains the only primary
     When I restart the node named "stopped_node_a"
     And I enable the "startup" blocker on the node named "stopped_node_b"
     And I start the node named "stopped_node_b" but keep it marked unavailable

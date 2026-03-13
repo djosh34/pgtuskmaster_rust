@@ -18,9 +18,8 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{
         append_fault_rule_script, clear_fault_rules_script, ensure_fault_plumbing_script,
-        remove_fault_rule_script, remove_file_script, signal_named_process_script,
-        touch_file_script, BlockerKind, TrafficPath, ALL_CLUSTER_MEMBERS, ETCD_SERVICE,
-        OBSERVER_SERVICE,
+        remove_fault_rule_script, signal_named_process_script, BlockerKind, TrafficPath,
+        DATABASE_MEMBERS, FAULT_DIR,
     },
     feature_metadata,
     givens::given_root,
@@ -29,6 +28,7 @@ use crate::support::{
         sql::SqlObserver,
     },
     timeouts::TimeoutModel,
+    topology::{ClusterMember, ComposeService, SupportService},
     workload::{SqlWorkloadHandle, WorkloadSummary},
 };
 
@@ -40,18 +40,158 @@ pub struct HaWorld {
 
 #[derive(Debug, Default)]
 pub struct ScenarioState {
-    pub aliases: BTreeMap<String, String>,
-    pub active_workload: Option<SqlWorkloadHandle>,
-    pub last_command_output: Option<String>,
-    pub last_workload_summary: Option<WorkloadSummary>,
-    pub markers: BTreeMap<String, u128>,
-    pub unsampled_nodes: BTreeSet<String>,
-    pub stopped_nodes: BTreeSet<String>,
-    pub wedged_nodes: BTreeSet<String>,
-    pub proof_convergence_blocked_nodes: BTreeSet<String>,
-    pub proof_rows: Vec<String>,
-    pub proof_table: Option<String>,
-    pub observed_primaries: Vec<String>,
+    pub aliases: AliasRegistry,
+    pub workload: WorkloadState,
+    pub command: CommandState,
+    pub transition: TransitionWindow,
+    pub invariants: InvariantHistory,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemberAlias(String);
+
+impl From<&str> for MemberAlias {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<String> for MemberAlias {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MarkerName(String);
+
+impl From<&str> for MarkerName {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<String> for MarkerName {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProofRow(String);
+
+impl From<&str> for ProofRow {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<String> for ProofRow {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl ProofRow {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProofTableName(String);
+
+impl From<&str> for ProofTableName {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<String> for ProofTableName {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl ProofTableName {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MemberSet {
+    members: BTreeSet<ClusterMember>,
+}
+
+impl MemberSet {
+    pub fn insert(&mut self, member: ClusterMember) -> bool {
+        self.members.insert(member)
+    }
+
+    pub fn remove(&mut self, member: ClusterMember) -> bool {
+        self.members.remove(&member)
+    }
+
+    pub fn contains(&self, member: ClusterMember) -> bool {
+        self.members.contains(&member)
+    }
+
+    pub fn clear(&mut self) {
+        self.members.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct AliasRegistry {
+    pub members_by_alias: BTreeMap<MemberAlias, ClusterMember>,
+}
+
+#[derive(Debug, Default)]
+pub struct ProofLedger {
+    pub table: Option<ProofTableName>,
+    pub recorded_rows: Vec<ProofRow>,
+    pub convergence_blocked_members: MemberSet,
+}
+
+#[derive(Debug, Default)]
+pub struct WorkloadState {
+    pub active: Option<SqlWorkloadHandle>,
+    pub last_summary: Option<WorkloadSummary>,
+    pub proof: ProofLedger,
+}
+
+#[derive(Debug, Default)]
+pub struct CommandState {
+    pub last_output: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct ObservationScope {
+    pub observer_unreachable_members: MemberSet,
+}
+
+#[derive(Debug, Default)]
+pub struct TransitionWindow {
+    pub markers: BTreeMap<MarkerName, u128>,
+    pub stopped_members: MemberSet,
+    pub wedged_members: MemberSet,
+    pub observation_scope: ObservationScope,
+}
+
+#[derive(Debug, Default)]
+pub struct InvariantHistory {
+    pub observed_authoritative_primaries: Vec<ClusterMember>,
 }
 
 impl HaWorld {
@@ -70,97 +210,130 @@ impl HaWorld {
         self.harness = Some(harness);
     }
 
-    pub fn record_marker(&mut self, marker: &str, timestamp_ms: u128) {
+    pub fn record_marker(&mut self, marker: impl Into<MarkerName>, timestamp_ms: u128) {
         self.scenario
+            .transition
             .markers
-            .insert(marker.to_string(), timestamp_ms);
+            .insert(marker.into(), timestamp_ms);
     }
 
     pub fn marker(&self, marker: &str) -> Result<u128> {
         self.scenario
+            .transition
             .markers
-            .get(marker)
+            .get(&MarkerName::from(marker))
             .copied()
             .ok_or_else(|| HarnessError::message(format!("marker `{marker}` was not recorded")))
     }
 
-    pub fn remember_alias(&mut self, alias: &str, member_id: String) {
-        self.scenario.aliases.insert(alias.to_string(), member_id);
-    }
-
-    pub fn require_alias(&self, alias: &str) -> Result<String> {
+    pub fn remember_alias(
+        &mut self,
+        alias: impl Into<MemberAlias>,
+        member: ClusterMember,
+    ) {
         self.scenario
             .aliases
-            .get(alias)
+            .members_by_alias
+            .insert(alias.into(), member);
+    }
+
+    pub fn require_alias(&self, alias: &str) -> Result<ClusterMember> {
+        self.scenario
+            .aliases
+            .members_by_alias
+            .get(&MemberAlias::from(alias))
             .cloned()
             .ok_or_else(|| HarnessError::message(format!("alias `{alias}` was not recorded")))
     }
 
-    pub fn add_stopped_node(&mut self, member_id: &str) {
-        let _ = self.scenario.stopped_nodes.insert(member_id.to_string());
+    pub fn add_stopped_node(&mut self, member: ClusterMember) {
+        let _ = self.scenario.transition.stopped_members.insert(member);
     }
 
-    pub fn remove_stopped_node(&mut self, member_id: &str) {
-        let _ = self.scenario.stopped_nodes.remove(member_id);
+    pub fn remove_stopped_node(&mut self, member: ClusterMember) {
+        let _ = self.scenario.transition.stopped_members.remove(member);
     }
 
-    pub fn add_unsampled_node(&mut self, member_id: &str) {
-        let _ = self.scenario.unsampled_nodes.insert(member_id.to_string());
-    }
-
-    pub fn remove_unsampled_node(&mut self, member_id: &str) {
-        let _ = self.scenario.unsampled_nodes.remove(member_id);
-    }
-
-    pub fn add_wedged_node(&mut self, member_id: &str) {
-        let _ = self.scenario.wedged_nodes.insert(member_id.to_string());
-    }
-
-    pub fn remove_wedged_node(&mut self, member_id: &str) {
-        let _ = self.scenario.wedged_nodes.remove(member_id);
-    }
-
-    pub fn add_proof_convergence_blocker(&mut self, member_id: &str) {
+    pub fn mark_observer_unreachable(&mut self, member: ClusterMember) {
         let _ = self
             .scenario
-            .proof_convergence_blocked_nodes
-            .insert(member_id.to_string());
+            .transition
+            .observation_scope
+            .observer_unreachable_members
+            .insert(member);
     }
 
-    pub fn remove_proof_convergence_blocker(&mut self, member_id: &str) {
+    pub fn clear_observer_unreachable(&mut self, member: ClusterMember) {
         let _ = self
             .scenario
-            .proof_convergence_blocked_nodes
-            .remove(member_id);
+            .transition
+            .observation_scope
+            .observer_unreachable_members
+            .remove(member);
     }
 
-    pub fn clear_unsampled_nodes(&mut self) {
-        self.scenario.unsampled_nodes.clear();
+    pub fn add_wedged_node(&mut self, member: ClusterMember) {
+        let _ = self.scenario.transition.wedged_members.insert(member);
+    }
+
+    pub fn remove_wedged_node(&mut self, member: ClusterMember) {
+        let _ = self.scenario.transition.wedged_members.remove(member);
+    }
+
+    pub fn add_proof_convergence_blocker(&mut self, member: ClusterMember) {
+        let _ = self
+            .scenario
+            .workload
+            .proof
+            .convergence_blocked_members
+            .insert(member);
+    }
+
+    pub fn remove_proof_convergence_blocker(&mut self, member: ClusterMember) {
+        let _ = self
+            .scenario
+            .workload
+            .proof
+            .convergence_blocked_members
+            .remove(member);
+    }
+
+    pub fn clear_observer_unreachable_members(&mut self) {
+        self.scenario
+            .transition
+            .observation_scope
+            .observer_unreachable_members
+            .clear();
     }
 
     pub fn clear_proof_convergence_blockers(&mut self) {
-        self.scenario.proof_convergence_blocked_nodes.clear();
+        self.scenario.workload.proof.convergence_blocked_members.clear();
     }
 
     pub fn clear_primary_history(&mut self) {
-        self.scenario.observed_primaries.clear();
+        self.scenario.invariants.observed_authoritative_primaries.clear();
     }
 
-    pub fn record_primary_observation(&mut self, member_id: &str) {
+    pub fn record_primary_observation(&mut self, member: ClusterMember) {
         let already_recorded = self
             .scenario
-            .observed_primaries
+            .invariants
+            .observed_authoritative_primaries
             .iter()
-            .any(|observed| observed == member_id);
+            .any(|observed| observed == &member);
         if !already_recorded {
-            self.scenario.observed_primaries.push(member_id.to_string());
+            self.scenario
+                .invariants
+                .observed_authoritative_primaries
+                .push(member);
         }
     }
 
     pub fn cleanup(&mut self) -> Result<()> {
         let workload_result = self
             .scenario
-            .active_workload
+            .workload
+            .active
             .take()
             .map(SqlWorkloadHandle::stop)
             .transpose();
@@ -221,11 +394,12 @@ impl HarnessShared {
         create_dir_all(source_copy_dir.as_path())?;
         create_dir_all(artifacts_dir.as_path())?;
         copy_directory(given_root.as_path(), source_copy_dir.as_path())?;
+        create_fault_directories(source_copy_dir.as_path())?;
 
         let compose_file = source_copy_dir.join("compose.yml");
         let timeouts = TimeoutModel::from_runtime_config(
             source_copy_dir
-                .join("configs/node-a/runtime.toml")
+                .join(ClusterMember::SEED_PRIMARY.runtime_config_relative_path())
                 .as_path(),
         )?;
         let ryuk = RyukGuard::start(docker.clone(), compose_project.as_str())?;
@@ -285,15 +459,15 @@ impl HarnessShared {
         SqlObserver::new(self.docker.clone(), self.observer_container.clone())
     }
 
-    pub fn kill_node(&self, member_id: &str) -> Result<()> {
-        let container_id = self.service_container_id(member_id)?;
-        self.record_note("docker.kill", format!("killing `{member_id}`"))?;
+    pub fn kill_node(&self, member: ClusterMember) -> Result<()> {
+        let container_id = self.service_container_id(member.into())?;
+        self.record_note("docker.kill", format!("killing `{member}`"))?;
         self.docker.kill_container(container_id.as_str())
     }
 
-    pub fn start_node(&self, member_id: &str) -> Result<()> {
-        let container_id = self.service_container_id(member_id)?;
-        self.record_note("docker.start", format!("starting `{member_id}`"))?;
+    pub fn start_node(&self, member: ClusterMember) -> Result<()> {
+        let container_id = self.service_container_id(member.into())?;
+        self.record_note("docker.start", format!("starting `{member}`"))?;
         self.docker.start_container(container_id.as_str())
     }
 
@@ -315,15 +489,15 @@ impl HarnessShared {
         }))
     }
 
-    pub fn service_container_id(&self, service: &str) -> Result<String> {
+    pub fn service_container_id(&self, service: ComposeService) -> Result<String> {
         self.docker.compose_container_id(
             self.compose_file.as_path(),
             self.compose_project.as_str(),
-            service,
+            service.service_name(),
         )
     }
 
-    pub fn service_logs(&self, service: &str) -> Result<String> {
+    pub fn service_logs(&self, service: ComposeService) -> Result<String> {
         let container_id = self.service_container_id(service)?;
         self.docker.container_logs(container_id.as_str())
     }
@@ -341,19 +515,19 @@ impl HarnessShared {
         write_text_file(path.as_path(), content.as_str())
     }
 
-    pub fn stop_service(&self, service: &str) -> Result<()> {
+    pub fn stop_service(&self, service: ComposeService) -> Result<()> {
         let container_id = self.service_container_id(service)?;
         self.record_note("docker.stop_service", format!("stopping `{service}`"))?;
         self.docker.kill_container(container_id.as_str())
     }
 
-    pub fn start_service(&self, service: &str) -> Result<()> {
+    pub fn start_service(&self, service: ComposeService) -> Result<()> {
         let container_id = self.service_container_id(service)?;
         self.record_note("docker.start_service", format!("starting `{service}`"))?;
         self.docker.start_container(container_id.as_str())
     }
 
-    pub fn run_shell_as_root(&self, service: &str, script: &str) -> Result<String> {
+    pub fn run_shell_as_root(&self, service: ComposeService, script: &str) -> Result<String> {
         let container_id = self.service_container_id(service)?;
         self.docker.exec_as_user(
             container_id.as_str(),
@@ -363,67 +537,67 @@ impl HarnessShared {
         )
     }
 
-    pub fn ensure_fault_plumbing(&self, member_id: &str) -> Result<()> {
+    pub fn ensure_fault_plumbing(&self, service: ComposeService) -> Result<()> {
         let script = ensure_fault_plumbing_script();
-        let _ = self.run_shell_as_root(member_id, script.as_str())?;
-        self.record_note("fault.ensure_plumbing", format!("member={member_id}"))?;
+        let _ = self.run_shell_as_root(service, script.as_str())?;
+        self.record_note("fault.ensure_plumbing", format!("service={service}"))?;
         Ok(())
     }
 
-    pub fn clear_network_faults(&self, member_id: &str) -> Result<()> {
-        if !self.service_is_running(member_id)? {
+    pub fn clear_network_faults(&self, service: ComposeService) -> Result<()> {
+        if !self.service_is_running(service)? {
             self.record_note(
                 "fault.clear_network",
-                format!("member={member_id} skipped=container_not_running"),
+                format!("service={service} skipped=container_not_running"),
             )?;
             return Ok(());
         }
         let script = clear_fault_rules_script();
-        if let Err(err) = self.run_shell_as_root(member_id, script.as_str()) {
+        if let Err(err) = self.run_shell_as_root(service, script.as_str()) {
             if container_not_running_error(&err) {
                 self.record_note(
                     "fault.clear_network",
-                    format!("member={member_id} skipped=container_not_running"),
+                    format!("service={service} skipped=container_not_running"),
                 )?;
                 return Ok(());
             }
             return Err(err);
         }
-        self.record_note("fault.clear_network", format!("member={member_id}"))?;
+        self.record_note("fault.clear_network", format!("service={service}"))?;
         Ok(())
     }
 
-    pub fn heal_member_network_faults(&self, member_id: &str) -> Result<()> {
-        self.clear_network_faults(member_id)?;
-        for peer_id in ALL_CLUSTER_MEMBERS.iter().copied() {
-            if peer_id == member_id {
+    pub fn heal_member_network_faults(&self, member: ClusterMember) -> Result<()> {
+        self.clear_network_faults(member.into())?;
+        for peer in DATABASE_MEMBERS {
+            if peer == member {
                 continue;
             }
             for path in [TrafficPath::Postgres, TrafficPath::Api, TrafficPath::Dcs] {
-                self.unblock_member_path_to_host(peer_id, path, member_id)?;
+                self.unblock_member_path_to_host(peer, path, member.into())?;
             }
         }
-        self.record_note("fault.heal_member_network", format!("member={member_id}"))?;
+        self.record_note("fault.heal_member_network", format!("member={member}"))?;
         Ok(())
     }
 
     pub fn block_member_path_to_host(
         &self,
-        member_id: &str,
+        member: ClusterMember,
         path: TrafficPath,
-        peer_service: &str,
+        peer_service: ComposeService,
     ) -> Result<()> {
         let peer_container_id = self.service_container_id(peer_service)?;
         let peer_ip = self
             .docker
             .container_ipv4_address(peer_container_id.as_str())?;
-        self.ensure_fault_plumbing(member_id)?;
+        self.ensure_fault_plumbing(member.into())?;
         let script = append_fault_rule_script(peer_ip.as_str(), path.port());
-        let _ = self.run_shell_as_root(member_id, script.as_str())?;
+        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
         self.record_note(
             "fault.block_path",
             format!(
-                "member={member_id} path={} peer={peer_service}",
+                "member={member} path={} peer={peer_service}",
                 path.label()
             ),
         )?;
@@ -432,15 +606,15 @@ impl HarnessShared {
 
     pub fn unblock_member_path_to_host(
         &self,
-        member_id: &str,
+        member: ClusterMember,
         path: TrafficPath,
-        peer_service: &str,
+        peer_service: ComposeService,
     ) -> Result<()> {
-        if !self.service_is_running(member_id)? {
+        if !self.service_is_running(member.into())? {
             self.record_note(
                 "fault.unblock_path",
                 format!(
-                    "member={member_id} path={} peer={peer_service} skipped=container_not_running",
+                    "member={member} path={} peer={peer_service} skipped=container_not_running",
                     path.label()
                 ),
             )?;
@@ -451,11 +625,11 @@ impl HarnessShared {
             .docker
             .container_ipv4_address(peer_container_id.as_str())?;
         let script = remove_fault_rule_script(peer_ip.as_str(), path.port());
-        let _ = self.run_shell_as_root(member_id, script.as_str())?;
+        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
         self.record_note(
             "fault.unblock_path",
             format!(
-                "member={member_id} path={} peer={peer_service}",
+                "member={member} path={} peer={peer_service}",
                 path.label()
             ),
         )?;
@@ -464,103 +638,78 @@ impl HarnessShared {
 
     pub fn isolate_member_from_peer_on_path(
         &self,
-        member_id: &str,
-        peer_id: &str,
+        member: ClusterMember,
+        peer: ClusterMember,
         path: TrafficPath,
     ) -> Result<()> {
-        self.block_member_path_to_host(member_id, path, peer_id)?;
-        self.block_member_path_to_host(peer_id, path, member_id)
+        self.block_member_path_to_host(member, path, peer.into())?;
+        self.block_member_path_to_host(peer, path, member.into())
     }
 
     pub fn isolate_member_from_all_peers_on_path(
         &self,
-        member_id: &str,
+        member: ClusterMember,
         path: TrafficPath,
     ) -> Result<()> {
-        ALL_CLUSTER_MEMBERS
-            .iter()
-            .filter(|peer_id| **peer_id != member_id)
-            .try_for_each(|peer_id| self.isolate_member_from_peer_on_path(member_id, peer_id, path))
+        DATABASE_MEMBERS
+            .into_iter()
+            .filter(|peer| *peer != member)
+            .try_for_each(|peer| self.isolate_member_from_peer_on_path(member, peer, path))
     }
 
-    pub fn isolate_member_from_observer_on_api(&self, member_id: &str) -> Result<()> {
-        self.block_member_path_to_host(member_id, TrafficPath::Api, OBSERVER_SERVICE)
+    pub fn isolate_member_from_observer_on_api(&self, member: ClusterMember) -> Result<()> {
+        self.block_member_path_to_host(
+            member,
+            TrafficPath::Api,
+            SupportService::Observer.into(),
+        )
     }
 
-    pub fn cut_member_off_from_dcs(&self, member_id: &str) -> Result<()> {
-        self.block_member_path_to_host(member_id, TrafficPath::Dcs, ETCD_SERVICE)
+    pub fn cut_member_off_from_dcs(&self, member: ClusterMember) -> Result<()> {
+        self.block_member_path_to_host(member, TrafficPath::Dcs, SupportService::Etcd.into())
     }
 
-    pub fn set_blocker(&self, member_id: &str, blocker: BlockerKind, enabled: bool) -> Result<()> {
-        let container_id = self.service_container_id(member_id)?;
-        let script = if enabled {
-            touch_file_script(blocker.marker_path())
+    pub fn set_blocker(
+        &self,
+        member: ClusterMember,
+        blocker: BlockerKind,
+        enabled: bool,
+    ) -> Result<()> {
+        if enabled {
+            self.write_fault_marker(member, blocker.marker_path())?;
+            self.remove_fault_marker(member, blocker.clear_on_start_marker_path())?;
         } else {
-            remove_file_script(blocker.marker_path())
-        };
-        if enabled && !self.service_is_running(member_id)? {
-            self.docker
-                .touch_file_in_container(container_id.as_str(), blocker.marker_path())?;
-        } else if !enabled && !self.service_is_running(member_id)? {
-            self.docker.touch_file_in_container(
-                container_id.as_str(),
-                blocker.clear_on_start_marker_path(),
-            )?;
-        } else if let Err(err) = self.run_shell_as_root(member_id, script.as_str()) {
-            if enabled && container_not_running_error(&err) {
-                self.docker
-                    .touch_file_in_container(container_id.as_str(), blocker.marker_path())?;
-            } else if !enabled && container_not_running_error(&err) {
-                self.docker.touch_file_in_container(
-                    container_id.as_str(),
-                    blocker.clear_on_start_marker_path(),
-                )?;
-            } else {
-                return Err(err);
-            }
+            self.remove_fault_marker(member, blocker.marker_path())?;
+            self.remove_fault_marker(member, blocker.clear_on_start_marker_path())?;
         }
         self.record_note(
             "fault.blocker",
             format!(
-                "member={member_id} blocker={} enabled={enabled}",
+                "member={member} blocker={} enabled={enabled}",
                 blocker.label()
             ),
         )?;
         Ok(())
     }
 
-    pub fn wipe_member_data_dir(&self, member_id: &str) -> Result<()> {
-        let container_id = self.service_container_id(member_id)?;
+    pub fn wipe_member_data_dir(&self, member: ClusterMember) -> Result<()> {
         let marker_path = "/var/lib/pgtuskmaster/faults/wipe-data-on-start";
-        if self.service_is_running(member_id)? {
-            let script = touch_file_script(marker_path);
-            if let Err(err) = self.run_shell_as_root(member_id, script.as_str()) {
-                if container_not_running_error(&err) {
-                    self.docker
-                        .touch_file_in_container(container_id.as_str(), marker_path)?;
-                } else {
-                    return Err(err);
-                }
-            }
-        } else {
-            self.docker
-                .touch_file_in_container(container_id.as_str(), marker_path)?;
-        }
-        self.record_note("fault.wipe_data_dir", format!("member={member_id}"))?;
+        self.write_fault_marker(member, marker_path)?;
+        self.record_note("fault.wipe_data_dir", format!("member={member}"))?;
         Ok(())
     }
 
-    pub fn wedge_member_postgres(&self, member_id: &str) -> Result<()> {
+    pub fn wedge_member_postgres(&self, member: ClusterMember) -> Result<()> {
         let script = signal_named_process_script("STOP", "postgres");
-        let _ = self.run_shell_as_root(member_id, script.as_str())?;
-        self.record_note("fault.wedge_postgres", format!("member={member_id}"))?;
+        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
+        self.record_note("fault.wedge_postgres", format!("member={member}"))?;
         Ok(())
     }
 
-    pub fn unwedge_member_postgres(&self, member_id: &str) -> Result<()> {
+    pub fn unwedge_member_postgres(&self, member: ClusterMember) -> Result<()> {
         let script = signal_named_process_script("CONT", "postgres");
-        let _ = self.run_shell_as_root(member_id, script.as_str())?;
-        self.record_note("fault.unwedge_postgres", format!("member={member_id}"))?;
+        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
+        self.record_note("fault.unwedge_postgres", format!("member={member}"))?;
         Ok(())
     }
 
@@ -592,7 +741,11 @@ impl HarnessShared {
         }
     }
 
-    pub fn assert_member_never_primary_since(&self, member_id: &str, since_ms: u128) -> Result<()> {
+    pub fn assert_member_never_primary_since(
+        &self,
+        member: ClusterMember,
+        since_ms: u128,
+    ) -> Result<()> {
         let timeline = self.timeline_entries()?;
         let mut member_was_primary = false;
         let mut member_relinquished_primary = false;
@@ -609,7 +762,7 @@ impl HarnessShared {
                 .cloned()
                 .and_then(|status| serde_json::from_value::<NodeState>(status).ok())
                 .and_then(|status| operator_visible_primary(&status))
-                .is_some_and(|primary| primary == member_id);
+                .is_some_and(|primary| primary == member.service_name());
             if member_is_primary {
                 let regained_primary = member_was_primary && member_relinquished_primary;
                 member_was_primary = true;
@@ -623,30 +776,66 @@ impl HarnessShared {
         });
         match offending {
             Some(_) => Err(HarnessError::message(format!(
-                "timeline captured `{member_id}` regaining primary after marker {since_ms}"
+                "timeline captured `{member}` regaining primary after marker {since_ms}"
             ))),
             None => Ok(()),
         }
     }
 
     pub fn clear_all_network_faults(&self) -> Result<()> {
-        for service in ALL_CLUSTER_MEMBERS
-            .iter()
-            .copied()
-            .chain([OBSERVER_SERVICE].into_iter())
+        for service in DATABASE_MEMBERS
+            .into_iter()
+            .map(ComposeService::from)
+            .chain([SupportService::Observer.into()].into_iter())
         {
             self.clear_network_faults(service)?;
         }
         Ok(())
     }
 
-    fn service_is_running(&self, service: &str) -> Result<bool> {
+    fn service_is_running(&self, service: ComposeService) -> Result<bool> {
         let container_id = self.service_container_id(service)?;
         Ok(self.docker.container_state_status(container_id.as_str())? == "running")
     }
 
+    fn host_fault_dir(&self, member: ClusterMember) -> PathBuf {
+        self.source_copy_dir.join("faults").join(member.service_name())
+    }
+
+    fn host_fault_marker_path(&self, member: ClusterMember, marker_path: &str) -> Result<PathBuf> {
+        let relative_path = Path::new(marker_path)
+            .strip_prefix(FAULT_DIR)
+            .map_err(|_| {
+                HarnessError::message(format!(
+                    "fault marker `{marker_path}` does not live under `{FAULT_DIR}`"
+                ))
+            })?;
+        Ok(self.host_fault_dir(member).join(relative_path))
+    }
+
+    fn write_fault_marker(&self, member: ClusterMember, marker_path: &str) -> Result<()> {
+        let marker_file = self.host_fault_marker_path(member, marker_path)?;
+        if let Some(parent) = marker_file.parent() {
+            create_dir_all(parent)?;
+        }
+        write_text_file(marker_file.as_path(), "")?;
+        Ok(())
+    }
+
+    fn remove_fault_marker(&self, member: ClusterMember, marker_path: &str) -> Result<()> {
+        let marker_file = self.host_fault_marker_path(member, marker_path)?;
+        match fs::remove_file(marker_file.as_path()) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(HarnessError::Io {
+                path: marker_file,
+                source,
+            }),
+        }
+    }
+
     async fn bootstrap_cluster(&self) -> Result<()> {
-        self.wait_for_service_health("etcd").await?;
+        self.wait_for_service_health(SupportService::Etcd.into()).await?;
         self.record_note("bootstrap", "starting seed primary node-b")?;
         self.docker.compose_up_services(
             self.compose_file.as_path(),
@@ -662,7 +851,7 @@ impl HarnessShared {
         )
     }
 
-    async fn wait_for_service_health(&self, service: &str) -> Result<()> {
+    async fn wait_for_service_health(&self, service: ComposeService) -> Result<()> {
         let deadline = Instant::now() + self.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
@@ -810,11 +999,19 @@ impl HarnessShared {
             Err(err) => failures.push(format!("observer state capture failed: {err}")),
         }
 
-        for service in ["observer", "node-a", "node-b", "node-c", "etcd"] {
+        for service in [
+            SupportService::Observer.into(),
+            ClusterMember::NodeA.into(),
+            ClusterMember::NodeB.into(),
+            ClusterMember::NodeC.into(),
+            SupportService::Etcd.into(),
+        ] {
             match self.service_container_id(service) {
                 Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
                     Ok(inspect) => {
-                        let artifact = self.artifacts_dir.join(format!("inspect-{service}.json"));
+                        let artifact = self
+                            .artifacts_dir
+                            .join(format!("inspect-{}.json", service.service_name()));
                         write_text_file(artifact.as_path(), inspect.as_str())?;
                     }
                     Err(err) => failures.push(format!(
@@ -950,6 +1147,15 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
                 copy_file(source_path.as_path(), destination_path.as_path())?;
             }
         }
+    }
+    Ok(())
+}
+
+fn create_fault_directories(root: &Path) -> Result<()> {
+    let faults_root = root.join("faults");
+    create_dir_all(faults_root.as_path())?;
+    for member in ClusterMember::ALL {
+        create_dir_all(faults_root.join(member.service_name()).as_path())?;
     }
     Ok(())
 }

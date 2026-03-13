@@ -8,6 +8,7 @@ mod process;
 pub mod runner;
 pub mod steps;
 pub mod timeouts;
+pub mod topology;
 pub mod workload;
 pub mod world;
 

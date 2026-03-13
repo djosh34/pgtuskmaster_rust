@@ -1,8 +1,7 @@
 use std::{
     collections::BTreeMap,
-    fs,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -271,33 +270,6 @@ impl DockerCli {
         Ok(())
     }
 
-    pub fn touch_file_in_container(&self, container: &str, destination: &str) -> Result<()> {
-        let temp_path = self.empty_temp_file_path(container)?;
-        fs::write(temp_path.as_path(), "").map_err(|source| HarnessError::Io {
-            path: temp_path.clone(),
-            source,
-        })?;
-
-        let copy_result = self.run(
-            [
-                "cp".to_string(),
-                temp_path.display().to_string(),
-                format!("{container}:{destination}"),
-            ],
-            format!("copying marker file into stopped container `{container}`"),
-        );
-
-        let remove_result =
-            fs::remove_file(temp_path.as_path()).map_err(|source| HarnessError::Io {
-                path: temp_path.clone(),
-                source,
-            });
-
-        let _ = copy_result?;
-        remove_result?;
-        Ok(())
-    }
-
     pub fn remove_container_force(&self, container: &str) -> Result<()> {
         let _ = self.run(
             [
@@ -507,19 +479,6 @@ impl DockerCli {
         let context = context.into();
         self.run_in_dir(cwd, args, context.clone())?
             .stdout_text(context)
-    }
-
-    fn empty_temp_file_path(&self, container: &str) -> Result<PathBuf> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|source| {
-                HarnessError::message(format!(
-                    "system clock is before unix epoch while preparing marker for `{container}`: {source}"
-                ))
-            })?
-            .as_millis();
-        let sanitized_container = container.replace('/', "_");
-        Ok(std::env::temp_dir().join(format!("pgtm-ha-marker-{sanitized_container}-{millis}")))
     }
 
     fn inspect_container_entries(&self, container: &str) -> Result<Vec<DockerInspectEntry>> {

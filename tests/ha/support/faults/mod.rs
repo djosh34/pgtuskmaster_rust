@@ -1,6 +1,9 @@
-pub const ALL_CLUSTER_MEMBERS: [&str; 3] = ["node-a", "node-b", "node-c"];
-pub const OBSERVER_SERVICE: &str = "observer";
-pub const ETCD_SERVICE: &str = "etcd";
+use crate::support::topology::{ClusterMember, ComposeService, SupportService};
+
+pub const DATABASE_MEMBERS: [ClusterMember; 3] = ClusterMember::ALL;
+pub const OBSERVER_SERVICE_NAME: &str = "observer";
+pub const ETCD_SERVICE_NAME: &str = "etcd";
+pub const ETCD_SERVICE: ComposeService = ComposeService::Support(SupportService::Etcd);
 pub const IPTABLES_CHAIN: &str = "PGTM_HA_FAULTS";
 pub const FAULT_DIR: &str = "/var/lib/pgtuskmaster/faults";
 
@@ -110,18 +113,6 @@ while iptables -w -D {chain} -p tcp -s {peer} --sport {port} -j REJECT 2>/dev/nu
         peer = peer,
         port = port,
     )
-}
-
-pub fn touch_file_script(path: &str) -> String {
-    format!(
-        "mkdir -p {dir} && : > {path}",
-        dir = FAULT_DIR,
-        path = shell_quote(path)
-    )
-}
-
-pub fn remove_file_script(path: &str) -> String {
-    format!("rm -f {path}", path = shell_quote(path))
 }
 
 pub fn signal_named_process_script(signal: &str, process_name: &str) -> String {

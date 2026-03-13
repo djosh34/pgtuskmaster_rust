@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CURRENT_TASK="NONE"
 
 # if current task is not empty, set current_task
-if [[ -f  "$SCRIPT_DIR/current_task.txt"]]; then
+if [[ -f "$SCRIPT_DIR/current_task.txt" ]]; then
   CURRENT_TASK="$(cat "$SCRIPT_DIR/current_task.txt")"
 
   # remove all newlines from current task

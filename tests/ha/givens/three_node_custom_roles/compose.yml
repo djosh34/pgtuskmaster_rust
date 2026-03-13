@@ -62,6 +62,7 @@ services:
     volumes:
       - node-a-data:/var/lib/postgresql
       - node-a-logs:/var/log/pgtuskmaster
+      - ./faults/node-a:/var/lib/pgtuskmaster/faults
 
   node-b:
     image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
@@ -97,6 +98,7 @@ services:
     volumes:
       - node-b-data:/var/lib/postgresql
       - node-b-logs:/var/log/pgtuskmaster
+      - ./faults/node-b:/var/lib/pgtuskmaster/faults
 
   node-c:
     image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}
@@ -132,6 +134,7 @@ services:
     volumes:
       - node-c-data:/var/lib/postgresql
       - node-c-logs:/var/log/pgtuskmaster
+      - ./faults/node-c:/var/lib/pgtuskmaster/faults
 
   observer:
     image: pgtm-cucumber-test:${PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}

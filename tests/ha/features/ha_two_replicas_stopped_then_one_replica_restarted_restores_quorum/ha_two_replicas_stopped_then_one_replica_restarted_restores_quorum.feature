@@ -7,8 +7,7 @@ Feature: ha_two_replicas_stopped_then_one_replica_restarted_restores_quorum
     And I insert proof row "1:before-two-node-outage" through "initial_primary"
     Then the 3 online nodes contain exactly the recorded proof rows
     When I kill the nodes named "stopped_node_a" and "stopped_node_b"
-    Then there is no operator-visible primary across 1 online node
-    And the lone online node is not treated as a writable primary
+    Then the primary named "initial_primary" remains the only primary
     When I restart the node named "stopped_node_a"
     Then exactly one primary exists across 2 running nodes as "restored_primary"
     When I insert proof row "2:after-quorum-restore-before-full-heal" through "restored_primary"

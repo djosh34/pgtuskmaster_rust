@@ -1,4 +1,4 @@
-## Task: Refactor The HA Acceptance Suite Around Typed Invariants And `NodeState`-First Assertions <status>not_started</status> <passes>false</passes>
+## Task: Refactor The HA Acceptance Suite Around Typed Invariants And `NodeState`-First Assertions <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -298,117 +298,117 @@ Thrown away:
 </description>
 
 <acceptance_criteria>
-- [ ] `tests/ha/support/steps/mod.rs` is fully replaced by a split step-module tree, and no replacement step file becomes a new god module with mixed harness/assertion/SQL/polling responsibilities
-- [ ] The suite-structure cleanup is fully landed in this task: no mixed-concern god module remains in `tests/ha/support`, no hidden fallback-based role inference remains, and no stale mutable bookkeeping like `unsampled_nodes` survives under a new name
-- [ ] A typed shared topology source exists and removes duplicated hardcoded member/service/config knowledge from `tests/ha/support/faults/mod.rs`, `tests/ha/support/observer/pgtm.rs`, and step files
-- [ ] The refactor lands the concrete canonical step set described in this task, and each surviving step maps to one typed underlying harness/assertion operation rather than a large mixed-concern branch
-- [ ] The feature corpus is rewritten to the concrete target feature/scenario inventory described in this task, including the specified merges of current scenario files into scenario-family feature files
-- [ ] `NodeState` is the sole truth source for cluster-role / authority / quorum / fail-safe assertions; no step or assertion helper falls back to SQL or `pgtm` connection behavior to reinterpret `Unknown` cluster state
-- [ ] SQL remains the sole truth source for data-plane assertions such as proof-row visibility, replication convergence, write rejection, fencing cutoff, and split-brain evidence
-- [ ] Where a scenario claims a node is authoritative, non-authoritative, writable, or non-writable, the suite also performs a separate SQL corroboration check that agrees with the published `NodeState`; this corroboration must remain a separate assertion and must never be used as fallback role inference
-- [ ] `pgtm primary` / `pgtm replicas` checks are reduced to explicit product-surface assertions or dedicated tests and are no longer used as a pervasive co-assertion of cluster authority
-- [ ] Fault injection is rebuilt around one clean harness-controlled mechanism that works for running nodes, stopped nodes, and repeated restart sequences without direct stopped-container file copying or permission-sensitive cleanup behavior
-- [ ] Switchover admission and failover promotion use the exact same typed eligibility contract; the suite explicitly covers both accepted and rejected targeted switchover cases against that one shared predicate
-- [ ] `unsampled_nodes` is removed entirely, and all assertions that previously depended on it are replaced by explicit, typed reachability or scope expectations
-- [ ] The new feature DSL uses explicit semantic aliases declared near scenario start and no hidden "default alias" behavior; physical node names are used only where the scenario truly depends on fixed identities or configs
-- [ ] Mid-scenario assertions remain present where they are semantically necessary; the refactor does not collapse the suite into end-only assertions
-- [ ] Current fallback behavior that masks `NodeState` bugs is removed, including the `MemberPostgresView::Unknown(_)` fallback path in HA assertions unless a scenario explicitly asserts that state should remain unknown
-- [ ] Recovery-path scenarios assert typed `ha` / `process` state exposed through `NodeState`, including the ordering policy that follower/start-streaming recovery is preferred when valid, `pg_rewind` is tried before `pg_basebackup` when rewind is possible, and `pg_basebackup` is only used when the typed state requires it or after explicit rewind failure with fallback-to-basebackup semantics
-- [ ] Log-based HA assertions are removed. Compose logs and process logs may be captured for debugging artifacts, but no HA scenario passes or fails based on matching log text
-- [ ] Repetitive feature files are merged where possible without losing coverage of a distinct invariant or fault class
-- [ ] The resulting feature set is organized around explicit invariant classes and scenario families, with clear naming and without preserving current file count or wording just for continuity
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] `tests/ha/support/steps/mod.rs` is fully replaced by a split step-module tree, and no replacement step file becomes a new god module with mixed harness/assertion/SQL/polling responsibilities
+- [x] The suite-structure cleanup is fully landed in this task: no mixed-concern god module remains in `tests/ha/support`, no hidden fallback-based role inference remains, and no stale mutable bookkeeping like `unsampled_nodes` survives under a new name
+- [x] A typed shared topology source exists and removes duplicated hardcoded member/service/config knowledge from `tests/ha/support/faults/mod.rs`, `tests/ha/support/observer/pgtm.rs`, and step files
+- [x] The refactor lands the concrete canonical step set described in this task, and each surviving step maps to one typed underlying harness/assertion operation rather than a large mixed-concern branch
+- [x] The feature corpus is rewritten to the concrete target feature/scenario inventory described in this task, including the specified merges of current scenario files into scenario-family feature files
+- [x] `NodeState` is the sole truth source for cluster-role / authority / quorum / fail-safe assertions; no step or assertion helper falls back to SQL or `pgtm` connection behavior to reinterpret `Unknown` cluster state
+- [x] SQL remains the sole truth source for data-plane assertions such as proof-row visibility, replication convergence, write rejection, fencing cutoff, and split-brain evidence
+- [x] Where a scenario claims a node is authoritative, non-authoritative, writable, or non-writable, the suite also performs a separate SQL corroboration check that agrees with the published `NodeState`; this corroboration must remain a separate assertion and must never be used as fallback role inference
+- [x] `pgtm primary` / `pgtm replicas` checks are reduced to explicit product-surface assertions or dedicated tests and are no longer used as a pervasive co-assertion of cluster authority
+- [x] Fault injection is rebuilt around one clean harness-controlled mechanism that works for running nodes, stopped nodes, and repeated restart sequences without direct stopped-container file copying or permission-sensitive cleanup behavior
+- [x] Switchover admission and failover promotion use the exact same typed eligibility contract; the suite explicitly covers both accepted and rejected targeted switchover cases against that one shared predicate
+- [x] `unsampled_nodes` is removed entirely, and all assertions that previously depended on it are replaced by explicit, typed reachability or scope expectations
+- [x] The new feature DSL uses explicit semantic aliases declared near scenario start and no hidden "default alias" behavior; physical node names are used only where the scenario truly depends on fixed identities or configs
+- [x] Mid-scenario assertions remain present where they are semantically necessary; the refactor does not collapse the suite into end-only assertions
+- [x] Current fallback behavior that masks `NodeState` bugs is removed, including the `MemberPostgresView::Unknown(_)` fallback path in HA assertions unless a scenario explicitly asserts that state should remain unknown
+- [x] Recovery-path scenarios assert typed `ha` / `process` state exposed through `NodeState`, including the ordering policy that follower/start-streaming recovery is preferred when valid, `pg_rewind` is tried before `pg_basebackup` when rewind is possible, and `pg_basebackup` is only used when the typed state requires it or after explicit rewind failure with fallback-to-basebackup semantics
+- [x] Log-based HA assertions are removed. Compose logs and process logs may be captured for debugging artifacts, but no HA scenario passes or fails based on matching log text
+- [x] Repetitive feature files are merged where possible without losing coverage of a distinct invariant or fault class
+- [x] The resulting feature set is organized around explicit invariant classes and scenario families, with clear naming and without preserving current file count or wording just for continuity
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ## Detailed implementation plan
 
 ### Phase 1: Define the post-refactor truth model and invariant catalog
-- [ ] Create a short HA-test invariant catalog in the repo documentation or task notes and implement against it. The catalog must name:
+- [x] Create a short HA-test invariant catalog in the repo documentation or task notes and implement against it. The catalog must name:
   - safety invariants
   - liveness invariants
   - which observation surface proves each invariant (`NodeState`, SQL, or explicit `pgtm` product-surface checks)
-- [ ] Audit all current `.feature` files in `tests/ha/features/` and map each one to one or more invariant classes. Record which scenarios are:
+- [x] Audit all current `.feature` files in `tests/ha/features/` and map each one to one or more invariant classes. Record which scenarios are:
   - unique and must remain
   - repetitive variants that should be merged
   - currently over-asserting the same fact through multiple truth surfaces
-- [ ] Extend the invariant catalog with explicit cross-surface corroboration rules:
+- [x] Extend the invariant catalog with explicit cross-surface corroboration rules:
   - `NodeState` remains authoritative for cluster-role assertions
   - SQL corroboration is a separate required check where the scenario claims client-visible writability or non-writability
   - disagreement between `NodeState` and SQL is a test failure, not a cue to reinterpret one surface through the other
-- [ ] Make the invariant vocabulary explicit in code comments and/or docs for the new assertion layer so a future maintainer understands why some assertions are `always`-style transition checks and others are `eventually`-style convergence checks.
+- [x] Make the invariant vocabulary explicit in code comments and/or docs for the new assertion layer so a future maintainer understands why some assertions are `always`-style transition checks and others are `eventually`-style convergence checks.
 
 ### Phase 2: Introduce typed topology and typed scenario state
-- [ ] Add a shared topology module, for example `tests/ha/support/topology.rs`, that owns:
+- [x] Add a shared topology module, for example `tests/ha/support/topology.rs`, that owns:
   - cluster members
   - service names
   - observer config paths
   - helper iteration over members
-- [ ] Replace repeated string constants and `all_cluster_members()` / hardcoded config-path matches with that shared topology source.
-- [ ] Refactor `ScenarioState` in `tests/ha/support/world/mod.rs` into smaller typed structs such as:
+- [x] Replace repeated string constants and `all_cluster_members()` / hardcoded config-path matches with that shared topology source.
+- [x] Refactor `ScenarioState` in `tests/ha/support/world/mod.rs` into smaller typed structs such as:
   - alias registry
   - workload/proof tracking
   - transition markers and timeline window state
   - expected fault/reachability scope
-- [ ] Avoid bags of unrelated `BTreeSet<String>` state where a typed enum or dedicated struct would make the semantics explicit.
+- [x] Avoid bags of unrelated `BTreeSet<String>` state where a typed enum or dedicated struct would make the semantics explicit.
 
 ### Phase 3: Split the support code by domain
-- [ ] Replace the current monolithic layout with domain-based modules. A target layout like the following is acceptable:
+- [x] Replace the current monolithic layout with domain-based modules. A target layout like the following is acceptable:
   - `tests/ha/support/world/` for harness and scenario state
   - `tests/ha/support/observe/` for `NodeState`, SQL, and product-surface observation helpers
   - `tests/ha/support/assert/` for polling and invariant assertions
   - `tests/ha/support/steps/` for thin cucumber adapters
-- [ ] Move repeated polling loops out of step files into a generic polling/assertion layer. There should be one shared poll engine and small typed predicate/check helpers rather than many hand-rolled deadline loops.
-- [ ] Move DSN resolution, row-fetch logic, and proof-table helpers out of step files into dedicated SQL/data modules.
-- [ ] Keep `tests/ha/support/faults/mod.rs` typed and focused; move only the higher-level orchestration around it, not the fault ADTs themselves.
-- [ ] Consider introducing a typed Compose context or wrapper around the repeated Compose command plumbing in `tests/ha/support/docker/cli.rs`.
-- [ ] Remove log-scraping assertion helpers from the HA pass/fail path. If logs are still collected, they should live only in artifact/debug helpers and not in the assertion DSL.
-- [ ] Redesign fault injection under `tests/ha/support/faults/` and adjacent harness code so blocker/restart-time faults are expressed through one explicit harness-controlled channel, preferably a dedicated bind-mounted fault-control directory or an equivalently clean mechanism, instead of direct marker-file copying into stopped containers.
+- [x] Move repeated polling loops out of step files into a generic polling/assertion layer. There should be one shared poll engine and small typed predicate/check helpers rather than many hand-rolled deadline loops.
+- [x] Move DSN resolution, row-fetch logic, and proof-table helpers out of step files into dedicated SQL/data modules.
+- [x] Keep `tests/ha/support/faults/mod.rs` typed and focused; move only the higher-level orchestration around it, not the fault ADTs themselves.
+- [x] Consider introducing a typed Compose context or wrapper around the repeated Compose command plumbing in `tests/ha/support/docker/cli.rs`.
+- [x] Remove log-scraping assertion helpers from the HA pass/fail path. If logs are still collected, they should live only in artifact/debug helpers and not in the assertion DSL.
+- [x] Redesign fault injection under `tests/ha/support/faults/` and adjacent harness code so blocker/restart-time faults are expressed through one explicit harness-controlled channel, preferably a dedicated bind-mounted fault-control directory or an equivalently clean mechanism, instead of direct marker-file copying into stopped containers.
 
 ### Phase 4: Remove fallback-based role inference
-- [ ] Delete the current cluster-role fallback behavior where `NodeState` `Unknown` is treated as acceptable if a direct SQL check suggests the node is in recovery.
-- [ ] Rewrite replica/primary assertions so they fail if `NodeState` is unknown at a point where the suite expects the node to have known state.
-- [ ] Keep direct SQL checks only for data assertions, and keep `pgtm` helper checks only for explicit product-surface assertions.
-- [ ] Add explicit paired-but-separate SQL corroboration helpers for the scenarios that claim a node is writable or non-writable, so the suite checks that the data plane agrees with the published `NodeState` without using SQL as fallback role inference.
-- [ ] Audit all usages of:
+- [x] Delete the current cluster-role fallback behavior where `NodeState` `Unknown` is treated as acceptable if a direct SQL check suggests the node is in recovery.
+- [x] Rewrite replica/primary assertions so they fail if `NodeState` is unknown at a point where the suite expects the node to have known state.
+- [x] Keep direct SQL checks only for data assertions, and keep `pgtm` helper checks only for explicit product-surface assertions.
+- [x] Add explicit paired-but-separate SQL corroboration helpers for the scenarios that claim a node is writable or non-writable, so the suite checks that the data plane agrees with the published `NodeState` without using SQL as fallback role inference.
+- [x] Audit all usages of:
   - `assert_member_is_replica_via_member(...)`
   - `sql_target_for_member(...)`
   - `current_primary_target(...)`
   - any other helper that silently substitutes one observation surface for another
-- [ ] For any remaining fallback that is genuinely needed for a data-plane assertion, document why it is allowed there and why it is not a cluster-role fallback.
+- [x] For any remaining fallback that is genuinely needed for a data-plane assertion, document why it is allowed there and why it is not a cluster-role fallback.
 
 ### Phase 5: Remove `unsampled_nodes` and replace with explicit reachability scope
-- [ ] Delete `unsampled_nodes` from `ScenarioState`.
-- [ ] Replace `online_expected_count(...)` and similar helpers with explicit assertion scopes such as:
+- [x] Delete `unsampled_nodes` from `ScenarioState`.
+- [x] Replace `online_expected_count(...)` and similar helpers with explicit assertion scopes such as:
   - reachable members from observer API
   - expected healthy SQL targets
   - expected authoritative-members set
-- [ ] Rewrite affected assertions so their scope is passed in explicitly instead of derived from hidden mutable state.
-- [ ] Audit every current usage of `unsampled_nodes` and `proof_convergence_blocked_nodes`. If a concept remains necessary, replace it with a better-named, typed structure that describes the actual reason an assertion scope is reduced or delayed.
-- [ ] Ensure that removing `unsampled_nodes` does not accidentally weaken minority-partition or API-isolation scenarios; those scenarios must still state exactly which observations should or should not work at each step.
+- [x] Rewrite affected assertions so their scope is passed in explicitly instead of derived from hidden mutable state.
+- [x] Audit every current usage of `unsampled_nodes` and `proof_convergence_blocked_nodes`. If a concept remains necessary, replace it with a better-named, typed structure that describes the actual reason an assertion scope is reduced or delayed.
+- [x] Ensure that removing `unsampled_nodes` does not accidentally weaken minority-partition or API-isolation scenarios; those scenarios must still state exactly which observations should or should not work at each step.
 
 ### Phase 6: Design a smaller canonical step DSL
-- [ ] Introduce typed cucumber parameters using `#[derive(Parameter)]` where helpful. This repo's `cucumber = "0.22.1"` supports custom typed parameters.
-- [ ] Create a small canonical set of setup/action/assertion step families. A target design is:
+- [x] Introduce typed cucumber parameters using `#[derive(Parameter)]` where helpful. This repo's `cucumber = "0.22.1"` supports custom typed parameters.
+- [x] Create a small canonical set of setup/action/assertion step families. A target design is:
   - setup: start harness, label participants, create proof/workload context
   - actions: kill/start/restart/isolate/heal/enable-blocker/request-switchover
   - cluster assertions: exactly one primary, no primary, member is replica, member never became primary, no dual-primary during window
   - data assertions: write token, rows converge, row absent during lag, fencing cutoff, workload summary checks
   - product assertions: explicit `pgtm primary` or `pgtm replicas` checks where intentionally covered
-- [ ] Merge step families only when the merged step corresponds to one underlying typed operation. Examples that should likely merge:
+- [x] Merge step families only when the merged step corresponds to one underlying typed operation. Examples that should likely merge:
   - enable/disable blocker
   - kill/start/restart with action parameter
   - isolate on `api|dcs|postgres|all`
   - several primary wait/assert variants
-- [ ] Do not merge steps if the result becomes a large branching function with unrelated world-state side effects.
-- [ ] Eliminate duplicated current behaviors such as the two distinct "aliases are distinct" steps.
+- [x] Do not merge steps if the result becomes a large branching function with unrelated world-state side effects.
+- [x] Eliminate duplicated current behaviors such as the two distinct "aliases are distinct" steps.
 
 ### Phase 7: Rewrite feature files around scenario families and invariants
-- [ ] Rewrite the `.feature` files under `tests/ha/features/` so they name semantic participants explicitly near the start rather than mixing semantic names and physical member names throughout the scenario.
-- [ ] Merge feature files when they are materially the same invariant family and differ only by repetitive wording or a thin parameter variation.
-- [ ] Preserve or improve coverage for these scenario families:
+- [x] Rewrite the `.feature` files under `tests/ha/features/` so they name semantic participants explicitly near the start rather than mixing semantic names and physical member names throughout the scenario.
+- [x] Merge feature files when they are materially the same invariant family and differ only by repetitive wording or a thin parameter variation.
+- [x] Preserve or improve coverage for these scenario families:
   - primary loss and old-primary rejoin
   - replica outage / flapping replica
   - repeated failovers with distinct leaders when topology still allows them
@@ -423,37 +423,37 @@ Thrown away:
   - targeted switchover accepted
   - targeted switchover rejected
   - blocked rejoin / blocked basebackup / blocked rewind
-- [ ] Preserve or improve coverage for recovery-path policy itself:
+- [x] Preserve or improve coverage for recovery-path policy itself:
   - a reusable replica/old-primary rejoin prefers follower/start-streaming recovery instead of destructive recovery
   - rewind-eligible divergence plans `pg_rewind` before `pg_basebackup`
   - `pg_basebackup` is used only when typed state requires it or after explicit rewind failure marked as fallback-to-basebackup
-- [ ] For each scenario family, decide which assertions are:
+- [x] For each scenario family, decide which assertions are:
   - immediate post-action assertions
   - transition-window safety assertions
   - eventual convergence assertions after heal/recovery
-- [ ] Make sure the new feature files remain readable and declarative. The target is a smaller, cleaner DSL, not hidden complexity inside helper wording.
-- [ ] Rewrite the current lagging-replica failover scenario so it asserts a correct invariant. Do not preserve the current "lagging replica is not promoted" expectation unless the scenario topology actually makes that replica ineligible under the same typed rules used by failover and switchover.
+- [x] Make sure the new feature files remain readable and declarative. The target is a smaller, cleaner DSL, not hidden complexity inside helper wording.
+- [x] Rewrite the current lagging-replica failover scenario so it asserts a correct invariant. Do not preserve the current "lagging replica is not promoted" expectation unless the scenario topology actually makes that replica ineligible under the same typed rules used by failover and switchover.
 
 ### Phase 8: Narrow and isolate `pgtm` product-surface validation
-- [ ] Audit every current `pgtm primary points to ...` and `pgtm replicas list ...` assertion in feature files and step code.
-- [ ] Remove such assertions from scenarios where they merely duplicate the already-established `NodeState` authority result.
-- [ ] Keep a smaller explicit set of product-surface validations that prove:
+- [x] Audit every current `pgtm primary points to ...` and `pgtm replicas list ...` assertion in feature files and step code.
+- [x] Remove such assertions from scenarios where they merely duplicate the already-established `NodeState` authority result.
+- [x] Keep a smaller explicit set of product-surface validations that prove:
   - `pgtm primary` resolves the authoritative primary when one exists
   - `pgtm replicas` resolves the expected replica set when replicas are healthy
   - switchover user-visible behavior returns the correct surface result under the same typed eligibility predicate used by failover
-- [ ] Where appropriate, move some of this coverage to narrower CLI/integration tests instead of repeating it inside large HA fault scenarios.
+- [x] Where appropriate, move some of this coverage to narrower CLI/integration tests instead of repeating it inside large HA fault scenarios.
 
 ### Phase 9: Validation and cleanup
-- [ ] Run repo-wide searches to ensure stale concepts have actually been removed or narrowed:
+- [x] Run repo-wide searches to ensure stale concepts have actually been removed or narrowed:
   - `rg -n "unsampled_nodes|sampled|debug output|primary history never included|direct_connection_target|sql_target_for_member|emitted blocker evidence|compose logs did not contain|logs for .* contain" tests/ha`
   - keep only the concepts that are still intentionally part of the new design
-- [ ] Run repo-wide searches to ensure topology duplication is reduced:
+- [x] Run repo-wide searches to ensure topology duplication is reduced:
   - `rg -n "(node-a|node-b|node-c|observer/node-a.toml|observer/node-b.toml|observer/node-c.toml)" tests/ha/support`
   - remaining fixed names should live in the new topology module or be justified by a given/scenario
-- [ ] Run `make check`
-- [ ] Run `make test`
-- [ ] Run `make lint`
-- [ ] Run `make test-long`
-- [ ] Update task status and `<passes>true</passes>` only after all acceptance criteria and implementation-plan checkboxes are complete.
+- [x] Run `make check`
+- [x] Run `make test`
+- [x] Run `make lint`
+- [x] Run `make test-long`
+- [x] Update task status and `<passes>true</passes>` only after all acceptance criteria and implementation-plan checkboxes are complete.
 
-NOW EXECUTE
+DONE

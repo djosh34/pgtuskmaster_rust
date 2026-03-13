@@ -12,6 +12,7 @@ pub use pgtuskmaster_rust::cli::connect::{ConnectionTarget, ConnectionView};
 use crate::support::{
     docker::cli::DockerCli,
     error::{HarnessError, Result},
+    topology::ClusterMember,
 };
 
 const PGTM_BIN: &str = "/usr/local/bin/pgtm";
@@ -33,7 +34,8 @@ impl PgtmObserver {
     }
 
     pub fn state(&self) -> Result<ClusterStatusView> {
-        let (statuses, errors) = self.collect_from_configs(|config| {
+        let (statuses, errors) = self.collect_from_configs(|member| {
+            let config = config_path(member);
             let output = self.run(config, &["status", "--json"])?;
             parse_json(
                 output.as_str(),
@@ -46,8 +48,8 @@ impl PgtmObserver {
             .ok_or_else(|| aggregate_seed_failure("pgtm status", &errors))
     }
 
-    pub fn state_via_member(&self, member_id: &str) -> Result<ClusterStatusView> {
-        let config = config_path(member_id)?;
+    pub fn state_via_member(&self, member: ClusterMember) -> Result<ClusterStatusView> {
+        let config = config_path(member);
         let output = self.run(config, &["status", "--json"])?;
         parse_json(
             output.as_str(),
@@ -56,7 +58,8 @@ impl PgtmObserver {
     }
 
     pub fn primary_tls_json(&self) -> Result<ConnectionView> {
-        let (views, errors) = self.collect_from_configs(|config| {
+        let (views, errors) = self.collect_from_configs(|member| {
+            let config = config_path(member);
             let output = self.run(config, &["primary", "--json", "--tls"])?;
             parse_json(
                 output.as_str(),
@@ -66,17 +69,9 @@ impl PgtmObserver {
         aggregate_connection_views("pgtm primary --tls", views, &errors)
     }
 
-    pub fn primary_tls_json_via_member(&self, member_id: &str) -> Result<ConnectionView> {
-        let config = config_path(member_id)?;
-        let output = self.run(config, &["primary", "--json", "--tls"])?;
-        parse_json(
-            output.as_str(),
-            format!("pgtm primary --tls via {}", config.display()),
-        )
-    }
-
     pub fn replicas_tls_json(&self) -> Result<ConnectionView> {
-        let (views, errors) = self.collect_from_configs(|config| {
+        let (views, errors) = self.collect_from_configs(|member| {
+            let config = config_path(member);
             let output = self.run(config, &["replicas", "--json", "--tls"])?;
             parse_json(
                 output.as_str(),
@@ -88,17 +83,17 @@ impl PgtmObserver {
 
     pub fn switchover_request_via_member(
         &self,
-        member_id: &str,
-        target: Option<&str>,
+        member: ClusterMember,
+        target: Option<ClusterMember>,
     ) -> Result<String> {
-        let config = config_path(member_id)?;
+        let config = config_path(member);
         let args = match target {
-            Some(target_member_id) => vec![
+            Some(target_member) => vec![
                 "--json",
                 "switchover",
                 "request",
                 "--switchover-to",
-                target_member_id,
+                target_member.service_name(),
             ],
             None => vec!["--json", "switchover", "request"],
         };
@@ -125,37 +120,26 @@ impl PgtmObserver {
 
     fn collect_from_configs<T, F>(&self, mut attempt: F) -> (Vec<T>, Vec<String>)
     where
-        F: FnMut(&Path) -> Result<T>,
+        F: FnMut(ClusterMember) -> Result<T>,
     {
         let mut values = Vec::new();
         let mut errors = Vec::new();
-        for config in config_paths() {
-            match attempt(config) {
+        for member in config_paths() {
+            match attempt(member) {
                 Ok(value) => values.push(value),
-                Err(err) => errors.push(format!("{}: {err}", config.display())),
+                Err(err) => errors.push(format!("{}: {err}", member.service_name())),
             }
         }
         (values, errors)
     }
 }
 
-fn config_paths() -> [&'static Path; 3] {
-    [
-        Path::new("/etc/pgtuskmaster/observer/node-a.toml"),
-        Path::new("/etc/pgtuskmaster/observer/node-b.toml"),
-        Path::new("/etc/pgtuskmaster/observer/node-c.toml"),
-    ]
+fn config_paths() -> [ClusterMember; 3] {
+    ClusterMember::ALL
 }
 
-fn config_path(member_id: &str) -> Result<&'static Path> {
-    match member_id {
-        "node-a" => Ok(Path::new("/etc/pgtuskmaster/observer/node-a.toml")),
-        "node-b" => Ok(Path::new("/etc/pgtuskmaster/observer/node-b.toml")),
-        "node-c" => Ok(Path::new("/etc/pgtuskmaster/observer/node-c.toml")),
-        _ => Err(HarnessError::message(format!(
-            "no observer seed config exists for member `{member_id}`"
-        ))),
-    }
+fn config_path(member: ClusterMember) -> &'static Path {
+    Path::new(member.observer_config_path())
 }
 
 fn parse_json<T>(input: &str, context: impl Into<String>) -> Result<T>
