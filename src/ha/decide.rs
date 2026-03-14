@@ -518,7 +518,7 @@ mod tests {
     use super::{best_failover_candidate, decide};
     use crate::{
         dcs::DcsTrust,
-        state::{MemberId, UnixMillis},
+        state::{MemberId, TimelineId, UnixMillis, WalLsn},
     };
 
     use super::super::types::{
@@ -533,7 +533,7 @@ mod tests {
 
     fn promote_peer(lsn: u64) -> PeerKnowledge {
         PeerKnowledge {
-            eligibility: ElectionEligibility::PromoteEligible(WalPosition { timeline: 1, lsn }),
+            eligibility: ElectionEligibility::PromoteEligible(WalPosition { timeline: TimelineId(1), lsn: WalLsn(lsn) }),
             api: ApiVisibility::Reachable,
         }
     }
@@ -590,8 +590,8 @@ mod tests {
                 postgres: PostgresState::Replica {
                     upstream: Some(MemberId("node-b".to_string())),
                     replication: ReplicationState::Streaming(WalPosition {
-                        timeline: 1,
-                        lsn: 42,
+                        timeline: TimelineId(1),
+                        lsn: WalLsn(42),
                     }),
                 },
                 process: ProcessState::Idle,
@@ -697,7 +697,7 @@ mod tests {
         let mut world = world(
             LocalKnowledge {
                 data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-                postgres: PostgresState::Primary { committed_lsn: 42 },
+                postgres: PostgresState::Primary { committed_lsn: WalLsn(42) },
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
@@ -755,8 +755,8 @@ mod tests {
                 postgres: PostgresState::Replica {
                     upstream: None,
                     replication: ReplicationState::Streaming(WalPosition {
-                        timeline: 1,
-                        lsn: 50,
+                        timeline: TimelineId(1),
+                        lsn: WalLsn(50),
                     }),
                 },
                 process: ProcessState::Idle,

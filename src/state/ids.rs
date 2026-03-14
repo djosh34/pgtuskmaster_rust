@@ -28,5 +28,10 @@ pub struct WalLsn(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TimelineId(pub u32);
 
+impl TimelineId {
+    /// Sentinel for when no timeline is known (PostgreSQL timelines start at 1).
+    pub const UNKNOWN: Self = Self(0);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SystemIdentifier(pub u64);

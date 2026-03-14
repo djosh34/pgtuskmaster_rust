@@ -10,7 +10,7 @@ use crate::{
 use super::{
     command::DcsHandle,
     state::{
-        DcsApiAdvertisement, DcsCadence, DcsLocalMemberAdvertisement, DcsNodeIdentity,
+        DcsCadence, DcsLocalMemberAdvertisement, DcsNodeIdentity,
         DcsObservedState, DcsRuntime as DcsWorkerRuntime, DcsStateChannel, DcsView,
     },
     store::DcsStoreError,
@@ -99,11 +99,7 @@ pub(crate) fn bootstrap(request: DcsRuntimeRequest) -> Result<DcsRuntime, DcsSto
         },
         advertisement: DcsLocalMemberAdvertisement {
             postgres: request.advertised.postgres,
-            api: request
-                .advertised
-                .api
-                .map(DcsApiAdvertisement::Advertised)
-                .unwrap_or(DcsApiAdvertisement::NotAdvertised),
+            api: request.advertised.api,
         },
         observed: DcsObservedState {
             pg: request.pg_subscriber,
