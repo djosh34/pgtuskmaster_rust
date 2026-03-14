@@ -6,8 +6,8 @@ use crate::{
 };
 
 use super::worker::{
-    ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiClusterIdentity, ApiControlPlane,
-    ApiObservedState, ApiServerCtx, ApiServingPlan,
+    ApiAuthState, ApiBindConfig, ApiClusterIdentity, ApiControlPlane, ApiObservedState,
+    ApiReloadCertificatesHandle, ApiServerCtx, ApiServingPlan,
 };
 
 #[derive(Clone)]
@@ -51,7 +51,7 @@ pub(crate) fn bootstrap(request: ApiRuntimeRequest) -> Result<ApiRuntime, Worker
             serving: ApiServingPlan {
                 bind: ApiBindConfig::listen(cfg.api.listen_addr),
                 auth: ApiAuthState::Disabled,
-                cert_reloader: ApiCertificateReloadHandle::from_transport(&transport),
+                reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
                 transport,
             },
             log: request.log,

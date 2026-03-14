@@ -30,10 +30,31 @@ pub struct AcceptedResponse {
     pub accepted: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiCertificateReloadStep {
+    HttpTransportUnchanged,
+    HttpsConfigurationReloaded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresReloadSignal {
+    Sighup,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresCertificateReloadStep {
+    pub signal: PostgresReloadSignal,
+    pub postmaster_pid: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReloadCertificatesResponse {
-    pub reloaded: bool,
+    pub api: ApiCertificateReloadStep,
+    pub postgres: PostgresCertificateReloadStep,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

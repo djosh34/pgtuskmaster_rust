@@ -17,13 +17,15 @@ use crate::{
             build_node_state, delete_switchover, post_switchover, NodeStateSnapshot,
             SwitchoverRequest,
         },
-        ApiError, NodeState, ReloadCertificatesResponse,
+        ApiCertificateReloadStep, ApiError, NodeState, PostgresCertificateReloadStep,
+        PostgresReloadSignal, ReloadCertificatesResponse,
     },
     config::{ApiAuthConfig, RuntimeConfig},
     dcs::{DcsHandle, DcsView},
     ha::state::HaState,
     logging::LogHandle,
     pginfo::state::PgInfoState,
+    process::postmaster::{reload_managed_postmaster, ManagedPostmasterTarget},
     process::state::ProcessState,
     state::{StateSubscriber, WorkerError},
 };
@@ -82,37 +84,80 @@ pub(crate) enum ApiServerTransport {
 }
 
 #[derive(Clone)]
-pub(crate) enum ApiCertificateReloadHandle {
-    Disabled,
+pub(crate) enum ApiTlsCertificateReloadHandle {
+    HttpTransport,
     Https { server_config: RustlsConfig },
 }
 
-impl ApiCertificateReloadHandle {
+impl ApiTlsCertificateReloadHandle {
     pub(crate) fn from_transport(transport: &ApiServerTransport) -> Self {
         match transport {
-            ApiServerTransport::Http => Self::Disabled,
+            ApiServerTransport::Http => Self::HttpTransport,
             ApiServerTransport::Https(runtime) => Self::Https {
                 server_config: runtime.server_config.clone(),
             },
         }
     }
 
-    async fn reload(&self, cfg: &RuntimeConfig) -> Result<bool, WorkerError> {
+    async fn reload(
+        &self,
+        cfg: &RuntimeConfig,
+    ) -> Result<ApiCertificateReloadStep, ReloadCertificatesError> {
         match self {
-            Self::Disabled => Ok(false),
+            Self::HttpTransport => Ok(ApiCertificateReloadStep::HttpTransportUnchanged),
             Self::Https { server_config } => match &cfg.api.transport {
-                crate::config::ApiTransportConfig::Http => Err(WorkerError::Message(
-                    "api cert reload requires https transport".to_string(),
-                )),
+                crate::config::ApiTransportConfig::Http => Err(ReloadCertificatesError::Api {
+                    message: "api cert reload requires https transport".to_string(),
+                }),
                 crate::config::ApiTransportConfig::Https { tls } => {
-                    let reloaded = crate::tls::build_api_server_config(tls)
-                        .map_err(|err| WorkerError::Message(err.to_string()))?;
+                    let reloaded = crate::tls::build_api_server_config(tls).map_err(|err| {
+                        ReloadCertificatesError::Api {
+                            message: err.to_string(),
+                        }
+                    })?;
                     server_config.reload_from_config(reloaded);
-                    Ok(true)
+                    Ok(ApiCertificateReloadStep::HttpsConfigurationReloaded)
                 }
             },
         }
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct ApiReloadCertificatesHandle {
+    api_tls: ApiTlsCertificateReloadHandle,
+}
+
+impl ApiReloadCertificatesHandle {
+    pub(crate) fn from_transport(transport: &ApiServerTransport) -> Self {
+        Self {
+            api_tls: ApiTlsCertificateReloadHandle::from_transport(transport),
+        }
+    }
+
+    async fn reload(
+        &self,
+        cfg: &RuntimeConfig,
+    ) -> Result<ReloadCertificatesResponse, ReloadCertificatesError> {
+        let api = self.api_tls.reload(cfg).await?;
+        let target = ManagedPostmasterTarget::from_data_dir(cfg.postgres.paths.data_dir.clone());
+        let postgres = reload_managed_postmaster(&target)?;
+        Ok(ReloadCertificatesResponse {
+            api,
+            postgres: PostgresCertificateReloadStep {
+                signal: PostgresReloadSignal::Sighup,
+                postmaster_pid: postgres.postmaster.pid.value(),
+            },
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReloadCertificatesError {
+    #[error("api certificate reload failed: {message}")]
+    Api { message: String },
+    #[error("postgres certificate reload failed: {0}")]
+    Postgres(#[from] crate::process::postmaster::ManagedPostmasterError),
 }
 
 pub struct ApiServerCtx {
@@ -134,7 +179,7 @@ pub(crate) struct ApiServingPlan {
     pub(crate) bind: ApiBindConfig,
     pub(crate) auth: ApiAuthState,
     pub(crate) transport: ApiServerTransport,
-    pub(crate) cert_reloader: ApiCertificateReloadHandle,
+    pub(crate) reload_certificates: ApiReloadCertificatesHandle,
 }
 
 #[derive(Clone)]
@@ -144,7 +189,7 @@ struct ApiAppState {
     dcs_handle: DcsHandle,
     state: ApiObservedState,
     auth: ApiAuthState,
-    cert_reloader: ApiCertificateReloadHandle,
+    reload_certificates: ApiReloadCertificatesHandle,
     _log: LogHandle,
 }
 
@@ -215,7 +260,7 @@ fn build_app_state(
         bind,
         auth,
         transport,
-        cert_reloader,
+        reload_certificates,
     } = serving;
     let auth = resolve_auth_state(&auth, &runtime_config.latest())?;
     let app_state = ApiAppState {
@@ -224,7 +269,7 @@ fn build_app_state(
         dcs_handle,
         state: observed,
         auth,
-        cert_reloader,
+        reload_certificates,
         _log: log,
     };
     Ok((bind, transport, app_state))
@@ -331,11 +376,11 @@ async fn reload_certificates(
     State(state): State<ApiAppState>,
 ) -> Result<Json<ReloadCertificatesResponse>, ApiHttpError> {
     let reloaded = state
-        .cert_reloader
+        .reload_certificates
         .reload(&state.runtime_config.latest())
         .await
         .map_err(|err| ApiHttpError::internal(err.to_string()))?;
-    Ok(Json(ReloadCertificatesResponse { reloaded }))
+    Ok(Json(reloaded))
 }
 
 async fn require_read_auth(
@@ -476,27 +521,62 @@ fn resolve_runtime_token(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::{Child, Command},
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
     use axum::{
-        body::Body,
+        body::{to_bytes, Body},
         http::{Method, Request, StatusCode},
+        Router,
     };
     use tower::util::ServiceExt;
 
     use crate::{
+        api::{ApiCertificateReloadStep, PostgresReloadSignal, ReloadCertificatesResponse},
         config::{
             ApiAuthConfig, ApiClientAuthConfig, ApiRoleTokensConfig, ApiTlsConfig,
-            ApiTransportConfig, InlineOrPath, SecretSource, TlsServerIdentityConfig,
+            ApiTransportConfig, InlineOrPath, RuntimeConfig, SecretSource, TlsServerIdentityConfig,
         },
         dcs::DcsHandle,
         dev_support::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
         logging::LogHandle,
-        state::new_state_channel,
+        process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget},
+        state::{new_state_channel, StatePublisher},
     };
 
     use super::{
-        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiClusterIdentity,
-        ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
+        build_router, ApiAuthState, ApiBindConfig, ApiClusterIdentity, ApiControlPlane,
+        ApiObservedState, ApiReloadCertificatesHandle, ApiServerCtx, ApiServingPlan,
     };
+
+    struct ChildGuard(Option<Child>);
+
+    impl ChildGuard {
+        fn child(&self) -> Result<&Child, String> {
+            self.0
+                .as_ref()
+                .ok_or_else(|| "fake postgres child handle missing".to_string())
+        }
+
+        fn child_mut(&mut self) -> Result<&mut Child, String> {
+            self.0
+                .as_mut()
+                .ok_or_else(|| "fake postgres child handle missing".to_string())
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
 
     fn sample_admin_request(uri: &str) -> Result<Request<Body>, String> {
         Request::builder()
@@ -507,10 +587,24 @@ mod tests {
             .map_err(|err| err.to_string())
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn reload_certificates_succeeds_for_https_transport() -> Result<(), String> {
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("clock error for test dir: {err}"))?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-api-worker-{label}-{}-{millis}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn sample_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfig, String> {
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
-        let cfg = RuntimeConfigBuilder::new()
+        Ok(RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
             .transform_api(|api| crate::config::ApiConfig {
                 transport: ApiTransportConfig::Https {
                     tls: ApiTlsConfig {
@@ -535,9 +629,60 @@ mod tests {
                 }),
                 ..api
             })
-            .build();
+            .build())
+    }
 
-        let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
+    fn sample_invalid_https_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
+        RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
+            .transform_api(|api| crate::config::ApiConfig {
+                transport: ApiTransportConfig::Https {
+                    tls: ApiTlsConfig {
+                        identity: TlsServerIdentityConfig {
+                            cert_chain: InlineOrPath::Inline {
+                                content: "not a certificate".to_string(),
+                            },
+                            private_key: InlineOrPath::Inline {
+                                content: "not a key".to_string(),
+                            },
+                        },
+                        client_auth: ApiClientAuthConfig::Disabled,
+                    },
+                },
+                auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                    read_token: Some(SecretSource::Inline {
+                        content: "read-secret".to_string(),
+                    }),
+                    admin_token: Some(SecretSource::Inline {
+                        content: "admin-secret".to_string(),
+                    }),
+                }),
+                ..api
+            })
+            .build()
+    }
+
+    fn sample_http_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
+        RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
+            .transform_api(|api| crate::config::ApiConfig {
+                auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                    read_token: Some(SecretSource::Inline {
+                        content: "read-secret".to_string(),
+                    }),
+                    admin_token: Some(SecretSource::Inline {
+                        content: "admin-secret".to_string(),
+                    }),
+                }),
+                ..api
+            })
+            .build()
+    }
+
+    fn build_test_app(
+        cfg: RuntimeConfig,
+    ) -> Result<(Router, StatePublisher<RuntimeConfig>), String> {
+        let (cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
         let (_pg_publisher, pg) = new_state_channel(crate::pginfo::state::PgInfoState::starting());
         let (_process_publisher, process) =
             new_state_channel(crate::process::state::ProcessState::starting());
@@ -567,19 +712,354 @@ mod tests {
                 bind: ApiBindConfig::listen(cfg.api.listen_addr),
                 auth: ApiAuthState::Disabled,
                 transport: transport.clone(),
-                cert_reloader: ApiCertificateReloadHandle::from_transport(&transport),
+                reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
             },
             log: LogHandle::disabled(),
         })
         .map_err(|err| err.to_string())?;
+        Ok((app, cfg_publisher))
+    }
+
+    async fn response_body_text(response: axum::response::Response) -> Result<String, String> {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map_err(|err| err.to_string())?;
+        String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
+    }
+
+    async fn response_body_json(
+        response: axum::response::Response,
+    ) -> Result<ReloadCertificatesResponse, String> {
+        let body = response_body_text(response).await?;
+        serde_json::from_str::<ReloadCertificatesResponse>(&body).map_err(|err| err.to_string())
+    }
+
+    #[cfg(unix)]
+    fn spawn_fake_postgres_process(
+        root: &Path,
+        data_dir: &Path,
+        signal_log: &Path,
+    ) -> Result<ChildGuard, String> {
+        let script = root.join("fake-postgres.sh");
+        let script_contents = format!(
+            "#!/bin/bash\ntrap 'printf hup >> \"{}\"' HUP\nwhile true; do read -r -t 1 _ || true; done\n",
+            signal_log.display()
+        );
+        fs::write(&script, script_contents).map_err(|err| {
+            format!(
+                "write fake postgres script {} failed: {err}",
+                script.display()
+            )
+        })?;
+        let mut permissions = fs::metadata(&script)
+            .map_err(|err| {
+                format!(
+                    "read fake postgres script metadata {} failed: {err}",
+                    script.display()
+                )
+            })?
+            .permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        fs::set_permissions(&script, permissions).map_err(|err| {
+            format!(
+                "set fake postgres script permissions {} failed: {err}",
+                script.display()
+            )
+        })?;
+        let child = Command::new("/bin/bash")
+            .arg("-lc")
+            .arg(format!(
+                "exec -a postgres /bin/bash '{}' '{}'",
+                script.display(),
+                data_dir.display()
+            ))
+            .spawn()
+            .map_err(|err| {
+                format!(
+                    "spawn fake postgres process via {} failed: {err}",
+                    script.display()
+                )
+            })?;
+        Ok(ChildGuard(Some(child)))
+    }
+
+    fn write_postmaster_pid(
+        data_dir: &Path,
+        pid: u32,
+        recorded_data_dir: &Path,
+    ) -> Result<(), String> {
+        let pid_file = data_dir.join("postmaster.pid");
+        let contents = format!("{pid}\n{}\n", recorded_data_dir.display());
+        fs::write(&pid_file, contents).map_err(|err| {
+            format!(
+                "write postmaster pid file {} failed: {err}",
+                pid_file.display()
+            )
+        })
+    }
+
+    fn wait_for_signal_log(signal_log: &Path) -> Result<String, String> {
+        let mut attempts = 0_u8;
+        while attempts < 150 {
+            match fs::read_to_string(signal_log) {
+                Ok(contents) if !contents.is_empty() => return Ok(contents),
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(format!(
+                        "read signal log {} failed: {err}",
+                        signal_log.display()
+                    ));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            attempts = attempts.saturating_add(1);
+        }
+        Err(format!(
+            "signal log {} was not written in time",
+            signal_log.display()
+        ))
+    }
+
+    fn wait_for_managed_postmaster_ready(data_dir: &Path) -> Result<(), String> {
+        let target = ManagedPostmasterTarget::from_data_dir(data_dir.to_path_buf());
+        let mut attempts = 0_u8;
+        while attempts < 50 {
+            if lookup_managed_postmaster(&target).is_ok() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            attempts = attempts.saturating_add(1);
+        }
+        Err(format!(
+            "managed postmaster never became ready for {}",
+            data_dir.display()
+        ))
+    }
+
+    async fn assert_no_signal_written(signal_log: &Path) -> Result<(), String> {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        match fs::read_to_string(signal_log) {
+            Ok(contents) if contents.is_empty() => Ok(()),
+            Ok(contents) => Err(format!(
+                "signal log {} should be empty but contained {contents:?}",
+                signal_log.display()
+            )),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(format!(
+                "read signal log {} failed: {err}",
+                signal_log.display()
+            )),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reload_certificates_succeeds_for_https_transport_and_signals_postgres(
+    ) -> Result<(), String> {
+        let root = unique_test_dir("reload-success")?;
+        let data_dir = root.join("data");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        let child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        write_postmaster_pid(&data_dir, pid, &data_dir)?;
+        let _child = child;
+        wait_for_managed_postmaster_ready(&data_dir)?;
+        let cfg = sample_https_runtime_config(data_dir)?;
+        let (app, _cfg_publisher) = build_test_app(cfg)?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)
             .await
             .map_err(|err| err.to_string())?;
         if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = response_body_text(response).await?;
+            return Err(format!("unexpected status {status}: {body}"));
+        }
+        let body = response_body_json(response).await?;
+        if body.api != ApiCertificateReloadStep::HttpsConfigurationReloaded {
+            return Err(format!("unexpected api reload step: {:?}", body.api));
+        }
+        if body.postgres.signal != PostgresReloadSignal::Sighup {
+            return Err(format!(
+                "unexpected postgres reload signal: {:?}",
+                body.postgres.signal
+            ));
+        }
+        if body.postgres.postmaster_pid != pid {
+            return Err(format!(
+                "unexpected reloaded pid: expected={pid} actual={}",
+                body.postgres.postmaster_pid
+            ));
+        }
+        let contents = wait_for_signal_log(&signal_log)?;
+        if !contents.contains("hup") {
+            return Err(format!(
+                "signal log {} did not record hup: {contents:?}",
+                signal_log.display()
+            ));
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reload_certificates_returns_error_when_postmaster_pid_is_missing() -> Result<(), String>
+    {
+        let root = unique_test_dir("reload-missing-postmaster")?;
+        let data_dir = root.join("data");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        let cfg = sample_http_runtime_config(data_dir);
+        let (app, _cfg_publisher) = build_test_app(cfg)?;
+
+        let response = app
+            .oneshot(sample_admin_request("/reload/certs")?)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if response.status() != StatusCode::INTERNAL_SERVER_ERROR {
             return Err(format!("unexpected status {}", response.status()));
         }
+        let body = response_body_text(response).await?;
+        if !body.contains("postgres certificate reload failed") {
+            return Err(format!(
+                "response body did not mention postgres failure: {body}"
+            ));
+        }
+        if !body.contains("postmaster pid file") {
+            return Err(format!(
+                "response body did not mention missing pid file: {body}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reload_certificates_returns_error_when_postmaster_pid_is_stale() -> Result<(), String>
+    {
+        let root = unique_test_dir("reload-stale-postmaster")?;
+        let data_dir = root.join("data");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        let mut child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        child
+            .child_mut()?
+            .kill()
+            .map_err(|err| format!("kill fake postgres pid={pid} failed: {err}"))?;
+        child
+            .child_mut()?
+            .wait()
+            .map_err(|err| format!("wait fake postgres pid={pid} failed: {err}"))?;
+        write_postmaster_pid(&data_dir, pid, &data_dir)?;
+        let cfg = sample_http_runtime_config(data_dir);
+        let (app, _cfg_publisher) = build_test_app(cfg)?;
+
+        let response = app
+            .oneshot(sample_admin_request("/reload/certs")?)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if response.status() != StatusCode::INTERNAL_SERVER_ERROR {
+            return Err(format!("unexpected status {}", response.status()));
+        }
+        let body = response_body_text(response).await?;
+        if !body.contains("is not running") {
+            return Err(format!("response body did not mention stale pid: {body}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reload_certificates_returns_error_when_postmaster_data_dir_mismatches(
+    ) -> Result<(), String> {
+        let root = unique_test_dir("reload-mismatch")?;
+        let target_data_dir = root.join("target-data");
+        let real_data_dir = root.join("real-data");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&target_data_dir).map_err(|err| {
+            format!(
+                "create target data dir {} failed: {err}",
+                target_data_dir.display()
+            )
+        })?;
+        fs::create_dir_all(&real_data_dir).map_err(|err| {
+            format!(
+                "create real data dir {} failed: {err}",
+                real_data_dir.display()
+            )
+        })?;
+        let child = spawn_fake_postgres_process(&root, &real_data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        write_postmaster_pid(&target_data_dir, pid, &real_data_dir)?;
+        let _child = child;
+        let cfg = sample_http_runtime_config(target_data_dir.clone());
+        let (app, _cfg_publisher) = build_test_app(cfg)?;
+
+        let response = app
+            .oneshot(sample_admin_request("/reload/certs")?)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if response.status() != StatusCode::INTERNAL_SERVER_ERROR {
+            return Err(format!("unexpected status {}", response.status()));
+        }
+        let body = response_body_text(response).await?;
+        if !body.contains("does not match managed data dir") {
+            return Err(format!(
+                "response body did not mention data dir mismatch: {body}"
+            ));
+        }
+        if !body.contains(target_data_dir.display().to_string().as_str()) {
+            return Err(format!(
+                "response body did not include expected data dir {}: {body}",
+                target_data_dir.display()
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reload_certificates_does_not_signal_postgres_when_api_reload_fails(
+    ) -> Result<(), String> {
+        let root = unique_test_dir("reload-ordering")?;
+        let data_dir = root.join("data");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        let child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        write_postmaster_pid(&data_dir, pid, &data_dir)?;
+        let _child = child;
+        wait_for_managed_postmaster_ready(&data_dir)?;
+        let cfg = sample_https_runtime_config(data_dir.clone())?;
+        let (app, cfg_publisher) = build_test_app(cfg)?;
+        cfg_publisher
+            .publish(sample_invalid_https_runtime_config(data_dir))
+            .map_err(|err| err.to_string())?;
+
+        let response = app
+            .oneshot(sample_admin_request("/reload/certs")?)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if response.status() != StatusCode::INTERNAL_SERVER_ERROR {
+            return Err(format!("unexpected status {}", response.status()));
+        }
+        let body = response_body_text(response).await?;
+        if !body.contains("api certificate reload failed") {
+            return Err(format!(
+                "response body did not mention api reload failure: {body}"
+            ));
+        }
+        assert_no_signal_written(&signal_log).await?;
         Ok(())
     }
 }

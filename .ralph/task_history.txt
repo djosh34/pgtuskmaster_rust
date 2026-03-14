@@ -203,3 +203,4 @@ NONE
 .ralph/tasks/story-ctl-operator-experience/09-task-add-a-three-etcd-ha-given-and-design-real-dcs-majority-features.md
 .ralph/tasks/story-config-simplification/01-task-rewrite-config-around-typed-toml-serde-and-remove-the-hand-rolled-parser.md
 .ralph/tasks/story-postgres-role-reconciliation/01-task-make-role-management-config-driven-idempotent-and-reconciling.md
+.ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md

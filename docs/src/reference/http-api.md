@@ -135,7 +135,10 @@ Failure statuses:
 
 ## `POST /reload/certs`
 
-Reloads the API server TLS identity plus API client-auth CA and common-name allow-list material from the already configured runtime-config sources.
+Reloads the API server TLS identity plus API client-auth CA and common-name allow-list material
+from the already configured runtime-config sources. After the API certificate reload step
+succeeds, the node verifies the managed PostgreSQL postmaster for `postgres.data_dir` and sends it
+`SIGHUP` so PostgreSQL reloads its own TLS files too.
 
 Authorization: admin
 
@@ -143,12 +146,36 @@ Success status: `200 OK`
 
 ```text
 {
-  "reloaded": true
+  "api": "https_configuration_reloaded",
+  "postgres": {
+    "signal": "sighup",
+    "postmaster_pid": 12345
+  }
 }
 ```
+
+Response fields:
+
+- `api`: `https_configuration_reloaded` when the API listener is using HTTPS, or
+  `http_transport_unchanged` when the API listener is configured for HTTP and only the PostgreSQL
+  reload step runs.
+- `postgres.signal`: always `sighup`
+- `postgres.postmaster_pid`: the verified managed postmaster PID that received the signal
 
 Failure statuses:
 
 - `401 Unauthorized`: missing or invalid token
 - `403 Forbidden`: read token used for an admin route
-- `500 Internal Server Error`: API TLS material could not be rebuilt from the configured sources
+- `500 Internal Server Error`: the API TLS material could not be rebuilt from the configured
+  sources, or the managed PostgreSQL postmaster could not be verified and signaled
+
+The endpoint is strict about partial failures. If API certificate reload succeeds but PostgreSQL
+postmaster lookup or `SIGHUP` delivery fails, the request still returns `500 Internal Server Error`
+instead of claiming a successful reload.
+
+Common PostgreSQL-side failure cases include:
+
+- missing `postmaster.pid`
+- malformed or stale `postmaster.pid`
+- PID/data-dir mismatch for the configured `postgres.data_dir`
+- signal delivery failure to the verified postmaster

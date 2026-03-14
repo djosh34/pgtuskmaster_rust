@@ -16,6 +16,9 @@ use crate::{
     pginfo::state::render_pg_conninfo,
     postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
     postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
+    process::postmaster::{
+        lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget,
+    },
     state::{JobId, UnixMillis, WorkerError, WorkerStatus},
 };
 
@@ -404,134 +407,7 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
     tick_active_job(ctx).await
 }
 
-fn parse_postmaster_pid(pid_file: &Path) -> Result<u32, ProcessError> {
-    let contents = fs::read_to_string(pid_file).map_err(|err| {
-        ProcessError::InvalidSpec(format!(
-            "read postmaster.pid {} failed: {err}",
-            pid_file.display()
-        ))
-    })?;
-    let first_line = contents.lines().next().ok_or_else(|| {
-        ProcessError::InvalidSpec(format!(
-            "postmaster.pid {} missing pid line",
-            pid_file.display()
-        ))
-    })?;
-    let trimmed = first_line.trim();
-    if trimmed.is_empty() {
-        return Err(ProcessError::InvalidSpec(format!(
-            "postmaster.pid {} pid line is empty",
-            pid_file.display()
-        )));
-    }
-    trimmed.parse::<u32>().map_err(|err| {
-        ProcessError::InvalidSpec(format!(
-            "parse postmaster.pid pid '{trimmed}' failed: {err}"
-        ))
-    })
-}
-
-fn postmaster_pid_data_dir_matches(pid_file: &Path, data_dir: &Path) -> Result<bool, ProcessError> {
-    let contents = fs::read_to_string(pid_file).map_err(|err| {
-        ProcessError::InvalidSpec(format!(
-            "read postmaster.pid {} failed: {err}",
-            pid_file.display()
-        ))
-    })?;
-    let Some(raw_data_dir) = contents.lines().nth(1) else {
-        return Ok(false);
-    };
-    let trimmed = raw_data_dir.trim();
-    if trimmed.is_empty() {
-        return Ok(false);
-    }
-    Ok(Path::new(trimmed) == data_dir)
-}
-
-fn pid_exists(pid: u32) -> Result<bool, ProcessError> {
-    #[cfg(unix)]
-    {
-        let pid_i32 = i32::try_from(pid).map_err(|err| {
-            ProcessError::InvalidSpec(format!("postmaster pid {pid} i32 conversion failed: {err}"))
-        })?;
-        let rc = unsafe { libc::kill(pid_i32, 0) };
-        if rc == 0 {
-            return Ok(true);
-        }
-        let err = std::io::Error::last_os_error();
-        let raw = err.raw_os_error();
-        if raw == Some(libc::ESRCH) {
-            return Ok(false);
-        }
-        if raw == Some(libc::EPERM) {
-            return Ok(true);
-        }
-        Err(ProcessError::InvalidSpec(format!(
-            "kill(0) failed for pid={pid}: {err}"
-        )))
-    }
-    #[cfg(not(unix))]
-    {
-        let _pid = pid;
-        Ok(true)
-    }
-}
-
-fn pid_matches_data_dir(pid: u32, data_dir: &Path, pid_file: &Path) -> Result<bool, ProcessError> {
-    if !pid_exists(pid)? {
-        return Ok(false);
-    }
-
-    #[cfg(unix)]
-    {
-        let cmdline_path = std::path::PathBuf::from(format!("/proc/{pid}/cmdline"));
-        let cmdline = match fs::read(&cmdline_path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(err) => {
-                return Err(ProcessError::InvalidSpec(format!(
-                    "read {} failed: {err}",
-                    cmdline_path.display()
-                )));
-            }
-        };
-        let data_dir_text = data_dir.display().to_string();
-        let cmdline_args = cmdline
-            .split(|byte| *byte == 0)
-            .filter(|arg| !arg.is_empty())
-            .map(|arg| String::from_utf8_lossy(arg))
-            .collect::<Vec<_>>();
-        let has_data_dir = cmdline_args
-            .iter()
-            .any(|arg| arg.contains(data_dir_text.as_str()));
-        let has_postgres_argv = cmdline_args.iter().any(|arg| {
-            std::path::Path::new(arg.as_ref())
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| matches!(name, "postgres" | "postmaster"))
-                .unwrap_or(false)
-        });
-        if !has_postgres_argv {
-            return Ok(false);
-        }
-        if has_data_dir {
-            return Ok(true);
-        }
-        postmaster_pid_data_dir_matches(pid_file, data_dir)
-    }
-    #[cfg(not(unix))]
-    {
-        let _pid_file = pid_file;
-        let _data_dir = data_dir;
-        Ok(true)
-    }
-}
-
 fn pid_is_postgres_process(pid: u32) -> Result<bool, ProcessError> {
-    if !pid_exists(pid)? {
-        return Ok(false);
-    }
-
     #[cfg(unix)]
     {
         let cmdline_path = std::path::PathBuf::from(format!("/proc/{pid}/cmdline"));
@@ -621,14 +497,24 @@ fn start_postgres_preflight_is_already_running(
 ) -> Result<bool, ProcessError> {
     let pid_file = data_dir.join("postmaster.pid");
     if pid_file.exists() {
-        let pid = parse_postmaster_pid(&pid_file)?;
-        if pid_matches_data_dir(pid, data_dir, &pid_file)? {
-            return Ok(true);
+        let target = ManagedPostmasterTarget::from_data_dir(data_dir.to_path_buf());
+        match lookup_managed_postmaster(&target) {
+            Ok(_postmaster) => return Ok(true),
+            Err(
+                ManagedPostmasterError::MissingPidFile { .. }
+                | ManagedPostmasterError::PidNotRunning { .. }
+                | ManagedPostmasterError::DataDirMismatch { .. },
+            ) => {
+                remove_file_best_effort(&pid_file)?;
+                let opts_file = data_dir.join("postmaster.opts");
+                remove_file_best_effort(&opts_file)?;
+            }
+            Err(err) => {
+                return Err(ProcessError::InvalidSpec(format!(
+                    "start postgres preflight managed postmaster lookup failed: {err}"
+                )));
+            }
         }
-
-        remove_file_best_effort(&pid_file)?;
-        let opts_file = data_dir.join("postmaster.opts");
-        remove_file_best_effort(&opts_file)?;
     }
 
     let (_, lock_file) = postgres_socket_paths(socket_dir, port);
@@ -1958,7 +1844,8 @@ mod tests {
         state::{new_state_channel, JobId, MemberId, StateSubscriber, WorkerStatus},
     };
 
-    use super::{pid_matches_data_dir, start_job};
+    use super::start_job;
+    use crate::process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget};
 
     struct UnexpectedSpawnRunner;
 
@@ -2060,23 +1947,18 @@ mod tests {
         Ok(dir)
     }
 
-    fn wait_for_fake_postgres_readiness(
-        pid: u32,
-        data_dir: &std::path::Path,
-        pid_file: &std::path::Path,
-    ) -> Result<(), String> {
+    fn wait_for_fake_postgres_readiness(data_dir: &std::path::Path) -> Result<(), String> {
         let mut attempts = 0_u8;
         while attempts < 50 {
-            if pid_matches_data_dir(pid, data_dir, pid_file)
-                .map_err(|err| format!("check fake postgres readiness failed: {err}"))?
-            {
+            let target = ManagedPostmasterTarget::from_data_dir(data_dir.to_path_buf());
+            if lookup_managed_postmaster(&target).is_ok() {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(10));
             attempts = attempts.saturating_add(1);
         }
         Err(format!(
-            "fake postgres readiness timed out for pid={pid} data_dir={}",
+            "fake postgres readiness timed out for data_dir={}",
             data_dir.display()
         ))
     }
@@ -2183,7 +2065,7 @@ mod tests {
         let pid_file = data_dir.join("postmaster.pid");
         fs::write(&pid_file, pid_contents)
             .map_err(|err| format!("write postmaster.pid {} failed: {err}", pid_file.display()))?;
-        wait_for_fake_postgres_readiness(fake_postgres_pid, &data_dir, &pid_file)?;
+        wait_for_fake_postgres_readiness(&data_dir)?;
 
         let _fake_postgres = fake_postgres;
         let (mut ctx, _state_subscriber) = build_test_ctx(data_dir.clone(), socket_dir, log_file)?;

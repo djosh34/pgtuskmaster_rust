@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 12:27:45 PM CET 2026
+Generated: Sat Mar 14 01:06:10 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -9,6 +9,17 @@ Generated: Sat Mar 14 12:27:45 PM CET 2026
 
 <description>
 `make test-long` is currently not reliably green because `ha_primary_storage_stalled_then_new_primary_takes_over` can fail waiting for a replacement primary.
+```
+
+==============
+
+# Task `.ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md`
+
+```
+## Task: Send PostgreSQL `SIGHUP` After Certificate Reload <status>done</status> <passes>true</passes>
+
+<priority>low</priority>
+<blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/08-task-replace-hand-rolled-api-server-with-axum-axum-server-and-tower.md`</blocked_by>
 ```
 
 ==============

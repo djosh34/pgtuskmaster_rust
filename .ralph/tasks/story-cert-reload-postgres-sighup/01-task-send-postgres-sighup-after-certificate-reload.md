@@ -1,4 +1,4 @@
-## Task: Send PostgreSQL `SIGHUP` After Certificate Reload <status>not_started</status> <passes>false</passes>
+## Task: Send PostgreSQL `SIGHUP` After Certificate Reload <status>done</status> <passes>true</passes>
 
 <priority>low</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/08-task-replace-hand-rolled-api-server-with-axum-axum-server-and-tower.md`</blocked_by>
@@ -73,19 +73,34 @@ Operational contract that must be documented in code and tests:
 </description>
 
 <acceptance_criteria>
-- [ ] `.ralph/tasks/story-ctl-operator-experience/08-task-replace-hand-rolled-api-server-with-axum-axum-server-and-tower.md` is fully complete first; this task does not start before `/reload/certs` exists.
-- [ ] The cert reload implementation sends PostgreSQL `SIGHUP` only after its own cert-reload step has succeeded.
-- [ ] The PostgreSQL reload step uses a direct postmaster signal, not `pg_ctl reload` and not SQL `pg_reload_conf()`.
-- [ ] Postmaster discovery validates that the PID belongs to the managed `postgres.data_dir` before signaling, reusing or extracting the existing logic from `src/process/worker.rs` instead of duplicating it loosely in the API layer.
-- [ ] Error handling covers missing or stale `postmaster.pid`, PID/data-dir mismatch, no running postmaster, and signal-delivery failures with an explicit API error response.
-- [ ] The endpoint does not claim full success when the cert reload succeeded but PostgreSQL `SIGHUP` failed.
-- [ ] successful cert reload followed by successful PostgreSQL `SIGHUP`,
-- [ ] cert reload failure preventing the signal step,
-- [ ] stale or missing postmaster PID cases,
-- [ ] PID/data-dir mismatch protection,
-- [ ] signal-delivery failure reporting.
-- [ ] The reload-endpoint docs and API contract text mention the PostgreSQL `SIGHUP` behavior and its failure semantics.
-- [ ] `make check` passes cleanly.
-- [ ] `make test` passes cleanly.
-- [ ] `make lint` passes cleanly.
+- [x] `.ralph/tasks/story-ctl-operator-experience/08-task-replace-hand-rolled-api-server-with-axum-axum-server-and-tower.md` is fully complete first; this task does not start before `/reload/certs` exists.
+- [x] The cert reload implementation sends PostgreSQL `SIGHUP` only after its own cert-reload step has succeeded.
+- [x] The PostgreSQL reload step uses a direct postmaster signal, not `pg_ctl reload` and not SQL `pg_reload_conf()`.
+- [x] Postmaster discovery validates that the PID belongs to the managed `postgres.data_dir` before signaling, reusing or extracting the existing logic from `src/process/worker.rs` instead of duplicating it loosely in the API layer.
+- [x] Error handling covers missing or stale `postmaster.pid`, PID/data-dir mismatch, no running postmaster, and signal-delivery failures with an explicit API error response.
+- [x] The endpoint does not claim full success when the cert reload succeeded but PostgreSQL `SIGHUP` failed.
+- [x] successful cert reload followed by successful PostgreSQL `SIGHUP`,
+- [x] cert reload failure preventing the signal step,
+- [x] stale or missing postmaster PID cases,
+- [x] PID/data-dir mismatch protection,
+- [x] signal-delivery failure reporting.
+- [x] The reload-endpoint docs and API contract text mention the PostgreSQL `SIGHUP` behavior and its failure semantics.
+- [x] `make check` passes cleanly.
+- [x] `make test` passes cleanly.
+- [x] `make lint` passes cleanly.
 </acceptance_criteria>
+
+Design handoff for execution:
+- The existing `ReloadCertificatesResponse { reloaded: bool }` shape is too weak for the contract in this story. The reload path should pivot to step-shaped ADTs: one explicit API-cert reload step and one explicit PostgreSQL signal-delivery step with the signaled postmaster PID.
+- The API worker should stop owning a single boolean cert reloader. Replace it with a dedicated reload coordinator ADT that sequences `api TLS reload -> managed postmaster verification -> SIGHUP delivery`, so the success path can only exist when both steps have completed.
+- The managed PostgreSQL side should be extracted behind a shared `process::postmaster` ADT boundary rather than loose helper functions inside `src/process/worker.rs`. The minimum type set is:
+  - `ManagedPostmasterTarget` for the configured managed `postgres.data_dir` and derived `postmaster.pid` location.
+  - `ManagedPostmasterPid` and `VerifiedManagedPostmaster` so “raw pid from file” and “pid verified against the managed data dir” are separate states.
+  - `ManagedPostmasterSignal` and `ManagedPostmasterSignalDelivery` so the API path talks in business terms instead of raw integers.
+  - `ManagedPostmasterError` with explicit variants for missing pid file, malformed pid contents, stale pid, data-dir mismatch, unsupported platform, procfs read failure, and signal-delivery failure.
+- Execution should finish the extraction by moving the old `postmaster.pid` parsing and pid/data-dir validation logic out of `src/process/worker.rs` to the new shared module, then update both the process-worker preflight path and the API reload path to use the same ADTs.
+- The `/reload/certs` route should return the richer success response and surface PostgreSQL failures as explicit HTTP failures. If API cert reload succeeds but PostgreSQL verification or `SIGHUP` fails, the route must fail rather than returning a partial-success boolean.
+- Test execution should add coverage for the step ordering and the failure taxonomy: cert reload failure prevents signal, missing/stale pid cases fail honestly, mismatched pid/data-dir is rejected, and signal-delivery failure is surfaced.
+- After code and validation are green, docs must be updated through `k2-docs-loop` to state that `POST /reload/certs` reloads API certificate material and then signals the managed PostgreSQL postmaster with `SIGHUP`.
+
+NOW EXECUTE

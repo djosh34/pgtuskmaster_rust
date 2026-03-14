@@ -4,8 +4,8 @@ use axum::Router;
 
 use crate::{
     api::worker::{
-        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiClusterIdentity,
-        ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
+        build_router, ApiAuthState, ApiBindConfig, ApiClusterIdentity, ApiControlPlane,
+        ApiObservedState, ApiReloadCertificatesHandle, ApiServerCtx, ApiServingPlan,
     },
     config::RuntimeConfig,
     dcs::DcsHandle,
@@ -70,7 +70,7 @@ fn build_test_router_with_state(
             bind: ApiBindConfig::listen(cfg.api.listen_addr),
             auth: ApiAuthState::Disabled,
             transport: transport.clone(),
-            cert_reloader: ApiCertificateReloadHandle::from_transport(&transport),
+            reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
         },
         log: LogHandle::disabled(),
     })
