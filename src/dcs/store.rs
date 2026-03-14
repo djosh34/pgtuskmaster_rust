@@ -2,20 +2,20 @@ use thiserror::Error;
 
 use super::{
     keys::{key_from_path, DcsKey, DcsKeyParseError},
-    state::{DcsCache, InitLockRecord, LeaderLeaseRecord, MemberSlot, SwitchoverIntentRecord},
+    state::{DcsCache, InitLockRecord, LeaderLeaseRecord, MemberRecord, SwitchoverRecord},
     worker::{apply_watch_update, DcsWatchUpdate},
 };
 use crate::state::MemberId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WatchOp {
+pub(crate) enum WatchOp {
     Put,
     Delete,
     Reset,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WatchEvent {
+pub(crate) struct WatchEvent {
     pub op: WatchOp,
     pub path: String,
     pub value: Option<String>,
@@ -29,7 +29,7 @@ pub(crate) struct RefreshResult {
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum DcsStoreError {
+pub(crate) enum DcsStoreError {
     #[error("watch value missing for put event at `{0}`")]
     MissingValue(String),
     #[error("invalid key path: {0}")]
@@ -40,15 +40,12 @@ pub enum DcsStoreError {
     AlreadyExists(String),
     #[error("leader lease support is not configured for `{0}`")]
     LeaderLeaseNotConfigured(String),
-    #[error("leader lease is not owned locally for `{0}`")]
-    LeaderLeaseNotOwned(String),
     #[error("store I/O error: {0}")]
     Io(String),
 }
 
-pub trait DcsStore: Send {
+pub(crate) trait DcsStore: Send {
     fn healthy(&self) -> bool;
-    fn read_path(&mut self, path: &str) -> Result<Option<String>, DcsStoreError>;
     fn snapshot_prefix(&mut self, path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError>;
     fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError>;
     fn write_path_with_lease(
@@ -57,12 +54,8 @@ pub trait DcsStore: Send {
         value: String,
         lease_ttl_ms: u64,
     ) -> Result<(), DcsStoreError>;
-    fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError>;
     fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError>;
     fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError>;
-}
-
-pub(crate) trait DcsLeaderStore: Send {
     fn acquire_leader_lease(
         &mut self,
         scope: &str,
@@ -97,10 +90,10 @@ pub(crate) fn encode_leader_record(
     Ok((path, encoded))
 }
 
-pub(crate) fn write_local_member_slot(
+pub(crate) fn write_local_member_record(
     store: &mut dyn DcsStore,
     scope: &str,
-    member: &MemberSlot,
+    member: &MemberRecord,
     lease_ttl_ms: u64,
 ) -> Result<(), DcsStoreError> {
     let path = format!(
@@ -126,9 +119,9 @@ pub(crate) fn refresh_from_etcd_watch(
 
     for event in events {
         if event.op == WatchOp::Reset {
-            cache.member_slots.clear();
-            cache.leader_lease = None;
-            cache.switchover_intent = None;
+            cache.member_records.clear();
+            cache.leader_record = None;
+            cache.switchover_record = None;
             cache.init_lock = None;
             applied = applied.saturating_add(1);
             continue;
@@ -177,7 +170,7 @@ fn decode_watch_value(
     path: &str,
 ) -> Result<super::worker::DcsValue, DcsStoreError> {
     match key {
-        DcsKey::Member(_) => serde_json::from_str::<MemberSlot>(raw)
+        DcsKey::Member(_) => serde_json::from_str::<MemberRecord>(raw)
             .map(super::worker::DcsValue::Member)
             .map_err(|err| DcsStoreError::Decode {
                 key: path.to_string(),
@@ -189,7 +182,7 @@ fn decode_watch_value(
                 key: path.to_string(),
                 message: err.to_string(),
             }),
-        DcsKey::Switchover => serde_json::from_str::<SwitchoverIntentRecord>(raw)
+        DcsKey::Switchover => serde_json::from_str::<SwitchoverRecord>(raw)
             .map(super::worker::DcsValue::Switchover)
             .map_err(|err| DcsStoreError::Decode {
                 key: path.to_string(),

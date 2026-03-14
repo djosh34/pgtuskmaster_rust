@@ -1,7 +1,7 @@
 use super::types::{
     AuthorityView, DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal, IdleReason,
     LeaseState, LocalDataState, PostgresState, ProcessState, PublicationGoal, PublicationState,
-    ReconcileAction, RecoveryPlan, TargetRole, WorldView,
+    ReconcileAction, RecoveryPlan, ReplicationState, TargetRole, WorldView,
 };
 
 pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> Vec<ReconcileAction> {
@@ -141,9 +141,20 @@ fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> Option<Reconci
                 PostgresState::Primary { .. } => {
                     Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast))
                 }
-                PostgresState::Replica { upstream, .. } => match upstream {
+                PostgresState::Replica {
+                    upstream,
+                    replication,
+                } => match upstream {
                     Some(current_upstream) if current_upstream == &goal.leader => None,
                     Some(_) => Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast)),
+                    None
+                        if matches!(
+                            replication,
+                            ReplicationState::CatchingUp(_) | ReplicationState::Stalled
+                        ) =>
+                    {
+                        Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast))
+                    }
                     None => None,
                 },
             }
@@ -227,14 +238,15 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        dcs::state::DcsTrust,
+        dcs::DcsTrust,
         state::{MemberId, UnixMillis},
     };
 
     use super::*;
     use crate::ha::types::{
         ApiVisibility, GlobalKnowledge, IneligibleReason, LeaseEpoch, LocalKnowledge,
-        ObservationState, PeerKnowledge, PublicationState, StorageState, SwitchoverState,
+        ObservationState, PeerKnowledge, PublicationState, ShutdownMode, StorageState,
+        SwitchoverState, WalPosition,
     };
 
     fn world(local: LocalKnowledge) -> WorldView {
@@ -404,6 +416,77 @@ mod tests {
         });
         let desired = DesiredState {
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
+            publication: PublicationGoal::KeepCurrent,
+            clear_switchover: false,
+        };
+
+        assert!(reconcile(&world, &desired).is_empty());
+    }
+
+    #[test]
+    fn follower_replica_without_upstream_is_restarted_to_follow_authoritative_leader() {
+        let world = world(LocalKnowledge {
+            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
+            postgres: PostgresState::Replica {
+                upstream: None,
+                replication: super::super::types::ReplicationState::CatchingUp(WalPosition {
+                    timeline: 1,
+                    lsn: 42,
+                }),
+            },
+            process: ProcessState::Idle,
+            storage: StorageState::Healthy,
+            required_roles_ready: false,
+            publication: PublicationState::unknown(),
+            observation: ObservationState {
+                pg_observed_at: UnixMillis(100),
+                last_start_success_at: None,
+                last_promote_success_at: None,
+                last_demote_success_at: None,
+            },
+        });
+        let desired = DesiredState {
+            role: TargetRole::Follower(FollowGoal {
+                leader: MemberId("node-b".to_string()),
+                recovery: RecoveryPlan::StartStreaming,
+            }),
+            publication: PublicationGoal::KeepCurrent,
+            clear_switchover: false,
+        };
+
+        assert_eq!(
+            reconcile(&world, &desired),
+            vec![ReconcileAction::Demote(ShutdownMode::Fast)]
+        );
+    }
+
+    #[test]
+    fn follower_replica_without_upstream_keeps_streaming_when_receiver_is_healthy() {
+        let world = world(LocalKnowledge {
+            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
+            postgres: PostgresState::Replica {
+                upstream: None,
+                replication: super::super::types::ReplicationState::Streaming(WalPosition {
+                    timeline: 1,
+                    lsn: 84,
+                }),
+            },
+            process: ProcessState::Idle,
+            storage: StorageState::Healthy,
+            required_roles_ready: false,
+            publication: PublicationState::unknown(),
+            observation: ObservationState {
+                pg_observed_at: UnixMillis(100),
+                last_start_success_at: None,
+                last_promote_success_at: None,
+                last_demote_success_at: None,
+            },
+        });
+        let desired = DesiredState {
+            role: TargetRole::Follower(FollowGoal {
+                leader: MemberId("node-b".to_string()),
+                recovery: RecoveryPlan::StartStreaming,
+            }),
             publication: PublicationGoal::KeepCurrent,
             clear_switchover: false,
         };

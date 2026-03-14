@@ -12,7 +12,7 @@ use crate::{
             authority_primary_member, fetch_seed_state, member_is_ready_replica, ClusterWarning,
         },
     },
-    dcs::state::MemberSlot,
+    dcs::DcsMemberView,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,8 +71,7 @@ fn resolve_primary_view(
     })?;
     let member = state
         .dcs
-        .cache
-        .member_slots
+        .members
         .get(&crate::state::MemberId(primary_id.clone()))
         .ok_or_else(|| {
             CliError::Resolution(format!(
@@ -95,8 +94,7 @@ fn resolve_replicas_view(
 ) -> Result<ConnectionView, CliError> {
     let targets = state
         .dcs
-        .cache
-        .member_slots
+        .members
         .values()
         .filter(|member| member_is_ready_replica(member))
         .map(|member| build_connection_target(member, tls, emit_tls))
@@ -127,14 +125,14 @@ fn build_connection_view(
         scope: state.scope.clone(),
         kind,
         tls: emit_tls,
-        discovered_member_count: state.dcs.cache.member_slots.len(),
+        discovered_member_count: state.dcs.members.len(),
         warnings: Vec::new(),
         targets,
     }
 }
 
 fn build_connection_target(
-    member: &MemberSlot,
+    member: &DcsMemberView,
     tls: &CliTlsConfig,
     emit_tls: bool,
 ) -> Result<ConnectionTarget, CliError> {
@@ -142,13 +140,13 @@ fn build_connection_target(
     if postgres_host.is_empty() || member.routing.postgres.port == 0 {
         return Err(CliError::Resolution(format!(
             "member {} does not advertise PostgreSQL host/port",
-            member.lease.owner.0
+            member.member_id.0
         )));
     }
 
     let dsn = render_connection_dsn(postgres_host, member.routing.postgres.port, tls, emit_tls)?;
     Ok(ConnectionTarget {
-        member_id: member.lease.owner.0.clone(),
+        member_id: member.member_id.0.clone(),
         postgres_host: postgres_host.to_string(),
         postgres_port: member.routing.postgres.port,
         dsn,

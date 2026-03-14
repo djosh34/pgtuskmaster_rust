@@ -191,3 +191,5 @@ NONE
 .ralph/tasks/story-greenfield-cucumber-ha-harness/06-task-refactor-ha-loop-from-final-decision.md
 .ralph/tasks/story-greenfield-cucumber-ha-harness/05-task-produce-ha-refactor-option-artifacts-email-review-and-stop-ralph.md
 .ralph/tasks/story-ctl-operator-experience/07-task-refactor-ha-acceptance-suite-around-node-state-invariants.md
+NONE
+.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md

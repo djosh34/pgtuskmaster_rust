@@ -1,4 +1,4 @@
-## Task: Collapse DCS Behind A Single Private Component And A Read-Only `DcsView` <status>not_started</status> <passes>false</passes>
+## Task: Collapse DCS Behind A Single Private Component And A Read-Only `DcsView` <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -218,6 +218,15 @@ The exact final file names may differ, but the privacy outcome is required. If i
 
 **Out of scope:**
 - Do not redesign HA policy itself beyond what is necessary to route DCS actions through the new boundary.
+
+**Additional acceptance criteria from follow-up audit:**
+- The task must not stop at reducing DCS exposure conceptually; it must also minimize Rust visibility mechanically. Any `pub` or `pub(crate)` item inside `src/dcs` that is not required by the final architecture must be made private.
+- This applies to modules, functions, structs, enums, traits, type aliases, constants, and fields. Visibility must be justified by an actual caller that cannot use a narrower visibility boundary.
+- `pub(crate)` must not be used as a convenience default for cross-file sharing inside `src/dcs`. The implementation should prefer the narrowest visibility that compiles cleanly and preserves the intended boundary.
+- After the refactor, `src/dcs` should expose only the deliberate public surface and the smallest necessary crate-internal/runtime bootstrap surface, if any remains. Any leftover wider visibility must be treated as unfinished work, not stylistic preference.
+- Verification must include an audit of unnecessary exposure in `src/dcs`, with explicit confirmation that all avoidable `pub` and `pub(crate)` items were removed or narrowed.
+- The task must also add or enable linting that rejects unnecessary visibility across the repository, so unneeded exposed functions, structs, enums, modules, traits, aliases, constants, and fields are not allowed to accumulate again.
+- The linting requirement is repo-wide, not limited to `src/dcs`. If an appropriate built-in lint or supported lint configuration already exists, use it. If current tooling does not cover the whole requirement directly, the task must add the closest enforceable automated check and document the remaining gap clearly in the task result.
 - Do not preserve backward compatibility for the old leaked DCS module surface. This is greenfield; remove the old surface.
 - Do not leave temporary compatibility shims such as duplicate old/new DCS APIs or `pub` re-exports of internal DCS record types. Finish the boundary cleanup in one pass.
 
@@ -313,29 +322,31 @@ The exact final file names may differ, but the privacy outcome is required. If i
 </description>
 
 <acceptance_criteria>
-- [ ] `src/runtime/node.rs` is refactored so the running node constructs exactly one etcd/DCS client owner component total; the previous three-store split is removed
-- [ ] `src/dcs/mod.rs` no longer publicly exposes internal modules such as `keys`, `store`, and internal state/cache plumbing
-- [ ] `src/dcs/keys.rs` is internal-only; no code outside `src/dcs/` accesses DCS keys or path parsing directly
-- [ ] `src/dcs/store.rs` low-level raw path-based mutation APIs are no longer part of the external DCS boundary
-- [ ] `src/dcs/etcd_store.rs` remains an internal adapter and is not used directly by HA, API, CLI, or other non-DCS modules
-- [ ] `src/dcs/state.rs` and/or a new DCS view module define one public read-only typed `DcsView` surface while keeping internal cache/storage/worker types private or crate-private
-- [ ] The final DCS implementation explicitly simplifies the current concurrency and plumbing model instead of preserving it wholesale behind a private boundary
-- [ ] Any remaining internal cache, channels, worker threads, `Arc`, `Mutex`, or atomics in DCS are justified by the final single-owner architecture and are materially fewer/smaller than today
-- [ ] `src/api/mod.rs` `NodeState` keeps a `dcs` field, but that field contains the public read-only DCS view type rather than leaked internal DCS worker/cache state
-- [ ] `src/ha/state.rs` no longer holds `Box<dyn DcsLeaderStore>`; HA uses a DCS command handle instead
-- [ ] `src/api/worker.rs` no longer holds `Box<dyn DcsStore>`; API uses DCS command handle(s) instead
-- [ ] `src/api/controller.rs` no longer performs raw `write_path` / `delete_path` operations against DCS; switchover writes and clears go through DCS commands only
-- [ ] `src/ha/worker.rs` no longer performs direct leader lease store operations; leadership acquire/release and switchover clear go through DCS commands only
-- [ ] `src/dcs/worker.rs` becomes the single owner of DCS writes and lease side effects
-- [ ] Foreign raw deletion of `/{scope}/leader` is removed; `/leader` lifecycle is owned by DCS lease semantics and locally initiated DCS commands only
-- [ ] `src/ha/worker.rs`, `src/ha/source_conn.rs`, `src/ha/process_dispatch.rs`, `src/api/controller.rs`, `src/api/mod.rs`, `src/api/worker.rs`, `src/cli/status.rs`, `src/cli/connect.rs`, `src/cli/switchover.rs`, and `src/runtime/node.rs` are updated to depend only on the public read-only DCS view / DCS command boundary, not internal DCS cache/store/key types
-- [ ] Type cleanup is completed so internal persisted/wire/cache types are clearly separated from the public read-only DCS view and from HA-domain types
-- [ ] Redundant or dead old DCS code/tests are removed, including the disabled legacy DCS test block in `src/runtime/node.rs`
-- [ ] A repo-wide verification confirms there is exactly one DCS/etcd client owner left and no other `EtcdDcsStore::connect` / `connect_with_leader_lease` call sites outside that single bootstrap path
-- [ ] A repo-wide verification confirms there are no raw DCS mutation calls outside `src/dcs/`
-- [ ] A repo-wide verification confirms there are no non-DCS imports of internal DCS modules/types beyond the intentional public read-only view surface
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] `src/runtime/node.rs` is refactored so the running node constructs exactly one etcd/DCS client owner component total; the previous three-store split is removed
+- [x] `src/dcs/mod.rs` no longer publicly exposes internal modules such as `keys`, `store`, and internal state/cache plumbing
+- [x] `src/dcs/keys.rs` is internal-only; no code outside `src/dcs/` accesses DCS keys or path parsing directly
+- [x] `src/dcs/store.rs` low-level raw path-based mutation APIs are no longer part of the external DCS boundary
+- [x] `src/dcs/etcd_store.rs` remains an internal adapter and is not used directly by HA, API, CLI, or other non-DCS modules
+- [x] `src/dcs/state.rs` and/or a new DCS view module define one public read-only typed `DcsView` surface while keeping internal cache/storage/worker types private or crate-private
+- [x] The final DCS implementation explicitly simplifies the current concurrency and plumbing model instead of preserving it wholesale behind a private boundary
+- [x] Any remaining internal cache, channels, worker threads, `Arc`, `Mutex`, or atomics in DCS are justified by the final single-owner architecture and are materially fewer/smaller than today
+- [x] `src/api/mod.rs` `NodeState` keeps a `dcs` field, but that field contains the public read-only DCS view type rather than leaked internal DCS worker/cache state
+- [x] `src/ha/state.rs` no longer holds `Box<dyn DcsLeaderStore>`; HA uses a DCS command handle instead
+- [x] `src/api/worker.rs` no longer holds `Box<dyn DcsStore>`; API uses DCS command handle(s) instead
+- [x] `src/api/controller.rs` no longer performs raw `write_path` / `delete_path` operations against DCS; switchover writes and clears go through DCS commands only
+- [x] `src/ha/worker.rs` no longer performs direct leader lease store operations; leadership acquire/release and switchover clear go through DCS commands only
+- [x] `src/dcs/worker.rs` becomes the single owner of DCS writes and lease side effects
+- [x] Foreign raw deletion of `/{scope}/leader` is removed; `/leader` lifecycle is owned by DCS lease semantics and locally initiated DCS commands only
+- [x] `src/ha/worker.rs`, `src/ha/source_conn.rs`, `src/ha/process_dispatch.rs`, `src/api/controller.rs`, `src/api/mod.rs`, `src/api/worker.rs`, `src/cli/status.rs`, `src/cli/connect.rs`, `src/cli/switchover.rs`, and `src/runtime/node.rs` are updated to depend only on the public read-only DCS view / DCS command boundary, not internal DCS cache/store/key types
+- [x] Type cleanup is completed so internal persisted/wire/cache types are clearly separated from the public read-only DCS view and from HA-domain types
+- [x] Redundant or dead old DCS code/tests are removed, including the disabled legacy DCS test block in `src/runtime/node.rs`
+- [x] A repo-wide verification confirms there is exactly one DCS/etcd client owner left and no other `EtcdDcsStore::connect` / `connect_with_leader_lease` call sites outside that single bootstrap path
+- [x] A repo-wide verification confirms there are no raw DCS mutation calls outside `src/dcs/`
+- [x] A repo-wide verification confirms there are no non-DCS imports of internal DCS modules/types beyond the intentional public read-only view surface
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+NOW EXECUTE

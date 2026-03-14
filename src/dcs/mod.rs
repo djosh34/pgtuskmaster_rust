@@ -1,5 +1,15 @@
 pub(crate) mod etcd_store;
-pub mod keys;
-pub mod state;
-pub mod store;
+mod command;
+mod keys;
+mod state;
+pub(crate) mod store;
 pub(crate) mod worker;
+
+pub use command::{DcsCommand, DcsCommandError, DcsHandle};
+pub use state::{
+    DcsLeaderStateView, DcsLeaderView, DcsMemberApiView, DcsMemberEndpointView,
+    DcsMemberLeaseView, DcsMemberPostgresView, DcsMemberRoutingView, DcsMemberView,
+    DcsPrimaryPostgresView, DcsReplicaPostgresView, DcsSwitchoverStateView,
+    DcsSwitchoverTargetView, DcsSwitchoverView, DcsTrust, DcsUnknownPostgresView, DcsView,
+    WalVector,
+};

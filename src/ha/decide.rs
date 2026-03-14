@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::{dcs::state::DcsTrust, state::MemberId};
+use crate::{dcs::DcsTrust, state::MemberId};
 
 use super::types::{
     ApiVisibility, AuthorityView, Candidacy, DesiredState, ElectionEligibility, FailSafeGoal,
@@ -147,8 +147,24 @@ fn decide_as_lease_holder(
     epoch: LeaseEpoch,
 ) -> DesiredState {
     let publication = leader_publication(world, self_id, &epoch);
+    if !matches!(world.local.postgres, PostgresState::Primary { .. })
+        && matches!(
+            world.global.switchover,
+            SwitchoverState::Requested(super::types::SwitchoverRequest {
+                target: SwitchoverTarget::AnyHealthyReplica,
+            })
+        )
+    {
+        return DesiredState {
+            role: TargetRole::Leader(epoch),
+            publication,
+            clear_switchover: true,
+        };
+    }
+    let allow_self_switchover_target =
+        !matches!(world.local.postgres, PostgresState::Primary { .. });
 
-    match resolve_switchover(world, self_id, false) {
+    match resolve_switchover(world, self_id, allow_self_switchover_target) {
         ResolvedSwitchover::NotRequested => DesiredState {
             role: TargetRole::Leader(epoch.clone()),
             publication,
@@ -162,6 +178,11 @@ fn decide_as_lease_holder(
         ResolvedSwitchover::Proceed(target) => DesiredState {
             role: TargetRole::DemotingForSwitchover(target),
             publication: PublicationGoal::KeepCurrent,
+            clear_switchover: false,
+        },
+        ResolvedSwitchover::Pending => DesiredState {
+            role: TargetRole::Leader(epoch),
+            publication,
             clear_switchover: false,
         },
         ResolvedSwitchover::Abandon => DesiredState {
@@ -184,6 +205,14 @@ fn decide_without_lease(world: &WorldView, self_id: &MemberId) -> DesiredState {
         },
         ResolvedSwitchover::Proceed(target) => DesiredState {
             role: TargetRole::Idle(IdleReason::AwaitingTarget(target)),
+            publication: PublicationGoal::PublishNoPrimary {
+                reason: NoPrimaryReason::LeaseOpen,
+                fence_cutoff: None,
+            },
+            clear_switchover: false,
+        },
+        ResolvedSwitchover::Pending => DesiredState {
+            role: TargetRole::Idle(IdleReason::AwaitingLeader),
             publication: PublicationGoal::PublishNoPrimary {
                 reason: NoPrimaryReason::LeaseOpen,
                 fence_cutoff: None,
@@ -325,6 +354,7 @@ fn observed_foreign_lease(world: &WorldView, self_id: &MemberId) -> Option<Lease
 enum ResolvedSwitchover {
     NotRequested,
     Proceed(MemberId),
+    Pending,
     Abandon,
 }
 
@@ -342,7 +372,7 @@ fn resolve_switchover(
                 self_id,
                 allow_self_target,
             )
-            .map_or(ResolvedSwitchover::Abandon, ResolvedSwitchover::Proceed),
+            .map_or(ResolvedSwitchover::Pending, ResolvedSwitchover::Proceed),
             SwitchoverTarget::Specific(member_id) => {
                 if member_id == self_id {
                     if allow_self_target && switchover_target_is_valid(&world.global.self_peer) {
@@ -371,6 +401,10 @@ fn best_switchover_target(
     self_id: &MemberId,
     allow_self_target: bool,
 ) -> Option<MemberId> {
+    if allow_self_target && switchover_target_is_valid(self_peer) {
+        return Some(self_id.clone());
+    }
+
     let peer_candidate = peers
         .iter()
         .filter(|(_, peer)| switchover_target_is_valid(peer))
@@ -379,23 +413,6 @@ fn best_switchover_target(
             compare_switchover_candidates(left_id, left_peer, right_id, right_peer)
         })
         .map(|(member_id, _)| member_id);
-
-    if allow_self_target && switchover_target_is_valid(self_peer) {
-        return match peer_candidate {
-            Some(peer_id) => {
-                let ordering = peers
-                    .get(&peer_id)
-                    .map(|peer| compare_switchover_candidates(self_id, self_peer, &peer_id, peer))
-                    .unwrap_or(Ordering::Greater);
-                if ordering == Ordering::Greater {
-                    Some(self_id.clone())
-                } else {
-                    Some(peer_id)
-                }
-            }
-            None => Some(self_id.clone()),
-        };
-    }
 
     peer_candidate
 }
@@ -513,7 +530,7 @@ mod tests {
 
     use super::{best_failover_candidate, decide};
     use crate::{
-        dcs::state::DcsTrust,
+        dcs::DcsTrust,
         state::{MemberId, UnixMillis},
     };
 
@@ -681,6 +698,116 @@ mod tests {
         assert_eq!(
             decide(&world, &self_id).role,
             TargetRole::Idle(IdleReason::AwaitingLeader)
+        );
+    }
+
+    #[test]
+    fn generic_switchover_request_waits_for_future_eligible_target() {
+        let self_id = MemberId("node-a".to_string());
+        let mut world = world(
+            LocalKnowledge {
+                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
+                postgres: PostgresState::Primary {
+                    committed_lsn: 42,
+                },
+                process: ProcessState::Idle,
+                storage: StorageState::Healthy,
+                required_roles_ready: false,
+                publication: PublicationState::unknown(),
+                observation: ObservationState {
+                    pg_observed_at: UnixMillis(0),
+                    last_start_success_at: None,
+                    last_promote_success_at: None,
+                    last_demote_success_at: None,
+                },
+            },
+            promote_peer(42),
+        );
+        world.global.lease = LeaseState::HeldByMe(LeaseEpoch {
+            holder: self_id.clone(),
+            generation: 7,
+        });
+        world.global.switchover = SwitchoverState::Requested(super::super::types::SwitchoverRequest {
+            target: super::super::types::SwitchoverTarget::AnyHealthyReplica,
+        });
+        world.global.peers = BTreeMap::from([(
+            MemberId("node-b".to_string()),
+            PeerKnowledge {
+                eligibility: ElectionEligibility::Ineligible(
+                    super::super::types::IneligibleReason::NotReady,
+                ),
+                api: ApiVisibility::Reachable,
+            },
+        )]);
+
+        assert_eq!(
+            decide(&world, &self_id),
+            DesiredState {
+                role: TargetRole::Leader(LeaseEpoch {
+                    holder: self_id.clone(),
+                    generation: 7,
+                }),
+                publication: PublicationGoal::PublishPrimary {
+                    primary: self_id,
+                    epoch: LeaseEpoch {
+                        holder: MemberId("node-a".to_string()),
+                        generation: 7,
+                    },
+                },
+                clear_switchover: false,
+            }
+        );
+    }
+
+    #[test]
+    fn lease_holder_replica_can_self_select_for_generic_switchover_after_winning_lease() {
+        let self_id = MemberId("node-c".to_string());
+        let epoch = LeaseEpoch {
+            holder: self_id.clone(),
+            generation: 7,
+        };
+        let mut world = world(
+            LocalKnowledge {
+                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
+                postgres: PostgresState::Replica {
+                    upstream: None,
+                    replication: ReplicationState::Streaming(WalPosition {
+                        timeline: 1,
+                        lsn: 50,
+                    }),
+                },
+                process: ProcessState::Idle,
+                storage: StorageState::Healthy,
+                required_roles_ready: false,
+                publication: PublicationState::unknown(),
+                observation: ObservationState {
+                    pg_observed_at: UnixMillis(0),
+                    last_start_success_at: None,
+                    last_promote_success_at: None,
+                    last_demote_success_at: None,
+                },
+            },
+            promote_peer(50),
+        );
+        world.global.lease = LeaseState::HeldByMe(epoch.clone());
+        world.global.switchover = SwitchoverState::Requested(super::super::types::SwitchoverRequest {
+            target: super::super::types::SwitchoverTarget::AnyHealthyReplica,
+        });
+        world.global.peers = BTreeMap::from([(
+            MemberId("node-a".to_string()),
+            promote_peer(40),
+        )]);
+
+        assert_eq!(
+            decide(&world, &self_id),
+            DesiredState {
+                role: TargetRole::Leader(epoch.clone()),
+                publication: PublicationGoal::PublishNoPrimary {
+                    reason: NoPrimaryReason::Recovering,
+                    fence_cutoff: None,
+                },
+                clear_switchover: true,
+            }
         );
     }
 }

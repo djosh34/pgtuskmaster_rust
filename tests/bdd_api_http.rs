@@ -1,73 +1,12 @@
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pgtuskmaster_rust::{
     api::worker::ApiWorkerCtx,
     config::{ApiAuthConfig, ApiRoleTokensConfig, RuntimeConfig, SecretSource},
-    dcs::store::{DcsStore, DcsStoreError, WatchEvent},
+    dcs::DcsHandle,
     state::{new_state_channel, WorkerError},
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-
-#[derive(Clone, Default)]
-struct RecordingStore {
-    writes: Arc<Mutex<Vec<(String, String)>>>,
-}
-
-impl RecordingStore {
-    fn writes(&self) -> Result<Vec<(String, String)>, WorkerError> {
-        let guard = self
-            .writes
-            .lock()
-            .map_err(|_| WorkerError::Message("writes lock poisoned".to_string()))?;
-        Ok(guard.clone())
-    }
-}
-
-impl DcsStore for RecordingStore {
-    fn healthy(&self) -> bool {
-        true
-    }
-
-    fn read_path(&mut self, _path: &str) -> Result<Option<String>, DcsStoreError> {
-        Ok(None)
-    }
-
-    fn snapshot_prefix(&mut self, _path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError> {
-        Ok(Vec::new())
-    }
-
-    fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
-        let mut guard = self
-            .writes
-            .lock()
-            .map_err(|_| DcsStoreError::Io("writes lock poisoned".to_string()))?;
-        guard.push((path.to_string(), value));
-        Ok(())
-    }
-
-    fn write_path_with_lease(
-        &mut self,
-        path: &str,
-        value: String,
-        _lease_ttl_ms: u64,
-    ) -> Result<(), DcsStoreError> {
-        self.write_path(path, value)
-    }
-
-    fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
-        self.write_path(path, value)?;
-        Ok(true)
-    }
-
-    fn delete_path(&mut self, _path: &str) -> Result<(), DcsStoreError> {
-        Ok(())
-    }
-
-    fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
-        Ok(Vec::new())
-    }
-}
 
 fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
     let auth = match auth_token {
@@ -179,8 +118,7 @@ async fn bdd_api_state_requires_live_state_subscribers() -> Result<(), WorkerErr
         .await
         .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
 
-    let store = RecordingStore::default();
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store));
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, DcsHandle::closed());
     let response = request_once(
         &mut ctx,
         "GET /state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
@@ -199,8 +137,7 @@ async fn bdd_api_old_debug_and_fallback_routes_are_gone() -> Result<(), WorkerEr
         .await
         .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
 
-    let store = RecordingStore::default();
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store));
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, DcsHandle::closed());
 
     let debug_response = request_once(
         &mut ctx,
@@ -227,14 +164,12 @@ async fn bdd_api_auth_token_denies_missing_header() -> Result<(), WorkerError> {
         .await
         .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
 
-    let store = RecordingStore::default();
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, Box::new(store.clone()));
+    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, DcsHandle::closed());
     let response = request_once(
         &mut ctx,
         "GET /state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     )
     .await?;
     assert_eq!(response.status_code, 401);
-    assert!(store.writes()?.is_empty());
     Ok(())
 }

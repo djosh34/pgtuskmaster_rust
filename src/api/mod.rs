@@ -4,27 +4,20 @@ pub(crate) mod controller;
 pub mod worker;
 
 use crate::{
-    dcs::state::DcsState, ha::state::HaState, pginfo::state::PgInfoState,
-    process::state::ProcessState,
+    dcs::DcsView, ha::state::HaState, pginfo::state::PgInfoState, process::state::ProcessState,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub(crate) enum ApiError {
     #[error("bad request: {0}")]
     BadRequest(String),
-    #[error("dcs store error: {0}")]
-    DcsStore(String),
-    #[error("internal error: {0}")]
-    Internal(String),
+    #[error("dcs command error: {0}")]
+    DcsCommand(String),
 }
 
 impl ApiError {
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest(message.into())
-    }
-
-    pub(crate) fn internal(message: impl Into<String>) -> Self {
-        Self::Internal(message.into())
     }
 }
 
@@ -44,6 +37,6 @@ pub struct NodeState {
     pub self_member_id: String,
     pub pg: PgInfoState,
     pub process: ProcessState,
-    pub dcs: DcsState,
+    pub dcs: DcsView,
     pub ha: HaState,
 }

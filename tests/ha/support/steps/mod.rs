@@ -7,7 +7,7 @@ use std::{
 use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
     api::NodeState,
-    dcs::state::{DcsTrust, MemberPostgresView},
+    dcs::{DcsMemberPostgresView, DcsMemberView, DcsTrust},
     ha::types::{AuthorityView, TargetRole},
     pginfo::state::Readiness,
 };
@@ -257,11 +257,15 @@ async fn i_start_only_the_fixed_nodes(
 async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
     world.clear_primary_history();
     let seed_member = world.require_alias("current_primary")?;
+    let target_member = wait_for_planned_switchover_precondition(world, seed_member).await?;
     let harness = world.harness()?;
     let response = harness
         .observer()
-        .switchover_request_via_member(seed_member, None)?;
-    harness.record_note("switchover.request", response)?;
+        .switchover_request_via_member(seed_member, Some(target_member))?;
+    harness.record_note(
+        "switchover.request",
+        format!("target={target_member} response={response}"),
+    )?;
     Ok(())
 }
 
@@ -470,20 +474,34 @@ async fn i_wait_for_the_primary_named_to_become_the_only_primary(
 
 #[then("the remaining online non-primary node is a replica")]
 async fn the_remaining_online_non_primary_node_is_a_replica(world: &mut HaWorld) -> Result<()> {
-    let status = current_status(world)?;
-    require_visible_members(&status, online_expected_count(world))?;
-    let primary = single_primary(&status)?;
-    let replicas = replica_members(&status)
-        .into_iter()
-        .filter(|member_id| member_id != &primary)
-        .count();
-    if replicas == 1 {
-        Ok(())
-    } else {
-        Err(HarnessError::message(format!(
-            "expected one remaining replica, observed {replicas}"
-        )))
-    }
+    let intended_online = online_member_ids(world);
+    let expected_online = online_expected_count(world);
+    poll_for_status(
+        world,
+        "remaining.online.replica",
+        PollKind::Failover,
+        |status| {
+            require_visible_members(status, expected_online)?;
+            let primary = single_primary(status)?;
+            let replicas = replica_members(status)
+                .into_iter()
+                .filter(|member_id| {
+                    member_id != &primary
+                        && intended_online
+                            .iter()
+                            .any(|expected_member_id| expected_member_id == member_id)
+                })
+                .count();
+            if replicas == 1 {
+                Ok(())
+            } else {
+                Err(HarnessError::message(format!(
+                    "expected one remaining replica, observed {replicas}"
+                )))
+            }
+        },
+    )
+    .await
 }
 
 #[then("the cluster is degraded but operational across 2 running nodes")]
@@ -1439,12 +1457,9 @@ fn single_primary(status: &NodeState) -> Result<ClusterMember> {
 fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
     status
         .dcs
-        .cache
-        .member_slots
+        .members
         .iter()
-        .filter(|(_member_id, member)| {
-            matches!(&member.postgres, MemberPostgresView::Replica(_))
-        })
+        .filter(|(_member_id, member)| matches!(&member.postgres, DcsMemberPostgresView::Replica(_)))
         .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
 }
@@ -1452,8 +1467,7 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
 fn operator_visible_member_ids(status: &NodeState) -> Vec<ClusterMember> {
     status
         .dcs
-        .cache
-        .member_slots
+        .members
         .keys()
         .filter_map(|member_id| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
@@ -1471,8 +1485,7 @@ fn assert_member_is_replica_via_member(
     let primary = single_primary(&status)?;
     let member_status = status
         .dcs
-        .cache
-        .member_slots
+        .members
         .get(&member.member_id())
         .ok_or_else(|| {
             HarnessError::message(format!("member `{member}` is not present in status"))
@@ -1483,20 +1496,20 @@ fn assert_member_is_replica_via_member(
         )));
     }
     match &member_status.postgres {
-        MemberPostgresView::Replica(_) => Ok(()),
-        MemberPostgresView::Unknown(_) => {
+        DcsMemberPostgresView::Replica(_) => Ok(()),
+        DcsMemberPostgresView::Unknown(_) => {
             Err(HarnessError::message(format!(
                 "member `{member}` role remained `unknown`; HA role assertions must come directly from NodeState"
             )))
         }
-        MemberPostgresView::Primary(_) => Err(HarnessError::message(format!(
+        DcsMemberPostgresView::Primary(_) => Err(HarnessError::message(format!(
             "member `{member}` role is `primary` instead of `replica`"
         ))),
     }
 }
 
 fn require_visible_members(status: &NodeState, expected: usize) -> Result<()> {
-    let visible = status.dcs.cache.member_slots.len();
+    let visible = status.dcs.members.len();
     if visible >= expected {
         return Ok(());
     }
@@ -1528,7 +1541,7 @@ fn format_warnings(status: &NodeState) -> String {
     if !matches!(status.ha.publication.authority, AuthorityView::Primary { .. }) {
         warnings.push(format!("authority={}", format_authority(status)));
     }
-    if status.dcs.cache.member_slots.is_empty() {
+    if status.dcs.members.is_empty() {
         warnings.push("no_members".to_string());
     }
     if warnings.is_empty() {
@@ -2100,7 +2113,7 @@ async fn wait_for_targeted_switchover_rejection_precondition(
             let harness = world.harness()?;
             let status = harness.observer().state_via_member(seed_member)?;
             harness.record_status_snapshot("switchover.rejected.precondition", &status)?;
-            let maybe_target = status.dcs.cache.member_slots.get(&target_member.member_id());
+            let maybe_target = status.dcs.members.get(&target_member.member_id());
             match maybe_target {
                 None => Ok(()),
                 Some(member) if !member_slot_is_api_switchover_eligible(member) => Ok(()),
@@ -2123,11 +2136,95 @@ async fn wait_for_targeted_switchover_rejection_precondition(
     )))
 }
 
-fn member_slot_is_api_switchover_eligible(member: &pgtuskmaster_rust::dcs::state::MemberSlot) -> bool {
+async fn wait_for_planned_switchover_precondition(
+    world: &mut HaWorld,
+    seed_member: ClusterMember,
+) -> Result<ClusterMember> {
+    let deadline = {
+        let harness = world.harness()?;
+        Instant::now() + harness.timeouts.failover_deadline
+    };
+    let poll_interval = {
+        let harness = world.harness()?;
+        harness.timeouts.poll_interval
+    };
+    let mut last_error = None;
+
+    while Instant::now() < deadline {
+        let attempt: Result<ClusterMember> = (|| {
+            let harness = world.harness()?;
+            let status = harness.observer().state_via_member(seed_member)?;
+            harness.record_status_snapshot("switchover.request.precondition", &status)?;
+            select_planned_switchover_target(&status, seed_member).ok_or_else(|| {
+                HarnessError::message(format!(
+                    "no eligible planned switchover target is currently visible via `{seed_member}`"
+                ))
+            })
+        })();
+        match attempt {
+            Ok(target_member) => return Ok(target_member),
+            Err(err) => last_error = Some(err.to_string()),
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    Err(HarnessError::message(format!(
+        "timed out waiting for an eligible planned switchover target via `{seed_member}`; last observed error: {}",
+        last_error.unwrap_or_else(|| "no planned switchover precondition check ran".to_string())
+    )))
+}
+
+fn select_planned_switchover_target(
+    status: &NodeState,
+    seed_member: ClusterMember,
+) -> Option<ClusterMember> {
+    status
+        .dcs
+        .members
+        .iter()
+        .filter_map(|(member_id, member_view)| {
+            ClusterMember::parse(member_id.0.as_str())
+                .ok()
+                .filter(|member| *member != seed_member)
+                .filter(|_| member_slot_is_api_switchover_eligible(member_view))
+                .map(|member| (member, planned_switchover_target_rank(member_view)))
+        })
+        .max_by(|(left_member, left_rank), (right_member, right_rank)| {
+            left_rank
+                .cmp(right_rank)
+                .then_with(|| right_member.cmp(left_member))
+        })
+        .map(|(member, _)| member)
+}
+
+fn planned_switchover_target_rank(member: &DcsMemberView) -> (u8, u64, u64) {
     match &member.postgres {
-        MemberPostgresView::Primary(_) => false,
-        MemberPostgresView::Unknown(observation) => observation.readiness == Readiness::Ready,
-        MemberPostgresView::Replica(observation) => observation.readiness == Readiness::Ready,
+        DcsMemberPostgresView::Replica(observation) => observation
+            .replay_wal
+            .as_ref()
+            .or(observation.follow_wal.as_ref())
+            .map(|wal| {
+                (
+                    1,
+                    wal.timeline.map_or(0, |timeline| u64::from(timeline.0)),
+                    wal.lsn.0,
+                )
+            })
+            .unwrap_or((0, 0, 0)),
+        DcsMemberPostgresView::Unknown(observation) => (
+            0,
+            observation.timeline.map_or(0, |timeline| u64::from(timeline.0)),
+            0,
+        ),
+        DcsMemberPostgresView::Primary(_) => (0, 0, 0),
+    }
+}
+
+fn member_slot_is_api_switchover_eligible(member: &DcsMemberView) -> bool {
+    match &member.postgres {
+        DcsMemberPostgresView::Primary(_) => false,
+        DcsMemberPostgresView::Unknown(observation) => observation.readiness == Readiness::Ready,
+        DcsMemberPostgresView::Replica(observation) => observation.readiness == Readiness::Ready,
     }
 }
 

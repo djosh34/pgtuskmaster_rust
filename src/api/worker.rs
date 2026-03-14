@@ -13,8 +13,7 @@ use crate::{
         ApiError,
     },
     config::{ApiAuthConfig, ApiTlsMode, RuntimeConfig},
-    dcs::state::DcsState,
-    dcs::store::DcsStore,
+    dcs::{DcsHandle, DcsView},
     ha::state::HaState,
     logging::{AppEvent, AppEventHeader, LogHandle, SeverityText, StructuredFields},
     pginfo::state::PgInfoState,
@@ -82,10 +81,10 @@ pub struct ApiWorkerCtx {
     scope: String,
     member_id: String,
     config_subscriber: StateSubscriber<RuntimeConfig>,
-    dcs_store: Box<dyn DcsStore>,
+    dcs_handle: DcsHandle,
     pg_subscriber: Option<StateSubscriber<PgInfoState>>,
     process_subscriber: Option<StateSubscriber<ProcessState>>,
-    dcs_subscriber: Option<StateSubscriber<DcsState>>,
+    dcs_subscriber: Option<StateSubscriber<DcsView>>,
     ha_subscriber: Option<StateSubscriber<HaState>>,
     tls_mode_override: Option<ApiTlsMode>,
     tls_acceptor: Option<TlsAcceptor>,
@@ -98,20 +97,15 @@ impl ApiWorkerCtx {
     pub fn contract_stub(
         listener: TcpListener,
         config_subscriber: StateSubscriber<RuntimeConfig>,
-        dcs_store: Box<dyn DcsStore>,
+        dcs_handle: DcsHandle,
     ) -> Self {
-        Self::new(
-            listener,
-            config_subscriber,
-            dcs_store,
-            LogHandle::disabled(),
-        )
+        Self::new(listener, config_subscriber, dcs_handle, LogHandle::disabled())
     }
 
     pub(crate) fn new(
         listener: TcpListener,
         config_subscriber: StateSubscriber<RuntimeConfig>,
-        dcs_store: Box<dyn DcsStore>,
+        dcs_handle: DcsHandle,
         log: LogHandle,
     ) -> Self {
         let cfg = config_subscriber.latest();
@@ -123,7 +117,7 @@ impl ApiWorkerCtx {
             scope,
             member_id,
             config_subscriber,
-            dcs_store,
+            dcs_handle,
             pg_subscriber: None,
             process_subscriber: None,
             dcs_subscriber: None,
@@ -174,7 +168,7 @@ impl ApiWorkerCtx {
         &mut self,
         pg_subscriber: StateSubscriber<PgInfoState>,
         process_subscriber: StateSubscriber<ProcessState>,
-        dcs_subscriber: StateSubscriber<DcsState>,
+        dcs_subscriber: StateSubscriber<DcsView>,
         ha_subscriber: StateSubscriber<HaState>,
     ) {
         self.pg_subscriber = Some(pg_subscriber);
@@ -293,7 +287,7 @@ pub async fn step_once(ctx: &mut ApiWorkerCtx) -> Result<(), WorkerError> {
 
     emit_api_auth_decision(ctx, peer, &request, "allowed")?;
 
-    let response = route_request(ctx, &cfg, peer, request);
+    let response = route_request(ctx, &cfg, peer, request).await;
     let status_code = response.status;
     stream.write_http_response(response).await?;
 
@@ -387,7 +381,7 @@ fn is_fatal_api_step_error(err: &WorkerError) -> bool {
         || message.contains("api local_addr failed")
 }
 
-fn route_request(
+async fn route_request(
     ctx: &mut ApiWorkerCtx,
     cfg: &RuntimeConfig,
     _peer: std::net::SocketAddr,
@@ -413,16 +407,18 @@ fn route_request(
             match post_switchover(
                 &ctx.scope,
                 &crate::state::MemberId(ctx.member_id.clone()),
-                &mut *ctx.dcs_store,
+                &ctx.dcs_handle,
                 &dcs,
                 &ha,
                 input,
-            ) {
+            )
+            .await
+            {
                 Ok(value) => HttpResponse::json(202, "Accepted", &value),
                 Err(err) => api_error_to_http(err),
             }
         }
-        ("DELETE", "/switchover") => match delete_switchover(&ctx.scope, &mut *ctx.dcs_store) {
+        ("DELETE", "/switchover") => match delete_switchover(&ctx.scope, &ctx.dcs_handle).await {
             Ok(value) => HttpResponse::json(202, "Accepted", &value),
             Err(err) => api_error_to_http(err),
         },
@@ -453,8 +449,7 @@ fn route_request(
 fn api_error_to_http(err: ApiError) -> HttpResponse {
     match err {
         ApiError::BadRequest(message) => HttpResponse::text(400, "Bad Request", message),
-        ApiError::DcsStore(message) => HttpResponse::text(503, "Service Unavailable", message),
-        ApiError::Internal(message) => HttpResponse::text(500, "Internal Server Error", message),
+        ApiError::DcsCommand(message) => HttpResponse::text(503, "Service Unavailable", message),
     }
 }
 

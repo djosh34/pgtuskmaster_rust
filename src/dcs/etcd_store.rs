@@ -17,7 +17,7 @@ use etcd_client::{
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::store::{
-    encode_leader_record, leader_path, DcsLeaderStore, DcsStore, DcsStoreError, WatchEvent, WatchOp,
+    encode_leader_record, leader_path, DcsStore, DcsStoreError, WatchEvent, WatchOp,
 };
 use crate::config::DcsEndpoint;
 use crate::state::MemberId;
@@ -43,10 +43,6 @@ struct OwnedLeaderLease {
 }
 
 enum WorkerCommand {
-    Read {
-        path: String,
-        response_tx: mpsc::Sender<Result<Option<String>, DcsStoreError>>,
-    },
     SnapshotPrefix {
         path_prefix: String,
         response_tx: mpsc::Sender<Result<Vec<WatchEvent>, DcsStoreError>>,
@@ -61,11 +57,6 @@ enum WorkerCommand {
         value: String,
         lease_ttl_ms: u64,
         response_tx: mpsc::Sender<Result<(), DcsStoreError>>,
-    },
-    PutIfAbsent {
-        path: String,
-        value: String,
-        response_tx: mpsc::Sender<Result<bool, DcsStoreError>>,
     },
     Delete {
         path: String,
@@ -92,10 +83,6 @@ pub(crate) struct EtcdDcsStore {
 }
 
 impl EtcdDcsStore {
-    pub(crate) fn connect(endpoints: Vec<DcsEndpoint>, scope: &str) -> Result<Self, DcsStoreError> {
-        Self::connect_with_options(endpoints, scope, WORKER_BOOTSTRAP_TIMEOUT, None)
-    }
-
     pub(crate) fn connect_with_leader_lease(
         endpoints: Vec<DcsEndpoint>,
         scope: &str,
@@ -177,31 +164,6 @@ impl EtcdDcsStore {
                 )))
             }
         }
-    }
-
-    pub(crate) fn put_path_if_absent(
-        &mut self,
-        path: &str,
-        value: String,
-    ) -> Result<bool, DcsStoreError> {
-        let (response_tx, response_rx) = mpsc::channel::<Result<bool, DcsStoreError>>();
-        self.command_tx
-            .send(WorkerCommand::PutIfAbsent {
-                path: path.to_string(),
-                value,
-                response_tx,
-            })
-            .map_err(|err| {
-                self.mark_unhealthy();
-                DcsStoreError::Io(format!("send put-if-absent command failed: {err}"))
-            })?;
-
-        response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
-            self.mark_unhealthy();
-            DcsStoreError::Io(format!(
-                "timed out waiting for put-if-absent response: {err}"
-            ))
-        })?
     }
 
     fn mark_unhealthy(&self) {
@@ -480,22 +442,6 @@ impl WorkerCommandCtx<'_> {
                 let _ = response_tx.send(result);
                 invalidate_result.is_ok()
             }
-            WorkerCommand::Read { path, response_tx } => {
-                let result = execute_read(self.endpoints, self.client, self.healthy, &path).await;
-                let invalidate_result = if should_invalidate_on_error(&result) {
-                    invalidate_watch_session(
-                        self.healthy,
-                        self.events,
-                        self.client,
-                        self.watcher,
-                        self.watch_stream,
-                    )
-                } else {
-                    Ok(())
-                };
-                let _ = response_tx.send(result);
-                invalidate_result.is_ok()
-            }
             WorkerCommand::SnapshotPrefix {
                 path_prefix,
                 response_tx,
@@ -507,28 +453,6 @@ impl WorkerCommandCtx<'_> {
                     &path_prefix,
                 )
                 .await;
-                let invalidate_result = if should_invalidate_on_error(&result) {
-                    invalidate_watch_session(
-                        self.healthy,
-                        self.events,
-                        self.client,
-                        self.watcher,
-                        self.watch_stream,
-                    )
-                } else {
-                    Ok(())
-                };
-                let _ = response_tx.send(result);
-                invalidate_result.is_ok()
-            }
-            WorkerCommand::PutIfAbsent {
-                path,
-                value,
-                response_tx,
-            } => {
-                let result =
-                    execute_put_if_absent(self.endpoints, self.client, self.healthy, &path, value)
-                        .await;
                 let invalidate_result = if should_invalidate_on_error(&result) {
                     invalidate_watch_session(
                         self.healthy,
@@ -998,41 +922,6 @@ async fn execute_delete(
     }
 }
 
-async fn execute_put_if_absent(
-    endpoints: &[DcsEndpoint],
-    client: &mut Option<Client>,
-    healthy: &Arc<AtomicBool>,
-    path: &str,
-    value: String,
-) -> Result<bool, DcsStoreError> {
-    if client.is_none() {
-        *client = Some(connect_client(endpoints).await?);
-    }
-
-    let Some(active_client) = client.as_mut() else {
-        healthy.store(false, Ordering::SeqCst);
-        return Err(DcsStoreError::Io(
-            "etcd client unavailable for put-if-absent".to_string(),
-        ));
-    };
-
-    let compare = Compare::version(path, CompareOp::Equal, 0);
-    let then_put = TxnOp::put(path, value, None);
-    let txn = Txn::new().when(vec![compare]).and_then(vec![then_put]);
-
-    match timeout_etcd("etcd txn", active_client.txn(txn)).await {
-        Ok(response) => {
-            healthy.store(true, Ordering::SeqCst);
-            Ok(response.succeeded())
-        }
-        Err(err) => {
-            healthy.store(false, Ordering::SeqCst);
-            *client = None;
-            Err(err)
-        }
-    }
-}
-
 async fn bootstrap_snapshot(
     client: &mut Client,
     scope_prefix: &str,
@@ -1209,43 +1098,6 @@ async fn apply_test_establish_delay() {
     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 }
 
-async fn execute_read(
-    endpoints: &[DcsEndpoint],
-    client: &mut Option<Client>,
-    healthy: &Arc<AtomicBool>,
-    path: &str,
-) -> Result<Option<String>, DcsStoreError> {
-    if client.is_none() {
-        *client = Some(connect_client(endpoints).await?);
-    }
-
-    let Some(active_client) = client.as_mut() else {
-        healthy.store(false, Ordering::SeqCst);
-        return Err(DcsStoreError::Io(
-            "etcd client unavailable for read".to_string(),
-        ));
-    };
-
-    match timeout_etcd("etcd get", active_client.get(path, None)).await {
-        Ok(response) => {
-            healthy.store(true, Ordering::SeqCst);
-            let Some(kv) = response.kvs().first() else {
-                return Ok(None);
-            };
-            let raw = kv.value();
-            let decoded = String::from_utf8(raw.to_vec()).map_err(|err| {
-                DcsStoreError::Io(format!("etcd read value not utf8 for `{path}`: {err}"))
-            })?;
-            Ok(Some(decoded))
-        }
-        Err(err) => {
-            healthy.store(false, Ordering::SeqCst);
-            *client = None;
-            Err(err)
-        }
-    }
-}
-
 async fn execute_snapshot_prefix(
     endpoints: &[DcsEndpoint],
     client: &mut Option<Client>,
@@ -1309,11 +1161,9 @@ async fn execute_snapshot_prefix(
 
 fn worker_command_label(command: &WorkerCommand) -> &'static str {
     match command {
-        WorkerCommand::Read { .. } => "read",
         WorkerCommand::SnapshotPrefix { .. } => "snapshot_prefix",
         WorkerCommand::Write { .. } => "write",
         WorkerCommand::WriteWithLease { .. } => "write_with_lease",
-        WorkerCommand::PutIfAbsent { .. } => "put_if_absent",
         WorkerCommand::Delete { .. } => "delete",
         WorkerCommand::AcquireLeaderLease { .. } => "acquire_leader_lease",
         WorkerCommand::ReleaseLeaderLease { .. } => "release_leader_lease",
@@ -1324,24 +1174,6 @@ fn worker_command_label(command: &WorkerCommand) -> &'static str {
 impl DcsStore for EtcdDcsStore {
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::SeqCst)
-    }
-
-    fn read_path(&mut self, path: &str) -> Result<Option<String>, DcsStoreError> {
-        let (response_tx, response_rx) = mpsc::channel();
-        self.command_tx
-            .send(WorkerCommand::Read {
-                path: path.to_string(),
-                response_tx,
-            })
-            .map_err(|err| {
-                self.mark_unhealthy();
-                DcsStoreError::Io(format!("send read command failed: {err}"))
-            })?;
-
-        response_rx.recv_timeout(COMMAND_TIMEOUT).map_err(|err| {
-            self.mark_unhealthy();
-            DcsStoreError::Io(format!("timed out waiting for read command: {err}"))
-        })?
     }
 
     fn snapshot_prefix(&mut self, path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError> {
@@ -1408,10 +1240,6 @@ impl DcsStore for EtcdDcsStore {
         })?
     }
 
-    fn put_path_if_absent(&mut self, path: &str, value: String) -> Result<bool, DcsStoreError> {
-        EtcdDcsStore::put_path_if_absent(self, path, value)
-    }
-
     fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
@@ -1437,9 +1265,7 @@ impl DcsStore for EtcdDcsStore {
             .map_err(|_| DcsStoreError::Io("events lock poisoned".to_string()))?;
         Ok(guard.drain(..).collect())
     }
-}
 
-impl DcsLeaderStore for EtcdDcsStore {
     fn acquire_leader_lease(
         &mut self,
         scope: &str,

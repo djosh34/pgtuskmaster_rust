@@ -7,7 +7,7 @@ use crate::{
         output,
         status::{authority_primary_member, fetch_seed_state, member_is_ready_replica},
     },
-    dcs::state::DcsTrust,
+    dcs::DcsTrust,
     ha::types::AuthorityView,
     state::MemberId,
 };
@@ -64,8 +64,7 @@ fn validate_switchover_request(
 
     let target_member = state
         .dcs
-        .cache
-        .member_slots
+        .members
         .get(&MemberId(target_member_id.to_string()))
         .ok_or_else(|| {
             CliError::Resolution(format!(

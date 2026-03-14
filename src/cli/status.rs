@@ -7,7 +7,7 @@ use crate::{
     cli::{
         args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError, output,
     },
-    dcs::state::{DcsTrust, MemberPostgresView, MemberSlot, SwitchoverTargetRecord},
+    dcs::{DcsMemberPostgresView, DcsMemberView, DcsSwitchoverStateView, DcsSwitchoverTargetView, DcsTrust},
     ha::types::AuthorityView,
     pginfo::state::Readiness,
 };
@@ -153,8 +153,7 @@ fn assemble_cluster_view(
 
     let mut nodes = state
         .dcs
-        .cache
-        .member_slots
+        .members
         .values()
         .map(|member| build_node_view(state, member))
         .collect::<Vec<_>>();
@@ -175,14 +174,14 @@ fn assemble_cluster_view(
         warnings,
         switchover: state
             .dcs
-            .cache
-            .switchover_intent
-            .as_ref()
+            .switchover
+            .clone()
+            .into_requested()
             .map(|switchover| ClusterSwitchoverView {
                 pending: true,
                 target_member_id: match &switchover.target {
-                    SwitchoverTargetRecord::AnyHealthyReplica => None,
-                    SwitchoverTargetRecord::Specific(member_id) => Some(member_id.0.clone()),
+                    DcsSwitchoverTargetView::AnyHealthyReplica => None,
+                    DcsSwitchoverTargetView::Specific(member_id) => Some(member_id.0.clone()),
                 },
             }),
         nodes,
@@ -206,7 +205,7 @@ fn collect_warnings(state: &NodeState) -> Vec<ClusterWarning> {
             message: "seed node does not currently project an authoritative primary".to_string(),
         });
     }
-    if state.dcs.cache.member_slots.is_empty() {
+    if state.dcs.members.is_empty() {
         warnings.push(ClusterWarning {
             code: "no_members".to_string(),
             message: "seed node does not currently expose any DCS member slots".to_string(),
@@ -215,10 +214,10 @@ fn collect_warnings(state: &NodeState) -> Vec<ClusterWarning> {
     warnings
 }
 
-fn build_node_view(state: &NodeState, member: &MemberSlot) -> ClusterNodeView {
-    let is_self = member.lease.owner.0 == state.self_member_id;
+fn build_node_view(state: &NodeState, member: &DcsMemberView) -> ClusterNodeView {
+    let is_self = member.member_id.0 == state.self_member_id;
     ClusterNodeView {
-        member_id: member.lease.owner.0.clone(),
+        member_id: member.member_id.0.clone(),
         is_self,
         api_url: member
             .routing
@@ -245,19 +244,19 @@ pub(crate) fn authority_primary_member(state: &NodeState) -> Option<String> {
     }
 }
 
-fn member_role_label(member: &MemberPostgresView) -> &'static str {
+fn member_role_label(member: &DcsMemberPostgresView) -> &'static str {
     match member {
-        MemberPostgresView::Unknown(_) => "unknown",
-        MemberPostgresView::Primary(_) => "primary",
-        MemberPostgresView::Replica(_) => "replica",
+        DcsMemberPostgresView::Unknown(_) => "unknown",
+        DcsMemberPostgresView::Primary(_) => "primary",
+        DcsMemberPostgresView::Replica(_) => "replica",
     }
 }
 
-fn member_readiness_label(member: &MemberPostgresView) -> &'static str {
+fn member_readiness_label(member: &DcsMemberPostgresView) -> &'static str {
     let readiness = match member {
-        MemberPostgresView::Unknown(observation) => &observation.readiness,
-        MemberPostgresView::Primary(observation) => &observation.readiness,
-        MemberPostgresView::Replica(observation) => &observation.readiness,
+        DcsMemberPostgresView::Unknown(observation) => &observation.readiness,
+        DcsMemberPostgresView::Primary(observation) => &observation.readiness,
+        DcsMemberPostgresView::Replica(observation) => &observation.readiness,
     };
     match readiness {
         Readiness::Unknown => "unknown",
@@ -266,10 +265,10 @@ fn member_readiness_label(member: &MemberPostgresView) -> &'static str {
     }
 }
 
-pub(crate) fn member_is_ready_replica(member: &MemberSlot) -> bool {
+pub(crate) fn member_is_ready_replica(member: &DcsMemberView) -> bool {
     matches!(
         &member.postgres,
-        MemberPostgresView::Replica(observation) if observation.readiness == Readiness::Ready
+        DcsMemberPostgresView::Replica(observation) if observation.readiness == Readiness::Ready
     )
 }
 
@@ -286,5 +285,18 @@ fn dcs_trust_label(trust: &DcsTrust) -> &'static str {
         DcsTrust::FullQuorum => "full_quorum",
         DcsTrust::Degraded => "degraded",
         DcsTrust::NotTrusted => "not_trusted",
+    }
+}
+
+trait DcsSwitchoverStateViewExt {
+    fn into_requested(self) -> Option<crate::dcs::DcsSwitchoverView>;
+}
+
+impl DcsSwitchoverStateViewExt for DcsSwitchoverStateView {
+    fn into_requested(self) -> Option<crate::dcs::DcsSwitchoverView> {
+        match self {
+            DcsSwitchoverStateView::None => None,
+            DcsSwitchoverStateView::Requested(view) => Some(view),
+        }
     }
 }

@@ -34,7 +34,7 @@ Authorization outcomes:
 
 ## `GET /state`
 
-Returns one serializable `NodeState` document built from the node's current runtime state plus its DCS-backed cluster cache.
+Returns one serializable `NodeState` document built from the node's current runtime state plus the public read-only `DcsView` snapshot that the local DCS worker publishes.
 
 Authorization: read
 
@@ -64,7 +64,7 @@ Top-level fields:
 - `self_member_id`: local member identifier
 - `pg`: current local PostgreSQL observation
 - `process`: current local process-worker state
-- `dcs`: current DCS trust plus cached leader, switchover, and member-slot records
+- `dcs`: current DCS trust plus the published member, leader, and switchover view
 - `ha`: current HA publication, target role, worldview, and planned commands
 
 ### What `GET /state` is for
@@ -82,7 +82,7 @@ The payload includes both facts and interpretation:
 
 ## `POST /switchover`
 
-Requests a planned switchover by writing the intent into DCS.
+Requests a planned switchover through the node's typed DCS command surface.
 
 Authorization: admin
 
@@ -94,7 +94,7 @@ Request body:
 }
 ```
 
-`switchover_to` is optional. When omitted, the API selects the best currently eligible replica from the DCS member slots.
+`switchover_to` is optional. When omitted, the API records a generic switchover request and the HA loop chooses the successor from the observed DCS view.
 
 Success status: `202 Accepted`
 
@@ -109,11 +109,11 @@ Validation and failure statuses:
 - `400 Bad Request`: malformed JSON, unknown target, self-target, degraded trust, request sent to a non-authoritative node, or ineligible target
 - `401 Unauthorized`: missing or invalid token
 - `403 Forbidden`: read token used for an admin route
-- `503 Service Unavailable`: DCS store write failed
+- `503 Service Unavailable`: DCS command failed
 
 ## `DELETE /switchover`
 
-Clears any pending switchover intent from DCS.
+Clears any pending switchover request through the node's typed DCS command surface.
 
 Authorization: admin
 
@@ -129,4 +129,4 @@ Failure statuses:
 
 - `401 Unauthorized`: missing or invalid token
 - `403 Forbidden`: read token used for an admin route
-- `503 Service Unavailable`: DCS store delete failed
+- `503 Service Unavailable`: DCS command failed

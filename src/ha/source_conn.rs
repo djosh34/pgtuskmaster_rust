@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    dcs::state::{MemberPostgresView, MemberSlot},
+    dcs::{DcsMemberPostgresView, DcsMemberView},
     pginfo::state::PgConnInfo,
     process::jobs::{ReplicatorSourceConn, RewinderSourceConn},
     state::MemberId,
@@ -21,7 +21,7 @@ pub(crate) enum SourceConnError {
 
 pub(crate) fn basebackup_source_from_member(
     self_id: &MemberId,
-    member: &MemberSlot,
+    member: &DcsMemberView,
     defaults: &ProcessDispatchDefaults,
 ) -> Result<ReplicatorSourceConn, SourceConnError> {
     validate_remote_source_member_strict(self_id, member)?;
@@ -33,7 +33,7 @@ pub(crate) fn basebackup_source_from_member(
 
 pub(crate) fn rewind_source_from_member(
     self_id: &MemberId,
-    member: &MemberSlot,
+    member: &DcsMemberView,
     defaults: &ProcessDispatchDefaults,
 ) -> Result<RewinderSourceConn, SourceConnError> {
     validate_remote_source_member_strict(self_id, member)?;
@@ -45,13 +45,13 @@ pub(crate) fn rewind_source_from_member(
 
 fn validate_remote_source_member_strict(
     self_id: &MemberId,
-    member: &MemberSlot,
+    member: &DcsMemberView,
 ) -> Result<(), SourceConnError> {
     validate_remote_source_member_resume(self_id, member)?;
 
-    if !matches!(member.postgres, MemberPostgresView::Primary(_)) {
+    if !matches!(member.postgres, DcsMemberPostgresView::Primary(_)) {
         return Err(SourceConnError::NotHealthyPrimary {
-            member_id: member.lease.owner.0.clone(),
+            member_id: member.member_id.0.clone(),
         });
     }
 
@@ -60,17 +60,17 @@ fn validate_remote_source_member_strict(
 
 fn validate_remote_source_member_resume(
     self_id: &MemberId,
-    member: &MemberSlot,
+    member: &DcsMemberView,
 ) -> Result<(), SourceConnError> {
-    if &member.lease.owner == self_id {
+    if &member.member_id == self_id {
         return Err(SourceConnError::SelfTarget {
-            member_id: member.lease.owner.0.clone(),
+            member_id: member.member_id.0.clone(),
         });
     }
 
     if member.routing.postgres.host.trim().is_empty() {
         return Err(SourceConnError::EmptyHost {
-            member_id: member.lease.owner.0.clone(),
+            member_id: member.member_id.0.clone(),
         });
     }
 
@@ -78,7 +78,7 @@ fn validate_remote_source_member_resume(
 }
 
 fn remote_conninfo(
-    member: &MemberSlot,
+    member: &DcsMemberView,
     user: &str,
     defaults: &ProcessDispatchDefaults,
 ) -> PgConnInfo {

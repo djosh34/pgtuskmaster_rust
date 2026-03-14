@@ -1,22 +1,27 @@
 use crate::{
+    config::DcsEndpoint,
     logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
-    state::WorkerError,
+    pginfo::state::PgInfoState,
+    state::{MemberId, StatePublisher, StateSubscriber, WorkerError},
 };
 
 use super::{
+    command::{dcs_command_channel, DcsCommand, DcsCommandError, DcsHandle},
+    etcd_store::EtcdDcsStore,
     keys::DcsKey,
     state::{
-        build_local_member_slot, evaluate_trust, DcsCache, DcsState, DcsTrust, DcsWorkerCtx,
-        InitLockRecord, LeaderLeaseRecord, MemberSlot, SwitchoverIntentRecord,
+        build_dcs_view, build_local_member_record, evaluate_trust, DcsCache, DcsTrust,
+        DcsWorkerCtx, InitLockRecord, LeaderLeaseRecord, MemberRecord, SwitchoverRecord,
+        SwitchoverTargetRecord,
     },
-    store::{leader_path, refresh_from_etcd_watch, write_local_member_slot},
+    store::{refresh_from_etcd_watch, write_local_member_record, DcsStoreError},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DcsValue {
-    Member(MemberSlot),
+    Member(MemberRecord),
     Leader(LeaderLeaseRecord),
-    Switchover(SwitchoverIntentRecord),
+    Switchover(SwitchoverRecord),
     Config(Box<crate::config::RuntimeConfig>),
     InitLock(InitLockRecord),
 }
@@ -63,6 +68,63 @@ fn dcs_refresh_error_severity(err: &crate::dcs::store::DcsStoreError) -> Severit
     }
 }
 
+pub(crate) struct DcsWorkerBootstrap {
+    pub(crate) self_id: MemberId,
+    pub(crate) scope: String,
+    pub(crate) endpoints: Vec<DcsEndpoint>,
+    pub(crate) poll_interval: std::time::Duration,
+    pub(crate) local_postgres_host: String,
+    pub(crate) local_postgres_port: u16,
+    pub(crate) local_api_url: Option<String>,
+    pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
+    pub(crate) publisher: StatePublisher<crate::dcs::DcsView>,
+    pub(crate) log: crate::logging::LogHandle,
+    pub(crate) member_ttl_ms: u64,
+}
+
+pub(crate) fn build_worker_ctx(
+    bootstrap: DcsWorkerBootstrap,
+) -> Result<(DcsWorkerCtx, DcsHandle), DcsStoreError> {
+    let DcsWorkerBootstrap {
+        self_id,
+        scope,
+        endpoints,
+        poll_interval,
+        local_postgres_host,
+        local_postgres_port,
+        local_api_url,
+        pg_subscriber,
+        publisher,
+        log,
+        member_ttl_ms,
+    } = bootstrap;
+    let store = EtcdDcsStore::connect_with_leader_lease(endpoints, scope.as_str(), member_ttl_ms)?;
+    let (handle, command_inbox) = dcs_command_channel();
+    let ctx = DcsWorkerCtx {
+        self_id,
+        scope,
+        poll_interval,
+        local_postgres_host,
+        local_postgres_port,
+        local_api_url,
+        pg_subscriber,
+        publisher,
+        command_inbox,
+        store: Box::new(store),
+        log,
+        cache: DcsCache {
+            member_records: std::collections::BTreeMap::new(),
+            leader_record: None,
+            switchover_record: None,
+            init_lock: None,
+        },
+        member_ttl_ms,
+        last_emitted_store_healthy: None,
+        last_emitted_trust: None,
+    };
+    Ok((ctx, handle))
+}
+
 pub(crate) async fn run(mut ctx: DcsWorkerCtx) -> Result<(), WorkerError> {
     loop {
         step_once(&mut ctx).await?;
@@ -72,16 +134,16 @@ pub(crate) async fn run(mut ctx: DcsWorkerCtx) -> Result<(), WorkerError> {
 
 pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
     match update {
-        DcsWatchUpdate::Put { key, value } => match (key, *value) {
-            (DcsKey::Member(member_id), DcsValue::Member(record)) => {
-                cache.member_slots.insert(member_id, record);
-            }
-            (DcsKey::Leader, DcsValue::Leader(record)) => {
-                cache.leader_lease = Some(record);
-            }
-            (DcsKey::Switchover, DcsValue::Switchover(record)) => {
-                cache.switchover_intent = Some(record);
-            }
+            DcsWatchUpdate::Put { key, value } => match (key, *value) {
+                (DcsKey::Member(member_id), DcsValue::Member(record)) => {
+                    cache.member_records.insert(member_id, record);
+                }
+                (DcsKey::Leader, DcsValue::Leader(record)) => {
+                    cache.leader_record = Some(record);
+                }
+                (DcsKey::Switchover, DcsValue::Switchover(record)) => {
+                    cache.switchover_record = Some(record);
+                }
             (DcsKey::Config, DcsValue::Config(_config)) => {}
             (DcsKey::InitLock, DcsValue::InitLock(record)) => {
                 cache.init_lock = Some(record);
@@ -90,13 +152,13 @@ pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
         },
         DcsWatchUpdate::Delete { key } => match key {
             DcsKey::Member(member_id) => {
-                cache.member_slots.remove(&member_id);
+                cache.member_records.remove(&member_id);
             }
             DcsKey::Leader => {
-                cache.leader_lease = None;
+                cache.leader_record = None;
             }
             DcsKey::Switchover => {
-                cache.switchover_intent = None;
+                cache.switchover_record = None;
             }
             DcsKey::Config => {}
             DcsKey::InitLock => {
@@ -107,6 +169,8 @@ pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
 }
 
 pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError> {
+    drain_command_inbox(ctx)?;
+
     let now = now_unix_millis()?;
     let pg_snapshot = ctx.pg_subscriber.latest();
     let member_ttl_ms = ctx.member_ttl_ms;
@@ -119,7 +183,7 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     if store_healthy && pg_snapshot_stale {
         match ctx.store.delete_path(local_member_path.as_str()) {
             Ok(()) => {
-                ctx.cache.member_slots.remove(&ctx.self_id);
+                ctx.cache.member_records.remove(&ctx.self_id);
             }
             Err(err) => {
                 let mut event = dcs_event(
@@ -141,7 +205,7 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             }
         }
     } else if store_healthy {
-        let local_member = build_local_member_slot(
+        let local_member = build_local_member_record(
             &ctx.self_id,
             ctx.local_postgres_host.as_str(),
             ctx.local_postgres_port,
@@ -149,11 +213,11 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
             member_ttl_ms,
             &pg_snapshot,
         );
-        match write_local_member_slot(ctx.store.as_mut(), &ctx.scope, &local_member, member_ttl_ms)
+        match write_local_member_record(ctx.store.as_mut(), &ctx.scope, &local_member, member_ttl_ms)
         {
             Ok(()) => {
                 ctx.cache
-                    .member_slots
+                    .member_records
                     .insert(ctx.self_id.clone(), local_member);
             }
             Err(err) => {
@@ -306,37 +370,6 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
         }
     }
 
-    let stale_leader_holder = ctx.cache.leader_lease.as_ref().and_then(|leader| {
-        (!ctx.cache.member_slots.contains_key(&leader.holder)).then(|| leader.holder.clone())
-    });
-    if let Some(member_id) = stale_leader_holder {
-        let leader_key = leader_path(ctx.scope.as_str());
-        match ctx.store.delete_path(leader_key.as_str()) {
-            Ok(()) => {
-                ctx.cache.leader_lease = None;
-            }
-            Err(err) => {
-                let mut event = dcs_event(
-                    dcs_io_error_severity(&err),
-                    "dcs stale leader cleanup failed",
-                    "dcs.leader.cleanup_failed",
-                    "failed",
-                );
-                let fields = event.fields_mut();
-                dcs_append_base_fields(fields, ctx);
-                fields.insert("leader_member_id", member_id.0);
-                fields.insert("error", err.to_string());
-                emit_dcs_event(
-                    ctx,
-                    "dcs_worker::step_once",
-                    event,
-                    "dcs stale leader cleanup log emit failed",
-                )?;
-                store_healthy = false;
-            }
-        }
-    }
-
     let trust = evaluate_trust(store_healthy, &ctx.cache, &ctx.self_id);
     let worker = if store_healthy {
         crate::state::WorkerStatus::Running
@@ -344,16 +377,16 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
         crate::state::WorkerStatus::Faulted(WorkerError::Message("dcs store unhealthy".to_string()))
     };
 
-    let next = DcsState {
+    let next = build_dcs_view(
         worker,
-        trust: if store_healthy {
+        if store_healthy {
             trust
         } else {
             DcsTrust::NotTrusted
         },
-        cache: ctx.cache.clone(),
-        last_refresh_at: Some(now),
-    };
+        &ctx.cache,
+        Some(now),
+    );
     if ctx.last_emitted_store_healthy != Some(store_healthy) {
         ctx.last_emitted_store_healthy = Some(store_healthy);
         let mut event = dcs_event(
@@ -404,6 +437,102 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
         .publish(next)
         .map_err(|err| WorkerError::Message(format!("dcs publish failed: {err}")))?;
     Ok(())
+}
+
+fn drain_command_inbox(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError> {
+    loop {
+        match ctx.command_inbox.try_recv() {
+            Ok(request) => handle_command_request(ctx, request)?,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return Ok(()),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                return Err(WorkerError::Message(
+                    "dcs command channel disconnected".to_string(),
+                ));
+            }
+        }
+    }
+}
+
+fn handle_command_request(
+    ctx: &mut DcsWorkerCtx,
+    request: super::command::DcsCommandRequest,
+) -> Result<(), WorkerError> {
+    let command_name = dcs_command_name(&request.command);
+    let result = execute_command(ctx, request.command);
+    if request.response_tx.send(result).is_err() {
+        let mut event = dcs_event(
+            SeverityText::Warn,
+            "dcs command response receiver dropped",
+            "dcs.command.response_dropped",
+            "failed",
+        );
+        let fields = event.fields_mut();
+        dcs_append_base_fields(fields, ctx);
+        fields.insert("command", command_name);
+        emit_dcs_event(
+            ctx,
+            "dcs_worker::handle_command_request",
+            event,
+            "dcs command response_dropped log emit failed",
+        )?;
+    }
+    Ok(())
+}
+
+fn execute_command(ctx: &mut DcsWorkerCtx, command: DcsCommand) -> Result<(), DcsCommandError> {
+    match command {
+        DcsCommand::AcquireLeadership => ctx
+            .store
+            .acquire_leader_lease(&ctx.scope, &ctx.self_id)
+            .or_else(handle_acquire_leadership_error)
+            .map_err(dcs_command_error),
+        DcsCommand::ReleaseLeadership => ctx
+            .store
+            .release_leader_lease(&ctx.scope, &ctx.self_id)
+            .map_err(dcs_command_error),
+        DcsCommand::PublishSwitchover { target } => {
+            let path = format!("/{}/switchover", ctx.scope.trim_matches('/'));
+            let record = SwitchoverRecord {
+                target: match target {
+                    crate::dcs::DcsSwitchoverTargetView::AnyHealthyReplica => {
+                        SwitchoverTargetRecord::AnyHealthyReplica
+                    }
+                    crate::dcs::DcsSwitchoverTargetView::Specific(member_id) => {
+                        SwitchoverTargetRecord::Specific(member_id)
+                    }
+                },
+            };
+            let encoded =
+                serde_json::to_string(&record).map_err(|err| {
+                    DcsCommandError::Transport(format!("switchover encode failed: {err}"))
+                })?;
+            ctx.store.write_path(path.as_str(), encoded).map_err(dcs_command_error)
+        }
+        DcsCommand::ClearSwitchover => ctx
+            .store
+            .clear_switchover(&ctx.scope)
+            .map_err(dcs_command_error),
+    }
+}
+
+fn handle_acquire_leadership_error(err: DcsStoreError) -> Result<(), DcsStoreError> {
+    match err {
+        DcsStoreError::AlreadyExists(_) => Ok(()),
+        other => Err(other),
+    }
+}
+
+fn dcs_command_error(err: DcsStoreError) -> DcsCommandError {
+    DcsCommandError::Rejected(err.to_string())
+}
+
+fn dcs_command_name(command: &DcsCommand) -> &'static str {
+    match command {
+        DcsCommand::AcquireLeadership => "acquire_leadership",
+        DcsCommand::ReleaseLeadership => "release_leadership",
+        DcsCommand::PublishSwitchover { .. } => "publish_switchover",
+        DcsCommand::ClearSwitchover => "clear_switchover",
+    }
 }
 
 fn now_unix_millis() -> Result<crate::state::UnixMillis, WorkerError> {

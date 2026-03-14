@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 12:32:45 AM CET 2026
+Generated: Sat Mar 14 02:15:53 AM CET 2026
 
 # Task `.ralph/tasks/story-ctl-operator-experience/01-task-rename-the-operator-cli-to-pgtm-and-flatten-the-command-tree.md`
 
@@ -78,6 +78,18 @@ Generated: Sat Mar 14 12:32:45 AM CET 2026
 
 ```
 ## Task: Refactor The HA Acceptance Suite Around Typed Invariants And `NodeState`-First Assertions <status>done</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`
+
+```
+## Task: Collapse DCS Behind A Single Private Component And A Read-Only `DcsView` <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 

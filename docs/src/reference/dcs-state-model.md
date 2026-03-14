@@ -1,71 +1,65 @@
 # DCS State Model
 
-This page documents the DCS-backed state structures used by the runtime and the key layout used under the configured cluster scope.
+This page documents the DCS data model after the single-owner rewrite. The important distinction is:
+
+- `DcsView` is the only public read-only surface exposed outside `src/dcs`
+- internal record, cache, key, and etcd-adapter types stay private to the DCS component
 
 ## Trust Model
 
 `DcsTrust` has three variants:
 
 - `FullQuorum`
-- `FailSafe`
+- `Degraded`
 - `NotTrusted`
 
 Trust evaluation follows this order:
 
 1. If the backing store is unhealthy, trust is `NotTrusted`.
-2. If the local member is missing from the cache, trust is `FailSafe`.
-3. If the local member record is stale, trust is `FailSafe`.
-4. If the observed cache has a multi-member view and fewer than two members are fresh, trust is `FailSafe`.
+2. If the local member is missing from the observed member map, trust is `Degraded`.
+3. If the observed member set does not meet quorum expectations, trust is `Degraded`.
 5. Otherwise trust is `FullQuorum`.
 
-Freshness is evaluated from:
-
-```text
-now - updated_at <= cache.config.ha.lease_ttl_ms
-```
+The current implementation derives freshness from the etcd-backed member keys that remain live under their own leases, not from a public `updated_at` field.
 
 ## Core Types
 
-### `MemberRole`
+### Public `DcsView`
 
-- `Unknown`
-- `Primary`
-- `Replica`
+`DcsView` contains:
 
-### `MemberRecord`
+- `worker`
+- `trust`
+- `members: BTreeMap<MemberId, DcsMemberView>`
+- `leader: DcsLeaderStateView`
+- `switchover: DcsSwitchoverStateView`
+- `last_observed_at`
 
-`MemberRecord` contains:
+### Public member view
 
-- `member_id`
-- `postgres_host`
-- `postgres_port`
-- `role`
-- `sql`
-- `readiness`
-- `timeline`
-- `write_lsn`
-- `replay_lsn`
-- `updated_at`
-- `pg_version`
-
-Optional fields:
-
-- `timeline`
-- `write_lsn`
-- `replay_lsn`
-
-The worker builds member records from the latest PostgreSQL state:
-
-- unknown PostgreSQL state publishes `role = Unknown`
-- primary PostgreSQL state publishes `role = Primary` and `write_lsn`
-- replica PostgreSQL state publishes `role = Replica` and `replay_lsn`
-
-### `LeaderRecord`
-
-`LeaderRecord` contains:
+`DcsMemberView` contains:
 
 - `member_id`
-- `generation`
+- `lease.ttl_ms`
+- `routing.postgres.host`
+- `routing.postgres.port`
+- optional `routing.api.url`
+- `postgres`
+
+The public PostgreSQL view is one of:
+
+- `Unknown { readiness, timeline }`
+- `Primary { readiness, committed_wal }`
+- `Replica { readiness, upstream, replay_wal, follow_wal }`
+
+These are observation shapes, not raw etcd records.
+
+### Public leader view
+
+`DcsLeaderStateView` is either:
+
+- `Unheld`
+- `Held { holder, generation }`
 
 `/{scope}/leader` is not a plain persistent key. In the etcd-backed store it is attached to an etcd lease whose TTL is derived from `ha.lease_ttl_ms`.
 
@@ -77,42 +71,23 @@ That means a missing leader member record does not itself force `FailSafe`. The 
 
 `generation` turns the leader record into a lease epoch rather than just a member label. Operators and the HA API use that epoch to distinguish one leadership term from the next even when the same member regains leadership.
 
-### `SwitchoverRequest`
+### Public switchover view
 
-`SwitchoverRequest` contains:
+`DcsSwitchoverStateView` is either:
 
-- `switchover_to: Option<MemberId>`
+- `None`
+- `Requested { target }`
 
-When `switchover_to` is `None`, the record means a generic switchover request is pending. When it is set, the record captures the requested target member for a targeted switchover.
+`target` is one of:
 
-The runtime keeps this record in DCS for the full handoff window. During a targeted switchover, non-target replicas continue to treat the request as blocking leadership until the requested successor becomes the observed primary. The record is cleared only after a safe success observer, normally the new primary, confirms the switchover completed.
+- `AnyHealthyReplica`
+- `Specific(MemberId)`
 
-### `InitLockRecord`
+The request stays in DCS while the HA loop coordinates the handoff, and clears only when the system decides the request is complete or an operator clears it explicitly.
 
-`InitLockRecord` contains:
+### Internal-only cache and record types
 
-- `holder`
-
-### `DcsCache`
-
-`DcsCache` contains:
-
-- `members: BTreeMap<MemberId, MemberRecord>`
-- `leader: Option<LeaderRecord>`
-- `switchover: Option<SwitchoverRequest>`
-- `config: RuntimeConfig`
-- `init_lock: Option<InitLockRecord>`
-
-### `DcsState`
-
-`DcsState` contains:
-
-- `worker`
-- `trust`
-- `cache`
-- `last_refresh_at`
-
-`last_refresh_at` is optional.
+Inside `src/dcs`, the worker still maintains private `*Record` and `*Cache` types such as `MemberRecord`, `LeaderLeaseRecord`, `SwitchoverRecord`, and `DcsCache`. Those types are implementation details and are not part of the architectural boundary anymore.
 
 ## Key Layout
 
@@ -126,26 +101,20 @@ All DCS keys are scoped under the configured cluster scope:
 /{scope}/member/{member_id}
 ```
 
-`key_from_path(...)` accepts exactly those shapes and rejects:
-
-- wrong scope prefixes
-- malformed paths
-- missing member IDs
-- unknown extra segments
+The key parser remains internal to `src/dcs`; non-DCS modules do not construct or interpret these raw paths directly.
 
 ## Watch and Cache Updates
 
 The DCS worker applies parsed updates into the cache:
 
-- member puts and deletes update `cache.members`
-- leader puts and deletes update `cache.leader`
-- switchover puts and deletes update `cache.switchover`
-- init-lock puts and deletes update `cache.init_lock`
-- config puts replace `cache.config`
+- member puts and deletes update the internal member-record map
+- leader puts and deletes update the internal leader record
+- switchover puts and deletes update the internal switchover record
+- init-lock puts and deletes update the internal init-lock record
 
 The local worker also republishes its own member record from current PostgreSQL state while the store is healthy.
 
-For the etcd-backed implementation, lease expiry is visible through the normal watch path. When etcd deletes `/{scope}/leader` because the lease expired or was revoked, the watch-fed cache removes `cache.leader` and the HA loop sees that update through normal DCS state publication.
+For the etcd-backed implementation, lease expiry is visible through the normal watch path. When etcd deletes `/{scope}/leader` because the lease expired or was revoked, the watch-fed cache removes the leader record and the HA loop sees that update through normal `DcsView` publication.
 
 ## Runtime Fields That Affect DCS Meaning
 
@@ -161,6 +130,6 @@ In the shipped docker cluster config, `ha.lease_ttl_ms` is `10000`.
 
 The DCS state model answers a different question from the debug API and the HA API:
 
-- this page defines what the runtime stores and caches
-- the debug API shows current snapshot views of that state
-- the HA API reports a smaller operator-facing subset
+- this page defines the DCS-owned storage model and the public `DcsView`
+- the debug/API state surfaces show one node's current published snapshot of that view
+- HA derives a separate `WorldView` from the read-only DCS snapshot rather than from raw etcd paths

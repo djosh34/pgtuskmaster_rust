@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    dcs::state::DcsTrust,
+    dcs::DcsTrust,
     process::{
         jobs::{ActiveJobKind, ShutdownMode as ProcessShutdownMode},
         state::{JobOutcome, ProcessState as WorkerProcessState},

@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar 14 12:32:45 AM CET 2026
+Generated: Sat Mar 14 02:15:53 AM CET 2026
 
 # Task `.ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md`
 
@@ -43,18 +43,6 @@ Generated: Sat Mar 14 12:32:45 AM CET 2026
 
 <description>
 **Goal:** Add a new HA compose given that uses a real three-member `etcd` cluster instead of the current single-`etcd` shortcut, and design the HA feature families that are only valid when DCS majority semantics are real. In this new topology, each `pgtuskmaster` node must talk only to its own colocated `etcd` member, not to a shared list of all `etcd` endpoints. The observer configs for node-specific observations must mirror that same locality so that observing `node-a` means observing the DCS view that `node-a` itself has through its own `etcd`.
-```
-
-==============
-
-# Task `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`
-
-```
-## Task: Collapse DCS Behind A Single Private Component And A Read-Only `DcsView` <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
 ```
 
 ==============

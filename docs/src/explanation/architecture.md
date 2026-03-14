@@ -13,7 +13,7 @@ The module split in [`src/lib.rs`](/home/joshazimullah.linux/work_mounts/patroni
 ```mermaid
 flowchart LR
     Config[Runtime config]
-    DCS[DCS cache and trust]
+    DCS[DCS owner and published view]
     PG[PostgreSQL state]
     HA[HA decide and reconcile loop]
     API[API state and switchover surface]
@@ -41,13 +41,13 @@ The HA layer produces stable outputs such as:
 
 Those role and authority outcomes are selected in [`src/ha/decide.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs), represented by the shared HA model in [`src/ha/types.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/types.rs), and turned into ordered work by [`src/ha/reconcile.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/reconcile.rs).
 
-The DCS layer stores membership and leadership data in a cache that contains member records, leader state, switchover state, the runtime config snapshot, and an optional init lock. Member records include role, readiness, SQL state, timeline, WAL position fields, update timestamp, and PostgreSQL version. Trust evaluation uses that cache together with store health to decide whether the HA layer can act normally.
+The DCS layer is now a single owner component. Runtime creates one DCS worker, that worker owns the etcd client and internal cache, and the rest of the system only sees a read-only `DcsView` plus typed commands such as acquire leadership, release leadership, publish switchover, and clear switchover. Non-DCS modules no longer manipulate raw DCS paths or internal cache records directly.
 
 The API layer in [`src/api/controller.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/api/controller.rs) has two main responsibilities:
 - project internal HA and DCS state into stable response enums and structs
-- write or clear switchover requests in the DCS namespace
+- send typed switchover commands to the DCS worker
 
-That keeps the API as a control and observability surface rather than the place where HA decisions are computed. The switchover request itself is generic; the HA loop still chooses the eligible successor from observed cluster state.
+That keeps the API as a control and observability surface rather than the place where HA decisions are computed or raw DCS keys are mutated.
 
 ## HA Phase Machine
 
@@ -144,7 +144,7 @@ Runtime configuration shapes almost every subsystem. The schema in [`src/config/
 
 That config controls cluster identity, DCS scope, PostgreSQL connection and authentication details, process binary paths, HA timing, log sinks, and API security settings. The Docker example at [`docker/configs/cluster/node-a/runtime.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docker/configs/cluster/node-a/runtime.toml) shows the sections together in a complete runtime config file.
 
-Because `DcsCache` carries a `RuntimeConfig`, configuration is not just startup input. It is part of the state used by trust evaluation and other worker behavior.
+Configuration still shapes DCS behavior through scope, endpoints, and timing, but that wiring remains inside the DCS component instead of leaking through the public API/state surface.
 
 ## Observability and Control
 
@@ -162,7 +162,7 @@ The controller surface in [`src/api/controller.rs`](/home/joshazimullah.linux/wo
 - planned actions
 - snapshot sequence
 
-The same controller also accepts a generic switchover request and writes it into the DCS namespace. That means operator intent enters through the API, but the HA loop still decides what to do with that request and which member becomes the new primary.
+The same controller also accepts switchover commands and forwards them to the DCS worker. That means operator intent still enters through the API, but only the DCS component owns persistence and only the HA loop decides how to satisfy the request.
 
 The current HA surface still treats split-brain avoidance as a first-class invariant. That shows up in the cluster state exposed by the controller, in the HA decision logic, and in the surviving greenfield HA end-to-end coverage under `tests/ha/`, rather than through the deleted legacy observer helper.
 

@@ -49,8 +49,9 @@ The important sections are:
 - `pg`
 - `process`
 - `dcs.trust`
-- `dcs.cache.leader_lease`
-- `dcs.cache.member_slots`
+- `dcs.leader`
+- `dcs.members`
+- `dcs.switchover`
 - `ha.publication`
 - `ha.role`
 - `ha.world`
@@ -79,10 +80,10 @@ Look at:
 
 Look at:
 
-- `dcs.cache.switchover_intent`
+- `dcs.switchover`
 - `ha.role`
 - `ha.planned_commands`
-- replica readiness in `dcs.cache.member_slots`
+- replica readiness in `dcs.members`
 
 ### Local process work is stalled
 
