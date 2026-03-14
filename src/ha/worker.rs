@@ -343,7 +343,7 @@ fn build_replication_state(
     }
     if replay_lsn.0 > 0 {
         return ReplicationState::CatchingUp(WalPosition {
-            timeline: timeline.unwrap_or(crate::state::TimelineId(0)),
+            timeline: timeline.unwrap_or(TimelineId::UNKNOWN),
             lsn: replay_lsn,
         });
     }

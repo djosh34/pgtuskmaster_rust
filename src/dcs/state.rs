@@ -312,14 +312,14 @@ pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &Mem
         return DcsTrust::Degraded;
     }
 
-    if !has_member_quorum(cache) {
+    if !has_any_members(cache) {
         return DcsTrust::Degraded;
     }
 
     DcsTrust::FullQuorum
 }
 
-fn has_member_quorum(cache: &DcsCache) -> bool {
+fn has_any_members(cache: &DcsCache) -> bool {
     !cache.member_records.is_empty()
 }
 
