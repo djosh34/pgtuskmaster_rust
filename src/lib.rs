@@ -21,7 +21,7 @@ pub mod pginfo;
 pub(crate) mod postgres_managed;
 pub(crate) mod postgres_managed_conf;
 pub(crate) mod postgres_roles;
-pub mod process;
+pub(crate) mod process;
 pub mod runtime;
 pub mod state;
 pub(crate) mod tls;

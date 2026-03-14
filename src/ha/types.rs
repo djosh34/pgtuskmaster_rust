@@ -8,7 +8,7 @@ use crate::{
         jobs::{ActiveJobKind, ProcessIntent},
         state::{JobOutcome, ProcessState as WorkerProcessState},
     },
-    state::{MemberId, TimelineId, UnixMillis, WalLsn},
+    state::{MemberId, SystemIdentifier, TimelineId, UnixMillis, WalLsn},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ pub struct LeaseEpoch {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FenceCutoff {
     pub epoch: LeaseEpoch,
-    pub committed_lsn: u64,
+    pub committed_lsn: WalLsn,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,7 +71,7 @@ pub enum DivergenceState {
 pub enum PostgresState {
     Offline,
     Primary {
-        committed_lsn: u64,
+        committed_lsn: WalLsn,
     },
     Replica {
         upstream: Option<MemberId>,
@@ -199,8 +199,8 @@ pub enum PrimaryObservation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedPrimary {
     pub member: MemberId,
-    pub timeline: Option<u64>,
-    pub system_identifier: Option<u64>,
+    pub timeline: Option<TimelineId>,
+    pub system_identifier: Option<SystemIdentifier>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,8 +366,8 @@ pub enum PublicationAction {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WalPosition {
-    pub timeline: u64,
-    pub lsn: u64,
+    pub timeline: TimelineId,
+    pub lsn: WalLsn,
 }
 
 pub type AuthorityProjectionState = PublicationState;
@@ -566,8 +566,8 @@ pub(crate) fn wal_position(
 ) -> Option<WalPosition> {
     match (timeline, lsn) {
         (Some(timeline), Some(lsn)) => Some(WalPosition {
-            timeline: u64::from(timeline.0),
-            lsn: lsn.0,
+            timeline,
+            lsn,
         }),
         _ => None,
     }

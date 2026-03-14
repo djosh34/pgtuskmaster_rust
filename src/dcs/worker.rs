@@ -18,10 +18,7 @@ use super::{
 };
 
 fn advertised_api_url(advertisement: &super::state::DcsLocalMemberAdvertisement) -> Option<&str> {
-    match &advertisement.api {
-        super::state::DcsApiAdvertisement::NotAdvertised => None,
-        super::state::DcsApiAdvertisement::Advertised(api) => Some(api.url.as_str()),
-    }
+    advertisement.api.as_ref().map(|api| api.url.as_str())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -762,7 +759,7 @@ mod tests {
                     host: "127.0.0.1".to_string(),
                     port: 5432,
                 },
-                api: super::super::state::DcsApiAdvertisement::Advertised(
+                api: Some(
                     crate::dcs::DcsMemberApiView {
                         url: "https://127.0.0.1:8443".to_string(),
                     },

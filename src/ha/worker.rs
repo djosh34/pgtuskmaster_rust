@@ -8,7 +8,7 @@ use crate::{
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     postgres_roles,
     process::jobs::{ActiveJobKind, PostgresStartIntent, ProcessIntent},
-    state::{MemberId, WorkerError, WorkerStatus},
+    state::{MemberId, SystemIdentifier, TimelineId, WorkerError, WorkerStatus},
 };
 
 use super::{
@@ -74,7 +74,7 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
     let process = ctx.observed.process.latest();
     let data_dir_path = config.postgres.paths.data_dir.clone();
     let observed_primary = observed_primary_member(&dcs, &ctx.identity.self_id);
-    let local_data_timeline = pg_timeline(&pg).or_else(|| {
+    let local_data_timeline = pg_timeline_id(&pg).or_else(|| {
         dcs.members
             .get(&ctx.identity.self_id)
             .and_then(member_timeline)
@@ -261,8 +261,8 @@ fn map_process_dispatch_error(
 
 fn build_data_dir_state(
     data_dir: &Path,
-    local_timeline: Option<u64>,
-    local_system_identifier: Option<u64>,
+    local_timeline: Option<TimelineId>,
+    local_system_identifier: Option<SystemIdentifier>,
     observed_primary: &Option<ObservedPrimary>,
 ) -> DataDirState {
     let pg_version_path = data_dir.join("PG_VERSION");
@@ -304,7 +304,7 @@ fn build_postgres_state(pg: &PgInfoState) -> PostgresState {
         PgInfoState::Primary {
             common, wal_lsn, ..
         } if common.sql == SqlStatus::Healthy => PostgresState::Primary {
-            committed_lsn: wal_lsn.0,
+            committed_lsn: *wal_lsn,
         },
         PgInfoState::Primary { .. } => PostgresState::Offline,
         PgInfoState::Replica {
@@ -343,8 +343,8 @@ fn build_replication_state(
     }
     if replay_lsn.0 > 0 {
         return ReplicationState::CatchingUp(WalPosition {
-            timeline: timeline.map_or(0, |value| u64::from(value.0)),
-            lsn: replay_lsn.0,
+            timeline: timeline.unwrap_or(crate::state::TimelineId(0)),
+            lsn: replay_lsn,
         });
     }
     ReplicationState::Stalled
@@ -475,7 +475,7 @@ fn build_self_peer(pg: &PgInfoState, local_data_dir: &DataDirState) -> PeerKnowl
         }
         (_, PostgresState::Primary { committed_lsn }) => wal_position(
             pg_timeline_id(pg),
-            Some(crate::state::WalLsn(committed_lsn)),
+            Some(committed_lsn),
         )
         .map(ElectionEligibility::PromoteEligible)
         .unwrap_or(ElectionEligibility::BootstrapEligible),
@@ -591,51 +591,36 @@ fn observed_primary_member(dcs: &DcsView, self_id: &MemberId) -> Option<Observed
         })
 }
 
-fn member_timeline(member: &DcsMemberView) -> Option<u64> {
+fn member_timeline(member: &DcsMemberView) -> Option<TimelineId> {
     match &member.postgres {
-        DcsMemberPostgresView::Unknown(observation) => {
-            observation.timeline.map(|value| u64::from(value.0))
-        }
-        DcsMemberPostgresView::Primary(observation) => observation
-            .committed_wal
-            .timeline
-            .map(|value| u64::from(value.0)),
+        DcsMemberPostgresView::Unknown(observation) => observation.timeline,
+        DcsMemberPostgresView::Primary(observation) => observation.committed_wal.timeline,
         DcsMemberPostgresView::Replica(observation) => observation
             .replay_wal
             .as_ref()
-            .and_then(|value| value.timeline.map(|timeline| u64::from(timeline.0)))
+            .and_then(|value| value.timeline)
             .or_else(|| {
                 observation
                     .follow_wal
                     .as_ref()
-                    .and_then(|value| value.timeline.map(|timeline| u64::from(timeline.0)))
+                    .and_then(|value| value.timeline)
             }),
     }
 }
 
-fn member_system_identifier(member: &DcsMemberView) -> Option<u64> {
+fn member_system_identifier(member: &DcsMemberView) -> Option<SystemIdentifier> {
     match &member.postgres {
-        DcsMemberPostgresView::Unknown(observation) => {
-            observation.system_identifier.map(|value| value.0)
-        }
-        DcsMemberPostgresView::Primary(observation) => {
-            observation.system_identifier.map(|value| value.0)
-        }
-        DcsMemberPostgresView::Replica(observation) => {
-            observation.system_identifier.map(|value| value.0)
-        }
+        DcsMemberPostgresView::Unknown(observation) => observation.system_identifier,
+        DcsMemberPostgresView::Primary(observation) => observation.system_identifier,
+        DcsMemberPostgresView::Replica(observation) => observation.system_identifier,
     }
 }
 
-fn pg_timeline(pg: &PgInfoState) -> Option<u64> {
-    pg_timeline_id(pg).map(|timeline| u64::from(timeline.0))
-}
-
-fn pg_system_identifier(pg: &PgInfoState) -> Option<u64> {
+fn pg_system_identifier(pg: &PgInfoState) -> Option<SystemIdentifier> {
     match pg {
         PgInfoState::Unknown { common }
         | PgInfoState::Primary { common, .. }
-        | PgInfoState::Replica { common, .. } => common.system_identifier.map(|value| value.0),
+        | PgInfoState::Replica { common, .. } => common.system_identifier,
     }
 }
 
@@ -745,8 +730,8 @@ mod tests {
         assert_eq!(
             peer.eligibility,
             ElectionEligibility::PromoteEligible(WalPosition {
-                timeline: 7,
-                lsn: 67_272_104,
+                timeline: TimelineId(7),
+                lsn: WalLsn(67_272_104),
             })
         );
     }
@@ -763,8 +748,8 @@ mod tests {
             PostgresState::Replica {
                 upstream: Some(MemberId("node-b".to_string())),
                 replication: ReplicationState::Streaming(WalPosition {
-                    timeline: 7,
-                    lsn: 67_272_104,
+                    timeline: TimelineId(7),
+                    lsn: WalLsn(67_272_104),
                 }),
             }
         );
@@ -791,12 +776,12 @@ mod tests {
         );
         let state = build_data_dir_state(
             &data_dir,
-            Some(7),
-            Some(41),
+            Some(TimelineId(7)),
+            Some(SystemIdentifier(41)),
             &Some(ObservedPrimary {
                 member: MemberId("node-c".to_string()),
-                timeline: Some(8),
-                system_identifier: Some(99),
+                timeline: Some(TimelineId(8)),
+                system_identifier: Some(SystemIdentifier(99)),
             }),
         );
         assert!(

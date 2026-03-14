@@ -249,7 +249,7 @@ mod tests {
     use crate::{
         dcs::DcsTrust,
         process::jobs::ShutdownMode,
-        state::{MemberId, UnixMillis},
+        state::{MemberId, TimelineId, UnixMillis, WalLsn},
     };
 
     use super::*;
@@ -427,8 +427,8 @@ mod tests {
             postgres: PostgresState::Replica {
                 upstream: None,
                 replication: super::super::types::ReplicationState::CatchingUp(WalPosition {
-                    timeline: 1,
-                    lsn: 42,
+                    timeline: TimelineId(1),
+                    lsn: WalLsn(42),
                 }),
             },
             process: ProcessState::Idle,
@@ -464,8 +464,8 @@ mod tests {
             postgres: PostgresState::Replica {
                 upstream: None,
                 replication: super::super::types::ReplicationState::Streaming(WalPosition {
-                    timeline: 1,
-                    lsn: 84,
+                    timeline: TimelineId(1),
+                    lsn: WalLsn(84),
                 }),
             },
             process: ProcessState::Idle,

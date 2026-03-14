@@ -171,15 +171,9 @@ pub(crate) struct DcsCadence {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DcsApiAdvertisement {
-    NotAdvertised,
-    Advertised(DcsMemberApiView),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DcsLocalMemberAdvertisement {
     pub(crate) postgres: DcsMemberEndpointView,
-    pub(crate) api: DcsApiAdvertisement,
+    pub(crate) api: Option<DcsMemberApiView>,
 }
 
 #[derive(Clone, Debug)]
@@ -326,11 +320,7 @@ pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &Mem
 }
 
 fn has_member_quorum(cache: &DcsCache) -> bool {
-    if cache.member_records.len() <= 1 {
-        cache.member_records.len() == 1
-    } else {
-        cache.member_records.len() >= 2
-    }
+    !cache.member_records.is_empty()
 }
 
 pub(crate) fn build_dcs_view(
