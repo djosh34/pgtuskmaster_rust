@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -u
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  echo "[post-commit] skipped on macOS"
+  exit 0
+fi
+
+PUBLISH_SCRIPT="$REPO_ROOT/scripts/publish-docs.sh"
+
+if [[ ! -x "$PUBLISH_SCRIPT" ]]; then
+  echo "[post-commit] publish script missing or not executable: $PUBLISH_SCRIPT" >&2
+  exit 0
+fi
+
+echo "[post-commit] running docs publish..."
+if "$PUBLISH_SCRIPT"; then
+  echo "[post-commit] docs publish completed"
+else
+  echo "[post-commit] docs publish failed (commit already created)" >&2
+fi
+
+exit 0

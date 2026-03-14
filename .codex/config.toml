@@ -1,0 +1,57 @@
+
+
+model_reasoning_summary = "detailed"
+model_verbosity = "high"
+model_supports_reasoning_summaries = true
+
+[features]
+multi_agent = true
+#runtime_metrics = true
+
+[profiles.spark]
+model = "gpt-5.3-codex-spark"
+model_reasoning_effort = "high"
+model_reasoning_summary = "none"
+model_supports_reasoning_summaries = false
+
+[profiles.normal_model]
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+
+compact_prompt = '''
+Read these messages. Instruct the agent very clearly:
+
+- Contex has passed its limit, you MUST be quitting now
+- Write your last progress with progress append command
+- YOU MUST QUIT IMMEDIATELY, NO EXCEPTIONS!, QUIT NOW, NEXT LOOP WILL TAKE OVER!
+
+Also say to it:
+
+You must QUIT IMMEDIATELY to save yourself from doomloops!
+'''
+model_context_window = 150000
+
+[profiles.normal_medium]
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
+
+[profiles.deep_review]
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+
+
+[otel]
+# Codex telemetry -> OpenObserve via OTLP/HTTP JSON
+environment = "pgtuskmaster_rust"
+log_user_prompt = true
+
+exporter = { otlp-grpc = { endpoint = "http://10.0.4.30:5081", headers = { "Authorization" = "Basic ZXhhbXBsZUBlbWFpbC5jb206OXdPdzNrSVBrYzRHc0Nrcw==", "stream-name" = "pgtuskmaster_rust", "organization" =  "default" } } }
+
+
+[agents]
+max_threads = 50
+max_depth = 1
+
+[agents.explore_spark]
+description = "ultra fast explorer"
+config_file = "agents/spark_review.toml"

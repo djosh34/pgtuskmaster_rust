@@ -1,106 +1,185 @@
 #!/bin/bash
 
-# ralph.sh — starts ralph-worker.sh as a systemd transient service.
-# Ctrl+C stops the service (systemd kills entire cgroup — no orphans ever).
-# Usage: /bin/bash ./ralph.sh <opencode|claude>
-
 set -euo pipefail
-
-export MODE="${1:-claude}"
-#MODE="opencode"
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 WORK_DIR="$(dirname "$SCRIPT_DIR")"
-UNIT_NAME="ralph-pgtuskmaster"
-EMAIL_WATCHER_UNIT="ralph-pgtuskmaster-progress-watcher.path"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+UNIT_NAME="ralph-worker.service"
+UNIT_PATH="$SYSTEMD_USER_DIR/$UNIT_NAME"
+DEFAULT_MODE="codex"
+MODE="$DEFAULT_MODE"
+ACTION="attach"
 
-# Show current ralph services status
-echo ""
-echo "=== Ralph Services Status ==="
-if systemctl --user is-active "$EMAIL_WATCHER_UNIT" &>/dev/null; then
-  echo "  [ACTIVE]   $EMAIL_WATCHER_UNIT (email watcher)"
-else
-  echo "  [inactive] $EMAIL_WATCHER_UNIT (email watcher)"
-fi
-if systemctl --user is-active "$UNIT_NAME.service" &>/dev/null; then
-  echo "  [ACTIVE]   $UNIT_NAME.service (worker)"
-else
-  echo "  [inactive] $UNIT_NAME.service (worker)"
-fi
-echo ""
+usage() {
+  cat <<EOF
+Usage: /bin/bash .ralph/ralph.sh [--start|--stop|--status] [--mode codex|claude|opencode]
 
-# Start email watcher if not running (but don't stop it when done)
-if ! systemctl --user is-active "$EMAIL_WATCHER_UNIT" &>/dev/null; then
-  echo "Starting email watcher..."
-  /bin/bash "$SCRIPT_DIR/ralph-email-watcher.sh" start
-  echo ""
-else
-  echo "WARNING: Email watcher was already running (leaving it on)"
-  echo ""
-fi
+No flags:
+  Start the Ralph worker service if needed, then attach to its logs.
 
-# If already running, attach to it. Otherwise start fresh.
-if systemctl --user is-active "$UNIT_NAME.service" &>/dev/null; then
-  echo ""
-  echo "============================================="
-  echo "  ATTACHING TO RUNNING ONE"
-  echo "============================================="
-  echo ""
-  echo "  Ctrl+C   = STOP ralph (kills the service)"
-  echo "  Ctrl+\\   = DETACH (leaves ralph running in background)"
-  echo ""
-else
-  START_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+Flags:
+  --start, start     Start the service only; do not attach to logs.
+  --stop, stop       Stop the service.
+  --status, status   Show service status.
+  --mode MODE        Set the worker mode for future starts. Default: $DEFAULT_MODE
+  --help, help       Show this help.
+EOF
+}
 
-  systemd-run --user \
-    --unit="$UNIT_NAME" \
-    --collect \
-    --working-directory="$WORK_DIR" \
-    --setenv=PATH="$HOME/.local/bin:$HOME/go/bin:$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    --setenv=HOME="$HOME" \
-    --property=TimeoutStopSec=10 \
-    --property=KillMode=control-group \
-    /bin/bash "$SCRIPT_DIR/ralph-worker.sh" "$MODE"
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --start|start)
+        ACTION="start"
+        shift
+        ;;
+      --stop|stop)
+        ACTION="stop"
+        shift
+        ;;
+      --status|status)
+        ACTION="status"
+        shift
+        ;;
+      --mode)
+        if [[ $# -lt 2 ]]; then
+          echo "error: --mode requires a value" >&2
+          exit 1
+        fi
+        MODE="$2"
+        shift 2
+        ;;
+      --help|help|-h)
+        ACTION="help"
+        shift
+        ;;
+      *)
+        echo "error: unknown argument: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+  done
+}
 
-  echo ""
-  echo "ralph started. Following output..."
-  echo ""
-  echo "  Ctrl+C   = STOP ralph (kills the service)"
-  echo "  Ctrl+\\   = DETACH (leaves ralph running in background)"
-  echo ""
-fi
+write_unit_file() {
+  mkdir -p "$SYSTEMD_USER_DIR"
 
-SINCE="${START_TIME:-today}"
+  local tmp_path
+  tmp_path="$(mktemp)"
 
-JPID=""
+  cat > "$tmp_path" <<EOF
+[Unit]
+Description=Ralph worker for pgtuskmaster_rust
+After=network.target
 
-# Ctrl+C (INT/TERM): stop the systemd service (kills entire cgroup), kill journalctl, exit
+[Service]
+Type=simple
+WorkingDirectory=$WORK_DIR
+Environment=HOME=$HOME
+Environment=PATH=$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/go/bin:$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=MODE=$MODE
+ExecStart=/bin/bash $SCRIPT_DIR/ralph-worker.sh $MODE
+KillMode=control-group
+TimeoutStopSec=10
+Restart=no
+
+[Install]
+WantedBy=default.target
+EOF
+
+  if [[ ! -f "$UNIT_PATH" ]] || ! cmp -s "$tmp_path" "$UNIT_PATH"; then
+    mv "$tmp_path" "$UNIT_PATH"
+    systemctl --user daemon-reload
+  else
+    rm -f "$tmp_path"
+  fi
+}
+
+is_active() {
+  systemctl --user is-active "$UNIT_NAME" >/dev/null 2>&1
+}
+
+start_service() {
+  write_unit_file
+
+  if is_active; then
+    echo "ralph already running"
+    return 0
+  fi
+
+  systemctl --user start "$UNIT_NAME"
+  echo "ralph started"
+}
+
+ensure_service_running_for_attach() {
+  if is_active; then
+    echo "ralph already running"
+    return 0
+  fi
+
+  start_service
+}
+
+stop_service() {
+  systemctl --user stop "$UNIT_NAME" 2>/dev/null || true
+  echo "ralph stopped"
+}
+
+show_status() {
+  write_unit_file
+  systemctl --user status "$UNIT_NAME" --no-pager || true
+}
+
 cleanup_stop() {
   echo ""
   echo "Stopping ralph..."
   systemctl --user stop "$UNIT_NAME" 2>/dev/null || true
-  [[ -n "$JPID" ]] && kill "$JPID" 2>/dev/null || true
   exit 0
 }
-trap cleanup_stop INT TERM
 
-# Ctrl+\ (QUIT): detach from logs but leave ralph running in background
 cleanup_detach() {
   echo ""
   echo ""
   echo "Detached. ralph continues running in background."
-  echo "  Re-run:   /bin/bash $SCRIPT_DIR/ralph.sh   to reattach"
-  echo "  Stop:     systemctl --user stop $UNIT_NAME"
-  echo "  Status:   systemctl --user status $UNIT_NAME"
-  [[ -n "$JPID" ]] && kill "$JPID" 2>/dev/null || true
+  echo "  Re-run:   /bin/bash $SCRIPT_DIR/ralph.sh"
+  echo "  Stop:     /bin/bash $SCRIPT_DIR/ralph.sh --stop"
+  echo "  Status:   /bin/bash $SCRIPT_DIR/ralph.sh --status"
   exit 0
 }
-trap cleanup_detach QUIT
 
-journalctl --user -u "$UNIT_NAME" -f --output=cat --since="$SINCE" &
-JPID=$!
+attach_logs() {
+  echo ""
+  echo "Attaching to $UNIT_NAME logs..."
+  echo ""
+  echo "  Ctrl+C   = STOP ralph"
+  echo "  Ctrl+\\   = DETACH"
+  echo ""
 
-# Wait in a loop — 'wait' without args is reliably interrupted by signals in bash
-while kill -0 "$JPID" 2>/dev/null; do
-  wait 2>/dev/null || true
-done
+  trap cleanup_stop INT TERM
+  trap cleanup_detach QUIT
+
+  journalctl --user -u "$UNIT_NAME" -n 50 -f --output=cat || true
+}
+
+parse_args "$@"
+
+case "$ACTION" in
+  help)
+    usage
+    ;;
+  status)
+    show_status
+    ;;
+  stop)
+    stop_service
+    ;;
+  start)
+    start_service
+    ;;
+  attach)
+    ensure_service_running_for_attach
+    attach_logs
+    ;;
+esac

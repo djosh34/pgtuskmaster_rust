@@ -1,0 +1,7 @@
+[package]
+name = "pgtuskmaster_test_support"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pgtuskmaster_rust = { path = "../..", features = ["internal-test-support"] }

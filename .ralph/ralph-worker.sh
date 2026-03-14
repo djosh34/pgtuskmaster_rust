@@ -1,21 +1,22 @@
 #!/bin/bash
 
 # ralph-worker.sh — the actual iteration loop.
-# Not meant to be run directly. Use ralph.sh which manages this via systemd.
+# Not meant to be run directly. Use ralph.sh or the ralph-pgtuskmaster systemd service.
 
 set -euo pipefail
 
 DO_TASK_PROMPT="ralph-do-task.md"
 CHOOSE_TASK_PROMPT="ralph-choose-task.md"
+MODEL_PROFILE_FILE="model.txt"
 
 SOURCE_PATH="${BASH_SOURCE[0]}"
 SCRIPT_DIR="$(cd -P "$( dirname "$SOURCE_PATH" )" >/dev/null 2>&1 && pwd)"
 echo "Running from $SCRIPT_DIR"
 
 
-MODE="${MODE:-claude}"
+MODE="${1:-${MODE:-claude}}"
 
-echo "Using MODE: $MODE (set MODE=opencode for OpenCode instead of Claude)"
+echo "Using MODE: $MODE (set MODE=opencode|claude|codex)"
 
 
 # Create archive directory if it doesn't exist (needed before finding max iteration)
@@ -23,7 +24,7 @@ ARCHIVE_DIR="$SCRIPT_DIR/archive"
 mkdir -p "$ARCHIVE_DIR"
 mkdir -p "$SCRIPT_DIR/progress"
 
-# Note: Email watcher is managed by ralph.sh / ralph-email-watcher.sh
+# Note: Progress email is sent directly by progress_append.sh
 # It is NOT stopped when ralph-worker exits (intentionally persists)
 
 
@@ -40,22 +41,7 @@ echo "Starting from iteration $START (last completed: $LAST_ITERATION)"
 # 1. Enable telemetry
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
 
-# 2. Choose exporters (both are optional - configure only what you need)
-export OTEL_METRICS_EXPORTER=otlp       # Options: otlp, prometheus, console
-export OTEL_LOGS_EXPORTER=otlp          # Options: otlp, console
-
-# 3. Configure OTLP endpoint (for OTLP exporter)
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://10.0.4.30:5080/api/default
-
-# 4. Set authentication (if required)
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ZXhhbXBsZUBlbWFpbC5jb206OXdPdzNrSVBrYzRHc0Nrcw==,stream-name=patroni"
-
-# 5. For debugging: reduce export intervals
-export OTEL_METRIC_EXPORT_INTERVAL=1000  # 10 seconds (default: 60000ms)
-export OTEL_LOGS_EXPORT_INTERVAL=1000     # 5 seconds (default: 5000ms)
-
-export OTEL_LOG_USER_PROMPTS=1
+# Codex OpenTelemetry settings are configured in .codex/config.toml.
 
 
 export OPENCODE_CONFIG="$SCRIPT_DIR/.ralph/opencode_gpt.json"
@@ -182,6 +168,19 @@ while true; do
   echo "                                             "
   TEST_CYCLE=$(cat "$SCRIPT_DIR/test_cycle.txt" 2>/dev/null || echo "5")
 
+  CODEX_PROFILE="normal_medium"
+  if [[ -f "$SCRIPT_DIR/$MODEL_PROFILE_FILE" ]]; then
+    CODEX_PROFILE=$(head -n 1 "$SCRIPT_DIR/$MODEL_PROFILE_FILE" | tr -d '\r' | xargs)
+    if [[ -z "$CODEX_PROFILE" ]]; then
+      CODEX_PROFILE="normal_medium"
+      echo "model.txt is empty. Using default codex profile: $CODEX_PROFILE"
+    else
+      echo "Using codex profile from model.txt: $CODEX_PROFILE"
+    fi
+  else
+    echo "model.txt not found. Using default codex profile: $CODEX_PROFILE"
+  fi
+
   if (( $TEST_CYCLE != 0 )) && (( i % $TEST_CYCLE == 0 )); then
     SHOULD_DO_TEST_NEXT=1
     echo "This is iteration $i, so SHOULD_DO_TEST_NEXT set to 1"
@@ -267,7 +266,22 @@ while true; do
       /bin/bash "$SCRIPT_DIR/email_crash.sh" "$EXIT_CODE" "$LAST_LINES" "$(backoff_status)" || true
       ITERATION_ERRORED=1
     }
-  else
+  elif [[ "$MODE" == "codex" ]]; then
+    codex exec - \
+      --dangerously-bypass-approvals-and-sandbox \
+      --json \
+      --profile "$CODEX_PROFILE" \
+      --skip-git-repo-check \
+      < "$SCRIPT_DIR/$PROMPT_NAME" | while read -r line; do
+      process_line "$line"
+    done || {
+      EXIT_CODE=$?
+      LAST_LINES=$(tail -600 "$OUTPUT_FILE" 2>/dev/null || echo "<no output>")
+      echo "codex exited with code $EXIT_CODE — continuing to next iteration"
+      /bin/bash "$SCRIPT_DIR/email_crash.sh" "$EXIT_CODE" "$LAST_LINES" "$(backoff_status)" || true
+      ITERATION_ERRORED=1
+    }
+  elif [[ "$MODE" == "claude" ]]; then
     claude -p "$(cat "$SCRIPT_DIR/$PROMPT_NAME")" --dangerously-skip-permissions --output-format stream-json --verbose --model opus | while read -r line; do
       # Check for STOP file after claude command completes
       if [[ -f "$SCRIPT_DIR/STOP" ]]; then
@@ -294,6 +308,10 @@ while true; do
       /bin/bash "$SCRIPT_DIR/email_crash.sh" "$EXIT_CODE" "$LAST_LINES" "$(backoff_status)" || true
       ITERATION_ERRORED=1
     }
+  else
+    echo "Unsupported MODE: $MODE"
+    echo "Supported modes: opencode, claude, codex"
+    exit 2
   fi
 
   if (( ITERATION_ERRORED )); then

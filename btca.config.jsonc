@@ -1,32 +1,42 @@
 {
-	"$schema": "https://btca.dev/btca.schema.json",
-	"dataDirectory": ".btca",
-	"resources": [
-		{
-			"type": "git",
-			"name": "patroni",
-			"url": "https://github.com/patroni/patroni",
-			"branch": "master"
-		},
-		{
-			"type": "git",
-			"name": "typedoc",
-			"url": "https://github.com/TypeStrong/typedoc",
-			"branch": "master"
-		},
-		{
-			"type": "git",
-			"name": "cloudnative-pg",
-			"url": "https://github.com/cloudnative-pg/cloudnative-pg",
-			"branch": "main"
-		},
-		{
-			"type": "git",
-			"name": "postgres",
-			"url": "https://github.com/postgres/postgres",
-			"branch": "master"
-		}
-	],
-	"model": "claude-haiku-4.5",
-	"provider": "github-copilot"
+  "$schema": "https://btca.dev/btca.schema.json",
+  "dataDirectory": ".btca",
+  "resources": [
+    {
+      "type": "git",
+      "name": "patroni",
+      "url": "https://github.com/patroni/patroni",
+      "branch": "master"
+    },
+    {
+      "type": "git",
+      "name": "typedoc",
+      "url": "https://github.com/TypeStrong/typedoc",
+      "branch": "master"
+    },
+    {
+      "type": "git",
+      "name": "cloudnative-pg",
+      "url": "https://github.com/cloudnative-pg/cloudnative-pg",
+      "branch": "main"
+    },
+    {
+      "type": "git",
+      "name": "postgres",
+      "url": "https://github.com/postgres/postgres",
+      "branch": "master"
+    },
+    {
+      "type": "local",
+      "name": "postgres16",
+      "path": "/tmp/postgres16_cloned"
+    },
+    {
+      "type": "local",
+      "name": "patroni-local",
+      "path": "/tmp/patroni_btca_2184550"
+    }
+  ],
+  "model": "claude-haiku-4.5",
+  "provider": "github-copilot"
 }

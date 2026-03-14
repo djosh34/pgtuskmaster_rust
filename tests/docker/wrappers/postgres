@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly BLOCKER_FILE="/var/lib/pgtuskmaster/faults/fail-postgres-start"
+readonly REAL_BIN="/usr/lib/postgresql/16/bin/postgres"
+
+if [[ -f "${BLOCKER_FILE}" ]]; then
+    printf 'postgres wrapper forced startup failure because blocker exists: %s\n' "${BLOCKER_FILE}" >&2
+    exit 98
+fi
+
+exec "${REAL_BIN}" "$@"

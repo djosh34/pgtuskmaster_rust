@@ -6,6 +6,7 @@ log
 # dotenv environment variable files
 .env
 .env*
+!.env.docker.example
 
 # IntelliJ based IDEs
 .idea
@@ -15,3 +16,22 @@ log
 
 # btca local data
 .btca/
+
+# rust build artifacts
+target/
+
+# test/build scratch dirs used by some fixtures
+target_verify_*/
+
+# local tool downloads/installations used by tests
+.tools/
+
+# mdBook generated output
+/docs/book/
+
+# local Node dependencies for docs tooling
+/tools/node_modules/
+
+# compose-managed secret sources
+docker/secrets/*
+!docker/secrets/*.example

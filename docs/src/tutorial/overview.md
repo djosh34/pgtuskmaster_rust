@@ -1,0 +1,12 @@
+# Tutorials
+
+This chapter contains hands-on lessons that guide you through practical activities with pgtuskmaster. Each tutorial takes you step-by-step through a concrete goal and uses `pgtm` as the normal operator interface.
+
+## What you'll find here
+
+- [First HA Cluster](first-ha-cluster.md) - Start a three-node PostgreSQL HA cluster on your local machine and inspect it with `pgtm`
+- [Observing a Failover Event](observing-failover.md) - Watch a real failover unfold with cluster-wide status and per-node debug history
+- [Performing a Planned Switchover](performing-switchover.md) - Practice controlled leadership transfer with both generic and targeted switchover requests
+- [Validating Cluster Behavior](validating-cluster-behavior.md) - Practice fault validation by keeping a primary stable through replica loss and then confirming clean failover and rejoin
+
+These tutorials are the best starting point when you want to learn the system by doing. After you are comfortable with the flows here, use the how-to guides for specific operational tasks and the reference pages for exact API and configuration details.
