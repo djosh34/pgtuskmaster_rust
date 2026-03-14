@@ -23,8 +23,8 @@ pub(crate) mod postgres_ingest;
 pub(crate) mod tailer;
 
 pub(crate) use event::{
-    CapturedStream, DcsCommandName, DcsEvent, DcsEventIdentity, InternalEvent, LogEvent,
-    PgInfoEvent, PostgresIngestEvent, PostgresLineEvent, PostgresLineSource, ProcessEvent,
+    CapturedStream, DcsEvent, DcsEventIdentity, InternalEvent, LogEvent, PgInfoEvent,
+    PostgresIngestEvent, PostgresLineEvent, PostgresLineSource, ProcessEvent,
     ProcessExecutionIdentity, ProcessJobIdentity, ProcessJobKind, RuntimeEvent, RuntimeIdentity,
     SubprocessLineEvent,
 };

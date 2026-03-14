@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::state::{PgConnectTarget, PgTcpTarget, PgUnixTarget};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PgSslMode {
     Disable,
@@ -59,8 +61,7 @@ impl Serialize for PgSslMode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PgConnInfo {
-    pub host: String,
-    pub port: u16,
+    pub target: PgConnectTarget,
     pub user: String,
     pub dbname: String,
     pub application_name: Option<String>,
@@ -82,6 +83,7 @@ pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, String> {
     let port = get_required("port")?
         .parse::<u16>()
         .map_err(|err| format!("invalid conninfo port: {err}"))?;
+    let host = get_required("host")?;
     let ssl_mode_raw = get_required("sslmode")?;
     let ssl_mode = PgSslMode::parse(ssl_mode_raw.as_str())
         .ok_or_else(|| format!("unsupported conninfo sslmode `{ssl_mode_raw}`"))?;
@@ -95,8 +97,7 @@ pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, String> {
         .transpose()?;
 
     Ok(PgConnInfo {
-        host: get_required("host")?,
-        port,
+        target: parse_connect_target(host, port)?,
         user: get_required("user")?,
         dbname: get_required("dbname")?,
         application_name: entries.get("application_name").cloned(),
@@ -108,9 +109,10 @@ pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, String> {
 }
 
 pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
+    let (host, port) = render_connect_target(&info.target);
     let mut pairs = vec![
-        ("host".to_string(), info.host.clone()),
-        ("port".to_string(), info.port.to_string()),
+        ("host".to_string(), host),
+        ("port".to_string(), port.to_string()),
         ("user".to_string(), info.user.clone()),
         ("dbname".to_string(), info.dbname.clone()),
     ];
@@ -134,6 +136,22 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
         .map(|(key, value)| format!("{key}={}", render_value(&value)))
         .collect::<Vec<String>>()
         .join(" ")
+}
+
+fn parse_connect_target(host: String, port: u16) -> Result<PgConnectTarget, String> {
+    if host.starts_with('/') {
+        return Ok(PgConnectTarget::Unix(PgUnixTarget {
+            socket_dir: PathBuf::from(host),
+        }));
+    }
+    PgTcpTarget::new(host, port).map(PgConnectTarget::Tcp)
+}
+
+fn render_connect_target(target: &PgConnectTarget) -> (String, u16) {
+    match target {
+        PgConnectTarget::Tcp(target) => (target.host().to_string(), target.port()),
+        PgConnectTarget::Unix(target) => (target.socket_dir.display().to_string(), 5432),
+    }
 }
 
 fn render_value(value: &str) -> String {
@@ -234,11 +252,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{parse_pg_conninfo, render_pg_conninfo, PgConnInfo, PgSslMode};
+    use crate::state::{PgConnectTarget, PgTcpTarget};
 
-    fn sample_conninfo() -> PgConnInfo {
-        PgConnInfo {
-            host: "127.0.0.1".to_string(),
-            port: 5432,
+    fn sample_conninfo() -> Result<PgConnInfo, String> {
+        Ok(PgConnInfo {
+            target: PgTcpTarget::new("127.0.0.1".to_string(), 5432).map(PgConnectTarget::Tcp)?,
             user: "postgres".to_string(),
             dbname: "postgres".to_string(),
             application_name: Some("ha worker".to_string()),
@@ -246,26 +264,28 @@ mod tests {
             ssl_mode: PgSslMode::Require,
             ssl_root_cert: Some(PathBuf::from("/etc/pgtm/ca bundle.pem")),
             options: Some("-c search_path=public".to_string()),
-        }
+        })
     }
 
     #[test]
-    fn render_emits_canonical_key_order() {
-        let rendered = render_pg_conninfo(&sample_conninfo());
+    fn render_emits_canonical_key_order() -> Result<(), String> {
+        let rendered = render_pg_conninfo(&sample_conninfo()?);
         assert_eq!(
             rendered,
             "host=127.0.0.1 port=5432 user=postgres dbname='postgres' application_name='ha worker' connect_timeout=5 sslmode=require sslrootcert='/etc/pgtm/ca bundle.pem' options='-c search_path=public'"
                 .replace("dbname='postgres'", "dbname=postgres")
         );
+        Ok(())
     }
 
     #[test]
-    fn parse_accepts_rendered_conninfo_with_extra_keys() {
+    fn parse_accepts_rendered_conninfo_with_extra_keys() -> Result<(), String> {
         let rendered = format!(
             "{} passfile='/var/lib/postgresql/data/pgtm.standby.passfile'",
-            render_pg_conninfo(&sample_conninfo())
+            render_pg_conninfo(&sample_conninfo()?)
         );
 
-        assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(sample_conninfo()));
+        assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(sample_conninfo()?));
+        Ok(())
     }
 }

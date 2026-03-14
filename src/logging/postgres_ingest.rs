@@ -1226,8 +1226,8 @@ mod tests {
         use tokio::time::Instant;
 
         use crate::dcs::{
-            DcsMemberEndpointView, DcsMemberLeaseView, DcsMemberPostgresView, DcsMemberRoutingView,
-            DcsMemberView, DcsPrimaryPostgresView, DcsTrust, DcsView, WalVector,
+            ClusterMemberView, ClusterView, DcsView, LeadershipObservation, MemberPostgresView,
+            SwitchoverView,
         };
         use crate::dev_support::binaries::{
             require_pg16_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
@@ -1248,7 +1248,7 @@ mod tests {
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
         use crate::state::{
-            new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError, WorkerStatus,
+            new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError,
         };
 
         use super::super::{
@@ -1594,7 +1594,7 @@ mod tests {
             let (mut process_ctx, _process_state_subscriber) = build_process_worker_ctx(
                 &cfg,
                 log_handle.clone(),
-                DcsView::empty(WorkerStatus::Starting),
+                DcsView::starting(),
                 rx,
             );
 
@@ -1826,35 +1826,25 @@ mod tests {
             let (log_handle, sink) = test_log_handle();
 
             let (tx, rx) = mpsc::unbounded_channel();
-            let dcs = DcsView {
-                worker: WorkerStatus::Running,
-                trust: DcsTrust::FullQuorum,
-                members: std::collections::BTreeMap::from([(
+            let dcs = DcsView::Coordinated(ClusterView::new(
+                std::collections::BTreeMap::from([(
                     MemberId("node-b".to_string()),
-                    DcsMemberView {
-                        member_id: MemberId("node-b".to_string()),
-                        lease: DcsMemberLeaseView { ttl_ms: 10_000 },
-                        routing: DcsMemberRoutingView {
-                            postgres: DcsMemberEndpointView {
-                                host: "127.0.0.1".to_string(),
-                                port: 9,
-                            },
-                            api: None,
-                        },
-                        postgres: DcsMemberPostgresView::Primary(DcsPrimaryPostgresView {
+                    ClusterMemberView::new(
+                        MemberPostgresView::Primary {
                             readiness: crate::pginfo::state::Readiness::Ready,
                             system_identifier: None,
-                            committed_wal: WalVector {
+                            committed_wal: crate::state::ObservedWalPosition {
                                 timeline: Some(TimelineId(1)),
                                 lsn: WalLsn(0),
                             },
-                        }),
-                    },
+                        },
+                        crate::state::PgTcpTarget::new("127.0.0.1".to_string(), 9)
+                            .map_err(|err| WorkerError::Message(format!("test dcs target failed: {err}")))?,
+                    ),
                 )]),
-                leader: crate::dcs::DcsLeaderStateView::Unheld,
-                switchover: crate::dcs::DcsSwitchoverStateView::None,
-                last_observed_at: None,
-            };
+                LeadershipObservation::Open,
+                SwitchoverView::None,
+            ));
             let (mut ctx, _process_state_subscriber) =
                 build_process_worker_ctx(&cfg, log_handle, dcs, rx);
 

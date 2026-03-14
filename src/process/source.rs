@@ -1,13 +1,13 @@
 use thiserror::Error;
 
 use crate::{
-    dcs::{DcsMemberPostgresView, DcsMemberView},
+    dcs::{ClusterMemberView, MemberPostgresView},
     pginfo::state::PgConnInfo,
     process::{
         jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
         state::{MandatoryPostgresRoleCredential, ProcessRuntimePlan},
     },
-    state::MemberId,
+    state::{MemberId, PgConnectTarget},
 };
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -23,9 +23,10 @@ pub(crate) enum SourceMaterializationError {
 pub(crate) fn basebackup_source_from_member(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
-    member: &DcsMemberView,
+    member_id: &MemberId,
+    member: &ClusterMemberView,
 ) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
-    validate_remote_primary_source(self_id, member)?;
+    validate_remote_primary_source(self_id, member_id, member)?;
     Ok(MandatoryRoleSourceConn {
         role: MandatorySourceRole::Replicator,
         conninfo: remote_conninfo(member, &runtime.replica_access.roles.replicator, runtime),
@@ -36,9 +37,10 @@ pub(crate) fn basebackup_source_from_member(
 pub(crate) fn rewind_source_from_member(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
-    member: &DcsMemberView,
+    member_id: &MemberId,
+    member: &ClusterMemberView,
 ) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
-    validate_remote_primary_source(self_id, member)?;
+    validate_remote_primary_source(self_id, member_id, member)?;
     Ok(MandatoryRoleSourceConn {
         role: MandatorySourceRole::Rewinder,
         conninfo: remote_conninfo(member, &runtime.replica_access.roles.rewinder, runtime),
@@ -48,23 +50,24 @@ pub(crate) fn rewind_source_from_member(
 
 fn validate_remote_primary_source(
     self_id: &MemberId,
-    member: &DcsMemberView,
+    member_id: &MemberId,
+    member: &ClusterMemberView,
 ) -> Result<(), SourceMaterializationError> {
-    if &member.member_id == self_id {
+    if member_id == self_id {
         return Err(SourceMaterializationError::SelfTarget {
-            member_id: member.member_id.0.clone(),
+            member_id: member_id.0.clone(),
         });
     }
 
-    if member.routing.postgres.host.trim().is_empty() {
+    if member.postgres_target().host().trim().is_empty() {
         return Err(SourceMaterializationError::EmptyHost {
-            member_id: member.member_id.0.clone(),
+            member_id: member_id.0.clone(),
         });
     }
 
-    if !matches!(member.postgres, DcsMemberPostgresView::Primary(_)) {
+    if !matches!(member.postgres(), MemberPostgresView::Primary { .. }) {
         return Err(SourceMaterializationError::NotHealthyPrimary {
-            member_id: member.member_id.0.clone(),
+            member_id: member_id.0.clone(),
         });
     }
 
@@ -72,13 +75,12 @@ fn validate_remote_primary_source(
 }
 
 fn remote_conninfo(
-    member: &DcsMemberView,
+    member: &ClusterMemberView,
     role: &MandatoryPostgresRoleCredential,
     runtime: &ProcessRuntimePlan,
 ) -> PgConnInfo {
     PgConnInfo {
-        host: member.routing.postgres.host.clone(),
-        port: member.routing.postgres.port,
+        target: PgConnectTarget::Tcp(member.postgres_target().clone()),
         user: role.username.as_str().to_owned(),
         dbname: runtime.replica_access.dbname.clone(),
         application_name: None,

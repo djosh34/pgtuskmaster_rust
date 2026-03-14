@@ -7,12 +7,10 @@ use crate::{
     cli::{
         args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError, output,
     },
-    dcs::{
-        DcsMemberPostgresView, DcsMemberView, DcsSwitchoverStateView, DcsSwitchoverTargetView,
-        DcsTrust,
-    },
+    dcs::{ClusterMemberView, DcsMode, MemberPostgresView, SwitchoverView},
     ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::Readiness,
+    state::{MemberId, SwitchoverTarget},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,9 +154,14 @@ fn assemble_cluster_view(
 
     let mut nodes = state
         .dcs
-        .members
-        .values()
-        .map(|member| build_node_view(state, member))
+        .cluster()
+        .into_iter()
+        .flat_map(|cluster| {
+            cluster
+                .member_ids()
+                .filter_map(|member_id| cluster.member(member_id).map(|member| (member_id, member)))
+        })
+        .map(|(member_id, member)| build_node_view(state, member_id, member))
         .collect::<Vec<_>>();
     nodes.sort_by(|left, right| {
         right
@@ -175,30 +178,19 @@ fn assemble_cluster_view(
         discovered_member_count: nodes.len(),
         health,
         warnings,
-        switchover: state
-            .dcs
-            .switchover
-            .clone()
-            .into_requested()
-            .map(|switchover| ClusterSwitchoverView {
-                pending: true,
-                target_member_id: match &switchover.target {
-                    DcsSwitchoverTargetView::AnyHealthyReplica => None,
-                    DcsSwitchoverTargetView::Specific(member_id) => Some(member_id.0.clone()),
-                },
-            }),
+        switchover: state.dcs.cluster().and_then(cluster_switchover_view),
         nodes,
     }
 }
 
 fn collect_warnings(state: &NodeState) -> Vec<ClusterWarning> {
     let mut warnings = Vec::new();
-    if state.dcs.trust != DcsTrust::FullQuorum {
+    if state.dcs.mode() != DcsMode::Coordinated {
         warnings.push(ClusterWarning {
-            code: "degraded_trust".to_string(),
+            code: "degraded_dcs_mode".to_string(),
             message: format!(
-                "seed node reports {} DCS trust",
-                dcs_trust_label(&state.dcs.trust)
+                "seed node reports {} DCS mode",
+                dcs_mode_label(state.dcs.mode())
             ),
         });
     }
@@ -208,7 +200,13 @@ fn collect_warnings(state: &NodeState) -> Vec<ClusterWarning> {
             message: "seed node does not currently project an authoritative primary".to_string(),
         });
     }
-    if state.dcs.members.is_empty() {
+    if state
+        .dcs
+        .cluster()
+        .map(|cluster| cluster.member_count())
+        .unwrap_or(0)
+        == 0
+    {
         warnings.push(ClusterWarning {
             code: "no_members".to_string(),
             message: "seed node does not currently expose any DCS member slots".to_string(),
@@ -217,25 +215,25 @@ fn collect_warnings(state: &NodeState) -> Vec<ClusterWarning> {
     warnings
 }
 
-fn build_node_view(state: &NodeState, member: &DcsMemberView) -> ClusterNodeView {
-    let is_self = member.member_id.0 == state.self_member_id;
+fn build_node_view(
+    state: &NodeState,
+    member_id: &MemberId,
+    member: &ClusterMemberView,
+) -> ClusterNodeView {
+    let is_self = member_id.0 == state.self_member_id;
     ClusterNodeView {
-        member_id: member.member_id.0.clone(),
+        member_id: member_id.0.clone(),
         is_self,
-        api_url: member
-            .routing
-            .api
-            .as_ref()
-            .map(|endpoint| endpoint.url.clone()),
+        api_url: None,
         api_status: ApiStatus::Ok,
-        role: member_role_label(&member.postgres).to_string(),
-        trust: dcs_trust_label(&state.dcs.trust).to_string(),
+        role: member_role_label(member.postgres()).to_string(),
+        trust: dcs_mode_label(state.dcs.mode()).to_string(),
         phase: is_self.then(|| state.ha.role.label().to_string()),
         leader: authority_primary_member(state),
         decision: is_self.then(|| authority_label(&state.ha.publication)),
-        postgres_host: member.routing.postgres.host.clone(),
-        postgres_port: member.routing.postgres.port,
-        readiness: member_readiness_label(&member.postgres).to_string(),
+        postgres_host: member.postgres_target().host().to_string(),
+        postgres_port: member.postgres_target().port(),
+        readiness: member_readiness_label(member.postgres()).to_string(),
         process: is_self.then(|| format!("{:?}", state.process).to_lowercase()),
     }
 }
@@ -250,20 +248,20 @@ pub(crate) fn authority_primary_member(state: &NodeState) -> Option<String> {
     }
 }
 
-fn member_role_label(member: &DcsMemberPostgresView) -> &'static str {
+fn member_role_label(member: &MemberPostgresView) -> &'static str {
     match member {
-        DcsMemberPostgresView::Unknown(_) => "unknown",
-        DcsMemberPostgresView::Primary(_) => "primary",
-        DcsMemberPostgresView::Replica(_) => "replica",
+        MemberPostgresView::Unknown { .. } => "unknown",
+        MemberPostgresView::Primary { .. } => "primary",
+        MemberPostgresView::Replica { .. } => "replica",
     }
 }
 
-fn member_readiness_label(member: &DcsMemberPostgresView) -> &'static str {
-    let readiness = match member {
-        DcsMemberPostgresView::Unknown(observation) => &observation.readiness,
-        DcsMemberPostgresView::Primary(observation) => &observation.readiness,
-        DcsMemberPostgresView::Replica(observation) => &observation.readiness,
-    };
+fn member_readiness_label(member: &MemberPostgresView) -> &'static str {
+    let readiness = member.readiness();
+    readiness_label(&readiness)
+}
+
+fn readiness_label(readiness: &Readiness) -> &'static str {
     match readiness {
         Readiness::Unknown => "unknown",
         Readiness::Ready => "ready",
@@ -271,11 +269,8 @@ fn member_readiness_label(member: &DcsMemberPostgresView) -> &'static str {
     }
 }
 
-pub(crate) fn member_is_ready_replica(member: &DcsMemberView) -> bool {
-    matches!(
-        &member.postgres,
-        DcsMemberPostgresView::Replica(observation) if observation.readiness == Readiness::Ready
-    )
+pub(crate) fn member_is_ready_replica(member: &ClusterMemberView) -> bool {
+    member.postgres().is_ready_replica()
 }
 
 fn authority_label(publication: &PublicationState) -> String {
@@ -290,23 +285,23 @@ fn authority_label(publication: &PublicationState) -> String {
     }
 }
 
-fn dcs_trust_label(trust: &DcsTrust) -> &'static str {
-    match trust {
-        DcsTrust::FullQuorum => "full_quorum",
-        DcsTrust::Degraded => "degraded",
-        DcsTrust::NotTrusted => "not_trusted",
+fn dcs_mode_label(mode: DcsMode) -> &'static str {
+    match mode {
+        DcsMode::Coordinated => "coordinated",
+        DcsMode::Degraded => "degraded",
+        DcsMode::NotTrusted => "not_trusted",
     }
 }
 
-trait DcsSwitchoverStateViewExt {
-    fn into_requested(self) -> Option<crate::dcs::DcsSwitchoverView>;
-}
-
-impl DcsSwitchoverStateViewExt for DcsSwitchoverStateView {
-    fn into_requested(self) -> Option<crate::dcs::DcsSwitchoverView> {
-        match self {
-            DcsSwitchoverStateView::None => None,
-            DcsSwitchoverStateView::Requested(view) => Some(view),
-        }
+fn cluster_switchover_view(cluster: &crate::dcs::ClusterView) -> Option<ClusterSwitchoverView> {
+    match cluster.switchover() {
+        SwitchoverView::None => None,
+        SwitchoverView::Requested(target) => Some(ClusterSwitchoverView {
+            pending: true,
+            target_member_id: match target {
+                SwitchoverTarget::AnyHealthyReplica => None,
+                SwitchoverTarget::Specific(member_id) => Some(member_id.0.clone()),
+            },
+        }),
     }
 }

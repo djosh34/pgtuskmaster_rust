@@ -12,7 +12,7 @@ use crate::{
             authority_primary_member, fetch_seed_state, member_is_ready_replica, ClusterWarning,
         },
     },
-    dcs::DcsMemberView,
+    dcs::ClusterMemberView,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,8 +77,8 @@ fn resolve_primary_view(
     })?;
     let member = state
         .dcs
-        .members
-        .get(&crate::state::MemberId(primary_id.clone()))
+        .cluster()
+        .and_then(|cluster| cluster.member(&crate::state::MemberId(primary_id.clone())))
         .ok_or_else(|| {
             CliError::Resolution(format!(
                 "authoritative primary `{primary_id}` is not present in the DCS member slots"
@@ -105,8 +105,9 @@ fn resolve_replicas_view(
 ) -> Result<ConnectionView, CliError> {
     let targets = state
         .dcs
-        .members
-        .values()
+        .cluster()
+        .into_iter()
+        .flat_map(|cluster| cluster.member_ids().filter_map(|member_id| cluster.member(member_id)))
         .filter(|member| member_is_ready_replica(member))
         .map(|member| build_connection_target(member, tls, emit_tls))
         .collect::<Result<Vec<_>, _>>()?;
@@ -136,57 +137,60 @@ fn build_connection_view(
         scope: state.scope.clone(),
         kind,
         tls: emit_tls,
-        discovered_member_count: state.dcs.members.len(),
+        discovered_member_count: state
+            .dcs
+            .cluster()
+            .map(|cluster| cluster.member_count())
+            .unwrap_or(0),
         warnings: Vec::new(),
         targets,
     }
 }
 
 fn build_connection_target(
-    member: &DcsMemberView,
+    member: &ClusterMemberView,
     tls: &CliTlsConfig,
     emit_tls: bool,
 ) -> Result<ConnectionTarget, CliError> {
-    let postgres_host = member.routing.postgres.host.trim();
-    if postgres_host.is_empty() || member.routing.postgres.port == 0 {
-        return Err(CliError::Resolution(format!(
-            "member {} does not advertise PostgreSQL host/port",
-            member.member_id.0
-        )));
+    let postgres_host = member.postgres_target().host().trim();
+    let postgres_port = member.postgres_target().port();
+    if postgres_host.is_empty() || postgres_port == 0 {
+        return Err(CliError::Resolution(
+            "member does not advertise PostgreSQL host/port".to_string(),
+        ));
     }
 
-    let dsn = render_connection_dsn(postgres_host, member.routing.postgres.port, tls, emit_tls)?;
+    let dsn = render_connection_dsn(postgres_host, postgres_port, tls, emit_tls)?;
     Ok(ConnectionTarget {
-        member_id: member.member_id.0.clone(),
+        member_id: postgres_host.to_string(),
         postgres_host: postgres_host.to_string(),
-        postgres_port: member.routing.postgres.port,
+        postgres_port,
         dsn,
     })
 }
 
 fn build_primary_connection_target(
-    member: &DcsMemberView,
+    member: &ClusterMemberView,
     tls: &CliTlsConfig,
     emit_tls: bool,
     override_target: Option<&crate::config::PgtmPrimaryTargetConfig>,
 ) -> Result<ConnectionTarget, CliError> {
     let resolved_host = override_target
         .map(|target| target.host.trim())
-        .unwrap_or_else(|| member.routing.postgres.host.trim());
+        .unwrap_or_else(|| member.postgres_target().host().trim());
     let resolved_port = override_target
         .and_then(|target| target.port)
-        .unwrap_or(member.routing.postgres.port);
+        .unwrap_or(member.postgres_target().port());
 
     if resolved_host.is_empty() || resolved_port == 0 {
-        return Err(CliError::Resolution(format!(
-            "member {} does not advertise PostgreSQL host/port",
-            member.member_id.0
-        )));
+        return Err(CliError::Resolution(
+            "member does not advertise PostgreSQL host/port".to_string(),
+        ));
     }
 
     let dsn = render_connection_dsn(resolved_host, resolved_port, tls, emit_tls)?;
     Ok(ConnectionTarget {
-        member_id: member.member_id.0.clone(),
+        member_id: resolved_host.to_string(),
         postgres_host: resolved_host.to_string(),
         postgres_port: resolved_port,
         dsn,

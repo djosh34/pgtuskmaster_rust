@@ -1,17 +1,14 @@
 use crate::{
     api::{AcceptedResponse, ApiError, ApiResult, NodeState},
     config::RuntimeConfig,
-    dcs::{
-        DcsHandle, DcsMemberPostgresView, DcsMemberView, DcsSwitchoverTargetView,
-        DcsSwitchoverView, DcsTrust, DcsView,
-    },
+    dcs::{ClusterMemberView, DcsHandle, DcsMode, DcsView, MemberPostgresView},
     ha::{
         state::HaState,
         types::{AuthorityProjection, PublicationState},
     },
     pginfo::state::{PgInfoState, Readiness},
     process::state::ProcessState,
-    state::MemberId,
+    state::{MemberId, SwitchoverTarget},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -40,10 +37,9 @@ pub(crate) async fn post_switchover(
     ha: &HaState,
     input: SwitchoverRequest,
 ) -> ApiResult<AcceptedResponse> {
-    let request = validate_switchover_request(self_id, dcs, ha, input)?;
+    let target = validate_switchover_request(self_id, dcs, ha, input)?;
     handle
-        .publish_switchover(request.target)
-        .await
+        .publish_switchover(target)
         .map_err(|err| ApiError::DcsCommand(err.to_string()))?;
 
     Ok(AcceptedResponse { accepted: true })
@@ -55,7 +51,6 @@ pub(crate) async fn delete_switchover(
 ) -> ApiResult<AcceptedResponse> {
     handle
         .clear_switchover()
-        .await
         .map_err(|err| ApiError::DcsCommand(err.to_string()))?;
     Ok(AcceptedResponse { accepted: true })
 }
@@ -77,10 +72,10 @@ fn validate_switchover_request(
     dcs: &DcsView,
     ha: &HaState,
     input: SwitchoverRequest,
-) -> ApiResult<DcsSwitchoverView> {
-    if dcs.trust != DcsTrust::FullQuorum {
+) -> ApiResult<SwitchoverTarget> {
+    if dcs.mode() != DcsMode::Coordinated {
         return Err(ApiError::bad_request(
-            "switchover requests require full quorum DCS trust".to_string(),
+            "switchover requests require coordinated DCS state".to_string(),
         ));
     }
 
@@ -96,9 +91,7 @@ fn validate_switchover_request(
 
     let target = match input.switchover_to {
         None => {
-            return Ok(DcsSwitchoverView {
-                target: DcsSwitchoverTargetView::AnyHealthyReplica,
-            });
+            return Ok(SwitchoverTarget::AnyHealthyReplica);
         }
         Some(member_id) => member_id,
     };
@@ -117,8 +110,8 @@ fn validate_switchover_request(
     }
 
     let target_member = dcs
-        .members
-        .get(&target_member_id)
+        .cluster()
+        .and_then(|cluster| cluster.member(&target_member_id))
         .ok_or_else(|| ApiError::bad_request(format!("unknown switchover_to member `{target}`")))?;
     if !member_slot_is_eligible_target(target_member) {
         return Err(ApiError::bad_request(format!(
@@ -126,15 +119,13 @@ fn validate_switchover_request(
         )));
     }
 
-    Ok(DcsSwitchoverView {
-        target: DcsSwitchoverTargetView::Specific(target_member_id),
-    })
+    Ok(SwitchoverTarget::Specific(target_member_id))
 }
 
-fn member_slot_is_eligible_target(value: &DcsMemberView) -> bool {
-    match &value.postgres {
-        DcsMemberPostgresView::Unknown(observation) => observation.readiness == Readiness::Ready,
-        DcsMemberPostgresView::Primary(_) => false,
-        DcsMemberPostgresView::Replica(observation) => observation.readiness == Readiness::Ready,
+fn member_slot_is_eligible_target(value: &ClusterMemberView) -> bool {
+    match value.postgres() {
+        MemberPostgresView::Unknown { readiness, .. } => readiness == &Readiness::Ready,
+        MemberPostgresView::Primary { .. } => false,
+        MemberPostgresView::Replica { readiness, .. } => readiness == &Readiness::Ready,
     }
 }

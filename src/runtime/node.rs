@@ -101,7 +101,8 @@ async fn run_workers(
         client: cfg.dcs.client.clone(),
         poll_interval: worker_poll_interval,
         member_ttl_ms: cfg.ha.lease_ttl_ms,
-        advertised: crate::dcs::startup::DcsAdvertisedEndpoints::from_config(&cfg),
+        advertised: crate::dcs::startup::DcsAdvertisedEndpoints::from_config(&cfg)
+            .map_err(|err| RuntimeError::Worker(format!("dcs advertisement build failed: {err}")))?,
         pg_subscriber: pginfo.state.clone(),
         log: log.clone(),
     })

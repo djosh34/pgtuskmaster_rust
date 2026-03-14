@@ -247,17 +247,17 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        dcs::DcsTrust,
+        dcs::DcsMode,
         process::jobs::ShutdownMode,
-        state::{MemberId, UnixMillis},
+        state::{LeaseEpoch, MemberId, UnixMillis},
     };
 
     use super::*;
     use crate::ha::types::{
         ApiVisibility, AuthorityProjection, CoordinationState, GlobalKnowledge, IneligibleReason,
-        LeadershipView, LeaseEpoch, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection,
-        ObservationState, PeerKnowledge, PrimaryObservation, PublicationState, StorageState,
-        SwitchoverState, WalPosition,
+        LeadershipView, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection, ObservationState,
+        PeerKnowledge, PrimaryObservation, PublicationState, StorageState, SwitchoverState,
+        WalPosition,
     };
 
     fn world(local: LocalKnowledge) -> WorldView {
@@ -265,7 +265,7 @@ mod tests {
             local,
             global: GlobalKnowledge {
                 coordination: CoordinationState {
-                    trust: DcsTrust::FullQuorum,
+                    mode: DcsMode::Coordinated,
                     leadership: LeadershipView::Open,
                     primary: PrimaryObservation::Absent,
                 },
@@ -298,6 +298,7 @@ mod tests {
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
                 last_start_success_at: None,
+                last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
             },
@@ -327,13 +328,14 @@ mod tests {
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(100),
                     last_start_success_at: None,
+                    last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
                 },
             },
             global: GlobalKnowledge {
                 coordination: CoordinationState {
-                    trust: DcsTrust::FullQuorum,
+                    mode: DcsMode::Coordinated,
                     leadership: LeadershipView::HeldBySelf(LeaseEpoch {
                         holder: MemberId("node-a".to_string()),
                         generation: 5,
@@ -377,6 +379,7 @@ mod tests {
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
                 last_start_success_at: None,
+                last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
             },
@@ -407,6 +410,7 @@ mod tests {
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
                 last_start_success_at: None,
+                last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
             },
@@ -438,6 +442,7 @@ mod tests {
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
                 last_start_success_at: None,
+                last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
             },
@@ -475,6 +480,7 @@ mod tests {
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
                 last_start_success_at: None,
+                last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
             },

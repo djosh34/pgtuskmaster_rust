@@ -318,9 +318,10 @@ fn render_libpq_passfile_entry(
     password: &str,
 ) -> Result<String, ManagedPostgresError> {
     const STREAMING_REPLICATION_DATABASE: &str = "replication";
+    let (host, port) = passfile_target_fields(&conninfo.target);
 
     if [
-        conninfo.host.as_str(),
+        host.as_str(),
         conninfo.user.as_str(),
         password,
         STREAMING_REPLICATION_DATABASE,
@@ -335,12 +336,21 @@ fn render_libpq_passfile_entry(
 
     Ok(format!(
         "{}:{}:{}:{}:{}\n",
-        escape_libpq_passfile_field(conninfo.host.as_str()),
-        conninfo.port,
+        escape_libpq_passfile_field(host.as_str()),
+        port,
         STREAMING_REPLICATION_DATABASE,
         escape_libpq_passfile_field(conninfo.user.as_str()),
         escape_libpq_passfile_field(password),
     ))
+}
+
+fn passfile_target_fields(target: &crate::state::PgConnectTarget) -> (String, u16) {
+    match target {
+        crate::state::PgConnectTarget::Tcp(target) => (target.host().to_string(), target.port()),
+        crate::state::PgConnectTarget::Unix(target) => {
+            (target.socket_dir.display().to_string(), 5432)
+        }
+    }
 }
 
 fn escape_libpq_passfile_field(value: &str) -> String {
@@ -622,6 +632,7 @@ mod tests {
             managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
             ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
+        state::{PgConnectTarget, PgTcpTarget},
     };
 
     use super::{
@@ -716,8 +727,7 @@ mod tests {
         let cfg = sample_runtime_config(data_dir.clone());
         let replica_start = ManagedPostgresStartIntent::replica(
             PgConnInfo {
-                host: "leader.internal".to_string(),
-                port: 5432,
+                target: tcp_connect_target("leader.internal", 5432)?,
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),
                 application_name: None,
@@ -785,8 +795,7 @@ mod tests {
             &cfg,
             &ManagedPostgresStartIntent::recovery(
                 PgConnInfo {
-                    host: "leader.internal".to_string(),
-                    port: 5432,
+                    target: tcp_connect_target("leader.internal", 5432)?,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
@@ -827,7 +836,7 @@ mod tests {
         let managed = materialize_managed_postgres_config(
             &cfg,
             &ManagedPostgresStartIntent::replica(
-                sample_replica_conninfo(),
+                sample_replica_conninfo()?,
                 sample_password_standby_auth(&data_dir),
                 None,
             ),
@@ -1140,8 +1149,8 @@ mod tests {
                 &runtime_config,
                 &ManagedPostgresStartIntent::replica(
                     PgConnInfo {
-                        host: "127.0.0.1".to_string(),
-                        port: primary_port,
+                        target: tcp_connect_target("127.0.0.1", primary_port)
+                            .map_err(real_test_error)?,
                         user: "replicator".to_string(),
                         dbname: "postgres".to_string(),
                         application_name: None,
@@ -1307,7 +1316,7 @@ mod tests {
         let data_dir = unique_test_data_dir("inspect-managed-recovery");
         let cfg = sample_runtime_config(data_dir.clone());
         let expected = ManagedPostgresStartIntent::replica(
-            sample_replica_conninfo(),
+            sample_replica_conninfo()?,
             sample_password_standby_auth(&data_dir),
             Some("slot_a".to_string()),
         );
@@ -1399,14 +1408,13 @@ mod tests {
             .build()
     }
 
-    fn sample_replica_conninfo() -> PgConnInfo {
+    fn sample_replica_conninfo() -> Result<PgConnInfo, String> {
         sample_replica_conninfo_for_port(5432)
     }
 
-    fn sample_replica_conninfo_for_port(port: u16) -> PgConnInfo {
-        PgConnInfo {
-            host: "leader.internal".to_string(),
-            port,
+    fn sample_replica_conninfo_for_port(port: u16) -> Result<PgConnInfo, String> {
+        Ok(PgConnInfo {
+            target: tcp_connect_target("leader.internal", port)?,
             user: "replicator".to_string(),
             dbname: "postgres".to_string(),
             application_name: None,
@@ -1414,13 +1422,17 @@ mod tests {
             ssl_mode: PgSslMode::Prefer,
             ssl_root_cert: None,
             options: None,
-        }
+        })
     }
 
     fn sample_password_standby_auth(data_dir: &Path) -> ManagedStandbyAuth {
         ManagedStandbyAuth::PasswordPassfile {
             path: managed_standby_passfile_path(data_dir),
         }
+    }
+
+    fn tcp_connect_target(host: &str, port: u16) -> Result<PgConnectTarget, String> {
+        PgTcpTarget::new(host.to_string(), port).map(PgConnectTarget::Tcp)
     }
 
     fn append_to_file(path: &Path, contents: &str) -> Result<(), io::Error> {

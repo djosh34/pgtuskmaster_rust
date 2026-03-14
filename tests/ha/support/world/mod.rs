@@ -9,7 +9,7 @@ use std::{
 use cucumber::World;
 use pgtuskmaster_rust::{
     api::NodeState,
-    dcs::DcsMemberPostgresView,
+    dcs::MemberPostgresView,
     ha::types::{AuthorityProjection, PublicationState},
 };
 
@@ -1780,7 +1780,11 @@ fn create_fault_directories(root: &Path) -> Result<()> {
 }
 
 fn validate_seed_primary(status: &NodeState) -> Result<()> {
-    let discovered_member_count = status.dcs.members.len();
+    let discovered_member_count = status
+        .dcs
+        .cluster()
+        .map(|cluster| cluster.member_count())
+        .unwrap_or_default();
     if discovered_member_count != 1 {
         return Err(HarnessError::message(format!(
             "expected exactly one discovered member during bootstrap, observed {}; warnings={}",
@@ -1806,7 +1810,13 @@ fn format_bootstrap_warnings(status: &NodeState) -> String {
     if operator_visible_primary(status).is_none() {
         warnings.push("no_primary".to_string());
     }
-    if status.dcs.members.is_empty() {
+    if status
+        .dcs
+        .cluster()
+        .map(|cluster| cluster.member_count())
+        .unwrap_or_default()
+        == 0
+    {
         warnings.push("no_members".to_string());
     }
     if warnings.is_empty() {
@@ -1829,9 +1839,10 @@ fn operator_visible_primary(status: &NodeState) -> Option<String> {
 fn dcs_primary_members(status: &NodeState) -> Vec<String> {
     status
         .dcs
-        .members
-        .iter()
-        .filter(|(_member_id, slot)| matches!(slot.postgres, DcsMemberPostgresView::Primary(_)))
+        .cluster()
+        .into_iter()
+        .flat_map(|cluster| cluster.members())
+        .filter(|(_member_id, slot)| matches!(slot.postgres(), MemberPostgresView::Primary { .. }))
         .map(|(member_id, _slot)| member_id.0.clone())
         .collect::<Vec<_>>()
 }

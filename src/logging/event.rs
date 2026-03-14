@@ -83,41 +83,9 @@ pub(crate) struct DcsEventIdentity {
     pub(crate) member_id: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DcsCommandName {
-    AcquireLeadership,
-    ReleaseLeadership,
-    PublishSwitchover,
-    ClearSwitchover,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DcsEvent {
-    LocalMemberDeleteFailed {
-        identity: DcsEventIdentity,
-        error: String,
-    },
-    LocalMemberWriteFailed {
-        identity: DcsEventIdentity,
-        error: String,
-    },
-    WatchDrainFailed {
-        identity: DcsEventIdentity,
-        error: String,
-    },
-    WatchApplyHadErrors {
-        identity: DcsEventIdentity,
-        applied: usize,
-    },
     WatchRefreshFailed {
-        identity: DcsEventIdentity,
-        error: String,
-    },
-    SnapshotApplyHadErrors {
-        identity: DcsEventIdentity,
-        applied: usize,
-    },
-    SnapshotRefreshFailed {
         identity: DcsEventIdentity,
         error: String,
     },
@@ -125,22 +93,10 @@ pub(crate) enum DcsEvent {
         identity: DcsEventIdentity,
         error: String,
     },
-    StoreHealthTransition {
+    CoordinationModeTransition {
         identity: DcsEventIdentity,
-        store_healthy: bool,
-    },
-    TrustTransition {
-        identity: DcsEventIdentity,
-        previous: Option<crate::dcs::DcsTrust>,
-        next: crate::dcs::DcsTrust,
-    },
-    LocalLeaderReleaseFailed {
-        identity: DcsEventIdentity,
-        error: String,
-    },
-    CommandResponseDropped {
-        identity: DcsEventIdentity,
-        command: DcsCommandName,
+        previous: Option<crate::dcs::DcsMode>,
+        next: crate::dcs::DcsMode,
     },
 }
 
@@ -366,61 +322,6 @@ fn encode_runtime_event(origin: String, event: InternalEvent<RuntimeEvent>) -> E
 
 fn encode_dcs_event(origin: String, event: InternalEvent<DcsEvent>) -> EncodedRecord {
     match event.event {
-        DcsEvent::LocalMemberDeleteFailed { identity, error } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.local_member.delete_failed",
-                "dcs",
-                "failed",
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_string(&mut attributes, "error", error);
-            app_record(
-                origin,
-                event.severity,
-                "dcs local member delete failed",
-                attributes,
-            )
-        }
-        DcsEvent::LocalMemberWriteFailed { identity, error } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.local_member.write_failed",
-                "dcs",
-                "failed",
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_string(&mut attributes, "error", error);
-            app_record(
-                origin,
-                event.severity,
-                "dcs local member write failed",
-                attributes,
-            )
-        }
-        DcsEvent::WatchDrainFailed { identity, error } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.watch.drain_failed",
-                "dcs",
-                "failed",
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_string(&mut attributes, "error", error);
-            app_record(origin, event.severity, "dcs watch drain failed", attributes)
-        }
-        DcsEvent::WatchApplyHadErrors { identity, applied } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.watch.apply_had_errors",
-                "dcs",
-                "failed",
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_usize(&mut attributes, "applied", applied);
-            app_record(
-                origin,
-                event.severity,
-                "dcs watch refresh had errors",
-                attributes,
-            )
-        }
         DcsEvent::WatchRefreshFailed { identity, error } => {
             let mut attributes = internal_event_attributes(
                 "dcs.watch.refresh_failed",
@@ -430,31 +331,6 @@ fn encode_dcs_event(origin: String, event: InternalEvent<DcsEvent>) -> EncodedRe
             insert_dcs_identity(&mut attributes, &identity);
             insert_string(&mut attributes, "error", error);
             app_record(origin, event.severity, "dcs watch refresh failed", attributes)
-        }
-        DcsEvent::SnapshotApplyHadErrors { identity, applied } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.snapshot.apply_had_errors",
-                "dcs",
-                "failed",
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_usize(&mut attributes, "applied", applied);
-            app_record(
-                origin,
-                event.severity,
-                "dcs snapshot refresh had errors",
-                attributes,
-            )
-        }
-        DcsEvent::SnapshotRefreshFailed { identity, error } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.snapshot.refresh_failed",
-                "dcs",
-                "failed",
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_string(&mut attributes, "error", error);
-            app_record(origin, event.severity, "dcs snapshot refresh failed", attributes)
         }
         DcsEvent::SnapshotReadFailed { identity, error } => {
             let mut attributes = internal_event_attributes(
@@ -466,70 +342,27 @@ fn encode_dcs_event(origin: String, event: InternalEvent<DcsEvent>) -> EncodedRe
             insert_string(&mut attributes, "error", error);
             app_record(origin, event.severity, "dcs snapshot read failed", attributes)
         }
-        DcsEvent::StoreHealthTransition {
-            identity,
-            store_healthy,
-        } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.store.health_transition",
-                "dcs",
-                if store_healthy { "recovered" } else { "failed" },
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_bool(&mut attributes, "store_healthy", store_healthy);
-            app_record(
-                origin,
-                event.severity,
-                "dcs store health transition",
-                attributes,
-            )
-        }
-        DcsEvent::TrustTransition {
+        DcsEvent::CoordinationModeTransition {
             identity,
             previous,
             next,
         } => {
             let mut attributes =
-                internal_event_attributes("dcs.trust.transition", "dcs", "ok");
+                internal_event_attributes("dcs.coordination_mode.transition", "dcs", "ok");
             insert_dcs_identity(&mut attributes, &identity);
             insert_string(
                 &mut attributes,
-                "trust_prev",
+                "mode_prev",
                 previous
                     .as_ref()
-                    .map(dcs_trust_label)
+                    .map(dcs_mode_label)
                     .unwrap_or("unknown"),
             );
-            insert_string(&mut attributes, "trust_next", dcs_trust_label(&next));
-            app_record(origin, event.severity, "dcs trust transition", attributes)
-        }
-        DcsEvent::LocalLeaderReleaseFailed { identity, error } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.local_leader.release_failed",
-                "dcs",
-                "failed",
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_string(&mut attributes, "error", error);
+            insert_string(&mut attributes, "mode_next", dcs_mode_label(&next));
             app_record(
                 origin,
                 event.severity,
-                "dcs local leader release failed",
-                attributes,
-            )
-        }
-        DcsEvent::CommandResponseDropped { identity, command } => {
-            let mut attributes = internal_event_attributes(
-                "dcs.command.response_dropped",
-                "dcs",
-                "failed",
-            );
-            insert_dcs_identity(&mut attributes, &identity);
-            insert_string(&mut attributes, "command", dcs_command_name_label(command));
-            app_record(
-                origin,
-                event.severity,
-                "dcs command response receiver dropped",
+                "dcs coordination mode transition",
                 attributes,
             )
         }
@@ -1032,20 +865,11 @@ fn log_level_label(level: crate::config::LogLevel) -> &'static str {
     }
 }
 
-fn dcs_trust_label(trust: &crate::dcs::DcsTrust) -> &'static str {
-    match trust {
-        crate::dcs::DcsTrust::FullQuorum => "full_quorum",
-        crate::dcs::DcsTrust::Degraded => "degraded",
-        crate::dcs::DcsTrust::NotTrusted => "not_trusted",
-    }
-}
-
-fn dcs_command_name_label(command: DcsCommandName) -> &'static str {
-    match command {
-        DcsCommandName::AcquireLeadership => "acquire_leadership",
-        DcsCommandName::ReleaseLeadership => "release_leadership",
-        DcsCommandName::PublishSwitchover => "publish_switchover",
-        DcsCommandName::ClearSwitchover => "clear_switchover",
+fn dcs_mode_label(mode: &crate::dcs::DcsMode) -> &'static str {
+    match mode {
+        crate::dcs::DcsMode::Coordinated => "coordinated",
+        crate::dcs::DcsMode::Degraded => "degraded",
+        crate::dcs::DcsMode::NotTrusted => "not_trusted",
     }
 }
 

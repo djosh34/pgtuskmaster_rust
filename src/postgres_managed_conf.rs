@@ -404,7 +404,10 @@ fn render_conninfo_value(value: &str) -> String {
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
-    use crate::pginfo::state::{PgConnInfo, PgSslMode};
+    use crate::{
+        pginfo::state::{PgConnInfo, PgSslMode},
+        state::{PgConnectTarget, PgTcpTarget},
+    };
 
     use super::{
         managed_standby_passfile_path, render_managed_postgres_conf, validate_extra_guc_entry,
@@ -413,8 +416,8 @@ mod tests {
         MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_STANDBY_PASSFILE_NAME,
     };
 
-    fn sample_conf() -> ManagedPostgresConf {
-        ManagedPostgresConf {
+    fn sample_conf() -> Result<ManagedPostgresConf, String> {
+        Ok(ManagedPostgresConf {
             listen_addresses: "127.0.0.1".to_string(),
             port: 5432,
             unix_socket_directories: PathBuf::from("/tmp/pgtm socket"),
@@ -427,8 +430,10 @@ mod tests {
             },
             start_intent: ManagedPostgresStartIntent::replica(
                 PgConnInfo {
-                    host: "leader.internal".to_string(),
-                    port: 5432,
+                    target: PgConnectTarget::Tcp(PgTcpTarget::new(
+                        "leader.internal".to_string(),
+                        5432,
+                    )?),
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: Some("node-b".to_string()),
@@ -454,14 +459,14 @@ mod tests {
                     "pg_stat_statements".to_string(),
                 ),
             ]),
-        }
+        })
     }
 
     #[test]
     fn render_managed_postgres_conf_is_deterministic() -> Result<(), String> {
-        let a = render_managed_postgres_conf(&sample_conf())
+        let a = render_managed_postgres_conf(&sample_conf()?)
             .map_err(|err| format!("render failed: {err}"))?;
-        let b = render_managed_postgres_conf(&sample_conf())
+        let b = render_managed_postgres_conf(&sample_conf()?)
             .map_err(|err| format!("render failed: {err}"))?;
         assert_eq!(a, b);
         Ok(())
@@ -469,7 +474,7 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_keeps_owned_settings_before_extra_gucs() -> Result<(), String> {
-        let rendered = render_managed_postgres_conf(&sample_conf())
+        let rendered = render_managed_postgres_conf(&sample_conf()?)
             .map_err(|err| format!("render failed: {err}"))?;
         let primary_slot_index = rendered
             .find("primary_slot_name =")
@@ -487,7 +492,7 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_sorts_extra_gucs() -> Result<(), String> {
-        let rendered = render_managed_postgres_conf(&sample_conf())
+        let rendered = render_managed_postgres_conf(&sample_conf()?)
             .map_err(|err| format!("render failed: {err}"))?;
         let first = rendered
             .find("log_line_prefix =")
@@ -505,7 +510,7 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_quotes_and_escapes_string_values() -> Result<(), String> {
-        let rendered = render_managed_postgres_conf(&sample_conf())
+        let rendered = render_managed_postgres_conf(&sample_conf()?)
             .map_err(|err| format!("render failed: {err}"))?;
         if !rendered.contains("unix_socket_directories = '/tmp/pgtm socket'") {
             return Err(format!(
@@ -529,7 +534,7 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_renders_booleans_and_replica_fields() -> Result<(), String> {
-        let rendered = render_managed_postgres_conf(&sample_conf())
+        let rendered = render_managed_postgres_conf(&sample_conf()?)
             .map_err(|err| format!("render failed: {err}"))?;
         if !rendered.starts_with(MANAGED_POSTGRESQL_CONF_HEADER) {
             return Err(format!("missing managed header: {rendered}"));
@@ -555,7 +560,7 @@ mod tests {
     #[test]
     fn render_managed_postgres_conf_renders_primary_without_replica_only_fields(
     ) -> Result<(), String> {
-        let mut conf = sample_conf();
+        let mut conf = sample_conf()?;
         conf.tls = ManagedPostgresTlsConfig::Disabled;
         conf.start_intent = ManagedPostgresStartIntent::Primary;
         let rendered =
@@ -577,7 +582,7 @@ mod tests {
     #[test]
     fn render_managed_postgres_conf_renders_detached_standby_without_source_fields(
     ) -> Result<(), String> {
-        let mut conf = sample_conf();
+        let mut conf = sample_conf()?;
         conf.start_intent = ManagedPostgresStartIntent::detached_standby();
         let rendered =
             render_managed_postgres_conf(&conf).map_err(|err| format!("render failed: {err}"))?;
@@ -593,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_start_intent_tracks_recovery_signal_state() {
+    fn managed_start_intent_tracks_recovery_signal_state() -> Result<(), String> {
         assert_eq!(
             ManagedPostgresStartIntent::primary().recovery_signal(),
             ManagedRecoverySignal::None
@@ -603,14 +608,16 @@ mod tests {
             ManagedRecoverySignal::Standby
         );
         assert_eq!(
-            sample_conf().start_intent.recovery_signal(),
+            sample_conf()?.start_intent.recovery_signal(),
             ManagedRecoverySignal::Standby
         );
         assert_eq!(
             ManagedPostgresStartIntent::recovery(
                 PgConnInfo {
-                    host: "leader.internal".to_string(),
-                    port: 5432,
+                    target: PgConnectTarget::Tcp(PgTcpTarget::new(
+                        "leader.internal".to_string(),
+                        5432,
+                    )?),
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
@@ -628,6 +635,7 @@ mod tests {
             .recovery_signal(),
             ManagedRecoverySignal::Recovery
         );
+        Ok(())
     }
 
     #[test]

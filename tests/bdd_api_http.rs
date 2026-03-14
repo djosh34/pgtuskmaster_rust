@@ -2,9 +2,8 @@ use axum::{
     body::Body,
     http::{Method, Request, StatusCode},
 };
-use pgtuskmaster_rust::{
-    config::{ApiAuthConfig, ApiRoleTokensConfig, RuntimeConfig, SecretSource},
-    dcs::DcsHandle,
+use pgtuskmaster_rust::config::{
+    ApiAuthConfig, ApiRoleTokensConfig, RuntimeConfig, SecretSource,
 };
 use pgtuskmaster_test_support::api::{build_test_router, build_test_router_with_live_state};
 use tower::util::ServiceExt;
@@ -38,7 +37,7 @@ fn request(method: Method, uri: &str, bearer_token: Option<&str>) -> Result<Requ
 
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_state_requires_live_state_subscribers() -> Result<(), String> {
-    let app = build_test_router(sample_runtime_config(None, None), DcsHandle::closed())
+    let app = build_test_router(sample_runtime_config(None, None))
         .map_err(|err| err.to_string())?;
 
     let response = app
@@ -52,7 +51,7 @@ async fn bdd_api_state_requires_live_state_subscribers() -> Result<(), String> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_old_debug_and_fallback_routes_are_gone() -> Result<(), String> {
-    let app = build_test_router(sample_runtime_config(None, None), DcsHandle::closed())
+    let app = build_test_router(sample_runtime_config(None, None))
         .map_err(|err| err.to_string())?;
 
     let debug_response = app
@@ -74,7 +73,6 @@ async fn bdd_api_old_debug_and_fallback_routes_are_gone() -> Result<(), String> 
 async fn bdd_api_auth_token_denies_missing_header() -> Result<(), String> {
     let app = build_test_router(
         sample_runtime_config(Some("reader"), Some("admin")),
-        DcsHandle::closed(),
     )
     .map_err(|err| err.to_string())?;
 
@@ -91,7 +89,6 @@ async fn bdd_api_auth_token_denies_missing_header() -> Result<(), String> {
 async fn bdd_api_auth_token_denies_invalid_header() -> Result<(), String> {
     let app = build_test_router(
         sample_runtime_config(Some("reader"), Some("admin")),
-        DcsHandle::closed(),
     )
     .map_err(|err| err.to_string())?;
 
@@ -107,7 +104,7 @@ async fn bdd_api_auth_token_denies_invalid_header() -> Result<(), String> {
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_state_succeeds_with_live_subscribers() -> Result<(), String> {
     let app =
-        build_test_router_with_live_state(sample_runtime_config(None, None), DcsHandle::closed())
+        build_test_router_with_live_state(sample_runtime_config(None, None))
             .map_err(|err| err.to_string())?;
 
     let response = app
@@ -123,7 +120,6 @@ async fn bdd_api_state_succeeds_with_live_subscribers() -> Result<(), String> {
 async fn bdd_api_read_token_can_read_but_not_call_admin_routes() -> Result<(), String> {
     let app = build_test_router_with_live_state(
         sample_runtime_config(Some("reader"), Some("admin")),
-        DcsHandle::closed(),
     )
     .map_err(|err| err.to_string())?;
 

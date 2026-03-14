@@ -34,6 +34,7 @@
     - [Failure Modes and Recovery Behavior](explanation/failure-modes.md)
     - [HA Decision Engine](explanation/ha-decision-engine.md)
     - [Process Management and Execution Domain](explanation/process-management.md)
+    - [Trust Model and DCS Coordination Modes](explanation/trust-model.md)
 
 # Reference
 

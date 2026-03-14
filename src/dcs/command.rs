@@ -1,36 +1,27 @@
-use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
-use super::state::DcsSwitchoverTargetView;
+use crate::state::{MemberId, SwitchoverTarget};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DcsCommand {
+pub(crate) enum DcsCommand {
     AcquireLeadership,
     ReleaseLeadership,
-    PublishSwitchover { target: DcsSwitchoverTargetView },
+    PublishSwitchoverAny,
+    PublishSwitchoverTo(MemberId),
     ClearSwitchover,
 }
 
 #[derive(Clone)]
-pub struct DcsHandle {
-    sender: mpsc::UnboundedSender<DcsCommandRequest>,
+pub(crate) struct DcsHandle {
+    sender: mpsc::UnboundedSender<DcsCommand>,
 }
 
-pub(crate) struct DcsCommandRequest {
-    pub(crate) command: DcsCommand,
-    pub(crate) response_tx: oneshot::Sender<Result<(), DcsCommandError>>,
-}
+pub(crate) type DcsCommandInbox = mpsc::UnboundedReceiver<DcsCommand>;
 
-pub(crate) type DcsCommandInbox = mpsc::UnboundedReceiver<DcsCommandRequest>;
-
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum DcsCommandError {
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub(crate) enum DcsHandleError {
     #[error("dcs command channel closed")]
     ChannelClosed,
-    #[error("dcs command rejected: {0}")]
-    Rejected(String),
-    #[error("dcs command transport failed: {0}")]
-    Transport(String),
 }
 
 pub(crate) fn dcs_command_channel() -> (DcsHandle, DcsCommandInbox) {
@@ -39,41 +30,46 @@ pub(crate) fn dcs_command_channel() -> (DcsHandle, DcsCommandInbox) {
 }
 
 impl DcsHandle {
-    pub fn closed() -> Self {
+    #[cfg(any(test, feature = "internal-test-support"))]
+    pub(crate) fn closed() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
         drop(receiver);
         Self { sender }
     }
 
-    pub async fn acquire_leadership(&self) -> Result<(), DcsCommandError> {
-        self.send(DcsCommand::AcquireLeadership).await
+    pub(crate) fn acquire_leadership(&self) -> Result<(), DcsHandleError> {
+        self.send(DcsCommand::AcquireLeadership)
     }
 
-    pub async fn release_leadership(&self) -> Result<(), DcsCommandError> {
-        self.send(DcsCommand::ReleaseLeadership).await
+    pub(crate) fn release_leadership(&self) -> Result<(), DcsHandleError> {
+        self.send(DcsCommand::ReleaseLeadership)
     }
 
-    pub async fn publish_switchover(
+    pub(crate) fn publish_switchover_any(&self) -> Result<(), DcsHandleError> {
+        self.send(DcsCommand::PublishSwitchoverAny)
+    }
+
+    pub(crate) fn publish_switchover_to(&self, target: MemberId) -> Result<(), DcsHandleError> {
+        self.send(DcsCommand::PublishSwitchoverTo(target))
+    }
+
+    pub(crate) fn publish_switchover(
         &self,
-        target: DcsSwitchoverTargetView,
-    ) -> Result<(), DcsCommandError> {
-        self.send(DcsCommand::PublishSwitchover { target }).await
+        target: SwitchoverTarget,
+    ) -> Result<(), DcsHandleError> {
+        match target {
+            SwitchoverTarget::AnyHealthyReplica => self.publish_switchover_any(),
+            SwitchoverTarget::Specific(member_id) => self.publish_switchover_to(member_id),
+        }
     }
 
-    pub async fn clear_switchover(&self) -> Result<(), DcsCommandError> {
-        self.send(DcsCommand::ClearSwitchover).await
+    pub(crate) fn clear_switchover(&self) -> Result<(), DcsHandleError> {
+        self.send(DcsCommand::ClearSwitchover)
     }
 
-    async fn send(&self, command: DcsCommand) -> Result<(), DcsCommandError> {
-        let (response_tx, response_rx) = oneshot::channel();
+    fn send(&self, command: DcsCommand) -> Result<(), DcsHandleError> {
         self.sender
-            .send(DcsCommandRequest {
-                command,
-                response_tx,
-            })
-            .map_err(|_| DcsCommandError::ChannelClosed)?;
-        response_rx
-            .await
-            .map_err(|err| DcsCommandError::Transport(err.to_string()))?
+            .send(command)
+            .map_err(|_| DcsHandleError::ChannelClosed)
     }
 }

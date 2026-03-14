@@ -4,22 +4,20 @@ use crate::{
     config::{DcsClientConfig, DcsEndpoint, RuntimeConfig},
     logging::LogHandle,
     pginfo::state::PgInfoState,
-    state::{new_state_channel, NodeIdentity, StateSubscriber, WorkerError},
+    state::{new_state_channel, NodeIdentity, PgTcpTarget, StateSubscriber, WorkerError},
 };
 
 use super::{
-    command::DcsHandle,
     state::{
-        DcsApiAdvertisement, DcsCadence, DcsLocalMemberAdvertisement, DcsNodeIdentity,
+        DcsCadence, DcsEtcdConfig, DcsLocalMemberAdvertisement, DcsNodeIdentity,
         DcsObservedState, DcsRuntime as DcsWorkerRuntime, DcsStateChannel, DcsView,
     },
-    store::DcsStoreError,
-    worker::{DcsStoreBootstrap, DcsWorkerBootstrap},
+    worker::{DcsError, DcsWorkerBootstrap},
+    DcsHandle,
 };
 
 pub(crate) struct DcsAdvertisedEndpoints {
-    pub(crate) postgres: crate::dcs::DcsMemberEndpointView,
-    pub(crate) api: Option<crate::dcs::DcsMemberApiView>,
+    pub(crate) postgres: PgTcpTarget,
 }
 
 pub(crate) struct DcsRuntimeRequest {
@@ -42,37 +40,15 @@ pub(crate) struct DcsRuntime {
 pub(crate) struct DcsWorker(super::state::DcsWorkerCtx);
 
 impl DcsAdvertisedEndpoints {
-    pub(crate) fn from_config(cfg: &RuntimeConfig) -> Self {
-        let api = if let Some(api_url) = cfg.pgtm.as_ref().and_then(|pgtm| {
-            pgtm.api
-                .advertised_url
-                .clone()
-                .or_else(|| pgtm.api.base_url.clone())
-        }) {
-            Some(crate::dcs::DcsMemberApiView { url: api_url })
-        } else if cfg.api.listen_addr.ip().is_unspecified() {
-            None
-        } else {
-            let scheme = match cfg.api.transport {
-                crate::config::ApiTransportConfig::Http => "http",
-                crate::config::ApiTransportConfig::Https { .. } => "https",
-            };
-            Some(crate::dcs::DcsMemberApiView {
-                url: format!("{scheme}://{}", cfg.api.listen_addr),
-            })
-        };
-
-        Self {
-            postgres: crate::dcs::DcsMemberEndpointView {
-                host: cfg.postgres.network.listen_host.clone(),
-                port: cfg
-                    .postgres
-                    .network
-                    .advertise_port
-                    .unwrap_or(cfg.postgres.network.listen_port),
-            },
-            api,
-        }
+    pub(crate) fn from_config(cfg: &RuntimeConfig) -> Result<Self, DcsError> {
+        let advertise_port = cfg
+            .postgres
+            .network
+            .advertise_port
+            .unwrap_or(cfg.postgres.network.listen_port);
+        let postgres = PgTcpTarget::new(cfg.postgres.network.listen_host.clone(), advertise_port)
+            .map_err(DcsError::Io)?;
+        Ok(Self { postgres })
     }
 }
 
@@ -82,14 +58,14 @@ impl DcsWorker {
     }
 }
 
-pub(crate) fn bootstrap(request: DcsRuntimeRequest) -> Result<DcsRuntime, DcsStoreError> {
+pub(crate) fn bootstrap(request: DcsRuntimeRequest) -> Result<DcsRuntime, DcsError> {
     let (publisher, state) = new_state_channel(DcsView::starting());
     let (ctx, handle) = super::worker::build_worker_ctx(DcsWorkerBootstrap {
         identity: DcsNodeIdentity {
             self_id: request.identity.member_id,
             scope: request.identity.scope.0,
         },
-        store: DcsStoreBootstrap {
+        etcd: DcsEtcdConfig {
             endpoints: request.endpoints,
             client: request.client,
         },
@@ -99,11 +75,6 @@ pub(crate) fn bootstrap(request: DcsRuntimeRequest) -> Result<DcsRuntime, DcsSto
         },
         advertisement: DcsLocalMemberAdvertisement {
             postgres: request.advertised.postgres,
-            api: request
-                .advertised
-                .api
-                .map(DcsApiAdvertisement::Advertised)
-                .unwrap_or(DcsApiAdvertisement::NotAdvertised),
         },
         observed: DcsObservedState {
             pg: request.pg_subscriber,
@@ -111,10 +82,9 @@ pub(crate) fn bootstrap(request: DcsRuntimeRequest) -> Result<DcsRuntime, DcsSto
         state_channel: DcsStateChannel::new(publisher),
         runtime: DcsWorkerRuntime {
             log: request.log,
-            last_emitted_store_healthy: None,
-            last_emitted_trust: None,
+            last_emitted_mode: None,
         },
-    })?;
+    });
 
     Ok(DcsRuntime {
         state,

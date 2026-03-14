@@ -1,17 +1,18 @@
 use std::cmp::Ordering;
 
-use crate::{dcs::DcsTrust, state::MemberId};
+use crate::{dcs::DcsMode, state::MemberId};
 
 use super::types::{
     ApiVisibility, AuthorityProjection, Candidacy, DesiredState, ElectionEligibility, FailSafeGoal,
-    FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeadershipView, LeaseEpoch,
+    FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeadershipView,
     LocalDataState, NoPrimaryFence, NoPrimaryProjection, PeerKnowledge, PeerLeaderState,
     PostgresState, ProcessState, PublicationGoal, PublicationState, RecoveryPlan, StorageState,
-    SwitchoverState, SwitchoverTarget, TargetRole, WalPosition, WorldView,
+    SwitchoverState, TargetRole, WalPosition, WorldView,
 };
+use crate::state::{LeaseEpoch, SwitchoverTarget};
 
 pub(crate) fn decide(world: &WorldView, self_id: &MemberId) -> DesiredState {
-    if !matches!(world.global.coordination.trust, DcsTrust::FullQuorum) {
+    if world.global.coordination.mode != DcsMode::Coordinated {
         return decide_degraded(world);
     }
 
@@ -260,6 +261,8 @@ fn follow_goal(world: &WorldView, leader: MemberId) -> FollowGoal {
             super::types::DivergenceState::RewindPossible => {
                 if rewind_failed_and_requires_basebackup(&world.local.process) {
                     RecoveryPlan::Basebackup
+                } else if world.local.observation.basebackup_completed_awaiting_start() {
+                    RecoveryPlan::StartStreaming
                 } else {
                     RecoveryPlan::Rewind
                 }
@@ -517,18 +520,18 @@ mod tests {
 
     use super::{best_failover_candidate, decide};
     use crate::{
-        dcs::DcsTrust,
-        state::{MemberId, UnixMillis},
+        dcs::DcsMode,
+        state::{LeaseEpoch, MemberId, SwitchoverTarget, UnixMillis},
     };
 
     use super::super::types::{
         ApiVisibility, AuthorityProjection, Candidacy, CoordinationState, DataDirState,
-        DesiredState, ElectionEligibility, GlobalKnowledge, IdleReason, IneligibleReason,
-        LeadershipView, LeaseEpoch, LocalDataState, LocalKnowledge, NoPrimaryFence,
-        NoPrimaryProjection, ObservationState, ObservedPrimary, PeerKnowledge, PostgresState,
-        PrimaryObservation, ProcessState, PublicationGoal, PublicationState, ReplicationState,
-        StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget, TargetRole,
-        WalPosition, WorldView,
+        DesiredState, DivergenceState, ElectionEligibility, FollowGoal, GlobalKnowledge,
+        IdleReason, IneligibleReason, LeadershipView, LocalDataState, LocalKnowledge,
+        NoPrimaryFence, NoPrimaryProjection, ObservationState, ObservedPrimary, PeerKnowledge,
+        PeerLeaderState, PostgresState, PrimaryObservation, ProcessState, PublicationGoal,
+        PublicationState, RecoveryPlan, ReplicationState, StorageState, SwitchoverRequest,
+        SwitchoverState, TargetRole, WalPosition, WorldView,
     };
 
     fn promote_peer(lsn: u64) -> PeerKnowledge {
@@ -543,7 +546,7 @@ mod tests {
             local,
             global: GlobalKnowledge {
                 coordination: CoordinationState {
-                    trust: DcsTrust::FullQuorum,
+                    mode: DcsMode::Coordinated,
                     leadership: LeadershipView::Open,
                     primary: PrimaryObservation::Absent,
                 },
@@ -603,6 +606,7 @@ mod tests {
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
                     last_start_success_at: None,
+                    last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
                 },
@@ -643,6 +647,7 @@ mod tests {
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
                     last_start_success_at: None,
+                    last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
                 },
@@ -662,6 +667,46 @@ mod tests {
     }
 
     #[test]
+    fn basebackup_success_on_diverged_data_transitions_to_start_streaming() {
+        let self_id = MemberId("node-b".to_string());
+        let mut world = world(
+            LocalKnowledge {
+                data_dir: DataDirState::Initialized(LocalDataState::Diverged(
+                    DivergenceState::RewindPossible,
+                )),
+                postgres: PostgresState::Offline,
+                process: ProcessState::Idle,
+                storage: StorageState::Healthy,
+                managed_roles_reconciled: false,
+                publication: PublicationState::unknown(),
+                observation: ObservationState {
+                    pg_observed_at: UnixMillis(100),
+                    last_start_success_at: Some(UnixMillis(10)),
+                    last_basebackup_success_at: Some(UnixMillis(20)),
+                    last_promote_success_at: None,
+                    last_demote_success_at: None,
+                },
+            },
+            promote_peer(42),
+        );
+        world.global.coordination.leadership = LeadershipView::HeldByPeer {
+            epoch: LeaseEpoch {
+                holder: MemberId("node-a".to_string()),
+                generation: 7,
+            },
+            state: PeerLeaderState::PrimaryReady,
+        };
+
+        assert_eq!(
+            decide(&world, &self_id).role,
+            TargetRole::Follower(FollowGoal {
+                leader: MemberId("node-a".to_string()),
+                recovery: RecoveryPlan::StartStreaming,
+            })
+        );
+    }
+
+    #[test]
     fn idle_when_no_leader_no_candidate_and_no_switchover() {
         let self_id = MemberId("node-a".to_string());
         let world = world(
@@ -675,6 +720,7 @@ mod tests {
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
                     last_start_success_at: None,
+                    last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
                 },
@@ -705,6 +751,7 @@ mod tests {
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
                     last_start_success_at: None,
+                    last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
                 },
@@ -766,6 +813,7 @@ mod tests {
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
                     last_start_success_at: None,
+                    last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
                 },

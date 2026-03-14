@@ -7,7 +7,7 @@ use std::{
 use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
     api::NodeState,
-    dcs::{DcsMemberPostgresView, DcsMemberView, DcsTrust},
+    dcs::{ClusterMemberView, DcsMode, MemberPostgresView},
     ha::types::{AuthorityProjection, PublicationState, TargetRole},
     pginfo::state::Readiness,
 };
@@ -1577,11 +1577,10 @@ fn single_primary(status: &NodeState) -> Result<ClusterMember> {
 fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
     status
         .dcs
-        .members
-        .iter()
-        .filter(|(_member_id, member)| {
-            matches!(&member.postgres, DcsMemberPostgresView::Replica(_))
-        })
+        .cluster()
+        .into_iter()
+        .flat_map(|cluster| cluster.members())
+        .filter(|(_member_id, member)| matches!(member.postgres(), MemberPostgresView::Replica { .. }))
         .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
 }
@@ -1589,8 +1588,9 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
 fn operator_visible_member_ids(status: &NodeState) -> Vec<ClusterMember> {
     status
         .dcs
-        .members
-        .keys()
+        .cluster()
+        .into_iter()
+        .flat_map(|cluster| cluster.member_ids())
         .filter_map(|member_id| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
 }
@@ -1605,29 +1605,35 @@ fn assert_member_is_replica_via_member(
     harness.record_status_snapshot(snapshot_label.as_str(), &status)?;
     require_visible_members(&status, expected_online)?;
     let primary = single_primary(&status)?;
-    let member_status = status.dcs.members.get(&member.member_id()).ok_or_else(|| {
-        HarnessError::message(format!("member `{member}` is not present in status"))
-    })?;
+    let member_status = status
+        .dcs
+        .cluster()
+        .and_then(|cluster| cluster.member(&member.member_id()))
+        .ok_or_else(|| HarnessError::message(format!("member `{member}` is not present in status")))?;
     if member == primary {
         return Err(HarnessError::message(format!(
             "member `{member}` is still the primary instead of a replica"
         )));
     }
-    match &member_status.postgres {
-        DcsMemberPostgresView::Replica(_) => Ok(()),
-        DcsMemberPostgresView::Unknown(_) => {
+    match member_status.postgres() {
+        MemberPostgresView::Replica { .. } => Ok(()),
+        MemberPostgresView::Unknown { .. } => {
             Err(HarnessError::message(format!(
                 "member `{member}` role remained `unknown`; HA role assertions must come directly from NodeState"
             )))
         }
-        DcsMemberPostgresView::Primary(_) => Err(HarnessError::message(format!(
+        MemberPostgresView::Primary { .. } => Err(HarnessError::message(format!(
             "member `{member}` role is `primary` instead of `replica`"
         ))),
     }
 }
 
 fn require_visible_members(status: &NodeState, expected: usize) -> Result<()> {
-    let visible = status.dcs.members.len();
+    let visible = status
+        .dcs
+        .cluster()
+        .map(|cluster| cluster.member_count())
+        .unwrap_or_default();
     if visible >= expected {
         return Ok(());
     }
@@ -1655,8 +1661,8 @@ fn require_no_authoritative_primary(status: &NodeState) -> Result<()> {
 
 fn format_warnings(status: &NodeState) -> String {
     let mut warnings = Vec::new();
-    if status.dcs.trust != DcsTrust::FullQuorum {
-        warnings.push(format!("dcs_trust={:?}", status.dcs.trust).to_lowercase());
+    if status.dcs.mode() != DcsMode::Coordinated {
+        warnings.push(format!("dcs_mode={:?}", status.dcs.mode()).to_lowercase());
     }
     if !matches!(
         status.ha.publication,
@@ -1664,7 +1670,13 @@ fn format_warnings(status: &NodeState) -> String {
     ) {
         warnings.push(format!("authority={}", format_authority(status)));
     }
-    if status.dcs.members.is_empty() {
+    if status
+        .dcs
+        .cluster()
+        .map(|cluster| cluster.member_count())
+        .unwrap_or_default()
+        == 0
+    {
         warnings.push("no_members".to_string());
     }
     if warnings.is_empty() {
@@ -2277,13 +2289,16 @@ async fn wait_for_targeted_switchover_rejection_precondition(
             let harness = world.harness()?;
             let status = harness.observer().state_via_member(seed_member)?;
             harness.record_status_snapshot("switchover.rejected.precondition", &status)?;
-            let maybe_target = status.dcs.members.get(&target_member.member_id());
+            let maybe_target = status
+                .dcs
+                .cluster()
+                .and_then(|cluster| cluster.member(&target_member.member_id()));
             match maybe_target {
                 None => Ok(()),
                 Some(member) if !member_slot_is_api_switchover_eligible(member) => Ok(()),
                 Some(member) => Err(HarnessError::message(format!(
                     "target `{target_member}` is still promotion-eligible via `{seed_member}` with postgres state {:?}",
-                    member.postgres
+                    member.postgres()
                 ))),
             }
         })();
@@ -2344,8 +2359,9 @@ fn select_planned_switchover_target(
 ) -> Option<ClusterMember> {
     status
         .dcs
-        .members
-        .iter()
+        .cluster()
+        .into_iter()
+        .flat_map(|cluster| cluster.members())
         .filter_map(|(member_id, member_view)| {
             ClusterMember::parse(member_id.0.as_str())
                 .ok()
@@ -2361,12 +2377,15 @@ fn select_planned_switchover_target(
         .map(|(member, _)| member)
 }
 
-fn planned_switchover_target_rank(member: &DcsMemberView) -> (u8, u64, u64) {
-    match &member.postgres {
-        DcsMemberPostgresView::Replica(observation) => observation
-            .replay_wal
+fn planned_switchover_target_rank(member: &ClusterMemberView) -> (u8, u64, u64) {
+    match member.postgres() {
+        MemberPostgresView::Replica {
+            replay_wal,
+            follow_wal,
+            ..
+        } => replay_wal
             .as_ref()
-            .or(observation.follow_wal.as_ref())
+            .or(follow_wal.as_ref())
             .map(|wal| {
                 (
                     1,
@@ -2375,22 +2394,18 @@ fn planned_switchover_target_rank(member: &DcsMemberView) -> (u8, u64, u64) {
                 )
             })
             .unwrap_or((0, 0, 0)),
-        DcsMemberPostgresView::Unknown(observation) => (
-            0,
-            observation
-                .timeline
-                .map_or(0, |timeline| u64::from(timeline.0)),
-            0,
-        ),
-        DcsMemberPostgresView::Primary(_) => (0, 0, 0),
+        MemberPostgresView::Unknown { timeline, .. } => {
+            (0, timeline.map_or(0, |timeline| u64::from(timeline.0)), 0)
+        }
+        MemberPostgresView::Primary { .. } => (0, 0, 0),
     }
 }
 
-fn member_slot_is_api_switchover_eligible(member: &DcsMemberView) -> bool {
-    match &member.postgres {
-        DcsMemberPostgresView::Primary(_) => false,
-        DcsMemberPostgresView::Unknown(observation) => observation.readiness == Readiness::Ready,
-        DcsMemberPostgresView::Replica(observation) => observation.readiness == Readiness::Ready,
+fn member_slot_is_api_switchover_eligible(member: &ClusterMemberView) -> bool {
+    match member.postgres() {
+        MemberPostgresView::Primary { .. } => false,
+        MemberPostgresView::Unknown { readiness, .. } => readiness == &Readiness::Ready,
+        MemberPostgresView::Replica { readiness, .. } => readiness == &Readiness::Ready,
     }
 }
 

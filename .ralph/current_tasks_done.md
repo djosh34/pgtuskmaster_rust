@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 06:16:50 PM CET 2026
+Generated: Sat Mar 14 08:19:21 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -150,6 +150,17 @@ Generated: Sat Mar 14 06:16:50 PM CET 2026
 <priority>high</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-dcs-simplification/01-task-rewrite-dcs-as-one-private-async-actor-with-one-public-opaque-view.md`
+
+```
+## Task: Rewrite DCS As One Private Async Actor With One Public `DcsView` <status>completed</status> <passes>true</passes>
+
+<description>
+**Goal:** Rewrite the DCS subsystem so it has exactly one owning async loop, exactly one etcd client/session owner, zero `Arc`/`Mutex` inside the production DCS path, one public read-only serde `DcsView`, and one crate-private typed command handle (`DcsHandle`) for mutation. The higher-order goal is to turn DCS into a small, private coordination domain instead of a collection of storage-shaped types, bridge layers, and leaked implementation details. This is a deliberate simplification task, not a privacy-only wrapper task: the end state must remove code, remove representations, and remove synchronization primitives that only exist because the current design split ownership badly.
 ```
 
 ==============

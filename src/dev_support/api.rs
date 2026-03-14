@@ -8,7 +8,6 @@ use crate::{
         ApiObservedState, ApiReloadCertificatesHandle, ApiServerCtx, ApiServingPlan,
     },
     config::RuntimeConfig,
-    dcs::DcsHandle,
     ha::state::HaState,
     logging::LogHandle,
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
@@ -18,26 +17,18 @@ use crate::{
 
 use super::HarnessError;
 
-pub fn build_test_router(
-    cfg: RuntimeConfig,
-    dcs_handle: DcsHandle,
-) -> Result<Router, HarnessError> {
-    build_test_router_with_state(cfg, dcs_handle, ApiObservedState::Unavailable)
+pub fn build_test_router(cfg: RuntimeConfig) -> Result<Router, HarnessError> {
+    build_test_router_with_state(cfg, ApiObservedState::Unavailable)
 }
 
-pub fn build_test_router_with_live_state(
-    cfg: RuntimeConfig,
-    dcs_handle: DcsHandle,
-) -> Result<Router, HarnessError> {
+pub fn build_test_router_with_live_state(cfg: RuntimeConfig) -> Result<Router, HarnessError> {
     let (_pg_publisher, pg) = new_state_channel(sample_pg_state());
     let (_process_publisher, process) = new_state_channel(sample_process_state());
-    let (_dcs_publisher, dcs) =
-        new_state_channel(crate::dcs::DcsView::empty(WorkerStatus::Running));
+    let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsView::starting());
     let (_ha_publisher, ha) = new_state_channel(HaState::initial(WorkerStatus::Running));
 
     build_test_router_with_state(
         cfg,
-        dcs_handle,
         ApiObservedState::Live {
             pg,
             process,
@@ -49,7 +40,6 @@ pub fn build_test_router_with_live_state(
 
 fn build_test_router_with_state(
     cfg: RuntimeConfig,
-    dcs_handle: DcsHandle,
     observed: ApiObservedState,
 ) -> Result<Router, HarnessError> {
     let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
@@ -64,7 +54,7 @@ fn build_test_router_with_state(
         observed,
         control: ApiControlPlane {
             runtime_config,
-            dcs_handle,
+            dcs_handle: crate::dcs::DcsHandle::closed(),
         },
         serving: ApiServingPlan {
             bind: ApiBindConfig::listen(cfg.api.listen_addr),

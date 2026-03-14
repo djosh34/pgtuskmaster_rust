@@ -7,7 +7,8 @@ pub use super::conninfo::{PgConnInfo, PgSslMode};
 use super::query::PgPollData;
 use crate::state::StatePublisher;
 use crate::state::{
-    MemberId, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerError, WorkerStatus,
+    MemberId, PgConnectTarget, PgUnixTarget, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
+    WorkerError, WorkerStatus,
 };
 use crate::{config::RuntimeConfig, logging::LogHandle, process::state::ProcessRuntimePlan};
 
@@ -208,8 +209,9 @@ impl PgProbeTarget {
     pub(crate) fn to_conninfo(&self) -> PgConnInfo {
         match self {
             Self::Local(target) => PgConnInfo {
-                host: target.socket_dir.display().to_string(),
-                port: target.port,
+                target: PgConnectTarget::Unix(PgUnixTarget {
+                    socket_dir: target.socket_dir.clone(),
+                }),
                 user: target.user.clone(),
                 dbname: target.dbname.clone(),
                 application_name: target.application_name.clone(),

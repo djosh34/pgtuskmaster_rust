@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::Path};
 
 use pgtuskmaster_rust::{
     api::NodeState,
-    dcs::{DcsMemberPostgresView, DcsTrust},
+    dcs::{DcsMode, MemberPostgresView},
     ha::types::{AuthorityProjection, PublicationState},
 };
 use serde::de::DeserializeOwned;
@@ -188,13 +188,19 @@ fn aggregate_connection_views(
 fn status_score(status: &ClusterStatusView) -> (usize, usize, usize, usize) {
     let reported_primary_count = status
         .dcs
-        .members
-        .values()
-        .filter(|member| matches!(&member.postgres, DcsMemberPostgresView::Primary(_)))
+        .cluster()
+        .into_iter()
+        .flat_map(|cluster| cluster.members())
+        .filter(|(_member_id, member)| matches!(member.postgres(), MemberPostgresView::Primary { .. }))
         .count();
+    let discovered_member_count = status
+        .dcs
+        .cluster()
+        .map(|cluster| cluster.member_count())
+        .unwrap_or_default();
     (
-        status.dcs.members.len(),
-        usize::from(status.dcs.trust == DcsTrust::FullQuorum),
+        discovered_member_count,
+        usize::from(status.dcs.mode() == DcsMode::Coordinated),
         usize::from(matches!(
             &status.ha.publication,
             PublicationState::Projected(AuthorityProjection::Primary(_))

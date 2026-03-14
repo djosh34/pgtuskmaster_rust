@@ -8,7 +8,7 @@ use tokio::{
 
 use crate::{
     config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
-    dcs::{DcsMemberView, DcsView},
+    dcs::{ClusterMemberView, DcsView},
     logging::{
         CapturedStream, InternalEvent, LogEvent, LogHandle, ProcessEvent,
         ProcessExecutionIdentity, ProcessJobIdentity, ProcessJobKind, SeverityText,
@@ -20,7 +20,7 @@ use crate::{
     process::postmaster::{
         lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget,
     },
-    state::{JobId, UnixMillis, WorkerError, WorkerStatus},
+    state::{JobId, MemberId, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::{
@@ -1154,11 +1154,10 @@ fn build_command(
         }
         ProcessExecutionKind::BaseBackup(spec) => {
             validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
-            if spec.source.conninfo.host.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "basebackup.source_conninfo.host must not be empty".to_string(),
-                ));
-            }
+            validate_non_empty_pg_connect_target(
+                "basebackup.source_conninfo.target",
+                &spec.source.conninfo.target,
+            )?;
             if spec.source.conninfo.user.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
                     "basebackup.source_conninfo.user must not be empty".to_string(),
@@ -1191,11 +1190,10 @@ fn build_command(
         }
         ProcessExecutionKind::PgRewind(spec) => {
             validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
-            if spec.source.conninfo.host.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "pg_rewind.source_conninfo.host must not be empty".to_string(),
-                ));
-            }
+            validate_non_empty_pg_connect_target(
+                "pg_rewind.source_conninfo.target",
+                &spec.source.conninfo.target,
+            )?;
             if spec.source.conninfo.user.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
                     "pg_rewind.source_conninfo.user must not be empty".to_string(),
@@ -1350,10 +1348,12 @@ fn materialize_execution_request(
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
             wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
+            let (source_member_id, source_member) = resolve_source_member(&dcs, leader)?;
             let source = basebackup_source_from_member(
                 &ctx.identity.self_id,
                 &ctx.plan,
-                resolve_source_member(&dcs, leader)?,
+                source_member_id,
+                source_member,
             )
             .map_err(source_materialization_error)?;
             ProcessExecutionKind::BaseBackup(super::jobs::BaseBackupSpec {
@@ -1363,10 +1363,12 @@ fn materialize_execution_request(
             })
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
+            let (source_member_id, source_member) = resolve_source_member(&dcs, leader)?;
             let source = rewind_source_from_member(
                 &ctx.identity.self_id,
                 &ctx.plan,
-                resolve_source_member(&dcs, leader)?,
+                source_member_id,
+                source_member,
             )
             .map_err(source_materialization_error)?;
             ProcessExecutionKind::PgRewind(super::jobs::PgRewindSpec {
@@ -1442,10 +1444,12 @@ fn replica_start_intent(
     dcs: &DcsView,
     leader: &crate::state::MemberId,
 ) -> Result<ManagedPostgresStartIntent, ProcessError> {
+    let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
     let source = basebackup_source_from_member(
         &ctx.identity.self_id,
         &ctx.plan,
-        resolve_source_member(dcs, leader)?,
+        source_member_id,
+        source_member,
     )
     .map_err(source_materialization_error)?;
     Ok(ManagedPostgresStartIntent::replica(
@@ -1484,9 +1488,15 @@ fn materialize_start_postgres(
 
 fn resolve_source_member<'a>(
     dcs: &'a DcsView,
-    leader: &crate::state::MemberId,
-) -> Result<&'a DcsMemberView, ProcessError> {
-    dcs.members.get(leader).ok_or_else(|| {
+    leader: &'a MemberId,
+) -> Result<(&'a MemberId, &'a ClusterMemberView), ProcessError> {
+    let cluster = dcs.cluster().ok_or_else(|| {
+        ProcessError::InvalidSpec(
+            "source member resolution requires a DCS cluster view, but DCS is currently not trusted"
+                .to_string(),
+        )
+    })?;
+    cluster.member(leader).map(|member| (leader, member)).ok_or_else(|| {
         ProcessError::InvalidSpec(format!(
             "target member `{}` not present in DCS view",
             leader.0
@@ -1580,6 +1590,22 @@ fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), P
     Ok(())
 }
 
+fn validate_non_empty_pg_connect_target(
+    field: &str,
+    value: &crate::state::PgConnectTarget,
+) -> Result<(), ProcessError> {
+    let is_empty = match value {
+        crate::state::PgConnectTarget::Tcp(target) => target.host().trim().is_empty(),
+        crate::state::PgConnectTarget::Unix(target) => target.socket_dir.as_os_str().is_empty(),
+    };
+    if is_empty {
+        return Err(ProcessError::InvalidSpec(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
 fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError> {
     let mut out = String::new();
     for (index, raw) in tokens.iter().enumerate() {
@@ -1647,7 +1673,7 @@ mod tests {
                 ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
             },
         },
-        state::{new_state_channel, JobId, MemberId, StateSubscriber, WorkerStatus},
+        state::{new_state_channel, JobId, MemberId, StateSubscriber},
     };
 
     use super::start_job;
@@ -1802,8 +1828,7 @@ mod tests {
         let initial = ProcessState::starting();
         let (publisher, subscriber) = new_state_channel(initial.clone());
         let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
-        let (_dcs_publisher, dcs_subscriber) =
-            new_state_channel(DcsView::empty(WorkerStatus::Running));
+        let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsView::starting());
         let (_tx, inbox) = unbounded_channel();
 
         Ok((

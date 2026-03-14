@@ -3,19 +3,13 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    dcs::DcsTrust,
+    dcs::DcsMode,
     process::{
         jobs::{ActiveJobKind, ProcessIntent},
         state::{JobOutcome, ProcessState as WorkerProcessState},
     },
-    state::{MemberId, TimelineId, UnixMillis, WalLsn},
+    state::{LeaseEpoch, MemberId, SwitchoverTarget, TimelineId, UnixMillis, WalLsn},
 };
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LeaseEpoch {
-    pub holder: MemberId,
-    pub generation: u64,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FenceCutoff {
@@ -44,6 +38,7 @@ pub struct LocalKnowledge {
 pub struct ObservationState {
     pub pg_observed_at: UnixMillis,
     pub last_start_success_at: Option<UnixMillis>,
+    pub last_basebackup_success_at: Option<UnixMillis>,
     pub last_promote_success_at: Option<UnixMillis>,
     pub last_demote_success_at: Option<UnixMillis>,
 }
@@ -157,7 +152,7 @@ pub struct GlobalKnowledge {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoordinationState {
-    pub trust: DcsTrust,
+    pub mode: DcsMode,
     pub leadership: LeadershipView,
     pub primary: PrimaryObservation,
 }
@@ -212,12 +207,6 @@ pub enum SwitchoverState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwitchoverRequest {
     pub target: SwitchoverTarget,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SwitchoverTarget {
-    AnyHealthyReplica,
-    Specific(MemberId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,13 +374,14 @@ impl WorldView {
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
                     last_start_success_at: None,
+                    last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
                 },
             },
             global: GlobalKnowledge {
                 coordination: CoordinationState {
-                    trust: DcsTrust::NotTrusted,
+                    mode: DcsMode::NotTrusted,
                     leadership: LeadershipView::Open,
                     primary: PrimaryObservation::Absent,
                 },
@@ -422,6 +412,16 @@ impl ObservationState {
     pub(crate) fn waiting_for_fresh_pg_after_demote(&self) -> bool {
         self.last_demote_success_at
             .map(|finished_at| finished_at.0 >= self.pg_observed_at.0)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn basebackup_completed_awaiting_start(&self) -> bool {
+        self.last_basebackup_success_at
+            .map(|finished_at| {
+                self.last_start_success_at
+                    .map(|started_at| finished_at.0 > started_at.0)
+                    .unwrap_or(true)
+            })
             .unwrap_or(false)
     }
 }

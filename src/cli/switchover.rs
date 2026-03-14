@@ -7,7 +7,7 @@ use crate::{
         output,
         status::{authority_primary_member, fetch_seed_state, member_is_ready_replica},
     },
-    dcs::DcsTrust,
+    dcs::DcsMode,
     ha::types::{AuthorityProjection, PublicationState},
     state::MemberId,
 };
@@ -35,9 +35,9 @@ fn validate_switchover_request(
     state: &NodeState,
     switchover_to: Option<&str>,
 ) -> Result<(), CliError> {
-    if state.dcs.trust != DcsTrust::FullQuorum {
+    if state.dcs.mode() != DcsMode::Coordinated {
         return Err(CliError::Resolution(format!(
-            "cannot request switchover via `{}`: seed node does not currently report full quorum trust",
+            "cannot request switchover via `{}`: seed node does not currently report coordinated DCS state",
             state.self_member_id
         )));
     }
@@ -65,8 +65,8 @@ fn validate_switchover_request(
 
     let target_member = state
         .dcs
-        .members
-        .get(&MemberId(target_member_id.to_string()))
+        .cluster()
+        .and_then(|cluster| cluster.member(&MemberId(target_member_id.to_string())))
         .ok_or_else(|| {
             CliError::Resolution(format!(
                 "cannot target member `{target_member_id}` for switchover: it is not present in the seed node DCS member slots"

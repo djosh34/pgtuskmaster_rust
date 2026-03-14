@@ -4,152 +4,308 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    config::{DcsClientConfig, DcsEndpoint},
     logging::LogHandle,
     pginfo::state::{PgInfoState, Readiness},
     state::{
-        MemberId, StatePublisher, StateSubscriber, SystemIdentifier, TimelineId, UnixMillis,
-        WalLsn, WorkerStatus,
+        LeaseEpoch, MemberId, ObservedWalPosition, PgTcpTarget, StatePublisher, StateSubscriber,
+        SwitchoverTarget, SystemIdentifier, TimelineId,
     },
 };
 
-use super::{command::DcsCommandInbox, store::DcsStore};
+use super::command::DcsCommandInbox;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DcsTrust {
-    FullQuorum,
-    Degraded,
+pub enum DcsMode {
     NotTrusted,
+    Degraded,
+    Coordinated,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsMemberLeaseView {
-    pub ttl_ms: u64,
+pub enum DcsView {
+    NotTrusted(NotTrustedView),
+    Degraded(ClusterView),
+    Coordinated(ClusterView),
+}
+
+impl DcsView {
+    pub fn mode(&self) -> DcsMode {
+        match self {
+            Self::NotTrusted(_) => DcsMode::NotTrusted,
+            Self::Degraded(_) => DcsMode::Degraded,
+            Self::Coordinated(_) => DcsMode::Coordinated,
+        }
+    }
+
+    pub fn observed_leadership(&self) -> Option<&LeaseEpoch> {
+        match self {
+            Self::NotTrusted(view) => view.observed_leadership(),
+            Self::Degraded(view) | Self::Coordinated(view) => view.leadership().held(),
+        }
+    }
+
+    pub fn cluster(&self) -> Option<&ClusterView> {
+        match self {
+            Self::NotTrusted(view) => Some(view.cluster()),
+            Self::Degraded(view) | Self::Coordinated(view) => Some(view),
+        }
+    }
+
+    pub fn is_coordinated(&self) -> bool {
+        matches!(self, Self::Coordinated(_))
+    }
+
+    pub(crate) fn starting() -> Self {
+        Self::NotTrusted(NotTrustedView {
+            observed_leadership: None,
+            cluster: ClusterView {
+                members: BTreeMap::new(),
+                leadership: LeadershipObservation::Open,
+                switchover: SwitchoverView::None,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsMemberView {
-    pub member_id: MemberId,
-    pub lease: DcsMemberLeaseView,
-    pub routing: DcsMemberRoutingView,
-    pub postgres: DcsMemberPostgresView,
+pub struct NotTrustedView {
+    observed_leadership: Option<LeaseEpoch>,
+    cluster: ClusterView,
+}
+
+impl NotTrustedView {
+    pub fn observed_leadership(&self) -> Option<&LeaseEpoch> {
+        self.observed_leadership.as_ref()
+    }
+
+    pub fn cluster(&self) -> &ClusterView {
+        &self.cluster
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsMemberRoutingView {
-    pub postgres: DcsMemberEndpointView,
-    pub api: Option<DcsMemberApiView>,
+pub struct ClusterView {
+    members: BTreeMap<MemberId, ClusterMemberView>,
+    leadership: LeadershipObservation,
+    switchover: SwitchoverView,
+}
+
+impl ClusterView {
+    pub fn members(&self) -> impl Iterator<Item = (&MemberId, &ClusterMemberView)> {
+        self.members.iter()
+    }
+
+    pub fn member_ids(&self) -> impl Iterator<Item = &MemberId> {
+        self.members.keys()
+    }
+
+    pub fn member_count(&self) -> usize {
+        self.members.len()
+    }
+
+    pub fn member(&self, member_id: &MemberId) -> Option<&ClusterMemberView> {
+        self.members.get(member_id)
+    }
+
+    pub fn leadership(&self) -> &LeadershipObservation {
+        &self.leadership
+    }
+
+    pub fn switchover(&self) -> &SwitchoverView {
+        &self.switchover
+    }
+
+    #[cfg(any(test, feature = "internal-test-support"))]
+    #[allow(dead_code)]
+    pub(crate) fn new(
+        members: BTreeMap<MemberId, ClusterMemberView>,
+        leadership: LeadershipObservation,
+        switchover: SwitchoverView,
+    ) -> Self {
+        Self {
+            members,
+            leadership,
+            switchover,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsMemberEndpointView {
-    pub host: String,
-    pub port: u16,
+pub struct ClusterMemberView {
+    postgres: MemberPostgresView,
+    postgres_target: PgTcpTarget,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsMemberApiView {
-    pub url: String,
-}
+impl ClusterMemberView {
+    pub fn postgres_target(&self) -> &PgTcpTarget {
+        &self.postgres_target
+    }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WalVector {
-    pub timeline: Option<TimelineId>,
-    pub lsn: WalLsn,
-}
+    pub fn postgres(&self) -> &MemberPostgresView {
+        &self.postgres
+    }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsUnknownPostgresView {
-    pub readiness: Readiness,
-    pub timeline: Option<TimelineId>,
-    pub system_identifier: Option<SystemIdentifier>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsPrimaryPostgresView {
-    pub readiness: Readiness,
-    pub system_identifier: Option<SystemIdentifier>,
-    pub committed_wal: WalVector,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsReplicaPostgresView {
-    pub readiness: Readiness,
-    pub system_identifier: Option<SystemIdentifier>,
-    pub upstream: Option<MemberId>,
-    pub replay_wal: Option<WalVector>,
-    pub follow_wal: Option<WalVector>,
+    #[cfg(any(test, feature = "internal-test-support"))]
+    #[allow(dead_code)]
+    pub(crate) fn new(postgres: MemberPostgresView, postgres_target: PgTcpTarget) -> Self {
+        Self {
+            postgres,
+            postgres_target,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DcsMemberPostgresView {
-    Unknown(DcsUnknownPostgresView),
-    Primary(DcsPrimaryPostgresView),
-    Replica(DcsReplicaPostgresView),
+pub enum MemberPostgresView {
+    Unknown {
+        readiness: Readiness,
+        timeline: Option<TimelineId>,
+        system_identifier: Option<SystemIdentifier>,
+    },
+    Primary {
+        readiness: Readiness,
+        system_identifier: Option<SystemIdentifier>,
+        committed_wal: ObservedWalPosition,
+    },
+    Replica {
+        readiness: Readiness,
+        system_identifier: Option<SystemIdentifier>,
+        upstream: Option<MemberId>,
+        replay_wal: Option<ObservedWalPosition>,
+        follow_wal: Option<ObservedWalPosition>,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsLeaderView {
-    pub holder: MemberId,
-    pub generation: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DcsLeaderStateView {
-    Unheld,
-    Held(DcsLeaderView),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DcsSwitchoverTargetView {
-    AnyHealthyReplica,
-    Specific(MemberId),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DcsSwitchoverView {
-    pub target: DcsSwitchoverTargetView,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DcsSwitchoverStateView {
-    None,
-    Requested(DcsSwitchoverView),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsView {
-    pub worker: WorkerStatus,
-    pub trust: DcsTrust,
-    pub members: BTreeMap<MemberId, DcsMemberView>,
-    pub leader: DcsLeaderStateView,
-    pub switchover: DcsSwitchoverStateView,
-    pub last_observed_at: Option<UnixMillis>,
-}
-
-impl DcsView {
-    pub fn empty(worker: WorkerStatus) -> Self {
-        Self {
-            worker,
-            trust: DcsTrust::NotTrusted,
-            members: BTreeMap::new(),
-            leader: DcsLeaderStateView::Unheld,
-            switchover: DcsSwitchoverStateView::None,
-            last_observed_at: None,
+impl MemberPostgresView {
+    pub fn readiness(&self) -> Readiness {
+        match self {
+            Self::Unknown { readiness, .. }
+            | Self::Primary { readiness, .. }
+            | Self::Replica { readiness, .. } => readiness.clone(),
         }
     }
 
-    pub(crate) fn starting() -> Self {
-        Self::empty(WorkerStatus::Starting)
+    pub fn system_identifier(&self) -> Option<SystemIdentifier> {
+        match self {
+            Self::Unknown {
+                system_identifier, ..
+            }
+            | Self::Primary {
+                system_identifier, ..
+            }
+            | Self::Replica {
+                system_identifier, ..
+            } => *system_identifier,
+        }
     }
+
+    pub fn timeline(&self) -> Option<TimelineId> {
+        match self {
+            Self::Unknown { timeline, .. } => *timeline,
+            Self::Primary { committed_wal, .. } => committed_wal.timeline,
+            Self::Replica {
+                replay_wal,
+                follow_wal,
+                ..
+            } => replay_wal
+                .as_ref()
+                .map(|position| position.timeline)
+                .or_else(|| follow_wal.as_ref().map(|position| position.timeline))
+                .flatten(),
+        }
+    }
+
+    pub fn is_primary(&self) -> bool {
+        matches!(self, Self::Primary { .. })
+    }
+
+    pub fn is_ready_replica(&self) -> bool {
+        matches!(
+            self,
+            Self::Replica {
+                readiness: Readiness::Ready,
+                ..
+            }
+        )
+    }
+
+    pub fn is_ready_non_primary(&self) -> bool {
+        matches!(
+            self,
+            Self::Unknown {
+                readiness: Readiness::Ready,
+                ..
+            }
+                | Self::Replica {
+                    readiness: Readiness::Ready,
+                    ..
+                }
+        )
+    }
+
+    pub fn committed_wal(&self) -> Option<&ObservedWalPosition> {
+        match self {
+            Self::Primary { committed_wal, .. } => Some(committed_wal),
+            Self::Unknown { .. } | Self::Replica { .. } => None,
+        }
+    }
+
+    pub fn replay_wal(&self) -> Option<&ObservedWalPosition> {
+        match self {
+            Self::Replica { replay_wal, .. } => replay_wal.as_ref(),
+            Self::Unknown { .. } | Self::Primary { .. } => None,
+        }
+    }
+
+    pub fn follow_wal(&self) -> Option<&ObservedWalPosition> {
+        match self {
+            Self::Replica { follow_wal, .. } => follow_wal.as_ref(),
+            Self::Unknown { .. } | Self::Primary { .. } => None,
+        }
+    }
+
+    pub fn upstream(&self) -> Option<&MemberId> {
+        match self {
+            Self::Replica { upstream, .. } => upstream.as_ref(),
+            Self::Unknown { .. } | Self::Primary { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LeadershipObservation {
+    Open,
+    Held(LeaseEpoch),
+}
+
+impl LeadershipObservation {
+    pub fn held(&self) -> Option<&LeaseEpoch> {
+        match self {
+            Self::Open => None,
+            Self::Held(epoch) => Some(epoch),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state", content = "target")]
+pub enum SwitchoverView {
+    None,
+    Requested(SwitchoverTarget),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DcsEtcdConfig {
+    pub(crate) endpoints: Vec<DcsEndpoint>,
+    pub(crate) client: DcsClientConfig,
 }
 
 pub(crate) struct DcsWorkerCtx {
     pub(crate) identity: DcsNodeIdentity,
+    pub(crate) etcd: DcsEtcdConfig,
     pub(crate) cadence: DcsCadence,
     pub(crate) advertisement: DcsLocalMemberAdvertisement,
     pub(crate) observed: DcsObservedState,
@@ -171,15 +327,8 @@ pub(crate) struct DcsCadence {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DcsApiAdvertisement {
-    NotAdvertised,
-    Advertised(DcsMemberApiView),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DcsLocalMemberAdvertisement {
-    pub(crate) postgres: DcsMemberEndpointView,
-    pub(crate) api: DcsApiAdvertisement,
+    pub(crate) postgres: PgTcpTarget,
 }
 
 #[derive(Clone, Debug)]
@@ -200,7 +349,6 @@ impl DcsStateChannel {
                 member_records: BTreeMap::new(),
                 leader_record: None,
                 switchover_record: None,
-                init_lock: None,
             },
         }
     }
@@ -208,13 +356,11 @@ impl DcsStateChannel {
 
 pub(crate) struct DcsControlPlane {
     pub(crate) command_inbox: DcsCommandInbox,
-    pub(crate) store: Box<dyn DcsStore>,
 }
 
 pub(crate) struct DcsRuntime {
     pub(crate) log: LogHandle,
-    pub(crate) last_emitted_store_healthy: Option<bool>,
-    pub(crate) last_emitted_trust: Option<DcsTrust>,
+    pub(crate) last_emitted_mode: Option<DcsMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,103 +372,63 @@ pub(crate) struct MemberLeaseRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MemberRecord {
     pub(crate) lease: MemberLeaseRecord,
-    pub(crate) routing: MemberRoutingRecord,
+    pub(crate) postgres_target: PgTcpTarget,
     pub(crate) postgres: MemberPostgresRecord,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberRoutingRecord {
-    pub(crate) postgres: MemberEndpointRecord,
-    pub(crate) api: Option<MemberApiRecord>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberEndpointRecord {
-    pub(crate) host: String,
-    pub(crate) port: u16,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberApiRecord {
-    pub(crate) url: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct UnknownPostgresRecord {
-    pub(crate) readiness: Readiness,
-    pub(crate) timeline: Option<TimelineId>,
-    pub(crate) system_identifier: Option<SystemIdentifier>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PrimaryPostgresRecord {
-    pub(crate) readiness: Readiness,
-    pub(crate) system_identifier: Option<SystemIdentifier>,
-    pub(crate) committed_wal: WalVector,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ReplicaPostgresRecord {
-    pub(crate) readiness: Readiness,
-    pub(crate) system_identifier: Option<SystemIdentifier>,
-    pub(crate) upstream: Option<MemberId>,
-    pub(crate) replay_wal: Option<WalVector>,
-    pub(crate) follow_wal: Option<WalVector>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum MemberPostgresRecord {
-    Unknown(UnknownPostgresRecord),
-    Primary(PrimaryPostgresRecord),
-    Replica(ReplicaPostgresRecord),
+    Unknown {
+        readiness: Readiness,
+        timeline: Option<TimelineId>,
+        system_identifier: Option<SystemIdentifier>,
+    },
+    Primary {
+        readiness: Readiness,
+        system_identifier: Option<SystemIdentifier>,
+        committed_wal: ObservedWalPosition,
+    },
+    Replica {
+        readiness: Readiness,
+        system_identifier: Option<SystemIdentifier>,
+        upstream: Option<MemberId>,
+        replay_wal: Option<ObservedWalPosition>,
+        follow_wal: Option<ObservedWalPosition>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LeaderLeaseRecord {
-    pub(crate) holder: MemberId,
-    pub(crate) generation: u64,
+pub(crate) struct LeadershipRecord {
+    pub(crate) epoch: LeaseEpoch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct SwitchoverRecord {
-    pub(crate) target: SwitchoverTargetRecord,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum SwitchoverTargetRecord {
-    AnyHealthyReplica,
-    Specific(MemberId),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct InitLockRecord {
-    pub(crate) holder: MemberId,
+    pub(crate) target: SwitchoverTarget,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DcsCache {
     pub(crate) member_records: BTreeMap<MemberId, MemberRecord>,
-    pub(crate) leader_record: Option<LeaderLeaseRecord>,
+    pub(crate) leader_record: Option<LeadershipRecord>,
     pub(crate) switchover_record: Option<SwitchoverRecord>,
-    pub(crate) init_lock: Option<InitLockRecord>,
 }
 
-pub(crate) fn evaluate_trust(etcd_healthy: bool, cache: &DcsCache, self_id: &MemberId) -> DcsTrust {
-    if !etcd_healthy {
-        return DcsTrust::NotTrusted;
+pub(crate) fn evaluate_mode(etcd_reachable: bool, cache: &DcsCache, self_id: &MemberId) -> DcsMode {
+    if !etcd_reachable {
+        return DcsMode::NotTrusted;
     }
 
     if !cache.member_records.contains_key(self_id) {
-        return DcsTrust::Degraded;
+        return DcsMode::Degraded;
     }
 
     if !has_member_quorum(cache) {
-        return DcsTrust::Degraded;
+        return DcsMode::Degraded;
     }
 
-    DcsTrust::FullQuorum
+    DcsMode::Coordinated
 }
 
 fn has_member_quorum(cache: &DcsCache) -> bool {
@@ -333,160 +439,341 @@ fn has_member_quorum(cache: &DcsCache) -> bool {
     }
 }
 
-pub(crate) fn build_dcs_view(
-    worker: WorkerStatus,
-    trust: DcsTrust,
-    cache: &DcsCache,
-    last_observed_at: Option<UnixMillis>,
-) -> DcsView {
-    DcsView {
-        worker,
-        trust,
+pub(crate) fn build_dcs_view(mode: DcsMode, cache: &DcsCache) -> DcsView {
+    let authoritative_leader = cache
+        .leader_record
+        .as_ref()
+        .map(|record| record.epoch.holder.clone());
+    let cluster = ClusterView {
         members: cache
             .member_records
             .iter()
-            .map(|(member_id, record)| (member_id.clone(), build_member_view(record)))
+            .map(|(member_id, record)| {
+                (
+                    member_id.clone(),
+                    build_member_view(member_id, record, authoritative_leader.as_ref()),
+                )
+            })
             .collect(),
-        leader: cache
+        leadership: cache
             .leader_record
             .as_ref()
-            .map(|record| {
-                DcsLeaderStateView::Held(DcsLeaderView {
-                    holder: record.holder.clone(),
-                    generation: record.generation,
-                })
-            })
-            .unwrap_or(DcsLeaderStateView::Unheld),
+            .map(|record| LeadershipObservation::Held(record.epoch.clone()))
+            .unwrap_or(LeadershipObservation::Open),
         switchover: cache
             .switchover_record
             .as_ref()
-            .map(|record| {
-                DcsSwitchoverStateView::Requested(DcsSwitchoverView {
-                    target: match &record.target {
-                        SwitchoverTargetRecord::AnyHealthyReplica => {
-                            DcsSwitchoverTargetView::AnyHealthyReplica
-                        }
-                        SwitchoverTargetRecord::Specific(member_id) => {
-                            DcsSwitchoverTargetView::Specific(member_id.clone())
-                        }
-                    },
-                })
-            })
-            .unwrap_or(DcsSwitchoverStateView::None),
-        last_observed_at,
+            .map(|record| SwitchoverView::Requested(record.target.clone()))
+            .unwrap_or(SwitchoverView::None),
+    };
+
+    match mode {
+        DcsMode::NotTrusted => DcsView::NotTrusted(NotTrustedView {
+            observed_leadership: cache.leader_record.as_ref().map(|record| record.epoch.clone()),
+            cluster,
+        }),
+        DcsMode::Degraded => DcsView::Degraded(cluster),
+        DcsMode::Coordinated => DcsView::Coordinated(cluster),
     }
 }
 
-fn build_member_view(record: &MemberRecord) -> DcsMemberView {
-    DcsMemberView {
-        member_id: record.lease.owner.clone(),
-        lease: DcsMemberLeaseView {
-            ttl_ms: record.lease.ttl_ms,
-        },
-        routing: DcsMemberRoutingView {
-            postgres: DcsMemberEndpointView {
-                host: record.routing.postgres.host.clone(),
-                port: record.routing.postgres.port,
-            },
-            api: record.routing.api.as_ref().map(|api| DcsMemberApiView {
-                url: api.url.clone(),
-            }),
-        },
+fn build_member_view(
+    member_id: &MemberId,
+    record: &MemberRecord,
+    authoritative_leader: Option<&MemberId>,
+) -> ClusterMemberView {
+    ClusterMemberView {
         postgres: match &record.postgres {
-            MemberPostgresRecord::Unknown(observation) => {
-                DcsMemberPostgresView::Unknown(DcsUnknownPostgresView {
-                    readiness: observation.readiness.clone(),
-                    timeline: observation.timeline,
-                    system_identifier: observation.system_identifier,
-                })
+            MemberPostgresRecord::Unknown {
+                readiness,
+                timeline,
+                system_identifier,
+            } => MemberPostgresView::Unknown {
+                readiness: readiness.clone(),
+                timeline: *timeline,
+                system_identifier: *system_identifier,
+            },
+            MemberPostgresRecord::Primary {
+                readiness,
+                system_identifier,
+                committed_wal,
+            } => {
+                if authoritative_leader.is_some_and(|leader| leader != member_id) {
+                    MemberPostgresView::Unknown {
+                        readiness: readiness.clone(),
+                        timeline: committed_wal.timeline,
+                        system_identifier: *system_identifier,
+                    }
+                } else {
+                    MemberPostgresView::Primary {
+                        readiness: readiness.clone(),
+                        system_identifier: *system_identifier,
+                        committed_wal: committed_wal.clone(),
+                    }
+                }
             }
-            MemberPostgresRecord::Primary(observation) => {
-                DcsMemberPostgresView::Primary(DcsPrimaryPostgresView {
-                    readiness: observation.readiness.clone(),
-                    system_identifier: observation.system_identifier,
-                    committed_wal: observation.committed_wal.clone(),
-                })
-            }
-            MemberPostgresRecord::Replica(observation) => {
-                DcsMemberPostgresView::Replica(DcsReplicaPostgresView {
-                    readiness: observation.readiness.clone(),
-                    system_identifier: observation.system_identifier,
-                    upstream: observation.upstream.clone(),
-                    replay_wal: observation.replay_wal.clone(),
-                    follow_wal: observation.follow_wal.clone(),
-                })
-            }
+            MemberPostgresRecord::Replica {
+                readiness,
+                system_identifier,
+                upstream,
+                replay_wal,
+                follow_wal,
+            } => MemberPostgresView::Replica {
+                readiness: readiness.clone(),
+                system_identifier: *system_identifier,
+                upstream: upstream.clone(),
+                replay_wal: replay_wal.clone(),
+                follow_wal: follow_wal.clone(),
+            },
         },
+        postgres_target: record.postgres_target.clone(),
     }
 }
 
 pub(crate) fn build_local_member_record(
     self_id: &MemberId,
-    postgres_host: &str,
-    postgres_port: u16,
-    api_url: Option<&str>,
+    postgres_target: &PgTcpTarget,
     lease_ttl_ms: u64,
     pg_state: &PgInfoState,
+    previous_record: Option<&MemberRecord>,
 ) -> MemberRecord {
     let lease = MemberLeaseRecord {
         owner: self_id.clone(),
         ttl_ms: lease_ttl_ms,
     };
-    let routing = MemberRoutingRecord {
-        postgres: MemberEndpointRecord {
-            host: postgres_host.to_string(),
-            port: postgres_port,
-        },
-        api: api_url.map(|url| MemberApiRecord {
-            url: url.to_string(),
-        }),
-    };
 
-    match pg_state {
-        PgInfoState::Unknown { common } => MemberRecord {
-            lease,
-            routing,
-            postgres: MemberPostgresRecord::Unknown(UnknownPostgresRecord {
-                readiness: common.readiness.clone(),
-                timeline: common.timeline,
-                system_identifier: common.system_identifier,
-            }),
+    let postgres = match pg_state {
+        PgInfoState::Unknown { common } => MemberPostgresRecord::Unknown {
+            readiness: common.readiness.clone(),
+            timeline: common
+                .timeline
+                .or_else(|| previous_record.and_then(member_record_timeline)),
+            system_identifier: common
+                .system_identifier
+                .or_else(|| previous_record.and_then(member_record_system_identifier)),
         },
         PgInfoState::Primary {
             common, wal_lsn, ..
-        } => MemberRecord {
-            lease,
-            routing,
-            postgres: MemberPostgresRecord::Primary(PrimaryPostgresRecord {
-                readiness: common.readiness.clone(),
-                system_identifier: common.system_identifier,
-                committed_wal: WalVector {
-                    timeline: common.timeline,
-                    lsn: *wal_lsn,
-                },
-            }),
+        } => MemberPostgresRecord::Primary {
+            readiness: common.readiness.clone(),
+            system_identifier: common.system_identifier,
+            committed_wal: ObservedWalPosition {
+                timeline: common.timeline,
+                lsn: *wal_lsn,
+            },
         },
         PgInfoState::Replica {
             common,
             replay_lsn,
             follow_lsn,
             upstream,
-        } => MemberRecord {
-            lease,
-            routing,
-            postgres: MemberPostgresRecord::Replica(ReplicaPostgresRecord {
-                readiness: common.readiness.clone(),
-                system_identifier: common.system_identifier,
-                upstream: upstream.as_ref().map(|value| value.member_id.clone()),
-                replay_wal: Some(WalVector {
-                    timeline: common.timeline,
-                    lsn: *replay_lsn,
-                }),
-                follow_wal: follow_lsn.map(|lsn| WalVector {
-                    timeline: common.timeline,
-                    lsn,
-                }),
+        } => MemberPostgresRecord::Replica {
+            readiness: common.readiness.clone(),
+            system_identifier: common.system_identifier,
+            upstream: upstream.as_ref().map(|value| value.member_id.clone()),
+            replay_wal: Some(ObservedWalPosition {
+                timeline: common.timeline,
+                lsn: *replay_lsn,
+            }),
+            follow_wal: follow_lsn.map(|lsn| ObservedWalPosition {
+                timeline: common.timeline,
+                lsn,
             }),
         },
+    };
+
+    MemberRecord {
+        lease,
+        postgres_target: postgres_target.clone(),
+        postgres,
+    }
+}
+
+fn member_record_timeline(record: &MemberRecord) -> Option<TimelineId> {
+    match &record.postgres {
+        MemberPostgresRecord::Unknown { timeline, .. } => *timeline,
+        MemberPostgresRecord::Primary { committed_wal, .. } => committed_wal.timeline,
+        MemberPostgresRecord::Replica {
+            replay_wal,
+            follow_wal,
+            ..
+        } => replay_wal
+            .as_ref()
+            .and_then(|value| value.timeline)
+            .or_else(|| follow_wal.as_ref().and_then(|value| value.timeline)),
+    }
+}
+
+fn member_record_system_identifier(record: &MemberRecord) -> Option<SystemIdentifier> {
+    match &record.postgres {
+        MemberPostgresRecord::Unknown {
+            system_identifier, ..
+        }
+        | MemberPostgresRecord::Primary {
+            system_identifier, ..
+        }
+        | MemberPostgresRecord::Replica {
+            system_identifier, ..
+        } => *system_identifier,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        pginfo::state::{PgInfoState, Readiness},
+        state::{LeaseEpoch, MemberId, PgTcpTarget, SystemIdentifier, TimelineId, WalLsn},
+    };
+
+    use super::{
+        build_dcs_view, build_local_member_record, DcsCache, DcsMode, LeadershipObservation,
+        LeadershipRecord,
+        MemberLeaseRecord, MemberPostgresRecord, MemberPostgresView, MemberRecord,
+        ObservedWalPosition,
+    };
+
+    fn member_record(postgres: MemberPostgresRecord) -> Result<MemberRecord, String> {
+        Ok(MemberRecord {
+            lease: MemberLeaseRecord {
+                owner: MemberId("owner".to_string()),
+                ttl_ms: 5_000,
+            },
+            postgres_target: PgTcpTarget::new("127.0.0.1".to_string(), 5432)?,
+            postgres,
+        })
+    }
+
+    #[test]
+    fn build_dcs_view_hides_non_leader_primary_records() -> Result<(), String> {
+        let mut member_records = BTreeMap::new();
+        member_records.insert(
+            MemberId("node-a".to_string()),
+            member_record(MemberPostgresRecord::Primary {
+                readiness: Readiness::Ready,
+                system_identifier: None,
+                committed_wal: ObservedWalPosition {
+                    timeline: None,
+                    lsn: WalLsn(42),
+                },
+            })?,
+        );
+        member_records.insert(
+            MemberId("node-b".to_string()),
+            member_record(MemberPostgresRecord::Primary {
+                readiness: Readiness::Ready,
+                system_identifier: None,
+                committed_wal: ObservedWalPosition {
+                    timeline: None,
+                    lsn: WalLsn(41),
+                },
+            })?,
+        );
+        let cache = DcsCache {
+            member_records,
+            leader_record: Some(LeadershipRecord {
+                epoch: LeaseEpoch {
+                    holder: MemberId("node-a".to_string()),
+                    generation: 7,
+                },
+            }),
+            switchover_record: None,
+        };
+
+        let cluster = match build_dcs_view(DcsMode::Coordinated, &cache) {
+            super::DcsView::Coordinated(cluster) => cluster,
+            other => return Err(format!("expected coordinated view, got {other:?}")),
+        };
+
+        if cluster.leadership()
+            != &LeadershipObservation::Held(LeaseEpoch {
+                holder: MemberId("node-a".to_string()),
+                generation: 7,
+            })
+        {
+            return Err("expected node-a leadership to remain authoritative".to_string());
+        }
+
+        match cluster
+            .member(&MemberId("node-a".to_string()))
+            .ok_or_else(|| "missing node-a member".to_string())?
+            .postgres()
+        {
+            MemberPostgresView::Primary { .. } => {}
+            other => return Err(format!("expected node-a to remain primary, got {other:?}")),
+        }
+
+        match cluster
+            .member(&MemberId("node-b".to_string()))
+            .ok_or_else(|| "missing node-b member".to_string())?
+            .postgres()
+        {
+            MemberPostgresView::Unknown { readiness, .. } if readiness == &Readiness::Ready => {}
+            other => {
+                return Err(format!(
+                    "expected stale non-leader primary to be downgraded, got {other:?}"
+                ))
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_local_member_record_preserves_last_known_identity_when_pg_is_unknown() -> Result<(), String> {
+        let previous = member_record(MemberPostgresRecord::Primary {
+            readiness: Readiness::Ready,
+            system_identifier: Some(SystemIdentifier(41)),
+            committed_wal: ObservedWalPosition {
+                timeline: Some(TimelineId(7)),
+                lsn: WalLsn(42),
+            },
+        })?;
+        let pg_state = PgInfoState::Unknown {
+            common: crate::pginfo::state::PgInfoCommon {
+                worker: crate::state::WorkerStatus::Running,
+                sql: crate::pginfo::state::SqlStatus::Unreachable,
+                readiness: Readiness::NotReady,
+                timeline: None,
+                system_identifier: None,
+                pg_config: crate::pginfo::state::PgConfig {
+                    port: None,
+                    hot_standby: None,
+                    primary_conninfo: None,
+                    primary_slot_name: None,
+                    extra: BTreeMap::new(),
+                },
+                last_refresh_at: None,
+            },
+        };
+
+        let record = build_local_member_record(
+            &MemberId("node-a".to_string()),
+            &PgTcpTarget::new("127.0.0.1".to_string(), 5432)?,
+            5_000,
+            &pg_state,
+            Some(&previous),
+        );
+
+        match record.postgres {
+            MemberPostgresRecord::Unknown {
+                timeline,
+                system_identifier,
+                ..
+            } => {
+                if timeline != Some(TimelineId(7)) {
+                    return Err(format!("expected preserved timeline, got {timeline:?}"));
+                }
+                if system_identifier != Some(SystemIdentifier(41)) {
+                    return Err(format!(
+                        "expected preserved system identifier, got {system_identifier:?}"
+                    ));
+                }
+            }
+            other => return Err(format!("expected unknown member record, got {other:?}")),
+        }
+
+        Ok(())
     }
 }

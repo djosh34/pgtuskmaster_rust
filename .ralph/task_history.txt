@@ -205,3 +205,5 @@ NONE
 .ralph/tasks/story-postgres-role-reconciliation/01-task-make-role-management-config-driven-idempotent-and-reconciling.md
 .ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md
 .ralph/tasks/story-logging-simplification/01-task-rewrite-logging-around-private-typed-events-and-json-postgres-defaults.md
+NONE
+.ralph/tasks/story-dcs-simplification/01-task-rewrite-dcs-as-one-private-async-actor-with-one-public-opaque-view.md

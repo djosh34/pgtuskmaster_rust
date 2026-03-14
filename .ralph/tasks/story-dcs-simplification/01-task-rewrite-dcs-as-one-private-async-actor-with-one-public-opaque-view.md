@@ -1,4 +1,4 @@
-## Task: Rewrite DCS As One Private Async Actor With One Public `DcsView` <status>not_started</status> <passes>false</passes>
+## Task: Rewrite DCS As One Private Async Actor With One Public `DcsView` <status>completed</status> <passes>true</passes>
 
 <description>
 **Goal:** Rewrite the DCS subsystem so it has exactly one owning async loop, exactly one etcd client/session owner, zero `Arc`/`Mutex` inside the production DCS path, one public read-only serde `DcsView`, and one crate-private typed command handle (`DcsHandle`) for mutation. The higher-order goal is to turn DCS into a small, private coordination domain instead of a collection of storage-shaped types, bridge layers, and leaked implementation details. This is a deliberate simplification task, not a privacy-only wrapper task: the end state must remove code, remove representations, and remove synchronization primitives that only exist because the current design split ownership badly.
@@ -595,52 +595,59 @@ This method-driven downstream shape is the real public-surface reduction.
 </description>
 
 <acceptance_criteria>
-- [ ] The strict rewrite constraints are satisfied explicitly: one loop, zero `Arc`, zero `Mutex`, zero separate “health” functions/booleans in the public HTTP DCS model, one public serde `DcsView`, and one crate-private typed write handle.
-- [ ] `src/dcs` is rewritten so the final public surface is only `DcsView` and its nested read-only payload/view types, while the final crate-private internal surface is only `DcsHandle`, `DcsHandleError`, and the minimum required runtime wiring.
-- [ ] Focused shared modules are added under `src/state` for the actually shared DCS/HA/API/process primitives; this task must not solve the overlap by creating a generic catch-all `types` module.
-- [ ] `LeaseEpoch`, `SwitchoverTarget`, and `ObservedWalPosition` are moved into `src/state` and reused by DCS, HA, and the public `DcsView` payloads.
-- [ ] `PgTcpTarget`, `PgUnixTarget`, and `PgConnectTarget` are added under `src/state` and reused by DCS/API/pginfo where appropriate.
-- [ ] `DcsView` is a public enum whose variants express coordination mode directly; `DcsTrust`/`FullQuorum` no longer exist publicly.
-- [ ] The final naming replaces `FullQuorum` with a term that matches the actual semantics, such as `Coordinated`/`Trusted`, and docs/tests/logging are updated consistently.
-- [ ] There is no second public DCS DTO. HTTP/API consumers, CLI code, and internal crate code all use the same read-only `DcsView`.
-- [ ] All writing into DCS happens only via exposed typed command-handle functions. No other write path remains.
-- [ ] The final `DcsHandle` exposes only typed one-way enqueue mutations for:
+- [x] The strict rewrite constraints are satisfied explicitly: one loop, zero `Arc`, zero `Mutex`, zero separate “health” functions/booleans in the public HTTP DCS model, one public serde `DcsView`, and one crate-private typed write handle.
+- [x] `src/dcs` is rewritten so the final public surface is only `DcsView` and its nested read-only payload/view types, while the final crate-private internal surface is only `DcsHandle`, `DcsHandleError`, and the minimum required runtime wiring.
+- [x] Focused shared modules are added under `src/state` for the actually shared DCS/HA/API/process primitives; this task must not solve the overlap by creating a generic catch-all `types` module.
+- [x] `LeaseEpoch`, `SwitchoverTarget`, and `ObservedWalPosition` are moved into `src/state` and reused by DCS, HA, and the public `DcsView` payloads.
+- [x] `PgTcpTarget`, `PgUnixTarget`, and `PgConnectTarget` are added under `src/state` and reused by DCS/API/pginfo where appropriate.
+- [x] `DcsView` is a public enum whose variants express coordination mode directly; `DcsTrust`/`FullQuorum` no longer exist publicly.
+- [x] The final naming replaces `FullQuorum` with a term that matches the actual semantics, such as `Coordinated`/`Trusted`, and docs/tests/logging are updated consistently.
+- [x] There is no second public DCS DTO. HTTP/API consumers, CLI code, and internal crate code all use the same read-only `DcsView`.
+- [x] All writing into DCS happens only via exposed typed command-handle functions. No other write path remains.
+- [x] The final `DcsHandle` exposes only typed one-way enqueue mutations for:
   - acquiring local leadership
   - releasing local leadership
   - publishing switchover to any healthy replica
   - publishing switchover to a specific member
   - clearing switchover
-- [ ] The final crate-private `DcsHandle` surface is method-based, with signatures equivalent to:
+- [x] The final crate-private `DcsHandle` surface is method-based, with signatures equivalent to:
   - `pub(crate) enum DcsHandleError { ChannelClosed }`
   - `acquire_leadership(&self) -> Result<(), DcsHandleError>`
   - `release_leadership(&self) -> Result<(), DcsHandleError>`
   - `publish_switchover_any(&self) -> Result<(), DcsHandleError>`
   - `publish_switchover_to(&self, MemberId) -> Result<(), DcsHandleError>`
   - `clear_switchover(&self) -> Result<(), DcsHandleError>`
-- [ ] The final crate-private command path is one-way enqueue only. No request/response reply channel remains in the mutation boundary.
-- [ ] The final crate-private command error model is minimal and enqueue-oriented. It should not preserve “rejected” / “transport” failure classes unless implementation proves a concrete need and documents it.
-- [ ] Duplicate identical commands are explicitly safe. If HA/API sends the same mutation again before `DcsView` catches up, the DCS actor handles that as an idempotent no-op/equivalent operation rather than a semantic error.
-- [ ] All non-DCS consumers inside this crate (`src/ha`, `src/process`, `src/api`, runtime wiring, CLI code, and relevant tests) are updated to match on `DcsView` and use only the public read-only payload methods they actually need.
-- [ ] Public API/CLI surfaces (`src/api`, `src/cli`, integration tests, serialized `NodeState`) expose `DcsView` directly. No `ApiDcsView` or equivalent parallel wire-only DCS type remains.
-- [ ] DCS member state no longer carries an API URL or API-presence marker. HA must no longer derive `ApiVisibility` from DCS member records, and CLI/API output must no longer render per-member API URLs from DCS.
-- [ ] `PgConnInfo` no longer overloads raw `host: String` to mean both TCP host and Unix socket directory; the in-memory type uses the shared `PgConnectTarget`.
-- [ ] `src/dcs/store.rs` is deleted, or any tiny unavoidable remnants are moved private inside `src/dcs` with no store-like boundary exposed outside the owning actor.
-- [ ] The old `src/dcs/etcd_store.rs` thread/bridge architecture is deleted or replaced by a substantially smaller private async etcd helper with no `Arc`, no `Mutex`, and no cross-thread watch event queue in the DCS path.
-- [ ] The final DCS runtime path has one async owner loop and one etcd client/session owner only.
-- [ ] No `Arc<...>`, `Mutex<...>`, or equivalent shared-state synchronization remains anywhere in the production DCS implementation. This is a hard requirement, not a best-effort target.
-- [ ] The separate modeled `store_healthy` / “health bool” concept is removed from the DCS design. Coordination mode is represented directly by the `DcsView` enum itself.
-- [ ] Public degraded/not-trusted reason types are not introduced unless a real external consumer proves they are necessary. If internal reason classification remains, it stays private to `src/dcs`.
-- [ ] `/scope/config` decoding and any similar dead DCS legacy are removed unless the rewrite finds a concrete current use and converts it into an intentional typed design.
-- [ ] `dcs.init`, `/scope/init`, and `/scope/config` are removed entirely as dead feature surface.
-- [ ] All old superseded DCS code is cleaned up. No dead compatibility code, leftover adapter scaffolding, or unused old DCS type family remains in the tree.
-- [ ] All old duplicated shared-concept types are cleaned up after the migration. In particular, no parallel old/new copies of epoch, switchover target, observed WAL vector, or PostgreSQL target types remain, and the old DCS member API URL type/path is deleted rather than carried forward.
-- [ ] `src/dcs/mod.rs` and the rest of `src/dcs` are audited so unnecessary `pub` and `pub(crate)` visibility is removed aggressively.
-- [ ] All DCS code is private by default first. Public visibility is used only for `DcsView` and the nested read-only payload/view types needed to inspect and serialize it; `pub(crate)` is used only where absolutely necessary to realize the crate-private mutation boundary.
-- [ ] There are no raw DCS key/path manipulations, raw etcd CRUD calls, or internal DCS record/cache imports outside `src/dcs`.
-- [ ] API/CLI output and validation continue to provide the product behavior they currently need, adapted to the public `DcsView`.
-- [ ] DCS, HA, process, API, CLI, runtime, logging, and affected docs/tests are updated coherently for the new model.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] The final crate-private command path is one-way enqueue only. No request/response reply channel remains in the mutation boundary.
+- [x] The final crate-private command error model is minimal and enqueue-oriented. It should not preserve “rejected” / “transport” failure classes unless implementation proves a concrete need and documents it.
+- [x] Duplicate identical commands are explicitly safe. If HA/API sends the same mutation again before `DcsView` catches up, the DCS actor handles that as an idempotent no-op/equivalent operation rather than a semantic error.
+- [x] All non-DCS consumers inside this crate (`src/ha`, `src/process`, `src/api`, runtime wiring, CLI code, and relevant tests) are updated to match on `DcsView` and use only the public read-only payload methods they actually need.
+- [x] Public API/CLI surfaces (`src/api`, `src/cli`, integration tests, serialized `NodeState`) expose `DcsView` directly. No `ApiDcsView` or equivalent parallel wire-only DCS type remains.
+- [x] DCS member state no longer carries an API URL or API-presence marker. HA must no longer derive `ApiVisibility` from DCS member records, and CLI/API output must no longer render per-member API URLs from DCS.
+- [x] `PgConnInfo` no longer overloads raw `host: String` to mean both TCP host and Unix socket directory; the in-memory type uses the shared `PgConnectTarget`.
+- [x] `src/dcs/store.rs` is deleted, or any tiny unavoidable remnants are moved private inside `src/dcs` with no store-like boundary exposed outside the owning actor.
+- [x] The old `src/dcs/etcd_store.rs` thread/bridge architecture is deleted or replaced by a substantially smaller private async etcd helper with no `Arc`, no `Mutex`, and no cross-thread watch event queue in the DCS path.
+- [x] The final DCS runtime path has one async owner loop and one etcd client/session owner only.
+- [x] No `Arc<...>`, `Mutex<...>`, or equivalent shared-state synchronization remains anywhere in the production DCS implementation. This is a hard requirement, not a best-effort target.
+- [x] The separate modeled `store_healthy` / “health bool” concept is removed from the DCS design. Coordination mode is represented directly by the `DcsView` enum itself.
+- [x] Public degraded/not-trusted reason types are not introduced unless a real external consumer proves they are necessary. If internal reason classification remains, it stays private to `src/dcs`.
+- [x] `/scope/config` decoding and any similar dead DCS legacy are removed unless the rewrite finds a concrete current use and converts it into an intentional typed design.
+- [x] `dcs.init`, `/scope/init`, and `/scope/config` are removed entirely as dead feature surface.
+- [x] All old superseded DCS code is cleaned up. No dead compatibility code, leftover adapter scaffolding, or unused old DCS type family remains in the tree.
+- [x] All old duplicated shared-concept types are cleaned up after the migration. In particular, no parallel old/new copies of epoch, switchover target, observed WAL vector, or PostgreSQL target types remain, and the old DCS member API URL type/path is deleted rather than carried forward.
+- [x] `src/dcs/mod.rs` and the rest of `src/dcs` are audited so unnecessary `pub` and `pub(crate)` visibility is removed aggressively.
+- [x] All DCS code is private by default first. Public visibility is used only for `DcsView` and the nested read-only payload/view types needed to inspect and serialize it; `pub(crate)` is used only where absolutely necessary to realize the crate-private mutation boundary.
+- [x] There are no raw DCS key/path manipulations, raw etcd CRUD calls, or internal DCS record/cache imports outside `src/dcs`.
+- [x] API/CLI output and validation continue to provide the product behavior they currently need, adapted to the public `DcsView`.
+- [x] DCS, HA, process, API, CLI, runtime, logging, and affected docs/tests are updated coherently for the new model.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<plan>
+1. Introduce shared coordination and PostgreSQL transport ADTs in `src/state` and move DCS/HA/PgInfo boundary types onto them.
+2. Collapse the public DCS surface to the enum-based `DcsView` ADT plus crate-private `DcsHandle`, removing trust-as-a-separate-type, DCS API URL advertisement, and duplicated endpoint/WAL/switchover leaf types.
+3. Retarget HA, API, process, CLI, logging, and runtime wiring to the new DCS/state ADTs, then delete the old bridge/store/thread architecture and dead `dcs.init`/`/scope/init`/`/scope/config` support.
+NOW EXECUTE
+</plan>
