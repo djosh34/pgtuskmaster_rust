@@ -1,5 +1,5 @@
 use crate::{
-    config::DcsEndpoint,
+    config::{DcsClientConfig, DcsEndpoint},
     logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
     state::WorkerError,
 };
@@ -11,8 +11,8 @@ use super::{
     state::{
         build_dcs_view, build_local_member_record, evaluate_trust, DcsCache, DcsCadence,
         DcsControlPlane, DcsLocalMemberAdvertisement, DcsNodeIdentity, DcsObservedState,
-        DcsRuntime, DcsStateChannel, DcsTrust, DcsWorkerCtx, InitLockRecord,
-        LeaderLeaseRecord, MemberRecord, SwitchoverRecord, SwitchoverTargetRecord,
+        DcsRuntime, DcsStateChannel, DcsTrust, DcsWorkerCtx, InitLockRecord, LeaderLeaseRecord,
+        MemberRecord, SwitchoverRecord, SwitchoverTargetRecord,
     },
     store::{refresh_from_etcd_watch, write_local_member_record, DcsStoreError},
 };
@@ -78,6 +78,7 @@ fn dcs_refresh_error_severity(err: &crate::dcs::store::DcsStoreError) -> Severit
 
 pub(crate) struct DcsStoreBootstrap {
     pub(crate) endpoints: Vec<DcsEndpoint>,
+    pub(crate) client: DcsClientConfig,
 }
 
 pub(crate) struct DcsWorkerBootstrap {
@@ -102,9 +103,10 @@ pub(crate) fn build_worker_ctx(
         state_channel,
         runtime,
     } = bootstrap;
-    let DcsStoreBootstrap { endpoints } = store;
+    let DcsStoreBootstrap { endpoints, client } = store;
     let store = EtcdDcsStore::connect_with_leader_lease(
         endpoints,
+        client,
         identity.scope.as_str(),
         cadence.member_ttl_ms,
     )?;
@@ -133,16 +135,16 @@ pub(crate) async fn run(mut ctx: DcsWorkerCtx) -> Result<(), WorkerError> {
 
 pub(crate) fn apply_watch_update(cache: &mut DcsCache, update: DcsWatchUpdate) {
     match update {
-            DcsWatchUpdate::Put { key, value } => match (key, *value) {
-                (DcsKey::Member(member_id), DcsValue::Member(record)) => {
-                    cache.member_records.insert(member_id, record);
-                }
-                (DcsKey::Leader, DcsValue::Leader(record)) => {
-                    cache.leader_record = Some(record);
-                }
-                (DcsKey::Switchover, DcsValue::Switchover(record)) => {
-                    cache.switchover_record = Some(record);
-                }
+        DcsWatchUpdate::Put { key, value } => match (key, *value) {
+            (DcsKey::Member(member_id), DcsValue::Member(record)) => {
+                cache.member_records.insert(member_id, record);
+            }
+            (DcsKey::Leader, DcsValue::Leader(record)) => {
+                cache.leader_record = Some(record);
+            }
+            (DcsKey::Switchover, DcsValue::Switchover(record)) => {
+                cache.switchover_record = Some(record);
+            }
             (DcsKey::Config, DcsValue::Config(_config)) => {}
             (DcsKey::InitLock, DcsValue::InitLock(record)) => {
                 cache.init_lock = Some(record);
@@ -558,10 +560,9 @@ fn execute_command(ctx: &mut DcsWorkerCtx, command: DcsCommand) -> Result<(), Dc
                     }
                 },
             };
-            let encoded =
-                serde_json::to_string(&record).map_err(|err| {
-                    DcsCommandError::Transport(format!("switchover encode failed: {err}"))
-                })?;
+            let encoded = serde_json::to_string(&record).map_err(|err| {
+                DcsCommandError::Transport(format!("switchover encode failed: {err}"))
+            })?;
             ctx.control
                 .store
                 .write_path(path.as_str(), encoded)
@@ -615,8 +616,8 @@ mod tests {
     use crate::{
         dcs::{
             state::{
-                build_local_member_record, DcsLeaderStateView, DcsMemberLeaseView, LeaderLeaseRecord,
-                MemberRecord,
+                build_local_member_record, DcsLeaderStateView, DcsMemberLeaseView,
+                LeaderLeaseRecord, MemberRecord,
             },
             store::{encode_leader_record, leader_path, DcsStore, WatchEvent, WatchOp},
         },

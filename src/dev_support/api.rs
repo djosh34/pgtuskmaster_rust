@@ -4,8 +4,8 @@ use axum::Router;
 
 use crate::{
     api::worker::{
-        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle,
-        ApiClusterIdentity, ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
+        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiClusterIdentity,
+        ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
     },
     config::RuntimeConfig,
     dcs::DcsHandle,
@@ -31,7 +31,8 @@ pub fn build_test_router_with_live_state(
 ) -> Result<Router, HarnessError> {
     let (_pg_publisher, pg) = new_state_channel(sample_pg_state());
     let (_process_publisher, process) = new_state_channel(sample_process_state());
-    let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsView::empty(WorkerStatus::Running));
+    let (_dcs_publisher, dcs) =
+        new_state_channel(crate::dcs::DcsView::empty(WorkerStatus::Running));
     let (_ha_publisher, ha) = new_state_channel(HaState::initial(WorkerStatus::Running));
 
     build_test_router_with_state(
@@ -52,12 +53,12 @@ fn build_test_router_with_state(
     observed: ApiObservedState,
 ) -> Result<Router, HarnessError> {
     let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
-    let transport = crate::tls::build_api_server_transport(&cfg.api.security.transport)
+    let transport = crate::tls::build_api_server_transport(&cfg.api.transport)
         .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
     build_router(ApiServerCtx {
         identity: ApiClusterIdentity {
             cluster_name: cfg.cluster.name.clone(),
-            scope: cfg.dcs.scope.clone(),
+            scope: cfg.cluster.scope.clone(),
             member_id: cfg.cluster.member_id.clone(),
         },
         observed,

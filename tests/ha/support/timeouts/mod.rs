@@ -1,6 +1,6 @@
 use std::{path::Path, time::Duration};
 
-use pgtuskmaster_rust::config::load_runtime_config;
+use pgtuskmaster_rust::config::RuntimeConfig;
 
 use crate::support::error::{HarnessError, Result};
 
@@ -18,9 +18,15 @@ pub struct TimeoutModel {
 
 impl TimeoutModel {
     pub fn from_runtime_config(path: &Path) -> Result<Self> {
-        let config = load_runtime_config(path).map_err(|err| {
+        let contents = std::fs::read_to_string(path).map_err(|err| {
             HarnessError::message(format!(
-                "failed to load runtime config `{}` for timeout derivation: {err}",
+                "failed to read runtime config `{}` for timeout derivation: {err}",
+                path.display()
+            ))
+        })?;
+        let config = toml::from_str::<RuntimeConfig>(contents.as_str()).map_err(|err| {
+            HarnessError::message(format!(
+                "failed to parse runtime config `{}` for timeout derivation: {err}",
                 path.display()
             ))
         })?;
@@ -30,11 +36,12 @@ impl TimeoutModel {
         let recovery_slack = poll_interval.mul_f64(RECOVERY_SLACK_LOOPS as f64);
         let failover_deadline = Duration::from_millis(config.ha.lease_ttl_ms) + failover_slack;
         let startup_deadline =
-            Duration::from_millis(config.process.bootstrap_timeout_ms) + recovery_slack;
+            Duration::from_millis(config.process.timeouts.bootstrap_ms) + recovery_slack;
         let recovery_base = config
             .process
-            .bootstrap_timeout_ms
-            .max(config.process.pg_rewind_timeout_ms);
+            .timeouts
+            .bootstrap_ms
+            .max(config.process.timeouts.pg_rewind_ms);
         let recovery_deadline = Duration::from_millis(recovery_base) + recovery_slack;
         Ok(Self {
             startup_deadline,

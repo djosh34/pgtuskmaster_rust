@@ -30,13 +30,12 @@ pub(crate) async fn ensure_required_roles(
     config.host_path(socket_dir);
     config.port(postgres_port);
     config.user(cfg.postgres.roles.superuser.username.as_str());
-    config.dbname(cfg.postgres.local_conn_identity.dbname.as_str());
+    config.dbname(cfg.postgres.local_database.as_str());
     config.connect_timeout(Duration::from_secs(cfg.postgres.connect_timeout_s.into()));
-    if let RoleAuthConfig::Password { password } = &cfg.postgres.roles.superuser.auth {
-        let resolved = resolve_secret_string("postgres.roles.superuser.auth.password", password)
-            .map_err(|err| RoleProvisionError::ResolveSuperuserPassword(err.to_string()))?;
-        config.password(resolved);
-    }
+    let RoleAuthConfig::Password { password } = &cfg.postgres.roles.superuser.auth;
+    let resolved = resolve_secret_string("postgres.roles.superuser.auth.password", password)
+        .map_err(|err| RoleProvisionError::ResolveSuperuserPassword(err.to_string()))?;
+    config.password(resolved);
 
     let (client, connection) = config
         .connect(NoTls)
@@ -86,9 +85,6 @@ fn render_role_provision_block(
 ) -> Result<String, RoleProvisionError> {
     let username_literal = sql_literal(username);
     let role_statement = match auth {
-        RoleAuthConfig::Tls => {
-            format!("format('ALTER ROLE %I WITH {attributes}', {username_literal})")
-        }
         RoleAuthConfig::Password { password } => {
             let resolved = resolve_secret_string("runtime role provisioning password", password)
                 .map_err(|err| RoleProvisionError::RenderSql(err.to_string()))?;

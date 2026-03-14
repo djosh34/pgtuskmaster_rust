@@ -9,8 +9,8 @@ You will establish a new cluster scope in your distributed coordination service 
 ## Prerequisites
 
 - Running etcd cluster accessible from all intended cluster members
-- PostgreSQL 16 binaries installed on each node
-- Runtime configuration file (TOML) for the bootstrap node with complete [postgres], [dcs], [ha], and [process] sections
+- PostgreSQL 16 binaries installed on each node, or a runtime environment where binary autodiscovery can find them
+- Runtime configuration file (TOML) for the bootstrap node with complete `cluster`, `postgres`, and `dcs` sections
 - Network connectivity between nodes on PostgreSQL and API ports
 
 ## Configure DCS Init Payload
@@ -69,7 +69,7 @@ For each additional node:
 
 1. Update `cluster.member_id` in the runtime configuration
 2. Configure `[postgres]` with unique `listen_port` and data directory
-3. Keep `[dcs]` endpoints and scope identical to bootstrap node
+3. Keep `[dcs]` endpoints and `cluster.scope` identical to bootstrap node
 4. Do not include `[dcs.init]` section
 
 When started, nodes automatically:
@@ -85,8 +85,8 @@ When started, nodes automatically:
 ### Bootstrap Node Stays in WaitingPostgresReachable
 
 - Check PostgreSQL logs for startup failures
-- Verify `postgres.listen_host` and `listen_port` are not in use
-- Confirm `[process.binaries]` paths point to valid PostgreSQL executables
+- Verify `postgres.network.listen_host` and `postgres.network.listen_port` are not in use
+- If autodiscovery is not enough in this environment, confirm `process.binaries.overrides.*` points to valid PostgreSQL executables
 
 ### Bootstrap Node Enters FailSafe
 
@@ -101,6 +101,6 @@ If two nodes appear primary at the same time, treat that as a split-brain signal
 ### Subsequent Node Fails to Join
 
 - Confirm replication roles exist on primary with correct passwords
-- Verify `rewind_conn_identity` points to the configured rewinder role
+- Verify `postgres.roles.rewinder` and `postgres.rewind.transport` match the intended rewind path
 - Check DCS member records show primary as healthy
 - Review `pg_hba.conf` on primary allows replication connections from new node

@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 pub(crate) use super::conninfo::render_pg_conninfo;
 pub use super::conninfo::{PgConnInfo, PgSslMode};
 use super::query::PgPollData;
-use crate::{config::RuntimeConfig, logging::LogHandle, process::state::ProcessRuntimePlan};
 use crate::state::StatePublisher;
 use crate::state::{
     MemberId, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerError, WorkerStatus,
 };
+use crate::{config::RuntimeConfig, logging::LogHandle, process::state::ProcessRuntimePlan};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SqlStatus {
@@ -182,16 +182,19 @@ impl PgInfoWorkerCtx {
 }
 
 impl PgProbeTarget {
-    pub(crate) fn local_from_config(cfg: &RuntimeConfig, process_plan: &ProcessRuntimePlan) -> Self {
+    pub(crate) fn local_from_config(
+        cfg: &RuntimeConfig,
+        process_plan: &ProcessRuntimePlan,
+    ) -> Self {
         Self::Local(PgLocalProbeTarget {
             socket_dir: process_plan.postgres.paths.socket_dir.clone(),
             port: process_plan.postgres.port,
             user: cfg.postgres.roles.superuser.username.clone(),
-            dbname: cfg.postgres.local_conn_identity.dbname.clone(),
+            dbname: cfg.postgres.local_database.clone(),
             application_name: None,
             connect_timeout_s: Some(cfg.postgres.connect_timeout_s),
-            ssl_mode: cfg.postgres.local_conn_identity.ssl_mode,
-            ssl_root_cert: cfg.postgres.local_conn_identity.ca_cert.clone(),
+            ssl_mode: crate::config::defaults::default_pg_ssl_mode(),
+            ssl_root_cert: None,
         })
     }
 
@@ -348,10 +351,10 @@ mod tests {
         }) = state
         {
             matched_primary = true;
-                assert_eq!(wal_lsn, WalLsn(42));
-                assert_eq!(slots.len(), 2);
-                assert_eq!(common.readiness, Readiness::Ready);
-                assert_eq!(common.system_identifier, Some(SystemIdentifier(11)));
+            assert_eq!(wal_lsn, WalLsn(42));
+            assert_eq!(slots.len(), 2);
+            assert_eq!(common.readiness, Readiness::Ready);
+            assert_eq!(common.system_identifier, Some(SystemIdentifier(11)));
         }
         assert!(matched_primary, "expected primary state");
     }
@@ -386,10 +389,10 @@ mod tests {
         }) = state
         {
             matched_replica = true;
-                assert_eq!(replay_lsn, WalLsn(11));
-                assert_eq!(follow_lsn, Some(WalLsn(12)));
-                assert_eq!(common.readiness, Readiness::Ready);
-                assert_eq!(common.system_identifier, Some(SystemIdentifier(17)));
+            assert_eq!(replay_lsn, WalLsn(11));
+            assert_eq!(follow_lsn, Some(WalLsn(12)));
+            assert_eq!(common.readiness, Readiness::Ready);
+            assert_eq!(common.system_identifier, Some(SystemIdentifier(17)));
         }
         assert!(matched_replica, "expected replica state");
     }
@@ -423,9 +426,9 @@ mod tests {
         }) = state
         {
             matched_replica = true;
-                assert_eq!(replay_lsn, WalLsn(0));
-                assert_eq!(follow_lsn, None);
-                assert_eq!(common.readiness, Readiness::NotReady);
+            assert_eq!(replay_lsn, WalLsn(0));
+            assert_eq!(follow_lsn, None);
+            assert_eq!(common.readiness, Readiness::NotReady);
         }
         assert!(matched_replica, "expected replica state");
     }

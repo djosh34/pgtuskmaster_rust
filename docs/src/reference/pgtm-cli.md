@@ -42,7 +42,7 @@ It does not call peer APIs for cluster discovery or debug enrichment.
 Resolution precedence:
 
 1. explicit CLI overrides
-2. `[pgtm].api_url`
+2. `pgtm.api.base_url`
 3. values derived from `api.listen_addr`
 4. config-backed auth and TLS material
 

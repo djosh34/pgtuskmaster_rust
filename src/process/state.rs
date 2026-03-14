@@ -8,7 +8,9 @@ use crate::{
     dcs::DcsView,
     logging::LogHandle,
     pginfo::state::PgSslMode,
-    state::{JobId, MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
+    state::{
+        JobId, MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
+    },
 };
 
 use super::jobs::{
@@ -219,11 +221,11 @@ impl ProcessRuntimePlan {
         Self {
             postgres: ManagedPostgresRuntime {
                 paths: ManagedPostgresPaths {
-                    data_dir: cfg.postgres.data_dir.clone(),
-                    socket_dir: cfg.postgres.socket_dir.clone(),
-                    log_file: cfg.postgres.log_file.clone(),
+                    data_dir: cfg.postgres.paths.data_dir.clone(),
+                    socket_dir: cfg.postgres_socket_dir(),
+                    log_file: cfg.postgres_log_file(),
                 },
-                port: cfg.postgres.listen_port,
+                port: cfg.postgres.network.listen_port,
             },
             replication_source: ReplicationSourceRuntime {
                 replicator: RemoteRoleProfile {
@@ -234,9 +236,19 @@ impl ProcessRuntimePlan {
                     username: cfg.postgres.roles.rewinder.username.clone(),
                     auth: cfg.postgres.roles.rewinder.auth.clone(),
                 },
-                dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
-                ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
-                ssl_root_cert: cfg.postgres.rewind_conn_identity.ca_cert.clone(),
+                dbname: cfg.postgres.rewind.database.clone(),
+                ssl_mode: cfg.postgres.rewind.transport.ssl_mode,
+                ssl_root_cert: cfg
+                    .postgres
+                    .rewind
+                    .transport
+                    .ca_cert
+                    .as_ref()
+                    .and_then(|source| match source {
+                        crate::config::InlineOrPath::Path(path)
+                        | crate::config::InlineOrPath::PathConfig { path } => Some(path.clone()),
+                        crate::config::InlineOrPath::Inline { .. } => None,
+                    }),
                 connect_timeout_s: cfg.postgres.connect_timeout_s,
             },
         }

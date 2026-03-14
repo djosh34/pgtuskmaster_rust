@@ -11,15 +11,18 @@ use std::{
 };
 
 use etcd_client::{
-    Client, Compare, CompareOp, EventType, GetOptions, PutOptions, Txn, TxnOp, WatchOptions,
-    WatchResponse, WatchStream, Watcher,
+    Certificate, Client, Compare, CompareOp, ConnectOptions, EventType, GetOptions, Identity,
+    PutOptions, TlsOptions, Txn, TxnOp, WatchOptions, WatchResponse, WatchStream, Watcher,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::store::{
     encode_leader_record, leader_path, DcsStore, DcsStoreError, WatchEvent, WatchOp,
 };
-use crate::config::DcsEndpoint;
+use crate::config::{
+    resolve_inline_or_path_bytes, resolve_secret_string, DcsAuthConfig, DcsClientConfig,
+    DcsEndpoint, DcsTlsConfig,
+};
 use crate::state::MemberId;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
@@ -30,6 +33,12 @@ const MIN_LEADER_LEASE_TTL_SECONDS: u64 = 1;
 #[derive(Clone, Copy, Debug)]
 struct LeaderLeaseConfig {
     ttl_seconds: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EtcdConnectConfig {
+    endpoints: Vec<DcsEndpoint>,
+    client: DcsClientConfig,
 }
 
 #[derive(Debug)]
@@ -85,20 +94,26 @@ pub(crate) struct EtcdDcsStore {
 impl EtcdDcsStore {
     pub(crate) fn connect_with_leader_lease(
         endpoints: Vec<DcsEndpoint>,
+        client: DcsClientConfig,
         scope: &str,
         lease_ttl_ms: u64,
     ) -> Result<Self, DcsStoreError> {
         let leader_lease = Some(leader_lease_config_from_ttl_ms(lease_ttl_ms)?);
-        Self::connect_with_options(endpoints, scope, WORKER_BOOTSTRAP_TIMEOUT, leader_lease)
+        Self::connect_with_options(
+            EtcdConnectConfig { endpoints, client },
+            scope,
+            WORKER_BOOTSTRAP_TIMEOUT,
+            leader_lease,
+        )
     }
 
     fn connect_with_options(
-        endpoints: Vec<DcsEndpoint>,
+        connect: EtcdConnectConfig,
         scope: &str,
         worker_bootstrap_timeout: Duration,
         leader_lease_config: Option<LeaderLeaseConfig>,
     ) -> Result<Self, DcsStoreError> {
-        if endpoints.is_empty() {
+        if connect.endpoints.is_empty() {
             return Err(DcsStoreError::Io(
                 "at least one etcd endpoint is required".to_string(),
             ));
@@ -112,14 +127,14 @@ impl EtcdDcsStore {
 
         let worker_healthy = Arc::clone(&healthy);
         let worker_events = Arc::clone(&events);
-        let worker_endpoints = endpoints;
+        let worker_connect = connect;
         let worker_scope = scope_prefix;
 
         let worker_handle = thread::Builder::new()
             .name("etcd-dcs-store".to_string())
             .spawn(move || {
                 run_worker_loop(
-                    worker_endpoints,
+                    worker_connect,
                     worker_scope,
                     leader_lease_config,
                     worker_healthy,
@@ -212,7 +227,7 @@ impl EtcdDcsStore {
 }
 
 fn run_worker_loop(
-    endpoints: Vec<DcsEndpoint>,
+    connect: EtcdConnectConfig,
     scope_prefix: String,
     leader_lease_config: Option<LeaderLeaseConfig>,
     healthy: Arc<AtomicBool>,
@@ -239,13 +254,8 @@ fn run_worker_loop(
             Option<Client>,
             Option<Watcher>,
             Option<WatchStream>,
-        ) = match establish_watch_session(
-            &endpoints,
-            &scope_prefix,
-            &events,
-            had_successful_session,
-        )
-        .await
+        ) = match establish_watch_session(&connect, &scope_prefix, &events, had_successful_session)
+            .await
         {
             Ok((next_client, next_watcher, next_stream)) => {
                 had_successful_session = true;
@@ -273,7 +283,7 @@ fn run_worker_loop(
                             return;
                         };
                         let mut command_ctx = WorkerCommandCtx {
-                            endpoints: &endpoints,
+                            connect: &connect,
                             leader_lease_config: &leader_lease_config,
                             healthy: &healthy,
                             events: &events,
@@ -289,7 +299,7 @@ fn run_worker_loop(
                     }
                     _ = tokio::time::sleep(WATCH_IDLE_INTERVAL) => {
                         match establish_watch_session(
-                            &endpoints,
+                            &connect,
                             &scope_prefix,
                             &events,
                             had_successful_session,
@@ -324,7 +334,7 @@ fn run_worker_loop(
                         return;
                     };
                     let mut command_ctx = WorkerCommandCtx {
-                        endpoints: &endpoints,
+                        connect: &connect,
                         leader_lease_config: &leader_lease_config,
                         healthy: &healthy,
                         events: &events,
@@ -379,7 +389,7 @@ fn run_worker_loop(
 }
 
 struct WorkerCommandCtx<'a> {
-    endpoints: &'a [DcsEndpoint],
+    connect: &'a EtcdConnectConfig,
     leader_lease_config: &'a Option<LeaderLeaseConfig>,
     healthy: &'a Arc<AtomicBool>,
     events: &'a Arc<Mutex<VecDeque<WatchEvent>>>,
@@ -398,7 +408,7 @@ impl WorkerCommandCtx<'_> {
                 response_tx,
             } => {
                 let result =
-                    execute_write(self.endpoints, self.client, self.healthy, &path, value).await;
+                    execute_write(self.connect, self.client, self.healthy, &path, value).await;
                 let invalidate_result = if should_invalidate_on_error(&result) {
                     invalidate_watch_session(
                         self.healthy,
@@ -420,7 +430,7 @@ impl WorkerCommandCtx<'_> {
                 response_tx,
             } => {
                 let result = execute_write_with_lease(
-                    self.endpoints,
+                    self.connect,
                     self.client,
                     self.healthy,
                     &path,
@@ -446,13 +456,9 @@ impl WorkerCommandCtx<'_> {
                 path_prefix,
                 response_tx,
             } => {
-                let result = execute_snapshot_prefix(
-                    self.endpoints,
-                    self.client,
-                    self.healthy,
-                    &path_prefix,
-                )
-                .await;
+                let result =
+                    execute_snapshot_prefix(self.connect, self.client, self.healthy, &path_prefix)
+                        .await;
                 let invalidate_result = if should_invalidate_on_error(&result) {
                     invalidate_watch_session(
                         self.healthy,
@@ -468,7 +474,7 @@ impl WorkerCommandCtx<'_> {
                 invalidate_result.is_ok()
             }
             WorkerCommand::Delete { path, response_tx } => {
-                let result = execute_delete(self.endpoints, self.client, self.healthy, &path).await;
+                let result = execute_delete(self.connect, self.client, self.healthy, &path).await;
                 let invalidate_result = if should_invalidate_on_error(&result) {
                     invalidate_watch_session(
                         self.healthy,
@@ -489,7 +495,7 @@ impl WorkerCommandCtx<'_> {
                 response_tx,
             } => {
                 let result = execute_acquire_leader_lease(
-                    self.endpoints,
+                    self.connect,
                     self.leader_lease_config,
                     self.healthy,
                     &scope,
@@ -506,7 +512,7 @@ impl WorkerCommandCtx<'_> {
                 response_tx,
             } => {
                 let result = execute_release_leader_lease(
-                    self.endpoints,
+                    self.connect,
                     self.healthy,
                     &scope,
                     &member_id,
@@ -582,7 +588,7 @@ fn invalidate_watch_session(
 }
 
 async fn establish_watch_session(
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     scope_prefix: &str,
     events: &Arc<Mutex<VecDeque<WatchEvent>>>,
     is_reconnect: bool,
@@ -590,7 +596,7 @@ async fn establish_watch_session(
     #[cfg(test)]
     apply_test_establish_delay().await;
 
-    let mut client = connect_client(endpoints).await?;
+    let mut client = connect_client(connect).await?;
     let snapshot_revision =
         bootstrap_snapshot(&mut client, scope_prefix, events, is_reconnect).await?;
     let start_revision = snapshot_revision.saturating_add(1);
@@ -599,12 +605,57 @@ async fn establish_watch_session(
     Ok((client, watcher, watch_stream))
 }
 
-async fn connect_client(endpoints: &[DcsEndpoint]) -> Result<Client, DcsStoreError> {
-    let client_endpoints = endpoints
+async fn connect_client(connect: &EtcdConnectConfig) -> Result<Client, DcsStoreError> {
+    let client_endpoints = connect
+        .endpoints
         .iter()
         .map(DcsEndpoint::to_client_string)
         .collect::<Vec<_>>();
-    timeout_etcd("etcd connect", Client::connect(client_endpoints, None)).await
+    let options = build_connect_options(&connect.client)?;
+    timeout_etcd("etcd connect", Client::connect(client_endpoints, options)).await
+}
+
+fn build_connect_options(
+    client: &DcsClientConfig,
+) -> Result<Option<ConnectOptions>, DcsStoreError> {
+    let mut options = ConnectOptions::new();
+    let mut configured = false;
+
+    if let DcsAuthConfig::Basic { username, password } = &client.auth {
+        let resolved = resolve_secret_string("dcs.client.auth.password", password)
+            .map_err(|err| DcsStoreError::Io(err.to_string()))?;
+        options = options.with_user(username.clone(), resolved);
+        configured = true;
+    }
+
+    if let DcsTlsConfig::Enabled {
+        ca_cert,
+        identity,
+        server_name,
+    } = &client.tls
+    {
+        let mut tls = TlsOptions::new();
+        if let Some(ca_cert) = ca_cert.as_ref() {
+            let pem = resolve_inline_or_path_bytes("dcs.client.tls.ca_cert", ca_cert)
+                .map_err(|err| DcsStoreError::Io(err.to_string()))?;
+            tls = tls.ca_certificate(Certificate::from_pem(pem));
+        }
+        if let Some(identity) = identity.as_ref() {
+            let cert_pem =
+                resolve_inline_or_path_bytes("dcs.client.tls.identity.cert", &identity.cert)
+                    .map_err(|err| DcsStoreError::Io(err.to_string()))?;
+            let key_pem = resolve_secret_string("dcs.client.tls.identity.key", &identity.key)
+                .map_err(|err| DcsStoreError::Io(err.to_string()))?;
+            tls = tls.identity(Identity::from_pem(cert_pem, key_pem.into_bytes()));
+        }
+        if let Some(server_name) = server_name.as_ref() {
+            tls = tls.domain_name(server_name.clone());
+        }
+        options = options.with_tls(tls);
+        configured = true;
+    }
+
+    Ok(configured.then_some(options))
 }
 
 fn leader_lease_config_from_ttl_ms(lease_ttl_ms: u64) -> Result<LeaderLeaseConfig, DcsStoreError> {
@@ -629,7 +680,7 @@ fn leader_keepalive_interval(ttl_seconds: i64) -> Duration {
 }
 
 fn spawn_leader_keepalive(
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     lease_id: i64,
     leader_path_value: &str,
     member_id: &MemberId,
@@ -638,7 +689,7 @@ fn spawn_leader_keepalive(
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (failure_tx, failure_rx) = mpsc::channel::<DcsStoreError>();
     let keepalive_interval = leader_keepalive_interval(ttl_seconds);
-    let keepalive_endpoints = endpoints.to_vec();
+    let keepalive_connect = connect.clone();
     let keepalive_handle = thread::Builder::new()
         .name("etcd-leader-keepalive".to_string())
         .spawn(move || {
@@ -649,7 +700,7 @@ fn spawn_leader_keepalive(
             let result = match runtime {
                 Ok(runtime) => run_leader_keepalive(
                     &runtime,
-                    &keepalive_endpoints,
+                    &keepalive_connect,
                     lease_id,
                     keepalive_interval,
                     stop_rx,
@@ -677,12 +728,12 @@ fn spawn_leader_keepalive(
 
 fn run_leader_keepalive(
     runtime: &tokio::runtime::Runtime,
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     lease_id: i64,
     keepalive_interval: Duration,
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), DcsStoreError> {
-    let mut client = runtime.block_on(connect_client(endpoints))?;
+    let mut client = runtime.block_on(connect_client(connect))?;
     let (mut keeper, mut stream) = runtime.block_on(timeout_etcd(
         "etcd lease keepalive create",
         client.lease_keep_alive(lease_id),
@@ -720,7 +771,7 @@ fn run_leader_keepalive(
 }
 
 async fn execute_acquire_leader_lease(
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     leader_lease_config: &Option<LeaderLeaseConfig>,
     healthy: &Arc<AtomicBool>,
     scope: &str,
@@ -744,7 +795,7 @@ async fn execute_acquire_leader_lease(
         return Err(DcsStoreError::LeaderLeaseNotConfigured(path));
     };
 
-    let mut client = connect_client(endpoints).await?;
+    let mut client = connect_client(connect).await?;
     let lease_response = timeout_etcd(
         "etcd lease grant",
         client.lease_grant(lease_config.ttl_seconds, None),
@@ -764,7 +815,7 @@ async fn execute_acquire_leader_lease(
         Ok(response) if response.succeeded() => {
             stop_owned_leader(owned_leader)?;
             let owned = spawn_leader_keepalive(
-                endpoints,
+                connect,
                 lease_id,
                 path.as_str(),
                 member_id,
@@ -787,7 +838,7 @@ async fn execute_acquire_leader_lease(
 }
 
 async fn execute_release_leader_lease(
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     healthy: &Arc<AtomicBool>,
     scope: &str,
     member_id: &MemberId,
@@ -809,7 +860,7 @@ async fn execute_release_leader_lease(
         .unwrap_or_default();
     stop_owned_leader(owned_leader)?;
 
-    let mut client = connect_client(endpoints).await?;
+    let mut client = connect_client(connect).await?;
     match timeout_etcd("etcd lease revoke", client.lease_revoke(lease_id)).await {
         Ok(_) => {
             healthy.store(true, Ordering::SeqCst);
@@ -823,14 +874,14 @@ async fn execute_release_leader_lease(
 }
 
 async fn execute_write(
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     client: &mut Option<Client>,
     healthy: &Arc<AtomicBool>,
     path: &str,
     value: String,
 ) -> Result<(), DcsStoreError> {
     if client.is_none() {
-        *client = Some(connect_client(endpoints).await?);
+        *client = Some(connect_client(connect).await?);
     }
 
     let Some(active_client) = client.as_mut() else {
@@ -854,7 +905,7 @@ async fn execute_write(
 }
 
 async fn execute_write_with_lease(
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     client: &mut Option<Client>,
     healthy: &Arc<AtomicBool>,
     path: &str,
@@ -862,7 +913,7 @@ async fn execute_write_with_lease(
     lease_ttl_ms: u64,
 ) -> Result<(), DcsStoreError> {
     if client.is_none() {
-        *client = Some(connect_client(endpoints).await?);
+        *client = Some(connect_client(connect).await?);
     }
 
     let Some(active_client) = client.as_mut() else {
@@ -893,13 +944,13 @@ async fn execute_write_with_lease(
 }
 
 async fn execute_delete(
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     client: &mut Option<Client>,
     healthy: &Arc<AtomicBool>,
     path: &str,
 ) -> Result<(), DcsStoreError> {
     if client.is_none() {
-        *client = Some(connect_client(endpoints).await?);
+        *client = Some(connect_client(connect).await?);
     }
 
     let Some(active_client) = client.as_mut() else {
@@ -1099,13 +1150,13 @@ async fn apply_test_establish_delay() {
 }
 
 async fn execute_snapshot_prefix(
-    endpoints: &[DcsEndpoint],
+    connect: &EtcdConnectConfig,
     client: &mut Option<Client>,
     healthy: &Arc<AtomicBool>,
     path_prefix: &str,
 ) -> Result<Vec<WatchEvent>, DcsStoreError> {
     if client.is_none() {
-        *client = Some(connect_client(endpoints).await?);
+        *client = Some(connect_client(connect).await?);
     }
 
     let Some(active_client) = client.as_mut() else {

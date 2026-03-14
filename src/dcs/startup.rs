@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::{
-    config::{DcsEndpoint, RuntimeConfig},
+    config::{DcsClientConfig, DcsEndpoint, RuntimeConfig},
     logging::LogHandle,
     pginfo::state::PgInfoState,
     state::{new_state_channel, NodeIdentity, StateSubscriber, WorkerError},
@@ -25,6 +25,7 @@ pub(crate) struct DcsAdvertisedEndpoints {
 pub(crate) struct DcsRuntimeRequest {
     pub(crate) identity: NodeIdentity,
     pub(crate) endpoints: Vec<DcsEndpoint>,
+    pub(crate) client: DcsClientConfig,
     pub(crate) poll_interval: Duration,
     pub(crate) member_ttl_ms: u64,
     pub(crate) advertised: DcsAdvertisedEndpoints,
@@ -42,12 +43,17 @@ pub(crate) struct DcsWorker(super::state::DcsWorkerCtx);
 
 impl DcsAdvertisedEndpoints {
     pub(crate) fn from_config(cfg: &RuntimeConfig) -> Self {
-        let api = if let Some(api_url) = cfg.pgtm.as_ref().and_then(|pgtm| pgtm.api_url.clone()) {
+        let api = if let Some(api_url) = cfg.pgtm.as_ref().and_then(|pgtm| {
+            pgtm.api
+                .advertised_url
+                .clone()
+                .or_else(|| pgtm.api.base_url.clone())
+        }) {
             Some(crate::dcs::DcsMemberApiView { url: api_url })
         } else if cfg.api.listen_addr.ip().is_unspecified() {
             None
         } else {
-            let scheme = match cfg.api.security.transport {
+            let scheme = match cfg.api.transport {
                 crate::config::ApiTransportConfig::Http => "http",
                 crate::config::ApiTransportConfig::Https { .. } => "https",
             };
@@ -58,11 +64,12 @@ impl DcsAdvertisedEndpoints {
 
         Self {
             postgres: crate::dcs::DcsMemberEndpointView {
-                host: cfg.postgres.listen_host.clone(),
+                host: cfg.postgres.network.listen_host.clone(),
                 port: cfg
                     .postgres
+                    .network
                     .advertise_port
-                    .unwrap_or(cfg.postgres.listen_port),
+                    .unwrap_or(cfg.postgres.network.listen_port),
             },
             api,
         }
@@ -84,6 +91,7 @@ pub(crate) fn bootstrap(request: DcsRuntimeRequest) -> Result<DcsRuntime, DcsSto
         },
         store: DcsStoreBootstrap {
             endpoints: request.endpoints,
+            client: request.client,
         },
         cadence: DcsCadence {
             poll_interval: request.poll_interval,

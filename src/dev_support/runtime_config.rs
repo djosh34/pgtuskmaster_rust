@@ -2,11 +2,12 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 
 use crate::{
     config::{
-        ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTransportConfig, BinaryPaths,
-        ClusterConfig, DcsConfig, DcsEndpoint, DebugConfig, FileSinkConfig, FileSinkMode,
-        HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig,
-        PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
-        PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
+        ApiAuthConfig, ApiConfig, ApiTransportConfig, BinaryPathOverrides, BinaryResolutionConfig,
+        ClusterConfig, DcsClientConfig, DcsConfig, DcsEndpoint, DebugConfig, FileSinkConfig,
+        FileSinkMode, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
+        LoggingSinksConfig, PostgresAccessConfig, PostgresClientTransportConfig, PostgresConfig,
+        PostgresLoggingConfig, PostgresNetworkConfig, PostgresPathsConfig, PostgresRewindConfig,
+        PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, ProcessTimeoutsConfig,
         RoleAuthConfig, RuntimeConfig, SecretSource, StderrSinkConfig, TlsServerConfig,
     },
     pginfo::conninfo::PgSslMode,
@@ -30,42 +31,28 @@ const SAMPLE_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS: u64 = 300;
 const SAMPLE_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
 const SAMPLE_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
 const SAMPLE_POSTGRES_LISTEN_PORT: u16 = 5432;
+const SAMPLE_RUNTIME_WORKING_ROOT: &str = "/tmp/pgtuskmaster";
 #[cfg(test)]
 const SAMPLE_DCS_INIT_PAYLOAD_JSON: &str = "{\"ttl\":30}";
 
 fn sample_cluster_config() -> ClusterConfig {
     ClusterConfig {
         name: "cluster-a".to_string(),
+        scope: "scope-a".to_string(),
         member_id: "node-a".to_string(),
     }
 }
 
-pub fn sample_binary_paths() -> BinaryPaths {
-    BinaryPaths {
-        postgres: "/usr/bin/postgres".into(),
-        pg_ctl: "/usr/bin/pg_ctl".into(),
-        pg_rewind: "/usr/bin/pg_rewind".into(),
-        initdb: "/usr/bin/initdb".into(),
-        pg_basebackup: "/usr/bin/pg_basebackup".into(),
-        psql: "/usr/bin/psql".into(),
-    }
-}
-
-fn sample_local_conn_identity() -> PostgresConnIdentityConfig {
-    PostgresConnIdentityConfig {
-        user: "postgres".to_string(),
-        dbname: "postgres".to_string(),
-        ssl_mode: PgSslMode::Prefer,
-        ca_cert: None,
-    }
-}
-
-fn sample_rewind_conn_identity() -> PostgresConnIdentityConfig {
-    PostgresConnIdentityConfig {
-        user: "rewinder".to_string(),
-        dbname: "postgres".to_string(),
-        ssl_mode: PgSslMode::Prefer,
-        ca_cert: None,
+pub fn sample_binary_paths() -> BinaryResolutionConfig {
+    BinaryResolutionConfig {
+        overrides: BinaryPathOverrides {
+            postgres: Some("/usr/bin/postgres".into()),
+            pg_ctl: Some("/usr/bin/pg_ctl".into()),
+            pg_rewind: Some("/usr/bin/pg_rewind".into()),
+            initdb: Some("/usr/bin/initdb".into()),
+            pg_basebackup: Some("/usr/bin/pg_basebackup".into()),
+            psql: Some("/usr/bin/psql".into()),
+        },
     }
 }
 
@@ -113,26 +100,21 @@ fn sample_postgres_tls_config_enabled() -> TlsServerConfig {
                 content: SAMPLE_TLS_KEY_PEM.to_string(),
             },
         },
-            client_auth: Some(crate::config::TlsClientAuthConfig {
-                client_ca: InlineOrPath::Inline {
-                    content: SAMPLE_TLS_CA_PEM.to_string(),
-                },
-                client_certificate: crate::config::ClientCertificateMode::Optional,
-            }),
-        }
-    }
-
-fn sample_pg_hba_config() -> PgHbaConfig {
-    PgHbaConfig {
-        source: InlineOrPath::Inline {
-            content: SAMPLE_PG_HBA_CONTENTS.to_string(),
-        },
+        client_auth: Some(crate::config::TlsClientAuthConfig {
+            client_ca: InlineOrPath::Inline {
+                content: SAMPLE_TLS_CA_PEM.to_string(),
+            },
+            client_certificate: crate::config::ClientCertificateMode::Optional,
+        }),
     }
 }
 
-fn sample_pg_ident_config() -> PgIdentConfig {
-    PgIdentConfig {
-        source: InlineOrPath::Inline {
+fn sample_postgres_access_config() -> PostgresAccessConfig {
+    PostgresAccessConfig {
+        hba: InlineOrPath::Inline {
+            content: SAMPLE_PG_HBA_CONTENTS.to_string(),
+        },
+        ident: InlineOrPath::Inline {
             content: SAMPLE_PG_IDENT_CONTENTS.to_string(),
         },
     }
@@ -172,7 +154,7 @@ pub fn sample_logging_config() -> LoggingConfig {
 fn sample_dcs_config() -> DcsConfig {
     DcsConfig {
         endpoints: vec![sample_dcs_endpoint()],
-        scope: "scope-a".to_string(),
+        client: DcsClientConfig::default(),
         init: None,
     }
 }
@@ -186,9 +168,12 @@ fn sample_ha_config() -> HaConfig {
 
 fn sample_process_config() -> ProcessConfig {
     ProcessConfig {
-        pg_rewind_timeout_ms: SAMPLE_PROCESS_TIMEOUT_MS,
-        bootstrap_timeout_ms: SAMPLE_PROCESS_TIMEOUT_MS,
-        fencing_timeout_ms: SAMPLE_PROCESS_TIMEOUT_MS,
+        timeouts: ProcessTimeoutsConfig {
+            pg_rewind_ms: SAMPLE_PROCESS_TIMEOUT_MS,
+            bootstrap_ms: SAMPLE_PROCESS_TIMEOUT_MS,
+            fencing_ms: SAMPLE_PROCESS_TIMEOUT_MS,
+        },
+        working_root: PathBuf::from(SAMPLE_RUNTIME_WORKING_ROOT),
         binaries: sample_binary_paths(),
     }
 }
@@ -197,17 +182,11 @@ fn sample_api_auth_disabled() -> ApiAuthConfig {
     ApiAuthConfig::Disabled
 }
 
-fn sample_api_security_config() -> ApiSecurityConfig {
-    ApiSecurityConfig {
-        transport: ApiTransportConfig::Http,
-        auth: sample_api_auth_disabled(),
-    }
-}
-
 fn sample_api_config() -> ApiConfig {
     ApiConfig {
         listen_addr: sample_api_listen_addr(),
-        security: sample_api_security_config(),
+        transport: ApiTransportConfig::Http,
+        auth: sample_api_auth_disabled(),
     }
 }
 
@@ -225,19 +204,28 @@ fn sample_debug_config() -> DebugConfig {
 
 fn sample_postgres_config() -> PostgresConfig {
     PostgresConfig {
-        data_dir: "/tmp/pgdata".into(),
+        paths: PostgresPathsConfig {
+            data_dir: "/tmp/pgdata".into(),
+            socket_dir: Some("/tmp/pgtuskmaster/socket".into()),
+            log_file: Some("/tmp/pgtuskmaster/postgres.log".into()),
+        },
+        network: PostgresNetworkConfig {
+            listen_host: SAMPLE_POSTGRES_LISTEN_HOST.to_string(),
+            listen_port: SAMPLE_POSTGRES_LISTEN_PORT,
+            advertise_port: None,
+        },
         connect_timeout_s: SAMPLE_POSTGRES_CONNECT_TIMEOUT_S,
-        listen_host: SAMPLE_POSTGRES_LISTEN_HOST.to_string(),
-        listen_port: SAMPLE_POSTGRES_LISTEN_PORT,
-        advertise_port: None,
-        socket_dir: "/tmp/pgtuskmaster/socket".into(),
-        log_file: "/tmp/pgtuskmaster/postgres.log".into(),
-        local_conn_identity: sample_local_conn_identity(),
-        rewind_conn_identity: sample_rewind_conn_identity(),
+        local_database: "postgres".to_string(),
+        rewind: PostgresRewindConfig {
+            database: "postgres".to_string(),
+            transport: PostgresClientTransportConfig {
+                ssl_mode: PgSslMode::Prefer,
+                ca_cert: None,
+            },
+        },
         tls: sample_postgres_tls_config_disabled(),
         roles: sample_postgres_roles_config(),
-        pg_hba: sample_pg_hba_config(),
-        pg_ident: sample_pg_ident_config(),
+        access: sample_postgres_access_config(),
         extra_gucs: BTreeMap::new(),
     }
 }
@@ -281,7 +269,7 @@ impl RuntimeConfigBuilder {
 
     pub fn with_dcs_scope(self, scope: impl Into<String>) -> Self {
         let scope = scope.into();
-        self.transform_dcs(move |dcs| DcsConfig { scope, ..dcs })
+        self.transform_cluster(move |cluster| ClusterConfig { scope, ..cluster })
     }
 
     #[cfg(test)]
@@ -294,19 +282,16 @@ impl RuntimeConfigBuilder {
     }
 
     pub fn with_api_auth(self, auth: ApiAuthConfig) -> Self {
-        self.transform_api(|api| ApiConfig {
-            security: ApiSecurityConfig {
-                auth,
-                ..api.security
-            },
-            ..api
-        })
+        self.transform_api(move |api| ApiConfig { auth, ..api })
     }
 
     pub fn with_postgres_data_dir(self, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
         self.transform_postgres(move |postgres| PostgresConfig {
-            data_dir,
+            paths: PostgresPathsConfig {
+                data_dir,
+                ..postgres.paths
+            },
             ..postgres
         })
     }
@@ -314,20 +299,32 @@ impl RuntimeConfigBuilder {
     #[cfg(test)]
     fn with_postgres_listen_port(self, listen_port: u16) -> Self {
         self.transform_postgres(move |postgres| PostgresConfig {
-            listen_port,
+            network: PostgresNetworkConfig {
+                listen_port,
+                ..postgres.network
+            },
             ..postgres
         })
     }
 
     pub fn with_postgres_advertise_port(self, advertise_port: Option<u16>) -> Self {
         self.transform_postgres(move |postgres| PostgresConfig {
-            advertise_port,
+            network: PostgresNetworkConfig {
+                advertise_port,
+                ..postgres.network
+            },
             ..postgres
         })
     }
 
-    pub fn with_pg_hba(self, pg_hba: PgHbaConfig) -> Self {
-        self.transform_postgres(move |postgres| PostgresConfig { pg_hba, ..postgres })
+    pub fn with_pg_hba(self, hba: InlineOrPath) -> Self {
+        self.transform_postgres(move |postgres| PostgresConfig {
+            access: PostgresAccessConfig {
+                hba,
+                ..postgres.access
+            },
+            ..postgres
+        })
     }
 
     pub fn with_logging(self, logging: LoggingConfig) -> Self {
@@ -369,6 +366,20 @@ impl RuntimeConfigBuilder {
         }
     }
 
+    fn transform_cluster<F>(self, transform: F) -> Self
+    where
+        F: FnOnce(ClusterConfig) -> ClusterConfig,
+    {
+        let RuntimeConfigBuilder { config } = self;
+        Self {
+            config: RuntimeConfig {
+                cluster: transform(config.cluster),
+                ..config
+            },
+        }
+    }
+
+    #[cfg(test)]
     fn transform_dcs<F>(self, transform: F) -> Self
     where
         F: FnOnce(DcsConfig) -> DcsConfig,
@@ -456,11 +467,14 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::config::validate_runtime_config;
-    use crate::postgres_managed::materialize_managed_postgres_config;
-    use crate::postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME};
-    use crate::dev_support::runtime_config::{
-        sample_runtime_config, RuntimeConfigBuilder,
+    use crate::{
+        config::{
+            validate_runtime_config, ApiRoleTokensConfig, ApiTlsConfig, ApiTransportConfig,
+            DcsInitConfig, InlineOrPath, TlsServerIdentityConfig,
+        },
+        dev_support::runtime_config::{sample_runtime_config, RuntimeConfigBuilder},
+        postgres_managed::materialize_managed_postgres_config,
+        postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME},
     };
 
     fn sample_override_api_listen_addr() -> std::net::SocketAddr {
@@ -500,20 +514,18 @@ mod tests {
             .build();
 
         assert_eq!(
-            updated.postgres.data_dir,
+            updated.postgres.paths.data_dir,
             PathBuf::from("/tmp/override-data-dir")
         );
         assert_eq!(
-            updated.postgres.local_conn_identity,
-            baseline.postgres.local_conn_identity
+            updated.postgres.local_database,
+            baseline.postgres.local_database
         );
-        assert_eq!(
-            updated.postgres.rewind_conn_identity,
-            baseline.postgres.rewind_conn_identity
-        );
+        assert_eq!(updated.postgres.rewind, baseline.postgres.rewind);
         assert_eq!(updated.postgres.roles, baseline.postgres.roles);
         assert_eq!(updated.postgres.tls, baseline.postgres.tls);
-        assert_eq!(updated.api.security, baseline.api.security);
+        assert_eq!(updated.api.transport, baseline.api.transport);
+        assert_eq!(updated.api.auth, baseline.api.auth);
     }
 
     #[test]
@@ -526,13 +538,16 @@ mod tests {
             .with_dcs_scope("scope-b")
             .build();
 
-        assert_eq!(updated.postgres.listen_port, 6543);
-        assert_eq!(updated.postgres.advertise_port, Some(6544));
+        assert_eq!(updated.postgres.network.listen_port, 6543);
+        assert_eq!(updated.postgres.network.advertise_port, Some(6544));
         assert_eq!(updated.api.listen_addr, sample_override_api_listen_addr());
-        assert_eq!(updated.dcs.scope, "scope-b");
-        assert_eq!(updated.cluster, baseline.cluster);
-        assert_eq!(updated.postgres.listen_host, baseline.postgres.listen_host);
-        assert_eq!(updated.postgres.pg_hba, baseline.postgres.pg_hba);
+        assert_eq!(updated.cluster.scope, "scope-b");
+        assert_eq!(updated.cluster.name, baseline.cluster.name);
+        assert_eq!(
+            updated.postgres.network.listen_host,
+            baseline.postgres.network.listen_host
+        );
+        assert_eq!(updated.postgres.access, baseline.postgres.access);
         assert_eq!(updated.logging, baseline.logging);
     }
 
@@ -541,32 +556,35 @@ mod tests {
         let baseline = sample_runtime_config();
         let updated = RuntimeConfigBuilder::new()
             .transform_postgres(|postgres| crate::config::PostgresConfig {
-                listen_port: 5544,
+                network: crate::config::PostgresNetworkConfig {
+                    listen_port: 5544,
+                    ..postgres.network
+                },
                 ..postgres
             })
             .transform_api(|api| crate::config::ApiConfig {
-                security: crate::config::ApiSecurityConfig {
-                    transport: crate::config::ApiTransportConfig::Https {
-                        tls: crate::config::ApiTlsConfig {
-                            identity: crate::config::TlsServerIdentityConfig {
-                                cert_chain: crate::config::InlineOrPath::Inline {
-                                    content: super::SAMPLE_TLS_CERT_PEM.to_string(),
-                                },
-                                private_key: crate::config::InlineOrPath::Inline {
-                                    content: super::SAMPLE_TLS_KEY_PEM.to_string(),
-                                },
+                transport: ApiTransportConfig::Https {
+                    tls: ApiTlsConfig {
+                        identity: TlsServerIdentityConfig {
+                            cert_chain: InlineOrPath::Inline {
+                                content: super::SAMPLE_TLS_CERT_PEM.to_string(),
                             },
-                            client_auth: crate::config::ApiClientAuthConfig::Disabled,
+                            private_key: InlineOrPath::Inline {
+                                content: super::SAMPLE_TLS_KEY_PEM.to_string(),
+                            },
                         },
+                        client_auth: crate::config::ApiClientAuthConfig::Disabled,
                     },
-                    ..api.security
                 },
                 ..api
             })
             .build();
 
-        assert_eq!(updated.postgres.listen_port, 5544);
-        assert_eq!(updated.postgres.data_dir, baseline.postgres.data_dir);
+        assert_eq!(updated.postgres.network.listen_port, 5544);
+        assert_eq!(
+            updated.postgres.paths.data_dir,
+            baseline.postgres.paths.data_dir
+        );
         assert_eq!(updated.postgres.roles, baseline.postgres.roles);
         assert_eq!(updated.api.listen_addr, baseline.api.listen_addr);
         assert_eq!(updated.debug, baseline.debug);
@@ -603,7 +621,7 @@ mod tests {
     fn builder_can_override_auth_and_dcs_init() {
         let cfg = RuntimeConfigBuilder::new()
             .with_api_auth(crate::config::ApiAuthConfig::RoleTokens(
-                crate::config::ApiRoleTokensConfig {
+                ApiRoleTokensConfig {
                     read_token: Some(crate::config::SecretSource::Inline {
                         content: "read-token".to_string(),
                     }),
@@ -612,15 +630,15 @@ mod tests {
                     }),
                 },
             ))
-            .with_dcs_init(Some(crate::config::DcsInitConfig {
+            .with_dcs_init(Some(DcsInitConfig {
                 payload_json: super::SAMPLE_DCS_INIT_PAYLOAD_JSON.to_string(),
                 write_on_bootstrap: true,
             }))
             .build();
 
         assert_eq!(
-            cfg.api.security.auth,
-            crate::config::ApiAuthConfig::RoleTokens(crate::config::ApiRoleTokensConfig {
+            cfg.api.auth,
+            crate::config::ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
                 read_token: Some(crate::config::SecretSource::Inline {
                     content: "read-token".to_string(),
                 }),
@@ -631,7 +649,7 @@ mod tests {
         );
         assert_eq!(
             cfg.dcs.init,
-            Some(crate::config::DcsInitConfig {
+            Some(DcsInitConfig {
                 payload_json: super::SAMPLE_DCS_INIT_PAYLOAD_JSON.to_string(),
                 write_on_bootstrap: true,
             })
@@ -649,6 +667,9 @@ mod tests {
             auth,
             crate::config::RoleAuthConfig::Password { .. }
         ));
-        assert!(matches!(tls, crate::config::TlsServerConfig::Enabled { .. }));
+        assert!(matches!(
+            tls,
+            crate::config::TlsServerConfig::Enabled { .. }
+        ));
     }
 }

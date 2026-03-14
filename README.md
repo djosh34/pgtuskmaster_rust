@@ -18,33 +18,25 @@ Start with the [docs overview](docs/src/overview.md), then use the chapter entry
 
 ### Run local cluster examples
 
-Single-node cluster:
-
-```bash
-docker compose --env-file .env.docker.example -f docker/compose/docker-compose.single.yml up -d --build
-```
-
-API available at `http://127.0.0.1:18080`, PostgreSQL at `127.0.0.1:15432`.
-
 Three-node HA cluster:
 
 ```bash
-make docker-up-cluster
+docker compose -f docker/compose.yml up -d --build
 ```
 
-The persistent cluster flow uses `tools/docker/cluster.sh` under the hood. It prints the effective compose project, env file, API URLs, debug URLs, PostgreSQL endpoints, leader, and each node's current HA role once readiness succeeds.
+This shipped HA stack is TLS-enabled. Use the operator config in `docker/pgtm.toml` or the docs-owned seed configs in `docs/examples/docker-cluster-node-*.toml` when you talk to it with `pgtm`.
 
-By default the cluster targets read `.env.docker`. If you want the stable example ports from `.env.docker.example`, either copy it to `.env.docker` or run the script directly:
+Inspect the running stack:
 
 ```bash
-tools/docker/cluster.sh up --env-file .env.docker.example
-tools/docker/cluster.sh status --env-file .env.docker.example
-tools/docker/cluster.sh down --env-file .env.docker.example
+docker compose -f docker/compose.yml ps
+pgtm -c docker/pgtm.toml status
+docker compose -f docker/compose.yml down
 ```
 
-The example env file publishes node APIs on `18081`, `18082`, and `18083`, and PostgreSQL on `15433`, `15434`, and `15435`. The first run can take noticeably longer because Docker needs to build `pgtuskmaster:local`.
+The compose file publishes node APIs on `18081`, `18082`, and `18083`, and PostgreSQL on `15001`, `15002`, and `15003`. The first run can take noticeably longer because Docker needs to build `pgtuskmaster-local:compose`.
 
-For guided walkthroughs, see [Single-Node Setup](docs/src/tutorial/single-node-setup.md), [First HA Cluster](docs/src/tutorial/first-ha-cluster.md), and [Check Cluster Health](docs/src/how-to/check-cluster-health.md).
+For guided walkthroughs, see [First HA Cluster](docs/src/tutorial/first-ha-cluster.md) and [Check Cluster Health](docs/src/how-to/check-cluster-health.md).
 
 ## License
 

@@ -17,34 +17,35 @@ The local docker tutorials use these docs-owned operator configs:
 - [`docs/examples/docker-cluster-node-b.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-b.toml)
 - [`docs/examples/docker-cluster-node-c.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-c.toml)
 
-Each file mirrors the shipped runtime config and adds `[pgtm].api_url` for the corresponding host-mapped API port.
+Each file is a docs-owned operator config that seeds one host-mapped HTTPS API and includes the shared CA, client certificate, and role-token paths required by the shipped Docker stack.
 
 ## Steps
 
 1. **Start the cluster**
 
    ```bash
-   tools/docker/cluster.sh up --env-file .env.docker.example
+   docker compose -f docker/compose.yml up -d --build
    ```
 
    This command:
 
-   - reads environment variables from `.env.docker.example`
-   - builds the `pgtuskmaster:local` image when needed
-   - starts `etcd`, `node-a`, `node-b`, and `node-c` as a persistent local stack
-   - waits until the HA API, debug API, PostgreSQL ports, SQL readiness, and `1 primary + 2 replicas` topology are all healthy
-   - prints the API URL, debug URL, PostgreSQL endpoint, leader, and current role for each node
+   - builds the `pgtuskmaster-local:compose` image when needed
+   - starts `etcd`, `node-a`, `node-b`, and `node-c`
+   - publishes the HTTPS APIs on ports `18081`, `18082`, and `18083`
+   - publishes PostgreSQL on ports `15001`, `15002`, and `15003`
 
-2. **Inspect the running stack later without rebuilding it**
+   Wait until the operator view becomes reachable:
 
    ```bash
-   tools/docker/cluster.sh status --env-file .env.docker.example
+   until pgtm -c docs/examples/docker-cluster-node-a.toml status >/dev/null 2>&1; do
+     sleep 1
+   done
    ```
 
-   If your local `.env.docker` matches the same ports, you can also use:
+2. **Inspect the running stack**
 
    ```bash
-   make docker-status-cluster
+   docker compose -f docker/compose.yml ps
    ```
 
 3. **Check the current leader through node-a**
@@ -53,7 +54,7 @@ Each file mirrors the shipped runtime config and adds `[pgtm].api_url` for the c
    pgtm -c docs/examples/docker-cluster-node-a.toml status
    ```
 
-   The local docker runtime config disables API auth, so this read command does not need token flags. The table is cluster-oriented already, so you can inspect the current topology from one seed node.
+   The docs example already points `pgtm` at node-a's host-mapped HTTPS API and carries the required TLS and token material. The table is cluster-oriented already, so you can inspect the current topology from one seed node.
 
 4. **Verify that the cluster reports a consistent view**
 
@@ -76,5 +77,5 @@ Each file mirrors the shipped runtime config and adds `[pgtm].api_url` for the c
 - one leader node serving as the primary
 - two follower nodes reporting `replica`
 - reachable HA APIs on ports `18081`, `18082`, and `18083`
-- reachable PostgreSQL ports on `15433`, `15434`, and `15435`
+- reachable PostgreSQL ports on `15001`, `15002`, and `15003`
 - truthful `pgtm -c ... status` examples for the local mapped API ports

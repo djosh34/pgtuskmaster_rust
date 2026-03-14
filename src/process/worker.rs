@@ -7,15 +7,15 @@ use tokio::{
 };
 
 use crate::{
-    config::{ProcessConfig, RoleAuthConfig, RuntimeConfig},
+    config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
     dcs::{DcsMemberView, DcsView},
     logging::{
         AppEvent, AppEventHeader, LogHandle, SeverityText, StructuredFields, SubprocessLineRecord,
         SubprocessStream,
     },
+    pginfo::state::render_pg_conninfo,
     postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
     postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
-    pginfo::state::render_pg_conninfo,
     state::{JobId, UnixMillis, WorkerError, WorkerStatus},
 };
 
@@ -341,10 +341,12 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
         SeverityText::Debug,
         "process worker run started",
     );
-    event
-        .fields_mut()
-        .insert("capture_subprocess_output", ctx.runtime.capture_subprocess_output);
-    ctx.runtime.log
+    event.fields_mut().insert(
+        "capture_subprocess_output",
+        ctx.runtime.capture_subprocess_output,
+    );
+    ctx.runtime
+        .log
         .emit_app_event("process_worker::run", event)
         .map_err(|err| {
             WorkerError::Message(format!("process worker start log emit failed: {err}"))
@@ -367,7 +369,8 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
             event.fields_mut().append_json_map(
                 process_job_fields(&request.id, request.intent.label()).into_attributes(),
             );
-            ctx.runtime.log
+            ctx.runtime
+                .log
                 .emit_app_event("process_worker::step_once", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process request log emit failed: {err}"))
@@ -378,7 +381,8 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
         Err(TryRecvError::Disconnected) => {
             if !ctx.control.inbox_disconnected_logged {
                 ctx.control.inbox_disconnected_logged = true;
-                ctx.runtime.log
+                ctx.runtime
+                    .log
                     .emit_app_event(
                         "process_worker::step_once",
                         process_event(
@@ -650,7 +654,7 @@ fn start_postgres_preflight_details(
         ) => {
             let runtime_config = ctx.observed.runtime_config.latest();
             Some((
-                runtime_config.postgres.data_dir.clone(),
+                runtime_config.postgres.paths.data_dir.clone(),
                 ctx.plan.postgres.paths.socket_dir.clone(),
                 ctx.plan.postgres.port,
             ))
@@ -685,7 +689,8 @@ pub(crate) async fn start_job(
         event.fields_mut().append_json_map(
             process_job_fields(&rejected_job_id, request.intent.label()).into_attributes(),
         );
-        ctx.runtime.log
+        ctx.runtime
+            .log
             .emit_app_event("process_worker::start_job", event)
             .map_err(|err| {
                 WorkerError::Message(format!("process busy reject log emit failed: {err}"))
@@ -694,7 +699,8 @@ pub(crate) async fn start_job(
     }
 
     let now = current_time(ctx)?;
-    if let Some((data_dir, socket_dir, port)) = start_postgres_preflight_details(ctx, &request.intent)
+    if let Some((data_dir, socket_dir, port)) =
+        start_postgres_preflight_details(ctx, &request.intent)
     {
         match start_postgres_preflight_is_already_running(
             data_dir.as_path(),
@@ -713,7 +719,8 @@ pub(crate) async fn start_job(
                     process_job_fields(&request.id, "start_postgres").into_attributes(),
                 );
                 fields.insert("data_dir", data_dir.display().to_string());
-                ctx.runtime.log
+                ctx.runtime
+                    .log
                     .emit_app_event("process_worker::start_job", event)
                     .map_err(|err| {
                         WorkerError::Message(format!(
@@ -744,7 +751,8 @@ pub(crate) async fn start_job(
                     process_job_fields(&request.id, "start_postgres").into_attributes(),
                 );
                 fields.insert("error", error.to_string());
-                ctx.runtime.log
+                ctx.runtime
+                    .log
                     .emit_app_event("process_worker::start_job", event)
                     .map_err(|err| {
                         WorkerError::Message(format!(
@@ -780,7 +788,8 @@ pub(crate) async fn start_job(
                 process_job_fields(&request.id, request.intent.label()).into_attributes(),
             );
             fields.insert("error", error.to_string());
-            ctx.runtime.log
+            ctx.runtime
+                .log
                 .emit_app_event("process_worker::start_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!(
@@ -822,7 +831,8 @@ pub(crate) async fn start_job(
                 process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
             );
             fields.insert("error", error.to_string());
-            ctx.runtime.log
+            ctx.runtime
+                .log
                 .emit_app_event("process_worker::start_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process build command log emit failed: {err}"))
@@ -856,7 +866,8 @@ pub(crate) async fn start_job(
                 process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
             );
             fields.insert("error", error.to_string());
-            ctx.runtime.log
+            ctx.runtime
+                .log
                 .emit_app_event("process_worker::start_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process spawn log emit failed: {err}"))
@@ -905,7 +916,8 @@ pub(crate) async fn start_job(
         .map(|runtime| process_log_identity_fields(&runtime.log_identity).into_attributes())
         .unwrap_or_default();
     event.fields_mut().append_json_map(runtime_fields);
-    ctx.runtime.log
+    ctx.runtime
+        .log
         .emit_app_event("process_worker::start_job", event)
         .map_err(|err| {
             WorkerError::Message(format!("process job started log emit failed: {err}"))
@@ -946,7 +958,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 process_log_identity_fields(&runtime.log_identity).into_attributes(),
             );
             fields.insert("error", err.to_string());
-            ctx.runtime.log
+            ctx.runtime
+                .log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|emit_err| {
                     WorkerError::Message(format!(
@@ -965,7 +978,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
         timeout_event
             .fields_mut()
             .append_json_map(process_log_identity_fields(&runtime.log_identity).into_attributes());
-        ctx.runtime.log
+        ctx.runtime
+            .log
             .emit_app_event("process_worker::tick_active_job", timeout_event)
             .map_err(|err| {
                 WorkerError::Message(format!("process timeout log emit failed: {err}"))
@@ -997,7 +1011,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     process_log_identity_fields(&runtime.log_identity).into_attributes(),
                 );
                 fields.insert("error", err.to_string());
-                ctx.runtime.log
+                ctx.runtime
+                    .log
                     .emit_app_event("process_worker::tick_active_job", event)
                     .map_err(|emit_err| {
                         WorkerError::Message(format!(
@@ -1037,9 +1052,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) =
-                            emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
-                        {
+                        if let Err(err) = emit_subprocess_line(
+                            &ctx.runtime.log,
+                            &runtime.log_identity,
+                            line.clone(),
+                        ) {
                             emit_process_output_emit_failed(
                                 ctx,
                                 &runtime.log_identity,
@@ -1061,7 +1078,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         process_log_identity_fields(&runtime.log_identity).into_attributes(),
                     );
                     fields.insert("error", err.to_string());
-                    ctx.runtime.log
+                    ctx.runtime
+                        .log
                         .emit_app_event("process_worker::tick_active_job", event)
                         .map_err(|emit_err| {
                             WorkerError::Message(format!(
@@ -1085,7 +1103,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             event.fields_mut().append_json_map(
                 process_log_identity_fields(&runtime.log_identity).into_attributes(),
             );
-            ctx.runtime.log
+            ctx.runtime
+                .log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process exit log emit failed: {err}"))
@@ -1100,9 +1119,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) =
-                            emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
-                        {
+                        if let Err(err) = emit_subprocess_line(
+                            &ctx.runtime.log,
+                            &runtime.log_identity,
+                            line.clone(),
+                        ) {
                             emit_process_output_emit_failed(
                                 ctx,
                                 &runtime.log_identity,
@@ -1124,7 +1145,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         process_log_identity_fields(&runtime.log_identity).into_attributes(),
                     );
                     fields.insert("error", err.to_string());
-                    ctx.runtime.log
+                    ctx.runtime
+                        .log
                         .emit_app_event("process_worker::tick_active_job", event)
                         .map_err(|emit_err| {
                             WorkerError::Message(format!(
@@ -1152,7 +1174,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 process_log_identity_fields(&runtime.log_identity).into_attributes(),
             );
             fields.insert("error", exit_error.to_string());
-            ctx.runtime.log
+            ctx.runtime
+                .log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process exit log emit failed: {err}"))
@@ -1167,9 +1190,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) =
-                            emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
-                        {
+                        if let Err(err) = emit_subprocess_line(
+                            &ctx.runtime.log,
+                            &runtime.log_identity,
+                            line.clone(),
+                        ) {
                             emit_process_output_emit_failed(
                                 ctx,
                                 &runtime.log_identity,
@@ -1191,7 +1216,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         process_log_identity_fields(&runtime.log_identity).into_attributes(),
                     );
                     fields.insert("error", err.to_string());
-                    ctx.runtime.log
+                    ctx.runtime
+                        .log
                         .emit_app_event("process_worker::tick_active_job", event)
                         .map_err(|emit_err| {
                             WorkerError::Message(format!(
@@ -1218,7 +1244,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 process_log_identity_fields(&runtime.log_identity).into_attributes(),
             );
             fields.insert("error", outcome_error_string(&outcome));
-            ctx.runtime.log
+            ctx.runtime
+                .log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process poll failure log emit failed: {err}"))
@@ -1257,7 +1284,8 @@ fn emit_process_output_emit_failed(
     );
     fields.insert("bytes_len", line.bytes.len());
     fields.insert("error", error.to_string());
-    ctx.runtime.log
+    ctx.runtime
+        .log
         .emit_app_event("process_worker::emit_subprocess_line", event)
         .map_err(|emit_err| {
             WorkerError::Message(format!(
@@ -1312,7 +1340,8 @@ fn transition_to_idle(
 }
 
 fn publish_state(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
-    ctx.state_channel.publisher
+    ctx.state_channel
+        .publisher
         .publish(ctx.state_channel.current.clone())
         .map_err(|err| WorkerError::Message(format!("process publish failed: {err}")))?;
     Ok(())
@@ -1334,22 +1363,20 @@ pub(crate) fn system_now_unix_millis() -> Result<UnixMillis, WorkerError> {
 fn timeout_for_kind(kind: &ProcessExecutionKind, config: &ProcessConfig) -> u64 {
     match kind {
         ProcessExecutionKind::Bootstrap(spec) => {
-            spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
+            spec.timeout_ms.unwrap_or(config.timeouts.bootstrap_ms)
         }
         ProcessExecutionKind::BaseBackup(spec) => {
-            spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
+            spec.timeout_ms.unwrap_or(config.timeouts.bootstrap_ms)
         }
         ProcessExecutionKind::PgRewind(spec) => {
-            spec.timeout_ms.unwrap_or(config.pg_rewind_timeout_ms)
+            spec.timeout_ms.unwrap_or(config.timeouts.pg_rewind_ms)
         }
         ProcessExecutionKind::Promote(spec) => {
-            spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
+            spec.timeout_ms.unwrap_or(config.timeouts.bootstrap_ms)
         }
-        ProcessExecutionKind::Demote(spec) => {
-            spec.timeout_ms.unwrap_or(config.fencing_timeout_ms)
-        }
+        ProcessExecutionKind::Demote(spec) => spec.timeout_ms.unwrap_or(config.timeouts.fencing_ms),
         ProcessExecutionKind::StartPostgres(spec) => {
-            spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
+            spec.timeout_ms.unwrap_or(config.timeouts.bootstrap_ms)
         }
     }
 }
@@ -1402,7 +1429,7 @@ fn build_command(
                     "bootstrap.superuser_username must not be empty".to_string(),
                 ));
             }
-            let program = config.binaries.initdb.clone();
+            let program = resolve_process_binary(config, PostgresBinaryName::Initdb)?;
             Ok(ProcessCommandSpec {
                 program: program.clone(),
                 args: vec![
@@ -1439,7 +1466,7 @@ fn build_command(
                     "basebackup.source_conninfo.dbname must not be empty".to_string(),
                 ));
             }
-            let program = config.binaries.pg_basebackup.clone();
+            let program = resolve_process_binary(config, PostgresBinaryName::PgBasebackup)?;
             Ok(ProcessCommandSpec {
                 program: program.clone(),
                 args: vec![
@@ -1476,7 +1503,7 @@ fn build_command(
                     "pg_rewind.source_conninfo.dbname must not be empty".to_string(),
                 ));
             }
-            let program = config.binaries.pg_rewind.clone();
+            let program = resolve_process_binary(config, PostgresBinaryName::PgRewind)?;
             Ok(ProcessCommandSpec {
                 program: program.clone(),
                 args: vec![
@@ -1506,7 +1533,7 @@ fn build_command(
                 args.push("-t".to_string());
                 args.push(wait_seconds.to_string());
             }
-            let program = config.binaries.pg_ctl.clone();
+            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
             Ok(ProcessCommandSpec {
                 program: program.clone(),
                 args,
@@ -1521,7 +1548,7 @@ fn build_command(
         }
         ProcessExecutionKind::Demote(spec) => {
             validate_non_empty_path("demote.data_dir", &spec.data_dir)?;
-            let program = config.binaries.pg_ctl.clone();
+            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
             Ok(ProcessCommandSpec {
                 program: program.clone(),
                 args: vec![
@@ -1551,7 +1578,7 @@ fn build_command(
                 format!("config_file={}", spec.config_file.display()),
             ];
             let options = render_pg_ctl_option_string(&option_tokens)?;
-            let program = config.binaries.pg_ctl.clone();
+            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
             Ok(ProcessCommandSpec {
                 program: program.clone(),
                 args: vec![
@@ -1578,9 +1605,18 @@ fn build_command(
     }
 }
 
+fn resolve_process_binary(
+    config: &ProcessConfig,
+    binary: PostgresBinaryName,
+) -> Result<std::path::PathBuf, ProcessError> {
+    config
+        .binaries
+        .resolve_binary_path(binary)
+        .map_err(ProcessError::InvalidSpec)
+}
+
 fn role_auth_env(auth: &RoleAuthConfig) -> Vec<ProcessEnvVar> {
     match auth {
-        RoleAuthConfig::Tls => Vec::new(),
         RoleAuthConfig::Password { password } => vec![ProcessEnvVar {
             key: "PGPASSWORD".to_string(),
             value: ProcessEnvValue::Secret(password.clone()),
@@ -1607,15 +1643,15 @@ fn materialize_execution_request(
     let dcs = ctx.observed.dcs.latest();
     let kind = match &request.intent {
         ProcessIntent::Bootstrap => {
-            wipe_data_dir(runtime_config.postgres.data_dir.as_path())?;
+            wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
             ProcessExecutionKind::Bootstrap(super::jobs::BootstrapSpec {
-                data_dir: runtime_config.postgres.data_dir.clone(),
+                data_dir: runtime_config.postgres.paths.data_dir.clone(),
                 superuser_username: runtime_config.postgres.roles.superuser.username.clone(),
                 timeout_ms: None,
             })
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
-            wipe_data_dir(runtime_config.postgres.data_dir.as_path())?;
+            wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
             let source = basebackup_source_from_member(
                 &ctx.identity.self_id,
                 &ctx.plan,
@@ -1623,9 +1659,9 @@ fn materialize_execution_request(
             )
             .map_err(source_materialization_error)?;
             ProcessExecutionKind::BaseBackup(super::jobs::BaseBackupSpec {
-                data_dir: runtime_config.postgres.data_dir.clone(),
+                data_dir: runtime_config.postgres.paths.data_dir.clone(),
                 source,
-                timeout_ms: Some(runtime_config.process.bootstrap_timeout_ms),
+                timeout_ms: Some(runtime_config.process.timeouts.bootstrap_ms),
             })
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
@@ -1636,7 +1672,7 @@ fn materialize_execution_request(
             )
             .map_err(source_materialization_error)?;
             ProcessExecutionKind::PgRewind(super::jobs::PgRewindSpec {
-                target_data_dir: runtime_config.postgres.data_dir.clone(),
+                target_data_dir: runtime_config.postgres.paths.data_dir.clone(),
                 source,
                 timeout_ms: None,
             })
@@ -1666,12 +1702,12 @@ fn materialize_execution_request(
             )?
         }
         ProcessIntent::Promote => ProcessExecutionKind::Promote(PromoteSpec {
-            data_dir: runtime_config.postgres.data_dir.clone(),
+            data_dir: runtime_config.postgres.paths.data_dir.clone(),
             wait_seconds: None,
             timeout_ms: None,
         }),
         ProcessIntent::Demote(mode) => ProcessExecutionKind::Demote(DemoteSpec {
-            data_dir: runtime_config.postgres.data_dir.clone(),
+            data_dir: runtime_config.postgres.paths.data_dir.clone(),
             mode: mode.clone(),
             timeout_ms: None,
         }),
@@ -1686,12 +1722,14 @@ fn materialize_execution_request(
 fn primary_start_intent(
     runtime_config: &RuntimeConfig,
 ) -> Result<ManagedPostgresStartIntent, ProcessError> {
-    let managed_recovery_state = inspect_managed_recovery_state(runtime_config.postgres.data_dir.as_path())
-        .map_err(|err| {
-            ProcessError::InvalidSpec(format!(
-                "inspect managed recovery state for primary start failed: {err}"
-            ))
-        })?;
+    let managed_recovery_state = inspect_managed_recovery_state(
+        runtime_config.postgres.paths.data_dir.as_path(),
+    )
+    .map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "inspect managed recovery state for primary start failed: {err}"
+        ))
+    })?;
     if managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None {
         return Err(ProcessError::InvalidSpec(
             "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
@@ -1714,7 +1752,10 @@ fn replica_start_intent(
     .map_err(source_materialization_error)?;
     Ok(ManagedPostgresStartIntent::replica(
         source.conninfo,
-        managed_standby_auth_from_role_auth(&source.auth, runtime_config.postgres.data_dir.as_path()),
+        managed_standby_auth_from_role_auth(
+            &source.auth,
+            runtime_config.postgres.paths.data_dir.as_path(),
+        ),
         None,
     ))
 }
@@ -1725,21 +1766,22 @@ fn materialize_start_postgres(
     mode: PostgresStartMode,
     start_intent: &ManagedPostgresStartIntent,
 ) -> Result<ProcessExecutionKind, ProcessError> {
-    let managed = materialize_managed_postgres_config(runtime_config, start_intent).map_err(|err| {
-        ProcessError::InvalidSpec(format!(
-            "materialize managed postgres config failed: {err}"
-        ))
-    })?;
-    Ok(ProcessExecutionKind::StartPostgres(super::jobs::StartPostgresSpec {
-        mode,
-        data_dir: runtime_config.postgres.data_dir.clone(),
-        socket_dir: intent_runtime.postgres.paths.socket_dir.clone(),
-        port: intent_runtime.postgres.port,
-        config_file: managed.postgresql_conf_path,
-        log_file: intent_runtime.postgres.paths.log_file.clone(),
-        wait_seconds: None,
-        timeout_ms: None,
-    }))
+    let managed =
+        materialize_managed_postgres_config(runtime_config, start_intent).map_err(|err| {
+            ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
+        })?;
+    Ok(ProcessExecutionKind::StartPostgres(
+        super::jobs::StartPostgresSpec {
+            mode,
+            data_dir: runtime_config.postgres.paths.data_dir.clone(),
+            socket_dir: intent_runtime.postgres.paths.socket_dir.clone(),
+            port: intent_runtime.postgres.port,
+            config_file: managed.postgresql_conf_path,
+            log_file: intent_runtime.postgres.paths.log_file.clone(),
+            wait_seconds: None,
+            timeout_ms: None,
+        },
+    ))
 }
 
 fn resolve_source_member<'a>(
@@ -1754,9 +1796,7 @@ fn resolve_source_member<'a>(
     })
 }
 
-fn source_materialization_error(
-    error: super::source::SourceMaterializationError,
-) -> ProcessError {
+fn source_materialization_error(error: super::source::SourceMaterializationError) -> ProcessError {
     ProcessError::InvalidSpec(error.to_string())
 }
 
@@ -1896,13 +1936,13 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     use crate::{
-        config::HaConfig,
+        config::{HaConfig, ProcessTimeoutsConfig},
         dcs::DcsView,
         dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
         logging::LogHandle,
         postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
-            jobs::{PostgresStartIntent, ProcessCommandSpec, ProcessCommandRunner, ProcessIntent},
+            jobs::{PostgresStartIntent, ProcessCommandRunner, ProcessCommandSpec, ProcessIntent},
             state::{
                 ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
                 ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
@@ -1912,7 +1952,7 @@ mod tests {
         state::{new_state_channel, JobId, MemberId, StateSubscriber, WorkerStatus},
     };
 
-    use super::start_job;
+    use super::{pid_matches_data_dir, start_job};
 
     struct UnexpectedSpawnRunner;
 
@@ -1933,21 +1973,44 @@ mod tests {
 
     impl ChildGuard {
         #[cfg(unix)]
-        fn spawn_fake_postgres(root: &std::path::Path, data_dir: &std::path::Path) -> Result<Self, String> {
+        fn spawn_fake_postgres(
+            root: &std::path::Path,
+            data_dir: &std::path::Path,
+        ) -> Result<Self, String> {
             let bin_dir = root.join("bin");
-            fs::create_dir_all(&bin_dir)
-                .map_err(|err| format!("create fake postgres bin dir {} failed: {err}", bin_dir.display()))?;
-            let fake_postgres = bin_dir.join("postgres");
-            std::os::unix::fs::symlink("/bin/sh", &fake_postgres).map_err(|err| {
+            fs::create_dir_all(&bin_dir).map_err(|err| {
                 format!(
-                    "create fake postgres symlink {} failed: {err}",
+                    "create fake postgres bin dir {} failed: {err}",
+                    bin_dir.display()
+                )
+            })?;
+            let fake_postgres = bin_dir.join("postgres");
+            fs::write(
+                &fake_postgres,
+                "#!/bin/bash\nexec -a postgres /bin/sleep 30\n",
+            )
+            .map_err(|err| {
+                format!(
+                    "write fake postgres script {} failed: {err}",
+                    fake_postgres.display()
+                )
+            })?;
+            let mut permissions = fs::metadata(&fake_postgres)
+                .map_err(|err| {
+                    format!(
+                        "read fake postgres metadata {} failed: {err}",
+                        fake_postgres.display()
+                    )
+                })?
+                .permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+            fs::set_permissions(&fake_postgres, permissions).map_err(|err| {
+                format!(
+                    "set fake postgres script permissions {} failed: {err}",
                     fake_postgres.display()
                 )
             })?;
             let child = Command::new(&fake_postgres)
-                .arg("-c")
-                .arg("sleep 30")
-                .arg("--")
                 .arg(data_dir.display().to_string())
                 .spawn()
                 .map_err(|err| {
@@ -1991,6 +2054,27 @@ mod tests {
         Ok(dir)
     }
 
+    fn wait_for_fake_postgres_readiness(
+        pid: u32,
+        data_dir: &std::path::Path,
+        pid_file: &std::path::Path,
+    ) -> Result<(), String> {
+        let mut attempts = 0_u8;
+        while attempts < 50 {
+            if pid_matches_data_dir(pid, data_dir, pid_file)
+                .map_err(|err| format!("check fake postgres readiness failed: {err}"))?
+            {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            attempts = attempts.saturating_add(1);
+        }
+        Err(format!(
+            "fake postgres readiness timed out for pid={pid} data_dir={}",
+            data_dir.display()
+        ))
+    }
+
     fn build_test_ctx(
         data_dir: PathBuf,
         socket_dir: PathBuf,
@@ -1999,8 +2083,11 @@ mod tests {
         let cfg = RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir.clone())
             .transform_postgres(move |postgres| crate::config::PostgresConfig {
-                socket_dir: socket_dir.clone(),
-                log_file: log_file.clone(),
+                paths: crate::config::PostgresPathsConfig {
+                    data_dir: postgres.paths.data_dir.clone(),
+                    socket_dir: Some(socket_dir.clone()),
+                    log_file: Some(log_file.clone()),
+                },
                 ..postgres
             })
             .with_dcs_scope("cluster-a")
@@ -2009,16 +2096,20 @@ mod tests {
                 lease_ttl_ms: 5_000,
             })
             .with_process(crate::config::ProcessConfig {
-                pg_rewind_timeout_ms: 30_000,
-                bootstrap_timeout_ms: 30_000,
-                fencing_timeout_ms: 10_000,
+                timeouts: ProcessTimeoutsConfig {
+                    pg_rewind_ms: 30_000,
+                    bootstrap_ms: 30_000,
+                    fencing_ms: 10_000,
+                },
+                working_root: std::path::PathBuf::from("/tmp/pgtuskmaster"),
                 binaries: sample_binary_paths(),
             })
             .build();
         let initial = ProcessState::starting();
         let (publisher, subscriber) = new_state_channel(initial.clone());
         let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
-        let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsView::empty(WorkerStatus::Running));
+        let (_dcs_publisher, dcs_subscriber) =
+            new_state_channel(DcsView::empty(WorkerStatus::Running));
         let (_tx, inbox) = unbounded_channel();
 
         Ok((
@@ -2064,12 +2155,8 @@ mod tests {
         let log_file = root.join("logs/postgres.log");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
-        fs::create_dir_all(&socket_dir).map_err(|err| {
-            format!(
-                "create socket dir {} failed: {err}",
-                socket_dir.display()
-            )
-        })?;
+        fs::create_dir_all(&socket_dir)
+            .map_err(|err| format!("create socket dir {} failed: {err}", socket_dir.display()))?;
 
         let passfile_path = managed_standby_passfile_path(&data_dir);
         let original_passfile = "node-b:5432:replication:replicator:secret-password\n";
@@ -2088,9 +2175,9 @@ mod tests {
             .ok_or_else(|| "fake postgres process handle missing child pid".to_string())?;
         let pid_contents = format!("{fake_postgres_pid}\n{}\n", data_dir.display());
         let pid_file = data_dir.join("postmaster.pid");
-        fs::write(&pid_file, pid_contents).map_err(|err| {
-            format!("write postmaster.pid {} failed: {err}", pid_file.display())
-        })?;
+        fs::write(&pid_file, pid_contents)
+            .map_err(|err| format!("write postmaster.pid {} failed: {err}", pid_file.display()))?;
+        wait_for_fake_postgres_readiness(fake_postgres_pid, &data_dir, &pid_file)?;
 
         let _fake_postgres = fake_postgres;
         let (mut ctx, _state_subscriber) = build_test_ctx(data_dir.clone(), socket_dir, log_file)?;
@@ -2105,8 +2192,7 @@ mod tests {
 
         match &ctx.state_channel.current {
             ProcessState::Idle {
-                last_outcome:
-                    Some(crate::process::state::JobOutcome::Success { id, job_kind, .. }),
+                last_outcome: Some(crate::process::state::JobOutcome::Success { id, job_kind, .. }),
                 ..
             } => {
                 if *id != request.id {

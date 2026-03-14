@@ -121,7 +121,7 @@ For the etcd-backed implementation, lease expiry is visible through the normal w
 The DCS state model is not independent of runtime config. In particular:
 
 - `dcs.endpoints` choose the coordination backend endpoints
-- `dcs.scope` determines the prefix for all keys
+- `cluster.scope` determines the prefix for all keys
 - `ha.lease_ttl_ms` determines member freshness and the etcd leader-lease TTL
 
 In the shipped docker cluster config, `ha.lease_ttl_ms` is `10000`.

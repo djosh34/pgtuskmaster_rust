@@ -21,7 +21,7 @@ tokio-postgres = "0.7.13"
 toml = "0.8.20"
 axum = { version = "0.8.6", features = ["http1", "http2", "json", "tokio"] }
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
-etcd-client = "0.14.1"
+etcd-client = { version = "0.14.1", features = ["tls"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rustls = { version = "0.23.28", features = ["ring"] }
 rustls-pemfile = "2.2.0"

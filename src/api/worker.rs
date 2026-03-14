@@ -100,7 +100,7 @@ impl ApiCertificateReloadHandle {
     async fn reload(&self, cfg: &RuntimeConfig) -> Result<bool, WorkerError> {
         match self {
             Self::Disabled => Ok(false),
-            Self::Https { server_config } => match &cfg.api.security.transport {
+            Self::Https { server_config } => match &cfg.api.transport {
                 crate::config::ApiTransportConfig::Http => Err(WorkerError::Message(
                     "api cert reload requires https transport".to_string(),
                 )),
@@ -187,9 +187,7 @@ impl From<ApiError> for ApiHttpError {
     fn from(value: ApiError) -> Self {
         match value {
             ApiError::BadRequest(message) => Self::new(StatusCode::BAD_REQUEST, message),
-            ApiError::DcsCommand(message) => {
-                Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
-            }
+            ApiError::DcsCommand(message) => Self::new(StatusCode::SERVICE_UNAVAILABLE, message),
         }
     }
 }
@@ -233,12 +231,13 @@ fn build_app_state(
 }
 
 fn router_from_state(app_state: ApiAppState) -> Router {
-    let read_routes = Router::new()
-        .route("/state", get(get_state))
-        .route_layer(middleware::from_fn_with_state(
-            app_state.clone(),
-            require_read_auth,
-        ));
+    let read_routes =
+        Router::new()
+            .route("/state", get(get_state))
+            .route_layer(middleware::from_fn_with_state(
+                app_state.clone(),
+                require_read_auth,
+            ));
     let admin_routes = Router::new()
         .route("/switchover", post(post_switchover_handler))
         .route("/switchover", delete(delete_switchover_handler))
@@ -363,10 +362,9 @@ async fn require_auth(
 ) -> Result<Response, ApiHttpError> {
     match authorize_request(&state.auth, required_role, &request) {
         AuthDecision::Allowed => Ok(next.run(request).await),
-        AuthDecision::Unauthorized => Err(ApiHttpError::new(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-        )),
+        AuthDecision::Unauthorized => {
+            Err(ApiHttpError::new(StatusCode::UNAUTHORIZED, "unauthorized"))
+        }
         AuthDecision::Forbidden => Err(ApiHttpError::new(StatusCode::FORBIDDEN, "forbidden")),
     }
 }
@@ -439,10 +437,10 @@ fn resolve_auth_state(
     cfg: &RuntimeConfig,
 ) -> Result<ApiAuthState, WorkerError> {
     match configured {
-        ApiAuthState::Disabled => match &cfg.api.security.auth {
+        ApiAuthState::Disabled => match &cfg.api.auth {
             ApiAuthConfig::Disabled => Ok(ApiAuthState::Disabled),
-            ApiAuthConfig::RoleTokens(tokens) => Ok(ApiAuthState::RoleTokens(
-                ResolvedApiRoleTokens {
+            ApiAuthConfig::RoleTokens(tokens) => {
+                Ok(ApiAuthState::RoleTokens(ResolvedApiRoleTokens {
                     read_token: resolve_runtime_token(
                         "api.security.auth.role_tokens.read_token",
                         tokens.read_token.as_ref(),
@@ -451,8 +449,8 @@ fn resolve_auth_state(
                         "api.security.auth.role_tokens.admin_token",
                         tokens.admin_token.as_ref(),
                     )?,
-                },
-            )),
+                }))
+            }
         },
         ApiAuthState::RoleTokens(tokens) => Ok(ApiAuthState::RoleTokens(tokens.clone())),
     }
@@ -486,18 +484,18 @@ mod tests {
 
     use crate::{
         config::{
-            ApiAuthConfig, ApiClientAuthConfig, ApiRoleTokensConfig, ApiSecurityConfig,
-            ApiTlsConfig, ApiTransportConfig, InlineOrPath, SecretSource, TlsServerIdentityConfig,
+            ApiAuthConfig, ApiClientAuthConfig, ApiRoleTokensConfig, ApiTlsConfig,
+            ApiTransportConfig, InlineOrPath, SecretSource, TlsServerIdentityConfig,
         },
         dcs::DcsHandle,
+        dev_support::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
         logging::LogHandle,
         state::new_state_channel,
-        dev_support::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
     };
 
     use super::{
-        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle,
-        ApiClusterIdentity, ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
+        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiClusterIdentity,
+        ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
     };
 
     fn sample_admin_request(uri: &str) -> Result<Request<Body>, String> {
@@ -514,48 +512,45 @@ mod tests {
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
         let cfg = RuntimeConfigBuilder::new()
             .transform_api(|api| crate::config::ApiConfig {
-                security: ApiSecurityConfig {
-                    transport: ApiTransportConfig::Https {
-                        tls: ApiTlsConfig {
-                            identity: TlsServerIdentityConfig {
-                                cert_chain: InlineOrPath::Inline {
-                                    content: fixture.valid_server.cert_pem.clone(),
-                                },
-                                private_key: InlineOrPath::Inline {
-                                    content: fixture.valid_server.key_pem.clone(),
-                                },
+                transport: ApiTransportConfig::Https {
+                    tls: ApiTlsConfig {
+                        identity: TlsServerIdentityConfig {
+                            cert_chain: InlineOrPath::Inline {
+                                content: fixture.valid_server.cert_pem.clone(),
                             },
-                            client_auth: ApiClientAuthConfig::Disabled,
+                            private_key: InlineOrPath::Inline {
+                                content: fixture.valid_server.key_pem.clone(),
+                            },
                         },
+                        client_auth: ApiClientAuthConfig::Disabled,
                     },
-                    auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                        read_token: Some(SecretSource::Inline {
-                            content: "read-secret".to_string(),
-                        }),
-                        admin_token: Some(SecretSource::Inline {
-                            content: "admin-secret".to_string(),
-                        }),
-                    }),
                 },
+                auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                    read_token: Some(SecretSource::Inline {
+                        content: "read-secret".to_string(),
+                    }),
+                    admin_token: Some(SecretSource::Inline {
+                        content: "admin-secret".to_string(),
+                    }),
+                }),
                 ..api
             })
             .build();
 
         let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
-        let (_pg_publisher, pg) =
-            new_state_channel(crate::pginfo::state::PgInfoState::starting());
+        let (_pg_publisher, pg) = new_state_channel(crate::pginfo::state::PgInfoState::starting());
         let (_process_publisher, process) =
             new_state_channel(crate::process::state::ProcessState::starting());
-        let (_dcs_publisher, dcs) =
-            new_state_channel(crate::dcs::DcsView::starting());
-        let (_ha_publisher, ha) =
-            new_state_channel(crate::ha::state::HaState::initial(crate::state::WorkerStatus::Starting));
-        let transport = crate::tls::build_api_server_transport(&cfg.api.security.transport)
+        let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsView::starting());
+        let (_ha_publisher, ha) = new_state_channel(crate::ha::state::HaState::initial(
+            crate::state::WorkerStatus::Starting,
+        ));
+        let transport = crate::tls::build_api_server_transport(&cfg.api.transport)
             .map_err(|err| err.to_string())?;
         let app = build_router(ApiServerCtx {
             identity: ApiClusterIdentity {
                 cluster_name: cfg.cluster.name.clone(),
-                scope: cfg.dcs.scope.clone(),
+                scope: cfg.cluster.scope.clone(),
                 member_id: cfg.cluster.member_id.clone(),
             },
             observed: ApiObservedState::Live {
@@ -582,8 +577,9 @@ mod tests {
             .oneshot(sample_admin_request("/reload/certs")?)
             .await
             .map_err(|err| err.to_string())?;
-
-        assert_eq!(response.status(), StatusCode::OK);
+        if response.status() != StatusCode::OK {
+            return Err(format!("unexpected status {}", response.status()));
+        }
         Ok(())
     }
 }

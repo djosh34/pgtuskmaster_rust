@@ -9,8 +9,10 @@ use crate::{
         error::CliError,
     },
     config::{
-        load_runtime_config, resolve_inline_or_path_bytes, resolve_secret_string, ApiAuthConfig,
-        ApiClientAuthConfig, ApiTransportConfig, InlineOrPath, RuntimeConfig, SecretSource,
+        load_operator_config, resolve_inline_or_path_bytes, resolve_secret_string, ApiAuthConfig,
+        ApiClientAuthConfig, ApiTransportConfig, InlineOrPath, PgtmApiAuthConfig,
+        PgtmApiTransportExpectation, PgtmConfig, PgtmPrimaryTargetConfig, RuntimeConfig,
+        SecretSource,
     },
 };
 
@@ -19,30 +21,40 @@ pub(crate) struct OperatorContext {
     pub(crate) api_client: CliApiClientConfig,
     pub(crate) postgres_client_tls: CliTlsConfig,
     pub(crate) api_auth_enabled: bool,
+    pub(crate) primary_target: Option<PgtmPrimaryTargetConfig>,
+}
+
+#[derive(Clone, Debug)]
+struct OperatorConfigSource {
+    runtime: Option<RuntimeConfig>,
+    operator: Option<PgtmConfig>,
 }
 
 pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, CliError> {
-    let runtime_config = cli
+    let config_source = cli
         .config
         .as_ref()
-        .map(|path| load_runtime_config(path.as_path()))
-        .transpose()
-        .map_err(|err| CliError::Config(err.to_string()))?;
+        .map(|path| load_operator_config_source(path.as_path()))
+        .transpose()?;
 
-    let base_url = resolve_api_url(cli.base_url.as_deref(), runtime_config.as_ref())?;
-    validate_effective_api_url(&base_url, runtime_config.as_ref())?;
+    let base_url = resolve_api_url(cli.base_url.as_deref(), config_source.as_ref())?;
+    validate_effective_api_url(&base_url, config_source.as_ref())?;
 
     let (config_read_token, config_admin_token, api_auth_enabled) =
-        resolve_config_auth(runtime_config.as_ref())?;
+        resolve_config_auth(config_source.as_ref())?;
     let read_token = normalize_optional_token(cli.read_token.as_deref()).or(config_read_token);
     let admin_token = normalize_optional_token(cli.admin_token.as_deref()).or(config_admin_token);
 
     let api_client_tls = if base_url.scheme() == "https" {
-        resolve_api_client_tls(runtime_config.as_ref())?
+        resolve_api_client_tls(config_source.as_ref())?
     } else {
         CliTlsConfig::default()
     };
-    let postgres_client_tls = resolve_postgres_client_tls(runtime_config.as_ref())?;
+    let postgres_client_tls = resolve_postgres_client_tls(config_source.as_ref())?;
+    let primary_target = config_source
+        .as_ref()
+        .and_then(|source| source.operator.as_ref())
+        .and_then(|operator| operator.primary_target.clone());
 
     Ok(OperatorContext {
         api_client: CliApiClientConfig {
@@ -56,38 +68,74 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
         },
         postgres_client_tls,
         api_auth_enabled,
+        primary_target,
+    })
+}
+
+fn load_operator_config_source(path: &std::path::Path) -> Result<OperatorConfigSource, CliError> {
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        CliError::Config(format!(
+            "failed to read config file {}: {err}",
+            path.display()
+        ))
+    })?;
+
+    if let Ok(runtime) = toml::from_str::<RuntimeConfig>(&contents) {
+        return Ok(OperatorConfigSource {
+            operator: runtime.pgtm.clone(),
+            runtime: Some(runtime),
+        });
+    }
+
+    let operator = load_operator_config(path).map_err(|err| CliError::Config(err.to_string()))?;
+    Ok(OperatorConfigSource {
+        runtime: None,
+        operator: Some(operator),
     })
 }
 
 fn resolve_api_url(
     override_base_url: Option<&str>,
-    runtime_config: Option<&RuntimeConfig>,
+    config_source: Option<&OperatorConfigSource>,
 ) -> Result<Url, CliError> {
     if let Some(raw) = override_base_url {
         return Url::parse(raw.trim())
             .map_err(|err| CliError::RequestBuild(format!("invalid --base-url value: {err}")));
     }
 
-    let cfg = runtime_config.ok_or_else(|| {
+    let source = config_source.ok_or_else(|| {
         CliError::Config("either `-c <PATH>` or `--base-url <URL>` must be provided".to_string())
     })?;
 
-    if let Some(api_url) = cfg.pgtm.as_ref().and_then(|pgtm| pgtm.api_url.as_deref()) {
-        return Url::parse(api_url)
-            .map_err(|err| CliError::Config(format!("invalid `pgtm.api_url`: {err}")));
+    if let Some(operator) = source.operator.as_ref() {
+        if let Some(api_url) = operator
+            .api
+            .base_url
+            .as_deref()
+            .or(operator.api.advertised_url.as_deref())
+        {
+            return Url::parse(api_url)
+                .map_err(|err| CliError::Config(format!("invalid `pgtm.api.base_url`: {err}")));
+        }
     }
+
+    let cfg = source.runtime.as_ref().ok_or_else(|| {
+        CliError::Config(
+            "set `pgtm.api.base_url` in the operator config or pass `--base-url <URL>`".to_string(),
+        )
+    })?;
 
     match cfg.api.listen_addr.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => Err(CliError::Config(
-            "`api.listen_addr` uses 0.0.0.0; set `pgtm.api_url` to an operator-reachable address"
+            "`api.listen_addr` uses 0.0.0.0; set `pgtm.api.base_url` to an operator-reachable address"
                 .to_string(),
         )),
         IpAddr::V6(ip) if ip.is_unspecified() => Err(CliError::Config(
-            "`api.listen_addr` uses [::]; set `pgtm.api_url` to an operator-reachable address"
+            "`api.listen_addr` uses [::]; set `pgtm.api.base_url` to an operator-reachable address"
                 .to_string(),
         )),
         _ => {
-            let scheme = match cfg.api.security.transport {
+            let scheme = match cfg.api.transport {
                 ApiTransportConfig::Http => "http",
                 ApiTransportConfig::Https { .. } => "https",
             };
@@ -102,60 +150,92 @@ fn resolve_api_url(
 
 fn validate_effective_api_url(
     base_url: &Url,
-    runtime_config: Option<&RuntimeConfig>,
+    config_source: Option<&OperatorConfigSource>,
 ) -> Result<(), CliError> {
-    let Some(cfg) = runtime_config else {
+    let Some(source) = config_source else {
         return Ok(());
     };
 
-    match (&cfg.api.security.transport, base_url.scheme()) {
+    if let Some(expected_transport) = source
+        .operator
+        .as_ref()
+        .and_then(|operator| operator.api.expected_transport)
+    {
+        return match (expected_transport, base_url.scheme()) {
+            (PgtmApiTransportExpectation::Http, "https") => Err(CliError::Config(
+                "API URL must not use https when `pgtm.api.expected_transport = \"http\"`"
+                    .to_string(),
+            )),
+            (PgtmApiTransportExpectation::Https, "http") => Err(CliError::Config(
+                "API URL must use https when `pgtm.api.expected_transport = \"https\"`".to_string(),
+            )),
+            _ => Ok(()),
+        };
+    }
+
+    let Some(cfg) = source.runtime.as_ref() else {
+        return Ok(());
+    };
+
+    match (&cfg.api.transport, base_url.scheme()) {
         (ApiTransportConfig::Http, "https") => Err(CliError::Config(
-            "API URL must not use https when `api.security.transport = \"http\"`".to_string(),
+            "API URL must not use https when `api.transport = \"http\"`".to_string(),
         )),
         (ApiTransportConfig::Https { .. }, "http") => Err(CliError::Config(
-            "API URL must use https when `api.security.transport = \"https\"`".to_string(),
+            "API URL must use https when `api.transport = \"https\"`".to_string(),
         )),
         _ => Ok(()),
     }
 }
 
 fn resolve_config_auth(
-    runtime_config: Option<&RuntimeConfig>,
+    config_source: Option<&OperatorConfigSource>,
 ) -> Result<(Option<String>, Option<String>, bool), CliError> {
-    let Some(cfg) = runtime_config else {
+    let Some(source) = config_source else {
         return Ok((None, None, false));
     };
 
-    match &cfg.api.security.auth {
+    if let Some(operator) = source.operator.as_ref() {
+        return match &operator.api.auth {
+            PgtmApiAuthConfig::Disabled => Ok((None, None, false)),
+            PgtmApiAuthConfig::RoleTokens {
+                read_token,
+                admin_token,
+            } => Ok((
+                resolve_optional_secret("pgtm.api.auth.read_token", read_token.as_ref())?,
+                resolve_optional_secret("pgtm.api.auth.admin_token", admin_token.as_ref())?,
+                true,
+            )),
+        };
+    }
+
+    let Some(cfg) = source.runtime.as_ref() else {
+        return Ok((None, None, false));
+    };
+
+    match &cfg.api.auth {
         ApiAuthConfig::Disabled => Ok((None, None, false)),
         ApiAuthConfig::RoleTokens(tokens) => Ok((
-            resolve_optional_secret(
-                "api.security.auth.role_tokens.read_token",
-                tokens.read_token.as_ref(),
-            )?,
-            resolve_optional_secret(
-                "api.security.auth.role_tokens.admin_token",
-                tokens.admin_token.as_ref(),
-            )?,
+            resolve_optional_secret("api.auth.read_token", tokens.read_token.as_ref())?,
+            resolve_optional_secret("api.auth.admin_token", tokens.admin_token.as_ref())?,
             true,
         )),
     }
 }
 
 fn resolve_api_client_tls(
-    runtime_config: Option<&RuntimeConfig>,
+    config_source: Option<&OperatorConfigSource>,
 ) -> Result<CliTlsConfig, CliError> {
-    let Some(cfg) = runtime_config else {
+    let Some(source) = config_source else {
         return Ok(CliTlsConfig::default());
     };
-    let Some(api_client) = cfg.pgtm.as_ref().and_then(|pgtm| pgtm.api_client.as_ref()) else {
+    let Some(api_client) = source.operator.as_ref().map(|operator| &operator.api.tls) else {
         return Ok(CliTlsConfig::default());
     };
 
-    if api_requires_client_cert(cfg) && (api_client.client_cert.is_none() || api_client.client_key.is_none())
-    {
+    if api_requires_client_cert(source) && api_client.identity.is_none() {
         return Err(CliError::Config(
-            "`pgtm.api_client.client_cert` and `pgtm.api_client.client_key` are required when API client certificates are mandatory"
+            "`pgtm.api.tls.identity` is required when API client certificates are mandatory"
                 .to_string(),
         ));
     }
@@ -164,19 +244,21 @@ fn resolve_api_client_tls(
         ca_cert_pem: api_client
             .ca_cert
             .as_ref()
-            .map(|source| resolve_inline_or_path_bytes("pgtm.api_client.ca_cert", source))
+            .map(|source| resolve_inline_or_path_bytes("pgtm.api.tls.ca_cert", source))
             .transpose()
             .map_err(|err| CliError::Config(err.to_string()))?,
         client_cert_pem: api_client
-            .client_cert
+            .identity
             .as_ref()
-            .map(|source| resolve_inline_or_path_bytes("pgtm.api_client.client_cert", source))
+            .map(|identity| {
+                resolve_inline_or_path_bytes("pgtm.api.tls.identity.cert", &identity.cert)
+            })
             .transpose()
             .map_err(|err| CliError::Config(err.to_string()))?,
         client_key_pem: api_client
-            .client_key
+            .identity
             .as_ref()
-            .map(|source| resolve_secret_string("pgtm.api_client.client_key", source))
+            .map(|identity| resolve_secret_string("pgtm.api.tls.identity.key", &identity.key))
             .transpose()
             .map(|result| result.map(String::into_bytes))
             .map_err(|err| CliError::Config(err.to_string()))?,
@@ -185,67 +267,57 @@ fn resolve_api_client_tls(
             .as_ref()
             .and_then(inline_or_path_to_path_buf),
         client_cert_path: api_client
-            .client_cert
+            .identity
             .as_ref()
-            .and_then(inline_or_path_to_path_buf),
-        client_key_path: api_client.client_key.as_ref().and_then(secret_to_path_buf),
+            .and_then(|identity| inline_or_path_to_path_buf(&identity.cert)),
+        client_key_path: api_client
+            .identity
+            .as_ref()
+            .and_then(|identity| secret_to_path_buf(&identity.key)),
     })
 }
 
 fn resolve_postgres_client_tls(
-    runtime_config: Option<&RuntimeConfig>,
+    config_source: Option<&OperatorConfigSource>,
 ) -> Result<CliTlsConfig, CliError> {
-    let Some(cfg) = runtime_config else {
+    let Some(source) = config_source else {
         return Ok(CliTlsConfig::default());
     };
-    let Some(pgtm) = cfg.pgtm.as_ref() else {
+    let Some(operator) = source.operator.as_ref() else {
         return Ok(CliTlsConfig::default());
     };
-    let ca_cert = pgtm
-        .postgres_client
+    let ca_cert = operator
+        .postgres
+        .tls
+        .ca_cert
         .as_ref()
-        .and_then(|client| client.ca_cert.as_ref())
-        .or_else(|| {
-            pgtm.api_client
-                .as_ref()
-                .and_then(|client| client.ca_cert.as_ref())
-        });
-    let client_cert = pgtm
-        .postgres_client
+        .or(operator.api.tls.ca_cert.as_ref());
+    let identity = operator
+        .postgres
+        .tls
+        .identity
         .as_ref()
-        .and_then(|client| client.client_cert.as_ref())
-        .or_else(|| {
-            pgtm.api_client
-                .as_ref()
-                .and_then(|client| client.client_cert.as_ref())
-        });
-    let client_key = pgtm
-        .postgres_client
-        .as_ref()
-        .and_then(|client| client.client_key.as_ref())
-        .or_else(|| {
-            pgtm.api_client
-                .as_ref()
-                .and_then(|client| client.client_key.as_ref())
-        });
+        .or(operator.api.tls.identity.as_ref());
 
     Ok(CliTlsConfig {
         ca_cert_pem: ca_cert
-            .map(|source| resolve_inline_or_path_bytes("pgtm.postgres_client.ca_cert", source))
+            .map(|source| resolve_inline_or_path_bytes("pgtm.postgres.tls.ca_cert", source))
             .transpose()
             .map_err(|err| CliError::Config(err.to_string()))?,
-        client_cert_pem: client_cert
-            .map(|source| resolve_inline_or_path_bytes("pgtm.postgres_client.client_cert", source))
+        client_cert_pem: identity
+            .map(|identity| {
+                resolve_inline_or_path_bytes("pgtm.postgres.tls.identity.cert", &identity.cert)
+            })
             .transpose()
             .map_err(|err| CliError::Config(err.to_string()))?,
-        client_key_pem: client_key
-            .map(|source| resolve_secret_string("pgtm.postgres_client.client_key", source))
+        client_key_pem: identity
+            .map(|identity| resolve_secret_string("pgtm.postgres.tls.identity.key", &identity.key))
             .transpose()
             .map(|result| result.map(String::into_bytes))
             .map_err(|err| CliError::Config(err.to_string()))?,
         ca_cert_path: ca_cert.and_then(inline_or_path_to_path_buf),
-        client_cert_path: client_cert.and_then(inline_or_path_to_path_buf),
-        client_key_path: client_key.and_then(secret_to_path_buf),
+        client_cert_path: identity.and_then(|identity| inline_or_path_to_path_buf(&identity.cert)),
+        client_key_path: identity.and_then(|identity| secret_to_path_buf(&identity.key)),
     })
 }
 
@@ -285,13 +357,17 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
     })
 }
 
-fn api_requires_client_cert(cfg: &RuntimeConfig) -> bool {
-    match &cfg.api.security.transport {
-        ApiTransportConfig::Http => false,
-        ApiTransportConfig::Https { tls } => {
-            matches!(tls.client_auth, ApiClientAuthConfig::Required { .. })
-        }
-    }
+fn api_requires_client_cert(source: &OperatorConfigSource) -> bool {
+    source
+        .runtime
+        .as_ref()
+        .map(|cfg| match &cfg.api.transport {
+            ApiTransportConfig::Http => false,
+            ApiTransportConfig::Https { tls } => {
+                matches!(tls.client_auth, ApiClientAuthConfig::Required { .. })
+            }
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -331,38 +407,39 @@ mod tests {
             r##"
 [cluster]
 name = "cluster-a"
+scope = "scope-a"
 member_id = "node-a"
 
 [postgres]
-data_dir = "/tmp/pgdata"
-listen_host = "127.0.0.1"
-listen_port = 5432
-socket_dir = "/tmp/pgtm/socket"
-log_file = "/tmp/pgtm/postgres.log"
-local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
-rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+paths = { data_dir = "/tmp/pgdata" }
+network = { listen_host = "127.0.0.1", listen_port = 5432 }
+access = { hba = { content = "local all all trust" }, ident = { content = "# empty" } }
+local_database = "postgres"
+rewind = { database = "postgres", transport = { ssl_mode = "prefer" } }
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
-pg_hba = { source = { content = "local all all trust" } }
-pg_ident = { source = { content = "# empty" } }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]
-scope = "scope-a"
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
 
 [process]
-pg_rewind_timeout_ms = 1000
-bootstrap_timeout_ms = 1000
-fencing_timeout_ms = 1000
-binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+[process.timeouts]
+pg_rewind_ms = 1000
+bootstrap_ms = 1000
+fencing_ms = 1000
+
+[process.binaries.overrides]
+postgres = "/usr/bin/postgres"
+pg_ctl = "/usr/bin/pg_ctl"
+pg_rewind = "/usr/bin/pg_rewind"
+initdb = "/usr/bin/initdb"
+pg_basebackup = "/usr/bin/pg_basebackup"
+psql = "/usr/bin/psql"
 
 [api]
 listen_addr = "0.0.0.0:8080"
-security = { transport = { transport = "http" }, auth = { type = "disabled" } }
+transport = { transport = "http" }
+auth = { type = "disabled" }
 "##,
         )?;
         let cli = Cli {
@@ -379,7 +456,7 @@ security = { transport = { transport = "http" }, auth = { type = "disabled" } }
         let err = resolve_operator_context(&cli);
         let _ = std::fs::remove_file(path);
         match err {
-            Err(err) if err.to_string().contains("set `pgtm.api_url`") => Ok(()),
+            Err(err) if err.to_string().contains("set `pgtm.api.base_url`") => Ok(()),
             Err(err) => Err(format!("unexpected error: {err}")),
             Ok(_) => Err("expected resolution failure".to_string()),
         }
@@ -389,45 +466,15 @@ security = { transport = { transport = "http" }, auth = { type = "disabled" } }
     fn resolve_context_loads_tokens_and_tls_from_config() -> Result<(), String> {
         let path = write_temp_config(
             r##"
-[cluster]
-name = "cluster-a"
-member_id = "node-a"
-
-[postgres]
-data_dir = "/tmp/pgdata"
-listen_host = "127.0.0.1"
-listen_port = 5432
-socket_dir = "/tmp/pgtm/socket"
-log_file = "/tmp/pgtm/postgres.log"
-local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
-rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
-tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
-pg_hba = { source = { content = "local all all trust" } }
-pg_ident = { source = { content = "# empty" } }
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-scope = "scope-a"
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process]
-pg_rewind_timeout_ms = 1000
-bootstrap_timeout_ms = 1000
-fencing_timeout_ms = 1000
-binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
-
 [api]
-listen_addr = "127.0.0.1:8443"
-security = { transport = { transport = "https", tls = { identity = { cert_chain = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }, private_key = { content = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n" } } } }, auth = { type = "role_tokens", read_token = { content = "read-token" }, admin_token = { content = "admin-token" } } }
+base_url = "https://127.0.0.1:8443"
 
-[pgtm]
-api_url = "https://127.0.0.1:8443"
+[api.auth]
+type = "role_tokens"
+read_token = { content = "read-token" }
+admin_token = { content = "admin-token" }
 
-[pgtm.api_client]
+[api.tls]
 ca_cert = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }
 "##,
         )?;
@@ -489,48 +536,12 @@ ca_cert = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE--
         let path = write_temp_config(
             format!(
                 r##"
-[cluster]
-name = "cluster-a"
-member_id = "node-a"
-
-[postgres]
-data_dir = "/tmp/pgdata"
-listen_host = "127.0.0.1"
-listen_port = 5432
-socket_dir = "/tmp/pgtm/socket"
-log_file = "/tmp/pgtm/postgres.log"
-local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "prefer" }}
-rewind_conn_identity = {{ user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }}
-tls = {{ mode = "disabled" }}
-roles = {{ superuser = {{ username = "postgres", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, replicator = {{ username = "replicator", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, rewinder = {{ username = "rewinder", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }} }}
-pg_hba = {{ source = {{ content = "local all all trust" }} }}
-pg_ident = {{ source = {{ content = "# empty" }} }}
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-scope = "scope-a"
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process]
-pg_rewind_timeout_ms = 1000
-bootstrap_timeout_ms = 1000
-fencing_timeout_ms = 1000
-binaries = {{ postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }}
-
 [api]
-listen_addr = "127.0.0.1:8080"
-security = {{ transport = {{ transport = "http" }}, auth = {{ type = "disabled" }} }}
+base_url = "http://127.0.0.1:8080"
 
-[pgtm]
-api_url = "http://127.0.0.1:8080"
-
-[pgtm.postgres_client]
+[postgres.tls]
 ca_cert = {{ path = "{}" }}
-client_cert = {{ path = "{}" }}
-client_key = {{ path = "{}" }}
+identity = {{ cert = {{ path = "{}" }}, key = {{ path = "{}" }} }}
 "##,
                 ca_path.display(),
                 cert_path.display(),
@@ -583,45 +594,10 @@ client_key = {{ path = "{}" }}
         let path = write_temp_config(
             format!(
                 r##"
-[cluster]
-name = "cluster-a"
-member_id = "node-a"
-
-[postgres]
-data_dir = "/tmp/pgdata"
-listen_host = "127.0.0.1"
-listen_port = 5432
-socket_dir = "/tmp/pgtm/socket"
-log_file = "/tmp/pgtm/postgres.log"
-local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "prefer" }}
-rewind_conn_identity = {{ user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }}
-tls = {{ mode = "disabled" }}
-roles = {{ superuser = {{ username = "postgres", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, replicator = {{ username = "replicator", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }}, rewinder = {{ username = "rewinder", auth = {{ type = "password", password = {{ content = "secret-password" }} }} }} }}
-pg_hba = {{ source = {{ content = "local all all trust" }} }}
-pg_ident = {{ source = {{ content = "# empty" }} }}
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-scope = "scope-a"
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process]
-pg_rewind_timeout_ms = 1000
-bootstrap_timeout_ms = 1000
-fencing_timeout_ms = 1000
-binaries = {{ postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }}
-
 [api]
-listen_addr = "127.0.0.1:8443"
-security = {{ transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }}, private_key = {{ content = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n" }} }} }} }}, auth = {{ type = "disabled" }} }}
+base_url = "https://127.0.0.1:8443"
 
-[pgtm]
-api_url = "https://127.0.0.1:8443"
-
-[pgtm.api_client]
+[api.tls]
 ca_cert = {{ path = "{}" }}
 "##,
                 ca_path.display()

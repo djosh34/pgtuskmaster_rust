@@ -81,10 +81,10 @@ pub(crate) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollDa
         .try_get("timeline_id")
         .map_err(|err| WorkerError::Message(format!("timeline decode failed: {err}")))?;
     let timeline = parse_timeline(timeline_raw)?;
-    let system_identifier = parse_system_identifier(
-        row.try_get("system_identifier")
-            .map_err(|err| WorkerError::Message(format!("system_identifier decode failed: {err}")))?,
-    )?;
+    let system_identifier =
+        parse_system_identifier(row.try_get("system_identifier").map_err(|err| {
+            WorkerError::Message(format!("system_identifier decode failed: {err}"))
+        })?)?;
 
     let current_wal_lsn =
         parse_optional_lsn(row.try_get("current_wal_lsn").map_err(|err| {
@@ -102,12 +102,12 @@ pub(crate) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollDa
     let slot_names: Vec<String> = row
         .try_get("slot_names")
         .map_err(|err| WorkerError::Message(format!("slot_names decode failed: {err}")))?;
-    let primary_conninfo: Option<String> = row.try_get("primary_conninfo").map_err(|err| {
-        WorkerError::Message(format!("primary_conninfo decode failed: {err}"))
-    })?;
-    let primary_slot_name: Option<String> = row.try_get("primary_slot_name").map_err(|err| {
-        WorkerError::Message(format!("primary_slot_name decode failed: {err}"))
-    })?;
+    let primary_conninfo: Option<String> = row
+        .try_get("primary_conninfo")
+        .map_err(|err| WorkerError::Message(format!("primary_conninfo decode failed: {err}")))?;
+    let primary_slot_name: Option<String> = row
+        .try_get("primary_slot_name")
+        .map_err(|err| WorkerError::Message(format!("primary_slot_name decode failed: {err}")))?;
 
     let in_recovery: bool = row
         .try_get("in_recovery")

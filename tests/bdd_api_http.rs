@@ -27,11 +27,7 @@ fn sample_runtime_config(read_token: Option<&str>, admin_token: Option<&str>) ->
         .build()
 }
 
-fn request(
-    method: Method,
-    uri: &str,
-    bearer_token: Option<&str>,
-) -> Result<Request<Body>, String> {
+fn request(method: Method, uri: &str, bearer_token: Option<&str>) -> Result<Request<Body>, String> {
     let builder = Request::builder().method(method).uri(uri);
     let builder = match bearer_token {
         Some(token) => builder.header("authorization", format!("Bearer {token}")),
@@ -80,7 +76,7 @@ async fn bdd_api_auth_token_denies_missing_header() -> Result<(), String> {
         sample_runtime_config(Some("reader"), Some("admin")),
         DcsHandle::closed(),
     )
-        .map_err(|err| err.to_string())?;
+    .map_err(|err| err.to_string())?;
 
     let response = app
         .oneshot(request(Method::GET, "/state", None)?)
@@ -110,11 +106,9 @@ async fn bdd_api_auth_token_denies_invalid_header() -> Result<(), String> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_state_succeeds_with_live_subscribers() -> Result<(), String> {
-    let app = build_test_router_with_live_state(
-        sample_runtime_config(None, None),
-        DcsHandle::closed(),
-    )
-    .map_err(|err| err.to_string())?;
+    let app =
+        build_test_router_with_live_state(sample_runtime_config(None, None), DcsHandle::closed())
+            .map_err(|err| err.to_string())?;
 
     let response = app
         .oneshot(request(Method::GET, "/state", None)?)

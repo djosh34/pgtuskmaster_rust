@@ -6,18 +6,13 @@ This guide shows how to inspect the current cluster state with one operator comm
 
 - The `pgtm` CLI is available to run.
 - At least one cluster node is running with an accessible API endpoint.
-- Your shared runtime config either sets `[pgtm].api_url` or uses an `api.listen_addr` that is already operator-reachable.
+- Your shared runtime config either sets `pgtm.api.base_url` or uses an `api.listen_addr` that is already operator-reachable.
 
-If you are using the local Docker HA cluster, you can first print the current endpoints and topology with:
-
-```bash
-tools/docker/cluster.sh status --env-file .env.docker.example
-```
-
-Or, when your local stack is configured through `.env.docker`:
+If you are using the local Docker HA cluster, first confirm the stack is up and then seed `pgtm` from one of the shipped operator configs:
 
 ```bash
-make docker-status-cluster
+docker compose -f docker/compose.yml ps
+pgtm -c docs/examples/docker-cluster-node-a.toml status
 ```
 
 ## Read the current cluster view
@@ -160,7 +155,7 @@ pgtm -c config.toml primary --tls
 
 If the CLI reports a `transport error`, verify:
 
-- the seed operator config or `[pgtm].api_url` is correct and reachable
+- the seed operator config or `pgtm.api.base_url` is correct and reachable
 - the node APIs are listening on the expected ports
 - network access from the host running `pgtm`
 - peer nodes are publishing usable `api_url` values in cluster discovery data

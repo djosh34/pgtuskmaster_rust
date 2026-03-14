@@ -17,14 +17,13 @@ use super::{
     reconcile::reconcile,
     state::{HaState, HaWorkerCtx},
     types::{
-        last_start_success_at, last_success_at, wal_position, ApiVisibility,
-        CoordinationAction, CoordinationState, DataDirState, DesiredState, DivergenceState,
-        ElectionEligibility, GlobalKnowledge, IneligibleReason, LeadershipView, LeaseEpoch,
-        LocalAction, LocalDataState, LocalKnowledge, ObservationState, ObservedPrimary,
-        PeerKnowledge, PeerLeaderState, PostgresState, PrimaryObservation, ProcessState,
-        PublicationGoal, PublicationState, ReconcilePlan, ReplicationState, StaleLeaseReason,
-        StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget, WalPosition,
-        WorldView,
+        last_start_success_at, last_success_at, wal_position, ApiVisibility, CoordinationAction,
+        CoordinationState, DataDirState, DesiredState, DivergenceState, ElectionEligibility,
+        GlobalKnowledge, IneligibleReason, LeadershipView, LeaseEpoch, LocalAction, LocalDataState,
+        LocalKnowledge, ObservationState, ObservedPrimary, PeerKnowledge, PeerLeaderState,
+        PostgresState, PrimaryObservation, ProcessState, PublicationGoal, PublicationState,
+        ReconcilePlan, ReplicationState, StaleLeaseReason, StorageState, SwitchoverRequest,
+        SwitchoverState, SwitchoverTarget, WalPosition, WorldView,
     },
 };
 
@@ -73,13 +72,18 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
     let pg = ctx.observed.pg.latest();
     let dcs = ctx.observed.dcs.latest();
     let process = ctx.observed.process.latest();
-    let data_dir_path = config.postgres.data_dir.clone();
+    let data_dir_path = config.postgres.paths.data_dir.clone();
     let observed_primary = observed_primary_member(&dcs, &ctx.identity.self_id);
     let local_data_timeline = pg_timeline(&pg).or_else(|| {
-        dcs.members.get(&ctx.identity.self_id).and_then(member_timeline)
+        dcs.members
+            .get(&ctx.identity.self_id)
+            .and_then(member_timeline)
     });
-    let local_system_identifier = pg_system_identifier(&pg)
-        .or_else(|| dcs.members.get(&ctx.identity.self_id).and_then(member_system_identifier));
+    let local_system_identifier = pg_system_identifier(&pg).or_else(|| {
+        dcs.members
+            .get(&ctx.identity.self_id)
+            .and_then(member_system_identifier)
+    });
 
     let local = LocalKnowledge {
         data_dir: build_data_dir_state(
@@ -90,7 +94,13 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
         ),
         postgres: build_local_postgres_state(&pg, &dcs),
         process: ProcessState::from(&process),
-        storage: build_storage_state(&dcs, &pg, config.ha.lease_ttl_ms, &ctx.identity.self_id, now),
+        storage: build_storage_state(
+            &dcs,
+            &pg,
+            config.ha.lease_ttl_ms,
+            &ctx.identity.self_id,
+            now,
+        ),
         required_roles_ready: ctx.state_channel.current.required_roles_ready,
         publication: ctx.state_channel.current.publication.clone(),
         observation: ObservationState {
@@ -212,8 +222,8 @@ async fn execute_local_action(
             let runtime_config = ctx.observed.config.latest();
             postgres_roles::ensure_required_roles(
                 &runtime_config,
-                runtime_config.postgres.socket_dir.as_path(),
-                runtime_config.postgres.listen_port,
+                runtime_config.postgres_socket_dir().as_path(),
+                runtime_config.postgres.network.listen_port,
             )
             .await
             .map_err(|err| {
@@ -275,14 +285,10 @@ fn build_data_dir_state(
         Some(ObservedPrimary {
             timeline: leader_timeline,
             ..
-        }) if leader_timeline == &local_timeline => {
-            LocalDataState::ConsistentReplica
-        }
+        }) if leader_timeline == &local_timeline => LocalDataState::ConsistentReplica,
         Some(ObservedPrimary {
             timeline: Some(_), ..
-        }) if local_timeline.is_some() => {
-            LocalDataState::Diverged(DivergenceState::RewindPossible)
-        }
+        }) if local_timeline.is_some() => LocalDataState::Diverged(DivergenceState::RewindPossible),
         _ => LocalDataState::ConsistentReplica,
     };
 
@@ -358,8 +364,7 @@ fn build_storage_state(
     if matches!(
         pg,
         PgInfoState::Primary { common, .. } if common.sql == SqlStatus::Healthy
-    )
-        && (self_member.is_none() || pg_observation_stale)
+    ) && (self_member.is_none() || pg_observation_stale)
     {
         StorageState::Stalled
     } else {
@@ -538,7 +543,9 @@ fn build_leadership_view(dcs: &DcsView, self_id: &MemberId) -> LeadershipView {
 
 fn classify_foreign_leader(member: &DcsMemberView, epoch: LeaseEpoch) -> LeadershipView {
     match &member.postgres {
-        DcsMemberPostgresView::Primary(observation) if observation.readiness == Readiness::Ready => {
+        DcsMemberPostgresView::Primary(observation)
+            if observation.readiness == Readiness::Ready =>
+        {
             LeadershipView::HeldByPeer {
                 epoch,
                 state: PeerLeaderState::PrimaryReady,
@@ -548,7 +555,9 @@ fn classify_foreign_leader(member: &DcsMemberView, epoch: LeaseEpoch) -> Leaders
             epoch,
             state: PeerLeaderState::Recovering,
         },
-        DcsMemberPostgresView::Unknown(observation) if observation.readiness == Readiness::Ready => {
+        DcsMemberPostgresView::Unknown(observation)
+            if observation.readiness == Readiness::Ready =>
+        {
             LeadershipView::HeldByPeer {
                 epoch,
                 state: PeerLeaderState::Unreachable,
@@ -565,10 +574,7 @@ fn classify_foreign_leader(member: &DcsMemberView, epoch: LeaseEpoch) -> Leaders
     }
 }
 
-fn observed_primary_member(
-    dcs: &DcsView,
-    self_id: &MemberId,
-) -> Option<ObservedPrimary> {
+fn observed_primary_member(dcs: &DcsView, self_id: &MemberId) -> Option<ObservedPrimary> {
     dcs.members
         .values()
         .find(|member| {
@@ -766,10 +772,8 @@ mod tests {
 
     #[test]
     fn data_dir_state_requires_basebackup_for_mismatched_system_identifier() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "pgtm-ha-worker-test-{}",
-            std::process::id()
-        ));
+        let data_dir =
+            std::env::temp_dir().join(format!("pgtm-ha-worker-test-{}", std::process::id()));
         let pg_version_path = data_dir.join("PG_VERSION");
         if data_dir.exists() {
             assert!(

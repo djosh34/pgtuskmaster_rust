@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 09:51:32 AM CET 2026
+Generated: Sat Mar 14 11:38:20 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -9,6 +9,17 @@ Generated: Sat Mar 14 09:51:32 AM CET 2026
 
 <description>
 `make test-long` is currently not reliably green because `ha_primary_storage_stalled_then_new_primary_takes_over` can fail waiting for a replacement primary.
+```
+
+==============
+
+# Task `.ralph/tasks/story-config-simplification/01-task-rewrite-config-around-typed-toml-serde-and-remove-the-hand-rolled-parser.md`
+
+```
+## Task: Rewrite Config Around Typed TOML + `serde` And Remove The Hand-Rolled Parser <status>not_started</status> <passes>true</passes>
+
+<priority>medium</priority>
+<blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/`</blocked_by>
 ```
 
 ==============

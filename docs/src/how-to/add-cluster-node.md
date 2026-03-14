@@ -6,34 +6,34 @@ This guide shows how to add a new node to an existing cluster and verify that it
 
 Bring up a new node that:
 
-- uses the same cluster identity and DCS scope as the existing cluster
+- uses the same cluster identity and `cluster.scope` as the existing cluster
 - publishes its own member record
 - converges into expected replica behavior when a healthy primary already exists
 
 ## Prerequisites
 
-- a running cluster with a known `cluster.name` and `dcs.scope`
+- a running cluster with a known `cluster.name` and `cluster.scope`
 - PostgreSQL 16 binaries installed on the new node
-- valid runtime-config paths for PostgreSQL data, socket, and logs
+- valid runtime-config paths for PostgreSQL data and any explicit socket/log overrides
 - network reachability to the cluster's DCS endpoints
 - network reachability to the relevant PostgreSQL endpoints in the cluster
-- an operator-facing config for the new node that either sets `[pgtm].api_url` or derives an operator-reachable URL from `api.listen_addr`
+- an operator-facing config for the new node that either sets `pgtm.api.base_url` or derives an operator-reachable URL from `api.listen_addr`
 
 ## Step 1: Prepare a runtime config for the new node
 
 Use an existing runtime config as your starting point and change the node-specific identity and addresses.
 
-The docker example at `docker/configs/cluster/node-a/runtime.toml` shows the full daemon config shape. If that daemon config binds an unspecified address such as `0.0.0.0:8080`, add a docs- or ops-owned `[pgtm].api_url` for the operator-reachable API URL before you use it with `pgtm`.
+The shipped docker runtime example at `docker/node-a.toml` shows the current daemon config shape. Keep the daemon config focused on the node itself. If the API binds an unspecified address such as `0.0.0.0:8443`, add a separate docs- or ops-owned operator config so `pgtm` resolves the operator-reachable URL and any TLS/auth material correctly.
 
 Fields that must be correct for the new node:
 
 - `cluster.name`
+- `cluster.scope`
 - `cluster.member_id`
-- `postgres.listen_host`
-- `postgres.listen_port`
+- `postgres.network.listen_host`
+- `postgres.network.listen_port`
 - `dcs.endpoints`
-- `dcs.scope`
-- `process.binaries.*`
+- `process.binaries.overrides.*` when autodiscovery is not sufficient
 - `api.listen_addr`
 
 ## Step 2: Check connectivity before you start it
@@ -116,7 +116,7 @@ Repeat `pgtm status -v` from at least one surviving node's operator config. You 
 Check:
 
 - local PostgreSQL startup
-- `process.binaries.*`
+- `process.binaries.overrides.*` if you rely on explicit overrides
 - PostgreSQL data, socket, and log paths
 
 ### The node stays in `waiting_dcs_trusted` or enters `fail_safe`
@@ -124,7 +124,7 @@ Check:
 Check:
 
 - DCS endpoint reachability
-- DCS scope correctness
+- `cluster.scope` correctness
 - whether the node can publish fresh membership
 
 ### The node attempts leadership unexpectedly

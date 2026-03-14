@@ -1,10 +1,12 @@
 use super::types::{
     CoordinationAction, DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal,
     IdleReason, LeadershipView, LocalAction, LocalDataState, PostgresState, ProcessState,
-    PublicationAction, PublicationGoal, PublicationState, ReconcilePlan, RecoveryPlan,
-    TargetRole, WorldView,
+    PublicationAction, PublicationGoal, PublicationState, ReconcilePlan, RecoveryPlan, TargetRole,
+    WorldView,
 };
-use crate::process::jobs::{PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode};
+use crate::process::jobs::{
+    PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
+};
 
 pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> ReconcilePlan {
     let publication_plan = reconcile_publication(&world.local.publication, desired);

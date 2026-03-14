@@ -1562,19 +1562,28 @@ fn render_member_runtime_template(
     format!(
         r#"[cluster]
 name = "ha-cucumber-cluster"
+scope = "ha-cucumber-cluster"
 member_id = "{member}"
 
-[postgres]
+[postgres.paths]
 data_dir = "/var/lib/postgresql/data"
-listen_host = "{member}"
-listen_port = 5432
 socket_dir = "/var/lib/pgtuskmaster/socket"
 log_file = "/var/log/pgtuskmaster/postgres.log"
-local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "disable" }}
-rewind_conn_identity = {{ user = "{rewinder}", dbname = "postgres", ssl_mode = "verify-full", ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }} }}
+
+[postgres.network]
+listen_host = "{member}"
+listen_port = 5432
+
+[postgres.rewind.transport]
+ssl_mode = "verify-full"
+ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
+
+[postgres]
 tls = {{ mode = "enabled", identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member}.key" }} }}, client_auth = {{ client_ca = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}, client_certificate = "optional" }} }}
-pg_hba = {{ source = {{ path = "/etc/pgtuskmaster/pg_hba.conf" }} }}
-pg_ident = {{ source = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }} }}
+
+[postgres.access]
+hba = {{ path = "/etc/pgtuskmaster/pg_hba.conf" }}
+ident = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }}
 
 [postgres.extra_gucs]
 wal_keep_size = "128MB"
@@ -1593,18 +1602,17 @@ auth = {{ type = "password", password = {{ path = "/run/secrets/rewinder-passwor
 
 [dcs]
 endpoints = ["{dcs_endpoint}"]
-scope = "ha-cucumber-cluster"
 
 [ha]
 loop_interval_ms = 1000
 lease_ttl_ms = 10000
 
-[process]
-pg_rewind_timeout_ms = 120000
-bootstrap_timeout_ms = 300000
-fencing_timeout_ms = 30000
+[process.timeouts]
+pg_rewind_ms = 120000
+bootstrap_ms = 300000
+fencing_ms = 30000
 
-[process.binaries]
+[process.binaries.overrides]
 postgres = "/usr/local/lib/pgtuskmaster/wrappers/postgres"
 pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
 pg_rewind = "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind"
@@ -1631,15 +1639,15 @@ mode = "append"
 
 [api]
 listen_addr = "0.0.0.0:8443"
-security = {{ transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member}.key" }} }} }} }}, auth = {{ type = "role_tokens", read_token = {{ path = "/run/secrets/api-read-token" }}, admin_token = {{ path = "/run/secrets/api-admin-token" }} }} }}
+transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member}.key" }} }} }} }}
+auth = {{ type = "role_tokens", read_token = {{ path = "/run/secrets/api-read-token" }}, admin_token = {{ path = "/run/secrets/api-admin-token" }} }}
 
-[pgtm]
-api_url = "https://{member}:8443"
+[pgtm.api]
+base_url = "https://{member}:8443"
+auth = {{ type = "role_tokens", read_token = {{ path = "/run/secrets/api-read-token" }}, admin_token = {{ path = "/run/secrets/api-admin-token" }} }}
+tls = {{ ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }} }}
 
-[pgtm.api_client]
-ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-
-[pgtm.postgres_client]
+[pgtm.postgres.tls]
 ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
 
 [debug]
@@ -1650,92 +1658,21 @@ enabled = true
 
 fn render_observer_template(template: &ObserverTemplate) -> String {
     let member = template.binding.member.service_name();
-    let dcs_endpoint = template.binding.dcs_service.client_url();
-    let replicator = template.postgres_roles.replicator.as_str();
-    let rewinder = template.postgres_roles.rewinder.as_str();
     format!(
-        r#"[cluster]
-name = "ha-cucumber-cluster"
-member_id = "observer-{member}"
+        r#"[api]
+base_url = "https://{member}:8443"
 
-[postgres]
-data_dir = "/var/lib/postgresql/data"
-listen_host = "observer"
-listen_port = 5432
-socket_dir = "/var/lib/pgtuskmaster/socket"
-log_file = "/var/log/pgtuskmaster/postgres.log"
-local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "disable" }}
-rewind_conn_identity = {{ user = "{rewinder}", dbname = "postgres", ssl_mode = "verify-full", ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }} }}
-tls = {{ mode = "enabled", identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }} }} }}
-pg_hba = {{ source = {{ path = "/etc/pgtuskmaster/pg_hba.conf" }} }}
-pg_ident = {{ source = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }} }}
+[api.auth]
+type = "role_tokens"
+read_token = {{ path = "/run/secrets/api-read-token" }}
+admin_token = {{ path = "/run/secrets/api-admin-token" }}
 
-[postgres.roles.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {{ path = "/run/secrets/postgres-superuser-password" }} }}
-
-[postgres.roles.replicator]
-username = "{replicator}"
-auth = {{ type = "password", password = {{ path = "/run/secrets/replicator-password" }} }}
-
-[postgres.roles.rewinder]
-username = "{rewinder}"
-auth = {{ type = "password", password = {{ path = "/run/secrets/rewinder-password" }} }}
-
-[dcs]
-endpoints = ["{dcs_endpoint}"]
-scope = "ha-cucumber-cluster"
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process]
-pg_rewind_timeout_ms = 120000
-bootstrap_timeout_ms = 300000
-fencing_timeout_ms = 30000
-
-[process.binaries]
-postgres = "/usr/lib/postgresql/16/bin/postgres"
-pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
-pg_rewind = "/usr/lib/postgresql/16/bin/pg_rewind"
-initdb = "/usr/lib/postgresql/16/bin/initdb"
-pg_basebackup = "/usr/lib/postgresql/16/bin/pg_basebackup"
-psql = "/usr/lib/postgresql/16/bin/psql"
-
-[logging]
-level = "info"
-capture_subprocess_output = true
-
-[logging.postgres]
-enabled = true
-poll_interval_ms = 200
-cleanup = {{ enabled = true, max_files = 20, max_age_seconds = 86400, protect_recent_seconds = 300 }}
-
-[logging.sinks.stderr]
-enabled = true
-
-[logging.sinks.file]
-enabled = false
-mode = "append"
-
-[api]
-listen_addr = "127.0.0.1:8443"
-security = {{ transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }} }} }} }}, auth = {{ type = "role_tokens", read_token = {{ path = "/run/secrets/api-read-token" }}, admin_token = {{ path = "/run/secrets/api-admin-token" }} }} }}
-
-[pgtm]
-api_url = "https://{member}:8443"
-
-[pgtm.api_client]
+[api.tls]
 ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
 
-[pgtm.postgres_client]
+[postgres.tls]
 ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-client_cert = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}
-client_key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }}
-
-[debug]
-enabled = true
+identity = {{ cert = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }} }}
 "#
     )
 }
@@ -1937,40 +1874,53 @@ mod tests {
         let given = resolve_given(repo_root.as_path(), HaGivenId::Plain)?;
         let output_root = temporary_directory("plain")?;
 
-        let result = (|| -> Result<()> {
-            materialize_given_fixture(&given, output_root.as_path())?;
+        let result =
+            (|| -> Result<()> {
+                materialize_given_fixture(&given, output_root.as_path())?;
 
-            let compose =
-                fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
-                    HarnessError::Io {
-                        path: output_root.join("compose.yml"),
-                        source,
-                    }
+                let compose =
+                    fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
+                        HarnessError::Io {
+                            path: output_root.join("compose.yml"),
+                            source,
+                        }
+                    })?;
+                assert_eq!(compose.matches("NET_ADMIN").count(), 4);
+
+                let runtime = fs::read_to_string(
+                    output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+                )
+                .map_err(|source| HarnessError::Io {
+                    path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+                    source,
                 })?;
-            assert_eq!(compose.matches("NET_ADMIN").count(), 4);
+                toml::from_str::<pgtuskmaster_rust::config::RuntimeConfig>(runtime.as_str())
+                    .map_err(|source| {
+                        HarnessError::message(format!(
+                            "materialized node runtime config failed to parse: {source}"
+                        ))
+                    })?;
+                assert!(runtime.contains(r#"username = "replicator""#));
+                assert!(runtime.contains(r#"username = "rewinder""#));
 
-            let runtime = fs::read_to_string(
-                output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-            )
-            .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-                source,
-            })?;
-            assert!(runtime.contains(r#"username = "replicator""#));
-            assert!(runtime.contains(r#"username = "rewinder""#));
-
-            let observer = fs::read_to_string(
-                output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
-            )
-            .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
-                source,
-            })?;
-            assert!(observer.contains(r#"api_url = "https://node-a:8443""#));
-            assert!(output_root.join("configs/tls/ca.crt").is_file());
-            assert!(output_root.join("secrets/replicator-password").is_file());
-            Ok(())
-        })();
+                let observer = fs::read_to_string(
+                    output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
+                )
+                .map_err(|source| HarnessError::Io {
+                    path: output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
+                    source,
+                })?;
+                toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(observer.as_str())
+                    .map_err(|source| {
+                        HarnessError::message(format!(
+                            "materialized observer config failed to parse: {source}"
+                        ))
+                    })?;
+                assert!(observer.contains(r#"base_url = "https://node-a:8443""#));
+                assert!(output_root.join("configs/tls/ca.crt").is_file());
+                assert!(output_root.join("secrets/replicator-password").is_file());
+                Ok(())
+            })();
 
         let cleanup_result = cleanup_directory(output_root.as_path());
         match (result, cleanup_result) {
@@ -2018,8 +1968,14 @@ mod tests {
                 path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
                 source,
             })?;
-            assert!(observer.contains(r#"member_id = "observer-node-c""#));
-            assert!(observer.contains(r#"username = "mirrorbot""#));
+            toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(observer.as_str()).map_err(
+                |source| {
+                    HarnessError::message(format!(
+                        "materialized observer config failed to parse: {source}"
+                    ))
+                },
+            )?;
+            assert!(observer.contains(r#"base_url = "https://node-c:8443""#));
             Ok(())
         })();
 
@@ -2043,12 +1999,13 @@ mod tests {
         let result = (|| -> Result<()> {
             materialize_given_fixture(&given, output_root.as_path())?;
 
-            let compose = fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
-                HarnessError::Io {
-                    path: output_root.join("compose.yml"),
-                    source,
-                }
-            })?;
+            let compose =
+                fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
+                    HarnessError::Io {
+                        path: output_root.join("compose.yml"),
+                        source,
+                    }
+                })?;
             assert!(compose.contains("etcd-a:"));
             assert!(compose.contains("etcd-b:"));
             assert!(compose.contains("etcd-c:"));
@@ -2059,29 +2016,50 @@ mod tests {
             assert!(compose.contains("etcd-b-data:/etcd-data"));
             assert!(compose.contains("etcd-c-data:/etcd-data"));
 
-            let node_a_runtime =
-                fs::read_to_string(output_root.join(ClusterMember::NodeA.runtime_config_relative_path()))
-                    .map_err(|source| HarnessError::Io {
-                        path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-                        source,
-                    })?;
+            let node_a_runtime = fs::read_to_string(
+                output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+            )
+            .map_err(|source| HarnessError::Io {
+                path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+                source,
+            })?;
+            toml::from_str::<pgtuskmaster_rust::config::RuntimeConfig>(node_a_runtime.as_str())
+                .map_err(|source| {
+                    HarnessError::message(format!(
+                        "materialized node-a runtime config failed to parse: {source}"
+                    ))
+                })?;
             assert!(node_a_runtime.contains(r#"endpoints = ["http://etcd-a:2379"]"#));
 
-            let node_b_runtime =
-                fs::read_to_string(output_root.join(ClusterMember::NodeB.runtime_config_relative_path()))
-                    .map_err(|source| HarnessError::Io {
-                        path: output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
-                        source,
-                    })?;
+            let node_b_runtime = fs::read_to_string(
+                output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
+            )
+            .map_err(|source| HarnessError::Io {
+                path: output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
+                source,
+            })?;
+            toml::from_str::<pgtuskmaster_rust::config::RuntimeConfig>(node_b_runtime.as_str())
+                .map_err(|source| {
+                    HarnessError::message(format!(
+                        "materialized node-b runtime config failed to parse: {source}"
+                    ))
+                })?;
             assert!(node_b_runtime.contains(r#"endpoints = ["http://etcd-b:2379"]"#));
 
-            let node_c_observer =
-                fs::read_to_string(output_root.join(ClusterMember::NodeC.observer_config_relative_path()))
-                    .map_err(|source| HarnessError::Io {
-                        path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
-                        source,
-                    })?;
-            assert!(node_c_observer.contains(r#"endpoints = ["http://etcd-c:2379"]"#));
+            let node_c_observer = fs::read_to_string(
+                output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+            )
+            .map_err(|source| HarnessError::Io {
+                path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+                source,
+            })?;
+            toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(node_c_observer.as_str())
+                .map_err(|source| {
+                    HarnessError::message(format!(
+                        "materialized observer config failed to parse: {source}"
+                    ))
+                })?;
+            assert!(node_c_observer.contains(r#"base_url = "https://node-c:8443""#));
             Ok(())
         })();
 

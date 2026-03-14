@@ -1,84 +1,16 @@
-[cluster]
-name = "local-docker"
-member_id = "operator"
-
-[postgres]
-data_dir = "/tmp/pgtm-operator-data"
-listen_host = "127.0.0.1"
-listen_port = 5432
-socket_dir = "/tmp"
-log_file = "/tmp/pgtm-operator.log"
-local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
-rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { path = "docker/certs/ca.crt" } }
-tls = { mode = "enabled", identity = { cert_chain = { path = "docker/certs/pgtm-client/tls.crt" }, private_key = { path = "docker/certs/pgtm-client/tls.key" } }, client_auth = { client_ca = { path = "docker/certs/ca.crt" }, client_certificate = "optional" } }
-pg_hba = { source = { path = "docker/pg/pg_hba.conf" } }
-pg_ident = { source = { path = "docker/pg/pg_ident.conf" } }
-
-[postgres.roles.superuser]
-username = "postgres"
-auth = { type = "password", password = { path = "docker/secrets/postgres-superuser-password" } }
-
-[postgres.roles.replicator]
-username = "replicator"
-auth = { type = "password", password = { path = "docker/secrets/replicator-password" } }
-
-[postgres.roles.rewinder]
-username = "rewinder"
-auth = { type = "password", password = { path = "docker/secrets/rewinder-password" } }
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-scope = "local-docker"
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process]
-pg_rewind_timeout_ms = 120000
-bootstrap_timeout_ms = 300000
-fencing_timeout_ms = 30000
-
-[process.binaries]
-postgres = "/usr/lib/postgresql/16/bin/postgres"
-pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
-pg_rewind = "/usr/lib/postgresql/16/bin/pg_rewind"
-initdb = "/usr/lib/postgresql/16/bin/initdb"
-pg_basebackup = "/usr/lib/postgresql/16/bin/pg_basebackup"
-psql = "/usr/lib/postgresql/16/bin/psql"
-
-[logging]
-level = "info"
-capture_subprocess_output = true
-
-[logging.postgres]
-enabled = true
-poll_interval_ms = 200
-cleanup = { enabled = true, max_files = 20, max_age_seconds = 86400, protect_recent_seconds = 300 }
-
-[logging.sinks.stderr]
-enabled = true
-
-[logging.sinks.file]
-enabled = false
-mode = "append"
-
 [api]
-listen_addr = "0.0.0.0:8443"
-security = { transport = { transport = "https", tls = { identity = { cert_chain = { path = "docker/certs/pgtm-client/tls.crt" }, private_key = { path = "docker/certs/pgtm-client/tls.key" } }, client_auth = { client_ca = { path = "docker/certs/ca.crt" }, require_client_cert = true } } }, auth = { type = "role_tokens", read_token = { path = "docker/secrets/api-read-token" }, admin_token = { path = "docker/secrets/api-admin-token" } } }
+base_url = "https://127.0.0.1:18081"
+expected_transport = "https"
 
-[pgtm]
-api_url = "https://127.0.0.1:18081"
+[api.auth]
+type = "role_tokens"
+read_token = { path = "docker/secrets/api-read-token" }
+admin_token = { path = "docker/secrets/api-admin-token" }
 
-[pgtm.api_client]
+[api.tls]
 ca_cert = { path = "docker/certs/ca.crt" }
-client_cert = { path = "docker/certs/pgtm-client/tls.crt" }
-client_key = { path = "docker/certs/pgtm-client/tls.key" }
+identity = { cert = { path = "docker/certs/pgtm-client/tls.crt" }, key = { path = "docker/certs/pgtm-client/tls.key" } }
 
-[pgtm.postgres_client]
+[postgres.tls]
 ca_cert = { path = "docker/certs/ca.crt" }
-client_cert = { path = "docker/certs/pgtm-client/tls.crt" }
-client_key = { path = "docker/certs/pgtm-client/tls.key" }
-
-[debug]
-enabled = true
+identity = { cert = { path = "docker/certs/pgtm-client/tls.crt" }, key = { path = "docker/certs/pgtm-client/tls.key" } }

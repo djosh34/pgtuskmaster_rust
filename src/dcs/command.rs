@@ -7,9 +7,7 @@ use super::state::DcsSwitchoverTargetView;
 pub enum DcsCommand {
     AcquireLeadership,
     ReleaseLeadership,
-    PublishSwitchover {
-        target: DcsSwitchoverTargetView,
-    },
+    PublishSwitchover { target: DcsSwitchoverTargetView },
     ClearSwitchover,
 }
 

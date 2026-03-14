@@ -25,7 +25,8 @@ fn emit_pginfo_event(
     event: AppEvent,
     error_prefix: &str,
 ) -> Result<(), WorkerError> {
-    ctx.runtime.log
+    ctx.runtime
+        .log
         .emit_app_event(origin, event)
         .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
 }
@@ -45,7 +46,9 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
     let now = now_unix_millis()?;
     let poll = poll_once(&ctx.probe.to_conninfo()).await;
     let next_state = match poll {
-        Ok(polled) => to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))?,
+        Ok(polled) => {
+            to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))?
+        }
         Err(ref err) => {
             let mut event = pginfo_event(
                 SeverityText::Warn,
@@ -97,12 +100,15 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
         ctx.state_channel.last_emitted_sql_status = Some(next_sql.clone());
     }
 
-    ctx.state_channel.publisher.publish(next_state).map_err(|err| {
-        WorkerError::Message(format!(
-            "pginfo publish failed for {:?}: {err}",
-            ctx.identity.self_id
-        ))
-    })?;
+    ctx.state_channel
+        .publisher
+        .publish(next_state)
+        .map_err(|err| {
+            WorkerError::Message(format!(
+                "pginfo publish failed for {:?}: {err}",
+                ctx.identity.self_id
+            ))
+        })?;
     Ok(())
 }
 

@@ -5,7 +5,6 @@ pgtuskmaster is a PostgreSQL high-availability manager. This documentation follo
 ## Tutorials
 
 - [First HA Cluster](tutorial/first-ha-cluster.md) - start the local three-node cluster and inspect it with `pgtm`
-- [Single-Node Setup](tutorial/single-node-setup.md) - run the smallest shipped deployment with a truthful operator config
 - [Observing a Failover Event](tutorial/observing-failover.md) - watch automatic failover behavior
 - [Validating Cluster Behavior](tutorial/validating-cluster-behavior.md) - validate expected HA outcomes
 

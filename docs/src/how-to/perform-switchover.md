@@ -61,7 +61,7 @@ With `--json`, the same success is:
 }
 ```
 
-`[pgtm].api_url` should point to a reachable node API. If you need to seed the command through another node temporarily, use another operator config whose `[pgtm].api_url` points at that node.
+`pgtm.api.base_url` should point to a reachable node API. If you need to seed the command through another node temporarily, use another operator config whose `pgtm.api.base_url` points at that node.
 
 ## Monitor the transition
 
@@ -150,7 +150,7 @@ accepted=true
 
 ### Request fails with a transport error
 
-Retry the same command from another operator config whose `[pgtm].api_url` points to a different reachable node API.
+Retry the same command from another operator config whose `pgtm.api.base_url` points to a different reachable node API.
 
 ### Status stays degraded during the switchover
 

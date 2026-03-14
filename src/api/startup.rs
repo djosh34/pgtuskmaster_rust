@@ -6,8 +6,8 @@ use crate::{
 };
 
 use super::worker::{
-    ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiClusterIdentity,
-    ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
+    ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiClusterIdentity, ApiControlPlane,
+    ApiObservedState, ApiServerCtx, ApiServingPlan,
 };
 
 #[derive(Clone)]
@@ -33,7 +33,7 @@ impl ApiServer {
 
 pub(crate) fn bootstrap(request: ApiRuntimeRequest) -> Result<ApiRuntime, WorkerError> {
     let cfg = request.runtime_config.latest();
-    let transport = crate::tls::build_api_server_transport(&cfg.api.security.transport)
+    let transport = crate::tls::build_api_server_transport(&cfg.api.transport)
         .map_err(|err| WorkerError::Message(format!("api tls config build failed: {err}")))?;
 
     Ok(ApiRuntime {

@@ -350,10 +350,12 @@ pub(crate) fn build_dcs_view(
         leader: cache
             .leader_record
             .as_ref()
-            .map(|record| DcsLeaderStateView::Held(DcsLeaderView {
-                holder: record.holder.clone(),
-                generation: record.generation,
-            }))
+            .map(|record| {
+                DcsLeaderStateView::Held(DcsLeaderView {
+                    holder: record.holder.clone(),
+                    generation: record.generation,
+                })
+            })
             .unwrap_or(DcsLeaderStateView::Unheld),
         switchover: cache
             .switchover_record

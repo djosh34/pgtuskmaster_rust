@@ -276,36 +276,42 @@ fn node_missing_secure_field_prints_stable_field_path() -> Result<(), String> {
         r#"
 [cluster]
 name = "cluster-a"
+scope = "scope-a"
 member_id = "member-a"
 
-[postgres]
+[postgres.paths]
 data_dir = "/var/lib/postgresql/data"
+
+[postgres.network]
 listen_host = "127.0.0.1"
 listen_port = 5432
-socket_dir = "/tmp/pgtuskmaster/socket"
-log_file = "/tmp/pgtuskmaster/postgres.log"
-local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
-rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+
+[postgres.access]
+hba = { content = "local all all trust" }
+ident = { content = "empty" }
+
+[postgres]
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
-pg_hba = { source = { content = "local all all trust" } }
-pg_ident = { source = { content = "empty" } }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]
-scope = "scope-a"
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
 
 [process]
-pg_rewind_timeout_ms = 120000
-bootstrap_timeout_ms = 300000
-fencing_timeout_ms = 30000
+[process.timeouts]
+pg_rewind_ms = 120000
+bootstrap_ms = 300000
+fencing_ms = 30000
+
+[process.binaries.overrides]
+initdb = "/definitely/missing/initdb"
+pg_basebackup = "/definitely/missing/pg_basebackup"
+pg_rewind = "/definitely/missing/pg_rewind"
+pg_ctl = "/definitely/missing/pg_ctl"
 
 [api]
-security = { transport = { transport = "http" }, auth = { type = "disabled" } }
+transport = { transport = "http" }
+auth = { type = "disabled" }
 "#,
     )?;
 
@@ -332,41 +338,44 @@ security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 }
 
 #[test]
-fn node_rejects_postgres_role_tls_auth_with_stable_field_path() -> Result<(), String> {
+fn node_rejects_empty_dcs_basic_auth_username_with_stable_field_path() -> Result<(), String> {
     let bin = node_bin_path()?;
     let path = write_temp_config(
-        "postgres-role-tls-auth",
+        "dcs-basic-auth-empty-username",
         r#"
 [cluster]
 name = "cluster-a"
+scope = "scope-a"
 member_id = "member-a"
 
-[postgres]
+[postgres.paths]
 data_dir = "/var/lib/postgresql/data"
+
+[postgres.network]
 listen_host = "127.0.0.1"
 listen_port = 5432
-socket_dir = "/tmp/pgtuskmaster/socket"
-log_file = "/tmp/pgtuskmaster/postgres.log"
-local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
-rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+
+[postgres.access]
+hba = { content = "local all all trust" }
+ident = { content = "empty" }
+
+[postgres]
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "tls" } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
-pg_hba = { source = { content = "local all all trust" } }
-pg_ident = { source = { content = "empty" } }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]
-scope = "scope-a"
+client = { auth = { type = "basic", username = "", password = { content = "secret-password" } } }
 
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process]
-binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+[process.binaries.overrides]
+initdb = "/usr/bin/initdb"
+pg_basebackup = "/usr/bin/pg_basebackup"
+pg_rewind = "/usr/bin/pg_rewind"
+pg_ctl = "/usr/bin/pg_ctl"
 
 [api]
-security = { transport = { transport = "http" }, auth = { type = "disabled" } }
+transport = { transport = "http" }
+auth = { type = "disabled" }
 "#,
     )?;
 
@@ -380,7 +389,7 @@ security = { transport = { transport = "http" }, auth = { type = "disabled" } }
     let stderr = String::from_utf8(output.stderr)
         .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
     assert!(
-        stderr.contains("`postgres.roles.superuser.auth`"),
+        stderr.contains("`dcs.client.auth.username`"),
         "stderr should mention stable field path, got: {stderr}"
     );
 
@@ -389,41 +398,43 @@ security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 }
 
 #[test]
-fn node_rejects_ssl_mode_requiring_tls_when_postgres_tls_disabled() -> Result<(), String> {
+fn node_rejects_https_dcs_without_tls_config() -> Result<(), String> {
     let bin = node_bin_path()?;
     let path = write_temp_config(
-        "postgres-ssl-mode-requires-tls",
+        "https-dcs-without-client-tls",
         r#"
 [cluster]
 name = "cluster-a"
+scope = "scope-a"
 member_id = "member-a"
 
-[postgres]
+[postgres.paths]
 data_dir = "/var/lib/postgresql/data"
+
+[postgres.network]
 listen_host = "127.0.0.1"
 listen_port = 5432
-socket_dir = "/tmp/pgtuskmaster/socket"
-log_file = "/tmp/pgtuskmaster/postgres.log"
-local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
-rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
+
+[postgres.access]
+hba = { content = "local all all trust" }
+ident = { content = "empty" }
+
+[postgres]
 tls = { mode = "disabled" }
 roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
-pg_hba = { source = { content = "local all all trust" } }
-pg_ident = { source = { content = "empty" } }
 
 [dcs]
-endpoints = ["http://127.0.0.1:2379"]
-scope = "scope-a"
+endpoints = ["https://127.0.0.1:2379"]
 
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process]
-binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
+[process.binaries.overrides]
+initdb = "/usr/bin/initdb"
+pg_basebackup = "/usr/bin/pg_basebackup"
+pg_rewind = "/usr/bin/pg_rewind"
+pg_ctl = "/usr/bin/pg_ctl"
 
 [api]
-security = { transport = { transport = "http" }, auth = { type = "disabled" } }
+transport = { transport = "http" }
+auth = { type = "disabled" }
 "#,
     )?;
 
@@ -437,7 +448,7 @@ security = { transport = { transport = "http" }, auth = { type = "disabled" } }
     let stderr = String::from_utf8(output.stderr)
         .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
     assert!(
-        stderr.contains("`postgres.local_conn_identity.ssl_mode`"),
+        stderr.contains("`dcs.client.tls`"),
         "stderr should mention stable field path, got: {stderr}"
     );
 

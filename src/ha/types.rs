@@ -581,8 +581,6 @@ fn failure_recovery_from_job(value: &ActiveJobKind) -> FailureRecovery {
         | ActiveJobKind::Demote
         | ActiveJobKind::StartPrimary
         | ActiveJobKind::StartDetachedStandby
-        | ActiveJobKind::StartReplica => {
-            FailureRecovery::RetrySameJob
-        }
+        | ActiveJobKind::StartReplica => FailureRecovery::RetrySameJob,
     }
 }

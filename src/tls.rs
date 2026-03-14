@@ -2,8 +2,8 @@ use std::{collections::BTreeSet, fs, io::Cursor, sync::Arc};
 
 use axum_server::tls_rustls::RustlsConfig;
 use rustls::{
-    client::danger::HandshakeSignatureValid,
     self,
+    client::danger::HandshakeSignatureValid,
     pki_types::{CertificateDer, PrivateKeyDer, UnixTime},
     server::danger::{ClientCertVerified, ClientCertVerifier},
     DigitallySignedStruct, DistinguishedName, Error as RustlsError, SignatureScheme,
@@ -11,6 +11,8 @@ use rustls::{
 use thiserror::Error;
 use x509_parser::parse_x509_certificate;
 
+#[cfg(test)]
+use crate::config::TlsServerConfig;
 use crate::{
     api::worker::{ApiServerTransport, ApiTlsRuntime},
     config::{
@@ -18,8 +20,6 @@ use crate::{
         ClientCommonName, InlineOrPath, TlsClientAuthConfig,
     },
 };
-#[cfg(test)]
-use crate::config::TlsServerConfig;
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum TlsConfigError {
@@ -274,13 +274,14 @@ impl ClientCertVerifier for AllowedCommonNamesClientCertVerifier {
     }
 }
 
-fn certificate_common_names(end_entity: &CertificateDer<'_>) -> Result<BTreeSet<String>, RustlsError> {
-    let (_remaining, certificate) =
-        parse_x509_certificate(end_entity.as_ref()).map_err(|err| {
-            RustlsError::General(format!(
-                "parse client certificate for common-name validation failed: {err}"
-            ))
-        })?;
+fn certificate_common_names(
+    end_entity: &CertificateDer<'_>,
+) -> Result<BTreeSet<String>, RustlsError> {
+    let (_remaining, certificate) = parse_x509_certificate(end_entity.as_ref()).map_err(|err| {
+        RustlsError::General(format!(
+            "parse client certificate for common-name validation failed: {err}"
+        ))
+    })?;
     let values = certificate
         .subject()
         .iter_common_name()

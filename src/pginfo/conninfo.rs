@@ -156,7 +156,9 @@ fn render_value(value: &str) -> String {
     }
 }
 
-fn parse_conninfo_entries(input: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+fn parse_conninfo_entries(
+    input: &str,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
     let chars = input.chars().collect::<Vec<_>>();
     let mut entries = std::collections::BTreeMap::new();
     let mut index = 0usize;
@@ -208,7 +210,9 @@ fn parse_conninfo_entries(input: &str) -> Result<std::collections::BTreeMap<Stri
                 }
             }
             if !closed {
-                return Err(format!("unterminated quoted value for conninfo key `{key}`"));
+                return Err(format!(
+                    "unterminated quoted value for conninfo key `{key}`"
+                ));
             }
             value
         } else {

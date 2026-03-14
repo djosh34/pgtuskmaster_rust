@@ -14,20 +14,7 @@ Run this command to see the status:
 pgtm -c docs/examples/docker-cluster-node-a.toml status -v
 ```
 
-The output shows a table. Look for the row where **ROLE** is **primary** and **SELF** is **yes**. This is your current primary. The other nodes show **replica** in the ROLE column.
-
-Expected output pattern (your node names will differ):
-
-```text
-cluster: docker-cluster  health: healthy
-queried via: http://127.0.0.1:18081
-NODE    SELF    ROLE      TRUST         READINESS   API
-node-a  yes     primary   full_quorum   Ready       http://127.0.0.1:18081
-node-b  no      replica   full_quorum   Ready       http://127.0.0.1:18082
-node-c  no      replica   full_quorum   Ready       http://127.0.0.1:18083
-```
-
-Verify all nodes report **full_quorum** trust and **Ready** readiness before proceeding.
+The output shows a cluster-oriented table. Identify the row where `ROLE` is `primary`; that is your current leader. Before proceeding, make sure the cluster is healthy, the leader is unambiguous, and the replicas report steady replica behavior.
 
 ```mermaid
 graph TD
@@ -43,7 +30,7 @@ Connect to the current primary and create a proof table:
 
 ```bash
 PGPASSWORD=$(cat docker/secrets/postgres-superuser-password) \
-  psql "$(pgtm -c docs/examples/docker-cluster-node-a.toml primary)" \
+  psql "$(pgtm -c docs/examples/docker-cluster-node-a.toml primary --tls)" \
   -U postgres \
   -c "CREATE TABLE IF NOT EXISTS tutorial_proof (id TEXT PRIMARY KEY);"
 ```
@@ -52,7 +39,7 @@ Insert a row to establish baseline replication:
 
 ```bash
 PGPASSWORD=$(cat docker/secrets/postgres-superuser-password) \
-  psql "$(pgtm -c docs/examples/docker-cluster-node-a.toml primary)" \
+  psql "$(pgtm -c docs/examples/docker-cluster-node-a.toml primary --tls)" \
   -U postgres \
   -c "INSERT INTO tutorial_proof VALUES ('1:before-switchover');"
 ```
@@ -74,7 +61,7 @@ Send the request to the **current primary**.
 Use the configuration file for whichever node is currently primary, not necessarily `docker-cluster-node-a.toml`.
 
 ```bash
-pgtm -c docs/examples/docker-cluster-<current-primary>.toml switchover request
+pgtm -c docs/examples/docker-cluster-node-<current-primary>.toml switchover request
 ```
 
 Expected response:
@@ -137,7 +124,7 @@ Insert a new row through the **new primary** to verify replication continues:
 
 ```bash
 PGPASSWORD=$(cat docker/secrets/postgres-superuser-password) \
-  psql "$(pgtm -c docs/examples/docker-cluster-node-a.toml primary)" \
+  psql "$(pgtm -c docs/examples/docker-cluster-node-a.toml primary --tls)" \
   -U postgres \
   -c "INSERT INTO tutorial_proof VALUES ('2:after-switchover');"
 ```
@@ -160,7 +147,7 @@ Request a targeted switchover to that specific node.
 Use the configuration file for whichever node is currently primary.
 
 ```bash
-pgtm -c docs/examples/docker-cluster-<current-primary>.toml switchover request --switchover-to node-c
+pgtm -c docs/examples/docker-cluster-node-<current-primary>.toml switchover request --switchover-to node-c
 ```
 
 The response again shows:
@@ -194,7 +181,7 @@ Attempt to switchover to an ineligible target to see how the system protects its
 Try targeting the current primary:
 
 ```bash
-pgtm -c docs/examples/docker-cluster-<current-primary>.toml switchover request --switchover-to <current-primary-name>
+pgtm -c docs/examples/docker-cluster-node-<current-primary>.toml switchover request --switchover-to <current-primary-name>
 ```
 
 The CLI immediately rejects this with:

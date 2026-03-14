@@ -53,34 +53,48 @@ pub(crate) fn materialize_managed_postgres_config(
     cfg: &RuntimeConfig,
     start_intent: &ManagedPostgresStartIntent,
 ) -> Result<ManagedPostgresConfig, ManagedPostgresError> {
-    let data_dir = cfg.postgres.data_dir.as_path();
+    let data_dir = cfg.postgres.paths.data_dir.as_path();
     if data_dir.as_os_str().is_empty() {
         return Err(ManagedPostgresError::InvalidConfig {
             message: "postgres.data_dir must not be empty".to_string(),
         });
     }
 
-    let managed_hba = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_PG_HBA_CONF_NAME))?;
-    let managed_ident = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_PG_IDENT_CONF_NAME))?;
-    let managed_postgresql_conf =
-        absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
+    let managed_hba = absolutize_path(&cfg.postgres.paths.data_dir.join(MANAGED_PG_HBA_CONF_NAME))?;
+    let managed_ident =
+        absolutize_path(&cfg.postgres.paths.data_dir.join(MANAGED_PG_IDENT_CONF_NAME))?;
+    let managed_postgresql_conf = absolutize_path(
+        &cfg.postgres
+            .paths
+            .data_dir
+            .join(MANAGED_POSTGRESQL_CONF_NAME),
+    )?;
     let managed_standby_passfile =
-        absolutize_path(&managed_standby_passfile_path(&cfg.postgres.data_dir))?;
-    let standby_signal = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_STANDBY_SIGNAL_NAME))?;
-    let recovery_signal =
-        absolutize_path(&cfg.postgres.data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME))?;
+        absolutize_path(&managed_standby_passfile_path(&cfg.postgres.paths.data_dir))?;
+    let standby_signal = absolutize_path(
+        &cfg.postgres
+            .paths
+            .data_dir
+            .join(MANAGED_STANDBY_SIGNAL_NAME),
+    )?;
+    let recovery_signal = absolutize_path(
+        &cfg.postgres
+            .paths
+            .data_dir
+            .join(MANAGED_RECOVERY_SIGNAL_NAME),
+    )?;
     let postgresql_auto_conf =
-        absolutize_path(&cfg.postgres.data_dir.join(POSTGRESQL_AUTO_CONF_NAME))?;
+        absolutize_path(&cfg.postgres.paths.data_dir.join(POSTGRESQL_AUTO_CONF_NAME))?;
     let quarantined_postgresql_auto_conf = absolutize_path(
         &cfg.postgres
+            .paths
             .data_dir
             .join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME),
     )?;
 
-    let hba_contents =
-        load_inline_or_path_string("postgres.pg_hba.source", &cfg.postgres.pg_hba.source)?;
+    let hba_contents = load_inline_or_path_string("postgres.access.hba", &cfg.postgres.access.hba)?;
     let ident_contents =
-        load_inline_or_path_string("postgres.pg_ident.source", &cfg.postgres.pg_ident.source)?;
+        load_inline_or_path_string("postgres.access.ident", &cfg.postgres.access.ident)?;
 
     write_atomic(&managed_hba, hba_contents.as_bytes(), Some(0o644))?;
     write_atomic(&managed_ident, ident_contents.as_bytes(), Some(0o644))?;
@@ -94,9 +108,9 @@ pub(crate) fn materialize_managed_postgres_config(
         managed_standby_passfile.as_path(),
     )?;
     let managed_conf = ManagedPostgresConf {
-        listen_addresses: cfg.postgres.listen_host.clone(),
-        port: cfg.postgres.listen_port,
-        unix_socket_directories: cfg.postgres.socket_dir.clone(),
+        listen_addresses: cfg.postgres.network.listen_host.clone(),
+        port: cfg.postgres.network.listen_port,
+        unix_socket_directories: cfg.postgres_socket_dir(),
         hba_file: managed_hba.clone(),
         ident_file: managed_ident.clone(),
         tls: tls_files.managed_tls_config.clone(),
@@ -170,8 +184,10 @@ fn materialize_tls_files(
                 &identity.private_key,
             )?;
 
-            let managed_cert = absolutize_path(&cfg.postgres.data_dir.join("pgtm.server.crt"))?;
-            let managed_key = absolutize_path(&cfg.postgres.data_dir.join("pgtm.server.key"))?;
+            let managed_cert =
+                absolutize_path(&cfg.postgres.paths.data_dir.join("pgtm.server.crt"))?;
+            let managed_key =
+                absolutize_path(&cfg.postgres.paths.data_dir.join("pgtm.server.key"))?;
 
             // Production TLS credentials are operator-supplied; pgtuskmaster only copies them
             // into managed runtime files under PGDATA before PostgreSQL starts.
@@ -183,7 +199,7 @@ fn materialize_tls_files(
                     "postgres.tls.client_auth.client_ca",
                     &client_auth.client_ca,
                 )?;
-                let managed_ca = absolutize_path(&cfg.postgres.data_dir.join("pgtm.ca.crt"))?;
+                let managed_ca = absolutize_path(&cfg.postgres.paths.data_dir.join("pgtm.ca.crt"))?;
                 write_atomic(&managed_ca, ca_pem.as_slice(), Some(0o644))?;
                 Some(managed_ca)
             } else {
@@ -239,7 +255,6 @@ fn normalize_standby_auth(
     managed_passfile_path: &Path,
 ) -> ManagedStandbyAuth {
     match standby_auth {
-        ManagedStandbyAuth::NoPassword => ManagedStandbyAuth::NoPassword,
         ManagedStandbyAuth::PasswordPassfile { .. } => ManagedStandbyAuth::PasswordPassfile {
             path: managed_passfile_path.to_path_buf(),
         },
@@ -271,10 +286,6 @@ fn materialize_managed_standby_passfile(
     };
 
     match standby_auth {
-        ManagedStandbyAuth::NoPassword => {
-            remove_file_if_exists(managed_passfile_path)?;
-            Ok(None)
-        }
         ManagedStandbyAuth::PasswordPassfile { path } => {
             let password = resolve_role_password(
                 "postgres.roles.replicator.auth",
@@ -290,11 +301,6 @@ fn materialize_managed_standby_passfile(
 fn resolve_role_password(key: &str, auth: &RoleAuthConfig) -> Result<String, ManagedPostgresError> {
     match auth {
         RoleAuthConfig::Password { password } => resolve_secret_source_string(key, password),
-        RoleAuthConfig::Tls => Err(ManagedPostgresError::InvalidConfig {
-            message: format!(
-                "{key} must use password auth when managed standby passfile materialization is requested"
-            ),
-        }),
     }
 }
 
@@ -602,19 +608,19 @@ mod tests {
 
     use crate::{
         config::{
-            ClientCertificateMode, HaConfig, InlineOrPath, ProcessConfig, RuntimeConfig,
-            TlsServerConfig,
-        },
-        pginfo::{conninfo::PgSslMode, state::PgConnInfo},
-        postgres_managed_conf::{
-            managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
-            ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
+            ClientCertificateMode, HaConfig, InlineOrPath, ProcessConfig, ProcessTimeoutsConfig,
+            RuntimeConfig, TlsServerConfig,
         },
         dev_support::{
             binaries::require_pg16_bin_for_real_tests,
             namespace::NamespaceGuard,
             pg16::{prepare_pgdata_dir, spawn_pg16, PgHandle, PgInstanceSpec},
             ports::allocate_ports,
+        },
+        pginfo::{conninfo::PgSslMode, state::PgConnInfo},
+        postgres_managed_conf::{
+            managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
+            ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
     };
 
@@ -1108,10 +1114,10 @@ mod tests {
             drop(replica_reservation);
 
             let mut runtime_config = sample_runtime_config(replica_data.clone());
-            runtime_config.postgres.listen_port = replica_port;
-            runtime_config.postgres.socket_dir = replica_socket.clone();
-            runtime_config.postgres.log_file = replica_logs.join("managed-postgres.log");
-            runtime_config.postgres.pg_hba.source = InlineOrPath::Inline {
+            runtime_config.postgres.network.listen_port = replica_port;
+            runtime_config.postgres.paths.socket_dir = Some(replica_socket.clone());
+            runtime_config.postgres.paths.log_file = Some(replica_logs.join("managed-postgres.log"));
+            runtime_config.postgres.access.hba = InlineOrPath::Inline {
                 content: concat!(
                     "local all all trust\n",
                     "host all all 127.0.0.1/32 trust\n",
@@ -1372,9 +1378,12 @@ mod tests {
                 lease_ttl_ms: 5_000,
             })
             .with_process(ProcessConfig {
-                pg_rewind_timeout_ms: 30_000,
-                bootstrap_timeout_ms: 30_000,
-                fencing_timeout_ms: 10_000,
+                timeouts: ProcessTimeoutsConfig {
+                    pg_rewind_ms: 30_000,
+                    bootstrap_ms: 30_000,
+                    fencing_ms: 10_000,
+                },
+                working_root: std::path::PathBuf::from("/tmp/pgtuskmaster"),
                 binaries: crate::dev_support::runtime_config::sample_binary_paths(),
             })
             .build()

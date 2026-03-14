@@ -228,7 +228,7 @@ impl PostgresIngestWorkerState {
     fn new(cfg: &RuntimeConfig) -> Self {
         let pg_ctl_log_file = match cfg.logging.postgres.pg_ctl_log_file.clone() {
             Some(path) => path,
-            None => cfg.postgres.log_file.clone(),
+            None => cfg.postgres_log_file(),
         };
 
         Self {
@@ -840,7 +840,7 @@ mod tests {
     use serde_json::Value;
 
     use crate::config::{
-        DebugConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, PgHbaConfig,
+        DebugConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
         PostgresLoggingConfig, RuntimeConfig,
     };
     use crate::logging::{
@@ -869,14 +869,11 @@ mod tests {
     }
 
     fn sample_runtime_config() -> RuntimeConfig {
-        let baseline_logging =
-            crate::dev_support::runtime_config::sample_postgres_logging_config();
+        let baseline_logging = crate::dev_support::runtime_config::sample_postgres_logging_config();
         crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-            .with_pg_hba(PgHbaConfig {
-                source: InlineOrPath::Inline {
-                    content: concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",)
-                        .to_string(),
-                },
+            .with_pg_hba(InlineOrPath::Inline {
+                content: concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",)
+                    .to_string(),
             })
             .with_logging(LoggingConfig {
                 level: LogLevel::Trace,
@@ -1242,21 +1239,9 @@ mod tests {
         use tokio::time::Instant;
 
         use crate::dcs::{
-            DcsMemberEndpointView, DcsMemberLeaseView, DcsMemberPostgresView,
-            DcsMemberRoutingView, DcsMemberView, DcsPrimaryPostgresView, DcsTrust, DcsView,
-            WalVector,
+            DcsMemberEndpointView, DcsMemberLeaseView, DcsMemberPostgresView, DcsMemberRoutingView,
+            DcsMemberView, DcsPrimaryPostgresView, DcsTrust, DcsView, WalVector,
         };
-        use crate::logging::LogRecord;
-        use crate::process::jobs::{
-            PostgresStartIntent, ProcessIntent, ShutdownMode, ReplicaProvisionIntent,
-        };
-        use crate::process::state::{
-            ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
-            ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
-            ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
-        };
-        use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
-        use crate::state::{new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError, WorkerStatus};
         use crate::dev_support::binaries::{
             require_pg16_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
         };
@@ -1265,6 +1250,19 @@ mod tests {
             prepare_pgdata_dir, spawn_pg16_for_vanilla_postgres, PgInstanceSpec,
         };
         use crate::dev_support::ports::allocate_ports;
+        use crate::logging::LogRecord;
+        use crate::process::jobs::{
+            PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
+        };
+        use crate::process::state::{
+            ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
+            ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
+            ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
+        };
+        use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
+        use crate::state::{
+            new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError, WorkerStatus,
+        };
 
         use super::super::{
             step_once as ingest_step_once, PostgresIngestWorkerCtx, PostgresIngestWorkerState,
@@ -1518,7 +1516,7 @@ mod tests {
             let mut cfg = sample_runtime_config();
             cfg.logging.postgres.log_dir = Some(log_dir);
             cfg.logging.postgres.cleanup.enabled = false;
-            cfg.postgres.log_file = ns.child_dir("runtime/pg_ctl.log");
+            cfg.postgres.paths.log_file = Some(ns.child_dir("runtime/pg_ctl.log"));
 
             let (log_handle, sink) = test_log_handle();
             let ctx = PostgresIngestWorkerCtx {
@@ -1579,16 +1577,18 @@ mod tests {
                     WorkerError::Message(format!("create log file parent failed: {err}"))
                 })?;
             }
-            let _ = std::fs::create_dir_all(&log_dir);
+            std::fs::create_dir_all(&log_dir)
+                .map_err(|err| WorkerError::Message(format!("create log_dir failed: {err}")))?;
             let jsonlog_path = log_dir.join("postgres.json");
-            let _ = std::fs::write(&jsonlog_path, b"");
+            std::fs::write(&jsonlog_path, b"")
+                .map_err(|err| WorkerError::Message(format!("seed jsonlog failed: {err}")))?;
 
             let mut cfg = sample_runtime_config();
             cfg.process.binaries = binaries.clone();
-            cfg.postgres.data_dir = data_dir.clone();
-            cfg.postgres.socket_dir = socket_dir.clone();
-            cfg.postgres.listen_port = port;
-            cfg.postgres.log_file = log_file.clone();
+            cfg.postgres.paths.data_dir = data_dir.clone();
+            cfg.postgres.paths.socket_dir = Some(socket_dir.clone());
+            cfg.postgres.network.listen_port = port;
+            cfg.postgres.paths.log_file = Some(log_file.clone());
             cfg.postgres
                 .extra_gucs
                 .insert("log_destination".to_string(), "jsonlog,stderr".to_string());
@@ -1729,7 +1729,10 @@ mod tests {
             }
 
             // Pump ingestion a bit to collect pg_ctl log lines.
-            let mut cmd = Command::new(binaries.psql.clone());
+            let psql_bin = binaries.overrides.psql.clone().ok_or_else(|| {
+                WorkerError::Message("test process binaries missing psql override".to_string())
+            })?;
+            let mut cmd = Command::new(psql_bin);
             cmd.arg("-h")
                 .arg("127.0.0.1")
                 .arg("-p")
@@ -1833,7 +1836,8 @@ mod tests {
             let ns = guard.namespace()?;
 
             let data_dir = ns.child_dir("pg_basebackup/out");
-            let _ = std::fs::create_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir)
+                .map_err(|err| WorkerError::Message(format!("create data_dir failed: {err}")))?;
 
             let mut cfg = sample_runtime_config();
             cfg.process.binaries = binaries;

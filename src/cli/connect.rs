@@ -46,7 +46,12 @@ pub(crate) async fn run_primary(
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
     let (state, _queried_via) = fetch_seed_state(context).await?;
-    let view = resolve_primary_view(&state, &context.postgres_client_tls, options.tls)?;
+    let view = resolve_primary_view(
+        &state,
+        &context.postgres_client_tls,
+        options.tls,
+        context.primary_target.as_ref(),
+    )?;
     output::render_connection_view(&view, options.json)
 }
 
@@ -63,6 +68,7 @@ fn resolve_primary_view(
     state: &NodeState,
     tls: &CliTlsConfig,
     emit_tls: bool,
+    primary_target: Option<&crate::config::PgtmPrimaryTargetConfig>,
 ) -> Result<ConnectionView, CliError> {
     let primary_id = authority_primary_member(state).ok_or_else(|| {
         CliError::Resolution(
@@ -83,7 +89,12 @@ fn resolve_primary_view(
         state,
         emit_tls,
         ConnectionCommandKind::Primary,
-        vec![build_connection_target(member, tls, emit_tls)?],
+        vec![build_primary_connection_target(
+            member,
+            tls,
+            emit_tls,
+            primary_target,
+        )?],
     ))
 }
 
@@ -149,6 +160,35 @@ fn build_connection_target(
         member_id: member.member_id.0.clone(),
         postgres_host: postgres_host.to_string(),
         postgres_port: member.routing.postgres.port,
+        dsn,
+    })
+}
+
+fn build_primary_connection_target(
+    member: &DcsMemberView,
+    tls: &CliTlsConfig,
+    emit_tls: bool,
+    override_target: Option<&crate::config::PgtmPrimaryTargetConfig>,
+) -> Result<ConnectionTarget, CliError> {
+    let resolved_host = override_target
+        .map(|target| target.host.trim())
+        .unwrap_or_else(|| member.routing.postgres.host.trim());
+    let resolved_port = override_target
+        .and_then(|target| target.port)
+        .unwrap_or(member.routing.postgres.port);
+
+    if resolved_host.is_empty() || resolved_port == 0 {
+        return Err(CliError::Resolution(format!(
+            "member {} does not advertise PostgreSQL host/port",
+            member.member_id.0
+        )));
+    }
+
+    let dsn = render_connection_dsn(resolved_host, resolved_port, tls, emit_tls)?;
+    Ok(ConnectionTarget {
+        member_id: member.member_id.0.clone(),
+        postgres_host: resolved_host.to_string(),
+        postgres_port: resolved_port,
         dsn,
     })
 }

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::BinaryPaths;
+use crate::config::{BinaryPathOverrides, BinaryResolutionConfig};
 use crate::dev_support::provenance;
 use crate::dev_support::HarnessError;
 
@@ -55,14 +55,17 @@ pub fn require_pg16_bin_for_real_tests(name: &str) -> Result<PathBuf, HarnessErr
     provenance::require_verified_real_binary(name)
 }
 
-pub fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryPaths, HarnessError> {
-    Ok(BinaryPaths {
-        postgres: require_pg16_bin_for_real_tests("postgres")?,
-        pg_ctl: require_pg16_bin_for_real_tests("pg_ctl")?,
-        pg_rewind: require_pg16_bin_for_real_tests("pg_rewind")?,
-        initdb: require_pg16_bin_for_real_tests("initdb")?,
-        pg_basebackup: require_pg16_bin_for_real_tests("pg_basebackup")?,
-        psql: require_pg16_bin_for_real_tests("psql")?,
+pub fn require_pg16_process_binaries_for_real_tests() -> Result<BinaryResolutionConfig, HarnessError>
+{
+    Ok(BinaryResolutionConfig {
+        overrides: BinaryPathOverrides {
+            postgres: Some(require_pg16_bin_for_real_tests("postgres")?),
+            pg_ctl: Some(require_pg16_bin_for_real_tests("pg_ctl")?),
+            pg_rewind: Some(require_pg16_bin_for_real_tests("pg_rewind")?),
+            initdb: Some(require_pg16_bin_for_real_tests("initdb")?),
+            pg_basebackup: Some(require_pg16_bin_for_real_tests("pg_basebackup")?),
+            psql: Some(require_pg16_bin_for_real_tests("psql")?),
+        },
     })
 }
 

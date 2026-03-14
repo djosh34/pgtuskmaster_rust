@@ -3,11 +3,10 @@ use std::cmp::Ordering;
 use crate::{dcs::DcsTrust, state::MemberId};
 
 use super::types::{
-    ApiVisibility, AuthorityProjection, Candidacy, DesiredState, ElectionEligibility,
-    FailSafeGoal, FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason,
-    LeadershipView, LeaseEpoch, LocalDataState, NoPrimaryFence, NoPrimaryProjection,
-    PeerKnowledge, PeerLeaderState, PostgresState, ProcessState, PublicationGoal,
-    PublicationState, RecoveryPlan, StorageState,
+    ApiVisibility, AuthorityProjection, Candidacy, DesiredState, ElectionEligibility, FailSafeGoal,
+    FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeadershipView, LeaseEpoch,
+    LocalDataState, NoPrimaryFence, NoPrimaryProjection, PeerKnowledge, PeerLeaderState,
+    PostgresState, ProcessState, PublicationGoal, PublicationState, RecoveryPlan, StorageState,
     SwitchoverState, SwitchoverTarget, TargetRole, WalPosition, WorldView,
 };
 
@@ -223,15 +222,15 @@ fn leader_publication(
 ) -> PublicationGoal {
     match &world.local.postgres {
         PostgresState::Primary { .. } => primary_publication(epoch.clone()),
-        PostgresState::Offline | PostgresState::Replica { .. } => no_primary_publication(
-            NoPrimaryProjection::Recovering {
+        PostgresState::Offline | PostgresState::Replica { .. } => {
+            no_primary_publication(NoPrimaryProjection::Recovering {
                 epoch: Some(LeaseEpoch {
                     holder: self_id.clone(),
                     generation: epoch.generation,
                 }),
                 fence: NoPrimaryFence::None,
-            },
-        ),
+            })
+        }
     }
 }
 
@@ -698,9 +697,7 @@ mod tests {
         let mut world = world(
             LocalKnowledge {
                 data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-                postgres: PostgresState::Primary {
-                    committed_lsn: 42,
-                },
+                postgres: PostgresState::Primary { committed_lsn: 42 },
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
                 required_roles_ready: false,
@@ -736,12 +733,10 @@ mod tests {
                     holder: self_id.clone(),
                     generation: 7,
                 }),
-                publication: PublicationGoal::Publish(AuthorityProjection::Primary(
-                    LeaseEpoch {
-                        holder: MemberId("node-a".to_string()),
-                        generation: 7,
-                    },
-                )),
+                publication: PublicationGoal::Publish(AuthorityProjection::Primary(LeaseEpoch {
+                    holder: MemberId("node-a".to_string()),
+                    generation: 7,
+                },)),
                 clear_switchover: false,
             }
         );
@@ -781,10 +776,7 @@ mod tests {
         world.global.switchover = SwitchoverState::Requested(SwitchoverRequest {
             target: SwitchoverTarget::AnyHealthyReplica,
         });
-        world.global.peers = BTreeMap::from([(
-            MemberId("node-a".to_string()),
-            promote_peer(40),
-        )]);
+        world.global.peers = BTreeMap::from([(MemberId("node-a".to_string()), promote_peer(40))]);
 
         assert_eq!(
             decide(&world, &self_id),

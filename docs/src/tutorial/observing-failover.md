@@ -12,7 +12,7 @@ Use these docs-owned operator configs while you follow the event:
 - [`docs/examples/docker-cluster-node-b.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-b.toml)
 - [`docs/examples/docker-cluster-node-c.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-c.toml)
 
-Each file mirrors the shipped docker runtime config and adds `[pgtm].api_url` for the corresponding host-mapped API port.
+Each file is a docs-owned TLS operator config for one host-mapped API seed.
 
 ## Step 1: Check initial cluster health
 

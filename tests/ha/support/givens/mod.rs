@@ -73,7 +73,9 @@ impl HaGivenDefinition {
 
     pub fn quorum_majority_dcs_services(&self) -> Vec<DcsService> {
         match &self.topology {
-            HaTopologyFixture::ThreeNode(topology) => topology.dcs_layout.quorum_majority_services(),
+            HaTopologyFixture::ThreeNode(topology) => {
+                topology.dcs_layout.quorum_majority_services()
+            }
         }
     }
 }

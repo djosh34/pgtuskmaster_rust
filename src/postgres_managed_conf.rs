@@ -56,7 +56,6 @@ pub(crate) enum ManagedRecoverySignal {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ManagedStandbyAuth {
-    NoPassword,
     PasswordPassfile { path: PathBuf },
 }
 
@@ -243,7 +242,6 @@ pub(crate) fn managed_standby_auth_from_role_auth(
     data_dir: &Path,
 ) -> ManagedStandbyAuth {
     match auth {
-        RoleAuthConfig::Tls => ManagedStandbyAuth::NoPassword,
         RoleAuthConfig::Password { .. } => ManagedStandbyAuth::PasswordPassfile {
             path: managed_standby_passfile_path(data_dir),
         },
@@ -254,12 +252,11 @@ fn render_managed_primary_conninfo(
     conninfo: &PgConnInfo,
     standby_auth: &ManagedStandbyAuth,
 ) -> String {
+    let ManagedStandbyAuth::PasswordPassfile { path } = standby_auth;
     let mut rendered = render_pg_conninfo(conninfo);
-    if let ManagedStandbyAuth::PasswordPassfile { path } = standby_auth {
-        rendered.push(' ');
-        rendered.push_str("passfile=");
-        rendered.push_str(render_conninfo_value(path.display().to_string().as_str()).as_str());
-    }
+    rendered.push(' ');
+    rendered.push_str("passfile=");
+    rendered.push_str(render_conninfo_value(path.display().to_string().as_str()).as_str());
     rendered
 }
 
@@ -409,7 +406,7 @@ mod tests {
         managed_standby_passfile_path, render_managed_postgres_conf, validate_extra_guc_entry,
         ManagedPostgresConf, ManagedPostgresConfError, ManagedPostgresStartIntent,
         ManagedPostgresTlsConfig, ManagedRecoverySignal, ManagedStandbyAuth,
-        MANAGED_POSTGRESQL_CONF_HEADER,
+        MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_STANDBY_PASSFILE_NAME,
     };
 
     fn sample_conf() -> ManagedPostgresConf {
@@ -612,7 +609,10 @@ mod tests {
                     ssl_root_cert: None,
                     options: None,
                 },
-                ManagedStandbyAuth::NoPassword,
+                ManagedStandbyAuth::PasswordPassfile {
+                    path: PathBuf::from("/var/lib/postgresql/data")
+                        .join(MANAGED_STANDBY_PASSFILE_NAME),
+                },
                 None,
             )
             .recovery_signal(),

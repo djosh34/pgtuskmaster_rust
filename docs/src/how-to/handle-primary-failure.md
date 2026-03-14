@@ -7,7 +7,7 @@ This guide shows how to detect, assess, and respond to a PostgreSQL primary node
 - a running pgtuskmaster cluster with more than one node
 - access to at least one reachable node API
 - access to PostgreSQL on the cluster nodes
-- an operator-facing config that either sets `[pgtm].api_url` or derives an operator-reachable URL from `api.listen_addr`
+- an operator-facing config that either sets `pgtm.api.base_url` or derives an operator-reachable URL from `api.listen_addr`
 
 ## Detect primary failure
 

@@ -7,7 +7,10 @@ use crate::{
     cli::{
         args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError, output,
     },
-    dcs::{DcsMemberPostgresView, DcsMemberView, DcsSwitchoverStateView, DcsSwitchoverTargetView, DcsTrust},
+    dcs::{
+        DcsMemberPostgresView, DcsMemberView, DcsSwitchoverStateView, DcsSwitchoverTargetView,
+        DcsTrust,
+    },
     ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::Readiness,
 };

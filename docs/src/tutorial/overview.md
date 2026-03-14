@@ -5,7 +5,6 @@ This chapter contains hands-on lessons that guide you through practical activiti
 ## What you'll find here
 
 - [First HA Cluster](first-ha-cluster.md) - Start a three-node PostgreSQL HA cluster on your local machine and inspect it with `pgtm`
-- [Single-Node Setup](single-node-setup.md) - Run the smallest shipped deployment with a truthful operator config
 - [Observing a Failover Event](observing-failover.md) - Watch a real failover unfold with cluster-wide status and per-node debug history
 - [Performing a Planned Switchover](performing-switchover.md) - Practice controlled leadership transfer with both generic and targeted switchover requests
 - [Validating Cluster Behavior](validating-cluster-behavior.md) - Practice fault validation by keeping a primary stable through replica loss and then confirming clean failover and rejoin

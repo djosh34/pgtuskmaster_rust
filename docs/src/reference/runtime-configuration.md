@@ -1,98 +1,150 @@
 # Runtime Configuration Reference
 
-This document describes the TOML schema and validation rules for pgtuskmaster runtime configuration.
+This document describes the current runtime TOML schema for `pgtuskmaster`.
 
-## Top-Level Sections
+The runtime loads directly into typed config structs with `serde`. Ordinary defaults live on the real schema, and only cross-field or domain invariants are validated afterward.
 
-The normalized runtime config contains exactly these blocks:
+## Top-level sections
 
-- `cluster` - cluster identity
-- `postgres` - PostgreSQL instance settings
-- `dcs` - distributed consensus store
-- `ha` - high-availability loop timing
-- `process` - external binary paths and timeouts
-- `logging` - log capture, sinks, and cleanup
-- `api` - HTTP control plane
-- `pgtm` - optional operator CLI context overrides and client TLS material
-- `debug` - developer features
+Runtime config supports these top-level blocks:
 
-`logging` and `debug` may be omitted; defaults are applied. All other sections are mandatory.
+- `cluster`
+- `postgres`
+- `dcs`
+- `ha`
+- `process`
+- `logging`
+- `api`
+- `pgtm`
+- `debug`
+
+Only `cluster`, `postgres`, and `dcs` are always required. The remaining sections have defaults and may be omitted when the defaults fit your deployment.
+
+## Example
+
+```toml
+[cluster]
+name = "docker-cluster"
+scope = "docker-cluster"
+member_id = "node-a"
+
+[postgres.paths]
+data_dir = "/var/lib/postgresql/data"
+
+[postgres.network]
+listen_host = "node-a"
+listen_port = 5432
+
+[postgres.access]
+hba = { path = "/etc/pgtuskmaster/pg_hba.conf" }
+ident = { path = "/etc/pgtuskmaster/pg_ident.conf" }
+
+[postgres]
+tls = { mode = "disabled" }
+roles = { superuser = { username = "postgres", auth = { type = "password", password = { path = "/run/secrets/postgres-superuser-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { path = "/run/secrets/replicator-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { path = "/run/secrets/rewinder-password" } } } }
+
+[dcs]
+endpoints = ["http://etcd:2379"]
+
+[api]
+listen_addr = "0.0.0.0:8080"
+transport = { transport = "http" }
+auth = { type = "disabled" }
+```
 
 ## `cluster`
 
 ```toml
 [cluster]
 name = "docker-cluster"
+scope = "docker-cluster"
 member_id = "node-a"
 ```
 
-| Field | Type | Constraints | Default |
-|-------|------|-------------|---------|
-| `name` | string | non-empty, trimmed | _required_ |
-| `member_id` | string | non-empty, trimmed | _required_ |
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | required, non-empty |
+| `scope` | string | required, non-empty; this is the DCS key prefix |
+| `member_id` | string | required, non-empty |
 
-Validation fails if either field is empty.
+`cluster.scope` is the single source of truth for the DCS namespace. The old `dcs.scope` field no longer exists.
 
 ## `postgres`
 
-Defines the managed PostgreSQL instance.
+`postgres` is split into smaller typed sub-blocks instead of one large flat table.
+
+### Paths
+
+```toml
+[postgres.paths]
+data_dir = "/var/lib/postgresql/data"
+socket_dir = "/var/lib/pgtuskmaster/socket"
+log_file = "/var/log/pgtuskmaster/postgres.log"
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `data_dir` | path | required |
+| `socket_dir` | path | optional; defaults under `process.working_root` |
+| `log_file` | path | optional; defaults under `process.working_root` |
+
+### Network
+
+```toml
+[postgres.network]
+listen_host = "node-a"
+listen_port = 5432
+advertise_port = 15432
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `listen_host` | string | defaults to `127.0.0.1` |
+| `listen_port` | integer | defaults to `5432` |
+| `advertise_port` | integer | optional |
+
+### Local database and rewind transport
 
 ```toml
 [postgres]
-data_dir = "/var/lib/postgresql/data"
-listen_host = "node-a"
-listen_port = 5432
-socket_dir = "/var/lib/pgtuskmaster/socket"
-log_file = "/var/log/pgtuskmaster/postgres.log"
-local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
-rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "disable" }
-tls = { mode = "disabled" }
-pg_hba = { source = { path = "/etc/pgtuskmaster/pg_hba.conf" } }
-pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
+local_database = "postgres"
+
+[postgres.rewind.transport]
+ssl_mode = "verify_full"
+ca_cert = { path = "/etc/pgtuskmaster/tls/postgres-ca.pem" }
 ```
 
-| Field | Type | Constraints | Default |
-|-------|------|-------------|---------|
-| `data_dir` | path (absolute) | non-empty, absolute | _required_ |
-| `connect_timeout_s` | integer | - | 5 |
-| `listen_host` | string | non-empty | _required_ |
-| `listen_port` | 16-bit integer | > 0 | _required_ |
-| `socket_dir` | path (absolute) | non-empty, absolute | _required_ |
-| `log_file` | path (absolute) | non-empty, absolute | _required_ |
-| `local_conn_identity` | identity block | see below | _required_ |
-| `rewind_conn_identity` | identity block | see below | _required_ |
-| `tls` | TLS block | see below | _required_ |
-| `roles` | roles block | see below | _required_ |
-| `pg_hba` | inline-or-path block | non-empty source | _required_ |
-| `pg_ident` | inline-or-path block | non-empty source | _required_ |
-| `extra_gucs` | map | optional; validated per entry | empty map |
+| Field | Type | Notes |
+|-------|------|-------|
+| `local_database` | string | defaults to `postgres` |
+| `rewind.database` | string | defaults to `postgres` |
+| `rewind.transport.ssl_mode` | enum | `disable`, `prefer`, `require`, `verify_ca`, `verify_full` |
+| `rewind.transport.ca_cert` | inline-or-path | optional; required for `verify_ca` or `verify_full` |
 
-### Connection Identity
+The old `local_conn_identity` and `rewind_conn_identity` config blocks were removed. Local connections use the configured superuser role plus `postgres.local_database`, and rewind uses `postgres.roles.rewinder` plus `postgres.rewind`.
 
-Both `local_conn_identity` and `rewind_conn_identity` must be table literals with these fields:
-
-| Subfield | Type | Constraints |
-|----------|------|-------------|
-| `user` | string | non-empty |
-| `dbname` | string | non-empty |
-| `ssl_mode` | enum | `disable`, `prefer`, `require`, `verify_ca`, `verify_full` |
-| `ca_cert` | inline-or-path | optional path-backed CA bundle; required when `ssl_mode` is `verify_ca` or `verify_full` |
-
-If any required subfield is missing or empty, normalization fails with a field-specific validation error listing the exact missing key. `ca_cert` must be path-backed; inline content is rejected because libpq needs a file path for `sslrootcert`. If `postgres.tls.mode` is `disabled`, the `ssl_mode` must not require TLS (`require`, `verify_ca`, `verify_full`) or validation fails. If `ssl_mode` is `verify_ca` or `verify_full`, the matching `ca_cert` path is required.
-
-### TLS Server Mode
+### PostgreSQL TLS server settings
 
 ```toml
+[postgres]
 tls = { mode = "disabled" }
-tls = { mode = "enabled", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } } }
-tls = { mode = "enabled", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } }, client_auth = { client_ca = { path = "/path/to/ca.pem" }, client_certificate = "optional" } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, client_certificate = "required" } }
 ```
 
-`mode` accepts two values: `disabled` and `enabled`. When the mode is `enabled`, `identity` must be present and contain non-empty `cert_chain` and `private_key` entries. `client_auth` is optional; if present it requires a non-empty `client_ca` path and `client_certificate = "optional"` or `client_certificate = "required"`.
+`mode` accepts:
 
-TLS client authentication is not permitted when `mode = "disabled"`.
+- `disabled`
+- `enabled`
 
-### Role Definitions
+When enabled, `identity.cert_chain` and `identity.private_key` are required.
+
+If `client_auth` is present, it uses:
+
+- `client_ca`
+- `client_certificate = "optional"` or `client_certificate = "required"`
+
+### Roles
 
 ```toml
 [postgres.roles.superuser]
@@ -108,74 +160,85 @@ username = "rewinder"
 auth = { type = "password", password = { path = "/run/secrets/rewinder-password" } }
 ```
 
-All three roles (`superuser`, `replicator`, `rewinder`) are required, and their usernames must be distinct. Each role must provide:
+All three roles are required:
 
-| Subfield | Type | Constraints |
-|----------|------|-------------|
-| `username` | string | non-empty |
-| `auth` | auth block | `type = "password"` with a non-empty secret source |
+- `superuser`
+- `replicator`
+- `rewinder`
 
-`type = "tls"` is explicitly rejected at validation with an actionable message directing operators to use password auth. The password source follows the `InlineOrPath` convention:
-
-```toml
-password = { content = "inline-secret" }
-password = { path = "/run/secrets/file" }
-```
-
-Both forms must be non-empty.
-
-**Invariants**:
-- `postgres.local_conn_identity.user` must equal `postgres.roles.superuser.username`
-- `postgres.rewind_conn_identity.user` must equal `postgres.roles.rewinder.username`
-
-### Authorization Rule Files
-
-`pg_hba` and `pg_ident` each accept a nested `source` key pointing to file or inline content. The source must be non-empty. Example:
+Only password auth is supported:
 
 ```toml
-pg_hba = { source = { content = "local all all trust\nhost all all 0.0.0.0/0 md5\n" } }
+auth = { type = "password", password = { content = "inline-secret" } }
+auth = { type = "password", password = { path = "/run/secrets/password-file" } }
+auth = { type = "password", password = { env = "PASSWORD_ENV_VAR" } }
 ```
+
+Equal usernames are allowed when that is how you want to run the cluster.
+
+### Access files
+
+```toml
+[postgres.access]
+hba = { path = "/etc/pgtuskmaster/pg_hba.conf" }
+ident = { path = "/etc/pgtuskmaster/pg_ident.conf" }
+```
+
+Both fields are required and accept inline-or-path values.
 
 ### Extra GUCs
 
-`extra_gucs` is an optional map of PostgreSQL parameter name to string value. Each entry is validated against internal rules; reserved parameter names are rejected. No default parameters are injected automatically.
+```toml
+[postgres.extra_gucs]
+wal_keep_size = "128MB"
+```
+
+`extra_gucs` is optional. Reserved keys are rejected.
 
 ## `dcs`
-
-Distributed consensus store settings.
 
 ```toml
 [dcs]
 endpoints = ["http://etcd:2379"]
-scope = "docker-cluster"
+
+[dcs.client]
+auth = { type = "disabled" }
+tls = { mode = "disabled" }
 ```
 
-| Field | Type | Constraints |
-|-------|------|-------------|
-| `endpoints` | array of strings | non-empty; each entry must be an `http://host:port` endpoint URL with an explicit port |
-| `scope` | string | non-empty after trim |
-| `init` | init block (optional) | see below |
+| Field | Type | Notes |
+|-------|------|-------|
+| `endpoints` | array of typed URLs | required, non-empty |
+| `client.auth` | auth block | defaults to disabled |
+| `client.tls` | TLS block | defaults to disabled |
+| `init` | init block | optional |
 
-At least one endpoint is required. Each endpoint must be a valid `http://host:port` URL; blank values, missing ports, paths, queries, fragments, and unsupported schemes are rejected during config parsing.
+### DCS client auth
 
-### DCS Init Payload
+```toml
+[dcs.client]
+auth = { type = "basic", username = "etcd-user", password = { path = "/run/secrets/etcd-password" } }
+```
+
+### DCS client TLS
+
+```toml
+[dcs.client]
+tls = { mode = "enabled", ca_cert = { path = "/etc/pgtuskmaster/tls/etcd-ca.pem" } }
+tls = { mode = "enabled", ca_cert = { path = "/etc/pgtuskmaster/tls/etcd-ca.pem" }, identity = { cert = { path = "/etc/pgtuskmaster/tls/etcd-client.crt" }, key = { path = "/etc/pgtuskmaster/tls/etcd-client.key" } }, server_name = "etcd.internal" }
+```
+
+### DCS bootstrap init
 
 ```toml
 [dcs.init]
-payload_json = "{\"cluster\":{\"name\":\"seed\"}}"
+payload_json = "{\"cluster\":{\"name\":\"seed\",\"scope\":\"seed\",\"member_id\":\"node-a\"}}"
 write_on_bootstrap = true
 ```
 
-| Subfield | Type | Constraints |
-|----------|------|-------------|
-| `payload_json` | string | valid JSON, must deserialize into a full `RuntimeConfig` object |
-| `write_on_bootstrap` | boolean | _required when init is present_ |
-
-If `init` is present, `payload_json` must be non-empty and parseable as both JSON and as a `RuntimeConfig`.
+`payload_json` must be valid JSON and must decode to a full runtime config snapshot.
 
 ## `ha`
-
-High-availability timing parameters.
 
 ```toml
 [ha]
@@ -183,58 +246,50 @@ loop_interval_ms = 1000
 lease_ttl_ms = 10000
 ```
 
-| Field | Type | Constraints |
-|-------|------|-------------|
-| `loop_interval_ms` | integer | 1 <= value <= 86_400_000 |
-| `lease_ttl_ms` | integer | 1 <= value <= 86_400_000 |
-
-Validation requires `lease_ttl_ms` > `loop_interval_ms`.
+Defaults exist for both values. Validation requires `lease_ttl_ms > loop_interval_ms`.
 
 ## `process`
 
-External binary locations and operation timeouts.
+`process` now separates timeouts, working-root defaults, and optional binary overrides.
 
 ```toml
 [process]
-pg_rewind_timeout_ms = 120000
-bootstrap_timeout_ms = 300000
-fencing_timeout_ms = 30000
+working_root = "/tmp/pgtuskmaster"
 
-[process.binaries]
+[process.timeouts]
+pg_rewind_ms = 120000
+bootstrap_ms = 300000
+fencing_ms = 30000
+
+[process.binaries.overrides]
 postgres = "/usr/lib/postgresql/16/bin/postgres"
 pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
-pg_rewind = "/usr/lib/postgresql/16/bin/pg_rewind"
-initdb = "/usr/lib/postgresql/16/bin/initdb"
-pg_basebackup = "/usr/lib/postgresql/16/bin/pg_basebackup"
-psql = "/usr/lib/postgresql/16/bin/psql"
 ```
 
 ### Timeouts
 
-| Field | Type | Constraints | Default |
-|-------|------|-------------|---------|
-| `pg_rewind_timeout_ms` | integer | 1 <= value <= 86_400_000 | 120_000 |
-| `bootstrap_timeout_ms` | integer | 1 <= value <= 86_400_000 | 300_000 |
-| `fencing_timeout_ms` | integer | 1 <= value <= 86_400_000 | 30_000 |
+All three timeout fields default to sane values and remain overridable:
 
-Timeouts are expressed in milliseconds.
+- `process.timeouts.pg_rewind_ms`
+- `process.timeouts.bootstrap_ms`
+- `process.timeouts.fencing_ms`
 
-### Binary Paths
+### Working root
 
-All six binary fields are required and must be **absolute** paths. The `binaries` table must be present; missing binaries cause validation errors with the prefix `process.binaries.<name>`. Empty or non-absolute paths are rejected.
+`process.working_root` defaults to `/tmp/pgtuskmaster`. When you do not override the PostgreSQL socket dir or log file, the runtime derives them from that working root.
 
-| Field | Type | Constraints |
-|-------|------|-------------|
-| `postgres` | absolute path | non-empty |
-| `pg_ctl` | absolute path | non-empty |
-| `pg_rewind` | absolute path | non-empty |
-| `initdb` | absolute path | non-empty |
-| `pg_basebackup` | absolute path | non-empty |
-| `psql` | absolute path | non-empty |
+### Binary resolution
+
+Binary overrides are optional.
+
+When an override is not present, the runtime searches:
+
+1. `PATH`
+2. conventional PostgreSQL install directories
+
+If autodiscovery fails, the runtime reports which `process.binaries.overrides.*` field to set explicitly.
 
 ## `logging`
-
-Controls log capture, routing, and retention.
 
 ```toml
 [logging]
@@ -255,188 +310,99 @@ path = "/var/log/pgtuskmaster/runtime.jsonl"
 mode = "append"
 ```
 
-| Field | Type | Constraints | Default |
-|-------|------|-------------|---------|
-| `level` | enum | `trace`, `debug`, `info`, `warn`, `error`, `fatal` | `info` |
-| `capture_subprocess_output` | boolean | - | `true` |
-| `postgres` | postgres-log block | see below | see below |
-| `sinks` | sinks block | see below | see below |
-
-### PostgreSQL Log Capture
-
-| Subfield | Type | Constraints | Default |
-|----------|------|-------------|---------|
-| `enabled` | boolean | - | `true` |
-| `pg_ctl_log_file` | absolute path (optional) | must be absolute if present | `None` |
-| `log_dir` | absolute path (optional) | must be absolute if present | `None` |
-| `poll_interval_ms` | integer | 1 <= value <= 86_400_000 | 200 |
-| `cleanup` | cleanup block | see below | see below |
-
-**Cleanup Rules**
-
-| Sub-subfield | Type | Constraints | Default |
-|--------------|------|-------------|---------|
-| `enabled` | boolean | - | `true` |
-| `max_files` | integer | > 0 when enabled | 50 |
-| `max_age_seconds` | integer | > 0 when enabled | 604_800 (7 days) |
-| `protect_recent_seconds` | integer | > 0 when enabled | 300 |
-
-**Path Invariants**
-If the runtime log file sink is enabled, its path must not collide with:
-
-- `postgres.log_file`
-- `logging.postgres.pg_ctl_log_file` (if configured)
-- any file inside `logging.postgres.log_dir` (to avoid self-ingest)
-
-### Sinks
-
-```toml
-[logging.sinks.stderr]
-enabled = true
-
-[logging.sinks.file]
-enabled = false
-path = "/optional/path"
-mode = "append"
-```
-
-| Subfield | Type | Constraints | Default |
-|----------|------|-------------|---------|
-| `stderr.enabled` | boolean | - | `true` |
-| `file.enabled` | boolean | - | `false` |
-| `file.path` | absolute path | required when `file.enabled = true` | `None` |
-| `file.mode` | enum | `append`, `truncate` | `append` |
-
-If `file.enabled` is `true` and `file.path` is unset or empty, validation fails. The path must be absolute.
+`logging.postgres.pg_ctl_log_file` and `logging.postgres.log_dir` remain optional advanced overrides.
 
 ## `api`
 
-HTTP control-plane listener and security.
+`api` no longer nests everything under `security`.
 
 ```toml
 [api]
-listen_addr = "0.0.0.0:8080"
-security = { transport = { transport = "http" }, auth = { type = "role_tokens", read_token = { env = "PGTM_READ_TOKEN" }, admin_token = { path = "/run/secrets/admin-token" } } }
-```
-
-| Field | Type | Constraints | Default |
-|-------|------|-------------|---------|
-| `listen_addr` | socket address string | non-empty | `"127.0.0.1:8080"` |
-| `security` | security block | see below | _required_ |
-
-### Security Block
-
-| Subfield | Type | Constraints |
-|----------|------|-------------|
-| `transport` | transport block | see below (required) |
-| `auth` | auth block | `type = "disabled"` or `type = "role_tokens"` (required) |
-
-### Transport Block
-
-```toml
+listen_addr = "0.0.0.0:8443"
 transport = { transport = "http" }
-transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } } } }
-transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, require_client_cert = true, allowed_common_names = ["operator-a"] } } }
+auth = { type = "disabled" }
+
+[api]
+listen_addr = "0.0.0.0:8443"
+transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_certificate = "required", client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, allowed_common_names = ["operator-a"] } } }
+auth = { type = "role_tokens", read_token = { env = "PGTM_READ_TOKEN" }, admin_token = { path = "/run/secrets/admin-token" } }
 ```
 
-| Subfield | Type | Constraints |
-|----------|------|-------------|
-| `transport` | enum | `http` or `https` |
-| `tls.identity` | TLS identity block | required when `transport = "https"` |
-| `tls.client_auth.client_ca` | inline-or-path | required when `client_auth` is configured |
-| `tls.client_auth.require_client_cert` | boolean | optional; defaults to `false` when omitted |
-| `tls.client_auth.allowed_common_names` | array of strings | optional; allowed only when `require_client_cert = true` |
+### Transport
 
-`transport = "http"` does not allow a `tls` block. `transport = "https"` requires a `tls.identity` block. If `allowed_common_names` is present, the config parser rejects the file unless `require_client_cert = true`.
+`api.transport` accepts:
 
-### Role Token Authentication
+- `http`
+- `https`
 
-```toml
-auth = { type = "role_tokens", read_token = { content = "read-secret" }, admin_token = { env = "PGTM_ADMIN_TOKEN" } }
-```
+HTTPS requires a `tls.identity` block.
 
-| Subfield | Type | Constraints |
-|----------|------|-------------|
-| `read_token` | secret source (optional) | non-empty when configured |
-| `admin_token` | secret source (optional) | non-empty when configured |
+Optional API client auth uses:
 
-At least one token must be configured. Empty inline values, blank env names, and empty path references are rejected.
+- `client_certificate = "optional"`
+- `client_certificate = "required"`
+
+The `required` mode may also include `allowed_common_names`.
+
+### API auth
+
+`api.auth` accepts:
+
+- `type = "disabled"`
+- `type = "role_tokens"`
+
+Role-token auth can set either or both:
+
+- `read_token`
+- `admin_token`
 
 ## `pgtm`
 
-Optional operator-context settings for the `pgtm` CLI.
+The runtime may include an operator-facing `pgtm` block, and `pgtm` can also load a standalone operator-only TOML file.
+
+### Runtime-side `pgtm` block
 
 ```toml
-[pgtm]
-api_url = "https://db-a.example.com:8443"
+[pgtm.api]
+base_url = "https://db-a.example.com:8443"
+advertised_url = "https://db-a.example.com:8443"
+expected_transport = "https"
+auth = { type = "role_tokens", read_token = { path = "/run/secrets/api-read-token" }, admin_token = { path = "/run/secrets/api-admin-token" } }
+tls = { ca_cert = { path = "/etc/pgtm/api-ca.pem" } }
 
-[pgtm.api_client]
-ca_cert = { path = "/etc/pgtm/api-ca.pem" }
-client_cert = { path = "/etc/pgtm/operator.crt" }
-client_key = { env = "PGTM_API_CLIENT_KEY" }
-
-[pgtm.postgres_client]
+[pgtm.postgres.tls]
 ca_cert = { path = "/etc/pgtm/postgres-ca.pem" }
-client_cert = { path = "/etc/pgtm/postgres.crt" }
-client_key = { path = "/run/secrets/postgres.key" }
+identity = { cert = { path = "/etc/pgtm/postgres.crt" }, key = { path = "/etc/pgtm/postgres.key" } }
+
+[pgtm.primary_target]
+host = "db-a.example.com"
+port = 15432
 ```
 
-| Field | Type | Constraints |
-|-------|------|-------------|
-| `api_url` | absolute URL (optional) | must use `http` or `https`; use this when `api.listen_addr` is only a bind address such as `0.0.0.0:8080` |
-| `api_client` | client TLS block (optional) | only valid for HTTPS API connections |
-| `postgres_client` | client TLS block (optional) | optional override for `pgtm primary --tls` and `pgtm replicas --tls` |
+### Meaning
 
-### API target derivation
+- `pgtm.api.base_url`: operator-reachable API URL
+- `pgtm.api.advertised_url`: optional runtime-advertised API URL
+- `pgtm.api.expected_transport`: optional client-side check for `http` or `https`
+- `pgtm.api.auth`: operator token config
+- `pgtm.api.tls`: API client TLS material
+- `pgtm.postgres.tls`: PostgreSQL client TLS material for `pgtm primary --tls` and `pgtm replicas --tls`
+- `pgtm.primary_target`: optional host/port override used only by `pgtm primary`
 
-`pgtm` resolves the API target like this:
-
-1. Use `--base-url` when the CLI flag is present.
-2. Otherwise use `[pgtm].api_url` when configured.
-3. Otherwise derive a URL from `api.listen_addr`.
-
-If `api.listen_addr` is an unspecified bind address such as `0.0.0.0:8080` or `[::]:8080`, `pgtm` refuses to guess and reports a config error telling you to set `[pgtm].api_url`.
-
-The local docker tutorials in this repository follow that rule by keeping the daemon runtime configs container-truthful and shipping separate operator-facing examples under `docs/examples/` that add `[pgtm].api_url` for the host-mapped API ports.
-
-### Client TLS blocks
-
-Both `[pgtm.api_client]` and `[pgtm.postgres_client]` accept the same fields:
-
-| Subfield | Type | Constraints |
-|----------|------|-------------|
-| `ca_cert` | inline-or-path (optional) | non-empty when configured |
-| `client_cert` | inline-or-path (optional) | requires `client_key` |
-| `client_key` | secret source (optional) | requires `client_cert` |
-
-`[pgtm.api_client]` is used only for HTTPS API requests. If `api.security.transport.transport = "http"`, do not configure API client TLS material. If API client certificates are required by the server, `pgtm.api_client.client_cert` and `pgtm.api_client.client_key` must both be present.
-
-`[pgtm.postgres_client]` is optional. When it is absent, `pgtm primary --tls` and `pgtm replicas --tls` fall back to `[pgtm.api_client]`.
-
-The connection-helper commands only print DSN fields that can be represented as filesystem paths:
-
-- path-backed `ca_cert` becomes `sslrootcert=...`
-- path-backed `client_cert` becomes `sslcert=...`
-- path-backed `client_key` becomes `sslkey=...`
-
-If the effective PostgreSQL client material comes from inline content or an env-backed private key, the TLS-expanded DSN commands fail rather than printing a misleading partial DSN. `pgtm` does not materialize inline secrets to temp files for operator convenience.
+`pgtm replicas` still uses discovered per-member routing rather than the primary-target override.
 
 ## `debug`
-
-Developer instrumentation toggle.
 
 ```toml
 [debug]
 enabled = false
 ```
 
-| Field | Type | Constraints | Default |
-|-------|------|-------------|---------|
-| `enabled` | boolean | - | `false` |
+`debug.enabled` defaults to `false`.
 
-## Inline or Path Values
+## Inline, path, and secret sources
 
-Several fields (`pg_hba.source`, `pg_ident.source`, TLS identity material, client CA/cert material) accept a union type serialized as one of:
+Many config fields use one of these encodings:
 
 ```toml
 # Path forms
@@ -445,29 +411,23 @@ key = { path = "/absolute/path" }
 
 # Inline form
 key = { content = "inline value" }
-```
 
-`SecretSource` fields (`password`, API role tokens, `pgtm` client private keys) accept one additional env-backed form:
-
-```toml
+# Secret env form
 key = { env = "ENV_VAR_NAME" }
 ```
 
-For `SecretSource` values, inline content is redacted in `Debug` output while path-backed and env-backed forms are shown as references rather than secret contents.
+`SecretSource` fields support the env-backed form. Inline secret contents are redacted in debug output.
 
-## Validation and Diagnostics
+## Validation notes
 
-All rules above are enforced by `load_runtime_config`. The parser returns a `Validation` error with:
+Common validation patterns include:
 
-- `field` - dot-separated path to the invalid key
-- `message` - human-readable explanation, often suggesting the correct value or pointing out the constraint
+- non-empty `cluster.name`, `cluster.scope`, and `cluster.member_id`
+- at least one DCS endpoint
+- DCS HTTPS endpoints requiring `dcs.client.tls`
+- non-empty `dcs.client.auth.username` for basic auth
+- `lease_ttl_ms > loop_interval_ms`
+- readable path-backed overrides when `process.binaries.overrides.*` is set
+- TLS client/server combinations that require CA material when verification modes demand it
 
-Common patterns:
-
-- **Missing required block** - `missing required secure config block`
-- **Missing required field** - `missing required secure field`
-- **Empty value** - `must not be empty`
-- **Relative path** - `must be an absolute path`
-- **Interval mismatch** - `must be greater than ha.loop_interval_ms`
-- **TLS mismatch** - `must not require server TLS when postgres.tls.mode is disabled`
-- **Role auth** - `use type = "password" for now` (TLS auth is not implemented)
+If validation fails, the loader reports a stable dotted field path such as `cluster.scope` or `process.binaries.overrides.initdb`.
