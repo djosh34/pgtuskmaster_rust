@@ -462,4 +462,19 @@ mod tests {
         assert!(!sql.contains("DROP ROLE \"rewinder\""));
         Ok(())
     }
+
+    #[test]
+    fn sql_literal_wraps_in_single_quotes_and_escapes() {
+        use super::sql_literal;
+        assert_eq!(sql_literal("plain"), "'plain'");
+        assert_eq!(sql_literal("it's"), "'it''s'");
+        assert_eq!(sql_literal("a''b"), "'a''''b'");
+    }
+
+    #[test]
+    fn sql_identifier_wraps_in_double_quotes_and_escapes() {
+        use super::sql_identifier;
+        assert_eq!(sql_identifier("role"), "\"role\"");
+        assert_eq!(sql_identifier("my\"role"), "\"my\"\"role\"");
+    }
 }

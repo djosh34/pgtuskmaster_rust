@@ -414,7 +414,8 @@ mod tests {
     use crate::pginfo::state::{PgConnInfo, PgSslMode};
 
     use super::{
-        managed_standby_passfile_path, render_managed_postgres_conf, validate_extra_guc_entry,
+        escape_postgres_conf_string, managed_standby_passfile_path, render_conninfo_value,
+        render_managed_postgres_conf, validate_extra_guc_entry, validate_primary_slot_name,
         ManagedPostgresConf, ManagedPostgresConfError, ManagedPostgresStartIntent,
         ManagedPostgresTlsConfig, ManagedRecoverySignal, ManagedStandbyAuth,
         MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_STANDBY_PASSFILE_NAME,
@@ -691,5 +692,46 @@ mod tests {
                 key: "recovery_target_timeline".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn validate_primary_slot_name_accepts_valid_names() {
+        assert!(validate_primary_slot_name("my_slot").is_ok());
+        assert!(validate_primary_slot_name("slot123").is_ok());
+        assert!(validate_primary_slot_name("a").is_ok());
+    }
+
+    #[test]
+    fn validate_primary_slot_name_rejects_empty() {
+        assert!(validate_primary_slot_name("").is_err());
+    }
+
+    #[test]
+    fn validate_primary_slot_name_rejects_uppercase() {
+        assert!(validate_primary_slot_name("MySlot").is_err());
+    }
+
+    #[test]
+    fn validate_primary_slot_name_rejects_special_characters() {
+        assert!(validate_primary_slot_name("slot-name").is_err());
+        assert!(validate_primary_slot_name("slot.name").is_err());
+        assert!(validate_primary_slot_name("slot name").is_err());
+    }
+
+    #[test]
+    fn escape_postgres_conf_string_escapes_single_quotes_and_backslashes() {
+        assert_eq!(escape_postgres_conf_string("plain"), "plain");
+        assert_eq!(escape_postgres_conf_string("it's"), "it''s");
+        assert_eq!(escape_postgres_conf_string(r"back\slash"), r"back\\slash");
+        assert_eq!(escape_postgres_conf_string(r"a'b\c"), r"a''b\\c");
+    }
+
+    #[test]
+    fn render_conninfo_value_quotes_when_needed() {
+        assert_eq!(render_conninfo_value("simple"), "simple");
+        assert_eq!(render_conninfo_value("has space"), "'has space'");
+        assert_eq!(render_conninfo_value(""), "''");
+        assert_eq!(render_conninfo_value("it's"), "'it\\'s'");
+        assert_eq!(render_conninfo_value(r"back\slash"), r"'back\\slash'");
     }
 }

@@ -616,9 +616,25 @@ mod tests {
     };
 
     use super::{
-        inspect_managed_recovery_state, materialize_managed_postgres_config, ManagedPostgresError,
-        POSTGRESQL_AUTO_CONF_NAME, QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
+        escape_libpq_passfile_field, inspect_managed_recovery_state,
+        materialize_managed_postgres_config, ManagedPostgresError, POSTGRESQL_AUTO_CONF_NAME,
+        QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
     };
+
+    #[test]
+    fn escape_libpq_passfile_field_leaves_plain_text_unchanged() {
+        assert_eq!(escape_libpq_passfile_field("simple"), "simple");
+    }
+
+    #[test]
+    fn escape_libpq_passfile_field_escapes_colons_and_backslashes() {
+        assert_eq!(escape_libpq_passfile_field("a:b"), r"a\:b");
+        assert_eq!(escape_libpq_passfile_field(r"a\b"), r"a\\b");
+        assert_eq!(
+            escape_libpq_passfile_field(r"user:pass\word"),
+            r"user\:pass\\word"
+        );
+    }
 
     #[test]
     fn materialize_managed_postgres_config_creates_authoritative_postgresql_conf(
