@@ -41,19 +41,6 @@ pub(crate) enum ProcessExecutionKind {
     StartPostgres(StartPostgresSpec),
 }
 
-impl ProcessExecutionKind {
-    pub(crate) fn label(&self) -> &'static str {
-        match self {
-            Self::Bootstrap(_) => "bootstrap",
-            Self::BaseBackup(_) => "basebackup",
-            Self::PgRewind(_) => "pg_rewind",
-            Self::Promote(_) => "promote",
-            Self::Demote(_) => "demote",
-            Self::StartPostgres(_) => "start_postgres",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProcessIntentRequest {
     pub(crate) id: JobId,

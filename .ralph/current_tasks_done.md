@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 01:06:10 PM CET 2026
+Generated: Sat Mar 14 14:03:08 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -206,6 +206,18 @@ Generated: Sat Mar 14 01:06:10 PM CET 2026
 ## Task: Collapse Duplicated HA Givens Into A Typed Topology Fixture Pipeline <status>done</status> <passes>true</passes>
 
 <priority>medium</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-logging-simplification/01-task-rewrite-logging-around-private-typed-events-and-json-postgres-defaults.md`
+
+```
+## Task: Rewrite Logging Around Private Typed Events And JSON Postgres Defaults <status>done</status> <passes>true</passes>
+
+<priority>low</priority>
 
 <description>
 ```

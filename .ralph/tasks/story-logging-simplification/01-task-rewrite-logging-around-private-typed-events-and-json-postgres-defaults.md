@@ -1,4 +1,4 @@
-## Task: Rewrite Logging Around Private Typed Events And JSON Postgres Defaults <status>not_started</status> <passes>false</passes>
+## Task: Rewrite Logging Around Private Typed Events And JSON Postgres Defaults <status>done</status> <passes>true</passes>
 
 <priority>low</priority>
 
@@ -158,18 +158,20 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Create or rename logging modules so the public/crate-visible logging boundary is narrow and typed, with `src/logging/mod.rs` no longer exposing generic mutable event/field builders to the rest of the crate.
-- [ ] Remove or privatize direct use of `AppEvent`, `AppEventHeader`, `StructuredFields`, `RawRecordBuilder`, and `PostgresLineRecordBuilder` from non-logging modules; verify the rest of the crate cannot call `fields_mut()` or equivalent ad-hoc field mutation APIs.
-- [ ] Replace application log emission in `src/api/worker.rs`, `src/dcs/worker.rs`, `src/pginfo/worker.rs`, `src/process/worker.rs`, `src/runtime/node.rs`, and any remaining discovered emitters with fully typed enum-based events or typed sub-enums handled by the logger.
-- [ ] Refactor `src/logging/event.rs` and related serialization code so conversion from typed event values into output attributes happens only inside `src/logging`.
-- [ ] Refactor or replace `src/logging/raw_record.rs` so raw-record details stay private to logging internals and are not a general-purpose crate interface.
-- [ ] Split `src/logging/postgres_ingest.rs` into clearer responsibility-specific files or modules covering file polling, normalization/cleanup, parsing, typed-event conversion, and worker orchestration/rate limiting.
-- [ ] Preserve and clarify PostgreSQL ingest behavior for both JSON log files and plain `.log` / stderr files, with tests explicitly covering both paths after the refactor.
-- [ ] Update `src/postgres_managed_conf.rs` and `src/postgres_managed.rs` so managed PostgreSQL config defaults to `logging_collector = on` and `log_destination = 'jsonlog,stderr'`, with tests locking this in.
-- [ ] Rewrite logging-focused tests in `src/logging/mod.rs`, `src/logging/postgres_ingest.rs`, `src/postgres_managed.rs`, and any other affected files so they validate the new typed/private architecture instead of the old mutable field-bag API.
-- [ ] Remove dead compatibility code, obsolete helper APIs, and old tests that only exist for the deleted logging surface.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Create or rename logging modules so the public/crate-visible logging boundary is narrow and typed, with `src/logging/mod.rs` no longer exposing generic mutable event/field builders to the rest of the crate.
+- [x] Remove or privatize direct use of `AppEvent`, `AppEventHeader`, `StructuredFields`, `RawRecordBuilder`, and `PostgresLineRecordBuilder` from non-logging modules; verify the rest of the crate cannot call `fields_mut()` or equivalent ad-hoc field mutation APIs.
+- [x] Replace application log emission in `src/api/worker.rs`, `src/dcs/worker.rs`, `src/pginfo/worker.rs`, `src/process/worker.rs`, `src/runtime/node.rs`, and any remaining discovered emitters with fully typed enum-based events or typed sub-enums handled by the logger.
+- [x] Refactor `src/logging/event.rs` and related serialization code so conversion from typed event values into output attributes happens only inside `src/logging`.
+- [x] Refactor or replace `src/logging/raw_record.rs` so raw-record details stay private to logging internals and are not a general-purpose crate interface.
+- [x] Split `src/logging/postgres_ingest.rs` into clearer responsibility-specific files or modules covering file polling, normalization/cleanup, parsing, typed-event conversion, and worker orchestration/rate limiting.
+- [x] Preserve and clarify PostgreSQL ingest behavior for both JSON log files and plain `.log` / stderr files, with tests explicitly covering both paths after the refactor.
+- [x] Update `src/postgres_managed_conf.rs` and `src/postgres_managed.rs` so managed PostgreSQL config defaults to `logging_collector = on` and `log_destination = 'jsonlog,stderr'`, with tests locking this in.
+- [x] Rewrite logging-focused tests in `src/logging/mod.rs`, `src/logging/postgres_ingest.rs`, `src/postgres_managed.rs`, and any other affected files so they validate the new typed/private architecture instead of the old mutable field-bag API.
+- [x] Remove dead compatibility code, obsolete helper APIs, and old tests that only exist for the deleted logging surface.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+NOW EXECUTE

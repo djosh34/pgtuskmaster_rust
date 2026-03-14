@@ -22,11 +22,11 @@ mod raw_record;
 pub(crate) mod postgres_ingest;
 pub(crate) mod tailer;
 
-#[cfg(test)]
-pub(crate) use event::decode_app_event;
-pub(crate) use event::{AppEvent, AppEventHeader, StructuredFields};
-pub(crate) use raw_record::{
-    PostgresLineRecordBuilder, RawRecordBuilder, SubprocessLineRecord, SubprocessStream,
+pub(crate) use event::{
+    CapturedStream, DcsCommandName, DcsEvent, DcsEventIdentity, InternalEvent, LogEvent,
+    PgInfoEvent, PostgresIngestEvent, PostgresLineEvent, PostgresLineSource, ProcessEvent,
+    ProcessExecutionIdentity, ProcessJobIdentity, ProcessJobKind, RuntimeEvent, RuntimeIdentity,
+    SubprocessLineEvent,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -529,7 +529,7 @@ impl LogHandle {
     }
 
     #[cfg(test)]
-    pub(crate) fn emit(
+    pub(crate) fn emit_direct(
         &self,
         severity_text: SeverityText,
         message: impl Into<String>,
@@ -548,10 +548,10 @@ impl LogHandle {
         self.backend.emit(&record)
     }
 
-    pub(crate) fn emit_app_event(
+    pub(crate) fn emit(
         &self,
         origin: impl Into<String>,
-        event: AppEvent,
+        event: LogEvent,
     ) -> Result<(), LogError> {
         if event.severity().number() < self.min_app_severity_number {
             return Ok(());
@@ -560,17 +560,8 @@ impl LogHandle {
             system_now_unix_millis(),
             self.hostname.clone(),
             origin.into(),
-        );
+        )?;
         self.backend.emit(&record)
-    }
-
-    pub(crate) fn emit_raw_record(&self, record: RawRecordBuilder) -> Result<(), LogError> {
-        let final_record = record.into_record(system_now_unix_millis(), self.hostname.clone());
-        self.emit_record(&final_record)
-    }
-
-    pub(crate) fn emit_record(&self, record: &LogRecord) -> Result<(), LogError> {
-        self.backend.emit(record)
     }
 }
 
@@ -748,110 +739,97 @@ mod tests {
     }
 
     #[test]
-    fn emit_app_event_encodes_typed_headers_and_fields() -> Result<(), Box<dyn std::error::Error>> {
+    fn emit_typed_runtime_event_encodes_headers_and_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (log, sink) = test_log_handle(SeverityText::Trace);
-        let mut event = AppEvent::new(
-            SeverityText::Info,
-            "runtime starting",
-            AppEventHeader::new("runtime.startup.entered", "runtime", "ok"),
-        );
-        event.fields_mut().insert("scope", "scope-a");
-        event.fields_mut().insert("member_count", 3_u64);
-        event
-            .fields_mut()
-            .insert_optional("optional_field", Option::<String>::None);
-
-        log.emit_app_event("runtime::run_node_from_config", event)?;
+        log.emit(
+            "runtime::run_node_from_config",
+            LogEvent::Runtime(InternalEvent::new(
+                SeverityText::Info,
+                RuntimeEvent::StartupEntered {
+                    identity: RuntimeIdentity {
+                        scope: "scope-a".to_string(),
+                        member_id: "member-a".to_string(),
+                    },
+                    startup_run_id: "run-1".to_string(),
+                    logging_level: crate::config::LogLevel::Info,
+                },
+            )),
+        )?;
 
         let records = sink.take();
         assert_eq!(records.len(), 1);
-        let decoded = decode_app_event(&records[0])?;
         assert_eq!(
-            decoded.header,
-            AppEventHeader::new("runtime.startup.entered", "runtime", "ok")
+            records[0].attributes.get("event.name"),
+            Some(&Value::String("runtime.startup.entered".to_string()))
         );
-        assert_eq!(decoded.origin, "runtime::run_node_from_config");
-        assert_eq!(decoded.message, "runtime starting");
         assert_eq!(
-            decoded.fields.get("scope"),
+            records[0].attributes.get("event.domain"),
+            Some(&Value::String("runtime".to_string()))
+        );
+        assert_eq!(
+            records[0].attributes.get("event.result"),
+            Some(&Value::String("ok".to_string()))
+        );
+        assert_eq!(records[0].source.origin, "runtime::run_node_from_config");
+        assert_eq!(records[0].message, "runtime starting");
+        assert_eq!(
+            records[0].attributes.get("scope"),
             Some(&Value::String("scope-a".to_string()))
         );
         assert_eq!(
-            decoded.fields.get("member_count"),
-            Some(&Value::Number(3_u64.into()))
+            records[0].attributes.get("member_id"),
+            Some(&Value::String("member-a".to_string()))
         );
-        assert!(!decoded.fields.contains_key("optional_field"));
+        assert_eq!(
+            records[0].attributes.get("startup_run_id"),
+            Some(&Value::String("run-1".to_string()))
+        );
+        assert_eq!(
+            records[0].attributes.get("logging.level"),
+            Some(&Value::String("info".to_string()))
+        );
         Ok(())
     }
 
     #[test]
-    fn structured_fields_encode_scalars_and_serialized_values(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-        #[serde(rename_all = "snake_case")]
-        enum DemoState {
-            NeedsRetry,
-        }
-
-        let mut fields = StructuredFields::new();
-        fields.insert("bool_field", true);
-        fields.insert("signed_field", -5_i64);
-        fields.insert("unsigned_field", 7_u64);
-        fields.insert("string_field", "value");
-        fields.insert_optional("absent_field", Option::<u64>::None);
-        fields.insert_serialized("state", &DemoState::NeedsRetry)?;
-
-        let attributes = fields.into_attributes();
-        assert_eq!(attributes.get("bool_field"), Some(&Value::Bool(true)));
-        assert_eq!(
-            attributes.get("signed_field"),
-            Some(&Value::Number((-5_i64).into()))
-        );
-        assert_eq!(
-            attributes.get("unsigned_field"),
-            Some(&Value::Number(7_u64.into()))
-        );
-        assert_eq!(
-            attributes.get("string_field"),
-            Some(&Value::String("value".to_string()))
-        );
-        assert_eq!(
-            attributes.get("state"),
-            Some(&Value::String("needs_retry".to_string()))
-        );
-        assert!(!attributes.contains_key("absent_field"));
-        Ok(())
-    }
-
-    #[test]
-    fn emit_app_event_respects_min_severity() -> Result<(), Box<dyn std::error::Error>> {
+    fn emit_typed_event_respects_min_severity() -> Result<(), Box<dyn std::error::Error>> {
         let (log, sink) = test_log_handle(SeverityText::Warn);
-        log.emit_app_event(
+        log.emit(
             "runtime::run_node_from_config",
-            AppEvent::new(
+            LogEvent::Runtime(InternalEvent::new(
                 SeverityText::Info,
-                "filtered",
-                AppEventHeader::new("runtime.filtered", "runtime", "ok"),
-            ),
+                RuntimeEvent::StartupEntered {
+                    identity: RuntimeIdentity {
+                        scope: "scope-a".to_string(),
+                        member_id: "member-a".to_string(),
+                    },
+                    startup_run_id: "run-1".to_string(),
+                    logging_level: crate::config::LogLevel::Info,
+                },
+            )),
         )?;
         assert!(sink.take().is_empty());
         Ok(())
     }
 
     #[test]
-    fn subprocess_line_record_builder_encodes_stream_metadata(
+    fn subprocess_line_event_encodes_stream_metadata(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let record = SubprocessLineRecord::new(
-            LogProducer::PgTool,
-            "process_worker",
-            "job-1",
-            "start_postgres",
-            "postgres",
-            SubprocessStream::Stderr,
-            vec![0xff_u8, 0x00, b'a', 0x80],
-        )
-        .into_raw_record()?
-        .into_record(5, "host-a".to_string());
+        let record = LogEvent::SubprocessLine(SubprocessLineEvent {
+            producer: LogProducer::PgTool,
+            origin: "process_worker".to_string(),
+            execution: ProcessExecutionIdentity {
+                job: ProcessJobIdentity {
+                    job_id: "job-1".to_string(),
+                    kind: ProcessJobKind::StartPostgres,
+                },
+                binary: "postgres".to_string(),
+            },
+            stream: CapturedStream::Stderr,
+            bytes: vec![0xff_u8, 0x00, b'a', 0x80],
+        })
+        .into_record(5, "host-a".to_string(), "ignored-origin")?;
 
         assert_eq!(record.source.producer, LogProducer::PgTool);
         assert_eq!(record.source.transport, LogTransport::ChildStderr);
@@ -1007,7 +985,7 @@ mod tests {
         let sink: Arc<dyn LogSink> = Arc::new(FailSink);
         let log = LogHandle::new("host-a".to_string(), sink, SeverityText::Trace);
 
-        let err = log.emit(
+        let err = log.emit_direct(
             SeverityText::Info,
             "should fail",
             LogSource {
@@ -1034,7 +1012,7 @@ mod tests {
         ]));
         let log = LogHandle::new("host-a".to_string(), sink, SeverityText::Trace);
 
-        log.emit(
+        log.emit_direct(
             SeverityText::Info,
             "fanout-through-tracing",
             LogSource {
@@ -1077,7 +1055,7 @@ mod tests {
         cfg.logging.sinks.file.path = Some(path.clone());
 
         let system = bootstrap(&cfg)?;
-        system.handle.emit(
+        system.handle.emit_direct(
             SeverityText::Info,
             "hello",
             LogSource {
@@ -1114,7 +1092,7 @@ mod tests {
         cfg.logging.sinks.file.path = Some(path.clone());
 
         let system = bootstrap(&cfg)?;
-        system.handle.emit(
+        system.handle.emit_direct(
             SeverityText::Info,
             "fanout",
             LogSource {
@@ -1143,7 +1121,11 @@ mod tests {
 
         let system = bootstrap(&cfg)?;
         let record = sample_record("dropped");
-        let res = system.handle.emit_record(&record);
+        let res = system.handle.emit_direct(
+            record.severity_text,
+            record.message.clone(),
+            record.source.clone(),
+        );
         assert!(res.is_ok(), "expected null sink to accept record: {res:?}");
         Ok(())
     }

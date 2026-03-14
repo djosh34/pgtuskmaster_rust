@@ -10,8 +10,9 @@ use crate::{
     config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
     dcs::{DcsMemberView, DcsView},
     logging::{
-        AppEvent, AppEventHeader, LogHandle, SeverityText, StructuredFields, SubprocessLineRecord,
-        SubprocessStream,
+        CapturedStream, InternalEvent, LogEvent, LogHandle, ProcessEvent,
+        ProcessExecutionIdentity, ProcessJobIdentity, ProcessJobKind, SeverityText,
+        SubprocessLineEvent,
     },
     pginfo::state::render_pg_conninfo,
     postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
@@ -44,65 +45,59 @@ const PG_CTL_DEFAULT_WAIT_SECONDS: u64 = 30;
 #[derive(Default)]
 pub(crate) struct TokioCommandRunner;
 
-#[derive(Clone, Copy, Debug)]
-enum ProcessEventKind {
-    RunStarted,
-    RequestReceived,
-    InboxDisconnected,
-    BusyReject,
-    IntentMaterializationFailed,
-    StartPostgresNoop,
-    StartPostgresPreflightFailed,
-    BuildCommandFailed,
-    SpawnFailed,
-    Started,
-    OutputDrainFailed,
-    Timeout,
-    Exited,
-    PollFailed,
-    OutputEmitFailed,
-}
-
-impl ProcessEventKind {
-    fn name(self) -> &'static str {
-        match self {
-            Self::RunStarted => "process.worker.run_started",
-            Self::RequestReceived => "process.worker.request_received",
-            Self::InboxDisconnected => "process.worker.inbox_disconnected",
-            Self::BusyReject => "process.worker.busy_reject",
-            Self::IntentMaterializationFailed => "process.worker.intent_materialization_failed",
-            Self::StartPostgresNoop => "process.job.start_postgres_noop",
-            Self::StartPostgresPreflightFailed => "process.job.start_postgres_preflight_failed",
-            Self::BuildCommandFailed => "process.job.build_command_failed",
-            Self::SpawnFailed => "process.job.spawn_failed",
-            Self::Started => "process.job.started",
-            Self::OutputDrainFailed => "process.worker.output_drain_failed",
-            Self::Timeout => "process.job.timeout",
-            Self::Exited => "process.job.exited",
-            Self::PollFailed => "process.job.poll_failed",
-            Self::OutputEmitFailed => "process.worker.output_emit_failed",
-        }
+fn process_job_identity(job_id: &JobId, job_kind: ProcessJobKind) -> ProcessJobIdentity {
+    ProcessJobIdentity {
+        job_id: job_id.0.clone(),
+        kind: job_kind,
     }
 }
 
-fn process_event(
-    kind: ProcessEventKind,
-    result: &str,
-    severity: SeverityText,
-    message: impl Into<String>,
-) -> AppEvent {
-    AppEvent::new(
-        severity,
-        message,
-        AppEventHeader::new(kind.name(), "process", result),
-    )
+fn process_job_kind_from_intent(intent: &ProcessIntent) -> ProcessJobKind {
+    match intent {
+        ProcessIntent::Bootstrap => ProcessJobKind::Bootstrap,
+        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
+            ProcessJobKind::BaseBackup
+        }
+        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
+            ProcessJobKind::PgRewind
+        }
+        ProcessIntent::Start(PostgresStartIntent::Primary) => ProcessJobKind::StartPrimary,
+        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
+            ProcessJobKind::StartDetachedStandby
+        }
+        ProcessIntent::Start(PostgresStartIntent::Replica { .. }) => ProcessJobKind::StartReplica,
+        ProcessIntent::Promote => ProcessJobKind::Promote,
+        ProcessIntent::Demote(_) => ProcessJobKind::Demote,
+    }
 }
 
-fn process_job_fields(job_id: &JobId, job_kind: &str) -> StructuredFields {
-    let mut fields = StructuredFields::new();
-    fields.insert("job_id", job_id.0.clone());
-    fields.insert("job_kind", job_kind.to_string());
-    fields
+fn process_job_kind_from_execution(kind: &ProcessExecutionKind) -> ProcessJobKind {
+    match kind {
+        ProcessExecutionKind::Bootstrap(_) => ProcessJobKind::Bootstrap,
+        ProcessExecutionKind::BaseBackup(_) => ProcessJobKind::BaseBackup,
+        ProcessExecutionKind::PgRewind(_) => ProcessJobKind::PgRewind,
+        ProcessExecutionKind::Promote(_) => ProcessJobKind::Promote,
+        ProcessExecutionKind::Demote(_) => ProcessJobKind::Demote,
+        ProcessExecutionKind::StartPostgres(_) => ProcessJobKind::StartPostgres,
+    }
+}
+
+fn process_execution_identity(identity: &ProcessLogIdentity) -> ProcessExecutionIdentity {
+    ProcessExecutionIdentity {
+        job: process_job_identity(&identity.job_id, identity.job_kind),
+        binary: identity.binary.clone(),
+    }
+}
+
+fn emit_process_event(
+    log: &LogHandle,
+    origin: &str,
+    event: ProcessEvent,
+    severity: SeverityText,
+    error_prefix: &str,
+) -> Result<(), WorkerError> {
+    log.emit(origin, LogEvent::Process(InternalEvent::new(severity, event)))
+        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
 }
 
 struct TokioProcessHandle {
@@ -338,22 +333,15 @@ fn can_accept_job(state: &ProcessState) -> bool {
 }
 
 pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
-    let mut event = process_event(
-        ProcessEventKind::RunStarted,
-        "ok",
+    emit_process_event(
+        &ctx.runtime.log,
+        "process_worker::run",
+        ProcessEvent::WorkerRunStarted {
+            capture_subprocess_output: ctx.runtime.capture_subprocess_output,
+        },
         SeverityText::Debug,
-        "process worker run started",
-    );
-    event.fields_mut().insert(
-        "capture_subprocess_output",
-        ctx.runtime.capture_subprocess_output,
-    );
-    ctx.runtime
-        .log
-        .emit_app_event("process_worker::run", event)
-        .map_err(|err| {
-            WorkerError::Message(format!("process worker start log emit failed: {err}"))
-        })?;
+        "process worker start log emit failed",
+    )?;
     loop {
         step_once(&mut ctx).await?;
         tokio::time::sleep(ctx.cadence.poll_interval).await;
@@ -363,43 +351,31 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
 pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
     match ctx.control.inbox.try_recv() {
         Ok(request) => {
-            let mut event = process_event(
-                ProcessEventKind::RequestReceived,
-                "ok",
+            emit_process_event(
+                &ctx.runtime.log,
+                "process_worker::step_once",
+                ProcessEvent::RequestReceived {
+                    job: process_job_identity(
+                        &request.id,
+                        process_job_kind_from_intent(&request.intent),
+                    ),
+                },
                 SeverityText::Debug,
-                "process job request received",
-            );
-            event.fields_mut().append_json_map(
-                process_job_fields(&request.id, request.intent.label()).into_attributes(),
-            );
-            ctx.runtime
-                .log
-                .emit_app_event("process_worker::step_once", event)
-                .map_err(|err| {
-                    WorkerError::Message(format!("process request log emit failed: {err}"))
-                })?;
+                "process request log emit failed",
+            )?;
             start_job(ctx, request).await?;
         }
         Err(TryRecvError::Empty) => {}
         Err(TryRecvError::Disconnected) => {
             if !ctx.control.inbox_disconnected_logged {
                 ctx.control.inbox_disconnected_logged = true;
-                ctx.runtime
-                    .log
-                    .emit_app_event(
-                        "process_worker::step_once",
-                        process_event(
-                            ProcessEventKind::InboxDisconnected,
-                            "failed",
-                            SeverityText::Warn,
-                            "process worker inbox disconnected",
-                        ),
-                    )
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "process inbox disconnected log emit failed: {err}"
-                        ))
-                    })?;
+                emit_process_event(
+                    &ctx.runtime.log,
+                    "process_worker::step_once",
+                    ProcessEvent::InboxDisconnected,
+                    SeverityText::Warn,
+                    "process inbox disconnected log emit failed",
+                )?;
             }
         }
     }
@@ -555,32 +531,24 @@ pub(crate) async fn start_job(
 ) -> Result<(), WorkerError> {
     if !can_accept_job(&ctx.state_channel.current) {
         let now = current_time(ctx)?;
+        let rejected_job_id = request.id.clone();
         ctx.state_channel.last_rejection = Some(ProcessJobRejection {
-            id: request.id,
+            id: rejected_job_id.clone(),
             error: ProcessError::Busy,
             rejected_at: now,
         });
-        let mut event = process_event(
-            ProcessEventKind::BusyReject,
-            "failed",
+        emit_process_event(
+            &ctx.runtime.log,
+            "process_worker::start_job",
+            ProcessEvent::BusyRejected {
+                job: process_job_identity(
+                    &rejected_job_id,
+                    process_job_kind_from_intent(&request.intent),
+                ),
+            },
             SeverityText::Warn,
-            "process worker busy; rejecting job",
-        );
-        let rejected_job_id = ctx
-            .state_channel
-            .last_rejection
-            .as_ref()
-            .map(|rejection| rejection.id.clone())
-            .unwrap_or_else(|| JobId("unknown".to_string()));
-        event.fields_mut().append_json_map(
-            process_job_fields(&rejected_job_id, request.intent.label()).into_attributes(),
-        );
-        ctx.runtime
-            .log
-            .emit_app_event("process_worker::start_job", event)
-            .map_err(|err| {
-                WorkerError::Message(format!("process busy reject log emit failed: {err}"))
-            })?;
+            "process busy reject log emit failed",
+        )?;
         return Ok(());
     }
 
@@ -594,25 +562,16 @@ pub(crate) async fn start_job(
             port,
         ) {
             Ok(true) => {
-                let mut event = process_event(
-                    ProcessEventKind::StartPostgresNoop,
-                    "ok",
+                emit_process_event(
+                    &ctx.runtime.log,
+                    "process_worker::start_job",
+                    ProcessEvent::StartPostgresAlreadyRunning {
+                        job: process_job_identity(&request.id, ProcessJobKind::StartPostgres),
+                        data_dir: data_dir.display().to_string(),
+                    },
                     SeverityText::Info,
-                    "start postgres preflight: postgres already running",
-                );
-                let fields = event.fields_mut();
-                fields.append_json_map(
-                    process_job_fields(&request.id, "start_postgres").into_attributes(),
-                );
-                fields.insert("data_dir", data_dir.display().to_string());
-                ctx.runtime
-                    .log
-                    .emit_app_event("process_worker::start_job", event)
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "process start-postgres noop log emit failed: {err}"
-                        ))
-                    })?;
+                    "process start-postgres noop log emit failed",
+                )?;
                 transition_to_idle(
                     ctx,
                     JobOutcome::Success {
@@ -626,25 +585,16 @@ pub(crate) async fn start_job(
             }
             Ok(false) => {}
             Err(error) => {
-                let mut event = process_event(
-                    ProcessEventKind::StartPostgresPreflightFailed,
-                    "failed",
+                emit_process_event(
+                    &ctx.runtime.log,
+                    "process_worker::start_job",
+                    ProcessEvent::StartPostgresPreflightFailed {
+                        job: process_job_identity(&request.id, ProcessJobKind::StartPostgres),
+                        error: error.to_string(),
+                    },
                     SeverityText::Error,
-                    "start postgres preflight failed",
-                );
-                let fields = event.fields_mut();
-                fields.append_json_map(
-                    process_job_fields(&request.id, "start_postgres").into_attributes(),
-                );
-                fields.insert("error", error.to_string());
-                ctx.runtime
-                    .log
-                    .emit_app_event("process_worker::start_job", event)
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "process start-postgres preflight log emit failed: {err}"
-                        ))
-                    })?;
+                    "process start-postgres preflight log emit failed",
+                )?;
                 transition_to_idle(
                     ctx,
                     JobOutcome::Failure {
@@ -663,25 +613,19 @@ pub(crate) async fn start_job(
     let execution_request = match materialize_execution_request(ctx, &request) {
         Ok(materialized) => materialized,
         Err(error) => {
-            let mut event = process_event(
-                ProcessEventKind::IntentMaterializationFailed,
-                "failed",
+            emit_process_event(
+                &ctx.runtime.log,
+                "process_worker::start_job",
+                ProcessEvent::IntentMaterializationFailed {
+                    job: process_job_identity(
+                        &request.id,
+                        process_job_kind_from_intent(&request.intent),
+                    ),
+                    error: error.to_string(),
+                },
                 SeverityText::Error,
-                "process intent materialization failed",
-            );
-            let fields = event.fields_mut();
-            fields.append_json_map(
-                process_job_fields(&request.id, request.intent.label()).into_attributes(),
-            );
-            fields.insert("error", error.to_string());
-            ctx.runtime
-                .log
-                .emit_app_event("process_worker::start_job", event)
-                .map_err(|err| {
-                    WorkerError::Message(format!(
-                        "process intent materialization log emit failed: {err}"
-                    ))
-                })?;
+                "process intent materialization log emit failed",
+            )?;
             transition_to_idle(
                 ctx,
                 JobOutcome::Failure {
@@ -706,23 +650,19 @@ pub(crate) async fn start_job(
     ) {
         Ok(command) => command,
         Err(error) => {
-            let mut event = process_event(
-                ProcessEventKind::BuildCommandFailed,
-                "failed",
+            emit_process_event(
+                &ctx.runtime.log,
+                "process_worker::start_job",
+                ProcessEvent::BuildCommandFailed {
+                    job: process_job_identity(
+                        &request.id,
+                        process_job_kind_from_execution(&execution_request.kind),
+                    ),
+                    error: error.to_string(),
+                },
                 SeverityText::Error,
-                "process build command failed",
-            );
-            let fields = event.fields_mut();
-            fields.append_json_map(
-                process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
-            );
-            fields.insert("error", error.to_string());
-            ctx.runtime
-                .log
-                .emit_app_event("process_worker::start_job", event)
-                .map_err(|err| {
-                    WorkerError::Message(format!("process build command log emit failed: {err}"))
-                })?;
+                "process build command log emit failed",
+            )?;
             transition_to_idle(
                 ctx,
                 JobOutcome::Failure {
@@ -741,23 +681,19 @@ pub(crate) async fn start_job(
     let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
-            let mut event = process_event(
-                ProcessEventKind::SpawnFailed,
-                "failed",
+            emit_process_event(
+                &ctx.runtime.log,
+                "process_worker::start_job",
+                ProcessEvent::SpawnFailed {
+                    job: process_job_identity(
+                        &request.id,
+                        process_job_kind_from_execution(&execution_request.kind),
+                    ),
+                    error: error.to_string(),
+                },
                 SeverityText::Error,
-                "process spawn failed",
-            );
-            let fields = event.fields_mut();
-            fields.append_json_map(
-                process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
-            );
-            fields.insert("error", error.to_string());
-            ctx.runtime
-                .log
-                .emit_app_event("process_worker::start_job", event)
-                .map_err(|err| {
-                    WorkerError::Message(format!("process spawn log emit failed: {err}"))
-                })?;
+                "process spawn log emit failed",
+            )?;
             transition_to_idle(
                 ctx,
                 JobOutcome::Failure {
@@ -778,6 +714,7 @@ pub(crate) async fn start_job(
         started_at: now,
         deadline_at,
     };
+    let started_execution = process_execution_identity(&log_identity);
 
     ctx.control.active_runtime = Some(ActiveRuntime {
         request: execution_request,
@@ -789,25 +726,15 @@ pub(crate) async fn start_job(
         worker: WorkerStatus::Running,
         active,
     };
-    let mut event = process_event(
-        ProcessEventKind::Started,
-        "ok",
+    emit_process_event(
+        &ctx.runtime.log,
+        "process_worker::start_job",
+        ProcessEvent::Started {
+            execution: started_execution,
+        },
         SeverityText::Info,
-        "process job started",
-    );
-    let runtime_fields = ctx
-        .control
-        .active_runtime
-        .as_ref()
-        .map(|runtime| process_log_identity_fields(&runtime.log_identity).into_attributes())
-        .unwrap_or_default();
-    event.fields_mut().append_json_map(runtime_fields);
-    ctx.runtime
-        .log
-        .emit_app_event("process_worker::start_job", event)
-        .map_err(|err| {
-            WorkerError::Message(format!("process job started log emit failed: {err}"))
-        })?;
+        "process job started log emit failed",
+    )?;
     publish_state(ctx)
 }
 
@@ -832,44 +759,22 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 }
             }
         }
-        Err(err) => {
-            let mut event = process_event(
-                ProcessEventKind::OutputDrainFailed,
-                "failed",
-                SeverityText::Warn,
-                "process output drain failed",
-            );
-            let fields = event.fields_mut();
-            fields.append_json_map(
-                process_log_identity_fields(&runtime.log_identity).into_attributes(),
-            );
-            fields.insert("error", err.to_string());
-            ctx.runtime
-                .log
-                .emit_app_event("process_worker::tick_active_job", event)
-                .map_err(|emit_err| {
-                    WorkerError::Message(format!(
-                        "process output drain log emit failed: {emit_err}"
-                    ))
-                })?;
-        }
+        Err(err) => emit_process_output_drain_failed(
+            &ctx.runtime.log,
+            &runtime.log_identity,
+            err.to_string(),
+        )?,
     }
     if now.0 >= runtime.deadline_at.0 {
-        let mut timeout_event = process_event(
-            ProcessEventKind::Timeout,
-            "timeout",
+        emit_process_event(
+            &ctx.runtime.log,
+            "process_worker::tick_active_job",
+            ProcessEvent::Timeout {
+                execution: process_execution_identity(&runtime.log_identity),
+            },
             SeverityText::Warn,
-            "process job timed out; cancelling",
-        );
-        timeout_event
-            .fields_mut()
-            .append_json_map(process_log_identity_fields(&runtime.log_identity).into_attributes());
-        ctx.runtime
-            .log
-            .emit_app_event("process_worker::tick_active_job", timeout_event)
-            .map_err(|err| {
-                WorkerError::Message(format!("process timeout log emit failed: {err}"))
-            })?;
+            "process timeout log emit failed",
+        )?;
         let cancel_result = runtime.handle.cancel().await;
         match runtime
             .handle
@@ -885,27 +790,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     }
                 }
             }
-            Err(err) => {
-                let mut event = process_event(
-                    ProcessEventKind::OutputDrainFailed,
-                    "failed",
-                    SeverityText::Warn,
-                    "process output drain failed",
-                );
-                let fields = event.fields_mut();
-                fields.append_json_map(
-                    process_log_identity_fields(&runtime.log_identity).into_attributes(),
-                );
-                fields.insert("error", err.to_string());
-                ctx.runtime
-                    .log
-                    .emit_app_event("process_worker::tick_active_job", event)
-                    .map_err(|emit_err| {
-                        WorkerError::Message(format!(
-                            "process output drain log emit failed: {emit_err}"
-                        ))
-                    })?;
-            }
+            Err(err) => emit_process_output_drain_failed(
+                &ctx.runtime.log,
+                &runtime.log_identity,
+                err.to_string(),
+            )?,
         }
         let outcome = match cancel_result {
             Ok(()) => JobOutcome::Timeout {
@@ -952,49 +841,27 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         }
                     }
                 }
-                Err(err) => {
-                    let mut event = process_event(
-                        ProcessEventKind::OutputDrainFailed,
-                        "failed",
-                        SeverityText::Warn,
-                        "process output drain failed",
-                    );
-                    let fields = event.fields_mut();
-                    fields.append_json_map(
-                        process_log_identity_fields(&runtime.log_identity).into_attributes(),
-                    );
-                    fields.insert("error", err.to_string());
-                    ctx.runtime
-                        .log
-                        .emit_app_event("process_worker::tick_active_job", event)
-                        .map_err(|emit_err| {
-                            WorkerError::Message(format!(
-                                "process output drain log emit failed: {emit_err}"
-                            ))
-                        })?;
-                }
+                Err(err) => emit_process_output_drain_failed(
+                    &ctx.runtime.log,
+                    &runtime.log_identity,
+                    err.to_string(),
+                )?,
             }
             let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Success {
-                id: job_id.clone(),
+                id: job_id,
                 job_kind: active_kind(&runtime.request.kind),
                 finished_at: now,
             };
-            let mut event = process_event(
-                ProcessEventKind::Exited,
-                "ok",
+            emit_process_event(
+                &ctx.runtime.log,
+                "process_worker::tick_active_job",
+                ProcessEvent::ExitedSuccessfully {
+                    execution: process_execution_identity(&runtime.log_identity),
+                },
                 SeverityText::Info,
-                "process job exited successfully",
-            );
-            event.fields_mut().append_json_map(
-                process_log_identity_fields(&runtime.log_identity).into_attributes(),
-            );
-            ctx.runtime
-                .log
-                .emit_app_event("process_worker::tick_active_job", event)
-                .map_err(|err| {
-                    WorkerError::Message(format!("process exit log emit failed: {err}"))
-                })?;
+                "process exit log emit failed",
+            )?;
             transition_to_idle(ctx, outcome, now)
         }
         Ok(Some(exit)) => {
@@ -1019,53 +886,29 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         }
                     }
                 }
-                Err(err) => {
-                    let mut event = process_event(
-                        ProcessEventKind::OutputDrainFailed,
-                        "failed",
-                        SeverityText::Warn,
-                        "process output drain failed",
-                    );
-                    let fields = event.fields_mut();
-                    fields.append_json_map(
-                        process_log_identity_fields(&runtime.log_identity).into_attributes(),
-                    );
-                    fields.insert("error", err.to_string());
-                    ctx.runtime
-                        .log
-                        .emit_app_event("process_worker::tick_active_job", event)
-                        .map_err(|emit_err| {
-                            WorkerError::Message(format!(
-                                "process output drain log emit failed: {emit_err}"
-                            ))
-                        })?;
-                }
+                Err(err) => emit_process_output_drain_failed(
+                    &ctx.runtime.log,
+                    &runtime.log_identity,
+                    err.to_string(),
+                )?,
             }
             let exit_error = ProcessError::from_exit(exit);
-            let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Failure {
-                id: job_id.clone(),
+                id: runtime.request.id.clone(),
                 job_kind: active_kind(&runtime.request.kind),
                 error: exit_error.clone(),
                 finished_at: now,
             };
-            let mut event = process_event(
-                ProcessEventKind::Exited,
-                "failed",
+            emit_process_event(
+                &ctx.runtime.log,
+                "process_worker::tick_active_job",
+                ProcessEvent::ExitedUnsuccessfully {
+                    execution: process_execution_identity(&runtime.log_identity),
+                    error: exit_error.to_string(),
+                },
                 SeverityText::Warn,
-                "process job exited unsuccessfully",
-            );
-            let fields = event.fields_mut();
-            fields.append_json_map(
-                process_log_identity_fields(&runtime.log_identity).into_attributes(),
-            );
-            fields.insert("error", exit_error.to_string());
-            ctx.runtime
-                .log
-                .emit_app_event("process_worker::tick_active_job", event)
-                .map_err(|err| {
-                    WorkerError::Message(format!("process exit log emit failed: {err}"))
-                })?;
+                "process exit log emit failed",
+            )?;
             transition_to_idle(ctx, outcome, now)
         }
         Err(error) => {
@@ -1090,61 +933,48 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         }
                     }
                 }
-                Err(err) => {
-                    let mut event = process_event(
-                        ProcessEventKind::OutputDrainFailed,
-                        "failed",
-                        SeverityText::Warn,
-                        "process output drain failed",
-                    );
-                    let fields = event.fields_mut();
-                    fields.append_json_map(
-                        process_log_identity_fields(&runtime.log_identity).into_attributes(),
-                    );
-                    fields.insert("error", err.to_string());
-                    ctx.runtime
-                        .log
-                        .emit_app_event("process_worker::tick_active_job", event)
-                        .map_err(|emit_err| {
-                            WorkerError::Message(format!(
-                                "process output drain log emit failed: {emit_err}"
-                            ))
-                        })?;
-                }
+                Err(err) => emit_process_output_drain_failed(
+                    &ctx.runtime.log,
+                    &runtime.log_identity,
+                    err.to_string(),
+                )?,
             }
-            let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Failure {
-                id: job_id.clone(),
+                id: runtime.request.id.clone(),
                 job_kind: active_kind(&runtime.request.kind),
                 error,
                 finished_at: now,
             };
-            let mut event = process_event(
-                ProcessEventKind::PollFailed,
-                "failed",
+            emit_process_event(
+                &ctx.runtime.log,
+                "process_worker::tick_active_job",
+                ProcessEvent::PollFailed {
+                    execution: process_execution_identity(&runtime.log_identity),
+                    error: outcome_error_string(&outcome),
+                },
                 SeverityText::Error,
-                "process job poll failed",
-            );
-            let fields = event.fields_mut();
-            fields.append_json_map(
-                process_log_identity_fields(&runtime.log_identity).into_attributes(),
-            );
-            fields.insert("error", outcome_error_string(&outcome));
-            ctx.runtime
-                .log
-                .emit_app_event("process_worker::tick_active_job", event)
-                .map_err(|err| {
-                    WorkerError::Message(format!("process poll failure log emit failed: {err}"))
-                })?;
+                "process poll failure log emit failed",
+            )?;
             transition_to_idle(ctx, outcome, now)
         }
     }
 }
 
-fn process_log_identity_fields(identity: &ProcessLogIdentity) -> StructuredFields {
-    let mut fields = process_job_fields(&identity.job_id, identity.job_kind.as_str());
-    fields.insert("binary", identity.binary.clone());
-    fields
+fn emit_process_output_drain_failed(
+    log: &LogHandle,
+    identity: &ProcessLogIdentity,
+    error: String,
+) -> Result<(), WorkerError> {
+    emit_process_event(
+        log,
+        "process_worker::tick_active_job",
+        ProcessEvent::OutputDrainFailed {
+            execution: process_execution_identity(identity),
+            error,
+        },
+        SeverityText::Warn,
+        "process output drain log emit failed",
+    )
 }
 
 fn emit_process_output_emit_failed(
@@ -1153,32 +983,21 @@ fn emit_process_output_emit_failed(
     line: &ProcessOutputLine,
     error: &crate::logging::LogError,
 ) -> Result<(), WorkerError> {
-    let mut event = process_event(
-        ProcessEventKind::OutputEmitFailed,
-        "failed",
-        SeverityText::Warn,
-        "process subprocess output emit failed",
-    );
-    let fields = event.fields_mut();
-    fields.append_json_map(process_log_identity_fields(identity).into_attributes());
-    fields.insert(
-        "stream",
-        match line.stream {
-            ProcessOutputStream::Stdout => "stdout",
-            ProcessOutputStream::Stderr => "stderr",
+    emit_process_event(
+        &ctx.runtime.log,
+        "process_worker::emit_subprocess_line",
+        ProcessEvent::OutputEmitFailed {
+            execution: process_execution_identity(identity),
+            stream: match line.stream {
+                ProcessOutputStream::Stdout => CapturedStream::Stdout,
+                ProcessOutputStream::Stderr => CapturedStream::Stderr,
+            },
+            bytes_len: line.bytes.len(),
+            error: error.to_string(),
         },
-    );
-    fields.insert("bytes_len", line.bytes.len());
-    fields.insert("error", error.to_string());
-    ctx.runtime
-        .log
-        .emit_app_event("process_worker::emit_subprocess_line", event)
-        .map_err(|emit_err| {
-            WorkerError::Message(format!(
-                "process output emit failure log emit failed: {emit_err}"
-            ))
-        })?;
-    Ok(())
+        SeverityText::Warn,
+        "process output emit failure log emit failed",
+    )
 }
 
 fn outcome_error_string(outcome: &JobOutcome) -> String {
@@ -1195,21 +1014,19 @@ fn emit_subprocess_line(
     line: ProcessOutputLine,
 ) -> Result<(), crate::logging::LogError> {
     let stream = match line.stream {
-        ProcessOutputStream::Stdout => SubprocessStream::Stdout,
-        ProcessOutputStream::Stderr => SubprocessStream::Stderr,
+        ProcessOutputStream::Stdout => CapturedStream::Stdout,
+        ProcessOutputStream::Stderr => CapturedStream::Stderr,
     };
 
-    log.emit_raw_record(
-        SubprocessLineRecord::new(
-            crate::logging::LogProducer::PgTool,
-            "process_worker",
-            identity.job_id.0.clone(),
-            identity.job_kind.clone(),
-            identity.binary.clone(),
+    log.emit(
+        "process_worker",
+        LogEvent::SubprocessLine(SubprocessLineEvent {
+            producer: crate::logging::LogProducer::PgTool,
             stream,
-            line.bytes,
-        )
-        .into_raw_record()?,
+            execution: process_execution_identity(identity),
+            origin: "process_worker".to_string(),
+            bytes: line.bytes,
+        }),
     )
 }
 
@@ -1330,7 +1147,7 @@ fn build_command(
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
+                    job_kind: process_job_kind_from_execution(kind),
                     binary: binary_label(program.as_path()),
                 },
             })
@@ -1367,7 +1184,7 @@ fn build_command(
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
+                    job_kind: process_job_kind_from_execution(kind),
                     binary: binary_label(program.as_path()),
                 },
             })
@@ -1402,7 +1219,7 @@ fn build_command(
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
+                    job_kind: process_job_kind_from_execution(kind),
                     binary: binary_label(program.as_path()),
                 },
             })
@@ -1427,7 +1244,7 @@ fn build_command(
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
+                    job_kind: process_job_kind_from_execution(kind),
                     binary: binary_label(program.as_path()),
                 },
             })
@@ -1449,7 +1266,7 @@ fn build_command(
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
+                    job_kind: process_job_kind_from_execution(kind),
                     binary: binary_label(program.as_path()),
                 },
             })
@@ -1483,7 +1300,7 @@ fn build_command(
                 capture_output,
                 log_identity: ProcessLogIdentity {
                     job_id: job_id.clone(),
-                    job_kind: job_kind_label(kind).to_string(),
+                    job_kind: process_job_kind_from_execution(kind),
                     binary: binary_label(program.as_path()),
                 },
             })
@@ -1507,17 +1324,6 @@ fn role_auth_env(auth: &RoleAuthConfig) -> Vec<ProcessEnvVar> {
             key: "PGPASSWORD".to_string(),
             value: ProcessEnvValue::Secret(password.clone()),
         }],
-    }
-}
-
-fn job_kind_label(kind: &ProcessExecutionKind) -> &'static str {
-    match kind {
-        ProcessExecutionKind::Bootstrap(_) => "bootstrap",
-        ProcessExecutionKind::BaseBackup(_) => "basebackup",
-        ProcessExecutionKind::PgRewind(_) => "pg_rewind",
-        ProcessExecutionKind::Promote(_) => "promote",
-        ProcessExecutionKind::Demote(_) => "demote",
-        ProcessExecutionKind::StartPostgres(_) => "start_postgres",
     }
 }
 

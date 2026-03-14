@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
-    logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
+    logging::{InternalEvent, LogEvent, RuntimeEvent, RuntimeIdentity, SeverityText},
     process::state::ProcessRuntimePlan,
     state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName},
 };
@@ -28,38 +28,18 @@ pub enum RuntimeError {
     Time(String),
 }
 
-#[derive(Clone, Copy, Debug)]
-enum RuntimeEventKind {
-    StartupEntered,
-}
-
-impl RuntimeEventKind {
-    fn name(self) -> &'static str {
-        match self {
-            Self::StartupEntered => "runtime.startup.entered",
-        }
-    }
-}
-
-fn runtime_event(
-    kind: RuntimeEventKind,
-    result: &str,
-    severity: SeverityText,
-    message: impl Into<String>,
-) -> AppEvent {
-    AppEvent::new(
-        severity,
-        message,
-        AppEventHeader::new(kind.name(), "runtime", result),
-    )
-}
-
-fn runtime_base_fields(cfg: &RuntimeConfig, startup_run_id: &str) -> StructuredFields {
-    let mut fields = StructuredFields::new();
-    fields.insert("scope", cfg.cluster.scope.clone());
-    fields.insert("member_id", cfg.cluster.member_id.clone());
-    fields.insert("startup_run_id", startup_run_id.to_string());
-    fields
+fn runtime_startup_event(cfg: &RuntimeConfig, startup_run_id: &str) -> LogEvent {
+    LogEvent::Runtime(InternalEvent::new(
+        SeverityText::Info,
+        RuntimeEvent::StartupEntered {
+            identity: RuntimeIdentity {
+                scope: cfg.cluster.scope.clone(),
+                member_id: cfg.cluster.member_id.clone(),
+            },
+            startup_run_id: startup_run_id.to_string(),
+            logging_level: cfg.logging.level,
+        },
+    ))
 }
 
 pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> {
@@ -79,19 +59,10 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         cfg.cluster.member_id,
         crate::logging::system_now_unix_millis()
     );
-    let mut event = runtime_event(
-        RuntimeEventKind::StartupEntered,
-        "ok",
-        SeverityText::Info,
-        "runtime starting",
-    );
-    let fields = event.fields_mut();
-    fields.append_json_map(runtime_base_fields(&cfg, startup_run_id.as_str()).into_attributes());
-    fields.insert(
-        "logging.level",
-        format!("{:?}", cfg.logging.level).to_lowercase(),
-    );
-    log.emit_app_event("runtime::run_node_from_config", event)
+    log.emit(
+        "runtime::run_node_from_config",
+        runtime_startup_event(&cfg, startup_run_id.as_str()),
+    )
         .map_err(|err| {
             RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
         })?;

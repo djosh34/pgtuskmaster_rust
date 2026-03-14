@@ -1,6 +1,6 @@
 use crate::{
     config::{DcsClientConfig, DcsEndpoint},
-    logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
+    logging::{DcsCommandName, DcsEvent, DcsEventIdentity, LogEvent, SeverityText},
     state::WorkerError,
 };
 
@@ -39,24 +39,23 @@ pub(crate) enum DcsWatchUpdate {
     Delete { key: DcsKey },
 }
 
-fn dcs_append_base_fields(fields: &mut StructuredFields, ctx: &DcsWorkerCtx) {
-    fields.insert("scope", ctx.identity.scope.clone());
-    fields.insert("member_id", ctx.identity.self_id.0.clone());
-}
-
-fn dcs_event(severity: SeverityText, message: &str, name: &str, result: &str) -> AppEvent {
-    AppEvent::new(severity, message, AppEventHeader::new(name, "dcs", result))
+fn dcs_event_identity(ctx: &DcsWorkerCtx) -> DcsEventIdentity {
+    DcsEventIdentity {
+        scope: ctx.identity.scope.clone(),
+        member_id: ctx.identity.self_id.0.clone(),
+    }
 }
 
 fn emit_dcs_event(
     ctx: &DcsWorkerCtx,
     origin: &str,
-    event: AppEvent,
+    event: DcsEvent,
+    severity: SeverityText,
     error_prefix: &str,
 ) -> Result<(), WorkerError> {
     ctx.runtime
         .log
-        .emit_app_event(origin, event)
+        .emit(origin, LogEvent::Dcs(crate::logging::InternalEvent::new(severity, event)))
         .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
 }
 
@@ -195,19 +194,15 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
                 release_local_leader_lease(ctx, &mut store_healthy)?;
             }
             Err(err) => {
-                let mut event = dcs_event(
-                    dcs_io_error_severity(&err),
-                    "dcs local member delete failed",
-                    "dcs.local_member.delete_failed",
-                    "failed",
-                );
-                let fields = event.fields_mut();
-                dcs_append_base_fields(fields, ctx);
-                fields.insert("error", err.to_string());
+                let severity = dcs_io_error_severity(&err);
                 emit_dcs_event(
                     ctx,
                     "dcs_worker::step_once",
-                    event,
+                    DcsEvent::LocalMemberDeleteFailed {
+                        identity: dcs_event_identity(ctx),
+                        error: err.to_string(),
+                    },
+                    severity,
                     "dcs local member delete log emit failed",
                 )?;
                 store_healthy = false;
@@ -235,19 +230,15 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
                     .insert(ctx.identity.self_id.clone(), local_member);
             }
             Err(err) => {
-                let mut event = dcs_event(
-                    dcs_io_error_severity(&err),
-                    "dcs local member write failed",
-                    "dcs.local_member.write_failed",
-                    "failed",
-                );
-                let fields = event.fields_mut();
-                dcs_append_base_fields(fields, ctx);
-                fields.insert("error", err.to_string());
+                let severity = dcs_io_error_severity(&err);
                 emit_dcs_event(
                     ctx,
                     "dcs_worker::step_once",
-                    event,
+                    DcsEvent::LocalMemberWriteFailed {
+                        identity: dcs_event_identity(ctx),
+                        error: err.to_string(),
+                    },
+                    severity,
                     "dcs local member write log emit failed",
                 )?;
                 store_healthy = false;
@@ -258,19 +249,15 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     let events = match ctx.control.store.drain_watch_events() {
         Ok(events) => events,
         Err(err) => {
-            let mut event = dcs_event(
-                dcs_io_error_severity(&err),
-                "dcs watch drain failed",
-                "dcs.watch.drain_failed",
-                "failed",
-            );
-            let fields = event.fields_mut();
-            dcs_append_base_fields(fields, ctx);
-            fields.insert("error", err.to_string());
+            let severity = dcs_io_error_severity(&err);
             emit_dcs_event(
                 ctx,
                 "dcs_worker::step_once",
-                event,
+                DcsEvent::WatchDrainFailed {
+                    identity: dcs_event_identity(ctx),
+                    error: err.to_string(),
+                },
+                severity,
                 "dcs drain log emit failed",
             )?;
             store_healthy = false;
@@ -280,38 +267,29 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     match refresh_from_etcd_watch(&ctx.identity.scope, &mut ctx.state_channel.cache, events) {
         Ok(result) => {
             if result.had_errors {
-                let mut event = dcs_event(
-                    SeverityText::Warn,
-                    "dcs watch refresh had errors",
-                    "dcs.watch.apply_had_errors",
-                    "failed",
-                );
-                let fields = event.fields_mut();
-                dcs_append_base_fields(fields, ctx);
-                fields.insert("applied", result.applied);
                 emit_dcs_event(
                     ctx,
                     "dcs_worker::step_once",
-                    event,
+                    DcsEvent::WatchApplyHadErrors {
+                        identity: dcs_event_identity(ctx),
+                        applied: result.applied,
+                    },
+                    SeverityText::Warn,
                     "dcs refresh had_errors log emit failed",
                 )?;
                 store_healthy = false;
             }
         }
         Err(err) => {
-            let mut event = dcs_event(
-                dcs_refresh_error_severity(&err),
-                "dcs watch refresh failed",
-                "dcs.watch.refresh_failed",
-                "failed",
-            );
-            let fields = event.fields_mut();
-            dcs_append_base_fields(fields, ctx);
-            fields.insert("error", err.to_string());
+            let severity = dcs_refresh_error_severity(&err);
             emit_dcs_event(
                 ctx,
                 "dcs_worker::step_once",
-                event,
+                DcsEvent::WatchRefreshFailed {
+                    identity: dcs_event_identity(ctx),
+                    error: err.to_string(),
+                },
+                severity,
                 "dcs refresh log emit failed",
             )?;
             store_healthy = false;
@@ -329,38 +307,29 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
                 ) {
                     Ok(result) => {
                         if result.had_errors {
-                            let mut event = dcs_event(
-                                SeverityText::Warn,
-                                "dcs snapshot refresh had errors",
-                                "dcs.snapshot.apply_had_errors",
-                                "failed",
-                            );
-                            let fields = event.fields_mut();
-                            dcs_append_base_fields(fields, ctx);
-                            fields.insert("applied", result.applied);
                             emit_dcs_event(
                                 ctx,
                                 "dcs_worker::step_once",
-                                event,
+                                DcsEvent::SnapshotApplyHadErrors {
+                                    identity: dcs_event_identity(ctx),
+                                    applied: result.applied,
+                                },
+                                SeverityText::Warn,
                                 "dcs snapshot had_errors log emit failed",
                             )?;
                             store_healthy = false;
                         }
                     }
                     Err(err) => {
-                        let mut event = dcs_event(
-                            dcs_refresh_error_severity(&err),
-                            "dcs snapshot refresh failed",
-                            "dcs.snapshot.refresh_failed",
-                            "failed",
-                        );
-                        let fields = event.fields_mut();
-                        dcs_append_base_fields(fields, ctx);
-                        fields.insert("error", err.to_string());
+                        let severity = dcs_refresh_error_severity(&err);
                         emit_dcs_event(
                             ctx,
                             "dcs_worker::step_once",
-                            event,
+                            DcsEvent::SnapshotRefreshFailed {
+                                identity: dcs_event_identity(ctx),
+                                error: err.to_string(),
+                            },
+                            severity,
                             "dcs snapshot refresh log emit failed",
                         )?;
                         store_healthy = false;
@@ -368,19 +337,15 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
                 }
             }
             Err(err) => {
-                let mut event = dcs_event(
-                    dcs_io_error_severity(&err),
-                    "dcs snapshot read failed",
-                    "dcs.snapshot.read_failed",
-                    "failed",
-                );
-                let fields = event.fields_mut();
-                dcs_append_base_fields(fields, ctx);
-                fields.insert("error", err.to_string());
+                let severity = dcs_io_error_severity(&err);
                 emit_dcs_event(
                     ctx,
                     "dcs_worker::step_once",
-                    event,
+                    DcsEvent::SnapshotReadFailed {
+                        identity: dcs_event_identity(ctx),
+                        error: err.to_string(),
+                    },
+                    severity,
                     "dcs snapshot read log emit failed",
                 )?;
                 store_healthy = false;
@@ -411,48 +376,34 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     );
     if ctx.runtime.last_emitted_store_healthy != Some(store_healthy) {
         ctx.runtime.last_emitted_store_healthy = Some(store_healthy);
-        let mut event = dcs_event(
-            if store_healthy {
-                SeverityText::Info
-            } else {
-                SeverityText::Warn
-            },
-            "dcs store health transition",
-            "dcs.store.health_transition",
-            if store_healthy { "recovered" } else { "failed" },
-        );
-        let fields = event.fields_mut();
-        dcs_append_base_fields(fields, ctx);
-        fields.insert("store_healthy", store_healthy);
+        let severity = if store_healthy {
+            SeverityText::Info
+        } else {
+            SeverityText::Warn
+        };
         emit_dcs_event(
             ctx,
             "dcs_worker::step_once",
-            event,
+            DcsEvent::StoreHealthTransition {
+                identity: dcs_event_identity(ctx),
+                store_healthy,
+            },
+            severity,
             "dcs health transition log emit failed",
         )?;
     }
     if ctx.runtime.last_emitted_trust.as_ref() != Some(&next.trust) {
-        let prev = ctx
-            .runtime
-            .last_emitted_trust
-            .as_ref()
-            .map(|value| format!("{value:?}").to_lowercase())
-            .unwrap_or_else(|| "unknown".to_string());
+        let previous = ctx.runtime.last_emitted_trust.clone();
         ctx.runtime.last_emitted_trust = Some(next.trust.clone());
-        let mut event = dcs_event(
-            SeverityText::Info,
-            "dcs trust transition",
-            "dcs.trust.transition",
-            "ok",
-        );
-        let fields = event.fields_mut();
-        dcs_append_base_fields(fields, ctx);
-        fields.insert("trust_prev", prev);
-        fields.insert("trust_next", format!("{:?}", next.trust).to_lowercase());
         emit_dcs_event(
             ctx,
             "dcs_worker::step_once",
-            event,
+            DcsEvent::TrustTransition {
+                identity: dcs_event_identity(ctx),
+                previous,
+                next: next.trust.clone(),
+            },
+            SeverityText::Info,
             "dcs trust transition log emit failed",
         )?;
     }
@@ -474,19 +425,15 @@ fn release_local_leader_lease(
     {
         Ok(()) => Ok(()),
         Err(err) => {
-            let mut event = dcs_event(
-                dcs_io_error_severity(&err),
-                "dcs local leader release failed",
-                "dcs.local_leader.release_failed",
-                "failed",
-            );
-            let fields = event.fields_mut();
-            dcs_append_base_fields(fields, ctx);
-            fields.insert("error", err.to_string());
+            let severity = dcs_io_error_severity(&err);
             emit_dcs_event(
                 ctx,
                 "dcs_worker::step_once",
-                event,
+                DcsEvent::LocalLeaderReleaseFailed {
+                    identity: dcs_event_identity(ctx),
+                    error: err.to_string(),
+                },
+                severity,
                 "dcs local leader release log emit failed",
             )?;
             *store_healthy = false;
@@ -516,19 +463,14 @@ fn handle_command_request(
     let command_name = dcs_command_name(&request.command);
     let result = execute_command(ctx, request.command);
     if request.response_tx.send(result).is_err() {
-        let mut event = dcs_event(
-            SeverityText::Warn,
-            "dcs command response receiver dropped",
-            "dcs.command.response_dropped",
-            "failed",
-        );
-        let fields = event.fields_mut();
-        dcs_append_base_fields(fields, ctx);
-        fields.insert("command", command_name);
         emit_dcs_event(
             ctx,
             "dcs_worker::handle_command_request",
-            event,
+            DcsEvent::CommandResponseDropped {
+                identity: dcs_event_identity(ctx),
+                command: command_name,
+            },
+            SeverityText::Warn,
             "dcs command response_dropped log emit failed",
         )?;
     }
@@ -587,12 +529,12 @@ fn dcs_command_error(err: DcsStoreError) -> DcsCommandError {
     DcsCommandError::Rejected(err.to_string())
 }
 
-fn dcs_command_name(command: &DcsCommand) -> &'static str {
+fn dcs_command_name(command: &DcsCommand) -> DcsCommandName {
     match command {
-        DcsCommand::AcquireLeadership => "acquire_leadership",
-        DcsCommand::ReleaseLeadership => "release_leadership",
-        DcsCommand::PublishSwitchover { .. } => "publish_switchover",
-        DcsCommand::ClearSwitchover => "clear_switchover",
+        DcsCommand::AcquireLeadership => DcsCommandName::AcquireLeadership,
+        DcsCommand::ReleaseLeadership => DcsCommandName::ReleaseLeadership,
+        DcsCommand::PublishSwitchover { .. } => DcsCommandName::PublishSwitchover,
+        DcsCommand::ClearSwitchover => DcsCommandName::ClearSwitchover,
     }
 }
 

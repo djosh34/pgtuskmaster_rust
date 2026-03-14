@@ -661,6 +661,16 @@ mod tests {
                 "managed postgresql conf missing primary hot_standby=off: {postgresql_conf}"
             ));
         }
+        if !postgresql_conf.contains("logging_collector = on") {
+            return Err(format!(
+                "managed postgresql conf missing logging_collector=on: {postgresql_conf}"
+            ));
+        }
+        if !postgresql_conf.contains("log_destination = 'jsonlog,stderr'") {
+            return Err(format!(
+                "managed postgresql conf missing jsonlog destination: {postgresql_conf}"
+            ));
+        }
         if postgresql_conf.contains("archive_mode")
             || postgresql_conf.contains("archive_command")
             || postgresql_conf.contains("restore_command")

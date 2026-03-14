@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config::{resolve_secret_string, PostgresRoleName, RoleAuthConfig, SecretSource};
+use crate::logging::ProcessJobKind;
 use crate::pginfo::state::PgConnInfo;
 use crate::state::{JobId, MemberId, UnixMillis};
 
@@ -177,7 +178,7 @@ impl ProcessEnvValue {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProcessLogIdentity {
     pub(crate) job_id: JobId,
-    pub(crate) job_kind: String,
+    pub(crate) job_kind: ProcessJobKind,
     pub(crate) binary: String,
 }
 

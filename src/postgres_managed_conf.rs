@@ -24,6 +24,8 @@ const RESERVED_EXTRA_GUC_KEYS: &[&str] = &[
     "hot_standby",
     "ident_file",
     "listen_addresses",
+    "log_destination",
+    "logging_collector",
     "port",
     "primary_conninfo",
     "primary_slot_name",
@@ -167,6 +169,8 @@ pub(crate) fn render_managed_postgres_conf(
     );
     push_path_setting(&mut rendered, "hba_file", conf.hba_file.as_path());
     push_path_setting(&mut rendered, "ident_file", conf.ident_file.as_path());
+    push_bool_setting(&mut rendered, "logging_collector", true);
+    push_string_setting(&mut rendered, "log_destination", "jsonlog,stderr");
 
     match &conf.tls {
         ManagedPostgresTlsConfig::Disabled => {
@@ -530,6 +534,12 @@ mod tests {
         if !rendered.starts_with(MANAGED_POSTGRESQL_CONF_HEADER) {
             return Err(format!("missing managed header: {rendered}"));
         }
+        if !rendered.contains("logging_collector = on") {
+            return Err(format!("missing logging_collector=on: {rendered}"));
+        }
+        if !rendered.contains("log_destination = 'jsonlog,stderr'") {
+            return Err(format!("missing jsonlog destination: {rendered}"));
+        }
         if !rendered.contains("ssl = on") {
             return Err(format!("missing ssl=on: {rendered}"));
         }
@@ -626,6 +636,12 @@ mod tests {
             validate_extra_guc_entry("port", "5432"),
             Err(ManagedPostgresConfError::ReservedExtraGuc {
                 key: "port".to_string(),
+            })
+        );
+        assert_eq!(
+            validate_extra_guc_entry("log_destination", "stderr"),
+            Err(ManagedPostgresConfError::ReservedExtraGuc {
+                key: "log_destination".to_string(),
             })
         );
     }

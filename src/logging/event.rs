@@ -1,201 +1,34 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
-use serde::Serialize;
 use serde_json::Value;
 
-use super::{LogError, LogParser, LogProducer, LogRecord, LogSource, LogTransport, SeverityText};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AppEventHeader {
-    pub(crate) name: String,
-    pub(crate) domain: String,
-    pub(crate) result: String,
-}
-
-impl AppEventHeader {
-    pub(crate) fn new(
-        name: impl Into<String>,
-        domain: impl Into<String>,
-        result: impl Into<String>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            domain: domain.into(),
-            result: result.into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct StructuredFields {
-    fields: Vec<(String, StructuredValue)>,
-}
-
-impl StructuredFields {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn append_json_map(&mut self, attributes: BTreeMap<String, Value>) {
-        self.fields.extend(
-            attributes
-                .into_iter()
-                .map(|(key, value)| (key, StructuredValue::Json(value))),
-        );
-    }
-
-    pub(crate) fn insert<V>(&mut self, key: impl Into<String>, value: V)
-    where
-        V: Into<StructuredValue>,
-    {
-        self.fields.push((key.into(), value.into()));
-    }
-
-    pub(crate) fn insert_optional<V>(&mut self, key: impl Into<String>, value: Option<V>)
-    where
-        V: Into<StructuredValue>,
-    {
-        if let Some(value) = value {
-            self.insert(key, value);
-        }
-    }
-
-    pub(crate) fn insert_serialized<T: Serialize>(
-        &mut self,
-        key: impl Into<String>,
-        value: &T,
-    ) -> Result<(), LogError> {
-        let json_value =
-            serde_json::to_value(value).map_err(|err| LogError::Json(err.to_string()))?;
-        self.fields
-            .push((key.into(), StructuredValue::Json(json_value)));
-        Ok(())
-    }
-
-    pub(crate) fn into_attributes(self) -> BTreeMap<String, Value> {
-        let mut attributes = BTreeMap::new();
-        for (key, value) in self.fields {
-            attributes.insert(key, value.into_json());
-        }
-        attributes
-    }
-}
+use super::{
+    raw_record::EncodedRecord, LogError, LogParser, LogProducer, LogRecord, LogSource,
+    LogTransport, SeverityText,
+};
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum StructuredValue {
-    Bool(bool),
-    I64(i64),
-    U64(u64),
-    String(String),
-    Json(Value),
+pub(crate) enum LogEvent {
+    Runtime(InternalEvent<RuntimeEvent>),
+    Dcs(InternalEvent<DcsEvent>),
+    PgInfo(InternalEvent<PgInfoEvent>),
+    Process(InternalEvent<ProcessEvent>),
+    PostgresIngest(InternalEvent<PostgresIngestEvent>),
+    PostgresLine(PostgresLineEvent),
+    SubprocessLine(SubprocessLineEvent),
 }
 
-impl StructuredValue {
-    fn into_json(self) -> Value {
-        match self {
-            Self::Bool(value) => Value::Bool(value),
-            Self::I64(value) => Value::Number(value.into()),
-            Self::U64(value) => Value::Number(value.into()),
-            Self::String(value) => Value::String(value),
-            Self::Json(value) => value,
-        }
-    }
-}
-
-impl From<bool> for StructuredValue {
-    fn from(value: bool) -> Self {
-        Self::Bool(value)
-    }
-}
-
-impl From<i16> for StructuredValue {
-    fn from(value: i16) -> Self {
-        Self::I64(i64::from(value))
-    }
-}
-
-impl From<i32> for StructuredValue {
-    fn from(value: i32) -> Self {
-        Self::I64(i64::from(value))
-    }
-}
-
-impl From<i64> for StructuredValue {
-    fn from(value: i64) -> Self {
-        Self::I64(value)
-    }
-}
-
-impl From<u16> for StructuredValue {
-    fn from(value: u16) -> Self {
-        Self::U64(u64::from(value))
-    }
-}
-
-impl From<u32> for StructuredValue {
-    fn from(value: u32) -> Self {
-        Self::U64(u64::from(value))
-    }
-}
-
-impl From<u64> for StructuredValue {
-    fn from(value: u64) -> Self {
-        Self::U64(value)
-    }
-}
-
-impl From<usize> for StructuredValue {
-    fn from(value: usize) -> Self {
-        Self::U64(value as u64)
-    }
-}
-
-impl From<&str> for StructuredValue {
-    fn from(value: &str) -> Self {
-        Self::String(value.to_string())
-    }
-}
-
-impl From<String> for StructuredValue {
-    fn from(value: String) -> Self {
-        Self::String(value)
-    }
-}
-
-impl From<Value> for StructuredValue {
-    fn from(value: Value) -> Self {
-        Self::Json(value)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AppEvent {
-    header: AppEventHeader,
-    severity: SeverityText,
-    message: String,
-    fields: StructuredFields,
-}
-
-impl AppEvent {
-    pub(crate) fn new(
-        severity: SeverityText,
-        message: impl Into<String>,
-        header: AppEventHeader,
-    ) -> Self {
-        Self {
-            header,
-            severity,
-            message: message.into(),
-            fields: StructuredFields::new(),
-        }
-    }
-
+impl LogEvent {
     pub(crate) fn severity(&self) -> SeverityText {
-        self.severity
-    }
-
-    pub(crate) fn fields_mut(&mut self) -> &mut StructuredFields {
-        &mut self.fields
+        match self {
+            Self::Runtime(event) => event.severity,
+            Self::Dcs(event) => event.severity,
+            Self::PgInfo(event) => event.severity,
+            Self::Process(event) => event.severity,
+            Self::PostgresIngest(event) => event.severity,
+            Self::PostgresLine(event) => event.severity(),
+            Self::SubprocessLine(event) => event.severity(),
+        }
     }
 
     pub(crate) fn into_record(
@@ -203,68 +36,1068 @@ impl AppEvent {
         timestamp_ms: u64,
         hostname: String,
         origin: impl Into<String>,
-    ) -> LogRecord {
-        let source = LogSource {
+    ) -> Result<LogRecord, LogError> {
+        let encoded = match self {
+            Self::Runtime(event) => encode_runtime_event(origin.into(), event),
+            Self::Dcs(event) => encode_dcs_event(origin.into(), event),
+            Self::PgInfo(event) => encode_pginfo_event(origin.into(), event),
+            Self::Process(event) => encode_process_event(origin.into(), event),
+            Self::PostgresIngest(event) => encode_postgres_ingest_event(origin.into(), event),
+            Self::PostgresLine(event) => encode_postgres_line_event(event),
+            Self::SubprocessLine(event) => encode_subprocess_line_event(event),
+        };
+        Ok(encoded.into_record(timestamp_ms, hostname))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct InternalEvent<T> {
+    pub(crate) severity: SeverityText,
+    pub(crate) event: T,
+}
+
+impl<T> InternalEvent<T> {
+    pub(crate) fn new(severity: SeverityText, event: T) -> Self {
+        Self { severity, event }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RuntimeIdentity {
+    pub(crate) scope: String,
+    pub(crate) member_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RuntimeEvent {
+    StartupEntered {
+        identity: RuntimeIdentity,
+        startup_run_id: String,
+        logging_level: crate::config::LogLevel,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DcsEventIdentity {
+    pub(crate) scope: String,
+    pub(crate) member_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DcsCommandName {
+    AcquireLeadership,
+    ReleaseLeadership,
+    PublishSwitchover,
+    ClearSwitchover,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DcsEvent {
+    LocalMemberDeleteFailed {
+        identity: DcsEventIdentity,
+        error: String,
+    },
+    LocalMemberWriteFailed {
+        identity: DcsEventIdentity,
+        error: String,
+    },
+    WatchDrainFailed {
+        identity: DcsEventIdentity,
+        error: String,
+    },
+    WatchApplyHadErrors {
+        identity: DcsEventIdentity,
+        applied: usize,
+    },
+    WatchRefreshFailed {
+        identity: DcsEventIdentity,
+        error: String,
+    },
+    SnapshotApplyHadErrors {
+        identity: DcsEventIdentity,
+        applied: usize,
+    },
+    SnapshotRefreshFailed {
+        identity: DcsEventIdentity,
+        error: String,
+    },
+    SnapshotReadFailed {
+        identity: DcsEventIdentity,
+        error: String,
+    },
+    StoreHealthTransition {
+        identity: DcsEventIdentity,
+        store_healthy: bool,
+    },
+    TrustTransition {
+        identity: DcsEventIdentity,
+        previous: Option<crate::dcs::DcsTrust>,
+        next: crate::dcs::DcsTrust,
+    },
+    LocalLeaderReleaseFailed {
+        identity: DcsEventIdentity,
+        error: String,
+    },
+    CommandResponseDropped {
+        identity: DcsEventIdentity,
+        command: DcsCommandName,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PgInfoEvent {
+    PollFailed {
+        member_id: String,
+        error: String,
+    },
+    SqlTransition {
+        member_id: String,
+        previous: crate::pginfo::state::SqlStatus,
+        next: crate::pginfo::state::SqlStatus,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessJobKind {
+    Bootstrap,
+    BaseBackup,
+    PgRewind,
+    Promote,
+    Demote,
+    StartPostgres,
+    StartPrimary,
+    StartDetachedStandby,
+    StartReplica,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessJobIdentity {
+    pub(crate) job_id: String,
+    pub(crate) kind: ProcessJobKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessExecutionIdentity {
+    pub(crate) job: ProcessJobIdentity,
+    pub(crate) binary: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CapturedStream {
+    Stdout,
+    Stderr,
+}
+
+impl CapturedStream {
+    fn severity(&self) -> SeverityText {
+        match self {
+            Self::Stdout => SeverityText::Info,
+            Self::Stderr => SeverityText::Warn,
+        }
+    }
+
+    fn transport(&self) -> LogTransport {
+        match self {
+            Self::Stdout => LogTransport::ChildStdout,
+            Self::Stderr => LogTransport::ChildStderr,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessEvent {
+    WorkerRunStarted {
+        capture_subprocess_output: bool,
+    },
+    RequestReceived {
+        job: ProcessJobIdentity,
+    },
+    InboxDisconnected,
+    BusyRejected {
+        job: ProcessJobIdentity,
+    },
+    StartPostgresAlreadyRunning {
+        job: ProcessJobIdentity,
+        data_dir: String,
+    },
+    StartPostgresPreflightFailed {
+        job: ProcessJobIdentity,
+        error: String,
+    },
+    IntentMaterializationFailed {
+        job: ProcessJobIdentity,
+        error: String,
+    },
+    BuildCommandFailed {
+        job: ProcessJobIdentity,
+        error: String,
+    },
+    SpawnFailed {
+        job: ProcessJobIdentity,
+        error: String,
+    },
+    Started {
+        execution: ProcessExecutionIdentity,
+    },
+    OutputDrainFailed {
+        execution: ProcessExecutionIdentity,
+        error: String,
+    },
+    Timeout {
+        execution: ProcessExecutionIdentity,
+    },
+    ExitedSuccessfully {
+        execution: ProcessExecutionIdentity,
+    },
+    ExitedUnsuccessfully {
+        execution: ProcessExecutionIdentity,
+        error: String,
+    },
+    PollFailed {
+        execution: ProcessExecutionIdentity,
+        error: String,
+    },
+    OutputEmitFailed {
+        execution: ProcessExecutionIdentity,
+        stream: CapturedStream,
+        bytes_len: usize,
+        error: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PostgresIngestEvent {
+    StepOnceFailed {
+        attempts: u32,
+        suppressed: u64,
+        error: String,
+    },
+    Recovered {
+        attempts: u32,
+    },
+    IterationSummary {
+        pg_ctl_lines_emitted: u64,
+        log_dir_files_tailed: u64,
+        log_dir_lines_emitted: u64,
+        dir_tailers: usize,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PostgresLineSource {
+    pub(crate) producer: LogProducer,
+    pub(crate) transport: LogTransport,
+    pub(crate) origin: String,
+    pub(crate) path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PostgresLineEvent {
+    Json {
+        source: PostgresLineSource,
+        severity: SeverityText,
+        message: String,
+        payload: Value,
+    },
+    Plain {
+        source: PostgresLineSource,
+        severity: SeverityText,
+        message: String,
+        level_raw: String,
+    },
+    Unparsed {
+        source: PostgresLineSource,
+        decoded_line: String,
+    },
+}
+
+impl PostgresLineEvent {
+    fn severity(&self) -> SeverityText {
+        match self {
+            Self::Json { severity, .. } | Self::Plain { severity, .. } => *severity,
+            Self::Unparsed { .. } => SeverityText::Info,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SubprocessLineEvent {
+    pub(crate) producer: LogProducer,
+    pub(crate) origin: String,
+    pub(crate) execution: ProcessExecutionIdentity,
+    pub(crate) stream: CapturedStream,
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl SubprocessLineEvent {
+    fn severity(&self) -> SeverityText {
+        self.stream.severity()
+    }
+}
+
+fn encode_runtime_event(origin: String, event: InternalEvent<RuntimeEvent>) -> EncodedRecord {
+    match event.event {
+        RuntimeEvent::StartupEntered {
+            identity,
+            startup_run_id,
+            logging_level,
+        } => {
+            let mut attributes = internal_event_attributes(
+                "runtime.startup.entered",
+                "runtime",
+                "ok",
+            );
+            insert_runtime_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "startup_run_id", startup_run_id);
+            insert_string(
+                &mut attributes,
+                "logging.level",
+                log_level_label(logging_level),
+            );
+            app_record(
+                origin,
+                event.severity,
+                "runtime starting",
+                attributes,
+            )
+        }
+    }
+}
+
+fn encode_dcs_event(origin: String, event: InternalEvent<DcsEvent>) -> EncodedRecord {
+    match event.event {
+        DcsEvent::LocalMemberDeleteFailed { identity, error } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.local_member.delete_failed",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "dcs local member delete failed",
+                attributes,
+            )
+        }
+        DcsEvent::LocalMemberWriteFailed { identity, error } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.local_member.write_failed",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "dcs local member write failed",
+                attributes,
+            )
+        }
+        DcsEvent::WatchDrainFailed { identity, error } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.watch.drain_failed",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "error", error);
+            app_record(origin, event.severity, "dcs watch drain failed", attributes)
+        }
+        DcsEvent::WatchApplyHadErrors { identity, applied } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.watch.apply_had_errors",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_usize(&mut attributes, "applied", applied);
+            app_record(
+                origin,
+                event.severity,
+                "dcs watch refresh had errors",
+                attributes,
+            )
+        }
+        DcsEvent::WatchRefreshFailed { identity, error } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.watch.refresh_failed",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "error", error);
+            app_record(origin, event.severity, "dcs watch refresh failed", attributes)
+        }
+        DcsEvent::SnapshotApplyHadErrors { identity, applied } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.snapshot.apply_had_errors",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_usize(&mut attributes, "applied", applied);
+            app_record(
+                origin,
+                event.severity,
+                "dcs snapshot refresh had errors",
+                attributes,
+            )
+        }
+        DcsEvent::SnapshotRefreshFailed { identity, error } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.snapshot.refresh_failed",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "error", error);
+            app_record(origin, event.severity, "dcs snapshot refresh failed", attributes)
+        }
+        DcsEvent::SnapshotReadFailed { identity, error } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.snapshot.read_failed",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "error", error);
+            app_record(origin, event.severity, "dcs snapshot read failed", attributes)
+        }
+        DcsEvent::StoreHealthTransition {
+            identity,
+            store_healthy,
+        } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.store.health_transition",
+                "dcs",
+                if store_healthy { "recovered" } else { "failed" },
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_bool(&mut attributes, "store_healthy", store_healthy);
+            app_record(
+                origin,
+                event.severity,
+                "dcs store health transition",
+                attributes,
+            )
+        }
+        DcsEvent::TrustTransition {
+            identity,
+            previous,
+            next,
+        } => {
+            let mut attributes =
+                internal_event_attributes("dcs.trust.transition", "dcs", "ok");
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(
+                &mut attributes,
+                "trust_prev",
+                previous
+                    .as_ref()
+                    .map(dcs_trust_label)
+                    .unwrap_or("unknown"),
+            );
+            insert_string(&mut attributes, "trust_next", dcs_trust_label(&next));
+            app_record(origin, event.severity, "dcs trust transition", attributes)
+        }
+        DcsEvent::LocalLeaderReleaseFailed { identity, error } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.local_leader.release_failed",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "dcs local leader release failed",
+                attributes,
+            )
+        }
+        DcsEvent::CommandResponseDropped { identity, command } => {
+            let mut attributes = internal_event_attributes(
+                "dcs.command.response_dropped",
+                "dcs",
+                "failed",
+            );
+            insert_dcs_identity(&mut attributes, &identity);
+            insert_string(&mut attributes, "command", dcs_command_name_label(command));
+            app_record(
+                origin,
+                event.severity,
+                "dcs command response receiver dropped",
+                attributes,
+            )
+        }
+    }
+}
+
+fn encode_pginfo_event(origin: String, event: InternalEvent<PgInfoEvent>) -> EncodedRecord {
+    match event.event {
+        PgInfoEvent::PollFailed { member_id, error } => {
+            let mut attributes =
+                internal_event_attributes("pginfo.poll_failed", "pginfo", "failed");
+            insert_string(&mut attributes, "member_id", member_id);
+            insert_string(&mut attributes, "error", error);
+            app_record(origin, event.severity, "pginfo poll failed", attributes)
+        }
+        PgInfoEvent::SqlTransition {
+            member_id,
+            previous,
+            next,
+        } => {
+            let result = match (&previous, &next) {
+                (
+                    crate::pginfo::state::SqlStatus::Healthy,
+                    crate::pginfo::state::SqlStatus::Unreachable,
+                ) => "failed",
+                (
+                    crate::pginfo::state::SqlStatus::Unreachable,
+                    crate::pginfo::state::SqlStatus::Healthy,
+                ) => "recovered",
+                _ => "ok",
+            };
+            let mut attributes =
+                internal_event_attributes("pginfo.sql_transition", "pginfo", result);
+            insert_string(&mut attributes, "member_id", member_id);
+            insert_string(&mut attributes, "sql_status_prev", sql_status_label(&previous));
+            insert_string(&mut attributes, "sql_status_next", sql_status_label(&next));
+            app_record(
+                origin,
+                event.severity,
+                "pginfo sql status transition",
+                attributes,
+            )
+        }
+    }
+}
+
+fn encode_process_event(origin: String, event: InternalEvent<ProcessEvent>) -> EncodedRecord {
+    match event.event {
+        ProcessEvent::WorkerRunStarted {
+            capture_subprocess_output,
+        } => {
+            let mut attributes = internal_event_attributes(
+                "process.worker.run_started",
+                "process",
+                "ok",
+            );
+            insert_bool(
+                &mut attributes,
+                "capture_subprocess_output",
+                capture_subprocess_output,
+            );
+            app_record(
+                origin,
+                event.severity,
+                "process worker run started",
+                attributes,
+            )
+        }
+        ProcessEvent::RequestReceived { job } => {
+            let mut attributes = internal_event_attributes(
+                "process.worker.request_received",
+                "process",
+                "ok",
+            );
+            insert_job_identity(&mut attributes, &job);
+            app_record(
+                origin,
+                event.severity,
+                "process job request received",
+                attributes,
+            )
+        }
+        ProcessEvent::InboxDisconnected => app_record(
+            origin,
+            event.severity,
+            "process worker inbox disconnected",
+            internal_event_attributes(
+                "process.worker.inbox_disconnected",
+                "process",
+                "failed",
+            ),
+        ),
+        ProcessEvent::BusyRejected { job } => {
+            let mut attributes = internal_event_attributes(
+                "process.worker.busy_reject",
+                "process",
+                "failed",
+            );
+            insert_job_identity(&mut attributes, &job);
+            app_record(
+                origin,
+                event.severity,
+                "process worker busy; rejecting job",
+                attributes,
+            )
+        }
+        ProcessEvent::StartPostgresAlreadyRunning { job, data_dir } => {
+            let mut attributes = internal_event_attributes(
+                "process.job.start_postgres_noop",
+                "process",
+                "ok",
+            );
+            insert_job_identity(&mut attributes, &job);
+            insert_string(&mut attributes, "data_dir", data_dir);
+            app_record(
+                origin,
+                event.severity,
+                "start postgres preflight: postgres already running",
+                attributes,
+            )
+        }
+        ProcessEvent::StartPostgresPreflightFailed { job, error } => {
+            let mut attributes = internal_event_attributes(
+                "process.job.start_postgres_preflight_failed",
+                "process",
+                "failed",
+            );
+            insert_job_identity(&mut attributes, &job);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "start postgres preflight failed",
+                attributes,
+            )
+        }
+        ProcessEvent::IntentMaterializationFailed { job, error } => {
+            let mut attributes = internal_event_attributes(
+                "process.worker.intent_materialization_failed",
+                "process",
+                "failed",
+            );
+            insert_job_identity(&mut attributes, &job);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "process intent materialization failed",
+                attributes,
+            )
+        }
+        ProcessEvent::BuildCommandFailed { job, error } => {
+            let mut attributes = internal_event_attributes(
+                "process.job.build_command_failed",
+                "process",
+                "failed",
+            );
+            insert_job_identity(&mut attributes, &job);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "process build command failed",
+                attributes,
+            )
+        }
+        ProcessEvent::SpawnFailed { job, error } => {
+            let mut attributes =
+                internal_event_attributes("process.job.spawn_failed", "process", "failed");
+            insert_job_identity(&mut attributes, &job);
+            insert_string(&mut attributes, "error", error);
+            app_record(origin, event.severity, "process spawn failed", attributes)
+        }
+        ProcessEvent::Started { execution } => {
+            let mut attributes = internal_event_attributes("process.job.started", "process", "ok");
+            insert_execution_identity(&mut attributes, &execution);
+            app_record(origin, event.severity, "process job started", attributes)
+        }
+        ProcessEvent::OutputDrainFailed { execution, error } => {
+            let mut attributes = internal_event_attributes(
+                "process.worker.output_drain_failed",
+                "process",
+                "failed",
+            );
+            insert_execution_identity(&mut attributes, &execution);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "process output drain failed",
+                attributes,
+            )
+        }
+        ProcessEvent::Timeout { execution } => {
+            let mut attributes =
+                internal_event_attributes("process.job.timeout", "process", "timeout");
+            insert_execution_identity(&mut attributes, &execution);
+            app_record(
+                origin,
+                event.severity,
+                "process job timed out; cancelling",
+                attributes,
+            )
+        }
+        ProcessEvent::ExitedSuccessfully { execution } => {
+            let mut attributes = internal_event_attributes("process.job.exited", "process", "ok");
+            insert_execution_identity(&mut attributes, &execution);
+            app_record(
+                origin,
+                event.severity,
+                "process job exited successfully",
+                attributes,
+            )
+        }
+        ProcessEvent::ExitedUnsuccessfully { execution, error } => {
+            let mut attributes =
+                internal_event_attributes("process.job.exited", "process", "failed");
+            insert_execution_identity(&mut attributes, &execution);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "process job exited unsuccessfully",
+                attributes,
+            )
+        }
+        ProcessEvent::PollFailed { execution, error } => {
+            let mut attributes =
+                internal_event_attributes("process.job.poll_failed", "process", "failed");
+            insert_execution_identity(&mut attributes, &execution);
+            insert_string(&mut attributes, "error", error);
+            app_record(origin, event.severity, "process job poll failed", attributes)
+        }
+        ProcessEvent::OutputEmitFailed {
+            execution,
+            stream,
+            bytes_len,
+            error,
+        } => {
+            let mut attributes = internal_event_attributes(
+                "process.worker.output_emit_failed",
+                "process",
+                "failed",
+            );
+            insert_execution_identity(&mut attributes, &execution);
+            insert_string(&mut attributes, "stream", captured_stream_label(stream));
+            insert_usize(&mut attributes, "bytes_len", bytes_len);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "process subprocess output emit failed",
+                attributes,
+            )
+        }
+    }
+}
+
+fn encode_postgres_ingest_event(
+    origin: String,
+    event: InternalEvent<PostgresIngestEvent>,
+) -> EncodedRecord {
+    match event.event {
+        PostgresIngestEvent::StepOnceFailed {
+            attempts,
+            suppressed,
+            error,
+        } => {
+            let mut attributes = internal_event_attributes(
+                "postgres_ingest.step_once_failed",
+                "postgres_ingest",
+                "failed",
+            );
+            insert_u64(&mut attributes, "attempts", u64::from(attempts));
+            insert_u64(&mut attributes, "suppressed", suppressed);
+            insert_string(&mut attributes, "error", error);
+            app_record(
+                origin,
+                event.severity,
+                "postgres ingest step_once failed",
+                attributes,
+            )
+        }
+        PostgresIngestEvent::Recovered { attempts } => {
+            let mut attributes = internal_event_attributes(
+                "postgres_ingest.recovered",
+                "postgres_ingest",
+                "recovered",
+            );
+            insert_u64(&mut attributes, "attempts", u64::from(attempts));
+            app_record(origin, event.severity, "postgres ingest recovered", attributes)
+        }
+        PostgresIngestEvent::IterationSummary {
+            pg_ctl_lines_emitted,
+            log_dir_files_tailed,
+            log_dir_lines_emitted,
+            dir_tailers,
+        } => {
+            let mut attributes = internal_event_attributes(
+                "postgres_ingest.iteration",
+                "postgres_ingest",
+                "ok",
+            );
+            insert_u64(&mut attributes, "pg_ctl_lines_emitted", pg_ctl_lines_emitted);
+            insert_u64(&mut attributes, "log_dir_files_tailed", log_dir_files_tailed);
+            insert_u64(&mut attributes, "log_dir_lines_emitted", log_dir_lines_emitted);
+            insert_usize(&mut attributes, "dir_tailers", dir_tailers);
+            app_record(
+                origin,
+                event.severity,
+                "postgres ingest iteration ok",
+                attributes,
+            )
+        }
+    }
+}
+
+fn encode_postgres_line_event(event: PostgresLineEvent) -> EncodedRecord {
+    match event {
+        PostgresLineEvent::Json {
+            source,
+            severity,
+            message,
+            payload,
+        } => {
+            let mut attributes = BTreeMap::new();
+            insert_string(
+                &mut attributes,
+                "log_file.path",
+                source.path.display().to_string(),
+            );
+            attributes.insert("postgres.json".to_string(), payload);
+            EncodedRecord {
+                severity,
+                message,
+                source: LogSource {
+                    producer: source.producer,
+                    transport: source.transport,
+                    parser: LogParser::PostgresJson,
+                    origin: source.origin,
+                },
+                attributes,
+            }
+        }
+        PostgresLineEvent::Plain {
+            source,
+            severity,
+            message,
+            level_raw,
+        } => {
+            let mut attributes = BTreeMap::new();
+            insert_string(
+                &mut attributes,
+                "log_file.path",
+                source.path.display().to_string(),
+            );
+            insert_string(&mut attributes, "postgres.level_raw", level_raw);
+            EncodedRecord {
+                severity,
+                message,
+                source: LogSource {
+                    producer: source.producer,
+                    transport: source.transport,
+                    parser: LogParser::PostgresPlain,
+                    origin: source.origin,
+                },
+                attributes,
+            }
+        }
+        PostgresLineEvent::Unparsed {
+            source,
+            decoded_line,
+        } => {
+            let mut attributes = BTreeMap::new();
+            insert_string(
+                &mut attributes,
+                "log_file.path",
+                source.path.display().to_string(),
+            );
+            insert_bool(&mut attributes, "parse_failed", true);
+            insert_string(&mut attributes, "raw_line", decoded_line.clone());
+            EncodedRecord {
+                severity: SeverityText::Info,
+                message: decoded_line,
+                source: LogSource {
+                    producer: source.producer,
+                    transport: source.transport,
+                    parser: LogParser::Raw,
+                    origin: source.origin,
+                },
+                attributes,
+            }
+        }
+    }
+}
+
+fn encode_subprocess_line_event(event: SubprocessLineEvent) -> EncodedRecord {
+    let severity = event.severity();
+    let (message, raw_bytes_hex) = decode_subprocess_bytes(event.bytes);
+    let mut attributes = BTreeMap::new();
+    insert_execution_identity(&mut attributes, &event.execution);
+    insert_string(&mut attributes, "stream", captured_stream_label(event.stream));
+    if let Some(raw_bytes_hex) = raw_bytes_hex {
+        insert_string(&mut attributes, "raw_bytes_hex", raw_bytes_hex);
+    }
+    EncodedRecord {
+        severity,
+        message,
+        source: LogSource {
+            producer: event.producer,
+            transport: event.stream.transport(),
+            parser: LogParser::Raw,
+            origin: event.origin,
+        },
+        attributes,
+    }
+}
+
+fn app_record(
+    origin: String,
+    severity: SeverityText,
+    message: impl Into<String>,
+    attributes: BTreeMap<String, Value>,
+) -> EncodedRecord {
+    EncodedRecord {
+        severity,
+        message: message.into(),
+        source: LogSource {
             producer: LogProducer::App,
             transport: LogTransport::Internal,
             parser: LogParser::App,
-            origin: origin.into(),
-        };
-        let mut record =
-            LogRecord::new(timestamp_ms, hostname, self.severity, self.message, source);
-        let mut attributes = self.fields.into_attributes();
-        attributes.insert("event.name".to_string(), Value::String(self.header.name));
-        attributes.insert(
-            "event.domain".to_string(),
-            Value::String(self.header.domain),
-        );
-        attributes.insert(
-            "event.result".to_string(),
-            Value::String(self.header.result),
-        );
-        record.attributes = attributes;
-        record
+            origin,
+        },
+        attributes,
     }
 }
 
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct DecodedAppEvent {
-    pub(crate) header: AppEventHeader,
-    pub(crate) severity: SeverityText,
-    pub(crate) message: String,
-    pub(crate) origin: String,
-    pub(crate) fields: BTreeMap<String, Value>,
+fn internal_event_attributes(name: &str, domain: &str, result: &str) -> BTreeMap<String, Value> {
+    let mut attributes = BTreeMap::new();
+    insert_string(&mut attributes, "event.name", name);
+    insert_string(&mut attributes, "event.domain", domain);
+    insert_string(&mut attributes, "event.result", result);
+    attributes
 }
 
-#[cfg(test)]
-pub(crate) fn decode_app_event(record: &LogRecord) -> Result<DecodedAppEvent, LogError> {
-    let name = decode_required_string_attribute(record, "event.name")?;
-    let domain = decode_required_string_attribute(record, "event.domain")?;
-    let result = decode_required_string_attribute(record, "event.result")?;
-    let mut fields = record.attributes.clone();
-    fields.remove("event.name");
-    fields.remove("event.domain");
-    fields.remove("event.result");
-
-    Ok(DecodedAppEvent {
-        header: AppEventHeader::new(name, domain, result),
-        severity: record.severity_text,
-        message: record.message.clone(),
-        origin: record.source.origin.clone(),
-        fields,
-    })
+fn insert_runtime_identity(attributes: &mut BTreeMap<String, Value>, identity: &RuntimeIdentity) {
+    insert_string(attributes, "scope", identity.scope.as_str());
+    insert_string(attributes, "member_id", identity.member_id.as_str());
 }
 
-#[cfg(test)]
-fn decode_required_string_attribute(record: &LogRecord, key: &str) -> Result<String, LogError> {
-    match record.attributes.get(key) {
-        Some(Value::String(value)) => Ok(value.clone()),
-        Some(other) => Err(LogError::Json(format!(
-            "attribute `{key}` should be a string, got {other}"
-        ))),
-        None => Err(LogError::Json(format!(
-            "attribute `{key}` is missing from app event record"
-        ))),
+fn insert_dcs_identity(attributes: &mut BTreeMap<String, Value>, identity: &DcsEventIdentity) {
+    insert_string(attributes, "scope", identity.scope.as_str());
+    insert_string(attributes, "member_id", identity.member_id.as_str());
+}
+
+fn insert_job_identity(attributes: &mut BTreeMap<String, Value>, identity: &ProcessJobIdentity) {
+    insert_string(attributes, "job_id", identity.job_id.as_str());
+    insert_string(attributes, "job_kind", process_job_kind_label(identity.kind));
+}
+
+fn insert_execution_identity(
+    attributes: &mut BTreeMap<String, Value>,
+    identity: &ProcessExecutionIdentity,
+) {
+    insert_job_identity(attributes, &identity.job);
+    insert_string(attributes, "binary", identity.binary.as_str());
+}
+
+fn insert_string(
+    attributes: &mut BTreeMap<String, Value>,
+    key: &str,
+    value: impl Into<String>,
+) {
+    attributes.insert(key.to_string(), Value::String(value.into()));
+}
+
+fn insert_bool(attributes: &mut BTreeMap<String, Value>, key: &str, value: bool) {
+    attributes.insert(key.to_string(), Value::Bool(value));
+}
+
+fn insert_u64(attributes: &mut BTreeMap<String, Value>, key: &str, value: u64) {
+    attributes.insert(key.to_string(), Value::Number(value.into()));
+}
+
+fn insert_usize(attributes: &mut BTreeMap<String, Value>, key: &str, value: usize) {
+    match u64::try_from(value) {
+        Ok(value) => insert_u64(attributes, key, value),
+        Err(_) => insert_string(attributes, key, value.to_string()),
     }
+}
+
+fn log_level_label(level: crate::config::LogLevel) -> &'static str {
+    match level {
+        crate::config::LogLevel::Trace => "trace",
+        crate::config::LogLevel::Debug => "debug",
+        crate::config::LogLevel::Info => "info",
+        crate::config::LogLevel::Warn => "warn",
+        crate::config::LogLevel::Error => "error",
+        crate::config::LogLevel::Fatal => "fatal",
+    }
+}
+
+fn dcs_trust_label(trust: &crate::dcs::DcsTrust) -> &'static str {
+    match trust {
+        crate::dcs::DcsTrust::FullQuorum => "full_quorum",
+        crate::dcs::DcsTrust::Degraded => "degraded",
+        crate::dcs::DcsTrust::NotTrusted => "not_trusted",
+    }
+}
+
+fn dcs_command_name_label(command: DcsCommandName) -> &'static str {
+    match command {
+        DcsCommandName::AcquireLeadership => "acquire_leadership",
+        DcsCommandName::ReleaseLeadership => "release_leadership",
+        DcsCommandName::PublishSwitchover => "publish_switchover",
+        DcsCommandName::ClearSwitchover => "clear_switchover",
+    }
+}
+
+fn sql_status_label(status: &crate::pginfo::state::SqlStatus) -> &'static str {
+    match status {
+        crate::pginfo::state::SqlStatus::Unknown => "unknown",
+        crate::pginfo::state::SqlStatus::Healthy => "healthy",
+        crate::pginfo::state::SqlStatus::Unreachable => "unreachable",
+    }
+}
+
+fn process_job_kind_label(kind: ProcessJobKind) -> &'static str {
+    match kind {
+        ProcessJobKind::Bootstrap => "bootstrap",
+        ProcessJobKind::BaseBackup => "basebackup",
+        ProcessJobKind::PgRewind => "pg_rewind",
+        ProcessJobKind::Promote => "promote",
+        ProcessJobKind::Demote => "demote",
+        ProcessJobKind::StartPostgres => "start_postgres",
+        ProcessJobKind::StartPrimary => "start_primary",
+        ProcessJobKind::StartDetachedStandby => "start_detached_standby",
+        ProcessJobKind::StartReplica => "start_replica",
+    }
+}
+
+fn captured_stream_label(stream: CapturedStream) -> &'static str {
+    match stream {
+        CapturedStream::Stdout => "stdout",
+        CapturedStream::Stderr => "stderr",
+    }
+}
+
+fn decode_subprocess_bytes(bytes: Vec<u8>) -> (String, Option<String>) {
+    match String::from_utf8(bytes) {
+        Ok(message) => (message, None),
+        Err(err) => {
+            let raw_bytes = err.into_bytes();
+            let raw_bytes_hex = hex_encode(raw_bytes.as_slice());
+            (
+                format!("non_utf8_bytes_hex={raw_bytes_hex}"),
+                Some(raw_bytes_hex),
+            )
+        }
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(TABLE[(byte >> 4) as usize] as char);
+        output.push(TABLE[(byte & 0x0f) as usize] as char);
+    }
+    output
 }

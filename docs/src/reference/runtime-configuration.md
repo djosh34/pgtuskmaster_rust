@@ -201,7 +201,10 @@ Both fields are required and accept inline-or-path values.
 wal_keep_size = "128MB"
 ```
 
-`extra_gucs` is optional. Reserved keys are rejected.
+`extra_gucs` is optional. Reserved keys are rejected. That reserved set includes pgtuskmaster-owned startup and logging settings such as `log_destination` and `logging_collector`, because managed PostgreSQL now always enables:
+
+- `logging_collector = on`
+- `log_destination = 'jsonlog,stderr'`
 
 ## `dcs`
 
@@ -318,7 +321,9 @@ path = "/var/log/pgtuskmaster/runtime.jsonl"
 mode = "append"
 ```
 
-`logging.postgres.pg_ctl_log_file` and `logging.postgres.log_dir` remain optional advanced overrides.
+Managed PostgreSQL always writes collector output with `logging_collector = on` and `log_destination = 'jsonlog,stderr'`. The postgres ingest worker still follows both JSON log files and plain `.log` output, because helper and archive-command output can still land outside the JSON stream.
+
+`logging.postgres.pg_ctl_log_file` and `logging.postgres.log_dir` remain optional advanced overrides for where the ingest worker reads those files from.
 
 ## `api`
 
