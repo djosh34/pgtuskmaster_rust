@@ -720,19 +720,19 @@ mod tests {
     }
 
     fn sample_runtime_config() -> RuntimeConfig {
-        crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
+        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
             .with_logging(LoggingConfig {
                 level: LogLevel::Trace,
                 postgres: PostgresLoggingConfig {
                     poll_interval_ms: 50,
                     cleanup: LogCleanupConfig {
                         enabled: false,
-                        ..crate::test_harness::runtime_config::sample_postgres_logging_config()
+                        ..crate::dev_support::runtime_config::sample_postgres_logging_config()
                             .cleanup
                     },
-                    ..crate::test_harness::runtime_config::sample_postgres_logging_config()
+                    ..crate::dev_support::runtime_config::sample_postgres_logging_config()
                 },
-                ..crate::test_harness::runtime_config::sample_logging_config()
+                ..crate::dev_support::runtime_config::sample_logging_config()
             })
             .with_debug(DebugConfig { enabled: false })
             .build()

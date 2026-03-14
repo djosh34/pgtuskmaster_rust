@@ -420,7 +420,7 @@ mod tests {
 
     use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
-    use crate::test_harness::{namespace::NamespaceGuard, HarnessError};
+    use crate::dev_support::{namespace::NamespaceGuard, HarnessError};
 
     use super::{
         build_adversarial_tls_fixture, build_client_config, build_server_config,

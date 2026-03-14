@@ -870,8 +870,8 @@ mod tests {
 
     fn sample_runtime_config() -> RuntimeConfig {
         let baseline_logging =
-            crate::test_harness::runtime_config::sample_postgres_logging_config();
-        crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
+            crate::dev_support::runtime_config::sample_postgres_logging_config();
+        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
             .with_pg_hba(PgHbaConfig {
                 source: InlineOrPath::Inline {
                     content: concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",)
@@ -888,7 +888,7 @@ mod tests {
                     },
                     ..baseline_logging
                 },
-                ..crate::test_harness::runtime_config::sample_logging_config()
+                ..crate::dev_support::runtime_config::sample_logging_config()
             })
             .with_debug(DebugConfig { enabled: false })
             .build()
@@ -1257,14 +1257,14 @@ mod tests {
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
         use crate::state::{new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError, WorkerStatus};
-        use crate::test_harness::binaries::{
+        use crate::dev_support::binaries::{
             require_pg16_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
         };
-        use crate::test_harness::namespace::NamespaceGuard;
-        use crate::test_harness::pg16::{
+        use crate::dev_support::namespace::NamespaceGuard;
+        use crate::dev_support::pg16::{
             prepare_pgdata_dir, spawn_pg16_for_vanilla_postgres, PgInstanceSpec,
         };
-        use crate::test_harness::ports::allocate_ports;
+        use crate::dev_support::ports::allocate_ports;
 
         use super::super::{
             step_once as ingest_step_once, PostgresIngestWorkerCtx, PostgresIngestWorkerState,

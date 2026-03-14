@@ -366,7 +366,7 @@ mod tests {
             ApiClientAuthConfig, ClientCommonName, InlineOrPath, TlsClientAuthConfig,
             TlsServerConfig, TlsServerIdentityConfig,
         },
-        test_harness::tls::build_adversarial_tls_fixture,
+        dev_support::tls::build_adversarial_tls_fixture,
     };
 
     use super::{api_client_verifier, build_rustls_server_config, TlsConfigError};

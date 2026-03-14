@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 06:56:51 CET 2026
+Generated: Sat Mar 14 07:16:00 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -149,6 +149,18 @@ Generated: Sat Mar 14 06:56:51 CET 2026
 ## Task: Refactor The HA->process Boundary Around A Dedicated Process Intent Adapter And Remove Secret-Bearing Process Defaults From HA <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/04-task-remove-public-test-harness-from-the-production-library-surface-and-move-test-support-behind-a-dev-only-boundary.md`
+
+```
+## Task: Remove Public `test_harness` From The Production Library Surface And Move Test Support Behind A Dev-Only Boundary <status>completed</status> <passes>true</passes>
+
+<priority>medium</priority>
 
 <description>
 ```

@@ -11,7 +11,7 @@ use tokio::time::{sleep, timeout, Instant};
 use super::binaries::validate_executable_file;
 use super::signals;
 use super::HarnessError;
-use crate::test_harness::namespace::TestNamespace;
+use crate::dev_support::namespace::TestNamespace;
 
 #[cfg(unix)]
 const SIGTERM: i32 = libc::SIGTERM;
@@ -556,10 +556,10 @@ mod tests {
         build_initial_cluster, prepare_etcd_data_dir, prepare_etcd_member_data_dir, spawn_etcd3,
         spawn_etcd3_cluster, EtcdClusterMemberSpec, EtcdClusterSpec, EtcdInstanceSpec,
     };
-    use crate::test_harness::binaries::require_etcd_bin_for_real_tests;
-    use crate::test_harness::namespace::NamespaceGuard;
-    use crate::test_harness::ports::allocate_ports;
-    use crate::test_harness::HarnessError;
+    use crate::dev_support::binaries::require_etcd_bin_for_real_tests;
+    use crate::dev_support::namespace::NamespaceGuard;
+    use crate::dev_support::ports::allocate_ports;
+    use crate::dev_support::HarnessError;
 
     #[test]
     fn prepare_etcd_data_dir_rejects_reuse() -> Result<(), HarnessError> {

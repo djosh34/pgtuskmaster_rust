@@ -1,4 +1,4 @@
-## Task: Remove Public `test_harness` From The Production Library Surface And Move Test Support Behind A Dev-Only Boundary <status>not_started</status> <passes>false</passes>
+## Task: Remove Public `test_harness` From The Production Library Surface And Move Test Support Behind A Dev-Only Boundary <status>completed</status> <passes>true</passes>
 
 <priority>medium</priority>
 
@@ -67,14 +67,21 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Remove `#[doc(hidden)] pub mod test_harness;` from `src/lib.rs` and replace it with a boundary that does not expose test support as production API.
-- [ ] Rework `src/test_harness/` ownership and visibility so helpers such as `api`, `runtime_config`, `etcd3`, `provenance`, `tls`, and related support code are no longer exported through the main library surface.
-- [ ] Update integration tests that currently import `pgtuskmaster_rust::test_harness::*`, including `tests/bdd_api_http.rs`, to use the new dev/test-only support boundary.
-- [ ] Update internal unit tests and support code across `src/` that currently depend on `RuntimeConfigBuilder` or other test-harness exports so they continue to work without relying on a public production export.
-- [ ] Preserve real-binary and harness-backed testing capabilities; do not weaken coverage just to simplify visibility.
-- [ ] Re-evaluate and reduce helper visibility inside the resulting test-support boundary so only the minimum necessary surface remains exposed to tests.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Remove `#[doc(hidden)] pub mod test_harness;` from `src/lib.rs` and replace it with a boundary that does not expose test support as production API.
+- [x] Rework `src/test_harness/` ownership and visibility so helpers such as `api`, `runtime_config`, `etcd3`, `provenance`, `tls`, and related support code are no longer exported through the main library surface.
+- [x] Update integration tests that currently import `pgtuskmaster_rust::test_harness::*`, including `tests/bdd_api_http.rs`, to use the new dev/test-only support boundary.
+- [x] Update internal unit tests and support code across `src/` that currently depend on `RuntimeConfigBuilder` or other test-harness exports so they continue to work without relying on a public production export.
+- [x] Preserve real-binary and harness-backed testing capabilities; do not weaken coverage just to simplify visibility.
+- [x] Re-evaluate and reduce helper visibility inside the resulting test-support boundary so only the minimum necessary surface remains exposed to tests.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<plan>
+- [x] Rename the leaked `src/test_harness` production export into an internal `src/dev_support` boundary, compile it only for unit tests or the dedicated dev-support feature, and stop exporting test support from the default runtime library surface.
+- [x] Introduce a dedicated `pgtuskmaster_test_support` dev-only crate for integration-test consumption, re-point current integration tests at that crate, and keep internal unit tests on the crate-private `dev_support` boundary.
+- [x] After the boundary/type rewrite is in place, repair compile fallout, reduce helper visibility inside the resulting support boundary, run `make check`, `make lint`, `make test`, `make test-long`, and only then update docs with the `k2-docs-loop` skill.
+- [x] Docs review completed after validation: no published docs referenced `test_harness` or the production library test-support surface, so no docs page change was required for this internal boundary refactor.
+</plan>

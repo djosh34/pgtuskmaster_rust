@@ -459,7 +459,7 @@ mod tests {
     use crate::config::validate_runtime_config;
     use crate::postgres_managed::materialize_managed_postgres_config;
     use crate::postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME};
-    use crate::test_harness::runtime_config::{
+    use crate::dev_support::runtime_config::{
         sample_runtime_config, RuntimeConfigBuilder,
     };
 

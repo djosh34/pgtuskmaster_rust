@@ -48,9 +48,9 @@ pub enum HarnessError {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_harness::namespace::NamespaceGuard;
-    use crate::test_harness::ports::allocate_ports;
-    use crate::test_harness::HarnessError;
+    use crate::dev_support::namespace::NamespaceGuard;
+    use crate::dev_support::ports::allocate_ports;
+    use crate::dev_support::HarnessError;
 
     #[test]
     fn concurrent_namespace_and_port_allocations_are_isolated() -> Result<(), HarnessError> {

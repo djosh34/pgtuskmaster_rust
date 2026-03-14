@@ -17,11 +17,13 @@ RUN apt-get update \
 FROM chef AS planner
 
 COPY Cargo.toml Cargo.lock ./
+COPY crates/pgtuskmaster_test_support/Cargo.toml crates/pgtuskmaster_test_support/Cargo.toml
 
-RUN install -d src/bin \
+RUN install -d src/bin crates/pgtuskmaster_test_support/src \
     && printf '%s\n' '// cargo-chef skeleton target' > src/lib.rs \
     && printf '%s\n' 'fn main() {}' > src/bin/pgtuskmaster.rs \
     && printf '%s\n' 'fn main() {}' > src/bin/pgtm.rs \
+    && printf '%s\n' '// cargo-chef skeleton target' > crates/pgtuskmaster_test_support/src/lib.rs \
     && cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -34,7 +36,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo chef cook --release --locked --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
+COPY crates/pgtuskmaster_test_support/Cargo.toml crates/pgtuskmaster_test_support/Cargo.toml
 COPY src ./src
+COPY crates/pgtuskmaster_test_support/src ./crates/pgtuskmaster_test_support/src
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::test_harness::HarnessError;
+use crate::dev_support::HarnessError;
 
 const POLICY_REL_PATH: &str = "tools/real-binaries-policy.json";
 const ATTESTATION_REL_PATH: &str = ".tools/real-binaries-attestation.json";
@@ -672,7 +672,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{verify_real_binaries_from_repo_root, ATTESTATION_REL_PATH, POLICY_REL_PATH};
-    use crate::test_harness::HarnessError;
+    use crate::dev_support::HarnessError;
 
     fn unique_tmp_dir(prefix: &str) -> Result<PathBuf, HarnessError> {
         let mut base = std::env::temp_dir();

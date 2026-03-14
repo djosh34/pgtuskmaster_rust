@@ -5,8 +5,8 @@ use axum::{
 use pgtuskmaster_rust::{
     config::{ApiAuthConfig, ApiRoleTokensConfig, RuntimeConfig, SecretSource},
     dcs::DcsHandle,
-    test_harness::api::{build_test_router, build_test_router_with_live_state},
 };
+use pgtuskmaster_test_support::api::{build_test_router, build_test_router_with_live_state};
 use tower::util::ServiceExt;
 
 fn sample_runtime_config(read_token: Option<&str>, admin_token: Option<&str>) -> RuntimeConfig {
@@ -22,7 +22,7 @@ fn sample_runtime_config(read_token: Option<&str>, admin_token: Option<&str>) ->
         }),
     };
 
-    pgtuskmaster_rust::test_harness::runtime_config::RuntimeConfigBuilder::new()
+    pgtuskmaster_test_support::runtime_config::RuntimeConfigBuilder::new()
         .with_api_auth(auth)
         .build()
 }

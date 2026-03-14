@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::BinaryPaths;
-use crate::test_harness::provenance;
-use crate::test_harness::HarnessError;
+use crate::dev_support::provenance;
+use crate::dev_support::HarnessError;
 
 pub fn validate_executable_file(path: &Path, label: &str) -> Result<(), HarnessError> {
     let metadata = fs::metadata(path).map_err(|err| {
@@ -72,7 +72,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::require_binary;
-    use crate::test_harness::HarnessError;
+    use crate::dev_support::HarnessError;
 
     fn unique_tmp_path(prefix: &str) -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);

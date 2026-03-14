@@ -10,7 +10,7 @@ use tokio::time::{sleep, timeout, Instant};
 use super::binaries::validate_executable_file;
 use super::signals;
 use super::HarnessError;
-use crate::test_harness::namespace::TestNamespace;
+use crate::dev_support::namespace::TestNamespace;
 
 #[cfg(unix)]
 const SIGTERM: i32 = libc::SIGTERM;
@@ -254,10 +254,10 @@ mod tests {
     use std::time::Duration;
 
     use super::{prepare_pgdata_dir, spawn_pg16, PgInstanceSpec};
-    use crate::test_harness::binaries::require_pg16_bin_for_real_tests;
-    use crate::test_harness::namespace::NamespaceGuard;
-    use crate::test_harness::ports::allocate_ports;
-    use crate::test_harness::HarnessError;
+    use crate::dev_support::binaries::require_pg16_bin_for_real_tests;
+    use crate::dev_support::namespace::NamespaceGuard;
+    use crate::dev_support::ports::allocate_ports;
+    use crate::dev_support::HarnessError;
 
     #[test]
     fn prepare_pgdata_dir_rejects_reuse() -> Result<(), HarnessError> {

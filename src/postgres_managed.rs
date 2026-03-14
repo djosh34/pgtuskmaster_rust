@@ -610,7 +610,7 @@ mod tests {
             managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
             ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
-        test_harness::{
+        dev_support::{
             binaries::require_pg16_bin_for_real_tests,
             namespace::NamespaceGuard,
             pg16::{prepare_pgdata_dir, spawn_pg16, PgHandle, PgInstanceSpec},
@@ -1364,7 +1364,7 @@ mod tests {
     }
 
     fn sample_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
-        crate::test_harness::runtime_config::RuntimeConfigBuilder::new()
+        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir)
             .with_dcs_scope("cluster-a")
             .with_ha(HaConfig {
@@ -1375,7 +1375,7 @@ mod tests {
                 pg_rewind_timeout_ms: 30_000,
                 bootstrap_timeout_ms: 30_000,
                 fencing_timeout_ms: 10_000,
-                binaries: crate::test_harness::runtime_config::sample_binary_paths(),
+                binaries: crate::dev_support::runtime_config::sample_binary_paths(),
             })
             .build()
     }

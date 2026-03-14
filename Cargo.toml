@@ -3,8 +3,12 @@ name = "pgtuskmaster_rust"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["crates/pgtuskmaster_test_support"]
+
 [features]
 default = []
+internal-test-support = []
 
 [dependencies]
 clap = { version = "4.5.47", features = ["derive", "env"] }
@@ -33,4 +37,5 @@ libc = "0.2"
 [dev-dependencies]
 cucumber = "0.22.1"
 futures = "0.3.31"
+pgtuskmaster_test_support = { path = "crates/pgtuskmaster_test_support" }
 rcgen = "0.14.5"

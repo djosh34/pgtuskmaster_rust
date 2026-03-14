@@ -2,6 +2,11 @@
 !.dockerignore
 !Cargo.toml
 !Cargo.lock
+!crates/
+!crates/pgtuskmaster_test_support/
+!crates/pgtuskmaster_test_support/Cargo.toml
+!crates/pgtuskmaster_test_support/src/
+!crates/pgtuskmaster_test_support/src/**
 !src/
 !src/**
 !tests/

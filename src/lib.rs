@@ -19,6 +19,9 @@ pub(crate) mod postgres_roles;
 pub mod process;
 pub mod runtime;
 pub mod state;
-#[doc(hidden)]
-pub mod test_harness;
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) mod dev_support;
+#[cfg(all(not(test), feature = "internal-test-support"))]
+pub mod dev_support;
 pub(crate) mod tls;

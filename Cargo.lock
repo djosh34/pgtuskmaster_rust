@@ -1605,6 +1605,7 @@ dependencies = [
  "etcd-client",
  "futures",
  "libc",
+ "pgtuskmaster_test_support",
  "rcgen",
  "reqwest",
  "rustls",
@@ -1621,6 +1622,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "x509-parser",
+]
+
+[[package]]
+name = "pgtuskmaster_test_support"
+version = "0.1.0"
+dependencies = [
+ "pgtuskmaster_rust",
 ]
 
 [[package]]

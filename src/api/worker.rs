@@ -36,6 +36,7 @@ pub(crate) struct ApiClusterIdentity {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) enum ApiObservedState {
     Unavailable,
     Live {
@@ -491,7 +492,7 @@ mod tests {
         dcs::DcsHandle,
         logging::LogHandle,
         state::new_state_channel,
-        test_harness::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
+        dev_support::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
     };
 
     use super::{

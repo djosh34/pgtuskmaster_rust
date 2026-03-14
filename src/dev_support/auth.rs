@@ -42,7 +42,7 @@ impl ApiRoleTokens {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_harness::HarnessError;
+    use crate::dev_support::HarnessError;
 
     use super::ApiRoleTokens;
 
