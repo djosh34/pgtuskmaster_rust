@@ -132,6 +132,10 @@ This task must not be placed under `story-ctl-operator-experience`. There is an 
 **Required public `DcsHandle` method signatures:**
 
 ```rust
+pub enum DcsHandleError {
+    ChannelClosed,
+}
+
 impl DcsHandle {
     pub fn acquire_leadership(&self) -> Result<(), DcsHandleError>;
     pub fn release_leadership(&self) -> Result<(), DcsHandleError>;
@@ -155,7 +159,8 @@ Do not expose a public raw `DcsCommand` enum unless implementation proves it is 
   - `Rejected(String)`
   - `Transport(String)`
   in [`src/dcs/command.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/command.rs#L26)
-- This task should simplify that model. Prefer a small send/enqueue error type such as `DcsHandleError::ChannelClosed`.
+- This task should simplify that model down to a typed non-string public enum:
+  - `DcsHandleError::ChannelClosed`
 - Mutation outcomes after enqueue should be observed through the published `DcsView` and logging, not through a reply channel.
 - Because HA can tick again before a fresh `DcsView` reflecting the mutation is published, the DCS actor must treat duplicate identical commands as safe/idempotent. At minimum:
   - repeated `acquire_leadership` from the same node must not create semantic failure
@@ -432,6 +437,7 @@ This method-driven downstream shape is the real public-surface reduction.
   - publishing switchover to a specific member
   - clearing switchover
 - [ ] The final public `DcsHandle` surface is method-based, with signatures equivalent to:
+  - `pub enum DcsHandleError { ChannelClosed }`
   - `acquire_leadership(&self) -> Result<(), DcsHandleError>`
   - `release_leadership(&self) -> Result<(), DcsHandleError>`
   - `publish_switchover_any(&self) -> Result<(), DcsHandleError>`
