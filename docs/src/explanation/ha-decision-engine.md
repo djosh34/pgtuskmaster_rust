@@ -4,8 +4,8 @@ The HA loop is organized around four steps:
 
 1. observe the local and global world
 2. decide the desired local role and published authority
-3. reconcile that desired state into ordered commands
-4. execute those commands
+3. reconcile that desired state into a structured action plan
+4. execute the planned work
 
 You can see the current results in the `ha` section of `GET /state`.
 
@@ -30,15 +30,13 @@ When trust is not `full_quorum`, the node avoids ordinary leadership behavior:
 
 Safety wins over availability when the cluster view is not trustworthy enough.
 
-## Ordered Commands Instead of Layered Public Views
+## Structured Planned Actions
 
-The reconcile step turns the desired state into `ha.planned_commands`, an ordered list such as:
+The reconcile step turns the desired state into `ha.planned_actions`, a structured read model with one optional field per action family:
 
-- publish authority
-- acquire or release a lease
-- start as primary or replica
-- promote or demote
-- rewind or base backup
-- clear switchover intent
+- `publication` for authority updates
+- `coordination` for lease and switchover work
+- `local` for local maintenance work
+- `process` for PostgreSQL/process intent
 
-That same list is exposed in `/state`, so operators can see not only the current answer but also the next intended work.
+That same structured plan is exposed in `/state`, so operators can see not only the current answer but also the next intended work without depending on the old mixed execution enum.

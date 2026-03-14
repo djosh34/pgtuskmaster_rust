@@ -7,7 +7,7 @@ use crate::{
     },
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     postgres_roles,
-    process::jobs::ActiveJobKind,
+    process::jobs::{ActiveJobKind, PostgresStartIntent, ProcessIntent},
     state::{MemberId, WorkerError, WorkerStatus},
 };
 
@@ -17,13 +17,14 @@ use super::{
     reconcile::reconcile,
     state::{HaState, HaWorkerCtx},
     types::{
-        last_success_at, wal_position, ApiVisibility, CoordinationState, DataDirState,
-        DesiredState, DivergenceState, ElectionEligibility, GlobalKnowledge, IneligibleReason,
-        LeadershipView, LeaseEpoch, LocalDataState, LocalKnowledge, ObservationState,
-        ObservedPrimary, PeerKnowledge, PeerLeaderState, PostgresState, PrimaryObservation,
-        ProcessState, PublicationGoal, PublicationState, ReconcileAction, ReplicationState,
-        StaleLeaseReason, StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget,
-        WalPosition, WorldView,
+        last_start_success_at, last_success_at, wal_position, ApiVisibility,
+        CoordinationAction, CoordinationState, DataDirState, DesiredState, DivergenceState,
+        ElectionEligibility, GlobalKnowledge, IneligibleReason, LeadershipView, LeaseEpoch,
+        LocalAction, LocalDataState, LocalKnowledge, ObservationState, ObservedPrimary,
+        PeerKnowledge, PeerLeaderState, PostgresState, PrimaryObservation, ProcessState,
+        PublicationGoal, PublicationState, ReconcilePlan, ReplicationState, StaleLeaseReason,
+        StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget, WalPosition,
+        WorldView,
     },
 };
 
@@ -53,17 +54,15 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
     let now = (ctx.now)()?;
     let world = observe(ctx, now)?;
     let desired = decide(&world, &ctx.self_id);
-    let actions = reconcile(&world, &desired);
-    let next_state = build_next_state(&ctx.state, &world, &desired, &actions);
+    let plan = reconcile(&world, &desired);
+    let next_state = build_next_state(&ctx.state, &world, &desired, &plan);
 
     ctx.publisher
         .publish(next_state.clone())
         .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
     ctx.state = next_state;
 
-    for (action_index, action) in actions.iter().enumerate() {
-        execute_action(ctx, ctx.state.tick, action_index, action).await?;
-    }
+    execute_plan(ctx, ctx.state.tick, &plan).await?;
 
     Ok(())
 }
@@ -95,7 +94,7 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
         publication: ctx.state.publication.clone(),
         observation: ObservationState {
             pg_observed_at: pg.last_refresh_at().unwrap_or(now),
-            last_start_success_at: last_success_at(&process, ActiveJobKind::StartPostgres),
+            last_start_success_at: last_start_success_at(&process),
             last_promote_success_at: last_success_at(&process, ActiveJobKind::Promote),
             last_demote_success_at: last_success_at(&process, ActiveJobKind::Demote),
         },
@@ -109,30 +108,28 @@ fn build_next_state(
     current: &HaState,
     world: &WorldView,
     desired: &DesiredState,
-    actions: &[ReconcileAction],
+    plan: &ReconcilePlan,
 ) -> HaState {
     HaState {
         worker: WorkerStatus::Running,
         tick: current.tick.saturating_add(1),
-        required_roles_ready: next_required_roles_ready(current, actions),
+        required_roles_ready: next_required_roles_ready(current, plan),
         publication: apply_publication_goal(&current.publication, &desired.publication),
         role: desired.role.clone(),
         world: world.clone(),
         clear_switchover: desired.clear_switchover,
-        planned_commands: actions.to_vec(),
+        planned_actions: super::types::PlannedActions::from_plan(plan),
     }
 }
 
-fn next_required_roles_ready(current: &HaState, actions: &[ReconcileAction]) -> bool {
-    if actions.iter().any(|action| {
-        matches!(
-            action,
-            ReconcileAction::InitDb
-                | ReconcileAction::BaseBackup(_)
-                | ReconcileAction::StartDetachedStandby
-                | ReconcileAction::StartReplica(_)
-        )
-    }) {
+fn next_required_roles_ready(current: &HaState, plan: &ReconcilePlan) -> bool {
+    if matches!(
+        plan.process,
+        Some(ProcessIntent::Bootstrap)
+            | Some(ProcessIntent::ProvisionReplica(_))
+            | Some(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
+            | Some(ProcessIntent::Start(PostgresStartIntent::Replica { .. }))
+    ) {
         return false;
     }
 
@@ -146,14 +143,31 @@ fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) ->
     }
 }
 
-async fn execute_action(
+async fn execute_plan(
+    ctx: &mut HaWorkerCtx,
+    ha_tick: u64,
+    plan: &ReconcilePlan,
+) -> Result<(), WorkerError> {
+    if let Some(action) = &plan.coordination {
+        execute_coordination_action(ctx, ha_tick, 0, action).await?;
+    }
+    if let Some(action) = &plan.local {
+        execute_local_action(ctx, ha_tick, 1, action).await?;
+    }
+    if let Some(action) = &plan.process {
+        execute_process_action(ctx, ha_tick, 2, action).await?;
+    }
+    Ok(())
+}
+
+async fn execute_coordination_action(
     ctx: &mut HaWorkerCtx,
     ha_tick: u64,
     action_index: usize,
-    action: &ReconcileAction,
+    action: &CoordinationAction,
 ) -> Result<(), WorkerError> {
     match action {
-        ReconcileAction::AcquireLease(_kind) => ctx
+        CoordinationAction::AcquireLease(_kind) => ctx
             .dcs_handle
             .acquire_leadership()
             .await
@@ -162,7 +176,7 @@ async fn execute_action(
                     "ha acquire lease failed at tick {ha_tick} index {action_index}: {err}"
                 ))
             }),
-        ReconcileAction::ReleaseLease => ctx
+        CoordinationAction::ReleaseLease => ctx
             .dcs_handle
             .release_leadership()
             .await
@@ -171,19 +185,31 @@ async fn execute_action(
                     "ha release lease failed at tick {ha_tick} index {action_index}: {err}"
                 ))
             }),
-        ReconcileAction::ClearSwitchover => ctx.dcs_handle.clear_switchover().await.map_err(
-            |err| {
+        CoordinationAction::ClearSwitchover => ctx
+            .dcs_handle
+            .clear_switchover()
+            .await
+            .map_err(|err| {
                 WorkerError::Message(format!(
                     "ha clear switchover failed at tick {ha_tick} index {action_index}: {err}"
                 ))
-            },
-        ),
-        ReconcileAction::EnsureRequiredRoles => {
+            }),
+    }
+}
+
+async fn execute_local_action(
+    ctx: &mut HaWorkerCtx,
+    ha_tick: u64,
+    action_index: usize,
+    action: &LocalAction,
+) -> Result<(), WorkerError> {
+    match action {
+        LocalAction::EnsureRequiredRoles => {
             let runtime_config = ctx.config_subscriber.latest();
             postgres_roles::ensure_required_roles(
                 &runtime_config,
-                ctx.process_defaults.socket_dir.as_path(),
-                ctx.process_defaults.postgres_port,
+                runtime_config.postgres.socket_dir.as_path(),
+                runtime_config.postgres.listen_port,
             )
             .await
             .map_err(|err| {
@@ -194,14 +220,19 @@ async fn execute_action(
             ctx.state.required_roles_ready = true;
             Ok(())
         }
-        ReconcileAction::Publish(_) => Ok(()),
-        process_action => {
-            let runtime_config = ctx.config_subscriber.latest();
-            dispatch_process_action(ctx, ha_tick, action_index, process_action, &runtime_config)
-                .map(|_| ())
-                .map_err(|err| map_process_dispatch_error(ha_tick, action_index, err))
-        }
     }
+}
+
+async fn execute_process_action(
+    ctx: &mut HaWorkerCtx,
+    ha_tick: u64,
+    action_index: usize,
+    action: &ProcessIntent,
+) -> Result<(), WorkerError> {
+    let runtime_config = ctx.config_subscriber.latest();
+    dispatch_process_action(ctx, ha_tick, action_index, action, &runtime_config)
+        .map(|_| ())
+        .map_err(|err| map_process_dispatch_error(ha_tick, action_index, err))
 }
 
 fn map_process_dispatch_error(

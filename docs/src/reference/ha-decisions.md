@@ -2,18 +2,31 @@
 
 ## Overview
 
-The `ha` section of `GET /state` exposes the current high-availability engine state. This reference describes each field, its type, and possible values.
+The `ha` section of `GET /state` exposes the current high-availability engine state. This reference describes each field, its type, and the structured planned-action view the HA worker publishes after every reconciliation pass.
 
 ## Top-Level Fields
 
 ```text
 ha: {
-  "role": TargetRole,
+  "worker": WorkerStatus,
+  "tick": u64,
+  "required_roles_ready": bool,
   "publication": PublicationState,
-  "planned_commands": [ReconcileAction],
-  "world": WorldView
+  "role": TargetRole,
+  "world": WorldView,
+  "clear_switchover": bool,
+  "planned_actions": PlannedActions
 }
 ```
+
+- `worker` - Current HA worker status
+- `tick` - Monotonic reconciliation counter
+- `required_roles_ready` - Whether local required PostgreSQL roles are ready
+- `publication` - Operator-facing authority projection
+- `role` - Target local HA role for this node
+- `world` - Derived local/global worldview used for the current decision
+- `clear_switchover` - Whether the node wants to clear a pending switchover request
+- `planned_actions` - Structured immediate next work split by action family
 
 ## ha.role
 
@@ -64,24 +77,49 @@ Fence data appears only inside `no_primary` projections as `NoPrimaryFence`:
 - `none` - No fence required
 - `cutoff` - Contains `FenceCutoff { epoch, committed_lsn }`
 
-## ha.planned_commands
+## ha.planned_actions
 
-`planned_commands` is an ordered list of actions the worker will execute.
+`planned_actions` is a structured read model of the immediate next work. It is not an ordered mixed command list.
 
-Command kinds:
+Fields:
 
-- `init_db` - Initialize a new data directory
-- `base_backup` - Clone from a leader using pg_basebackup
-- `pg_rewind` - Rewind diverged data directory using pg_rewind
-- `start_primary` - Start PostgreSQL in primary mode
-- `start_replica` - Start PostgreSQL replicating from a leader
+- `publication: Option<PublicationAction>` - Publication updates for operator-visible authority
+- `coordination: Option<CoordinationAction>` - Lease and switchover coordination work
+- `local: Option<LocalAction>` - Local node maintenance work
+- `process: Option<ProcessIntent>` - PostgreSQL/process intent for the process worker boundary
+
+### PublicationAction
+
+- `publish(PublicationGoal)` - Publish a new authority projection
+
+### CoordinationAction
+
+- `acquire_lease(Candidacy)` - Attempt to become lease holder
+- `release_lease` - Relinquish the lease
+- `clear_switchover` - Remove the current switchover request
+
+### LocalAction
+
+- `ensure_required_roles` - Create or verify required PostgreSQL roles
+
+### ProcessIntent
+
+- `bootstrap` - Initialize a new data directory
+- `provision_replica` - Rebuild replica data from a leader
+- `start` - Start PostgreSQL in a specific mode
 - `promote` - Promote a replica to primary
-- `demote` - Demote primary to replica (fast or immediate shutdown)
-- `acquire_lease` - Attempt to become lease holder
-- `release_lease` - Relinquish lease holder status
-- `ensure_required_roles` - Create required PostgreSQL roles
-- `publish` - Update published authority projection
-- `clear_switchover` - Remove switchover request from DCS
+- `demote` - Stop PostgreSQL for demotion/fencing
+
+#### ReplicaProvisionIntent
+
+- `base_backup { leader }` - Clone from a leader with `pg_basebackup`
+- `pg_rewind { leader }` - Repair divergence with `pg_rewind`
+
+#### PostgresStartIntent
+
+- `primary` - Start as primary
+- `detached_standby` - Start as detached standby
+- `replica { leader }` - Start as a replica following a specific leader
 
 ## ha.world
 

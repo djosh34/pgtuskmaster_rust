@@ -1,4 +1,4 @@
-## Task: Refactor The HA->process Boundary Around A Dedicated Process Intent Adapter And Remove Secret-Bearing Process Defaults From HA <status>not_started</status> <passes>false</passes>
+## Task: Refactor The HA->process Boundary Around A Dedicated Process Intent Adapter And Remove Secret-Bearing Process Defaults From HA <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -74,17 +74,38 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Refactor `src/ha/state.rs` so `HaWorkerCtx` no longer owns secret-bearing process dispatch defaults such as role auth material, SSL root certs, and other process-only connection details.
-- [ ] Refactor `src/runtime/node.rs` so runtime no longer constructs and injects a broad `ProcessDispatchDefaults` bag into HA.
-- [ ] Refactor `src/ha/process_dispatch.rs` so HA no longer materializes raw `ProcessJobRequest` values and process-owned spec structs directly.
-- [ ] Refactor `src/ha/source_conn.rs` so secret-bearing process source/auth assembly is no longer owned by HA modules.
-- [ ] Rework `src/ha/types.rs` and related routing so mixed side-effect actions are split into a narrower typed process-intent boundary plus non-process actions, and non-process variants are no longer representable inside the process dispatch adapter.
-- [ ] Re-evaluate duplicated process job/state vocabulary across `src/ha/types.rs`, `src/process/jobs.rs`, and `src/process/state.rs`; the final boundary must reduce lossy duplication and make ownership clearer.
-- [ ] Update `src/ha/worker.rs` and any related execution/routing code so the new HA/process boundary is enforced in real worker flow.
-- [ ] Update any affected public/API-facing HA state exposure, including `src/api/mod.rs` and related DTO/read-model code, if internal mixed execution types are currently leaking through `HaState`.
-- [ ] Add or update focused tests proving that HA decision behavior is preserved while process request translation now happens behind the narrower boundary.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Refactor `src/ha/state.rs` so `HaWorkerCtx` no longer owns secret-bearing process dispatch defaults such as role auth material, SSL root certs, and other process-only connection details.
+- [x] Refactor `src/runtime/node.rs` so runtime no longer constructs and injects a broad `ProcessDispatchDefaults` bag into HA.
+- [x] Refactor `src/ha/process_dispatch.rs` so HA no longer materializes raw `ProcessJobRequest` values and process-owned spec structs directly.
+- [x] Refactor `src/ha/source_conn.rs` so secret-bearing process source/auth assembly is no longer owned by HA modules.
+- [x] Rework `src/ha/types.rs` and related routing so mixed side-effect actions are split into a narrower typed process-intent boundary plus non-process actions, and non-process variants are no longer representable inside the process dispatch adapter.
+- [x] Re-evaluate duplicated process job/state vocabulary across `src/ha/types.rs`, `src/process/jobs.rs`, and `src/process/state.rs`; the final boundary must reduce lossy duplication and make ownership clearer.
+- [x] Update `src/ha/worker.rs` and any related execution/routing code so the new HA/process boundary is enforced in real worker flow.
+- [x] Update any affected public/API-facing HA state exposure, including `src/api/mod.rs` and related DTO/read-model code, if internal mixed execution types are currently leaking through `HaState`.
+- [x] Add or update focused tests proving that HA decision behavior is preserved while process request translation now happens behind the narrower boundary.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+### Execution plan
+1. Finish the `ReconcilePlan` ADT rollout so HA worker execution consumes the split `publication` / `coordination` / `local` / `process` plan shape directly, and remove the remaining legacy `ReconcileAction` call sites and test fixtures.
+2. Complete the process-domain intent boundary by replacing remaining `ProcessJobRequest` / `ProcessJobKind` entry points with `ProcessIntentRequest` plus process-owned materialization to concrete execution requests inside `src/process/worker.rs`.
+3. Wire the live runtime/process context through the process worker so source member resolution, managed config generation, and secret-bearing auth assembly are fully process-owned and no longer reconstructed in HA.
+4. Finish the active-job and HA-world vocabulary cleanup so start modes remain explicit (`StartPrimary`, `StartDetachedStandby`, `StartReplica`) and HA failure/process-state reporting uses the process-owned authoritative kinds.
+5. Update API/controller/test-harness shaping so `HaState.planned_actions` remains a deliberate read model instead of leaking execution enums, then refresh the focused HA/process routing tests around the new boundary.
+6. After the design compiles and the routing/tests are updated, run the required validation gates in repo-preferred order:
+   - `make check`
+   - `make lint`
+   - `make test`
+   - `make test-long`
+7. Only after all checks pass, update docs for any boundary/read-model changes using the `k2-docs-loop` skill, remove stale docs if needed, then complete task closeout (`<passes>true</passes>`, task switch, commit, push).
+
+### Constraints for execution
+- Do not reintroduce secret-bearing process defaults or source/auth assembly into `src/ha/`.
+- Keep the plan/product-type split: HA should emit process intent plus non-process action families, and the process adapter must only accept `ProcessIntent`.
+- If execution shows the current ADTs are still wrong, switch this task back out of execution, describe the type gap, and stop immediately.
+- Do not run `cargo test`; use the required `make` targets, and use `cargo nextest` only for focused local iteration if absolutely needed before the final `make` gates.
+
+NOW EXECUTE

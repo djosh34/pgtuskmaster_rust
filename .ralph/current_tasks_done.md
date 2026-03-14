@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 05:15:04 CET 2026
+Generated: Sat Mar 14 05:51:12 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -128,5 +128,17 @@ Generated: Sat Mar 14 05:15:04 CET 2026
 
 <priority>medium</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/03-task-refactor-the-ha-process-boundary-around-a-dedicated-process-intent-adapter-and-remove-secret-bearing-process-defaults-from-ha.md`
+
+```
+## Task: Refactor The HA->process Boundary Around A Dedicated Process Intent Adapter And Remove Secret-Bearing Process Defaults From HA <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
 ```
 

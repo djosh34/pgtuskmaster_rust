@@ -55,7 +55,7 @@ The important sections are:
 - `ha.publication`
 - `ha.role`
 - `ha.world`
-- `ha.planned_commands`
+- `ha.planned_actions`
 
 ## Step 4: Use the worldview to explain the answer
 
@@ -82,7 +82,7 @@ Look at:
 
 - `dcs.switchover`
 - `ha.role`
-- `ha.planned_commands`
+- `ha.planned_actions.coordination`
 - replica readiness in `dcs.members`
 
 ### Local process work is stalled
@@ -90,7 +90,7 @@ Look at:
 Look at:
 
 - `process`
-- `ha.planned_commands`
+- `ha.planned_actions.process`
 - `ha.world.local.process`
 
 ## Next step

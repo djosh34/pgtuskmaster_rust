@@ -5,7 +5,44 @@ use thiserror::Error;
 
 use crate::config::{resolve_secret_string, RoleAuthConfig, SecretSource};
 use crate::pginfo::state::PgConnInfo;
-use crate::state::{JobId, UnixMillis};
+use crate::state::{JobId, MemberId, UnixMillis};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProcessIntent {
+    Bootstrap,
+    ProvisionReplica(ReplicaProvisionIntent),
+    Start(PostgresStartIntent),
+    Promote,
+    Demote(ShutdownMode),
+}
+
+impl ProcessIntent {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Bootstrap => "bootstrap",
+            Self::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => "basebackup",
+            Self::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => "pg_rewind",
+            Self::Start(PostgresStartIntent::Primary) => "start_primary",
+            Self::Start(PostgresStartIntent::DetachedStandby) => "start_detached_standby",
+            Self::Start(PostgresStartIntent::Replica { .. }) => "start_replica",
+            Self::Promote => "promote",
+            Self::Demote(_) => "demote",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReplicaProvisionIntent {
+    BaseBackup { leader: MemberId },
+    PgRewind { leader: MemberId },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PostgresStartIntent {
+    Primary,
+    DetachedStandby,
+    Replica { leader: MemberId },
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BootstrapSpec {
@@ -56,6 +93,7 @@ pub(crate) struct DemoteSpec {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StartPostgresSpec {
+    pub(crate) mode: PostgresStartMode,
     pub(crate) data_dir: PathBuf,
     pub(crate) socket_dir: PathBuf,
     pub(crate) port: u16,
@@ -69,6 +107,13 @@ pub(crate) struct StartPostgresSpec {
 pub enum ShutdownMode {
     Fast,
     Immediate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PostgresStartMode {
+    Primary,
+    DetachedStandby,
+    Replica,
 }
 
 impl ShutdownMode {
@@ -87,7 +132,9 @@ pub enum ActiveJobKind {
     PgRewind,
     Promote,
     Demote,
-    StartPostgres,
+    StartPrimary,
+    StartDetachedStandby,
+    StartReplica,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

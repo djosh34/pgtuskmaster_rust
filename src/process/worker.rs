@@ -7,23 +7,29 @@ use tokio::{
 };
 
 use crate::{
-    config::{ProcessConfig, RoleAuthConfig},
+    config::{ProcessConfig, RoleAuthConfig, RuntimeConfig},
+    dcs::{DcsMemberView, DcsView},
     logging::{
         AppEvent, AppEventHeader, LogHandle, SeverityText, StructuredFields, SubprocessLineRecord,
         SubprocessStream,
     },
+    postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
+    postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
     pginfo::state::render_pg_conninfo,
     state::{JobId, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::{
     jobs::{
-        ActiveJob, ActiveJobKind, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError,
-        ProcessExit, ProcessHandle, ProcessLogIdentity, ProcessOutputLine, ProcessOutputStream,
+        ActiveJob, ActiveJobKind, DemoteSpec, PostgresStartIntent, PostgresStartMode,
+        ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, ProcessExit,
+        ProcessHandle, ProcessIntent, ProcessLogIdentity, ProcessOutputLine, ProcessOutputStream,
+        PromoteSpec, ReplicaProvisionIntent,
     },
+    source::{basebackup_source_from_member, rewind_source_from_member},
     state::{
-        ActiveRuntime, JobOutcome, ProcessJobKind, ProcessJobRejection, ProcessJobRequest,
-        ProcessState, ProcessWorkerCtx,
+        ActiveRuntime, JobOutcome, ProcessExecutionKind, ProcessExecutionRequest,
+        ProcessIntentRequest, ProcessJobRejection, ProcessState, ProcessWorkerCtx,
     },
 };
 
@@ -41,6 +47,7 @@ enum ProcessEventKind {
     RequestReceived,
     InboxDisconnected,
     BusyReject,
+    IntentMaterializationFailed,
     StartPostgresNoop,
     StartPostgresPreflightFailed,
     BuildCommandFailed,
@@ -60,6 +67,7 @@ impl ProcessEventKind {
             Self::RequestReceived => "process.worker.request_received",
             Self::InboxDisconnected => "process.worker.inbox_disconnected",
             Self::BusyReject => "process.worker.busy_reject",
+            Self::IntentMaterializationFailed => "process.worker.intent_materialization_failed",
             Self::StartPostgresNoop => "process.job.start_postgres_noop",
             Self::StartPostgresPreflightFailed => "process.job.start_postgres_preflight_failed",
             Self::BuildCommandFailed => "process.job.build_command_failed",
@@ -357,7 +365,7 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
                 "process job request received",
             );
             event.fields_mut().append_json_map(
-                process_job_fields(&request.id, request.kind.label()).into_attributes(),
+                process_job_fields(&request.id, request.intent.label()).into_attributes(),
             );
             ctx.log
                 .emit_app_event("process_worker::step_once", event)
@@ -632,7 +640,7 @@ fn start_postgres_preflight_is_already_running(
 
 pub(crate) async fn start_job(
     ctx: &mut ProcessWorkerCtx,
-    request: ProcessJobRequest,
+    request: ProcessIntentRequest,
 ) -> Result<(), WorkerError> {
     if !can_accept_job(&ctx.state) {
         let now = current_time(ctx)?;
@@ -653,7 +661,7 @@ pub(crate) async fn start_job(
             .map(|rejection| rejection.id.clone())
             .unwrap_or_else(|| JobId("unknown".to_string()));
         event.fields_mut().append_json_map(
-            process_job_fields(&rejected_job_id, request.kind.label()).into_attributes(),
+            process_job_fields(&rejected_job_id, request.intent.label()).into_attributes(),
         );
         ctx.log
             .emit_app_event("process_worker::start_job", event)
@@ -664,10 +672,44 @@ pub(crate) async fn start_job(
     }
 
     let now = current_time(ctx)?;
-    let timeout_ms = timeout_for_kind(&request.kind, &ctx.config);
+    let execution_request = match materialize_execution_request(ctx, &request) {
+        Ok(materialized) => materialized,
+        Err(error) => {
+            let mut event = process_event(
+                ProcessEventKind::IntentMaterializationFailed,
+                "failed",
+                SeverityText::Error,
+                "process intent materialization failed",
+            );
+            let fields = event.fields_mut();
+            fields.append_json_map(
+                process_job_fields(&request.id, request.intent.label()).into_attributes(),
+            );
+            fields.insert("error", error.to_string());
+            ctx.log
+                .emit_app_event("process_worker::start_job", event)
+                .map_err(|err| {
+                    WorkerError::Message(format!(
+                        "process intent materialization log emit failed: {err}"
+                    ))
+                })?;
+            transition_to_idle(
+                ctx,
+                JobOutcome::Failure {
+                    id: request.id,
+                    job_kind: active_kind_from_intent(&request.intent),
+                    error,
+                    finished_at: now,
+                },
+                now,
+            )?;
+            return Ok(());
+        }
+    };
+    let timeout_ms = timeout_for_kind(&execution_request.kind, &ctx.config);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
 
-    if let ProcessJobKind::StartPostgres(spec) = &request.kind {
+    if let ProcessExecutionKind::StartPostgres(spec) = &execution_request.kind {
         match start_postgres_preflight_is_already_running(
             spec.data_dir.as_path(),
             spec.socket_dir.as_path(),
@@ -682,7 +724,7 @@ pub(crate) async fn start_job(
                 );
                 let fields = event.fields_mut();
                 fields.append_json_map(
-                    process_job_fields(&request.id, request.kind.label()).into_attributes(),
+                    process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
                 );
                 fields.insert("data_dir", spec.data_dir.display().to_string());
                 ctx.log
@@ -696,7 +738,7 @@ pub(crate) async fn start_job(
                     ctx,
                     JobOutcome::Success {
                         id: request.id,
-                        job_kind: active_kind(&request.kind),
+                        job_kind: active_kind(&execution_request.kind),
                         finished_at: now,
                     },
                     now,
@@ -713,7 +755,7 @@ pub(crate) async fn start_job(
                 );
                 let fields = event.fields_mut();
                 fields.append_json_map(
-                    process_job_fields(&request.id, request.kind.label()).into_attributes(),
+                    process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
                 );
                 fields.insert("error", error.to_string());
                 ctx.log
@@ -727,7 +769,7 @@ pub(crate) async fn start_job(
                     ctx,
                     JobOutcome::Failure {
                         id: request.id,
-                        job_kind: active_kind(&request.kind),
+                        job_kind: active_kind(&execution_request.kind),
                         error,
                         finished_at: now,
                     },
@@ -741,7 +783,7 @@ pub(crate) async fn start_job(
     let command = match build_command(
         &ctx.config,
         &request.id,
-        &request.kind,
+        &execution_request.kind,
         ctx.capture_subprocess_output,
     ) {
         Ok(command) => command,
@@ -754,7 +796,7 @@ pub(crate) async fn start_job(
             );
             let fields = event.fields_mut();
             fields.append_json_map(
-                process_job_fields(&request.id, request.kind.label()).into_attributes(),
+                process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
             );
             fields.insert("error", error.to_string());
             ctx.log
@@ -766,7 +808,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
-                    job_kind: active_kind(&request.kind),
+                    job_kind: active_kind(&execution_request.kind),
                     error,
                     finished_at: now,
                 },
@@ -788,7 +830,7 @@ pub(crate) async fn start_job(
             );
             let fields = event.fields_mut();
             fields.append_json_map(
-                process_job_fields(&request.id, request.kind.label()).into_attributes(),
+                process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
             );
             fields.insert("error", error.to_string());
             ctx.log
@@ -800,7 +842,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
-                    job_kind: active_kind(&request.kind),
+                    job_kind: active_kind(&execution_request.kind),
                     error,
                     finished_at: now,
                 },
@@ -812,13 +854,13 @@ pub(crate) async fn start_job(
 
     let active = ActiveJob {
         id: request.id.clone(),
-        kind: active_kind(&request.kind),
+        kind: active_kind(&execution_request.kind),
         started_at: now,
         deadline_at,
     };
 
     ctx.active_runtime = Some(ActiveRuntime {
-        request,
+        request: execution_request,
         deadline_at,
         handle,
         log_identity,
@@ -1265,38 +1307,71 @@ pub(crate) fn system_now_unix_millis() -> Result<UnixMillis, WorkerError> {
     Ok(UnixMillis(millis))
 }
 
-fn timeout_for_kind(kind: &ProcessJobKind, config: &ProcessConfig) -> u64 {
+fn timeout_for_kind(kind: &ProcessExecutionKind, config: &ProcessConfig) -> u64 {
     match kind {
-        ProcessJobKind::Bootstrap(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
-        ProcessJobKind::BaseBackup(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
-        ProcessJobKind::PgRewind(spec) => spec.timeout_ms.unwrap_or(config.pg_rewind_timeout_ms),
-        ProcessJobKind::Promote(spec) => spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms),
-        ProcessJobKind::Demote(spec) => spec.timeout_ms.unwrap_or(config.fencing_timeout_ms),
-        ProcessJobKind::StartPostgres(spec) => {
+        ProcessExecutionKind::Bootstrap(spec) => {
+            spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
+        }
+        ProcessExecutionKind::BaseBackup(spec) => {
+            spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
+        }
+        ProcessExecutionKind::PgRewind(spec) => {
+            spec.timeout_ms.unwrap_or(config.pg_rewind_timeout_ms)
+        }
+        ProcessExecutionKind::Promote(spec) => {
+            spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
+        }
+        ProcessExecutionKind::Demote(spec) => {
+            spec.timeout_ms.unwrap_or(config.fencing_timeout_ms)
+        }
+        ProcessExecutionKind::StartPostgres(spec) => {
             spec.timeout_ms.unwrap_or(config.bootstrap_timeout_ms)
         }
     }
 }
 
-fn active_kind(kind: &ProcessJobKind) -> ActiveJobKind {
+fn active_kind(kind: &ProcessExecutionKind) -> ActiveJobKind {
     match kind {
-        ProcessJobKind::Bootstrap(_) => ActiveJobKind::Bootstrap,
-        ProcessJobKind::BaseBackup(_) => ActiveJobKind::BaseBackup,
-        ProcessJobKind::PgRewind(_) => ActiveJobKind::PgRewind,
-        ProcessJobKind::Promote(_) => ActiveJobKind::Promote,
-        ProcessJobKind::Demote(_) => ActiveJobKind::Demote,
-        ProcessJobKind::StartPostgres(_) => ActiveJobKind::StartPostgres,
+        ProcessExecutionKind::Bootstrap(_) => ActiveJobKind::Bootstrap,
+        ProcessExecutionKind::BaseBackup(_) => ActiveJobKind::BaseBackup,
+        ProcessExecutionKind::PgRewind(_) => ActiveJobKind::PgRewind,
+        ProcessExecutionKind::Promote(_) => ActiveJobKind::Promote,
+        ProcessExecutionKind::Demote(_) => ActiveJobKind::Demote,
+        ProcessExecutionKind::StartPostgres(spec) => match spec.mode {
+            PostgresStartMode::Primary => ActiveJobKind::StartPrimary,
+            PostgresStartMode::DetachedStandby => ActiveJobKind::StartDetachedStandby,
+            PostgresStartMode::Replica => ActiveJobKind::StartReplica,
+        },
+    }
+}
+
+fn active_kind_from_intent(intent: &ProcessIntent) -> ActiveJobKind {
+    match intent {
+        ProcessIntent::Bootstrap => ActiveJobKind::Bootstrap,
+        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
+            ActiveJobKind::BaseBackup
+        }
+        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
+            ActiveJobKind::PgRewind
+        }
+        ProcessIntent::Promote => ActiveJobKind::Promote,
+        ProcessIntent::Demote(_) => ActiveJobKind::Demote,
+        ProcessIntent::Start(PostgresStartIntent::Primary) => ActiveJobKind::StartPrimary,
+        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
+            ActiveJobKind::StartDetachedStandby
+        }
+        ProcessIntent::Start(PostgresStartIntent::Replica { .. }) => ActiveJobKind::StartReplica,
     }
 }
 
 fn build_command(
     config: &ProcessConfig,
     job_id: &JobId,
-    kind: &ProcessJobKind,
+    kind: &ProcessExecutionKind,
     capture_output: bool,
 ) -> Result<ProcessCommandSpec, ProcessError> {
     match kind {
-        ProcessJobKind::Bootstrap(spec) => {
+        ProcessExecutionKind::Bootstrap(spec) => {
             validate_non_empty_path("bootstrap.data_dir", &spec.data_dir)?;
             if spec.superuser_username.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
@@ -1323,7 +1398,7 @@ fn build_command(
                 },
             })
         }
-        ProcessJobKind::BaseBackup(spec) => {
+        ProcessExecutionKind::BaseBackup(spec) => {
             validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
             if spec.source.conninfo.host.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
@@ -1360,7 +1435,7 @@ fn build_command(
                 },
             })
         }
-        ProcessJobKind::PgRewind(spec) => {
+        ProcessExecutionKind::PgRewind(spec) => {
             validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
             if spec.source.conninfo.host.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
@@ -1395,7 +1470,7 @@ fn build_command(
                 },
             })
         }
-        ProcessJobKind::Promote(spec) => {
+        ProcessExecutionKind::Promote(spec) => {
             validate_non_empty_path("promote.data_dir", &spec.data_dir)?;
             let mut args = vec![
                 "-D".to_string(),
@@ -1420,7 +1495,7 @@ fn build_command(
                 },
             })
         }
-        ProcessJobKind::Demote(spec) => {
+        ProcessExecutionKind::Demote(spec) => {
             validate_non_empty_path("demote.data_dir", &spec.data_dir)?;
             let program = config.binaries.pg_ctl.clone();
             Ok(ProcessCommandSpec {
@@ -1442,7 +1517,7 @@ fn build_command(
                 },
             })
         }
-        ProcessJobKind::StartPostgres(spec) => {
+        ProcessExecutionKind::StartPostgres(spec) => {
             validate_non_empty_path("start_postgres.data_dir", &spec.data_dir)?;
             validate_non_empty_path("start_postgres.config_file", &spec.config_file)?;
             validate_non_empty_path("start_postgres.log_file", &spec.log_file)?;
@@ -1489,15 +1564,242 @@ fn role_auth_env(auth: &RoleAuthConfig) -> Vec<ProcessEnvVar> {
     }
 }
 
-fn job_kind_label(kind: &ProcessJobKind) -> &'static str {
+fn job_kind_label(kind: &ProcessExecutionKind) -> &'static str {
     match kind {
-        ProcessJobKind::Bootstrap(_) => "bootstrap",
-        ProcessJobKind::BaseBackup(_) => "basebackup",
-        ProcessJobKind::PgRewind(_) => "pg_rewind",
-        ProcessJobKind::Promote(_) => "promote",
-        ProcessJobKind::Demote(_) => "demote",
-        ProcessJobKind::StartPostgres(_) => "start_postgres",
+        ProcessExecutionKind::Bootstrap(_) => "bootstrap",
+        ProcessExecutionKind::BaseBackup(_) => "basebackup",
+        ProcessExecutionKind::PgRewind(_) => "pg_rewind",
+        ProcessExecutionKind::Promote(_) => "promote",
+        ProcessExecutionKind::Demote(_) => "demote",
+        ProcessExecutionKind::StartPostgres(_) => "start_postgres",
     }
+}
+
+fn materialize_execution_request(
+    ctx: &ProcessWorkerCtx,
+    request: &ProcessIntentRequest,
+) -> Result<ProcessExecutionRequest, ProcessError> {
+    let runtime_config = ctx.runtime_config.latest();
+    let dcs = ctx.dcs_subscriber.latest();
+    let kind = match &request.intent {
+        ProcessIntent::Bootstrap => {
+            wipe_data_dir(runtime_config.postgres.data_dir.as_path())?;
+            ProcessExecutionKind::Bootstrap(super::jobs::BootstrapSpec {
+                data_dir: runtime_config.postgres.data_dir.clone(),
+                superuser_username: runtime_config.postgres.roles.superuser.username.clone(),
+                timeout_ms: None,
+            })
+        }
+        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
+            wipe_data_dir(runtime_config.postgres.data_dir.as_path())?;
+            let source = basebackup_source_from_member(
+                &ctx.self_id,
+                &ctx.intent_runtime,
+                resolve_source_member(&dcs, leader)?,
+            )
+            .map_err(source_materialization_error)?;
+            ProcessExecutionKind::BaseBackup(super::jobs::BaseBackupSpec {
+                data_dir: runtime_config.postgres.data_dir.clone(),
+                source,
+                timeout_ms: Some(runtime_config.process.bootstrap_timeout_ms),
+            })
+        }
+        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
+            let source = rewind_source_from_member(
+                &ctx.self_id,
+                &ctx.intent_runtime,
+                resolve_source_member(&dcs, leader)?,
+            )
+            .map_err(source_materialization_error)?;
+            ProcessExecutionKind::PgRewind(super::jobs::PgRewindSpec {
+                target_data_dir: runtime_config.postgres.data_dir.clone(),
+                source,
+                timeout_ms: None,
+            })
+        }
+        ProcessIntent::Start(PostgresStartIntent::Primary) => {
+            let start_intent = primary_start_intent(&runtime_config)?;
+            materialize_start_postgres(
+                &runtime_config,
+                &ctx.intent_runtime,
+                PostgresStartMode::Primary,
+                &start_intent,
+            )?
+        }
+        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => materialize_start_postgres(
+            &runtime_config,
+            &ctx.intent_runtime,
+            PostgresStartMode::DetachedStandby,
+            &ManagedPostgresStartIntent::detached_standby(),
+        )?,
+        ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
+            let start_intent = replica_start_intent(ctx, &runtime_config, &dcs, leader)?;
+            materialize_start_postgres(
+                &runtime_config,
+                &ctx.intent_runtime,
+                PostgresStartMode::Replica,
+                &start_intent,
+            )?
+        }
+        ProcessIntent::Promote => ProcessExecutionKind::Promote(PromoteSpec {
+            data_dir: runtime_config.postgres.data_dir.clone(),
+            wait_seconds: None,
+            timeout_ms: None,
+        }),
+        ProcessIntent::Demote(mode) => ProcessExecutionKind::Demote(DemoteSpec {
+            data_dir: runtime_config.postgres.data_dir.clone(),
+            mode: mode.clone(),
+            timeout_ms: None,
+        }),
+    };
+
+    Ok(ProcessExecutionRequest {
+        id: request.id.clone(),
+        kind,
+    })
+}
+
+fn primary_start_intent(
+    runtime_config: &RuntimeConfig,
+) -> Result<ManagedPostgresStartIntent, ProcessError> {
+    let managed_recovery_state = inspect_managed_recovery_state(runtime_config.postgres.data_dir.as_path())
+        .map_err(|err| {
+            ProcessError::InvalidSpec(format!(
+                "inspect managed recovery state for primary start failed: {err}"
+            ))
+        })?;
+    if managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None {
+        return Err(ProcessError::InvalidSpec(
+            "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
+        ));
+    }
+    Ok(ManagedPostgresStartIntent::primary())
+}
+
+fn replica_start_intent(
+    ctx: &ProcessWorkerCtx,
+    runtime_config: &RuntimeConfig,
+    dcs: &DcsView,
+    leader: &crate::state::MemberId,
+) -> Result<ManagedPostgresStartIntent, ProcessError> {
+    let source = basebackup_source_from_member(
+        &ctx.self_id,
+        &ctx.intent_runtime,
+        resolve_source_member(dcs, leader)?,
+    )
+    .map_err(source_materialization_error)?;
+    Ok(ManagedPostgresStartIntent::replica(
+        source.conninfo,
+        managed_standby_auth_from_role_auth(&source.auth, runtime_config.postgres.data_dir.as_path()),
+        None,
+    ))
+}
+
+fn materialize_start_postgres(
+    runtime_config: &RuntimeConfig,
+    intent_runtime: &super::state::ProcessIntentRuntime,
+    mode: PostgresStartMode,
+    start_intent: &ManagedPostgresStartIntent,
+) -> Result<ProcessExecutionKind, ProcessError> {
+    let managed = materialize_managed_postgres_config(runtime_config, start_intent).map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "materialize managed postgres config failed: {err}"
+        ))
+    })?;
+    Ok(ProcessExecutionKind::StartPostgres(super::jobs::StartPostgresSpec {
+        mode,
+        data_dir: runtime_config.postgres.data_dir.clone(),
+        socket_dir: intent_runtime.local_postgres.socket_dir.clone(),
+        port: intent_runtime.local_postgres.port,
+        config_file: managed.postgresql_conf_path,
+        log_file: intent_runtime.local_postgres.log_file.clone(),
+        wait_seconds: None,
+        timeout_ms: None,
+    }))
+}
+
+fn resolve_source_member<'a>(
+    dcs: &'a DcsView,
+    leader: &crate::state::MemberId,
+) -> Result<&'a DcsMemberView, ProcessError> {
+    dcs.members.get(leader).ok_or_else(|| {
+        ProcessError::InvalidSpec(format!(
+            "target member `{}` not present in DCS view",
+            leader.0
+        ))
+    })
+}
+
+fn source_materialization_error(
+    error: super::source::SourceMaterializationError,
+) -> ProcessError {
+    ProcessError::InvalidSpec(error.to_string())
+}
+
+fn wipe_data_dir(data_dir: &Path) -> Result<(), ProcessError> {
+    if data_dir.as_os_str().is_empty() {
+        return Err(ProcessError::InvalidSpec(
+            "wipe_data_dir data_dir must not be empty".to_string(),
+        ));
+    }
+    if data_dir.exists() {
+        wipe_data_dir_contents(data_dir)?;
+    } else {
+        fs::create_dir_all(data_dir).map_err(|err| {
+            ProcessError::InvalidSpec(format!("wipe_data_dir create_dir_all failed: {err}"))
+        })?;
+    }
+    set_postgres_data_dir_permissions(data_dir)?;
+    Ok(())
+}
+
+fn wipe_data_dir_contents(data_dir: &Path) -> Result<(), ProcessError> {
+    let entries = fs::read_dir(data_dir).map_err(|err| {
+        ProcessError::InvalidSpec(format!("wipe_data_dir read_dir failed: {err}"))
+    })?;
+    for entry_result in entries {
+        let entry = entry_result.map_err(|err| {
+            ProcessError::InvalidSpec(format!("wipe_data_dir read_dir entry failed: {err}"))
+        })?;
+        let file_type = entry.file_type().map_err(|err| {
+            ProcessError::InvalidSpec(format!("wipe_data_dir file_type failed: {err}"))
+        })?;
+        let entry_path = entry.path();
+        if file_type.is_dir() {
+            fs::remove_dir_all(entry_path.as_path()).map_err(|err| {
+                ProcessError::InvalidSpec(format!(
+                    "wipe_data_dir remove_dir_all failed for {}: {err}",
+                    entry_path.display()
+                ))
+            })?;
+        } else {
+            fs::remove_file(entry_path.as_path()).map_err(|err| {
+                ProcessError::InvalidSpec(format!(
+                    "wipe_data_dir remove_file failed for {}: {err}",
+                    entry_path.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn set_postgres_data_dir_permissions(data_dir: &Path) -> Result<(), ProcessError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            ProcessError::InvalidSpec(format!("wipe_data_dir set_permissions failed: {err}"))
+        })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _path = data_dir;
+    }
+
+    Ok(())
 }
 
 fn binary_label(path: &std::path::Path) -> String {

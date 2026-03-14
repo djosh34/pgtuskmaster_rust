@@ -1241,16 +1241,21 @@ mod tests {
         use tokio::sync::mpsc;
         use tokio::time::Instant;
 
-        use crate::config::{RoleAuthConfig, SecretSource};
+        use crate::dcs::{
+            DcsMemberEndpointView, DcsMemberLeaseView, DcsMemberPostgresView,
+            DcsMemberRoutingView, DcsMemberView, DcsPrimaryPostgresView, DcsTrust, DcsView,
+            WalVector,
+        };
         use crate::logging::LogRecord;
         use crate::process::jobs::{
-            BaseBackupSpec, BootstrapSpec, DemoteSpec, ShutdownMode, StartPostgresSpec,
+            PostgresStartIntent, ProcessIntent, ShutdownMode, ReplicaProvisionIntent,
         };
         use crate::process::state::{
-            ProcessJobKind, ProcessJobRequest, ProcessState, ProcessWorkerCtx,
+            LocalPostgresExecution, ProcessIntentRequest, ProcessIntentRuntime, ProcessState,
+            ProcessWorkerCtx, RemoteRoleProfile, RemoteSourceExecution,
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
-        use crate::state::{new_state_channel, JobId, WorkerError, WorkerStatus};
+        use crate::state::{new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError, WorkerStatus};
         use crate::test_harness::binaries::{
             require_pg16_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
         };
@@ -1343,6 +1348,69 @@ mod tests {
                 lines.drain(0..start);
             }
             lines.join("\n")
+        }
+
+        fn process_intent_runtime_from_config(cfg: &crate::config::RuntimeConfig) -> ProcessIntentRuntime {
+            ProcessIntentRuntime {
+                local_postgres: LocalPostgresExecution {
+                    socket_dir: cfg.postgres.socket_dir.clone(),
+                    port: cfg.postgres.listen_port,
+                    log_file: cfg.postgres.log_file.clone(),
+                },
+                remote_source: RemoteSourceExecution {
+                    replicator: RemoteRoleProfile {
+                        username: cfg.postgres.roles.replicator.username.clone(),
+                        auth: cfg.postgres.roles.replicator.auth.clone(),
+                    },
+                    rewinder: RemoteRoleProfile {
+                        username: cfg.postgres.roles.rewinder.username.clone(),
+                        auth: cfg.postgres.roles.rewinder.auth.clone(),
+                    },
+                    dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
+                    ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
+                    ssl_root_cert: cfg.postgres.rewind_conn_identity.ca_cert.clone(),
+                    connect_timeout_s: cfg.postgres.connect_timeout_s,
+                },
+            }
+        }
+
+        fn build_process_worker_ctx(
+            cfg: &crate::config::RuntimeConfig,
+            log: crate::logging::LogHandle,
+            dcs: DcsView,
+            inbox: tokio::sync::mpsc::UnboundedReceiver<ProcessIntentRequest>,
+        ) -> (
+            ProcessWorkerCtx,
+            crate::state::StateSubscriber<ProcessState>,
+        ) {
+            let initial = ProcessState::Idle {
+                worker: WorkerStatus::Starting,
+                last_outcome: None,
+            };
+            let (publisher, subscriber) = new_state_channel(initial.clone());
+            let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
+            let (_dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
+            (
+                ProcessWorkerCtx {
+                poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
+                config: cfg.process.clone(),
+                self_id: MemberId(cfg.cluster.member_id.clone()),
+                runtime_config,
+                dcs_subscriber,
+                intent_runtime: process_intent_runtime_from_config(cfg),
+                log,
+                capture_subprocess_output: true,
+                state: initial,
+                publisher,
+                inbox,
+                inbox_disconnected_logged: false,
+                command_runner: Box::new(TokioCommandRunner),
+                active_runtime: None,
+                last_rejection: None,
+                now: Box::new(crate::process::worker::system_now_unix_millis),
+                },
+                subscriber,
+            )
         }
 
         fn is_transient_psql_failure(stderr: &str) -> bool {
@@ -1555,28 +1623,13 @@ mod tests {
 
             let (log_handle, sink) = test_log_handle();
 
-            let (publisher, _subscriber) = new_state_channel(ProcessState::Idle {
-                worker: WorkerStatus::Starting,
-                last_outcome: None,
-            });
             let (tx, rx) = mpsc::unbounded_channel();
-            let mut process_ctx = ProcessWorkerCtx {
-                poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
-                config: cfg.process.clone(),
-                log: log_handle.clone(),
-                capture_subprocess_output: true,
-                state: ProcessState::Idle {
-                    worker: WorkerStatus::Starting,
-                    last_outcome: None,
-                },
-                publisher,
-                inbox: rx,
-                inbox_disconnected_logged: false,
-                command_runner: Box::new(TokioCommandRunner),
-                active_runtime: None,
-                last_rejection: None,
-                now: Box::new(crate::process::worker::system_now_unix_millis),
-            };
+            let (mut process_ctx, _process_state_subscriber) = build_process_worker_ctx(
+                &cfg,
+                log_handle.clone(),
+                DcsView::empty(WorkerStatus::Starting),
+                rx,
+            );
 
             let ingest_ctx = PostgresIngestWorkerCtx {
                 cfg,
@@ -1585,41 +1638,22 @@ mod tests {
             let mut ingest_state = PostgresIngestWorkerState::new(&ingest_ctx.cfg);
 
             let bootstrap_id = JobId("bootstrap".to_string());
-            tx.send(ProcessJobRequest {
+            tx.send(ProcessIntentRequest {
                 id: bootstrap_id.clone(),
-                kind: ProcessJobKind::Bootstrap(BootstrapSpec {
-                    data_dir: data_dir.clone(),
-                    superuser_username: ingest_ctx.cfg.postgres.roles.superuser.username.clone(),
-                    timeout_ms: Some(30_000),
-                }),
+                intent: ProcessIntent::Bootstrap,
             })
             .map_err(|_| WorkerError::Message("send bootstrap job failed".to_string()))?;
 
             wait_for_process_idle_success(&mut process_ctx, &bootstrap_id, Duration::from_secs(30))
                 .await?;
-            let managed = crate::postgres_managed::materialize_managed_postgres_config(
-                &ingest_ctx.cfg,
-                &crate::postgres_managed_conf::ManagedPostgresStartIntent::primary(),
-            )
-            .map_err(|err| {
-                WorkerError::Message(format!("materialize managed postgres config failed: {err}"))
-            })?;
 
             reservation.release_port(port).map_err(|err| {
                 WorkerError::Message(format!("release reserved port failed: {err}"))
             })?;
             let start_id = JobId("start".to_string());
-            tx.send(ProcessJobRequest {
+            tx.send(ProcessIntentRequest {
                 id: start_id.clone(),
-                kind: ProcessJobKind::StartPostgres(StartPostgresSpec {
-                    data_dir: data_dir.clone(),
-                    socket_dir: ingest_ctx.cfg.postgres.socket_dir.clone(),
-                    port,
-                    config_file: managed.postgresql_conf_path,
-                    log_file: log_file.clone(),
-                    wait_seconds: Some(30),
-                    timeout_ms: Some(60_000),
-                }),
+                intent: ProcessIntent::Start(PostgresStartIntent::Primary),
             })
             .map_err(|_| WorkerError::Message("send start job failed".to_string()))?;
 
@@ -1756,13 +1790,9 @@ mod tests {
             }
 
             let stop_id = JobId("stop".to_string());
-            tx.send(ProcessJobRequest {
+            tx.send(ProcessIntentRequest {
                 id: stop_id.clone(),
-                kind: ProcessJobKind::Demote(DemoteSpec {
-                    data_dir,
-                    mode: ShutdownMode::Fast,
-                    timeout_ms: Some(20_000),
-                }),
+                intent: ProcessIntent::Demote(ShutdownMode::Fast),
             })
             .map_err(|_| WorkerError::Message("send stop job failed".to_string()))?;
             wait_for_process_idle_success(&mut process_ctx, &stop_id, Duration::from_secs(30))
@@ -1824,51 +1854,44 @@ mod tests {
 
             let (log_handle, sink) = test_log_handle();
 
-            let initial = ProcessState::Idle {
-                worker: WorkerStatus::Starting,
-                last_outcome: None,
-            };
-            let (publisher, _subscriber) = new_state_channel(initial.clone());
             let (tx, rx) = mpsc::unbounded_channel();
-            let mut ctx = ProcessWorkerCtx {
-                poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
-                config: cfg.process,
-                log: log_handle,
-                capture_subprocess_output: true,
-                state: initial,
-                publisher,
-                inbox: rx,
-                inbox_disconnected_logged: false,
-                command_runner: Box::new(TokioCommandRunner),
-                active_runtime: None,
-                last_rejection: None,
-                now: Box::new(crate::process::worker::system_now_unix_millis),
+            let dcs = DcsView {
+                worker: WorkerStatus::Running,
+                trust: DcsTrust::FullQuorum,
+                members: std::collections::BTreeMap::from([(
+                    MemberId("node-b".to_string()),
+                    DcsMemberView {
+                        member_id: MemberId("node-b".to_string()),
+                        lease: DcsMemberLeaseView { ttl_ms: 10_000 },
+                        routing: DcsMemberRoutingView {
+                            postgres: DcsMemberEndpointView {
+                                host: "127.0.0.1".to_string(),
+                                port: 9,
+                            },
+                            api: None,
+                        },
+                        postgres: DcsMemberPostgresView::Primary(DcsPrimaryPostgresView {
+                            readiness: crate::pginfo::state::Readiness::Ready,
+                            system_identifier: None,
+                            committed_wal: WalVector {
+                                timeline: Some(TimelineId(1)),
+                                lsn: WalLsn(0),
+                            },
+                        }),
+                    },
+                )]),
+                leader: crate::dcs::DcsLeaderStateView::Unheld,
+                switchover: crate::dcs::DcsSwitchoverStateView::None,
+                last_observed_at: None,
             };
+            let (mut ctx, _process_state_subscriber) =
+                build_process_worker_ctx(&cfg, log_handle, dcs, rx);
 
             let job_id = JobId("basebackup-fail".to_string());
-            tx.send(ProcessJobRequest {
+            tx.send(ProcessIntentRequest {
                 id: job_id.clone(),
-                kind: ProcessJobKind::BaseBackup(BaseBackupSpec {
-                    data_dir,
-                    source: crate::process::jobs::ReplicatorSourceConn {
-                        conninfo: crate::pginfo::state::PgConnInfo {
-                            host: "127.0.0.1".to_string(),
-                            port: 9,
-                            user: "replicator".to_string(),
-                            dbname: "postgres".to_string(),
-                            application_name: None,
-                            connect_timeout_s: Some(1),
-                            ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
-                            ssl_root_cert: None,
-                            options: None,
-                        },
-                        auth: RoleAuthConfig::Password {
-                            password: SecretSource::Inline {
-                                content: "secret-password".to_string(),
-                            },
-                        },
-                    },
-                    timeout_ms: Some(5_000),
+                intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
+                    leader: MemberId("node-b".to_string()),
                 }),
             })
             .map_err(|_| WorkerError::Message("send basebackup job failed".to_string()))?;

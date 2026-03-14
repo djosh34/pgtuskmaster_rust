@@ -49,7 +49,7 @@ Look at:
 - `ha.publication`
 - `ha.role`
 - `ha.world.global`
-- `ha.planned_commands`
+- `ha.planned_actions`
 - `process`
 
 ## Step 4: Decide whether to wait or intervene

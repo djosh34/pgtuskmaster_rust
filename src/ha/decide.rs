@@ -276,7 +276,7 @@ fn rewind_failed_and_requires_basebackup(process: &ProcessState) -> bool {
     matches!(
         process,
         ProcessState::Failed(super::types::JobFailure {
-            job: super::types::JobKind::PgRewind,
+            job: crate::process::jobs::ActiveJobKind::PgRewind,
             recovery: FailureRecovery::FallbackToBasebackup,
         })
     )

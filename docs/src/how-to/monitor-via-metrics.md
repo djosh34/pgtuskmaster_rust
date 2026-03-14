@@ -63,7 +63,7 @@ Useful fields for machine polling:
 - `dcs.cache.member_slots`
 - `ha.publication.authority`
 - `ha.role`
-- `ha.planned_commands`
+- `ha.planned_actions`
 - `process`
 
 ## Step 5: Archive the current node state during incidents

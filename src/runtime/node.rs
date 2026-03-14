@@ -15,11 +15,14 @@ use crate::{
     },
     config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
     dcs::DcsView,
-    ha::state::{HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults},
+    ha::state::{HaState, HaWorkerContractStubInputs, HaWorkerCtx},
     logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::{
-        state::{ProcessState, ProcessWorkerCtx},
+        state::{
+            LocalPostgresExecution, ProcessIntentRuntime, ProcessState, ProcessWorkerCtx,
+            RemoteRoleProfile, RemoteSourceExecution,
+        },
         worker::{system_now_unix_millis, TokioCommandRunner},
     },
     state::{new_state_channel, MemberId, UnixMillis, WorkerStatus},
@@ -114,25 +117,32 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
             RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
         })?;
 
-    let process_defaults = process_defaults_from_config(&cfg);
-    ensure_start_paths(&process_defaults, &cfg.postgres.data_dir)?;
-    run_workers(cfg, process_defaults, log).await
+    let process_runtime = process_runtime_from_config(&cfg);
+    ensure_start_paths(&process_runtime, &cfg.postgres.data_dir)?;
+    run_workers(cfg, process_runtime, log).await
 }
 
-fn process_defaults_from_config(cfg: &RuntimeConfig) -> ProcessDispatchDefaults {
-    ProcessDispatchDefaults {
-        postgres_host: cfg.postgres.listen_host.clone(),
-        postgres_port: cfg.postgres.listen_port,
-        socket_dir: cfg.postgres.socket_dir.clone(),
-        log_file: cfg.postgres.log_file.clone(),
-        replicator_username: cfg.postgres.roles.replicator.username.clone(),
-        replicator_auth: cfg.postgres.roles.replicator.auth.clone(),
-        rewinder_username: cfg.postgres.roles.rewinder.username.clone(),
-        rewinder_auth: cfg.postgres.roles.rewinder.auth.clone(),
-        remote_dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
-        remote_ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
-        remote_ssl_root_cert: cfg.postgres.rewind_conn_identity.ca_cert.clone(),
-        connect_timeout_s: cfg.postgres.connect_timeout_s,
+fn process_runtime_from_config(cfg: &RuntimeConfig) -> ProcessIntentRuntime {
+    ProcessIntentRuntime {
+        local_postgres: LocalPostgresExecution {
+            socket_dir: cfg.postgres.socket_dir.clone(),
+            port: cfg.postgres.listen_port,
+            log_file: cfg.postgres.log_file.clone(),
+        },
+        remote_source: RemoteSourceExecution {
+            replicator: RemoteRoleProfile {
+                username: cfg.postgres.roles.replicator.username.clone(),
+                auth: cfg.postgres.roles.replicator.auth.clone(),
+            },
+            rewinder: RemoteRoleProfile {
+                username: cfg.postgres.roles.rewinder.username.clone(),
+                auth: cfg.postgres.roles.rewinder.auth.clone(),
+            },
+            dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
+            ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
+            ssl_root_cert: cfg.postgres.rewind_conn_identity.ca_cert.clone(),
+            connect_timeout_s: cfg.postgres.connect_timeout_s,
+        },
     }
 }
 
@@ -142,10 +152,7 @@ fn advertised_postgres_port(cfg: &RuntimeConfig) -> u16 {
         .unwrap_or(cfg.postgres.listen_port)
 }
 
-fn ensure_start_paths(
-    process_defaults: &ProcessDispatchDefaults,
-    data_dir: &Path,
-) -> Result<(), RuntimeError> {
+fn ensure_start_paths(process_runtime: &ProcessIntentRuntime, data_dir: &Path) -> Result<(), RuntimeError> {
     if let Some(parent) = data_dir.parent() {
         fs::create_dir_all(parent).map_err(|err| {
             RuntimeError::StartupExecution(format!(
@@ -174,14 +181,14 @@ fn ensure_start_paths(
         })?;
     }
 
-    fs::create_dir_all(&process_defaults.socket_dir).map_err(|err| {
+    fs::create_dir_all(&process_runtime.local_postgres.socket_dir).map_err(|err| {
         RuntimeError::StartupExecution(format!(
             "failed to create postgres socket dir `{}`: {err}",
-            process_defaults.socket_dir.display()
+            process_runtime.local_postgres.socket_dir.display()
         ))
     })?;
 
-    if let Some(log_parent) = process_defaults.log_file.parent() {
+    if let Some(log_parent) = process_runtime.local_postgres.log_file.parent() {
         fs::create_dir_all(log_parent).map_err(|err| {
             RuntimeError::StartupExecution(format!(
                 "failed to create postgres log dir `{}`: {err}",
@@ -195,7 +202,7 @@ fn ensure_start_paths(
 
 async fn run_workers(
     cfg: RuntimeConfig,
-    process_defaults: ProcessDispatchDefaults,
+    process_runtime: ProcessIntentRuntime,
     log: crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone());
@@ -219,9 +226,9 @@ async fn run_workers(
     let pg_ctx = crate::pginfo::state::PgInfoWorkerCtx {
         self_id: self_id.clone(),
         postgres_conninfo: local_postgres_conninfo(
-            &process_defaults,
             &cfg.postgres.local_conn_identity,
             cfg.postgres.roles.superuser.username.as_str(),
+            &process_runtime.local_postgres,
             cfg.postgres.connect_timeout_s,
         ),
         poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
@@ -247,15 +254,19 @@ async fn run_workers(
     )
     .map_err(|err| RuntimeError::Worker(format!("dcs store connect failed: {err}")))?;
 
-    let (process_inbox_tx, process_inbox_rx) = mpsc::unbounded_channel();
+    let (process_intent_inbox_tx, process_intent_inbox_rx) = mpsc::unbounded_channel();
     let process_ctx = ProcessWorkerCtx {
         poll_interval: PROCESS_WORKER_POLL_INTERVAL,
         config: cfg.process.clone(),
+        self_id: self_id.clone(),
+        runtime_config: cfg_subscriber.clone(),
+        dcs_subscriber: dcs_subscriber.clone(),
+        intent_runtime: process_runtime,
         log: log.clone(),
         capture_subprocess_output: cfg.logging.capture_subprocess_output,
         state: initial_process,
         publisher: process_publisher,
-        inbox: process_inbox_rx,
+        inbox: process_intent_inbox_rx,
         inbox_disconnected_logged: false,
         command_runner: Box::new(TokioCommandRunner),
         active_runtime: None,
@@ -269,14 +280,13 @@ async fn run_workers(
         pg_subscriber: pg_subscriber.clone(),
         dcs_subscriber: dcs_subscriber.clone(),
         process_subscriber: process_subscriber.clone(),
-        process_inbox: process_inbox_tx,
+        process_intent_inbox: process_intent_inbox_tx,
         dcs_handle: dcs_handle.clone(),
         scope: scope.clone(),
         self_id: self_id.clone(),
     });
     ha_ctx.poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
     ha_ctx.now = Box::new(system_now_unix_millis);
-    ha_ctx.process_defaults = process_defaults;
     ha_ctx.log = log.clone();
 
     let api_transport = crate::tls::build_api_server_transport(&cfg.api.security.transport)
@@ -335,14 +345,14 @@ fn advertised_operator_api_url(cfg: &RuntimeConfig) -> Option<String> {
 }
 
 fn local_postgres_conninfo(
-    process_defaults: &ProcessDispatchDefaults,
     identity: &crate::config::PostgresConnIdentityConfig,
     superuser_username: &str,
+    local_postgres: &LocalPostgresExecution,
     connect_timeout_s: u32,
 ) -> crate::pginfo::state::PgConnInfo {
     crate::pginfo::state::PgConnInfo {
-        host: process_defaults.socket_dir.display().to_string(),
-        port: process_defaults.postgres_port,
+        host: local_postgres.socket_dir.display().to_string(),
+        port: local_postgres.port,
         user: superuser_username.to_string(),
         dbname: identity.dbname.clone(),
         application_name: None,

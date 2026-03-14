@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     dcs::DcsTrust,
     process::{
-        jobs::{ActiveJobKind, ShutdownMode as ProcessShutdownMode},
+        jobs::{ActiveJobKind, ProcessIntent},
         state::{JobOutcome, ProcessState as WorkerProcessState},
     },
     state::{MemberId, TimelineId, UnixMillis, WalLsn},
@@ -89,13 +89,13 @@ pub enum ReplicationState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessState {
     Idle,
-    Running(JobKind),
+    Running(ActiveJobKind),
     Failed(JobFailure),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobFailure {
-    pub job: JobKind,
+    pub job: ActiveJobKind,
     pub recovery: FailureRecovery,
 }
 
@@ -327,38 +327,41 @@ pub enum SwitchoverBlocker {
     TargetIneligible(IneligibleReason),
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannedActions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication: Option<PublicationAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<CoordinationAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local: Option<LocalAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process: Option<ProcessIntent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReconcilePlan {
+    pub(crate) publication: Option<PublicationAction>,
+    pub(crate) coordination: Option<CoordinationAction>,
+    pub(crate) local: Option<LocalAction>,
+    pub(crate) process: Option<ProcessIntent>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ReconcileAction {
-    InitDb,
-    BaseBackup(MemberId),
-    PgRewind(MemberId),
-    StartPrimary,
-    StartDetachedStandby,
-    StartReplica(MemberId),
-    Promote,
-    Demote(ShutdownMode),
+pub enum CoordinationAction {
     AcquireLease(Candidacy),
     ReleaseLease,
-    EnsureRequiredRoles,
-    Publish(PublicationGoal),
     ClearSwitchover,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ShutdownMode {
-    Fast,
-    Immediate,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LocalAction {
+    EnsureRequiredRoles,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum JobKind {
-    InitDb,
-    BaseBackup,
-    PgRewind,
-    StartPrimary,
-    StartReplica,
-    Promote,
-    Demote,
+pub enum PublicationAction {
+    Publish(PublicationGoal),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -443,41 +446,68 @@ impl TargetRole {
     }
 }
 
-impl ReconcileAction {
-    pub(crate) fn label(&self) -> &'static str {
-        match self {
-            Self::InitDb => "init_db",
-            Self::BaseBackup(_) => "basebackup",
-            Self::PgRewind(_) => "pg_rewind",
-            Self::StartPrimary => "start_primary",
-            Self::StartDetachedStandby => "start_detached_standby",
-            Self::StartReplica(_) => "start_replica",
-            Self::Promote => "promote",
-            Self::Demote(_) => "demote",
-            Self::AcquireLease(_) => "acquire_lease",
-            Self::ReleaseLease => "release_lease",
-            Self::EnsureRequiredRoles => "ensure_required_roles",
-            Self::Publish(_) => "publish",
-            Self::ClearSwitchover => "clear_switchover",
+impl PlannedActions {
+    pub(crate) fn from_plan(value: &ReconcilePlan) -> Self {
+        Self {
+            publication: value.publication.clone(),
+            coordination: value.coordination.clone(),
+            local: value.local.clone(),
+            process: value.process.clone(),
         }
     }
 }
 
-impl ShutdownMode {
-    pub(crate) fn to_process_mode(self) -> ProcessShutdownMode {
-        match self {
-            Self::Fast => ProcessShutdownMode::Fast,
-            Self::Immediate => ProcessShutdownMode::Immediate,
+impl ReconcilePlan {
+    pub(crate) fn process(intent: ProcessIntent) -> Self {
+        Self {
+            process: Some(intent),
+            ..Self::default()
         }
+    }
+
+    pub(crate) fn coordination(action: CoordinationAction) -> Self {
+        Self {
+            coordination: Some(action),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn local(action: LocalAction) -> Self {
+        Self {
+            local: Some(action),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn publication(action: PublicationAction) -> Self {
+        Self {
+            publication: Some(action),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn merge(self, other: Self) -> Self {
+        Self {
+            publication: self.publication.or(other.publication),
+            coordination: self.coordination.or(other.coordination),
+            local: self.local.or(other.local),
+            process: self.process.or(other.process),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.publication.is_none()
+            && self.coordination.is_none()
+            && self.local.is_none()
+            && self.process.is_none()
     }
 }
 
 impl From<&WorkerProcessState> for ProcessState {
     fn from(value: &WorkerProcessState) -> Self {
         match value {
-            WorkerProcessState::Running { active, .. } => {
-                Self::Running(job_kind_from_active(&active.kind))
-            }
+            WorkerProcessState::Running { active, .. } => Self::Running(active.kind.clone()),
             WorkerProcessState::Idle {
                 last_outcome: Some(JobOutcome::Failure { job_kind, .. }),
                 ..
@@ -486,7 +516,7 @@ impl From<&WorkerProcessState> for ProcessState {
                 last_outcome: Some(JobOutcome::Timeout { job_kind, .. }),
                 ..
             } => Self::Failed(JobFailure {
-                job: job_kind_from_active(job_kind),
+                job: job_kind.clone(),
                 recovery: failure_recovery_from_job(job_kind),
             }),
             WorkerProcessState::Idle { .. } => Self::Idle,
@@ -512,6 +542,24 @@ pub(crate) fn last_success_at(
     }
 }
 
+pub(crate) fn last_start_success_at(value: &WorkerProcessState) -> Option<UnixMillis> {
+    match value {
+        WorkerProcessState::Idle {
+            last_outcome:
+                Some(JobOutcome::Success {
+                    job_kind:
+                        ActiveJobKind::StartPrimary
+                        | ActiveJobKind::StartDetachedStandby
+                        | ActiveJobKind::StartReplica,
+                    finished_at,
+                    ..
+                }),
+            ..
+        } => Some(*finished_at),
+        _ => None,
+    }
+}
+
 pub(crate) fn wal_position(
     timeline: Option<TimelineId>,
     lsn: Option<WalLsn>,
@@ -525,22 +573,15 @@ pub(crate) fn wal_position(
     }
 }
 
-fn job_kind_from_active(value: &ActiveJobKind) -> JobKind {
-    match value {
-        ActiveJobKind::Bootstrap => JobKind::InitDb,
-        ActiveJobKind::BaseBackup => JobKind::BaseBackup,
-        ActiveJobKind::PgRewind => JobKind::PgRewind,
-        ActiveJobKind::Promote => JobKind::Promote,
-        ActiveJobKind::Demote => JobKind::Demote,
-        ActiveJobKind::StartPostgres => JobKind::StartPrimary,
-    }
-}
-
 fn failure_recovery_from_job(value: &ActiveJobKind) -> FailureRecovery {
     match value {
         ActiveJobKind::PgRewind => FailureRecovery::FallbackToBasebackup,
         ActiveJobKind::BaseBackup | ActiveJobKind::Bootstrap => FailureRecovery::WaitForOperator,
-        ActiveJobKind::Promote | ActiveJobKind::Demote | ActiveJobKind::StartPostgres => {
+        ActiveJobKind::Promote
+        | ActiveJobKind::Demote
+        | ActiveJobKind::StartPrimary
+        | ActiveJobKind::StartDetachedStandby
+        | ActiveJobKind::StartReplica => {
             FailureRecovery::RetrySameJob
         }
     }
