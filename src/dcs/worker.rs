@@ -13,12 +13,12 @@ use crate::{
         resolve_inline_or_path_bytes, resolve_secret_string, DcsAuthConfig, DcsClientConfig,
         DcsEndpoint, DcsTlsConfig,
     },
-    logging::{DcsEvent, DcsEventIdentity, LogEvent, SeverityText},
     state::{LeaseEpoch, MemberId, SwitchoverTarget, WorkerError},
 };
 
 use super::{
     command::{dcs_command_channel, DcsCommand, DcsHandle},
+    log_event::{DcsFailure, DcsLogEvent, DcsLogIdentity, DcsLogOrigin},
     state::{
         build_dcs_view, build_local_member_record, evaluate_mode, DcsCadence, DcsControlPlane,
         DcsEtcdConfig, DcsLocalMemberAdvertisement, DcsNodeIdentity, DcsObservedState,
@@ -563,29 +563,25 @@ async fn handle_connected_failure(
     if session.leader_lease.is_some() {
         session.leader_lease = None;
     }
-    emit_dcs_event(
-        ctx,
-        "dcs_worker::connected_failure",
-        DcsEvent::WatchRefreshFailed {
+    ctx.runtime
+        .log
+        .send(DcsLogEvent::ConnectedStepFailed {
+            origin: DcsLogOrigin::ConnectedFailure,
             identity: dcs_event_identity(ctx),
-            error: err.to_string(),
-        },
-        dcs_error_severity(err),
-        "dcs watch failure log emit failed",
-    )
+            failure: dcs_failure(err),
+        })
+        .map_err(|log_err| WorkerError::Message(format!("dcs watch failure log emit failed: {log_err}")))
 }
 
 fn handle_initial_connect_failure(ctx: &mut DcsWorkerCtx, err: &DcsError) -> Result<(), WorkerError> {
-    emit_dcs_event(
-        ctx,
-        "dcs_worker::initial_connect_failure",
-        DcsEvent::SnapshotReadFailed {
+    ctx.runtime
+        .log
+        .send(DcsLogEvent::InitialConnectFailed {
+            origin: DcsLogOrigin::InitialConnectFailure,
             identity: dcs_event_identity(ctx),
-            error: err.to_string(),
-        },
-        dcs_error_severity(err),
-        "dcs connect failure log emit failed",
-    )
+            failure: dcs_failure(err),
+        })
+        .map_err(|log_err| WorkerError::Message(format!("dcs connect failure log emit failed: {log_err}")))
 }
 
 fn publish_current_view(ctx: &mut DcsWorkerCtx, etcd_reachable: bool) -> Result<(), WorkerError> {
@@ -599,17 +595,15 @@ fn publish_current_view(ctx: &mut DcsWorkerCtx, etcd_reachable: bool) -> Result<
         let previous = ctx.runtime.last_emitted_mode;
         let next_mode = next.mode();
         ctx.runtime.last_emitted_mode = Some(next_mode);
-        emit_dcs_event(
-            ctx,
-            "dcs_worker::publish_current_view",
-            DcsEvent::CoordinationModeTransition {
+        ctx.runtime
+            .log
+            .send(DcsLogEvent::CoordinationModeTransition {
+                origin: DcsLogOrigin::PublishCurrentView,
                 identity: dcs_event_identity(ctx),
                 previous,
                 next: next_mode,
-            },
-            SeverityText::Info,
-            "dcs coordination mode log emit failed",
-        )?;
+            })
+            .map_err(|err| WorkerError::Message(format!("dcs coordination mode log emit failed: {err}")))?;
     }
     ctx.state_channel
         .publisher
@@ -773,30 +767,24 @@ fn switchover_path(scope: &str) -> String {
     format!("/{}/switchover", scope.trim_matches('/'))
 }
 
-fn dcs_event_identity(ctx: &DcsWorkerCtx) -> DcsEventIdentity {
-    DcsEventIdentity {
+fn dcs_event_identity(ctx: &DcsWorkerCtx) -> DcsLogIdentity {
+    DcsLogIdentity {
         scope: ctx.identity.scope.clone(),
         member_id: ctx.identity.self_id.0.clone(),
     }
 }
 
-fn emit_dcs_event(
-    ctx: &DcsWorkerCtx,
-    origin: &str,
-    event: DcsEvent,
-    severity: SeverityText,
-    error_prefix: &str,
-) -> Result<(), WorkerError> {
-    ctx.runtime
-        .log
-        .emit(origin, LogEvent::Dcs(crate::logging::InternalEvent::new(severity, event)))
-        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
-}
-
-fn dcs_error_severity(err: &DcsError) -> SeverityText {
+fn dcs_failure(err: &DcsError) -> DcsFailure {
     match err {
-        DcsError::AlreadyExists(_) | DcsError::Io(_) => SeverityText::Warn,
-        DcsError::Decode { .. } => SeverityText::Error,
+        DcsError::AlreadyExists(error) => DcsFailure::AlreadyExists {
+            error: error.clone(),
+        },
+        DcsError::Io(error) => DcsFailure::StoreIo {
+            error: error.clone(),
+        },
+        DcsError::Decode { message, .. } => DcsFailure::Decode {
+            error: message.clone(),
+        },
     }
 }
 

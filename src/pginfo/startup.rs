@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::{
-    logging::LogHandle,
+    logging::LogSender,
     state::{new_state_channel, MemberId, WorkerError},
 };
 
@@ -14,7 +14,7 @@ pub(crate) struct PgInfoRuntimeRequest {
     pub(crate) self_id: MemberId,
     pub(crate) probe: PgProbeTarget,
     pub(crate) poll_interval: Duration,
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
 }
 
 pub(crate) struct PgInfoRuntimeBundle {

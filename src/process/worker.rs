@@ -9,11 +9,6 @@ use tokio::{
 use crate::{
     config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
     dcs::{ClusterMemberView, DcsView},
-    logging::{
-        CapturedStream, InternalEvent, LogEvent, LogHandle, ProcessEvent,
-        ProcessExecutionIdentity, ProcessJobIdentity, ProcessJobKind, SeverityText,
-        SubprocessLineEvent,
-    },
     pginfo::state::render_pg_conninfo,
     postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
     postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
@@ -28,7 +23,11 @@ use super::{
         ActiveJob, ActiveJobKind, DemoteSpec, PostgresStartIntent, PostgresStartMode,
         ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, ProcessExit,
         ProcessHandle, ProcessIntent, ProcessLogIdentity, ProcessOutputLine, ProcessOutputStream,
-        PromoteSpec, ReplicaProvisionIntent,
+        PromoteSpec, ProcessJobKind, ReplicaProvisionIntent,
+    },
+    log_event::{
+        CapturedStream, ProcessExecutionIdentity, ProcessJobIdentity, ProcessLogEvent,
+        ProcessLogOrigin, SubprocessLogEvent,
     },
     source::{basebackup_source_from_member, rewind_source_from_member},
     state::{
@@ -87,17 +86,6 @@ fn process_execution_identity(identity: &ProcessLogIdentity) -> ProcessExecution
         job: process_job_identity(&identity.job_id, identity.job_kind),
         binary: identity.binary.clone(),
     }
-}
-
-fn emit_process_event(
-    log: &LogHandle,
-    origin: &str,
-    event: ProcessEvent,
-    severity: SeverityText,
-    error_prefix: &str,
-) -> Result<(), WorkerError> {
-    log.emit(origin, LogEvent::Process(InternalEvent::new(severity, event)))
-        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
 }
 
 struct TokioProcessHandle {
@@ -333,15 +321,15 @@ fn can_accept_job(state: &ProcessState) -> bool {
 }
 
 pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
-    emit_process_event(
-        &ctx.runtime.log,
-        "process_worker::run",
-        ProcessEvent::WorkerRunStarted {
+    ctx.runtime
+        .log
+        .send(ProcessLogEvent::WorkerRunStarted {
+            origin: ProcessLogOrigin::Run,
             capture_subprocess_output: ctx.runtime.capture_subprocess_output,
-        },
-        SeverityText::Debug,
-        "process worker start log emit failed",
-    )?;
+        })
+        .map_err(|err| {
+            WorkerError::Message(format!("process worker start log send failed: {err}"))
+        })?;
     loop {
         step_once(&mut ctx).await?;
         tokio::time::sleep(ctx.cadence.poll_interval).await;
@@ -351,31 +339,34 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
 pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
     match ctx.control.inbox.try_recv() {
         Ok(request) => {
-            emit_process_event(
-                &ctx.runtime.log,
-                "process_worker::step_once",
-                ProcessEvent::RequestReceived {
+            ctx.runtime
+                .log
+                .send(ProcessLogEvent::RequestReceived {
+                    origin: ProcessLogOrigin::StepOnce,
                     job: process_job_identity(
                         &request.id,
                         process_job_kind_from_intent(&request.intent),
                     ),
-                },
-                SeverityText::Debug,
-                "process request log emit failed",
-            )?;
+                })
+                .map_err(|err| {
+                    WorkerError::Message(format!("process request log send failed: {err}"))
+                })?;
             start_job(ctx, request).await?;
         }
         Err(TryRecvError::Empty) => {}
         Err(TryRecvError::Disconnected) => {
             if !ctx.control.inbox_disconnected_logged {
                 ctx.control.inbox_disconnected_logged = true;
-                emit_process_event(
-                    &ctx.runtime.log,
-                    "process_worker::step_once",
-                    ProcessEvent::InboxDisconnected,
-                    SeverityText::Warn,
-                    "process inbox disconnected log emit failed",
-                )?;
+                ctx.runtime
+                    .log
+                    .send(ProcessLogEvent::InboxDisconnected {
+                        origin: ProcessLogOrigin::StepOnce,
+                    })
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process inbox disconnected log send failed: {err}"
+                        ))
+                    })?;
             }
         }
     }
@@ -537,18 +528,18 @@ pub(crate) async fn start_job(
             error: ProcessError::Busy,
             rejected_at: now,
         });
-        emit_process_event(
-            &ctx.runtime.log,
-            "process_worker::start_job",
-            ProcessEvent::BusyRejected {
+        ctx.runtime
+            .log
+            .send(ProcessLogEvent::BusyRejected {
+                origin: ProcessLogOrigin::StartJob,
                 job: process_job_identity(
                     &rejected_job_id,
                     process_job_kind_from_intent(&request.intent),
                 ),
-            },
-            SeverityText::Warn,
-            "process busy reject log emit failed",
-        )?;
+            })
+            .map_err(|err| {
+                WorkerError::Message(format!("process busy reject log send failed: {err}"))
+            })?;
         return Ok(());
     }
 
@@ -562,16 +553,18 @@ pub(crate) async fn start_job(
             port,
         ) {
             Ok(true) => {
-                emit_process_event(
-                    &ctx.runtime.log,
-                    "process_worker::start_job",
-                    ProcessEvent::StartPostgresAlreadyRunning {
+                ctx.runtime
+                    .log
+                    .send(ProcessLogEvent::StartPostgresAlreadyRunning {
+                        origin: ProcessLogOrigin::StartJob,
                         job: process_job_identity(&request.id, ProcessJobKind::StartPostgres),
                         data_dir: data_dir.display().to_string(),
-                    },
-                    SeverityText::Info,
-                    "process start-postgres noop log emit failed",
-                )?;
+                    })
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process start-postgres noop log send failed: {err}"
+                        ))
+                    })?;
                 transition_to_idle(
                     ctx,
                     JobOutcome::Success {
@@ -585,16 +578,18 @@ pub(crate) async fn start_job(
             }
             Ok(false) => {}
             Err(error) => {
-                emit_process_event(
-                    &ctx.runtime.log,
-                    "process_worker::start_job",
-                    ProcessEvent::StartPostgresPreflightFailed {
+                ctx.runtime
+                    .log
+                    .send(ProcessLogEvent::StartPostgresPreflightFailed {
+                        origin: ProcessLogOrigin::StartJob,
                         job: process_job_identity(&request.id, ProcessJobKind::StartPostgres),
                         error: error.to_string(),
-                    },
-                    SeverityText::Error,
-                    "process start-postgres preflight log emit failed",
-                )?;
+                    })
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process start-postgres preflight log send failed: {err}"
+                        ))
+                    })?;
                 transition_to_idle(
                     ctx,
                     JobOutcome::Failure {
@@ -613,19 +608,21 @@ pub(crate) async fn start_job(
     let execution_request = match materialize_execution_request(ctx, &request) {
         Ok(materialized) => materialized,
         Err(error) => {
-            emit_process_event(
-                &ctx.runtime.log,
-                "process_worker::start_job",
-                ProcessEvent::IntentMaterializationFailed {
+            ctx.runtime
+                .log
+                .send(ProcessLogEvent::IntentMaterializationFailed {
+                    origin: ProcessLogOrigin::StartJob,
                     job: process_job_identity(
                         &request.id,
                         process_job_kind_from_intent(&request.intent),
                     ),
                     error: error.to_string(),
-                },
-                SeverityText::Error,
-                "process intent materialization log emit failed",
-            )?;
+                })
+                .map_err(|err| {
+                    WorkerError::Message(format!(
+                        "process intent materialization log send failed: {err}"
+                    ))
+                })?;
             transition_to_idle(
                 ctx,
                 JobOutcome::Failure {
@@ -650,19 +647,21 @@ pub(crate) async fn start_job(
     ) {
         Ok(command) => command,
         Err(error) => {
-            emit_process_event(
-                &ctx.runtime.log,
-                "process_worker::start_job",
-                ProcessEvent::BuildCommandFailed {
+            ctx.runtime
+                .log
+                .send(ProcessLogEvent::BuildCommandFailed {
+                    origin: ProcessLogOrigin::StartJob,
                     job: process_job_identity(
                         &request.id,
                         process_job_kind_from_execution(&execution_request.kind),
                     ),
                     error: error.to_string(),
-                },
-                SeverityText::Error,
-                "process build command log emit failed",
-            )?;
+                })
+                .map_err(|err| {
+                    WorkerError::Message(format!(
+                        "process build command log send failed: {err}"
+                    ))
+                })?;
             transition_to_idle(
                 ctx,
                 JobOutcome::Failure {
@@ -681,19 +680,19 @@ pub(crate) async fn start_job(
     let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
-            emit_process_event(
-                &ctx.runtime.log,
-                "process_worker::start_job",
-                ProcessEvent::SpawnFailed {
+            ctx.runtime
+                .log
+                .send(ProcessLogEvent::SpawnFailed {
+                    origin: ProcessLogOrigin::StartJob,
                     job: process_job_identity(
                         &request.id,
                         process_job_kind_from_execution(&execution_request.kind),
                     ),
                     error: error.to_string(),
-                },
-                SeverityText::Error,
-                "process spawn log emit failed",
-            )?;
+                })
+                .map_err(|err| {
+                    WorkerError::Message(format!("process spawn log send failed: {err}"))
+                })?;
             transition_to_idle(
                 ctx,
                 JobOutcome::Failure {
@@ -726,15 +725,13 @@ pub(crate) async fn start_job(
         worker: WorkerStatus::Running,
         active,
     };
-    emit_process_event(
-        &ctx.runtime.log,
-        "process_worker::start_job",
-        ProcessEvent::Started {
+    ctx.runtime
+        .log
+        .send(ProcessLogEvent::Started {
+            origin: ProcessLogOrigin::StartJob,
             execution: started_execution,
-        },
-        SeverityText::Info,
-        "process job started log emit failed",
-    )?;
+        })
+        .map_err(|err| WorkerError::Message(format!("process job started log send failed: {err}")))?;
     publish_state(ctx)
 }
 
@@ -752,29 +749,48 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
     {
         Ok(lines) => {
             for line in lines {
-                if let Err(err) =
-                    emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
-                {
-                    emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
+                    &runtime.log_identity,
+                    line.clone(),
+                )) {
+                    ctx.runtime
+                        .log
+                        .send(ProcessLogEvent::OutputEmitFailed {
+                            origin: ProcessLogOrigin::EmitSubprocessLine,
+                            execution: process_execution_identity(&runtime.log_identity),
+                            stream: captured_stream(line.stream),
+                            bytes_len: line.bytes.len(),
+                            error: err.to_string(),
+                        })
+                        .map_err(|send_err| {
+                            WorkerError::Message(format!(
+                                "process output emit failure log send failed: {send_err}"
+                            ))
+                        })?;
                 }
             }
         }
-        Err(err) => emit_process_output_drain_failed(
-            &ctx.runtime.log,
-            &runtime.log_identity,
-            err.to_string(),
-        )?,
+        Err(err) => ctx.runtime
+            .log
+            .send(ProcessLogEvent::OutputDrainFailed {
+                origin: ProcessLogOrigin::TickActiveJob,
+                execution: process_execution_identity(&runtime.log_identity),
+                error: err.to_string(),
+            })
+            .map_err(|send_err| {
+                WorkerError::Message(format!(
+                    "process output drain log send failed: {send_err}"
+                ))
+            })?,
     }
     if now.0 >= runtime.deadline_at.0 {
-        emit_process_event(
-            &ctx.runtime.log,
-            "process_worker::tick_active_job",
-            ProcessEvent::Timeout {
+        ctx.runtime
+            .log
+            .send(ProcessLogEvent::Timeout {
+                origin: ProcessLogOrigin::TickActiveJob,
                 execution: process_execution_identity(&runtime.log_identity),
-            },
-            SeverityText::Warn,
-            "process timeout log emit failed",
-        )?;
+            })
+            .map_err(|err| WorkerError::Message(format!("process timeout log send failed: {err}")))?;
         let cancel_result = runtime.handle.cancel().await;
         match runtime
             .handle
@@ -783,18 +799,39 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
         {
             Ok(lines) => {
                 for line in lines {
-                    if let Err(err) =
-                        emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
-                    {
-                        emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
+                    if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
+                        &runtime.log_identity,
+                        line.clone(),
+                    )) {
+                        ctx.runtime
+                            .log
+                            .send(ProcessLogEvent::OutputEmitFailed {
+                                origin: ProcessLogOrigin::EmitSubprocessLine,
+                                execution: process_execution_identity(&runtime.log_identity),
+                                stream: captured_stream(line.stream),
+                                bytes_len: line.bytes.len(),
+                                error: err.to_string(),
+                            })
+                            .map_err(|send_err| {
+                                WorkerError::Message(format!(
+                                    "process output emit failure log send failed: {send_err}"
+                                ))
+                            })?;
                     }
                 }
             }
-            Err(err) => emit_process_output_drain_failed(
-                &ctx.runtime.log,
-                &runtime.log_identity,
-                err.to_string(),
-            )?,
+            Err(err) => ctx.runtime
+                .log
+                .send(ProcessLogEvent::OutputDrainFailed {
+                    origin: ProcessLogOrigin::TickActiveJob,
+                    execution: process_execution_identity(&runtime.log_identity),
+                    error: err.to_string(),
+                })
+                .map_err(|send_err| {
+                    WorkerError::Message(format!(
+                        "process output drain log send failed: {send_err}"
+                    ))
+                })?,
         }
         let outcome = match cancel_result {
             Ok(()) => JobOutcome::Timeout {
@@ -827,25 +864,39 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = emit_subprocess_line(
-                            &ctx.runtime.log,
+                        if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
                             &runtime.log_identity,
                             line.clone(),
-                        ) {
-                            emit_process_output_emit_failed(
-                                ctx,
-                                &runtime.log_identity,
-                                &line,
-                                &err,
-                            )?;
+                        )) {
+                            ctx.runtime
+                                .log
+                                .send(ProcessLogEvent::OutputEmitFailed {
+                                    origin: ProcessLogOrigin::EmitSubprocessLine,
+                                    execution: process_execution_identity(&runtime.log_identity),
+                                    stream: captured_stream(line.stream),
+                                    bytes_len: line.bytes.len(),
+                                    error: err.to_string(),
+                                })
+                                .map_err(|send_err| {
+                                    WorkerError::Message(format!(
+                                        "process output emit failure log send failed: {send_err}"
+                                    ))
+                                })?;
                         }
                     }
                 }
-                Err(err) => emit_process_output_drain_failed(
-                    &ctx.runtime.log,
-                    &runtime.log_identity,
-                    err.to_string(),
-                )?,
+                Err(err) => ctx.runtime
+                    .log
+                    .send(ProcessLogEvent::OutputDrainFailed {
+                        origin: ProcessLogOrigin::TickActiveJob,
+                        execution: process_execution_identity(&runtime.log_identity),
+                        error: err.to_string(),
+                    })
+                    .map_err(|send_err| {
+                        WorkerError::Message(format!(
+                            "process output drain log send failed: {send_err}"
+                        ))
+                    })?,
             }
             let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Success {
@@ -853,15 +904,13 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 job_kind: active_kind(&runtime.request.kind),
                 finished_at: now,
             };
-            emit_process_event(
-                &ctx.runtime.log,
-                "process_worker::tick_active_job",
-                ProcessEvent::ExitedSuccessfully {
+            ctx.runtime
+                .log
+                .send(ProcessLogEvent::ExitedSuccessfully {
+                    origin: ProcessLogOrigin::TickActiveJob,
                     execution: process_execution_identity(&runtime.log_identity),
-                },
-                SeverityText::Info,
-                "process exit log emit failed",
-            )?;
+                })
+                .map_err(|err| WorkerError::Message(format!("process exit log send failed: {err}")))?;
             transition_to_idle(ctx, outcome, now)
         }
         Ok(Some(exit)) => {
@@ -872,25 +921,39 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = emit_subprocess_line(
-                            &ctx.runtime.log,
+                        if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
                             &runtime.log_identity,
                             line.clone(),
-                        ) {
-                            emit_process_output_emit_failed(
-                                ctx,
-                                &runtime.log_identity,
-                                &line,
-                                &err,
-                            )?;
+                        )) {
+                            ctx.runtime
+                                .log
+                                .send(ProcessLogEvent::OutputEmitFailed {
+                                    origin: ProcessLogOrigin::EmitSubprocessLine,
+                                    execution: process_execution_identity(&runtime.log_identity),
+                                    stream: captured_stream(line.stream),
+                                    bytes_len: line.bytes.len(),
+                                    error: err.to_string(),
+                                })
+                                .map_err(|send_err| {
+                                    WorkerError::Message(format!(
+                                        "process output emit failure log send failed: {send_err}"
+                                    ))
+                                })?;
                         }
                     }
                 }
-                Err(err) => emit_process_output_drain_failed(
-                    &ctx.runtime.log,
-                    &runtime.log_identity,
-                    err.to_string(),
-                )?,
+                Err(err) => ctx.runtime
+                    .log
+                    .send(ProcessLogEvent::OutputDrainFailed {
+                        origin: ProcessLogOrigin::TickActiveJob,
+                        execution: process_execution_identity(&runtime.log_identity),
+                        error: err.to_string(),
+                    })
+                    .map_err(|send_err| {
+                        WorkerError::Message(format!(
+                            "process output drain log send failed: {send_err}"
+                        ))
+                    })?,
             }
             let exit_error = ProcessError::from_exit(exit);
             let outcome = JobOutcome::Failure {
@@ -899,16 +962,14 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 error: exit_error.clone(),
                 finished_at: now,
             };
-            emit_process_event(
-                &ctx.runtime.log,
-                "process_worker::tick_active_job",
-                ProcessEvent::ExitedUnsuccessfully {
+            ctx.runtime
+                .log
+                .send(ProcessLogEvent::ExitedUnsuccessfully {
+                    origin: ProcessLogOrigin::TickActiveJob,
                     execution: process_execution_identity(&runtime.log_identity),
                     error: exit_error.to_string(),
-                },
-                SeverityText::Warn,
-                "process exit log emit failed",
-            )?;
+                })
+                .map_err(|err| WorkerError::Message(format!("process exit log send failed: {err}")))?;
             transition_to_idle(ctx, outcome, now)
         }
         Err(error) => {
@@ -919,25 +980,39 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = emit_subprocess_line(
-                            &ctx.runtime.log,
+                        if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
                             &runtime.log_identity,
                             line.clone(),
-                        ) {
-                            emit_process_output_emit_failed(
-                                ctx,
-                                &runtime.log_identity,
-                                &line,
-                                &err,
-                            )?;
+                        )) {
+                            ctx.runtime
+                                .log
+                                .send(ProcessLogEvent::OutputEmitFailed {
+                                    origin: ProcessLogOrigin::EmitSubprocessLine,
+                                    execution: process_execution_identity(&runtime.log_identity),
+                                    stream: captured_stream(line.stream),
+                                    bytes_len: line.bytes.len(),
+                                    error: err.to_string(),
+                                })
+                                .map_err(|send_err| {
+                                    WorkerError::Message(format!(
+                                        "process output emit failure log send failed: {send_err}"
+                                    ))
+                                })?;
                         }
                     }
                 }
-                Err(err) => emit_process_output_drain_failed(
-                    &ctx.runtime.log,
-                    &runtime.log_identity,
-                    err.to_string(),
-                )?,
+                Err(err) => ctx.runtime
+                    .log
+                    .send(ProcessLogEvent::OutputDrainFailed {
+                        origin: ProcessLogOrigin::TickActiveJob,
+                        execution: process_execution_identity(&runtime.log_identity),
+                        error: err.to_string(),
+                    })
+                    .map_err(|send_err| {
+                        WorkerError::Message(format!(
+                            "process output drain log send failed: {send_err}"
+                        ))
+                    })?,
             }
             let outcome = JobOutcome::Failure {
                 id: runtime.request.id.clone(),
@@ -945,59 +1020,21 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 error,
                 finished_at: now,
             };
-            emit_process_event(
-                &ctx.runtime.log,
-                "process_worker::tick_active_job",
-                ProcessEvent::PollFailed {
+            ctx.runtime
+                .log
+                .send(ProcessLogEvent::PollFailed {
+                    origin: ProcessLogOrigin::TickActiveJob,
                     execution: process_execution_identity(&runtime.log_identity),
                     error: outcome_error_string(&outcome),
-                },
-                SeverityText::Error,
-                "process poll failure log emit failed",
-            )?;
+                })
+                .map_err(|err| {
+                    WorkerError::Message(format!(
+                        "process poll failure log send failed: {err}"
+                    ))
+                })?;
             transition_to_idle(ctx, outcome, now)
         }
     }
-}
-
-fn emit_process_output_drain_failed(
-    log: &LogHandle,
-    identity: &ProcessLogIdentity,
-    error: String,
-) -> Result<(), WorkerError> {
-    emit_process_event(
-        log,
-        "process_worker::tick_active_job",
-        ProcessEvent::OutputDrainFailed {
-            execution: process_execution_identity(identity),
-            error,
-        },
-        SeverityText::Warn,
-        "process output drain log emit failed",
-    )
-}
-
-fn emit_process_output_emit_failed(
-    ctx: &ProcessWorkerCtx,
-    identity: &ProcessLogIdentity,
-    line: &ProcessOutputLine,
-    error: &crate::logging::LogError,
-) -> Result<(), WorkerError> {
-    emit_process_event(
-        &ctx.runtime.log,
-        "process_worker::emit_subprocess_line",
-        ProcessEvent::OutputEmitFailed {
-            execution: process_execution_identity(identity),
-            stream: match line.stream {
-                ProcessOutputStream::Stdout => CapturedStream::Stdout,
-                ProcessOutputStream::Stderr => CapturedStream::Stderr,
-            },
-            bytes_len: line.bytes.len(),
-            error: error.to_string(),
-        },
-        SeverityText::Warn,
-        "process output emit failure log emit failed",
-    )
 }
 
 fn outcome_error_string(outcome: &JobOutcome) -> String {
@@ -1008,26 +1045,24 @@ fn outcome_error_string(outcome: &JobOutcome) -> String {
     }
 }
 
-fn emit_subprocess_line(
-    log: &LogHandle,
-    identity: &ProcessLogIdentity,
-    line: ProcessOutputLine,
-) -> Result<(), crate::logging::LogError> {
-    let stream = match line.stream {
+fn captured_stream(stream: ProcessOutputStream) -> CapturedStream {
+    match stream {
         ProcessOutputStream::Stdout => CapturedStream::Stdout,
         ProcessOutputStream::Stderr => CapturedStream::Stderr,
-    };
+    }
+}
 
-    log.emit(
-        "process_worker",
-        LogEvent::SubprocessLine(SubprocessLineEvent {
-            producer: crate::logging::LogProducer::PgTool,
-            stream,
-            execution: process_execution_identity(identity),
-            origin: "process_worker".to_string(),
-            bytes: line.bytes,
-        }),
-    )
+fn subprocess_log_event(
+    identity: &ProcessLogIdentity,
+    line: ProcessOutputLine,
+) -> SubprocessLogEvent {
+    SubprocessLogEvent {
+        producer: crate::logging::LogProducer::PgTool,
+        stream: captured_stream(line.stream),
+        execution: process_execution_identity(identity),
+        origin: ProcessLogOrigin::EmitSubprocessLine,
+        bytes: line.bytes,
+    }
 }
 
 fn transition_to_idle(
@@ -1663,7 +1698,7 @@ mod tests {
         config::{HaConfig, ProcessTimeoutsConfig},
         dcs::DcsView,
         dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
-        logging::LogHandle,
+        logging::LogSender,
         postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
             jobs::{PostgresStartIntent, ProcessCommandRunner, ProcessCommandSpec, ProcessIntent},
@@ -1857,7 +1892,7 @@ mod tests {
                     active_runtime: None,
                 },
                 runtime: ProcessRuntime {
-                    log: LogHandle::disabled(),
+                    log: LogSender::disabled(),
                     capture_subprocess_output: true,
                     command_runner: Box::new(UnexpectedSpawnRunner),
                 },

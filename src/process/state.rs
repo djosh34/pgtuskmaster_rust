@@ -6,7 +6,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::{
     config::{PostgresRoleName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
     dcs::DcsView,
-    logging::LogHandle,
+    logging::LogSender,
     pginfo::state::PgSslMode,
     state::{
         JobId, MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
@@ -179,7 +179,7 @@ pub(crate) struct ProcessControlPlane {
 }
 
 pub(crate) struct ProcessRuntime {
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
     pub(crate) capture_subprocess_output: bool,
     pub(crate) command_runner: Box<dyn ProcessCommandRunner>,
 }

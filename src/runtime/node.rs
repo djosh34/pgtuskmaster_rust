@@ -4,10 +4,11 @@ use thiserror::Error;
 
 use crate::{
     config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
-    logging::{InternalEvent, LogEvent, RuntimeEvent, RuntimeIdentity, SeverityText},
     process::state::ProcessRuntimePlan,
     state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName},
 };
+
+use super::log_event::{RuntimeLogEvent, RuntimeLogOrigin, RuntimeNodeIdentity};
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -28,18 +29,16 @@ pub enum RuntimeError {
     Time(String),
 }
 
-fn runtime_startup_event(cfg: &RuntimeConfig, startup_run_id: &str) -> LogEvent {
-    LogEvent::Runtime(InternalEvent::new(
-        SeverityText::Info,
-        RuntimeEvent::StartupEntered {
-            identity: RuntimeIdentity {
-                scope: cfg.cluster.scope.clone(),
-                member_id: cfg.cluster.member_id.clone(),
-            },
-            startup_run_id: startup_run_id.to_string(),
-            logging_level: cfg.logging.level,
+fn runtime_startup_event(cfg: &RuntimeConfig, startup_run_id: &str) -> RuntimeLogEvent {
+    RuntimeLogEvent::StartupEntered {
+        origin: RuntimeLogOrigin::RunNodeFromConfig,
+        identity: RuntimeNodeIdentity {
+            scope: cfg.cluster.scope.clone(),
+            member_id: cfg.cluster.member_id.clone(),
         },
-    ))
+        startup_run_id: startup_run_id.to_string(),
+        logging_level: cfg.logging.level,
+    }
 }
 
 pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> {
@@ -53,16 +52,14 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
     let logging = crate::logging::bootstrap(&cfg).map_err(|err| {
         RuntimeError::StartupExecution(format!("logging bootstrap failed: {err}"))
     })?;
-    let log = logging.handle.clone();
+    let log = logging.sender.clone();
+    let worker = logging.worker;
     let startup_run_id = format!(
         "{}-{}",
         cfg.cluster.member_id,
         crate::logging::system_now_unix_millis()
     );
-    log.emit(
-        "runtime::run_node_from_config",
-        runtime_startup_event(&cfg, startup_run_id.as_str()),
-    )
+    log.send(runtime_startup_event(&cfg, startup_run_id.as_str()))
         .map_err(|err| {
             RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
         })?;
@@ -72,13 +69,14 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         RuntimeError::StartupExecution(format!("process start path preparation failed: {err}"))
     })?;
 
-    run_workers(cfg, process_plan, log).await
+    run_workers(cfg, process_plan, log, worker).await
 }
 
 async fn run_workers(
     cfg: RuntimeConfig,
     process_plan: ProcessRuntimePlan,
-    log: crate::logging::LogHandle,
+    log: crate::logging::LogSender,
+    log_worker: crate::logging::LogWorker,
 ) -> Result<(), RuntimeError> {
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone());
     let identity = NodeIdentity {
@@ -144,7 +142,16 @@ async fn run_workers(
     })
     .map_err(|err| RuntimeError::Worker(err.to_string()))?;
 
-    tokio::try_join!(
+    let (
+        (),
+        pginfo_result,
+        dcs_result,
+        process_result,
+        ingest_result,
+        ha_result,
+        api_result,
+    ) = tokio::join!(
+        log_worker.run(),
         pginfo.worker.run(),
         dcs.worker.run(),
         process.worker.run(),
@@ -154,8 +161,14 @@ async fn run_workers(
         )),
         ha.worker.run(),
         api.worker.run(),
-    )
-    .map_err(|err| RuntimeError::Worker(err.to_string()))?;
+    );
+
+    pginfo_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
+    dcs_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
+    process_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
+    ingest_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
+    ha_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
+    api_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
 
     Ok(())
 }

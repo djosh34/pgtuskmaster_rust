@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{
     config::{DcsClientConfig, DcsEndpoint, RuntimeConfig},
-    logging::LogHandle,
+    logging::LogSender,
     pginfo::state::PgInfoState,
     state::{new_state_channel, NodeIdentity, PgTcpTarget, StateSubscriber, WorkerError},
 };
@@ -28,7 +28,7 @@ pub(crate) struct DcsRuntimeRequest {
     pub(crate) member_ttl_ms: u64,
     pub(crate) advertised: DcsAdvertisedEndpoints,
     pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
 }
 
 pub(crate) struct DcsRuntime {

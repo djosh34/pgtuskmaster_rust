@@ -23,7 +23,7 @@ use crate::{
     config::{ApiAuthConfig, RuntimeConfig},
     dcs::{DcsHandle, DcsView},
     ha::state::HaState,
-    logging::LogHandle,
+    logging::LogSender,
     pginfo::state::PgInfoState,
     process::postmaster::{reload_managed_postmaster, ManagedPostmasterTarget},
     process::state::ProcessState,
@@ -165,7 +165,7 @@ pub struct ApiServerCtx {
     pub(crate) observed: ApiObservedState,
     pub(crate) control: ApiControlPlane,
     pub(crate) serving: ApiServingPlan,
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
 }
 
 #[derive(Clone)]
@@ -190,7 +190,7 @@ struct ApiAppState {
     state: ApiObservedState,
     auth: ApiAuthState,
     reload_certificates: ApiReloadCertificatesHandle,
-    _log: LogHandle,
+    _log: LogSender,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -543,7 +543,7 @@ mod tests {
         },
         dcs::DcsHandle,
         dev_support::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
-        logging::LogHandle,
+        logging::LogSender,
         process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget},
         state::{new_state_channel, StatePublisher},
     };
@@ -714,7 +714,7 @@ mod tests {
                 transport: transport.clone(),
                 reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
             },
-            log: LogHandle::disabled(),
+            log: LogSender::disabled(),
         })
         .map_err(|err| err.to_string())?;
         Ok((app, cfg_publisher))

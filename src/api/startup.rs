@@ -1,7 +1,7 @@
 use crate::{
     config::RuntimeConfig,
     dcs::DcsHandle,
-    logging::LogHandle,
+    logging::LogSender,
     state::{NodeIdentity, StateSubscriber, WorkerError},
 };
 
@@ -16,7 +16,7 @@ pub(crate) struct ApiRuntimeRequest {
     pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
     pub(crate) dcs_handle: DcsHandle,
     pub(crate) observed_state: ApiObservedState,
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
 }
 
 pub(crate) struct ApiRuntime {

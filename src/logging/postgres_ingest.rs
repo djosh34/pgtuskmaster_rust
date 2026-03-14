@@ -2,12 +2,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use crate::config::{LogCleanupConfig, RuntimeConfig};
 use crate::logging::{
-    InternalEvent, LogHandle, LogProducer, LogTransport, PostgresIngestEvent, PostgresLineEvent,
-    PostgresLineSource, SeverityText,
+    DomainLogEvent, LogEventMetadata, LogEventResult, LogEventSource, LogFieldVisitor,
+    LogProducer, LogSender, LogTransport, SealedLogEvent, SeverityText,
 };
 use crate::state::WorkerError;
 
@@ -15,7 +17,203 @@ use super::tailer::{DirTailers, FileTailer, StartPosition};
 
 pub(crate) struct PostgresIngestWorkerCtx {
     pub(crate) cfg: RuntimeConfig,
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PostgresIngestOrigin {
+    Run,
+}
+
+impl PostgresIngestOrigin {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Run => "postgres_ingest::run",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PostgresIngestLogEvent {
+    StepOnceFailed {
+        origin: PostgresIngestOrigin,
+        attempts: u32,
+        suppressed: u64,
+        error: String,
+    },
+    Recovered {
+        origin: PostgresIngestOrigin,
+        attempts: u32,
+    },
+    IterationSummary {
+        origin: PostgresIngestOrigin,
+        pg_ctl_lines_emitted: u64,
+        log_dir_files_tailed: u64,
+        log_dir_lines_emitted: u64,
+        dir_tailers: usize,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PostgresLineSource {
+    producer: LogProducer,
+    transport: LogTransport,
+    origin: String,
+    path: std::path::PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum PostgresLineLogEvent {
+    Json {
+        source: PostgresLineSource,
+        severity: SeverityText,
+        message: String,
+        payload: Value,
+    },
+    Plain {
+        source: PostgresLineSource,
+        severity: SeverityText,
+        message: String,
+        level_raw: String,
+    },
+    Unparsed {
+        source: PostgresLineSource,
+        decoded_line: String,
+    },
+}
+
+impl SealedLogEvent for PostgresIngestLogEvent {}
+
+impl DomainLogEvent for PostgresIngestLogEvent {
+    fn metadata(&self) -> LogEventMetadata {
+        match self {
+            Self::StepOnceFailed { origin, .. } => LogEventMetadata {
+                severity: SeverityText::Error,
+                message: Cow::Borrowed("postgres ingest step once failed"),
+                event_name: "postgres_ingest.step_once_failed",
+                event_domain: "postgres_ingest",
+                event_result: LogEventResult::Failed,
+                source: LogEventSource::app(origin.label()),
+            },
+            Self::Recovered { origin, .. } => LogEventMetadata {
+                severity: SeverityText::Info,
+                message: Cow::Borrowed("postgres ingest recovered"),
+                event_name: "postgres_ingest.recovered",
+                event_domain: "postgres_ingest",
+                event_result: LogEventResult::Recovered,
+                source: LogEventSource::app(origin.label()),
+            },
+            Self::IterationSummary { origin, .. } => LogEventMetadata {
+                severity: SeverityText::Debug,
+                message: Cow::Borrowed("postgres ingest iteration summary"),
+                event_name: "postgres_ingest.iteration_summary",
+                event_domain: "postgres_ingest",
+                event_result: LogEventResult::Ok,
+                source: LogEventSource::app(origin.label()),
+            },
+        }
+    }
+
+    fn write_fields(&self, visitor: &mut dyn LogFieldVisitor) {
+        match self {
+            Self::StepOnceFailed {
+                attempts,
+                suppressed,
+                error,
+                ..
+            } => {
+                visitor.u64("attempts", u64::from(*attempts));
+                visitor.u64("suppressed", *suppressed);
+                visitor.string("error", error.clone());
+            }
+            Self::Recovered { attempts, .. } => {
+                visitor.u64("attempts", u64::from(*attempts));
+            }
+            Self::IterationSummary {
+                pg_ctl_lines_emitted,
+                log_dir_files_tailed,
+                log_dir_lines_emitted,
+                dir_tailers,
+                ..
+            } => {
+                visitor.u64("pg_ctl_lines_emitted", *pg_ctl_lines_emitted);
+                visitor.u64("log_dir_files_tailed", *log_dir_files_tailed);
+                visitor.u64("log_dir_lines_emitted", *log_dir_lines_emitted);
+                visitor.usize("dir_tailers", *dir_tailers);
+            }
+        }
+    }
+}
+
+impl SealedLogEvent for PostgresLineLogEvent {}
+
+impl DomainLogEvent for PostgresLineLogEvent {
+    fn metadata(&self) -> LogEventMetadata {
+        match self {
+            Self::Json {
+                source,
+                severity,
+                message,
+                ..
+            } => line_metadata(source, *severity, Cow::Owned(message.clone()), crate::logging::LogParser::PostgresJson),
+            Self::Plain {
+                source,
+                severity,
+                message,
+                ..
+            } => line_metadata(source, *severity, Cow::Owned(message.clone()), crate::logging::LogParser::PostgresPlain),
+            Self::Unparsed {
+                source,
+                decoded_line,
+            } => line_metadata(source, SeverityText::Info, Cow::Owned(decoded_line.clone()), crate::logging::LogParser::Raw),
+        }
+    }
+
+    fn write_fields(&self, visitor: &mut dyn LogFieldVisitor) {
+        match self {
+            Self::Json { source, payload, .. } => {
+                visitor.string("path", source.path.display().to_string());
+                visitor.json("payload", payload.clone());
+            }
+            Self::Plain {
+                source,
+                level_raw,
+                ..
+            } => {
+                visitor.string("path", source.path.display().to_string());
+                visitor.string("level_raw", level_raw.clone());
+            }
+            Self::Unparsed {
+                source,
+                decoded_line,
+            } => {
+                visitor.string("path", source.path.display().to_string());
+                visitor.bool("parse_failed", true);
+                visitor.string("raw_line", decoded_line.clone());
+            }
+        }
+    }
+}
+
+fn line_metadata(
+    source: &PostgresLineSource,
+    severity: SeverityText,
+    message: Cow<'static, str>,
+    parser: crate::logging::LogParser,
+) -> LogEventMetadata {
+    LogEventMetadata {
+        severity,
+        message,
+        event_name: "postgres.line",
+        event_domain: "postgres",
+        event_result: LogEventResult::Ok,
+        source: LogEventSource::new(
+            source.producer,
+            source.transport,
+            parser,
+            source.origin.clone(),
+        ),
+    }
 }
 
 const POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS: u64 = 30_000;
@@ -100,7 +298,16 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx) -> Result<(), WorkerError>
             match step_once(&ctx, &mut state).await {
                 Ok(()) => {
                     if consecutive_failures > 0 {
-                        emit_ingest_retry_recovered(&ctx.log, consecutive_failures)?;
+                        ctx.log
+                            .send(PostgresIngestLogEvent::Recovered {
+                                origin: PostgresIngestOrigin::Run,
+                                attempts: consecutive_failures,
+                            })
+                            .map_err(|err| {
+                                WorkerError::Message(format!(
+                                    "postgres ingest recovered log send failed: {err}"
+                                ))
+                            })?;
                         consecutive_failures = 0;
                     }
                 }
@@ -110,12 +317,18 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx) -> Result<(), WorkerError>
                     let key = ingest_error_key_best_effort(&error);
                     let decision = limiter.record(key, now_ms);
                     if decision.emit {
-                        emit_ingest_step_failure(
-                            &ctx.log,
-                            &error,
-                            consecutive_failures,
-                            decision.suppressed,
-                        )?;
+                        ctx.log
+                            .send(PostgresIngestLogEvent::StepOnceFailed {
+                                origin: PostgresIngestOrigin::Run,
+                                attempts: consecutive_failures,
+                                suppressed: decision.suppressed,
+                                error: error.to_string(),
+                            })
+                            .map_err(|err| {
+                                WorkerError::Message(format!(
+                                    "postgres ingest error log send failed: {err}"
+                                ))
+                            })?;
                     }
                 }
             }
@@ -159,49 +372,6 @@ fn ingest_error_key_best_effort(error: &WorkerError) -> IngestErrorKey {
     }
 
     IngestErrorKey { stage, kind, path }
-}
-
-fn emit_ingest_event(
-    log: &LogHandle,
-    origin: &str,
-    event: PostgresIngestEvent,
-    severity: SeverityText,
-    error_prefix: &str,
-) -> Result<(), WorkerError> {
-    log.emit(
-        origin,
-        crate::logging::LogEvent::PostgresIngest(InternalEvent::new(severity, event)),
-    )
-        .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
-}
-
-fn emit_ingest_step_failure(
-    log: &LogHandle,
-    error: &WorkerError,
-    attempts: u32,
-    suppressed: u64,
-) -> Result<(), WorkerError> {
-    emit_ingest_event(
-        log,
-        "postgres_ingest::run",
-        PostgresIngestEvent::StepOnceFailed {
-            attempts,
-            suppressed,
-            error: error.to_string(),
-        },
-        SeverityText::Error,
-        "postgres ingest error log emit failed",
-    )
-}
-
-fn emit_ingest_retry_recovered(log: &LogHandle, attempts: u32) -> Result<(), WorkerError> {
-    emit_ingest_event(
-        log,
-        "postgres_ingest::run",
-        PostgresIngestEvent::Recovered { attempts },
-        SeverityText::Info,
-        "postgres ingest recovered log emit failed",
-    )
 }
 
 struct PostgresIngestWorkerState {
@@ -271,20 +441,19 @@ async fn step_once(
     match state.pg_ctl_log.read_new_lines(max_bytes_per_file).await {
         Ok(pg_lines) => {
             for line in pg_lines {
-                if let Err(err) = emit_postgres_line(
-                    &ctx.log,
+                if let Err(err) = ctx.log.send(postgres_line_event(
                     LogProducer::Postgres,
                     LogTransport::FileTail,
                     "pg_ctl_log_file",
                     state.pg_ctl_log.path(),
                     line,
-                ) {
+                )) {
                     push_issue(
                         &mut issues,
                         "pg_ctl_log_file.emit",
                         "log.emit_record",
                         state.pg_ctl_log.path(),
-                        err,
+                        WorkerError::Message(err.to_string()),
                     );
                 } else {
                     pg_ctl_lines_emitted = pg_ctl_lines_emitted.saturating_add(1);
@@ -313,20 +482,19 @@ async fn step_once(
             match tailer.read_new_lines(max_bytes_per_file).await {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = emit_postgres_line(
-                            &ctx.log,
+                        if let Err(err) = ctx.log.send(postgres_line_event(
                             LogProducer::Postgres,
                             LogTransport::FileTail,
                             origin.as_str(),
                             tailer.path(),
                             line,
-                        ) {
+                        )) {
                             push_issue(
                                 &mut issues,
                                 "log_dir.emit",
                                 "log.emit_record",
                                 tailer.path(),
-                                err,
+                                WorkerError::Message(err.to_string()),
                             );
                         } else {
                             log_dir_lines_emitted = log_dir_lines_emitted.saturating_add(1);
@@ -375,18 +543,17 @@ async fn step_once(
     }
 
     if issues.is_empty() {
-        emit_ingest_event(
-            &ctx.log,
-            "postgres_ingest::step_once",
-            PostgresIngestEvent::IterationSummary {
+        ctx.log
+            .send(PostgresIngestLogEvent::IterationSummary {
+                origin: PostgresIngestOrigin::Run,
                 pg_ctl_lines_emitted,
                 log_dir_files_tailed,
                 log_dir_lines_emitted,
                 dir_tailers: state.dir_tailers.len(),
-            },
-            SeverityText::Debug,
-            "postgres ingest debug log emit failed",
-        )?;
+            })
+            .map_err(|err| {
+                WorkerError::Message(format!("postgres ingest debug log send failed: {err}"))
+            })?;
         return Ok(());
     }
 
@@ -670,16 +837,15 @@ impl CleanupReport {
     }
 }
 
-fn emit_postgres_line(
-    log: &LogHandle,
+fn postgres_line_event(
     producer: LogProducer,
     transport: LogTransport,
     origin: &str,
     path: &Path,
     line: Vec<u8>,
-) -> Result<(), WorkerError> {
+) -> PostgresLineLogEvent {
     let decoded = decode_line(&line);
-    let event = normalize_postgres_line(
+    normalize_postgres_line(
         decoded.as_str(),
         PostgresLineSource {
             producer,
@@ -687,14 +853,7 @@ fn emit_postgres_line(
             origin: format!("{origin}:{}", path.display()),
             path: path.to_path_buf(),
         },
-    );
-    log.emit(origin, crate::logging::LogEvent::PostgresLine(event))
-        .map_err(|err| {
-        WorkerError::Message(format!(
-            "log sink error while ingesting postgres log: {err}"
-        ))
-    })?;
-    Ok(())
+    )
 }
 
 fn decode_line(line: &[u8]) -> String {
@@ -717,10 +876,10 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn normalize_postgres_line(line: &str, source: PostgresLineSource) -> PostgresLineEvent {
+fn normalize_postgres_line(line: &str, source: PostgresLineSource) -> PostgresLineLogEvent {
     if let Ok(value) = serde_json::from_str::<Value>(line) {
         if let Some(parsed) = normalize_postgres_json(value) {
-            return PostgresLineEvent::Json {
+            return PostgresLineLogEvent::Json {
                 source,
                 severity: parsed.severity,
                 message: parsed.message,
@@ -730,7 +889,7 @@ fn normalize_postgres_line(line: &str, source: PostgresLineSource) -> PostgresLi
     }
 
     if let Some(parsed) = normalize_postgres_plain(line) {
-        return PostgresLineEvent::Plain {
+        return PostgresLineLogEvent::Plain {
             source,
             severity: parsed.severity,
             message: parsed.message,
@@ -738,7 +897,7 @@ fn normalize_postgres_line(line: &str, source: PostgresLineSource) -> PostgresLi
         };
     }
 
-    PostgresLineEvent::Unparsed {
+    PostgresLineLogEvent::Unparsed {
         source,
         decoded_line: line.to_string(),
     }
@@ -810,7 +969,7 @@ fn map_pg_severity(raw: &str) -> SeverityText {
     }
 }
 
-pub(crate) fn build_ctx(cfg: RuntimeConfig, log: LogHandle) -> PostgresIngestWorkerCtx {
+pub(crate) fn build_ctx(cfg: RuntimeConfig, log: LogSender) -> PostgresIngestWorkerCtx {
     PostgresIngestWorkerCtx { cfg, log }
 }
 
@@ -822,22 +981,20 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use serde_json::Value;
+    use tokio::task::JoinHandle;
 
     use crate::config::{
         DebugConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
         PostgresLoggingConfig, RuntimeConfig,
     };
-    use crate::logging::{
-        LogError, LogEvent, LogHandle, LogParser, LogProducer, LogTransport,
-        PostgresLineSource, SeverityText, TestSink,
-    };
+    use crate::logging::{LogParser, LogProducer, LogSender, LogTransport, SeverityText, TestSink};
 
     use crate::state::WorkerError;
 
     use super::{
-        cleanup_log_dir, decode_line, emit_ingest_step_failure, emit_postgres_line,
-        ingest_error_key_best_effort, map_pg_severity, normalize_postgres_line, IngestErrorKey,
-        IngestErrorRateLimiter,
+        cleanup_log_dir, decode_line, ingest_error_key_best_effort, map_pg_severity,
+        normalize_postgres_line, IngestErrorKey, IngestErrorRateLimiter, PostgresIngestLogEvent,
+        PostgresIngestOrigin,
     };
 
     const REAL_INGEST_RETRY_SLEEP: Duration = Duration::from_millis(20);
@@ -875,17 +1032,54 @@ mod tests {
             .build()
     }
 
-    fn test_log_handle() -> (LogHandle, Arc<TestSink>) {
-        let sink = Arc::new(TestSink::default());
-        let sink_dyn: Arc<dyn crate::logging::LogSink> = sink.clone();
-        (
-            LogHandle::new("host-a".to_string(), sink_dyn, SeverityText::Trace),
-            sink,
-        )
+    struct RunningTestLog {
+        sender: LogSender,
+        sink: Arc<TestSink>,
+        worker_task: JoinHandle<()>,
     }
 
-    fn sample_postgres_line_source() -> PostgresLineSource {
-        PostgresLineSource {
+    impl RunningTestLog {
+        fn start() -> Self {
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            let sink = Arc::new(TestSink::default());
+            let sink_dyn: Arc<dyn super::super::LogSink> = sink.clone();
+            let worker = super::super::LogWorker {
+                receiver,
+                backend: Arc::new(super::super::TracingBackend::new(sink_dyn)),
+            };
+            Self {
+                sender: LogSender::new("host-a".to_string(), sender, SeverityText::Trace),
+                sink,
+                worker_task: tokio::spawn(worker.run()),
+            }
+        }
+
+        fn sender(&self) -> LogSender {
+            self.sender.clone()
+        }
+
+        async fn take(&self) -> Vec<crate::logging::LogRecord> {
+            tokio::task::yield_now().await;
+            self.sink.take()
+        }
+    }
+
+    impl Drop for RunningTestLog {
+        fn drop(&mut self) {
+            self.worker_task.abort();
+        }
+    }
+
+    fn materialize_record<E>(event: E) -> crate::logging::LogRecord
+    where
+        E: crate::logging::DomainLogEvent,
+    {
+        super::super::raw_record::QueuedRecord::from_event(1, "host-a".to_string(), event)
+            .into_record()
+    }
+
+    fn sample_postgres_line_source() -> super::PostgresLineSource {
+        super::PostgresLineSource {
             producer: LogProducer::Postgres,
             transport: LogTransport::FileTail,
             origin: "test".to_string(),
@@ -893,9 +1087,31 @@ mod tests {
         }
     }
 
-    fn normalized_postgres_record(raw: &str) -> Result<crate::logging::LogRecord, LogError> {
-        LogEvent::PostgresLine(normalize_postgres_line(raw, sample_postgres_line_source()))
-            .into_record(1, "host-a".to_string(), "ignored-origin")
+    fn normalized_postgres_record(raw: &str) -> crate::logging::LogRecord {
+        materialize_record(normalize_postgres_line(raw, sample_postgres_line_source()))
+    }
+
+    fn start_test_log() -> RunningTestLog {
+        RunningTestLog::start()
+    }
+
+    fn sample_postgres_ingest_failure_event(error: &WorkerError) -> PostgresIngestLogEvent {
+        PostgresIngestLogEvent::StepOnceFailed {
+            origin: PostgresIngestOrigin::Run,
+            attempts: 2,
+            suppressed: 7,
+            error: error.to_string(),
+        }
+    }
+
+    fn sample_non_utf8_postgres_line_event(path: &std::path::Path) -> super::PostgresLineLogEvent {
+        super::postgres_line_event(
+            LogProducer::Postgres,
+            LogTransport::FileTail,
+            "pg_ctl_log_file",
+            path,
+            vec![0xff_u8, 0x00, b'a', 0x80],
+        )
     }
 
     #[test]
@@ -948,38 +1164,32 @@ mod tests {
     }
 
     #[test]
-    fn emit_ingest_step_failure_emits_internal_error_record() -> Result<(), WorkerError> {
-        let (log, sink) = test_log_handle();
+    fn step_failure_event_encodes_internal_error_record() {
         let err = WorkerError::Message("stage=x kind=y path=/z error=boom".to_string());
+        let record = materialize_record(sample_postgres_ingest_failure_event(&err));
 
-        let emitted = emit_ingest_step_failure(&log, &err, 2, 7);
-        assert_eq!(emitted, Ok(()));
-
-        let records = sink.take();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].severity_text, SeverityText::Error);
-        assert_eq!(records[0].source.origin, "postgres_ingest::run");
+        assert_eq!(record.severity_text, SeverityText::Error);
+        assert_eq!(record.source.origin, "postgres_ingest::run");
         assert_eq!(
-            records[0].attributes.get("event.name"),
+            record.attributes.get("event.name"),
             Some(&Value::String("postgres_ingest.step_once_failed".to_string()))
         );
         assert_eq!(
-            records[0].attributes.get("event.domain"),
+            record.attributes.get("event.domain"),
             Some(&Value::String("postgres_ingest".to_string()))
         );
         assert_eq!(
-            records[0].attributes.get("event.result"),
+            record.attributes.get("event.result"),
             Some(&Value::String("failed".to_string()))
         );
         assert_eq!(
-            records[0].attributes.get("attempts"),
+            record.attributes.get("attempts"),
             Some(&Value::Number(serde_json::Number::from(2_u64)))
         );
         assert_eq!(
-            records[0].attributes.get("suppressed"),
+            record.attributes.get("suppressed"),
             Some(&Value::Number(serde_json::Number::from(7_u64)))
         );
-        Ok(())
     }
 
     #[test]
@@ -990,31 +1200,29 @@ mod tests {
     }
 
     #[test]
-    fn normalize_postgres_line_parses_jsonlog() -> Result<(), LogError> {
+    fn normalize_postgres_line_parses_jsonlog() {
         let raw = r#"{"error_severity":"LOG","message":"hello from json"}"#;
-        let record = normalized_postgres_record(raw)?;
+        let record = normalized_postgres_record(raw);
         assert_eq!(record.source.parser, LogParser::PostgresJson);
         assert_eq!(record.message, "hello from json");
         assert_eq!(record.severity_text, SeverityText::Info);
         assert_eq!(record.severity_number, SeverityText::Info.number());
         assert_eq!(record.hostname, "host-a");
-        Ok(())
     }
 
     #[test]
-    fn normalize_postgres_line_parses_plain() -> Result<(), LogError> {
+    fn normalize_postgres_line_parses_plain() {
         let raw = "2026-03-04 01:02:03 UTC [123] ERROR:  something bad";
-        let record = normalized_postgres_record(raw)?;
+        let record = normalized_postgres_record(raw);
         assert_eq!(record.source.parser, LogParser::PostgresPlain);
         assert_eq!(record.severity_text, SeverityText::Error);
         assert_eq!(record.message, "something bad");
-        Ok(())
     }
 
     #[test]
-    fn normalize_postgres_line_preserves_raw_on_failure() -> Result<(), LogError> {
+    fn normalize_postgres_line_preserves_raw_on_failure() {
         let raw = "not a postgres log line";
-        let record = normalized_postgres_record(raw)?;
+        let record = normalized_postgres_record(raw);
         assert_eq!(record.source.parser, LogParser::Raw);
         assert_eq!(record.message, raw);
         assert_eq!(
@@ -1025,7 +1233,6 @@ mod tests {
             record.attributes.get("raw_line"),
             Some(&serde_json::Value::String(raw.to_string()))
         );
-        Ok(())
     }
 
     #[test]
@@ -1035,10 +1242,10 @@ mod tests {
     }
 
     #[test]
-    fn normalize_postgres_line_preserves_raw_on_non_utf8_failure() -> Result<(), LogError> {
+    fn normalize_postgres_line_preserves_raw_on_non_utf8_failure() {
         let bytes = [0xff_u8, 0x00, b'a', 0x80];
         let raw = decode_line(bytes.as_slice());
-        let record = normalized_postgres_record(raw.as_str())?;
+        let record = normalized_postgres_record(raw.as_str());
         assert_eq!(record.source.parser, LogParser::Raw);
         assert_eq!(record.message, raw);
         assert_eq!(
@@ -1049,33 +1256,20 @@ mod tests {
             record.attributes.get("raw_line"),
             Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
         );
-        Ok(())
     }
 
     #[test]
-    fn emit_postgres_line_emits_parse_failed_record_for_non_utf8() -> Result<(), WorkerError> {
-        let (log, sink) = test_log_handle();
+    fn postgres_line_event_preserves_parse_failure_for_non_utf8() {
         let path = PathBuf::from("/tmp/pg.log");
-        let bytes = vec![0xff_u8, 0x00, b'a', 0x80];
-        emit_postgres_line(
-            &log,
-            LogProducer::Postgres,
-            LogTransport::FileTail,
-            "pg_ctl_log_file",
-            path.as_path(),
-            bytes,
-        )?;
-        let records = sink.take();
-        assert_eq!(records.len(), 1);
+        let record = materialize_record(sample_non_utf8_postgres_line_event(path.as_path()));
         assert_eq!(
-            records[0].attributes.get("parse_failed"),
+            record.attributes.get("parse_failed"),
             Some(&Value::Bool(true))
         );
         assert_eq!(
-            records[0].attributes.get("raw_line"),
+            record.attributes.get("raw_line"),
             Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
         );
-        Ok(())
     }
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -1255,7 +1449,7 @@ mod tests {
             step_once as ingest_step_once, PostgresIngestWorkerCtx, PostgresIngestWorkerState,
         };
         use super::{
-            sample_runtime_config, test_log_handle, REAL_INGEST_RETRY_SLEEP,
+            sample_runtime_config, start_test_log, REAL_INGEST_RETRY_SLEEP,
             REAL_PROCESS_WORKER_POLL_INTERVAL, REAL_PSQL_RETRY_SLEEP,
         };
 
@@ -1338,7 +1532,7 @@ mod tests {
 
         fn build_process_worker_ctx(
             cfg: &crate::config::RuntimeConfig,
-            log: crate::logging::LogHandle,
+            log: crate::logging::LogSender,
             dcs: DcsView,
             inbox: tokio::sync::mpsc::UnboundedReceiver<ProcessIntentRequest>,
         ) -> (
@@ -1505,10 +1699,10 @@ mod tests {
             cfg.logging.postgres.cleanup.enabled = false;
             cfg.postgres.paths.log_file = Some(ns.child_dir("runtime/pg_ctl.log"));
 
-            let (log_handle, sink) = test_log_handle();
+            let test_log = start_test_log();
             let ctx = PostgresIngestWorkerCtx {
                 cfg,
-                log: log_handle,
+                log: test_log.sender(),
             };
             let mut state = PostgresIngestWorkerState::new(&ctx.cfg);
 
@@ -1522,7 +1716,7 @@ mod tests {
             let mut collected = Vec::new();
             while Instant::now() < deadline {
                 ingest_step_once(&ctx, &mut state).await?;
-                collected.extend(sink.take());
+                collected.extend(test_log.take().await);
                 let saw_json = collected
                     .iter()
                     .any(|r| r.source.parser == crate::logging::LogParser::PostgresJson);
@@ -1588,19 +1782,19 @@ mod tests {
             cfg.logging.postgres.log_dir = Some(log_dir.clone());
             cfg.logging.postgres.cleanup.enabled = false;
 
-            let (log_handle, sink) = test_log_handle();
+            let test_log = start_test_log();
 
             let (tx, rx) = mpsc::unbounded_channel();
             let (mut process_ctx, _process_state_subscriber) = build_process_worker_ctx(
                 &cfg,
-                log_handle.clone(),
+                test_log.sender(),
                 DcsView::starting(),
                 rx,
             );
 
             let ingest_ctx = PostgresIngestWorkerCtx {
                 cfg,
-                log: log_handle,
+                log: test_log.sender(),
             };
             let mut ingest_state = PostgresIngestWorkerState::new(&ingest_ctx.cfg);
 
@@ -1628,7 +1822,7 @@ mod tests {
             let mut collected_for_debug: Vec<LogRecord> = Vec::new();
             while started.elapsed() < Duration::from_secs(60) {
                 process_step_once(&mut process_ctx).await?;
-                collected_for_debug.extend(sink.take());
+                collected_for_debug.extend(test_log.take().await);
 
                 if let ProcessState::Idle {
                     last_outcome: Some(outcome),
@@ -1656,12 +1850,12 @@ mod tests {
                                 }
                                 let job_kind = record
                                     .attributes
-                                    .get("job_kind")
+                                    .get("job.kind")
                                     .and_then(|v| v.as_str())
                                     .map_or("<none>", |value| value);
                                 let job_id_attr = record
                                     .attributes
-                                    .get("job_id")
+                                    .get("job.id")
                                     .and_then(|v| v.as_str())
                                     .map_or("<none>", |value| value);
                                 if job_kind != "start_postgres"
@@ -1739,7 +1933,7 @@ mod tests {
             while Instant::now() < deadline {
                 ingest_step_once(&ingest_ctx, &mut ingest_state).await?;
                 process_step_once(&mut process_ctx).await?;
-                collected.extend(sink.take());
+                collected.extend(test_log.take().await);
                 let saw_pg_ctl_log = collected.iter().any(|r| {
                     r.source.producer == crate::logging::LogProducer::Postgres
                         && r.source.origin.contains("pg_ctl_log_file")
@@ -1772,7 +1966,7 @@ mod tests {
             ingest_step_once(&ingest_ctx, &mut ingest_state).await?;
 
             let mut all_records = collected;
-            all_records.extend(sink.take());
+            all_records.extend(test_log.take().await);
 
             let saw_pg_ctl_log = all_records.iter().any(|r| {
                 r.source.producer == crate::logging::LogProducer::Postgres
@@ -1781,7 +1975,7 @@ mod tests {
             let saw_pg_tool = all_records.iter().any(|r| {
                 r.source.producer == crate::logging::LogProducer::PgTool
                     && r.attributes
-                        .get("job_kind")
+                        .get("job.kind")
                         .and_then(|v| v.as_str())
                         .is_some()
             });
@@ -1823,7 +2017,7 @@ mod tests {
             let mut cfg = sample_runtime_config();
             cfg.process.binaries = binaries;
 
-            let (log_handle, sink) = test_log_handle();
+            let test_log = start_test_log();
 
             let (tx, rx) = mpsc::unbounded_channel();
             let dcs = DcsView::Coordinated(ClusterView::new(
@@ -1846,7 +2040,7 @@ mod tests {
                 SwitchoverView::None,
             ));
             let (mut ctx, _process_state_subscriber) =
-                build_process_worker_ctx(&cfg, log_handle, dcs, rx);
+                build_process_worker_ctx(&cfg, test_log.sender(), dcs, rx);
 
             let job_id = JobId("basebackup-fail".to_string());
             tx.send(ProcessIntentRequest {
@@ -1861,11 +2055,11 @@ mod tests {
             let mut collected = Vec::new();
             while Instant::now() < deadline {
                 process_step_once(&mut ctx).await?;
-                collected.extend(sink.take());
+                collected.extend(test_log.take().await);
                 let saw_stderr = collected.iter().any(|r| {
                     r.source.producer == crate::logging::LogProducer::PgTool
                         && r.source.transport == crate::logging::LogTransport::ChildStderr
-                        && r.attributes.get("job_kind").and_then(|v| v.as_str())
+                        && r.attributes.get("job.kind").and_then(|v| v.as_str())
                             == Some("basebackup")
                 });
                 if saw_stderr {

@@ -10,7 +10,7 @@ use crate::state::{
     MemberId, PgConnectTarget, PgUnixTarget, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
     WorkerError, WorkerStatus,
 };
-use crate::{config::RuntimeConfig, logging::LogHandle, process::state::ProcessRuntimePlan};
+use crate::{config::RuntimeConfig, logging::LogSender, process::state::ProcessRuntimePlan};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SqlStatus {
@@ -152,7 +152,7 @@ pub(crate) struct PgInfoStateChannel {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PgInfoRuntime {
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
 }
 
 pub(crate) struct PgInfoWorkerBootstrap {

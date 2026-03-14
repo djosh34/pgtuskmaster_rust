@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{DcsClientConfig, DcsEndpoint},
-    logging::LogHandle,
+    logging::LogSender,
     pginfo::state::{PgInfoState, Readiness},
     state::{
         LeaseEpoch, MemberId, ObservedWalPosition, PgTcpTarget, StatePublisher, StateSubscriber,
@@ -359,7 +359,7 @@ pub(crate) struct DcsControlPlane {
 }
 
 pub(crate) struct DcsRuntime {
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
     pub(crate) last_emitted_mode: Option<DcsMode>,
 }
 

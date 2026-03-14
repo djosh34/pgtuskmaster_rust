@@ -1,4 +1,4 @@
-## Task: Rewrite Logging Around Best-Effort Private Traited Domain Events And An Opaque LogSender <status>not_started</status> <passes>false</passes>
+## Task: Rewrite Logging Around Best-Effort Private Traited Domain Events And An Opaque LogSender <status>completed</status> <passes>true</passes>
 
 <description>
 **Goal:** Refactor the logging subsystem so that the only outward-facing logging API is an opaque `LogSender` with a single `send(event)` style method, where `event` is a typed enum owned by the emitting domain and accepted through a trait bound. The higher-order goal is to make logging impossible to misuse and impossible to couple to business logic: non-logging code must not know about field maps, records, severities, sinks, tracing APIs, or serialization details, and logging failures must no longer alter worker or runtime control flow except when the send operation itself cannot enqueue because the channel is broken.
@@ -386,31 +386,33 @@ The trait implementation may delegate field writing across the composed pieces. 
 </description>
 
 <acceptance_criteria>
-- [ ] Replace the current logging emission boundary in `src/logging/mod.rs` with an opaque `LogSender` that exposes only a single-event send API and hides the underlying queue type and private queued-record type.
-- [ ] Remove the current `LogHandle::emit(origin, event)` style outward API for normal domain code, or reduce it to a private/internal implementation detail that non-logging modules cannot call.
-- [ ] Refactor `src/logging/event.rs` so logging no longer owns one central public/crate-visible application-event sum enum spanning runtime, DCS, pginfo, process, and ingest domains.
-- [ ] Introduce or preserve per-domain typed logging enums for runtime, DCS, pginfo, process, and any other emitting non-logging modules; each domain enum must define its own variants and implied severity semantics.
-- [ ] Introduce a logging trait that typed events implement; the trait must be the only route by which normal code can make an event loggable, and it must not expose mutable field bags or manual severity assembly to callers.
-- [ ] Implement the architecture using a concrete `LogSender` plus a trait/method shape materially equivalent to the proposed signatures in this task, including one private queued-record shape and a caller-visible send error that only represents broken channel/enqueue failure.
-- [ ] Ensure the send path eagerly renders the typed event into one private queued-record shape before queueing so one shared queue can carry heterogeneous events without exposing any queue item type publicly.
-- [ ] Ensure the logging package keeps `LogRecord`, attribute maps, severity constructors, sinks, and queue message types private to `src/logging`.
-- [ ] Remove all non-logging imports or usages of `tracing`; after the refactor, only `src/logging` may depend on `tracing`, and if `tracing` is no longer needed internally, remove it entirely.
-- [ ] Remove all non-logging ability to construct manual log fields, manual records, manual severities for application events, or direct private queued-record values.
-- [ ] Remove every `emit_xxx` helper function from the codebase. Zero such wrapper functions are allowed to remain after the refactor, including in `src/process/worker.rs`, `src/pginfo/worker.rs`, `src/dcs/worker.rs`, and `src/logging/postgres_ingest.rs`.
-- [ ] Remove every field-bag or manual field-construction path outside the final backend renderer in `src/logging`; postgres ingest and any other logging-internal producer code must also emit typed events rather than assembling generic fields directly.
-- [ ] Rewrite `src/runtime/node.rs` so startup logging failure cannot abort node startup except for a broken sender/channel during bootstrap if that is still part of startup invariants.
-- [ ] Rewrite `src/pginfo/worker.rs` so `PollFailed` and `SqlTransition` logging cannot prevent state calculation or publication after the event has been accepted by the sender.
-- [ ] Rewrite `src/dcs/worker.rs` so logging cannot prevent `store_healthy` updates, trust computation, command handling, or state publication after send succeeds.
-- [ ] Rewrite `src/process/worker.rs` so logging cannot prevent request handling, job start/failure/success transitions, timeout handling, output handling, or `transition_to_idle(...)` after send succeeds.
-- [ ] Rewrite `src/logging/postgres_ingest.rs` so sink/serialization/backend failures no longer fail the ingest loop after an event has been accepted by the sender, and line-emission issues do not become workflow failures solely because logging backends misbehaved.
-- [ ] Remove obsolete helper wrappers such as the current `emit_process_event`, `emit_pginfo_event`, `emit_dcs_event`, and similar adapter functions if they no longer serve a meaningful purpose beyond wrapping the old API.
-- [ ] Update logging tests so they validate the new best-effort sender/worker architecture rather than asserting propagation of sink failures back to domain callers.
-- [ ] Remove or rewrite the current sink-failure-preservation behavior and tests in `src/logging/mod.rs`, including the current expectation that tracing-backed emission returns sink write errors to callers.
-- [ ] Add or update tests proving that normal business/workflow code continues correctly even when logging sinks fail internally after enqueue.
-- [ ] Add or update tests proving that the only caller-visible send failure is a broken/closed queue and that backend sink failure remains internal to logging.
-- [ ] Verify with ripgrep that no non-logging module under `src/` imports `tracing` or manually constructs logging records/field maps after the refactor.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Replace the current logging emission boundary in `src/logging/mod.rs` with an opaque `LogSender` that exposes only a single-event send API and hides the underlying queue type and private queued-record type.
+- [x] Remove the current `LogHandle::emit(origin, event)` style outward API for normal domain code, or reduce it to a private/internal implementation detail that non-logging modules cannot call.
+- [x] Refactor `src/logging/event.rs` so logging no longer owns one central public/crate-visible application-event sum enum spanning runtime, DCS, pginfo, process, and ingest domains.
+- [x] Introduce or preserve per-domain typed logging enums for runtime, DCS, pginfo, process, and any other emitting non-logging modules; each domain enum must define its own variants and implied severity semantics.
+- [x] Introduce a logging trait that typed events implement; the trait must be the only route by which normal code can make an event loggable, and it must not expose mutable field bags or manual severity assembly to callers.
+- [x] Implement the architecture using a concrete `LogSender` plus a trait/method shape materially equivalent to the proposed signatures in this task, including one private queued-record shape and a caller-visible send error that only represents broken channel/enqueue failure.
+- [x] Ensure the send path eagerly renders the typed event into one private queued-record shape before queueing so one shared queue can carry heterogeneous events without exposing any queue item type publicly.
+- [x] Ensure the logging package keeps `LogRecord`, attribute maps, severity constructors, sinks, and queue message types private to `src/logging`.
+- [x] Remove all non-logging imports or usages of `tracing`; after the refactor, only `src/logging` may depend on `tracing`, and if `tracing` is no longer needed internally, remove it entirely.
+- [x] Remove all non-logging ability to construct manual log fields, manual records, manual severities for application events, or direct private queued-record values.
+- [x] Remove every `emit_xxx` helper function from the codebase. Zero such wrapper functions are allowed to remain after the refactor, including in `src/process/worker.rs`, `src/pginfo/worker.rs`, `src/dcs/worker.rs`, and `src/logging/postgres_ingest.rs`.
+- [x] Remove every field-bag or manual field-construction path outside the final backend renderer in `src/logging`; postgres ingest and any other logging-internal producer code must also emit typed events rather than assembling generic fields directly.
+- [x] Rewrite `src/runtime/node.rs` so startup logging failure cannot abort node startup except for a broken sender/channel during bootstrap if that is still part of startup invariants.
+- [x] Rewrite `src/pginfo/worker.rs` so `PollFailed` and `SqlTransition` logging cannot prevent state calculation or publication after the event has been accepted by the sender.
+- [x] Rewrite `src/dcs/worker.rs` so logging cannot prevent `store_healthy` updates, trust computation, command handling, or state publication after send succeeds.
+- [x] Rewrite `src/process/worker.rs` so logging cannot prevent request handling, job start/failure/success transitions, timeout handling, output handling, or `transition_to_idle(...)` after send succeeds.
+- [x] Rewrite `src/logging/postgres_ingest.rs` so sink/serialization/backend failures no longer fail the ingest loop after an event has been accepted by the sender, and line-emission issues do not become workflow failures solely because logging backends misbehaved.
+- [x] Remove obsolete helper wrappers such as the current `emit_process_event`, `emit_pginfo_event`, `emit_dcs_event`, and similar adapter functions if they no longer serve a meaningful purpose beyond wrapping the old API.
+- [x] Update logging tests so they validate the new best-effort sender/worker architecture rather than asserting propagation of sink failures back to domain callers.
+- [x] Remove or rewrite the current sink-failure-preservation behavior and tests in `src/logging/mod.rs`, including the current expectation that tracing-backed emission returns sink write errors to callers.
+- [x] Add or update tests proving that normal business/workflow code continues correctly even when logging sinks fail internally after enqueue.
+- [x] Add or update tests proving that the only caller-visible send failure is a broken/closed queue and that backend sink failure remains internal to logging.
+- [x] Verify with ripgrep that no non-logging module under `src/` imports `tracing` or manually constructs logging records/field maps after the refactor.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+NOW EXECUTE

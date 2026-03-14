@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config::{resolve_secret_string, PostgresRoleName, RoleAuthConfig, SecretSource};
-use crate::logging::ProcessJobKind;
 use crate::pginfo::state::PgConnInfo;
 use crate::state::{JobId, MemberId, UnixMillis};
 
@@ -134,6 +133,19 @@ pub enum ActiveJobKind {
     PgRewind,
     Promote,
     Demote,
+    StartPrimary,
+    StartDetachedStandby,
+    StartReplica,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ProcessJobKind {
+    Bootstrap,
+    BaseBackup,
+    PgRewind,
+    Promote,
+    Demote,
+    StartPostgres,
     StartPrimary,
     StartDetachedStandby,
     StartReplica,

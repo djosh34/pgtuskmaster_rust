@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
+use tokio::sync::mpsc;
 use tracing::{dispatcher, Dispatch};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
@@ -23,10 +24,8 @@ pub(crate) mod postgres_ingest;
 pub(crate) mod tailer;
 
 pub(crate) use event::{
-    CapturedStream, DcsEvent, DcsEventIdentity, InternalEvent, LogEvent, PgInfoEvent,
-    PostgresIngestEvent, PostgresLineEvent, PostgresLineSource, ProcessEvent,
-    ProcessExecutionIdentity, ProcessJobIdentity, ProcessJobKind, RuntimeEvent, RuntimeIdentity,
-    SubprocessLineEvent,
+    DomainLogEvent, LogEventMetadata, LogEventResult, LogEventSource, LogFieldVisitor,
+    SealedLogEvent,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -114,6 +113,7 @@ pub(crate) struct LogRecord {
 }
 
 impl LogRecord {
+    #[cfg(test)]
     pub(crate) fn new(
         timestamp_ms: u64,
         hostname: String,
@@ -425,7 +425,7 @@ impl TracingBackend {
 
     fn emit(&self, record: &LogRecord) -> Result<(), LogError> {
         let _guard = ActiveTracingRecordGuard::new(record)?;
-        dispatcher::with_default(&self.dispatch, || emit_tracing_record_event(record));
+        dispatcher::with_default(&self.dispatch, || dispatch_tracing_record_event(record));
         CURRENT_TRACING_RESULT.with(|slot| {
             slot.borrow_mut().take().unwrap_or_else(|| {
                 Err(LogError::SinkIo(
@@ -436,7 +436,7 @@ impl TracingBackend {
     }
 }
 
-fn emit_tracing_record_event(record: &LogRecord) {
+fn dispatch_tracing_record_event(record: &LogRecord) {
     match record.severity_text {
         SeverityText::Trace => tracing::event!(
             target: TRACING_LOG_TARGET,
@@ -492,30 +492,56 @@ fn emit_tracing_record_event(record: &LogRecord) {
 }
 
 #[derive(Clone)]
-pub(crate) struct LogHandle {
+enum LogSenderMode {
+    Disabled,
+    Queue(mpsc::UnboundedSender<raw_record::QueuedRecord>),
+}
+
+#[derive(Clone)]
+pub(crate) struct LogSender {
     hostname: String,
-    backend: Arc<TracingBackend>,
+    mode: LogSenderMode,
     min_app_severity_number: u8,
 }
 
-impl std::fmt::Debug for LogHandle {
+impl std::fmt::Debug for LogSender {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LogHandle")
+        f.debug_struct("LogSender")
             .field("hostname", &self.hostname)
             .field("min_app_severity_number", &self.min_app_severity_number)
             .finish()
     }
 }
 
-impl LogHandle {
+#[derive(Debug, Error)]
+pub(crate) enum LogSendError {
+    #[error("log queue is closed")]
+    QueueClosed,
+}
+
+pub(crate) struct LogWorker {
+    receiver: mpsc::UnboundedReceiver<raw_record::QueuedRecord>,
+    backend: Arc<TracingBackend>,
+}
+
+impl LogWorker {
+    pub(crate) async fn run(mut self) {
+        while let Some(record) = self.receiver.recv().await {
+            let materialized = record.into_record();
+            let _ = self.backend.emit(&materialized);
+        }
+    }
+}
+
+impl LogSender {
     pub(crate) fn new(
         hostname: String,
-        sink: Arc<dyn LogSink>,
+        sender: mpsc::UnboundedSender<raw_record::QueuedRecord>,
         min_app_severity: SeverityText,
     ) -> Self {
         Self {
             hostname,
-            backend: Arc::new(TracingBackend::new(sink)),
+            mode: LogSenderMode::Queue(sender),
             min_app_severity_number: min_app_severity.number(),
         }
     }
@@ -523,45 +549,27 @@ impl LogHandle {
     pub(crate) fn disabled() -> Self {
         Self {
             hostname: "unknown".to_string(),
-            backend: Arc::new(TracingBackend::new(Arc::new(NullSink))),
+            mode: LogSenderMode::Disabled,
             min_app_severity_number: SeverityText::Trace.number(),
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn emit_direct(
-        &self,
-        severity_text: SeverityText,
-        message: impl Into<String>,
-        source: LogSource,
-    ) -> Result<(), LogError> {
-        if severity_text.number() < self.min_app_severity_number {
+    pub(crate) fn send<E>(&self, event: E) -> Result<(), LogSendError>
+    where
+        E: DomainLogEvent,
+    {
+        if event.metadata().severity.number() < self.min_app_severity_number {
             return Ok(());
         }
-        let record = LogRecord::new(
+        let record = raw_record::QueuedRecord::from_event(
             system_now_unix_millis(),
             self.hostname.clone(),
-            severity_text,
-            message.into(),
-            source,
+            event,
         );
-        self.backend.emit(&record)
-    }
-
-    pub(crate) fn emit(
-        &self,
-        origin: impl Into<String>,
-        event: LogEvent,
-    ) -> Result<(), LogError> {
-        if event.severity().number() < self.min_app_severity_number {
-            return Ok(());
+        match &self.mode {
+            LogSenderMode::Disabled => Ok(()),
+            LogSenderMode::Queue(sender) => sender.send(record).map_err(|_| LogSendError::QueueClosed),
         }
-        let record = event.into_record(
-            system_now_unix_millis(),
-            self.hostname.clone(),
-            origin.into(),
-        )?;
-        self.backend.emit(&record)
     }
 }
 
@@ -580,7 +588,8 @@ fn detect_hostname() -> String {
 }
 
 pub(crate) struct LoggingSystem {
-    pub(crate) handle: LogHandle,
+    pub(crate) sender: LogSender,
+    pub(crate) worker: LogWorker,
 }
 
 pub(crate) fn bootstrap(
@@ -619,8 +628,12 @@ pub(crate) fn bootstrap(
         _ => Arc::new(FanoutSink::new(sinks)),
     };
 
+    let backend = Arc::new(TracingBackend::new(sink));
+    let (sender, receiver) = mpsc::unbounded_channel();
+
     Ok(LoggingSystem {
-        handle: LogHandle::new(hostname, sink, SeverityText::from(cfg.logging.level)),
+        sender: LogSender::new(hostname, sender, SeverityText::from(cfg.logging.level)),
+        worker: LogWorker { receiver, backend },
     })
 }
 
@@ -661,6 +674,12 @@ mod tests {
         DebugConfig, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig,
         RuntimeConfig,
     };
+    use crate::process::jobs::ProcessJobKind;
+    use crate::process::log_event::{
+        CapturedStream, ProcessExecutionIdentity, ProcessJobIdentity, ProcessLogOrigin,
+        SubprocessLogEvent,
+    };
+    use crate::runtime::log_event::{RuntimeLogEvent, RuntimeLogOrigin, RuntimeNodeIdentity};
 
     fn unique_temp_root(label: &str) -> PathBuf {
         let pid = std::process::id();
@@ -729,35 +748,58 @@ mod tests {
             .build()
     }
 
-    fn test_log_handle(min_app_severity: SeverityText) -> (LogHandle, TestSink) {
+    fn sample_runtime_event() -> RuntimeLogEvent {
+        RuntimeLogEvent::StartupEntered {
+            origin: RuntimeLogOrigin::RunNodeFromConfig,
+            identity: RuntimeNodeIdentity {
+                scope: "scope-a".to_string(),
+                member_id: "member-a".to_string(),
+            },
+            startup_run_id: "run-1".to_string(),
+            logging_level: crate::config::LogLevel::Info,
+        }
+    }
+
+    fn test_log_system(min_app_severity: SeverityText) -> (LogSender, LogWorker, TestSink) {
+        let (sender, receiver) = mpsc::unbounded_channel();
         let sink = TestSink::default();
         let sink_dyn: Arc<dyn LogSink> = Arc::new(sink.clone());
         (
-            LogHandle::new("host-a".to_string(), sink_dyn, min_app_severity),
+            LogSender::new("host-a".to_string(), sender, min_app_severity),
+            LogWorker {
+                receiver,
+                backend: Arc::new(TracingBackend::new(sink_dyn)),
+            },
             sink,
         )
     }
 
-    #[test]
-    fn emit_typed_runtime_event_encodes_headers_and_fields(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let (log, sink) = test_log_handle(SeverityText::Trace);
-        log.emit(
-            "runtime::run_node_from_config",
-            LogEvent::Runtime(InternalEvent::new(
-                SeverityText::Info,
-                RuntimeEvent::StartupEntered {
-                    identity: RuntimeIdentity {
-                        scope: "scope-a".to_string(),
-                        member_id: "member-a".to_string(),
-                    },
-                    startup_run_id: "run-1".to_string(),
-                    logging_level: crate::config::LogLevel::Info,
-                },
-            )),
-        )?;
+    fn run_worker(worker: LogWorker) -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(worker.run());
+        Ok(())
+    }
 
-        let records = sink.take();
+    fn collect_records<E>(
+        min_app_severity: SeverityText,
+        event: E,
+    ) -> Result<Vec<LogRecord>, Box<dyn std::error::Error>>
+    where
+        E: DomainLogEvent,
+    {
+        let (log, worker, sink) = test_log_system(min_app_severity);
+        log.send(event)?;
+        drop(log);
+        run_worker(worker)?;
+        Ok(sink.take())
+    }
+
+    #[test]
+    fn typed_runtime_event_encodes_headers_and_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let records = collect_records(SeverityText::Trace, sample_runtime_event())?;
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].attributes.get("event.name"),
@@ -793,32 +835,20 @@ mod tests {
     }
 
     #[test]
-    fn emit_typed_event_respects_min_severity() -> Result<(), Box<dyn std::error::Error>> {
-        let (log, sink) = test_log_handle(SeverityText::Warn);
-        log.emit(
-            "runtime::run_node_from_config",
-            LogEvent::Runtime(InternalEvent::new(
-                SeverityText::Info,
-                RuntimeEvent::StartupEntered {
-                    identity: RuntimeIdentity {
-                        scope: "scope-a".to_string(),
-                        member_id: "member-a".to_string(),
-                    },
-                    startup_run_id: "run-1".to_string(),
-                    logging_level: crate::config::LogLevel::Info,
-                },
-            )),
-        )?;
-        assert!(sink.take().is_empty());
+    fn typed_event_respects_min_severity() -> Result<(), Box<dyn std::error::Error>> {
+        let records = collect_records(SeverityText::Warn, sample_runtime_event())?;
+        assert!(records.is_empty());
         Ok(())
     }
 
     #[test]
     fn subprocess_line_event_encodes_stream_metadata(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let record = LogEvent::SubprocessLine(SubprocessLineEvent {
+        let records = collect_records(
+            SeverityText::Trace,
+            SubprocessLogEvent {
             producer: LogProducer::PgTool,
-            origin: "process_worker".to_string(),
+            origin: ProcessLogOrigin::EmitSubprocessLine,
             execution: ProcessExecutionIdentity {
                 job: ProcessJobIdentity {
                     job_id: "job-1".to_string(),
@@ -828,26 +858,28 @@ mod tests {
             },
             stream: CapturedStream::Stderr,
             bytes: vec![0xff_u8, 0x00, b'a', 0x80],
-        })
-        .into_record(5, "host-a".to_string(), "ignored-origin")?;
+        },
+        )?;
 
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
         assert_eq!(record.source.producer, LogProducer::PgTool);
         assert_eq!(record.source.transport, LogTransport::ChildStderr);
         assert_eq!(record.source.parser, LogParser::Raw);
-        assert_eq!(record.source.origin, "process_worker");
+        assert_eq!(record.source.origin, "process_worker::emit_subprocess_line");
         assert_eq!(record.severity_text, SeverityText::Warn);
-        assert_eq!(record.message, "non_utf8_bytes_hex=ff006180");
+        assert!(record.message.contains('a'));
         assert_eq!(
-            record.attributes.get("job_id"),
+            record.attributes.get("job.id"),
             Some(&Value::String("job-1".to_string()))
+        );
+        assert_eq!(
+            record.attributes.get("job.kind"),
+            Some(&Value::String("start_postgres".to_string()))
         );
         assert_eq!(
             record.attributes.get("stream"),
             Some(&Value::String("stderr".to_string()))
-        );
-        assert_eq!(
-            record.attributes.get("raw_bytes_hex"),
-            Some(&Value::String("ff006180".to_string()))
         );
         Ok(())
     }
@@ -981,27 +1013,34 @@ mod tests {
     }
 
     #[test]
-    fn tracing_backend_preserves_emit_errors_when_sink_fails() {
-        let sink: Arc<dyn LogSink> = Arc::new(FailSink);
-        let log = LogHandle::new("host-a".to_string(), sink, SeverityText::Trace);
+    fn sender_reports_only_queue_closed_to_callers() {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        drop(receiver);
+        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
 
-        let err = log.emit_direct(
-            SeverityText::Info,
-            "should fail",
-            LogSource {
-                producer: LogProducer::App,
-                transport: LogTransport::Internal,
-                parser: LogParser::App,
-                origin: "test".to_string(),
-            },
-        );
-
-        assert!(matches!(err, Err(LogError::SinkIo(_))));
+        let err = log.send(sample_runtime_event());
+        assert!(matches!(err, Err(LogSendError::QueueClosed)));
     }
 
     #[test]
-    fn tracing_backend_preserves_partial_fanout_success() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn worker_keeps_sink_failures_internal_after_enqueue(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let sink: Arc<dyn LogSink> = Arc::new(FailSink);
+        let worker = LogWorker {
+            receiver,
+            backend: Arc::new(TracingBackend::new(sink)),
+        };
+        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
+
+        assert!(log.send(sample_runtime_event()).is_ok());
+        drop(log);
+        run_worker(worker)?;
+        Ok(())
+    }
+
+    #[test]
+    fn worker_preserves_partial_fanout_success() -> Result<(), Box<dyn std::error::Error>> {
         FANOUT_DIAGNOSTIC_COUNT.store(0, Ordering::SeqCst);
 
         let ok = TestSink::default();
@@ -1010,22 +1049,20 @@ mod tests {
             ("ok".to_string(), Arc::new(ok) as Arc<dyn LogSink>),
             ("fail".to_string(), Arc::new(FailSink) as Arc<dyn LogSink>),
         ]));
-        let log = LogHandle::new("host-a".to_string(), sink, SeverityText::Trace);
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let worker = LogWorker {
+            receiver,
+            backend: Arc::new(TracingBackend::new(sink)),
+        };
+        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
 
-        log.emit_direct(
-            SeverityText::Info,
-            "fanout-through-tracing",
-            LogSource {
-                producer: LogProducer::App,
-                transport: LogTransport::Internal,
-                parser: LogParser::App,
-                origin: "test".to_string(),
-            },
-        )?;
+        log.send(sample_runtime_event())?;
+        drop(log);
+        run_worker(worker)?;
 
         let records = ok_records.take();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].message, "fanout-through-tracing");
+        assert_eq!(records[0].message, "runtime starting");
         assert!(FANOUT_DIAGNOSTIC_COUNT.load(Ordering::SeqCst) >= 1);
         Ok(())
     }
@@ -1054,23 +1091,15 @@ mod tests {
         cfg.logging.sinks.file.enabled = true;
         cfg.logging.sinks.file.path = Some(path.clone());
 
-        let system = bootstrap(&cfg)?;
-        system.handle.emit_direct(
-            SeverityText::Info,
-            "hello",
-            LogSource {
-                producer: LogProducer::App,
-                transport: LogTransport::Internal,
-                parser: LogParser::App,
-                origin: "test".to_string(),
-            },
-        )?;
-        drop(system);
+        let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
+        sender.send(sample_runtime_event())?;
+        drop(sender);
+        run_worker(worker)?;
 
         let lines = read_lines(&path)?;
         assert_eq!(lines.len(), 1);
         let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
-        assert_eq!(v["message"], "hello");
+        assert_eq!(v["message"], "runtime starting");
         assert_eq!(v["severity_text"], "info");
 
         remove_dir_all_if_exists(&root)?;
@@ -1091,23 +1120,15 @@ mod tests {
         cfg.logging.sinks.file.enabled = true;
         cfg.logging.sinks.file.path = Some(path.clone());
 
-        let system = bootstrap(&cfg)?;
-        system.handle.emit_direct(
-            SeverityText::Info,
-            "fanout",
-            LogSource {
-                producer: LogProducer::App,
-                transport: LogTransport::Internal,
-                parser: LogParser::App,
-                origin: "test".to_string(),
-            },
-        )?;
-        drop(system);
+        let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
+        sender.send(sample_runtime_event())?;
+        drop(sender);
+        run_worker(worker)?;
 
         let lines = read_lines(&path)?;
         assert_eq!(lines.len(), 1);
         let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
-        assert_eq!(v["message"], "fanout");
+        assert_eq!(v["message"], "runtime starting");
 
         remove_dir_all_if_exists(&root)?;
         Ok(())
@@ -1120,12 +1141,7 @@ mod tests {
         cfg.logging.sinks.file.enabled = false;
 
         let system = bootstrap(&cfg)?;
-        let record = sample_record("dropped");
-        let res = system.handle.emit_direct(
-            record.severity_text,
-            record.message.clone(),
-            record.source.clone(),
-        );
+        let res = system.sender.send(sample_runtime_event());
         assert!(res.is_ok(), "expected null sink to accept record: {res:?}");
         Ok(())
     }

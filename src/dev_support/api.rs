@@ -9,7 +9,7 @@ use crate::{
     },
     config::RuntimeConfig,
     ha::state::HaState,
-    logging::LogHandle,
+    logging::LogSender,
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::state::ProcessState,
     state::{new_state_channel, WorkerStatus},
@@ -62,7 +62,7 @@ fn build_test_router_with_state(
             transport: transport.clone(),
             reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
         },
-        log: LogHandle::disabled(),
+        log: LogSender::disabled(),
     })
     .map_err(|err| HarnessError::InvalidInput(err.to_string()))
 }

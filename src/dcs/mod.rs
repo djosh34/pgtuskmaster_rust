@@ -1,4 +1,5 @@
 mod command;
+pub(crate) mod log_event;
 pub(crate) mod startup;
 mod state;
 pub(crate) mod worker;

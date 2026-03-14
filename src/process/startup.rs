@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use crate::{
     config::{ProcessConfig, RuntimeConfig},
     dcs::DcsView,
-    logging::LogHandle,
+    logging::LogSender,
     state::{new_state_channel, NodeIdentity, StateSubscriber, WorkerError},
 };
 
@@ -28,7 +28,7 @@ pub(crate) struct ProcessRuntimeRequest {
     pub(crate) plan: ProcessRuntimePlan,
     pub(crate) config: ProcessConfig,
     pub(crate) capture_subprocess_output: bool,
-    pub(crate) log: LogHandle,
+    pub(crate) log: LogSender,
 }
 
 #[derive(Clone, Debug)]
