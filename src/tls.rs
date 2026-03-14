@@ -310,7 +310,7 @@ fn certificate_common_names(
 fn client_common_names(values: &[ClientCommonName]) -> BTreeSet<String> {
     values
         .iter()
-        .map(|value| value.0.trim().to_string())
+        .map(|value| value.as_str().trim().to_string())
         .collect()
 }
 

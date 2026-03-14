@@ -65,10 +65,6 @@ pub fn load_operator_config(path: &Path) -> Result<PgtmConfig, ConfigError> {
 }
 
 pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
-    validate_non_empty("cluster.name", cfg.cluster.name.as_str())?;
-    validate_non_empty("cluster.scope", cfg.cluster.scope.as_str())?;
-    validate_non_empty("cluster.member_id", cfg.cluster.member_id.as_str())?;
-
     if cfg.dcs.endpoints.is_empty() {
         return Err(ConfigError::Validation {
             field: "dcs.endpoints",
@@ -84,20 +80,8 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         "postgres.rewind.database",
         cfg.postgres.rewind.database.as_str(),
     )?;
-    validate_non_empty(
-        "postgres.roles.mandatory.superuser.username",
-        cfg.postgres.roles.mandatory.superuser.username.as_str(),
-    )?;
-    validate_non_empty(
-        "postgres.roles.mandatory.replicator.username",
-        cfg.postgres.roles.mandatory.replicator.username.as_str(),
-    )?;
-    validate_non_empty(
-        "postgres.roles.mandatory.rewinder.username",
-        cfg.postgres.roles.mandatory.rewinder.username.as_str(),
-    )?;
 
-    for (role_key, role) in &cfg.postgres.roles.extra {
+    for role_key in cfg.postgres.roles.extra.keys() {
         if matches!(role_key.as_str(), "superuser" | "replicator" | "rewinder") {
             return Err(ConfigError::Validation {
                 field: "postgres.roles.extra",
@@ -108,7 +92,6 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
             });
         }
 
-        validate_non_empty("postgres.roles.extra.<key>.username", role.role.username.as_str())?;
     }
 
     validate_unique_managed_role_usernames(cfg)?;
@@ -354,46 +337,9 @@ mod tests {
 
     #[test]
     fn rejects_empty_extra_managed_role_username() -> Result<(), String> {
-        let cfg = RuntimeConfigBuilder::new()
-            .transform_postgres(|postgres| crate::config::PostgresConfig {
-                roles: crate::config::PostgresRolesConfig {
-                    extra: BTreeMap::from([(
-                        ManagedPostgresRoleKey("analytics".to_string()),
-                        ExtraManagedPostgresRoleConfig {
-                            role: PostgresRoleConfig {
-                                username: PostgresRoleName(" ".to_string()),
-                                auth: RoleAuthConfig::Password {
-                                    password: inline_password("analytics-secret"),
-                                },
-                            },
-                            privilege: PostgresRolePrivilege::Login,
-                            member_of: Vec::new(),
-                        },
-                    )]),
-                    ..postgres.roles
-                },
-                ..postgres
-            })
-            .build();
-
-        let err = match validate_runtime_config(&cfg) {
-            Ok(()) => {
-                return Err(
-                    "expected empty extra managed postgres username to be rejected".to_string()
-                );
-            }
-            Err(err) => err,
-        };
-
-        match err {
-            crate::config::ConfigError::Validation { field, .. } => {
-                if field != "postgres.roles.extra.<key>.username" {
-                    return Err(format!("unexpected field `{field}`"));
-                }
-            }
-            other => return Err(format!("unexpected error variant: {other}")),
+        match PostgresRoleName::try_from(" ") {
+            Ok(_) => Err("expected empty managed postgres username to be rejected".to_string()),
+            Err(_) => Ok(()),
         }
-
-        Ok(())
     }
 }

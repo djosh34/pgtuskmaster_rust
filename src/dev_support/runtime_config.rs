@@ -12,6 +12,7 @@ use crate::{
         RoleAuthConfig, RuntimeConfig, SecretSource, StderrSinkConfig, TlsServerConfig,
     },
     pginfo::conninfo::PgSslMode,
+    state::{ClusterName, MemberId, ScopeName},
 };
 
 const SAMPLE_PG_HBA_CONTENTS: &str = "local all all trust\n";
@@ -38,21 +39,21 @@ const SAMPLE_DCS_INIT_PAYLOAD_JSON: &str = "{\"ttl\":30}";
 
 fn sample_cluster_config() -> ClusterConfig {
     ClusterConfig {
-        name: "cluster-a".to_string(),
-        scope: "scope-a".to_string(),
-        member_id: "node-a".to_string(),
+        name: ClusterName("cluster-a".to_string()),
+        scope: ScopeName("scope-a".to_string()),
+        member_id: MemberId("node-a".to_string()),
     }
 }
 
 pub fn sample_binary_paths() -> BinaryResolutionConfig {
     BinaryResolutionConfig {
         overrides: BinaryPathOverrides {
-            postgres: Some("/usr/bin/postgres".into()),
-            pg_ctl: Some("/usr/bin/pg_ctl".into()),
-            pg_rewind: Some("/usr/bin/pg_rewind".into()),
-            initdb: Some("/usr/bin/initdb".into()),
-            pg_basebackup: Some("/usr/bin/pg_basebackup".into()),
-            psql: Some("/usr/bin/psql".into()),
+            postgres: Some(".tools/postgres16/bin/postgres".into()),
+            pg_ctl: Some(".tools/postgres16/bin/pg_ctl".into()),
+            pg_rewind: Some(".tools/postgres16/bin/pg_rewind".into()),
+            initdb: Some(".tools/postgres16/bin/initdb".into()),
+            pg_basebackup: Some(".tools/postgres16/bin/pg_basebackup".into()),
+            psql: Some(".tools/postgres16/bin/psql".into()),
         },
     }
 }
@@ -272,7 +273,7 @@ impl RuntimeConfigBuilder {
     }
 
     pub fn with_dcs_scope(self, scope: impl Into<String>) -> Self {
-        let scope = scope.into();
+        let scope = ScopeName(scope.into());
         self.transform_cluster(move |cluster| ClusterConfig { scope, ..cluster })
     }
 
@@ -507,7 +508,11 @@ mod tests {
     #[test]
     fn baseline_builder_output_passes_runtime_validation() {
         let cfg = sample_runtime_config();
-        assert!(validate_runtime_config(&cfg).is_ok());
+        let result = validate_runtime_config(&cfg);
+        assert!(
+            result.is_ok(),
+            "expected baseline config to validate cleanly, got: {result:?}"
+        );
     }
 
     #[test]
@@ -545,7 +550,7 @@ mod tests {
         assert_eq!(updated.postgres.network.listen_port, 6543);
         assert_eq!(updated.postgres.network.advertise_port, Some(6544));
         assert_eq!(updated.api.listen_addr, sample_override_api_listen_addr());
-        assert_eq!(updated.cluster.scope, "scope-b");
+        assert_eq!(updated.cluster.scope.as_str(), "scope-b");
         assert_eq!(updated.cluster.name, baseline.cluster.name);
         assert_eq!(
             updated.postgres.network.listen_host,

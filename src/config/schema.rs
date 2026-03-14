@@ -7,6 +7,8 @@ use std::{
 
 use serde::Deserialize;
 
+use crate::state::{ClusterName, MemberId, NonEmptyStringError, ScopeName};
+
 use super::{defaults, endpoint::DcsEndpoint};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -57,8 +59,32 @@ pub enum ClientCertificateMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(transparent)]
-pub struct ClientCommonName(pub String);
+#[serde(try_from = "String")]
+pub struct ClientCommonName(pub(crate) String);
+
+impl ClientCommonName {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl TryFrom<String> for ClientCommonName {
+    type Error = NonEmptyStringError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        require_non_empty("client_common_name", value.as_str())?;
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<&str> for ClientCommonName {
+    type Error = NonEmptyStringError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        require_non_empty("client_common_name", value)?;
+        Ok(Self(value.to_string()))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -165,9 +191,9 @@ impl RuntimeConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterConfig {
-    pub name: String,
-    pub scope: String,
-    pub member_id: String,
+    pub name: ClusterName,
+    pub scope: ScopeName,
+    pub member_id: MemberId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -260,8 +286,8 @@ pub enum RoleAuthConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(transparent)]
-pub struct PostgresRoleName(pub String);
+#[serde(try_from = "String")]
+pub struct PostgresRoleName(pub(crate) String);
 
 impl PostgresRoleName {
     pub fn as_str(&self) -> &str {
@@ -269,14 +295,60 @@ impl PostgresRoleName {
     }
 }
 
+impl TryFrom<String> for PostgresRoleName {
+    type Error = NonEmptyStringError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        require_non_empty("postgres_role_name", value.as_str())?;
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<&str> for PostgresRoleName {
+    type Error = NonEmptyStringError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        require_non_empty("postgres_role_name", value)?;
+        Ok(Self(value.to_string()))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(transparent)]
-pub struct ManagedPostgresRoleKey(pub String);
+#[serde(try_from = "String")]
+pub struct ManagedPostgresRoleKey(pub(crate) String);
 
 impl ManagedPostgresRoleKey {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+}
+
+impl TryFrom<String> for ManagedPostgresRoleKey {
+    type Error = NonEmptyStringError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        require_non_empty("managed_postgres_role_key", value.as_str())?;
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<&str> for ManagedPostgresRoleKey {
+    type Error = NonEmptyStringError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        require_non_empty("managed_postgres_role_key", value)?;
+        Ok(Self(value.to_string()))
+    }
+}
+
+fn require_non_empty(
+    label: &'static str,
+    value: &str,
+) -> Result<(), NonEmptyStringError> {
+    if value.trim().is_empty() {
+        return Err(NonEmptyStringError::Empty { label });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

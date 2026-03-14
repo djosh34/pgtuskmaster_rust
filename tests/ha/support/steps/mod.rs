@@ -1582,7 +1582,7 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
         .filter(|(_member_id, member)| {
             matches!(&member.postgres, DcsMemberPostgresView::Replica(_))
         })
-        .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.0.as_str()).ok())
+        .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.as_str()).ok())
         .collect::<Vec<_>>()
 }
 
@@ -1591,7 +1591,7 @@ fn operator_visible_member_ids(status: &NodeState) -> Vec<ClusterMember> {
         .dcs
         .members
         .keys()
-        .filter_map(|member_id| ClusterMember::parse(member_id.0.as_str()).ok())
+        .filter_map(|member_id| ClusterMember::parse(member_id.as_str()).ok())
         .collect::<Vec<_>>()
 }
 
@@ -1605,7 +1605,7 @@ fn assert_member_is_replica_via_member(
     harness.record_status_snapshot(snapshot_label.as_str(), &status)?;
     require_visible_members(&status, expected_online)?;
     let primary = single_primary(&status)?;
-    let member_status = status.dcs.members.get(&member.member_id()).ok_or_else(|| {
+    let member_status = status.dcs.members.get(&member.member_id()?).ok_or_else(|| {
         HarnessError::message(format!("member `{member}` is not present in status"))
     })?;
     if member == primary {
@@ -1644,7 +1644,7 @@ fn require_no_authoritative_primary(status: &NodeState) -> Result<()> {
         PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
             Err(HarnessError::message(format!(
                 "expected no authoritative primary, but `{}` was still published",
-                epoch.holder.0
+                epoch.holder
             )))
         }
         PublicationState::Unknown => Err(HarnessError::message(
@@ -1677,7 +1677,7 @@ fn format_warnings(status: &NodeState) -> String {
 fn format_authority(status: &NodeState) -> String {
     match &status.ha.publication {
         PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            format!("primary({})", epoch.holder.0)
+            format!("primary({})", epoch.holder)
         }
         PublicationState::Projected(AuthorityProjection::NoPrimary(reason)) => {
             format!("no_primary({reason:?})").to_lowercase()
@@ -1689,7 +1689,7 @@ fn format_authority(status: &NodeState) -> String {
 fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
     match &status.ha.publication {
         PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            ClusterMember::parse(epoch.holder.0.as_str()).ok()
+            ClusterMember::parse(epoch.holder.as_str()).ok()
         }
         PublicationState::Unknown
         | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
@@ -2277,7 +2277,7 @@ async fn wait_for_targeted_switchover_rejection_precondition(
             let harness = world.harness()?;
             let status = harness.observer().state_via_member(seed_member)?;
             harness.record_status_snapshot("switchover.rejected.precondition", &status)?;
-            let maybe_target = status.dcs.members.get(&target_member.member_id());
+            let maybe_target = status.dcs.members.get(&target_member.member_id()?);
             match maybe_target {
                 None => Ok(()),
                 Some(member) if !member_slot_is_api_switchover_eligible(member) => Ok(()),
@@ -2347,7 +2347,7 @@ fn select_planned_switchover_target(
         .members
         .iter()
         .filter_map(|(member_id, member_view)| {
-            ClusterMember::parse(member_id.0.as_str())
+            ClusterMember::parse(member_id.as_str())
                 .ok()
                 .filter(|member| *member != seed_member)
                 .filter(|_| member_slot_is_api_switchover_eligible(member_view))

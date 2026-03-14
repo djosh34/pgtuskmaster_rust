@@ -1819,7 +1819,7 @@ fn format_bootstrap_warnings(status: &NodeState) -> String {
 fn operator_visible_primary(status: &NodeState) -> Option<String> {
     match &status.ha.publication {
         PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            Some(epoch.holder.0.clone())
+            Some(epoch.holder.to_string())
         }
         PublicationState::Unknown
         | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
@@ -1832,7 +1832,7 @@ fn dcs_primary_members(status: &NodeState) -> Vec<String> {
         .members
         .iter()
         .filter(|(_member_id, slot)| matches!(slot.postgres, DcsMemberPostgresView::Primary(_)))
-        .map(|(member_id, _slot)| member_id.0.clone())
+        .map(|(member_id, _slot)| member_id.to_string())
         .collect::<Vec<_>>()
 }
 
