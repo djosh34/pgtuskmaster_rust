@@ -343,20 +343,20 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
     );
     event
         .fields_mut()
-        .insert("capture_subprocess_output", ctx.capture_subprocess_output);
-    ctx.log
+        .insert("capture_subprocess_output", ctx.runtime.capture_subprocess_output);
+    ctx.runtime.log
         .emit_app_event("process_worker::run", event)
         .map_err(|err| {
             WorkerError::Message(format!("process worker start log emit failed: {err}"))
         })?;
     loop {
         step_once(&mut ctx).await?;
-        tokio::time::sleep(ctx.poll_interval).await;
+        tokio::time::sleep(ctx.cadence.poll_interval).await;
     }
 }
 
 pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
-    match ctx.inbox.try_recv() {
+    match ctx.control.inbox.try_recv() {
         Ok(request) => {
             let mut event = process_event(
                 ProcessEventKind::RequestReceived,
@@ -367,7 +367,7 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
             event.fields_mut().append_json_map(
                 process_job_fields(&request.id, request.intent.label()).into_attributes(),
             );
-            ctx.log
+            ctx.runtime.log
                 .emit_app_event("process_worker::step_once", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process request log emit failed: {err}"))
@@ -376,9 +376,9 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
         }
         Err(TryRecvError::Empty) => {}
         Err(TryRecvError::Disconnected) => {
-            if !ctx.inbox_disconnected_logged {
-                ctx.inbox_disconnected_logged = true;
-                ctx.log
+            if !ctx.control.inbox_disconnected_logged {
+                ctx.control.inbox_disconnected_logged = true;
+                ctx.runtime.log
                     .emit_app_event(
                         "process_worker::step_once",
                         process_event(
@@ -642,9 +642,9 @@ pub(crate) async fn start_job(
     ctx: &mut ProcessWorkerCtx,
     request: ProcessIntentRequest,
 ) -> Result<(), WorkerError> {
-    if !can_accept_job(&ctx.state) {
+    if !can_accept_job(&ctx.state_channel.current) {
         let now = current_time(ctx)?;
-        ctx.last_rejection = Some(ProcessJobRejection {
+        ctx.state_channel.last_rejection = Some(ProcessJobRejection {
             id: request.id,
             error: ProcessError::Busy,
             rejected_at: now,
@@ -656,6 +656,7 @@ pub(crate) async fn start_job(
             "process worker busy; rejecting job",
         );
         let rejected_job_id = ctx
+            .state_channel
             .last_rejection
             .as_ref()
             .map(|rejection| rejection.id.clone())
@@ -663,7 +664,7 @@ pub(crate) async fn start_job(
         event.fields_mut().append_json_map(
             process_job_fields(&rejected_job_id, request.intent.label()).into_attributes(),
         );
-        ctx.log
+        ctx.runtime.log
             .emit_app_event("process_worker::start_job", event)
             .map_err(|err| {
                 WorkerError::Message(format!("process busy reject log emit failed: {err}"))
@@ -686,7 +687,7 @@ pub(crate) async fn start_job(
                 process_job_fields(&request.id, request.intent.label()).into_attributes(),
             );
             fields.insert("error", error.to_string());
-            ctx.log
+            ctx.runtime.log
                 .emit_app_event("process_worker::start_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!(
@@ -727,7 +728,7 @@ pub(crate) async fn start_job(
                     process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
                 );
                 fields.insert("data_dir", spec.data_dir.display().to_string());
-                ctx.log
+                ctx.runtime.log
                     .emit_app_event("process_worker::start_job", event)
                     .map_err(|err| {
                         WorkerError::Message(format!(
@@ -758,7 +759,7 @@ pub(crate) async fn start_job(
                     process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
                 );
                 fields.insert("error", error.to_string());
-                ctx.log
+                ctx.runtime.log
                     .emit_app_event("process_worker::start_job", event)
                     .map_err(|err| {
                         WorkerError::Message(format!(
@@ -784,7 +785,7 @@ pub(crate) async fn start_job(
         &ctx.config,
         &request.id,
         &execution_request.kind,
-        ctx.capture_subprocess_output,
+        ctx.runtime.capture_subprocess_output,
     ) {
         Ok(command) => command,
         Err(error) => {
@@ -799,7 +800,7 @@ pub(crate) async fn start_job(
                 process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
             );
             fields.insert("error", error.to_string());
-            ctx.log
+            ctx.runtime.log
                 .emit_app_event("process_worker::start_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process build command log emit failed: {err}"))
@@ -819,7 +820,7 @@ pub(crate) async fn start_job(
     };
 
     let log_identity = command.log_identity.clone();
-    let handle = match ctx.command_runner.spawn(command) {
+    let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
             let mut event = process_event(
@@ -833,7 +834,7 @@ pub(crate) async fn start_job(
                 process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
             );
             fields.insert("error", error.to_string());
-            ctx.log
+            ctx.runtime.log
                 .emit_app_event("process_worker::start_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process spawn log emit failed: {err}"))
@@ -859,13 +860,13 @@ pub(crate) async fn start_job(
         deadline_at,
     };
 
-    ctx.active_runtime = Some(ActiveRuntime {
+    ctx.control.active_runtime = Some(ActiveRuntime {
         request: execution_request,
         deadline_at,
         handle,
         log_identity,
     });
-    ctx.state = ProcessState::Running {
+    ctx.state_channel.current = ProcessState::Running {
         worker: WorkerStatus::Running,
         active,
     };
@@ -876,12 +877,13 @@ pub(crate) async fn start_job(
         "process job started",
     );
     let runtime_fields = ctx
+        .control
         .active_runtime
         .as_ref()
         .map(|runtime| process_log_identity_fields(&runtime.log_identity).into_attributes())
         .unwrap_or_default();
     event.fields_mut().append_json_map(runtime_fields);
-    ctx.log
+    ctx.runtime.log
         .emit_app_event("process_worker::start_job", event)
         .map_err(|err| {
             WorkerError::Message(format!("process job started log emit failed: {err}"))
@@ -890,7 +892,7 @@ pub(crate) async fn start_job(
 }
 
 pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
-    let mut runtime = match ctx.active_runtime.take() {
+    let mut runtime = match ctx.control.active_runtime.take() {
         Some(runtime) => runtime,
         None => return Ok(()),
     };
@@ -904,7 +906,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
         Ok(lines) => {
             for line in lines {
                 if let Err(err) =
-                    emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                    emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
                 {
                     emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
                 }
@@ -922,7 +924,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 process_log_identity_fields(&runtime.log_identity).into_attributes(),
             );
             fields.insert("error", err.to_string());
-            ctx.log
+            ctx.runtime.log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|emit_err| {
                     WorkerError::Message(format!(
@@ -941,7 +943,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
         timeout_event
             .fields_mut()
             .append_json_map(process_log_identity_fields(&runtime.log_identity).into_attributes());
-        ctx.log
+        ctx.runtime.log
             .emit_app_event("process_worker::tick_active_job", timeout_event)
             .map_err(|err| {
                 WorkerError::Message(format!("process timeout log emit failed: {err}"))
@@ -955,7 +957,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             Ok(lines) => {
                 for line in lines {
                     if let Err(err) =
-                        emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                        emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
                     {
                         emit_process_output_emit_failed(ctx, &runtime.log_identity, &line, &err)?;
                     }
@@ -973,7 +975,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     process_log_identity_fields(&runtime.log_identity).into_attributes(),
                 );
                 fields.insert("error", err.to_string());
-                ctx.log
+                ctx.runtime.log
                     .emit_app_event("process_worker::tick_active_job", event)
                     .map_err(|emit_err| {
                         WorkerError::Message(format!(
@@ -1002,7 +1004,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
     let poll = runtime.handle.poll_exit();
     match poll {
         Ok(None) => {
-            ctx.active_runtime = Some(runtime);
+            ctx.control.active_runtime = Some(runtime);
             Ok(())
         }
         Ok(Some(ProcessExit::Success)) => {
@@ -1014,7 +1016,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 Ok(lines) => {
                     for line in lines {
                         if let Err(err) =
-                            emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                            emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
                         {
                             emit_process_output_emit_failed(
                                 ctx,
@@ -1037,7 +1039,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         process_log_identity_fields(&runtime.log_identity).into_attributes(),
                     );
                     fields.insert("error", err.to_string());
-                    ctx.log
+                    ctx.runtime.log
                         .emit_app_event("process_worker::tick_active_job", event)
                         .map_err(|emit_err| {
                             WorkerError::Message(format!(
@@ -1061,7 +1063,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             event.fields_mut().append_json_map(
                 process_log_identity_fields(&runtime.log_identity).into_attributes(),
             );
-            ctx.log
+            ctx.runtime.log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process exit log emit failed: {err}"))
@@ -1077,7 +1079,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 Ok(lines) => {
                     for line in lines {
                         if let Err(err) =
-                            emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                            emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
                         {
                             emit_process_output_emit_failed(
                                 ctx,
@@ -1100,7 +1102,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         process_log_identity_fields(&runtime.log_identity).into_attributes(),
                     );
                     fields.insert("error", err.to_string());
-                    ctx.log
+                    ctx.runtime.log
                         .emit_app_event("process_worker::tick_active_job", event)
                         .map_err(|emit_err| {
                             WorkerError::Message(format!(
@@ -1128,7 +1130,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 process_log_identity_fields(&runtime.log_identity).into_attributes(),
             );
             fields.insert("error", exit_error.to_string());
-            ctx.log
+            ctx.runtime.log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process exit log emit failed: {err}"))
@@ -1144,7 +1146,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 Ok(lines) => {
                     for line in lines {
                         if let Err(err) =
-                            emit_subprocess_line(&ctx.log, &runtime.log_identity, line.clone())
+                            emit_subprocess_line(&ctx.runtime.log, &runtime.log_identity, line.clone())
                         {
                             emit_process_output_emit_failed(
                                 ctx,
@@ -1167,7 +1169,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         process_log_identity_fields(&runtime.log_identity).into_attributes(),
                     );
                     fields.insert("error", err.to_string());
-                    ctx.log
+                    ctx.runtime.log
                         .emit_app_event("process_worker::tick_active_job", event)
                         .map_err(|emit_err| {
                             WorkerError::Message(format!(
@@ -1194,7 +1196,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 process_log_identity_fields(&runtime.log_identity).into_attributes(),
             );
             fields.insert("error", outcome_error_string(&outcome));
-            ctx.log
+            ctx.runtime.log
                 .emit_app_event("process_worker::tick_active_job", event)
                 .map_err(|err| {
                     WorkerError::Message(format!("process poll failure log emit failed: {err}"))
@@ -1233,7 +1235,7 @@ fn emit_process_output_emit_failed(
     );
     fields.insert("bytes_len", line.bytes.len());
     fields.insert("error", error.to_string());
-    ctx.log
+    ctx.runtime.log
         .emit_app_event("process_worker::emit_subprocess_line", event)
         .map_err(|emit_err| {
             WorkerError::Message(format!(
@@ -1280,7 +1282,7 @@ fn transition_to_idle(
     outcome: JobOutcome,
     _now: UnixMillis,
 ) -> Result<(), WorkerError> {
-    ctx.state = ProcessState::Idle {
+    ctx.state_channel.current = ProcessState::Idle {
         worker: WorkerStatus::Running,
         last_outcome: Some(outcome),
     };
@@ -1288,14 +1290,14 @@ fn transition_to_idle(
 }
 
 fn publish_state(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
-    ctx.publisher
-        .publish(ctx.state.clone())
+    ctx.state_channel.publisher
+        .publish(ctx.state_channel.current.clone())
         .map_err(|err| WorkerError::Message(format!("process publish failed: {err}")))?;
     Ok(())
 }
 
 fn current_time(ctx: &mut ProcessWorkerCtx) -> Result<UnixMillis, WorkerError> {
-    (ctx.now)()
+    (ctx.cadence.now)()
 }
 
 pub(crate) fn system_now_unix_millis() -> Result<UnixMillis, WorkerError> {
@@ -1579,8 +1581,8 @@ fn materialize_execution_request(
     ctx: &ProcessWorkerCtx,
     request: &ProcessIntentRequest,
 ) -> Result<ProcessExecutionRequest, ProcessError> {
-    let runtime_config = ctx.runtime_config.latest();
-    let dcs = ctx.dcs_subscriber.latest();
+    let runtime_config = ctx.observed.runtime_config.latest();
+    let dcs = ctx.observed.dcs.latest();
     let kind = match &request.intent {
         ProcessIntent::Bootstrap => {
             wipe_data_dir(runtime_config.postgres.data_dir.as_path())?;
@@ -1593,8 +1595,8 @@ fn materialize_execution_request(
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
             wipe_data_dir(runtime_config.postgres.data_dir.as_path())?;
             let source = basebackup_source_from_member(
-                &ctx.self_id,
-                &ctx.intent_runtime,
+                &ctx.identity.self_id,
+                &ctx.plan,
                 resolve_source_member(&dcs, leader)?,
             )
             .map_err(source_materialization_error)?;
@@ -1606,8 +1608,8 @@ fn materialize_execution_request(
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
             let source = rewind_source_from_member(
-                &ctx.self_id,
-                &ctx.intent_runtime,
+                &ctx.identity.self_id,
+                &ctx.plan,
                 resolve_source_member(&dcs, leader)?,
             )
             .map_err(source_materialization_error)?;
@@ -1621,14 +1623,14 @@ fn materialize_execution_request(
             let start_intent = primary_start_intent(&runtime_config)?;
             materialize_start_postgres(
                 &runtime_config,
-                &ctx.intent_runtime,
+                &ctx.plan,
                 PostgresStartMode::Primary,
                 &start_intent,
             )?
         }
         ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => materialize_start_postgres(
             &runtime_config,
-            &ctx.intent_runtime,
+            &ctx.plan,
             PostgresStartMode::DetachedStandby,
             &ManagedPostgresStartIntent::detached_standby(),
         )?,
@@ -1636,7 +1638,7 @@ fn materialize_execution_request(
             let start_intent = replica_start_intent(ctx, &runtime_config, &dcs, leader)?;
             materialize_start_postgres(
                 &runtime_config,
-                &ctx.intent_runtime,
+                &ctx.plan,
                 PostgresStartMode::Replica,
                 &start_intent,
             )?
@@ -1683,8 +1685,8 @@ fn replica_start_intent(
     leader: &crate::state::MemberId,
 ) -> Result<ManagedPostgresStartIntent, ProcessError> {
     let source = basebackup_source_from_member(
-        &ctx.self_id,
-        &ctx.intent_runtime,
+        &ctx.identity.self_id,
+        &ctx.plan,
         resolve_source_member(dcs, leader)?,
     )
     .map_err(source_materialization_error)?;
@@ -1697,7 +1699,7 @@ fn replica_start_intent(
 
 fn materialize_start_postgres(
     runtime_config: &RuntimeConfig,
-    intent_runtime: &super::state::ProcessIntentRuntime,
+    intent_runtime: &super::state::ProcessRuntimePlan,
     mode: PostgresStartMode,
     start_intent: &ManagedPostgresStartIntent,
 ) -> Result<ProcessExecutionKind, ProcessError> {
@@ -1709,10 +1711,10 @@ fn materialize_start_postgres(
     Ok(ProcessExecutionKind::StartPostgres(super::jobs::StartPostgresSpec {
         mode,
         data_dir: runtime_config.postgres.data_dir.clone(),
-        socket_dir: intent_runtime.local_postgres.socket_dir.clone(),
-        port: intent_runtime.local_postgres.port,
+        socket_dir: intent_runtime.postgres.paths.socket_dir.clone(),
+        port: intent_runtime.postgres.port,
         config_file: managed.postgresql_conf_path,
-        log_file: intent_runtime.local_postgres.log_file.clone(),
+        log_file: intent_runtime.postgres.paths.log_file.clone(),
         wait_seconds: None,
         timeout_ms: None,
     }))

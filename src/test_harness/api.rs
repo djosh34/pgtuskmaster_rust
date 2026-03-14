@@ -4,8 +4,8 @@ use axum::Router;
 
 use crate::{
     api::worker::{
-        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiNodeIdentity,
-        ApiServerCtx, ApiStateSubscribers,
+        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle,
+        ApiClusterIdentity, ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
     },
     config::RuntimeConfig,
     dcs::DcsHandle,
@@ -22,7 +22,7 @@ pub fn build_test_router(
     cfg: RuntimeConfig,
     dcs_handle: DcsHandle,
 ) -> Result<Router, HarnessError> {
-    build_test_router_with_state(cfg, dcs_handle, None)
+    build_test_router_with_state(cfg, dcs_handle, ApiObservedState::Unavailable)
 }
 
 pub fn build_test_router_with_live_state(
@@ -37,36 +37,40 @@ pub fn build_test_router_with_live_state(
     build_test_router_with_state(
         cfg,
         dcs_handle,
-        Some(ApiStateSubscribers {
+        ApiObservedState::Live {
             pg,
             process,
             dcs,
             ha,
-        }),
+        },
     )
 }
 
 fn build_test_router_with_state(
     cfg: RuntimeConfig,
     dcs_handle: DcsHandle,
-    state: Option<ApiStateSubscribers>,
+    observed: ApiObservedState,
 ) -> Result<Router, HarnessError> {
     let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
     let transport = crate::tls::build_api_server_transport(&cfg.api.security.transport)
         .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
     build_router(ApiServerCtx {
-        bind: ApiBindConfig::listen(cfg.api.listen_addr),
-        identity: ApiNodeIdentity {
+        identity: ApiClusterIdentity {
             cluster_name: cfg.cluster.name.clone(),
             scope: cfg.dcs.scope.clone(),
             member_id: cfg.cluster.member_id.clone(),
         },
-        runtime_config,
-        dcs_handle,
-        state,
-        auth: ApiAuthState::Disabled,
-        transport: transport.clone(),
-        cert_reloader: ApiCertificateReloadHandle::from_transport(&transport),
+        observed,
+        control: ApiControlPlane {
+            runtime_config,
+            dcs_handle,
+        },
+        serving: ApiServingPlan {
+            bind: ApiBindConfig::listen(cfg.api.listen_addr),
+            auth: ApiAuthState::Disabled,
+            transport: transport.clone(),
+            cert_reloader: ApiCertificateReloadHandle::from_transport(&transport),
+        },
         log: LogHandle::disabled(),
     })
     .map_err(|err| HarnessError::InvalidInput(err.to_string()))

@@ -198,3 +198,4 @@ NONE
 .ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md
 .ralph/tasks/story-general-architecture-improvement-finding/03-task-refactor-the-ha-process-boundary-around-a-dedicated-process-intent-adapter-and-remove-secret-bearing-process-defaults-from-ha.md
 .ralph/tasks/story-general-architecture-improvement-finding/05-task-collapse-duplicated-ha-givens-into-a-typed-topology-fixture-pipeline.md
+.ralph/tasks/story-general-architecture-improvement-finding/02-task-shrink-runtime-node-rs-into-a-narrow-composition-root-and-move-startup-logic-into-owning-domains.md

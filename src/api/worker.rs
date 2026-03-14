@@ -29,18 +29,21 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ApiNodeIdentity {
+pub(crate) struct ApiClusterIdentity {
     pub(crate) cluster_name: String,
     pub(crate) scope: String,
     pub(crate) member_id: String,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ApiStateSubscribers {
-    pub(crate) pg: StateSubscriber<PgInfoState>,
-    pub(crate) process: StateSubscriber<ProcessState>,
-    pub(crate) dcs: StateSubscriber<DcsView>,
-    pub(crate) ha: StateSubscriber<HaState>,
+pub(crate) enum ApiObservedState {
+    Unavailable,
+    Live {
+        pg: StateSubscriber<PgInfoState>,
+        process: StateSubscriber<ProcessState>,
+        dcs: StateSubscriber<DcsView>,
+        ha: StateSubscriber<HaState>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -55,7 +58,7 @@ pub(crate) enum ApiAuthState {
     RoleTokens(ResolvedApiRoleTokens),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum ApiBindConfig {
     Listen(SocketAddr),
 }
@@ -112,23 +115,33 @@ impl ApiCertificateReloadHandle {
 }
 
 pub struct ApiServerCtx {
-    pub(crate) bind: ApiBindConfig,
-    pub(crate) identity: ApiNodeIdentity,
-    pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
-    pub(crate) dcs_handle: DcsHandle,
-    pub(crate) state: Option<ApiStateSubscribers>,
-    pub(crate) auth: ApiAuthState,
-    pub(crate) transport: ApiServerTransport,
-    pub(crate) cert_reloader: ApiCertificateReloadHandle,
+    pub(crate) identity: ApiClusterIdentity,
+    pub(crate) observed: ApiObservedState,
+    pub(crate) control: ApiControlPlane,
+    pub(crate) serving: ApiServingPlan,
     pub(crate) log: LogHandle,
 }
 
 #[derive(Clone)]
+pub(crate) struct ApiControlPlane {
+    pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
+    pub(crate) dcs_handle: DcsHandle,
+}
+
+#[derive(Clone)]
+pub(crate) struct ApiServingPlan {
+    pub(crate) bind: ApiBindConfig,
+    pub(crate) auth: ApiAuthState,
+    pub(crate) transport: ApiServerTransport,
+    pub(crate) cert_reloader: ApiCertificateReloadHandle,
+}
+
+#[derive(Clone)]
 struct ApiAppState {
-    identity: ApiNodeIdentity,
+    identity: ApiClusterIdentity,
     runtime_config: StateSubscriber<RuntimeConfig>,
     dcs_handle: DcsHandle,
-    state: Option<ApiStateSubscribers>,
+    state: ApiObservedState,
     auth: ApiAuthState,
     cert_reloader: ApiCertificateReloadHandle,
     _log: LogHandle,
@@ -189,22 +202,28 @@ fn build_app_state(
     ctx: ApiServerCtx,
 ) -> Result<(ApiBindConfig, ApiServerTransport, ApiAppState), WorkerError> {
     let ApiServerCtx {
-        bind,
         identity,
+        observed,
+        control,
+        serving,
+        log,
+    } = ctx;
+    let ApiControlPlane {
         runtime_config,
         dcs_handle,
-        state,
+    } = control;
+    let ApiServingPlan {
+        bind,
         auth,
         transport,
         cert_reloader,
-        log,
-    } = ctx;
+    } = serving;
     let auth = resolve_auth_state(&auth, &runtime_config.latest())?;
     let app_state = ApiAppState {
         identity,
         runtime_config,
         dcs_handle,
-        state,
+        state: observed,
         auth,
         cert_reloader,
         _log: log,
@@ -256,19 +275,26 @@ pub async fn run(ctx: ApiServerCtx) -> Result<(), WorkerError> {
 }
 
 async fn get_state(State(state): State<ApiAppState>) -> Result<Json<NodeState>, ApiHttpError> {
-    let subscribers = state
-        .state
-        .as_ref()
-        .ok_or_else(|| ApiHttpError::service_unavailable("state subscribers unavailable"))?;
+    let ApiObservedState::Live {
+        pg,
+        process,
+        dcs,
+        ha,
+    } = &state.state
+    else {
+        return Err(ApiHttpError::service_unavailable(
+            "state subscribers unavailable",
+        ));
+    };
     let runtime_config = state.runtime_config.latest();
     let snapshot = NodeStateSnapshot {
         cluster_name: state.identity.cluster_name.clone(),
         scope: state.identity.scope.clone(),
         self_member_id: state.identity.member_id.clone(),
-        pg: subscribers.pg.latest(),
-        process: subscribers.process.latest(),
-        dcs: subscribers.dcs.latest(),
-        ha: subscribers.ha.latest(),
+        pg: pg.latest(),
+        process: process.latest(),
+        dcs: dcs.latest(),
+        ha: ha.latest(),
     };
     Ok(Json(build_node_state(&runtime_config, snapshot)))
 }
@@ -277,16 +303,17 @@ async fn post_switchover_handler(
     State(state): State<ApiAppState>,
     Json(request): Json<SwitchoverRequest>,
 ) -> Result<(StatusCode, Json<crate::api::AcceptedResponse>), ApiHttpError> {
-    let subscribers = state
-        .state
-        .as_ref()
-        .ok_or_else(|| ApiHttpError::service_unavailable("state subscribers unavailable"))?;
+    let ApiObservedState::Live { dcs, ha, .. } = &state.state else {
+        return Err(ApiHttpError::service_unavailable(
+            "state subscribers unavailable",
+        ));
+    };
     let response = post_switchover(
         state.identity.scope.as_str(),
         &crate::state::MemberId(state.identity.member_id.clone()),
         &state.dcs_handle,
-        &subscribers.dcs.latest(),
-        &subscribers.ha.latest(),
+        &dcs.latest(),
+        &ha.latest(),
         request,
     )
     .await?;
@@ -468,8 +495,8 @@ mod tests {
     };
 
     use super::{
-        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiNodeIdentity,
-        ApiServerCtx,
+        build_router, ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle,
+        ApiClusterIdentity, ApiControlPlane, ApiObservedState, ApiServerCtx, ApiServingPlan,
     };
 
     fn sample_admin_request(uri: &str) -> Result<Request<Body>, String> {
@@ -514,21 +541,38 @@ mod tests {
             .build();
 
         let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
+        let (_pg_publisher, pg) =
+            new_state_channel(crate::pginfo::state::PgInfoState::starting());
+        let (_process_publisher, process) =
+            new_state_channel(crate::process::state::ProcessState::starting());
+        let (_dcs_publisher, dcs) =
+            new_state_channel(crate::dcs::DcsView::starting());
+        let (_ha_publisher, ha) =
+            new_state_channel(crate::ha::state::HaState::initial(crate::state::WorkerStatus::Starting));
         let transport = crate::tls::build_api_server_transport(&cfg.api.security.transport)
             .map_err(|err| err.to_string())?;
         let app = build_router(ApiServerCtx {
-            bind: ApiBindConfig::listen(cfg.api.listen_addr),
-            identity: ApiNodeIdentity {
+            identity: ApiClusterIdentity {
                 cluster_name: cfg.cluster.name.clone(),
                 scope: cfg.dcs.scope.clone(),
                 member_id: cfg.cluster.member_id.clone(),
             },
-            runtime_config,
-            dcs_handle: DcsHandle::closed(),
-            state: None,
-            auth: ApiAuthState::Disabled,
-            transport: transport.clone(),
-            cert_reloader: ApiCertificateReloadHandle::from_transport(&transport),
+            observed: ApiObservedState::Live {
+                pg,
+                process,
+                dcs,
+                ha,
+            },
+            control: ApiControlPlane {
+                runtime_config,
+                dcs_handle: DcsHandle::closed(),
+            },
+            serving: ApiServingPlan {
+                bind: ApiBindConfig::listen(cfg.api.listen_addr),
+                auth: ApiAuthState::Disabled,
+                transport: transport.clone(),
+                cert_reloader: ApiCertificateReloadHandle::from_transport(&transport),
+            },
             log: LogHandle::disabled(),
         })
         .map_err(|err| err.to_string())?;

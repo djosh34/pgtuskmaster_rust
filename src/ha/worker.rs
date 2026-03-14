@@ -29,19 +29,19 @@ use super::{
 };
 
 pub(crate) async fn run(mut ctx: HaWorkerCtx) -> Result<(), WorkerError> {
-    let mut interval = tokio::time::interval(ctx.poll_interval);
+    let mut interval = tokio::time::interval(ctx.cadence.poll_interval);
     loop {
         tokio::select! {
-            changed = ctx.pg_subscriber.changed() => {
+            changed = ctx.observed.pg.changed() => {
                 changed.map_err(|err| WorkerError::Message(format!("ha pg subscriber closed: {err}")))?;
             }
-            changed = ctx.dcs_subscriber.changed() => {
+            changed = ctx.observed.dcs.changed() => {
                 changed.map_err(|err| WorkerError::Message(format!("ha dcs subscriber closed: {err}")))?;
             }
-            changed = ctx.process_subscriber.changed() => {
+            changed = ctx.observed.process.changed() => {
                 changed.map_err(|err| WorkerError::Message(format!("ha process subscriber closed: {err}")))?;
             }
-            changed = ctx.config_subscriber.changed() => {
+            changed = ctx.observed.config.changed() => {
                 changed.map_err(|err| WorkerError::Message(format!("ha config subscriber closed: {err}")))?;
             }
             _ = interval.tick() => {}
@@ -51,34 +51,35 @@ pub(crate) async fn run(mut ctx: HaWorkerCtx) -> Result<(), WorkerError> {
 }
 
 pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> {
-    let now = (ctx.now)()?;
+    let now = (ctx.cadence.now)()?;
     let world = observe(ctx, now)?;
-    let desired = decide(&world, &ctx.self_id);
+    let desired = decide(&world, &ctx.identity.self_id);
     let plan = reconcile(&world, &desired);
-    let next_state = build_next_state(&ctx.state, &world, &desired, &plan);
+    let next_state = build_next_state(&ctx.state_channel.current, &world, &desired, &plan);
 
-    ctx.publisher
+    ctx.state_channel
+        .publisher
         .publish(next_state.clone())
         .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
-    ctx.state = next_state;
+    ctx.state_channel.current = next_state;
 
-    execute_plan(ctx, ctx.state.tick, &plan).await?;
+    execute_plan(ctx, ctx.state_channel.current.tick, &plan).await?;
 
     Ok(())
 }
 
 fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView, WorkerError> {
-    let config = ctx.config_subscriber.latest();
-    let pg = ctx.pg_subscriber.latest();
-    let dcs = ctx.dcs_subscriber.latest();
-    let process = ctx.process_subscriber.latest();
+    let config = ctx.observed.config.latest();
+    let pg = ctx.observed.pg.latest();
+    let dcs = ctx.observed.dcs.latest();
+    let process = ctx.observed.process.latest();
     let data_dir_path = config.postgres.data_dir.clone();
-    let observed_primary = observed_primary_member(&dcs, &ctx.self_id);
+    let observed_primary = observed_primary_member(&dcs, &ctx.identity.self_id);
     let local_data_timeline = pg_timeline(&pg).or_else(|| {
-        dcs.members.get(&ctx.self_id).and_then(member_timeline)
+        dcs.members.get(&ctx.identity.self_id).and_then(member_timeline)
     });
     let local_system_identifier = pg_system_identifier(&pg)
-        .or_else(|| dcs.members.get(&ctx.self_id).and_then(member_system_identifier));
+        .or_else(|| dcs.members.get(&ctx.identity.self_id).and_then(member_system_identifier));
 
     let local = LocalKnowledge {
         data_dir: build_data_dir_state(
@@ -89,9 +90,9 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
         ),
         postgres: build_local_postgres_state(&pg, &dcs),
         process: ProcessState::from(&process),
-        storage: build_storage_state(&dcs, &pg, config.ha.lease_ttl_ms, &ctx.self_id, now),
-        required_roles_ready: ctx.state.required_roles_ready,
-        publication: ctx.state.publication.clone(),
+        storage: build_storage_state(&dcs, &pg, config.ha.lease_ttl_ms, &ctx.identity.self_id, now),
+        required_roles_ready: ctx.state_channel.current.required_roles_ready,
+        publication: ctx.state_channel.current.publication.clone(),
         observation: ObservationState {
             pg_observed_at: pg.last_refresh_at().unwrap_or(now),
             last_start_success_at: last_start_success_at(&process),
@@ -99,7 +100,7 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
             last_demote_success_at: last_success_at(&process, ActiveJobKind::Demote),
         },
     };
-    let global = build_global_knowledge(&dcs, &pg, &local.data_dir, &ctx.self_id);
+    let global = build_global_knowledge(&dcs, &pg, &local.data_dir, &ctx.identity.self_id);
 
     Ok(WorldView { local, global })
 }
@@ -168,6 +169,7 @@ async fn execute_coordination_action(
 ) -> Result<(), WorkerError> {
     match action {
         CoordinationAction::AcquireLease(_kind) => ctx
+            .control
             .dcs_handle
             .acquire_leadership()
             .await
@@ -177,6 +179,7 @@ async fn execute_coordination_action(
                 ))
             }),
         CoordinationAction::ReleaseLease => ctx
+            .control
             .dcs_handle
             .release_leadership()
             .await
@@ -186,6 +189,7 @@ async fn execute_coordination_action(
                 ))
             }),
         CoordinationAction::ClearSwitchover => ctx
+            .control
             .dcs_handle
             .clear_switchover()
             .await
@@ -205,7 +209,7 @@ async fn execute_local_action(
 ) -> Result<(), WorkerError> {
     match action {
         LocalAction::EnsureRequiredRoles => {
-            let runtime_config = ctx.config_subscriber.latest();
+            let runtime_config = ctx.observed.config.latest();
             postgres_roles::ensure_required_roles(
                 &runtime_config,
                 runtime_config.postgres.socket_dir.as_path(),
@@ -217,7 +221,7 @@ async fn execute_local_action(
                     "ha ensure required roles failed at tick {ha_tick} index {action_index}: {err}"
                 ))
             })?;
-            ctx.state.required_roles_ready = true;
+            ctx.state_channel.current.required_roles_ready = true;
             Ok(())
         }
     }
@@ -229,7 +233,7 @@ async fn execute_process_action(
     action_index: usize,
     action: &ProcessIntent,
 ) -> Result<(), WorkerError> {
-    let runtime_config = ctx.config_subscriber.latest();
+    let runtime_config = ctx.observed.config.latest();
     dispatch_process_action(ctx, ha_tick, action_index, action, &runtime_config)
         .map(|_| ())
         .map_err(|err| map_process_dispatch_error(ha_tick, action_index, err))

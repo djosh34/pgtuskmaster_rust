@@ -8,7 +8,7 @@ use super::query::poll_once;
 use super::state::{to_member_status, PgInfoState, PgInfoWorkerCtx, SqlStatus};
 
 fn pginfo_append_base_fields(fields: &mut StructuredFields, ctx: &PgInfoWorkerCtx) {
-    fields.insert("member_id", ctx.self_id.0.clone());
+    fields.insert("member_id", ctx.identity.self_id.0.clone());
 }
 
 fn pginfo_event(severity: SeverityText, message: &str, name: &str, result: &str) -> AppEvent {
@@ -25,7 +25,7 @@ fn emit_pginfo_event(
     event: AppEvent,
     error_prefix: &str,
 ) -> Result<(), WorkerError> {
-    ctx.log
+    ctx.runtime.log
         .emit_app_event(origin, event)
         .map_err(|err| WorkerError::Message(format!("{error_prefix}: {err}")))
 }
@@ -37,13 +37,13 @@ fn sql_status_label(status: &SqlStatus) -> String {
 pub(crate) async fn run(mut ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
     loop {
         step_once(&mut ctx).await?;
-        tokio::time::sleep(ctx.poll_interval).await;
+        tokio::time::sleep(ctx.cadence.poll_interval).await;
     }
 }
 
 pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerError> {
     let now = now_unix_millis()?;
-    let poll = poll_once(&ctx.postgres_conninfo).await;
+    let poll = poll_once(&ctx.probe.to_conninfo()).await;
     let next_state = match poll {
         Ok(polled) => to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))?,
         Err(ref err) => {
@@ -68,6 +68,7 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
 
     let next_sql = pginfo_sql_status(&next_state);
     let prev_sql = ctx
+        .state_channel
         .last_emitted_sql_status
         .clone()
         .unwrap_or(SqlStatus::Unknown);
@@ -93,13 +94,13 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
             event,
             "pginfo sql transition log emit failed",
         )?;
-        ctx.last_emitted_sql_status = Some(next_sql.clone());
+        ctx.state_channel.last_emitted_sql_status = Some(next_sql.clone());
     }
 
-    ctx.publisher.publish(next_state).map_err(|err| {
+    ctx.state_channel.publisher.publish(next_state).map_err(|err| {
         WorkerError::Message(format!(
             "pginfo publish failed for {:?}: {err}",
-            ctx.self_id
+            ctx.identity.self_id
         ))
     })?;
     Ok(())

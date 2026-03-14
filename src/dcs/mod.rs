@@ -1,6 +1,7 @@
 pub(crate) mod etcd_store;
 mod command;
 mod keys;
+pub(crate) mod startup;
 mod state;
 pub(crate) mod store;
 pub(crate) mod worker;

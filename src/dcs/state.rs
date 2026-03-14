@@ -142,22 +142,77 @@ impl DcsView {
             last_observed_at: None,
         }
     }
+
+    pub(crate) fn starting() -> Self {
+        Self::empty(WorkerStatus::Starting)
+    }
 }
 
 pub(crate) struct DcsWorkerCtx {
+    pub(crate) identity: DcsNodeIdentity,
+    pub(crate) cadence: DcsCadence,
+    pub(crate) advertisement: DcsLocalMemberAdvertisement,
+    pub(crate) observed: DcsObservedState,
+    pub(crate) state_channel: DcsStateChannel,
+    pub(crate) control: DcsControlPlane,
+    pub(crate) runtime: DcsRuntime,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DcsNodeIdentity {
     pub(crate) self_id: MemberId,
     pub(crate) scope: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DcsCadence {
     pub(crate) poll_interval: Duration,
-    pub(crate) local_postgres_host: String,
-    pub(crate) local_postgres_port: u16,
-    pub(crate) local_api_url: Option<String>,
-    pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
+    pub(crate) member_ttl_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DcsApiAdvertisement {
+    NotAdvertised,
+    Advertised(DcsMemberApiView),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DcsLocalMemberAdvertisement {
+    pub(crate) postgres: DcsMemberEndpointView,
+    pub(crate) api: DcsApiAdvertisement,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DcsObservedState {
+    pub(crate) pg: StateSubscriber<PgInfoState>,
+}
+
+pub(crate) struct DcsStateChannel {
     pub(crate) publisher: StatePublisher<DcsView>,
+    pub(crate) cache: DcsCache,
+}
+
+impl DcsStateChannel {
+    pub(crate) fn new(publisher: StatePublisher<DcsView>) -> Self {
+        Self {
+            publisher,
+            cache: DcsCache {
+                member_records: BTreeMap::new(),
+                leader_record: None,
+                switchover_record: None,
+                init_lock: None,
+            },
+        }
+    }
+}
+
+pub(crate) struct DcsControlPlane {
     pub(crate) command_inbox: DcsCommandInbox,
     pub(crate) store: Box<dyn DcsStore>,
+}
+
+pub(crate) struct DcsRuntime {
     pub(crate) log: LogHandle,
-    pub(crate) cache: DcsCache,
-    pub(crate) member_ttl_ms: u64,
     pub(crate) last_emitted_store_healthy: Option<bool>,
     pub(crate) last_emitted_trust: Option<DcsTrust>,
 }

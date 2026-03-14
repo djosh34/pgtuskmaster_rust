@@ -5,7 +5,7 @@ use crate::{
     pginfo::state::PgConnInfo,
     process::{
         jobs::{ReplicatorSourceConn, RewinderSourceConn},
-        state::{ProcessIntentRuntime, RemoteRoleProfile},
+        state::{ProcessRuntimePlan, RemoteRoleProfile},
     },
     state::MemberId,
 };
@@ -22,25 +22,25 @@ pub(crate) enum SourceMaterializationError {
 
 pub(crate) fn basebackup_source_from_member(
     self_id: &MemberId,
-    runtime: &ProcessIntentRuntime,
+    runtime: &ProcessRuntimePlan,
     member: &DcsMemberView,
 ) -> Result<ReplicatorSourceConn, SourceMaterializationError> {
     validate_remote_primary_source(self_id, member)?;
     Ok(ReplicatorSourceConn {
-        conninfo: remote_conninfo(member, &runtime.remote_source.replicator, runtime),
-        auth: runtime.remote_source.replicator.auth.clone(),
+        conninfo: remote_conninfo(member, &runtime.replication_source.replicator, runtime),
+        auth: runtime.replication_source.replicator.auth.clone(),
     })
 }
 
 pub(crate) fn rewind_source_from_member(
     self_id: &MemberId,
-    runtime: &ProcessIntentRuntime,
+    runtime: &ProcessRuntimePlan,
     member: &DcsMemberView,
 ) -> Result<RewinderSourceConn, SourceMaterializationError> {
     validate_remote_primary_source(self_id, member)?;
     Ok(RewinderSourceConn {
-        conninfo: remote_conninfo(member, &runtime.remote_source.rewinder, runtime),
-        auth: runtime.remote_source.rewinder.auth.clone(),
+        conninfo: remote_conninfo(member, &runtime.replication_source.rewinder, runtime),
+        auth: runtime.replication_source.rewinder.auth.clone(),
     })
 }
 
@@ -72,17 +72,17 @@ fn validate_remote_primary_source(
 fn remote_conninfo(
     member: &DcsMemberView,
     role: &RemoteRoleProfile,
-    runtime: &ProcessIntentRuntime,
+    runtime: &ProcessRuntimePlan,
 ) -> PgConnInfo {
     PgConnInfo {
         host: member.routing.postgres.host.clone(),
         port: member.routing.postgres.port,
         user: role.username.clone(),
-        dbname: runtime.remote_source.dbname.clone(),
+        dbname: runtime.replication_source.dbname.clone(),
         application_name: None,
-        connect_timeout_s: Some(runtime.remote_source.connect_timeout_s),
-        ssl_mode: runtime.remote_source.ssl_mode,
-        ssl_root_cert: runtime.remote_source.ssl_root_cert.clone(),
+        connect_timeout_s: Some(runtime.replication_source.connect_timeout_s),
+        ssl_mode: runtime.replication_source.ssl_mode,
+        ssl_root_cert: runtime.replication_source.ssl_root_cert.clone(),
         options: None,
     }
 }

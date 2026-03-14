@@ -27,7 +27,13 @@ pub(crate) fn dispatch_process_action(
     _runtime_config: &RuntimeConfig,
 ) -> Result<ProcessDispatchOutcome, ProcessDispatchError> {
     let request = ProcessIntentRequest {
-        id: process_job_id(&ctx.scope, &ctx.self_id, action, action_index, ha_tick),
+        id: process_job_id(
+            &ctx.identity.scope,
+            &ctx.identity.self_id,
+            action,
+            action_index,
+            ha_tick,
+        ),
         intent: action.clone(),
     };
     send_process_request(ctx, action.label(), request)?;
@@ -39,7 +45,8 @@ fn send_process_request(
     action: &str,
     request: ProcessIntentRequest,
 ) -> Result<(), ProcessDispatchError> {
-    ctx.process_intent_inbox
+    ctx.control
+        .process_intent_inbox
         .send(request)
         .map_err(|err| ProcessDispatchError::ProcessSend {
             action: action.to_string(),

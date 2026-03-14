@@ -6,7 +6,6 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     config::RuntimeConfig,
     dcs::{DcsHandle, DcsView},
-    logging::LogHandle,
     pginfo::state::PgInfoState,
     process::state::{ProcessIntentRequest, ProcessState},
     state::{MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
@@ -27,31 +26,47 @@ pub struct HaState {
 }
 
 pub(crate) struct HaWorkerCtx {
-    pub(crate) poll_interval: Duration,
-    pub(crate) state: HaState,
-    pub(crate) publisher: StatePublisher<HaState>,
-    pub(crate) config_subscriber: StateSubscriber<RuntimeConfig>,
-    pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
-    pub(crate) dcs_subscriber: StateSubscriber<DcsView>,
-    pub(crate) process_subscriber: StateSubscriber<ProcessState>,
-    pub(crate) process_intent_inbox: UnboundedSender<ProcessIntentRequest>,
-    pub(crate) dcs_handle: DcsHandle,
-    pub(crate) scope: String,
-    pub(crate) self_id: MemberId,
-    pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
-    pub(crate) log: LogHandle,
+    pub(crate) cadence: HaWorkerCadence,
+    pub(crate) state_channel: HaStateChannel,
+    pub(crate) observed: HaObservedState,
+    pub(crate) control: HaControlPlane,
+    pub(crate) identity: HaNodeIdentity,
 }
 
-pub(crate) struct HaWorkerContractStubInputs {
+pub(crate) struct HaWorkerCadence {
+    pub(crate) poll_interval: Duration,
+    pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
+}
+
+pub(crate) struct HaStateChannel {
+    pub(crate) current: HaState,
     pub(crate) publisher: StatePublisher<HaState>,
-    pub(crate) config_subscriber: StateSubscriber<RuntimeConfig>,
-    pub(crate) pg_subscriber: StateSubscriber<PgInfoState>,
-    pub(crate) dcs_subscriber: StateSubscriber<DcsView>,
-    pub(crate) process_subscriber: StateSubscriber<ProcessState>,
+}
+
+pub(crate) struct HaObservedState {
+    pub(crate) config: StateSubscriber<RuntimeConfig>,
+    pub(crate) pg: StateSubscriber<PgInfoState>,
+    pub(crate) dcs: StateSubscriber<DcsView>,
+    pub(crate) process: StateSubscriber<ProcessState>,
+}
+
+pub(crate) struct HaControlPlane {
     pub(crate) process_intent_inbox: UnboundedSender<ProcessIntentRequest>,
     pub(crate) dcs_handle: DcsHandle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HaNodeIdentity {
     pub(crate) scope: String,
     pub(crate) self_id: MemberId,
+}
+
+pub(crate) struct HaWorkerBootstrap {
+    pub(crate) cadence: HaWorkerCadence,
+    pub(crate) state_channel: HaStateChannel,
+    pub(crate) observed: HaObservedState,
+    pub(crate) control: HaControlPlane,
+    pub(crate) identity: HaNodeIdentity,
 }
 
 impl HaState {
@@ -70,33 +85,20 @@ impl HaState {
 }
 
 impl HaWorkerCtx {
-    pub(crate) fn contract_stub(inputs: HaWorkerContractStubInputs) -> Self {
-        let HaWorkerContractStubInputs {
-            publisher,
-            config_subscriber,
-            pg_subscriber,
-            dcs_subscriber,
-            process_subscriber,
-            process_intent_inbox,
-            dcs_handle,
-            scope,
-            self_id,
-        } = inputs;
-
+    pub(crate) fn new(bootstrap: HaWorkerBootstrap) -> Self {
+        let HaWorkerBootstrap {
+            cadence,
+            state_channel,
+            observed,
+            control,
+            identity,
+        } = bootstrap;
         Self {
-            poll_interval: Duration::from_millis(10),
-            state: HaState::initial(WorkerStatus::Starting),
-            publisher,
-            config_subscriber,
-            pg_subscriber,
-            dcs_subscriber,
-            process_subscriber,
-            process_intent_inbox,
-            dcs_handle,
-            scope,
-            self_id,
-            now: Box::new(|| Ok(UnixMillis(0))),
-            log: LogHandle::disabled(),
+            cadence,
+            state_channel,
+            observed,
+            control,
+            identity,
         }
     }
 }

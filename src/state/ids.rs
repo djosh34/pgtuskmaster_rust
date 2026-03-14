@@ -7,6 +7,16 @@ pub struct MemberId(pub String);
 pub struct ClusterName(pub String);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ScopeName(pub String);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NodeIdentity {
+    pub cluster_name: ClusterName,
+    pub scope: ScopeName,
+    pub member_id: MemberId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SwitchoverRequestId(pub String);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

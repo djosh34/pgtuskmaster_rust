@@ -1,11 +1,11 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
 pub(crate) use super::conninfo::render_pg_conninfo;
 pub use super::conninfo::{PgConnInfo, PgSslMode};
 use super::query::PgPollData;
-use crate::logging::LogHandle;
+use crate::{config::RuntimeConfig, logging::LogHandle, process::state::ProcessRuntimePlan};
 use crate::state::StatePublisher;
 use crate::state::{
     MemberId, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerError, WorkerStatus,
@@ -85,16 +85,131 @@ impl PgInfoState {
     pub(crate) fn last_refresh_at(&self) -> Option<UnixMillis> {
         self.common().last_refresh_at
     }
+
+    pub(crate) fn starting() -> Self {
+        Self::Unknown {
+            common: PgInfoCommon {
+                worker: WorkerStatus::Starting,
+                sql: SqlStatus::Unknown,
+                readiness: Readiness::Unknown,
+                timeline: None,
+                system_identifier: None,
+                pg_config: PgConfig {
+                    port: None,
+                    hot_standby: None,
+                    primary_conninfo: None,
+                    primary_slot_name: None,
+                    extra: std::collections::BTreeMap::new(),
+                },
+                last_refresh_at: None,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct PgInfoWorkerCtx {
+    pub(crate) identity: PgNodeIdentity,
+    pub(crate) probe: PgProbeTarget,
+    pub(crate) cadence: PgInfoCadence,
+    pub(crate) state_channel: PgInfoStateChannel,
+    pub(crate) runtime: PgInfoRuntime,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PgNodeIdentity {
     pub(crate) self_id: MemberId,
-    pub(crate) postgres_conninfo: PgConnInfo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PgLocalProbeTarget {
+    pub(crate) socket_dir: PathBuf,
+    pub(crate) port: u16,
+    pub(crate) user: String,
+    pub(crate) dbname: String,
+    pub(crate) application_name: Option<String>,
+    pub(crate) connect_timeout_s: Option<u32>,
+    pub(crate) ssl_mode: PgSslMode,
+    pub(crate) ssl_root_cert: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PgProbeTarget {
+    Local(PgLocalProbeTarget),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PgInfoCadence {
     pub(crate) poll_interval: Duration,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PgInfoStateChannel {
     pub(crate) publisher: StatePublisher<PgInfoState>,
-    pub(crate) log: LogHandle,
     pub(crate) last_emitted_sql_status: Option<SqlStatus>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PgInfoRuntime {
+    pub(crate) log: LogHandle,
+}
+
+pub(crate) struct PgInfoWorkerBootstrap {
+    pub(crate) identity: PgNodeIdentity,
+    pub(crate) probe: PgProbeTarget,
+    pub(crate) cadence: PgInfoCadence,
+    pub(crate) state_channel: PgInfoStateChannel,
+    pub(crate) runtime: PgInfoRuntime,
+}
+
+impl PgInfoWorkerCtx {
+    pub(crate) fn new(bootstrap: PgInfoWorkerBootstrap) -> Self {
+        let PgInfoWorkerBootstrap {
+            identity,
+            probe,
+            cadence,
+            state_channel,
+            runtime,
+        } = bootstrap;
+        Self {
+            identity,
+            probe,
+            cadence,
+            state_channel,
+            runtime,
+        }
+    }
+}
+
+impl PgProbeTarget {
+    pub(crate) fn local_from_config(cfg: &RuntimeConfig, process_plan: &ProcessRuntimePlan) -> Self {
+        Self::Local(PgLocalProbeTarget {
+            socket_dir: process_plan.postgres.paths.socket_dir.clone(),
+            port: process_plan.postgres.port,
+            user: cfg.postgres.roles.superuser.username.clone(),
+            dbname: cfg.postgres.local_conn_identity.dbname.clone(),
+            application_name: None,
+            connect_timeout_s: Some(cfg.postgres.connect_timeout_s),
+            ssl_mode: cfg.postgres.local_conn_identity.ssl_mode,
+            ssl_root_cert: cfg.postgres.local_conn_identity.ca_cert.clone(),
+        })
+    }
+
+    pub(crate) fn to_conninfo(&self) -> PgConnInfo {
+        match self {
+            Self::Local(target) => PgConnInfo {
+                host: target.socket_dir.display().to_string(),
+                port: target.port,
+                user: target.user.clone(),
+                dbname: target.dbname.clone(),
+                application_name: target.application_name.clone(),
+                connect_timeout_s: target.connect_timeout_s,
+                ssl_mode: target.ssl_mode,
+                ssl_root_cert: target.ssl_root_cert.clone(),
+                options: None,
+            },
+        }
+    }
 }
 
 pub(crate) fn derive_readiness(sql: &SqlStatus, is_ready: bool) -> Readiness {

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 pub(crate) mod controller;
+pub(crate) mod startup;
 pub mod worker;
 
 use crate::{

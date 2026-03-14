@@ -1,34 +1,13 @@
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::Path, time::Duration};
 
 use thiserror::Error;
-use tokio::sync::mpsc;
 
 use crate::{
-    api::worker::{
-        ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiNodeIdentity, ApiServerCtx,
-        ApiStateSubscribers,
-    },
     config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
-    dcs::DcsView,
-    ha::state::{HaState, HaWorkerContractStubInputs, HaWorkerCtx},
     logging::{AppEvent, AppEventHeader, SeverityText, StructuredFields},
-    pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-    process::{
-        state::{
-            LocalPostgresExecution, ProcessIntentRuntime, ProcessState, ProcessWorkerCtx,
-            RemoteRoleProfile, RemoteSourceExecution,
-        },
-        worker::{system_now_unix_millis, TokioCommandRunner},
-    },
-    state::{new_state_channel, MemberId, UnixMillis, WorkerStatus},
+    process::state::ProcessRuntimePlan,
+    state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName},
 };
-
-const PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -117,277 +96,92 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
             RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
         })?;
 
-    let process_runtime = process_runtime_from_config(&cfg);
-    ensure_start_paths(&process_runtime, &cfg.postgres.data_dir)?;
-    run_workers(cfg, process_runtime, log).await
-}
-
-fn process_runtime_from_config(cfg: &RuntimeConfig) -> ProcessIntentRuntime {
-    ProcessIntentRuntime {
-        local_postgres: LocalPostgresExecution {
-            socket_dir: cfg.postgres.socket_dir.clone(),
-            port: cfg.postgres.listen_port,
-            log_file: cfg.postgres.log_file.clone(),
-        },
-        remote_source: RemoteSourceExecution {
-            replicator: RemoteRoleProfile {
-                username: cfg.postgres.roles.replicator.username.clone(),
-                auth: cfg.postgres.roles.replicator.auth.clone(),
-            },
-            rewinder: RemoteRoleProfile {
-                username: cfg.postgres.roles.rewinder.username.clone(),
-                auth: cfg.postgres.roles.rewinder.auth.clone(),
-            },
-            dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
-            ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
-            ssl_root_cert: cfg.postgres.rewind_conn_identity.ca_cert.clone(),
-            connect_timeout_s: cfg.postgres.connect_timeout_s,
-        },
-    }
-}
-
-fn advertised_postgres_port(cfg: &RuntimeConfig) -> u16 {
-    cfg.postgres
-        .advertise_port
-        .unwrap_or(cfg.postgres.listen_port)
-}
-
-fn ensure_start_paths(process_runtime: &ProcessIntentRuntime, data_dir: &Path) -> Result<(), RuntimeError> {
-    if let Some(parent) = data_dir.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            RuntimeError::StartupExecution(format!(
-                "failed to create postgres data dir parent `{}`: {err}",
-                parent.display()
-            ))
-        })?;
-    }
-
-    fs::create_dir_all(data_dir).map_err(|err| {
-        RuntimeError::StartupExecution(format!(
-            "failed to create postgres data dir `{}`: {err}",
-            data_dir.display()
-        ))
+    let process_plan = ProcessRuntimePlan::from_config(&cfg);
+    process_plan.ensure_start_paths().map_err(|err| {
+        RuntimeError::StartupExecution(format!("process start path preparation failed: {err}"))
     })?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
-            RuntimeError::StartupExecution(format!(
-                "failed to set postgres data dir permissions on `{}`: {err}",
-                data_dir.display()
-            ))
-        })?;
-    }
-
-    fs::create_dir_all(&process_runtime.local_postgres.socket_dir).map_err(|err| {
-        RuntimeError::StartupExecution(format!(
-            "failed to create postgres socket dir `{}`: {err}",
-            process_runtime.local_postgres.socket_dir.display()
-        ))
-    })?;
-
-    if let Some(log_parent) = process_runtime.local_postgres.log_file.parent() {
-        fs::create_dir_all(log_parent).map_err(|err| {
-            RuntimeError::StartupExecution(format!(
-                "failed to create postgres log dir `{}`: {err}",
-                log_parent.display()
-            ))
-        })?;
-    }
-
-    Ok(())
+    run_workers(cfg, process_plan, log).await
 }
 
 async fn run_workers(
     cfg: RuntimeConfig,
-    process_runtime: ProcessIntentRuntime,
+    process_plan: ProcessRuntimePlan,
     log: crate::logging::LogHandle,
 ) -> Result<(), RuntimeError> {
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone());
-    let (pg_publisher, pg_subscriber) = new_state_channel(initial_pg_state());
-
-    let initial_dcs = DcsView::empty(WorkerStatus::Starting);
-    let (dcs_publisher, dcs_subscriber) = new_state_channel(initial_dcs);
-
-    let initial_process = ProcessState::Idle {
-        worker: WorkerStatus::Starting,
-        last_outcome: None,
+    let identity = NodeIdentity {
+        cluster_name: ClusterName(cfg.cluster.name.clone()),
+        scope: ScopeName(cfg.dcs.scope.clone()),
+        member_id: MemberId(cfg.cluster.member_id.clone()),
     };
-    let (process_publisher, process_subscriber) = new_state_channel(initial_process.clone());
+    let worker_poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
 
-    let initial_ha = HaState::initial(WorkerStatus::Starting);
-    let (ha_publisher, ha_subscriber) = new_state_channel(initial_ha);
-
-    let self_id = MemberId(cfg.cluster.member_id.clone());
-    let scope = cfg.dcs.scope.clone();
-
-    let pg_ctx = crate::pginfo::state::PgInfoWorkerCtx {
-        self_id: self_id.clone(),
-        postgres_conninfo: local_postgres_conninfo(
-            &cfg.postgres.local_conn_identity,
-            cfg.postgres.roles.superuser.username.as_str(),
-            &process_runtime.local_postgres,
-            cfg.postgres.connect_timeout_s,
-        ),
-        poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
-        publisher: pg_publisher,
+    let pginfo = crate::pginfo::startup::bootstrap(crate::pginfo::startup::PgInfoRuntimeRequest {
+        self_id: identity.member_id.clone(),
+        probe: crate::pginfo::state::PgProbeTarget::local_from_config(&cfg, &process_plan),
+        poll_interval: worker_poll_interval,
         log: log.clone(),
-        last_emitted_sql_status: None,
-    };
+    });
 
-    let (dcs_ctx, dcs_handle) = crate::dcs::worker::build_worker_ctx(
-        crate::dcs::worker::DcsWorkerBootstrap {
-            self_id: self_id.clone(),
-            scope: scope.clone(),
-            endpoints: cfg.dcs.endpoints.clone(),
-            poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
-            local_postgres_host: cfg.postgres.listen_host.clone(),
-            local_postgres_port: advertised_postgres_port(&cfg),
-            local_api_url: advertised_operator_api_url(&cfg),
-            pg_subscriber: pg_subscriber.clone(),
-            publisher: dcs_publisher,
-            log: log.clone(),
-            member_ttl_ms: cfg.ha.lease_ttl_ms,
-        },
-    )
+    let dcs = crate::dcs::startup::bootstrap(crate::dcs::startup::DcsRuntimeRequest {
+        identity: identity.clone(),
+        endpoints: cfg.dcs.endpoints.clone(),
+        poll_interval: worker_poll_interval,
+        member_ttl_ms: cfg.ha.lease_ttl_ms,
+        advertised: crate::dcs::startup::DcsAdvertisedEndpoints::from_config(&cfg),
+        pg_subscriber: pginfo.state.clone(),
+        log: log.clone(),
+    })
     .map_err(|err| RuntimeError::Worker(format!("dcs store connect failed: {err}")))?;
 
-    let (process_intent_inbox_tx, process_intent_inbox_rx) = mpsc::unbounded_channel();
-    let process_ctx = ProcessWorkerCtx {
-        poll_interval: PROCESS_WORKER_POLL_INTERVAL,
-        config: cfg.process.clone(),
-        self_id: self_id.clone(),
+    let process = crate::process::startup::bootstrap(crate::process::startup::ProcessRuntimeRequest {
+        identity: identity.clone(),
         runtime_config: cfg_subscriber.clone(),
-        dcs_subscriber: dcs_subscriber.clone(),
-        intent_runtime: process_runtime,
-        log: log.clone(),
+        dcs_subscriber: dcs.state.clone(),
+        plan: process_plan,
+        config: cfg.process.clone(),
         capture_subprocess_output: cfg.logging.capture_subprocess_output,
-        state: initial_process,
-        publisher: process_publisher,
-        inbox: process_intent_inbox_rx,
-        inbox_disconnected_logged: false,
-        command_runner: Box::new(TokioCommandRunner),
-        active_runtime: None,
-        last_rejection: None,
-        now: Box::new(system_now_unix_millis),
-    };
-
-    let mut ha_ctx = HaWorkerCtx::contract_stub(HaWorkerContractStubInputs {
-        publisher: ha_publisher,
-        config_subscriber: cfg_subscriber.clone(),
-        pg_subscriber: pg_subscriber.clone(),
-        dcs_subscriber: dcs_subscriber.clone(),
-        process_subscriber: process_subscriber.clone(),
-        process_intent_inbox: process_intent_inbox_tx,
-        dcs_handle: dcs_handle.clone(),
-        scope: scope.clone(),
-        self_id: self_id.clone(),
-    });
-    ha_ctx.poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
-    ha_ctx.now = Box::new(system_now_unix_millis);
-    ha_ctx.log = log.clone();
-
-    let api_transport = crate::tls::build_api_server_transport(&cfg.api.security.transport)
-        .map_err(|err| RuntimeError::Worker(format!("api tls config build failed: {err}")))?;
-    let api_ctx = ApiServerCtx {
-        bind: ApiBindConfig::listen(cfg.api.listen_addr),
-        identity: ApiNodeIdentity {
-            cluster_name: cfg.cluster.name.clone(),
-            scope: scope.clone(),
-            member_id: cfg.cluster.member_id.clone(),
-        },
-        runtime_config: cfg_subscriber,
-        dcs_handle,
-        state: Some(ApiStateSubscribers {
-            pg: pg_subscriber.clone(),
-            process: process_subscriber.clone(),
-            dcs: dcs_subscriber.clone(),
-            ha: ha_subscriber.clone(),
-        }),
-        auth: ApiAuthState::Disabled,
-        cert_reloader: ApiCertificateReloadHandle::from_transport(&api_transport),
-        transport: api_transport,
         log: log.clone(),
-    };
+    });
+
+    let ha = crate::ha::startup::bootstrap(crate::ha::startup::HaRuntimeRequest {
+        identity: identity.clone(),
+        poll_interval: worker_poll_interval,
+        config_subscriber: cfg_subscriber.clone(),
+        pg_subscriber: pginfo.state.clone(),
+        dcs_subscriber: dcs.state.clone(),
+        process_subscriber: process.state.clone(),
+        process_control: process.control.clone(),
+        dcs_handle: dcs.handle.clone(),
+    });
+
+    let api = crate::api::startup::bootstrap(crate::api::startup::ApiRuntimeRequest {
+        identity,
+        runtime_config: cfg_subscriber,
+        dcs_handle: dcs.handle.clone(),
+        observed_state: crate::api::worker::ApiObservedState::Live {
+            pg: pginfo.state.clone(),
+            process: process.state.clone(),
+            dcs: dcs.state.clone(),
+            ha: ha.state.clone(),
+        },
+        log: log.clone(),
+    })
+    .map_err(|err| RuntimeError::Worker(err.to_string()))?;
 
     tokio::try_join!(
-        crate::pginfo::worker::run(pg_ctx),
-        crate::dcs::worker::run(dcs_ctx),
-        crate::process::worker::run(process_ctx),
+        pginfo.worker.run(),
+        dcs.worker.run(),
+        process.worker.run(),
         crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(
             cfg.clone(),
             log.clone(),
         )),
-        crate::ha::worker::run(ha_ctx),
-        crate::api::worker::run(api_ctx),
+        ha.worker.run(),
+        api.worker.run(),
     )
     .map_err(|err| RuntimeError::Worker(err.to_string()))?;
 
     Ok(())
-}
-
-fn advertised_operator_api_url(cfg: &RuntimeConfig) -> Option<String> {
-    if let Some(api_url) = cfg.pgtm.as_ref().and_then(|pgtm| pgtm.api_url.clone()) {
-        return Some(api_url);
-    }
-
-    if cfg.api.listen_addr.ip().is_unspecified() {
-        return None;
-    }
-
-    let scheme = match cfg.api.security.transport {
-        crate::config::ApiTransportConfig::Http => "http",
-        crate::config::ApiTransportConfig::Https { .. } => "https",
-    };
-    Some(format!("{scheme}://{}", cfg.api.listen_addr))
-}
-
-fn local_postgres_conninfo(
-    identity: &crate::config::PostgresConnIdentityConfig,
-    superuser_username: &str,
-    local_postgres: &LocalPostgresExecution,
-    connect_timeout_s: u32,
-) -> crate::pginfo::state::PgConnInfo {
-    crate::pginfo::state::PgConnInfo {
-        host: local_postgres.socket_dir.display().to_string(),
-        port: local_postgres.port,
-        user: superuser_username.to_string(),
-        dbname: identity.dbname.clone(),
-        application_name: None,
-        connect_timeout_s: Some(connect_timeout_s),
-        ssl_mode: identity.ssl_mode,
-        ssl_root_cert: identity.ca_cert.clone(),
-        options: None,
-    }
-}
-
-fn initial_pg_state() -> PgInfoState {
-    PgInfoState::Unknown {
-        common: PgInfoCommon {
-            worker: WorkerStatus::Starting,
-            sql: SqlStatus::Unknown,
-            readiness: Readiness::Unknown,
-            timeline: None,
-            system_identifier: None,
-            pg_config: PgConfig {
-                port: None,
-                hot_standby: None,
-                primary_conninfo: None,
-                primary_slot_name: None,
-                extra: BTreeMap::new(),
-            },
-            last_refresh_at: None,
-        },
-    }
-}
-
-fn _now_unix_millis() -> Result<UnixMillis, RuntimeError> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| RuntimeError::Time(format!("system time before epoch: {err}")))?;
-    let millis = u64::try_from(elapsed.as_millis())
-        .map_err(|err| RuntimeError::Time(format!("millis conversion failed: {err}")))?;
-    Ok(UnixMillis(millis))
 }

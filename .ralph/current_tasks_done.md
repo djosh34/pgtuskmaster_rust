@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 06:14:31 CET 2026
+Generated: Sat Mar 14 06:56:51 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -125,6 +125,17 @@ Generated: Sat Mar 14 06:14:31 CET 2026
 
 ```
 ## Task: Find General Architecture, Privacy, And Deduplication Improvements And Create Follow-Up Tasks <status>completed</status> <passes>true</passes>
+
+<priority>medium</priority>
+<blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/02-task-shrink-runtime-node-rs-into-a-narrow-composition-root-and-move-startup-logic-into-owning-domains.md`
+
+```
+## Task: Shrink `runtime/node.rs` Into A Narrow Composition Root And Move Startup Logic Into Owning Domains <status>completed</status> <passes>true</passes>
 
 <priority>medium</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`</blocked_by>

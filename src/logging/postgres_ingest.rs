@@ -1251,8 +1251,9 @@ mod tests {
             PostgresStartIntent, ProcessIntent, ShutdownMode, ReplicaProvisionIntent,
         };
         use crate::process::state::{
-            LocalPostgresExecution, ProcessIntentRequest, ProcessIntentRuntime, ProcessState,
-            ProcessWorkerCtx, RemoteRoleProfile, RemoteSourceExecution,
+            ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
+            ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
+            ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
         use crate::state::{new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError, WorkerStatus};
@@ -1293,14 +1294,14 @@ mod tests {
                 if let ProcessState::Idle {
                     last_outcome: Some(outcome),
                     ..
-                } = &ctx.state
+                } = &ctx.state_channel.current
                 {
                     match outcome {
-                        crate::process::state::JobOutcome::Success { id, .. } if id == job_id => {
+                        crate::process::state::JobOutcome::Success { id, .. } if *id == *job_id => {
                             return Ok(());
                         }
                         crate::process::state::JobOutcome::Failure { id, error, .. }
-                            if id == job_id =>
+                            if *id == *job_id =>
                         {
                             let debug_tail = match debug_log_path {
                                 Some(path) => tail_file_best_effort(path, 60),
@@ -1350,30 +1351,6 @@ mod tests {
             lines.join("\n")
         }
 
-        fn process_intent_runtime_from_config(cfg: &crate::config::RuntimeConfig) -> ProcessIntentRuntime {
-            ProcessIntentRuntime {
-                local_postgres: LocalPostgresExecution {
-                    socket_dir: cfg.postgres.socket_dir.clone(),
-                    port: cfg.postgres.listen_port,
-                    log_file: cfg.postgres.log_file.clone(),
-                },
-                remote_source: RemoteSourceExecution {
-                    replicator: RemoteRoleProfile {
-                        username: cfg.postgres.roles.replicator.username.clone(),
-                        auth: cfg.postgres.roles.replicator.auth.clone(),
-                    },
-                    rewinder: RemoteRoleProfile {
-                        username: cfg.postgres.roles.rewinder.username.clone(),
-                        auth: cfg.postgres.roles.rewinder.auth.clone(),
-                    },
-                    dbname: cfg.postgres.rewind_conn_identity.dbname.clone(),
-                    ssl_mode: cfg.postgres.rewind_conn_identity.ssl_mode,
-                    ssl_root_cert: cfg.postgres.rewind_conn_identity.ca_cert.clone(),
-                    connect_timeout_s: cfg.postgres.connect_timeout_s,
-                },
-            }
-        }
-
         fn build_process_worker_ctx(
             cfg: &crate::config::RuntimeConfig,
             log: crate::logging::LogHandle,
@@ -1383,32 +1360,41 @@ mod tests {
             ProcessWorkerCtx,
             crate::state::StateSubscriber<ProcessState>,
         ) {
-            let initial = ProcessState::Idle {
-                worker: WorkerStatus::Starting,
-                last_outcome: None,
-            };
+            let initial = ProcessState::starting();
             let (publisher, subscriber) = new_state_channel(initial.clone());
             let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
             let (_dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
             (
-                ProcessWorkerCtx {
-                poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
-                config: cfg.process.clone(),
-                self_id: MemberId(cfg.cluster.member_id.clone()),
-                runtime_config,
-                dcs_subscriber,
-                intent_runtime: process_intent_runtime_from_config(cfg),
-                log,
-                capture_subprocess_output: true,
-                state: initial,
-                publisher,
-                inbox,
-                inbox_disconnected_logged: false,
-                command_runner: Box::new(TokioCommandRunner),
-                active_runtime: None,
-                last_rejection: None,
-                now: Box::new(crate::process::worker::system_now_unix_millis),
-                },
+                ProcessWorkerCtx::new(ProcessWorkerBootstrap {
+                    cadence: ProcessCadence {
+                        poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
+                        now: Box::new(crate::process::worker::system_now_unix_millis),
+                    },
+                    config: cfg.process.clone(),
+                    identity: ProcessNodeIdentity {
+                        self_id: MemberId(cfg.cluster.member_id.clone()),
+                    },
+                    observed: ProcessObservedState {
+                        runtime_config,
+                        dcs: dcs_subscriber,
+                    },
+                    plan: ProcessRuntimePlan::from_config(cfg),
+                    state_channel: ProcessStateChannel {
+                        current: initial,
+                        publisher,
+                        last_rejection: None,
+                    },
+                    control: ProcessControlPlane {
+                        inbox,
+                        inbox_disconnected_logged: false,
+                        active_runtime: None,
+                    },
+                    runtime: ProcessRuntime {
+                        log,
+                        capture_subprocess_output: true,
+                        command_runner: Box::new(TokioCommandRunner),
+                    },
+                }),
                 subscriber,
             )
         }
@@ -1666,16 +1652,16 @@ mod tests {
                 if let ProcessState::Idle {
                     last_outcome: Some(outcome),
                     ..
-                } = &process_ctx.state
+                } = &process_ctx.state_channel.current
                 {
                     match outcome {
                         crate::process::state::JobOutcome::Success { id, .. }
-                            if id == &start_id =>
+                            if *id == start_id =>
                         {
                             break;
                         }
                         crate::process::state::JobOutcome::Failure { id, error, .. }
-                            if id == &start_id =>
+                            if *id == start_id =>
                         {
                             let pg_ctl_tail = tail_file_best_effort(&log_file, 120);
                             let postgres_json_tail = tail_file_best_effort(&jsonlog_path, 120);
