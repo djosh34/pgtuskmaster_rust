@@ -67,6 +67,7 @@ pub(crate) enum StreamingStandbyKind {
     /// Currently only constructed in tests, but the variant is matched in
     /// production code (`recovery_signal`) and will be used once point-in-time
     /// recovery orchestration is wired into the HA worker.
+    // TODO: remove allow(dead_code) when PITR orchestration is wired into HA worker
     #[allow(dead_code)]
     Recovery,
 }
