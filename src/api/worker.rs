@@ -160,7 +160,7 @@ enum ReloadCertificatesError {
     Postgres(#[from] crate::process::postmaster::ManagedPostmasterError),
 }
 
-pub struct ApiServerCtx {
+pub(crate) struct ApiServerCtx {
     pub(crate) identity: ApiClusterIdentity,
     pub(crate) observed: ApiObservedState,
     pub(crate) control: ApiControlPlane,
@@ -299,7 +299,7 @@ fn router_from_state(app_state: ApiAppState) -> Router {
         .with_state(app_state)
 }
 
-pub async fn run(ctx: ApiServerCtx) -> Result<(), WorkerError> {
+pub(crate) async fn run(ctx: ApiServerCtx) -> Result<(), WorkerError> {
     let (bind, transport, app_state) = build_app_state(ctx)?;
     let app = router_from_state(app_state);
 

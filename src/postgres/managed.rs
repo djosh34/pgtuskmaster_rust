@@ -11,11 +11,11 @@ use crate::{
         resolve_inline_or_path_bytes, resolve_inline_or_path_string, resolve_secret_string,
         RoleAuthConfig, RuntimeConfig, SecretSource, TlsServerConfig,
     },
-    postgres_managed_conf::{
+    postgres::managed_conf::{
         managed_standby_passfile_path, render_managed_postgres_conf, ManagedPostgresConf,
         ManagedPostgresConfError, ManagedPostgresStartIntent, ManagedPostgresTlsConfig,
-        ManagedRecoverySignal, ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME,
-        MANAGED_RECOVERY_SIGNAL_NAME, MANAGED_STANDBY_SIGNAL_NAME,
+        ManagedRecoverySignal, ManagedStandbyAuth, StreamingStandbyConfig,
+        MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME, MANAGED_STANDBY_SIGNAL_NAME,
     },
 };
 
@@ -30,13 +30,25 @@ pub(crate) struct ManagedPostgresConfig {
     pub(crate) hba_path: PathBuf,
     pub(crate) ident_path: PathBuf,
     pub(crate) standby_passfile_path: Option<PathBuf>,
-    pub(crate) tls_cert_path: Option<PathBuf>,
-    pub(crate) tls_key_path: Option<PathBuf>,
-    pub(crate) tls_client_ca_path: Option<PathBuf>,
+    pub(crate) tls: ManagedTlsPaths,
     pub(crate) standby_signal_path: PathBuf,
     pub(crate) recovery_signal_path: PathBuf,
     pub(crate) postgresql_auto_conf_path: PathBuf,
     pub(crate) quarantined_postgresql_auto_conf_path: PathBuf,
+}
+
+/// Materialized TLS file paths under PGDATA.
+///
+/// Replaces three independent `Option<PathBuf>` fields with a single enum that
+/// makes invalid combinations (e.g. cert without key) unrepresentable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ManagedTlsPaths {
+    Disabled,
+    Enabled {
+        cert: PathBuf,
+        key: PathBuf,
+        client_ca: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -137,9 +149,7 @@ pub(crate) fn materialize_managed_postgres_config(
         hba_path: managed_hba,
         ident_path: managed_ident,
         standby_passfile_path,
-        tls_cert_path: tls_files.cert_path,
-        tls_key_path: tls_files.key_path,
-        tls_client_ca_path: tls_files.client_ca_path,
+        tls: tls_files.paths,
         standby_signal_path: standby_signal,
         recovery_signal_path: recovery_signal,
         postgresql_auto_conf_path: postgresql_auto_conf,
@@ -156,9 +166,7 @@ pub(crate) fn inspect_managed_recovery_state(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MaterializedTlsFiles {
     managed_tls_config: ManagedPostgresTlsConfig,
-    cert_path: Option<PathBuf>,
-    key_path: Option<PathBuf>,
-    client_ca_path: Option<PathBuf>,
+    paths: ManagedTlsPaths,
 }
 
 fn materialize_tls_files(
@@ -167,9 +175,7 @@ fn materialize_tls_files(
     match &cfg.postgres.tls {
         TlsServerConfig::Disabled => Ok(MaterializedTlsFiles {
             managed_tls_config: ManagedPostgresTlsConfig::Disabled,
-            cert_path: None,
-            key_path: None,
-            client_ca_path: None,
+            paths: ManagedTlsPaths::Disabled,
         }),
         TlsServerConfig::Enabled {
             identity,
@@ -212,9 +218,11 @@ fn materialize_tls_files(
                     key_file: managed_key.clone(),
                     ca_file: client_ca_path.clone(),
                 },
-                cert_path: Some(managed_cert),
-                key_path: Some(managed_key),
-                client_ca_path,
+                paths: ManagedTlsPaths::Enabled {
+                    cert: managed_cert,
+                    key: managed_key,
+                    client_ca: client_ca_path,
+                },
             })
         }
     }
@@ -229,24 +237,14 @@ fn normalize_standby_auth_paths(
         ManagedPostgresStartIntent::DetachedStandby => {
             ManagedPostgresStartIntent::detached_standby()
         }
-        ManagedPostgresStartIntent::Replica {
-            primary_conninfo,
-            standby_auth,
-            primary_slot_name,
-        } => ManagedPostgresStartIntent::replica(
-            primary_conninfo.clone(),
-            normalize_standby_auth(standby_auth, managed_passfile_path),
-            primary_slot_name.clone(),
-        ),
-        ManagedPostgresStartIntent::Recovery {
-            primary_conninfo,
-            standby_auth,
-            primary_slot_name,
-        } => ManagedPostgresStartIntent::recovery(
-            primary_conninfo.clone(),
-            normalize_standby_auth(standby_auth, managed_passfile_path),
-            primary_slot_name.clone(),
-        ),
+        ManagedPostgresStartIntent::StreamingStandby(config) => {
+            ManagedPostgresStartIntent::StreamingStandby(Box::new(StreamingStandbyConfig {
+                kind: config.kind,
+                primary_conninfo: config.primary_conninfo.clone(),
+                standby_auth: normalize_standby_auth(&config.standby_auth, managed_passfile_path),
+                primary_slot_name: config.primary_slot_name.clone(),
+            }))
+        }
     }
 }
 
@@ -268,16 +266,9 @@ fn materialize_managed_standby_passfile(
 ) -> Result<Option<PathBuf>, ManagedPostgresError> {
     let standby_details = match start_intent {
         ManagedPostgresStartIntent::Primary | ManagedPostgresStartIntent::DetachedStandby => None,
-        ManagedPostgresStartIntent::Replica {
-            primary_conninfo,
-            standby_auth,
-            ..
+        ManagedPostgresStartIntent::StreamingStandby(config) => {
+            Some((&config.primary_conninfo, &config.standby_auth))
         }
-        | ManagedPostgresStartIntent::Recovery {
-            primary_conninfo,
-            standby_auth,
-            ..
-        } => Some((primary_conninfo, standby_auth)),
     };
 
     let Some((primary_conninfo, standby_auth)) = standby_details else {
@@ -618,16 +609,32 @@ mod tests {
             ports::allocate_ports,
         },
         pginfo::{conninfo::PgSslMode, state::PgConnInfo},
-        postgres_managed_conf::{
+        postgres::managed_conf::{
             managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
             ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
     };
 
     use super::{
-        inspect_managed_recovery_state, materialize_managed_postgres_config, ManagedPostgresError,
-        POSTGRESQL_AUTO_CONF_NAME, QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
+        escape_libpq_passfile_field, inspect_managed_recovery_state,
+        materialize_managed_postgres_config, ManagedPostgresError, POSTGRESQL_AUTO_CONF_NAME,
+        QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
     };
+
+    #[test]
+    fn escape_libpq_passfile_field_leaves_plain_text_unchanged() {
+        assert_eq!(escape_libpq_passfile_field("simple"), "simple");
+    }
+
+    #[test]
+    fn escape_libpq_passfile_field_escapes_colons_and_backslashes() {
+        assert_eq!(escape_libpq_passfile_field("a:b"), r"a\:b");
+        assert_eq!(escape_libpq_passfile_field(r"a\b"), r"a\\b");
+        assert_eq!(
+            escape_libpq_passfile_field(r"user:pass\word"),
+            r"user\:pass\\word"
+        );
+    }
 
     #[test]
     fn materialize_managed_postgres_config_creates_authoritative_postgresql_conf(
@@ -1000,15 +1007,22 @@ mod tests {
             materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
                 .map_err(|err| format!("materialize managed config failed: {err}"))?;
 
-        let cert = managed
-            .tls_cert_path
-            .ok_or_else(|| "missing managed cert path".to_string())?;
-        let key = managed
-            .tls_key_path
-            .ok_or_else(|| "missing managed key path".to_string())?;
-        let ca = managed
-            .tls_client_ca_path
-            .ok_or_else(|| "missing managed ca path".to_string())?;
+        let (cert, key, ca) = match &managed.tls {
+            super::ManagedTlsPaths::Enabled {
+                cert,
+                key,
+                client_ca,
+            } => (
+                cert.clone(),
+                key.clone(),
+                client_ca
+                    .clone()
+                    .ok_or_else(|| "missing managed ca path".to_string())?,
+            ),
+            super::ManagedTlsPaths::Disabled => {
+                return Err("expected TLS to be enabled".to_string());
+            }
+        };
 
         if fs::read_to_string(&cert).map_err(|err| err.to_string())? != "CERT" {
             return Err(format!("unexpected cert contents at {}", cert.display()));

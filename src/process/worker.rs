@@ -15,8 +15,8 @@ use crate::{
         SubprocessLineEvent,
     },
     pginfo::state::render_pg_conninfo,
-    postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
-    postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
+    postgres::managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
+    postgres::managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
     process::postmaster::{
         lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget,
     },
@@ -1428,7 +1428,7 @@ fn primary_start_intent(
             "inspect managed recovery state for primary start failed: {err}"
         ))
     })?;
-    if managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None {
+    if managed_recovery_state != crate::postgres::managed_conf::ManagedRecoverySignal::None {
         return Err(ProcessError::InvalidSpec(
             "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
         ));
@@ -1638,7 +1638,7 @@ mod tests {
         dcs::DcsView,
         dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
         logging::LogHandle,
-        postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
+        postgres::managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
             jobs::{PostgresStartIntent, ProcessCommandRunner, ProcessCommandSpec, ProcessIntent},
             state::{
