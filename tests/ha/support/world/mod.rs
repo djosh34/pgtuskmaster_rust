@@ -1588,15 +1588,15 @@ ident = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }}
 [postgres.extra_gucs]
 wal_keep_size = "128MB"
 
-[postgres.roles.superuser]
+[postgres.roles.mandatory.superuser]
 username = "postgres"
 auth = {{ type = "password", password = {{ path = "/run/secrets/postgres-superuser-password" }} }}
 
-[postgres.roles.replicator]
+[postgres.roles.mandatory.replicator]
 username = "{replicator}"
 auth = {{ type = "password", password = {{ path = "/run/secrets/replicator-password" }} }}
 
-[postgres.roles.rewinder]
+[postgres.roles.mandatory.rewinder]
 username = "{rewinder}"
 auth = {{ type = "password", password = {{ path = "/run/secrets/rewinder-password" }} }}
 

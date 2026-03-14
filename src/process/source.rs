@@ -4,8 +4,8 @@ use crate::{
     dcs::{DcsMemberPostgresView, DcsMemberView},
     pginfo::state::PgConnInfo,
     process::{
-        jobs::{ReplicatorSourceConn, RewinderSourceConn},
-        state::{ProcessRuntimePlan, RemoteRoleProfile},
+        jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
+        state::{MandatoryPostgresRoleCredential, ProcessRuntimePlan},
     },
     state::MemberId,
 };
@@ -24,11 +24,12 @@ pub(crate) fn basebackup_source_from_member(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
     member: &DcsMemberView,
-) -> Result<ReplicatorSourceConn, SourceMaterializationError> {
+) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
     validate_remote_primary_source(self_id, member)?;
-    Ok(ReplicatorSourceConn {
-        conninfo: remote_conninfo(member, &runtime.replication_source.replicator, runtime),
-        auth: runtime.replication_source.replicator.auth.clone(),
+    Ok(MandatoryRoleSourceConn {
+        role: MandatorySourceRole::Replicator,
+        conninfo: remote_conninfo(member, &runtime.replica_access.roles.replicator, runtime),
+        auth: runtime.replica_access.roles.replicator.auth.clone(),
     })
 }
 
@@ -36,11 +37,12 @@ pub(crate) fn rewind_source_from_member(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
     member: &DcsMemberView,
-) -> Result<RewinderSourceConn, SourceMaterializationError> {
+) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
     validate_remote_primary_source(self_id, member)?;
-    Ok(RewinderSourceConn {
-        conninfo: remote_conninfo(member, &runtime.replication_source.rewinder, runtime),
-        auth: runtime.replication_source.rewinder.auth.clone(),
+    Ok(MandatoryRoleSourceConn {
+        role: MandatorySourceRole::Rewinder,
+        conninfo: remote_conninfo(member, &runtime.replica_access.roles.rewinder, runtime),
+        auth: runtime.replica_access.roles.rewinder.auth.clone(),
     })
 }
 
@@ -71,18 +73,18 @@ fn validate_remote_primary_source(
 
 fn remote_conninfo(
     member: &DcsMemberView,
-    role: &RemoteRoleProfile,
+    role: &MandatoryPostgresRoleCredential,
     runtime: &ProcessRuntimePlan,
 ) -> PgConnInfo {
     PgConnInfo {
         host: member.routing.postgres.host.clone(),
         port: member.routing.postgres.port,
-        user: role.username.clone(),
-        dbname: runtime.replication_source.dbname.clone(),
+        user: role.username.as_str().to_owned(),
+        dbname: runtime.replica_access.dbname.clone(),
         application_name: None,
-        connect_timeout_s: Some(runtime.replication_source.connect_timeout_s),
-        ssl_mode: runtime.replication_source.ssl_mode,
-        ssl_root_cert: runtime.replication_source.ssl_root_cert.clone(),
+        connect_timeout_s: Some(runtime.replica_access.connect_timeout_s),
+        ssl_mode: runtime.replica_access.ssl_mode,
+        ssl_root_cert: runtime.replica_access.ssl_root_cert.clone(),
         options: None,
     }
 }

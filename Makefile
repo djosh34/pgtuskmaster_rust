@@ -80,9 +80,11 @@ lint.no_silent_errors:
 	./tools/lint-no-silent-errors.sh
 
 lint.orphan_rust_files:
-	rm -rf "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files"
-	cargo check --all-targets --target-dir "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
-	python3 ./tools/check-orphan-rust-files.py --target-dir "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files"
+	@set -euo pipefail; \
+	mkdir -p "$(CARGO_GATE_TARGET_DIR)"; \
+	target_dir="$$(mktemp -d "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files.XXXXXX")"; \
+	cargo check -j 1 --all-targets --target-dir "$$target_dir" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"; \
+	python3 ./tools/check-orphan-rust-files.py --target-dir "$$target_dir"
 
 lint: docs-lint lint.no_silent_errors lint.orphan_rust_files
 	cargo clippy --all-targets --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings

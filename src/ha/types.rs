@@ -35,7 +35,7 @@ pub struct LocalKnowledge {
     pub postgres: PostgresState,
     pub process: ProcessState,
     pub storage: StorageState,
-    pub required_roles_ready: bool,
+    pub managed_roles_reconciled: bool,
     pub publication: PublicationState,
     pub observation: ObservationState,
 }
@@ -356,7 +356,7 @@ pub enum CoordinationAction {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalAction {
-    EnsureRequiredRoles,
+    ReconcileManagedRoles,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,7 +380,7 @@ impl WorldView {
                 postgres: PostgresState::Offline,
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
-                required_roles_ready: false,
+                managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),

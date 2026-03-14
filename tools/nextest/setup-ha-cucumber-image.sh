@@ -17,6 +17,39 @@ readonly image_run_id="nextest-${NEXTEST_RUN_ID}"
 readonly image_ref="${image_repository}:${image_run_id}"
 readonly cucumber_test_label="io.pgtuskmaster.cucumber-test=true"
 
+prune_unused_ha_networks() {
+  mapfile -t docker_networks < <(docker network ls --format '{{.Name}}')
+
+  for network in "${docker_networks[@]}"; do
+    if [[ "${network}" != ha-* ]]; then
+      continue
+    fi
+
+    if ! container_count="$(
+      docker network inspect "${network}" --format '{{ len .Containers }}' 2>/dev/null
+    )"; then
+      continue
+    fi
+
+    if [[ "${container_count}" != "0" ]]; then
+      continue
+    fi
+
+    echo "removing unused HA network ${network}" >&2
+    if ! rm_output="$(docker network rm "${network}" 2>&1)"; then
+      if [[ "${rm_output}" == *"No such network"* || "${rm_output}" == *"has active endpoints"* ]]; then
+        printf '%s\n' "${rm_output}" >&2
+        continue
+      fi
+      printf '%s\n' "${rm_output}" >&2
+      exit 1
+    fi
+    printf '%s\n' "${rm_output}" >&2
+  done
+}
+
+prune_unused_ha_networks
+
 echo "building shared HA cucumber image ${image_ref}" >&2
 docker build \
   --file "${repo_root}/docker/Dockerfile" \
@@ -24,33 +57,6 @@ docker build \
   --label "${cucumber_test_label}" \
   --tag "${image_ref}" \
   "${repo_root}"
-
-mapfile -t cucumber_images < <(
-  docker image ls \
-    --filter "label=${cucumber_test_label}" \
-    --format '{{.Repository}}:{{.Tag}}'
-)
-
-for image in "${cucumber_images[@]}"; do
-  if [[ -z "${image}" || "${image}" == "<none>:<none>" || "${image}" == "${image_ref}" ]]; then
-    continue
-  fi
-  echo "removing older HA cucumber image ${image}" >&2
-  if ! rm_output="$(docker image rm "${image}" 2>&1)"; then
-    if [[ "${rm_output}" == *"No such image"* ]]; then
-      printf '%s\n' "${rm_output}" >&2
-      continue
-    fi
-    if [[ "${rm_output}" == *"must be forced"* || "${rm_output}" == *"is being used by running container"* ]]; then
-      printf '%s\n' "${rm_output}" >&2
-      echo "skipping removal for HA cucumber image still referenced by a container" >&2
-      continue
-    fi
-    printf '%s\n' "${rm_output}" >&2
-    exit 1
-  fi
-  printf '%s\n' "${rm_output}" >&2
-done
 
 printf 'PGTM_CUCUMBER_TEST_RUN_ID=%s\n' "${image_run_id}" >> "${NEXTEST_ENV}"
 printf 'PGTM_CUCUMBER_TEST_IMAGE=%s\n' "${image_ref}" >> "${NEXTEST_ENV}"

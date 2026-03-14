@@ -101,6 +101,6 @@ If two nodes appear primary at the same time, treat that as a split-brain signal
 ### Subsequent Node Fails to Join
 
 - Confirm replication roles exist on primary with correct passwords
-- Verify `postgres.roles.rewinder` and `postgres.rewind.transport` match the intended rewind path
+- Verify `postgres.roles.mandatory.rewinder` and `postgres.rewind.transport` match the intended rewind path
 - Check DCS member records show primary as healthy
 - Review `pg_hba.conf` on primary allows replication connections from new node

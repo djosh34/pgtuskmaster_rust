@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
-    config::{ProcessConfig, RoleAuthConfig, RuntimeConfig},
+    config::{PostgresRoleName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
     dcs::DcsView,
     logging::LogHandle,
     pginfo::state::PgSslMode,
@@ -114,15 +114,21 @@ pub(crate) struct ManagedPostgresRuntime {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RemoteRoleProfile {
-    pub(crate) username: String,
+pub(crate) struct MandatoryPostgresRoleCredential {
+    pub(crate) username: PostgresRoleName,
     pub(crate) auth: RoleAuthConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReplicationSourceRuntime {
-    pub(crate) replicator: RemoteRoleProfile,
-    pub(crate) rewinder: RemoteRoleProfile,
+pub(crate) struct MandatoryPostgresRuntimeRoles {
+    pub(crate) superuser: MandatoryPostgresRoleCredential,
+    pub(crate) replicator: MandatoryPostgresRoleCredential,
+    pub(crate) rewinder: MandatoryPostgresRoleCredential,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplicaAccessRuntime {
+    pub(crate) roles: MandatoryPostgresRuntimeRoles,
     pub(crate) dbname: String,
     pub(crate) ssl_mode: PgSslMode,
     pub(crate) ssl_root_cert: Option<PathBuf>,
@@ -132,7 +138,7 @@ pub(crate) struct ReplicationSourceRuntime {
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessRuntimePlan {
     pub(crate) postgres: ManagedPostgresRuntime,
-    pub(crate) replication_source: ReplicationSourceRuntime,
+    pub(crate) replica_access: ReplicaAccessRuntime,
 }
 
 pub(crate) struct ProcessWorkerBootstrap {
@@ -227,14 +233,20 @@ impl ProcessRuntimePlan {
                 },
                 port: cfg.postgres.network.listen_port,
             },
-            replication_source: ReplicationSourceRuntime {
-                replicator: RemoteRoleProfile {
-                    username: cfg.postgres.roles.replicator.username.clone(),
-                    auth: cfg.postgres.roles.replicator.auth.clone(),
-                },
-                rewinder: RemoteRoleProfile {
-                    username: cfg.postgres.roles.rewinder.username.clone(),
-                    auth: cfg.postgres.roles.rewinder.auth.clone(),
+            replica_access: ReplicaAccessRuntime {
+                roles: MandatoryPostgresRuntimeRoles {
+                    superuser: MandatoryPostgresRoleCredential {
+                        username: cfg.postgres.roles.mandatory.superuser.username.clone(),
+                        auth: cfg.postgres.roles.mandatory.superuser.auth.clone(),
+                    },
+                    replicator: MandatoryPostgresRoleCredential {
+                        username: cfg.postgres.roles.mandatory.replicator.username.clone(),
+                        auth: cfg.postgres.roles.mandatory.replicator.auth.clone(),
+                    },
+                    rewinder: MandatoryPostgresRoleCredential {
+                        username: cfg.postgres.roles.mandatory.rewinder.username.clone(),
+                        auth: cfg.postgres.roles.mandatory.rewinder.auth.clone(),
+                    },
                 },
                 dbname: cfg.postgres.rewind.database.clone(),
                 ssl_mode: cfg.postgres.rewind.transport.ssl_mode,
@@ -254,6 +266,9 @@ impl ProcessRuntimePlan {
         }
     }
 
+}
+
+impl ProcessRuntimePlan {
     pub(crate) fn ensure_start_paths(&self) -> Result<(), ProcessError> {
         let data_dir = &self.postgres.paths.data_dir;
         if let Some(parent) = data_dir.parent() {

@@ -85,17 +85,33 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         cfg.postgres.rewind.database.as_str(),
     )?;
     validate_non_empty(
-        "postgres.roles.superuser.username",
-        cfg.postgres.roles.superuser.username.as_str(),
+        "postgres.roles.mandatory.superuser.username",
+        cfg.postgres.roles.mandatory.superuser.username.as_str(),
     )?;
     validate_non_empty(
-        "postgres.roles.replicator.username",
-        cfg.postgres.roles.replicator.username.as_str(),
+        "postgres.roles.mandatory.replicator.username",
+        cfg.postgres.roles.mandatory.replicator.username.as_str(),
     )?;
     validate_non_empty(
-        "postgres.roles.rewinder.username",
-        cfg.postgres.roles.rewinder.username.as_str(),
+        "postgres.roles.mandatory.rewinder.username",
+        cfg.postgres.roles.mandatory.rewinder.username.as_str(),
     )?;
+
+    for (role_key, role) in &cfg.postgres.roles.extra {
+        if matches!(role_key.as_str(), "superuser" | "replicator" | "rewinder") {
+            return Err(ConfigError::Validation {
+                field: "postgres.roles.extra",
+                message: format!(
+                    "managed extra role key `{}` is reserved for mandatory postgres roles",
+                    role_key.as_str()
+                ),
+            });
+        }
+
+        validate_non_empty("postgres.roles.extra.<key>.username", role.role.username.as_str())?;
+    }
+
+    validate_unique_managed_role_usernames(cfg)?;
 
     if cfg
         .dcs
@@ -164,4 +180,220 @@ fn validate_non_empty(field: &'static str, value: &str) -> Result<(), ConfigErro
         });
     }
     Ok(())
+}
+
+fn validate_unique_managed_role_usernames(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
+    let managed_usernames = [
+        (
+            "postgres.roles.mandatory.superuser.username".to_string(),
+            cfg.postgres
+                .roles
+                .mandatory
+                .superuser
+                .username
+                .as_str()
+                .to_string(),
+        ),
+        (
+            "postgres.roles.mandatory.replicator.username".to_string(),
+            cfg.postgres
+                .roles
+                .mandatory
+                .replicator
+                .username
+                .as_str()
+                .to_string(),
+        ),
+        (
+            "postgres.roles.mandatory.rewinder.username".to_string(),
+            cfg.postgres
+                .roles
+                .mandatory
+                .rewinder
+                .username
+                .as_str()
+                .to_string(),
+        ),
+    ]
+    .into_iter()
+    .chain(cfg.postgres.roles.extra.iter().map(|(role_key, role)| {
+        (
+            format!("postgres.roles.extra.{}.username", role_key.as_str()),
+            role.role.username.as_str().to_string(),
+        )
+    }))
+    .collect::<Vec<_>>();
+
+    let mut seen = std::collections::BTreeMap::<String, String>::new();
+    for (field, username) in managed_usernames {
+        if let Some(first_field) = seen.insert(username.clone(), field.clone()) {
+            return Err(ConfigError::Validation {
+                field: "postgres.roles",
+                message: format!(
+                    "managed postgres role username `{username}` is declared more than once (`{first_field}` and `{field}`)"
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        config::{
+            validate_runtime_config, ExtraManagedPostgresRoleConfig, ManagedPostgresRoleKey,
+            PostgresRoleConfig, PostgresRoleName, PostgresRolePrivilege, RoleAuthConfig,
+            SecretSource,
+        },
+        dev_support::runtime_config::RuntimeConfigBuilder,
+    };
+
+    fn inline_password(value: &str) -> SecretSource {
+        SecretSource::Inline {
+            content: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn rejects_reserved_extra_managed_role_key() -> Result<(), String> {
+        let cfg = RuntimeConfigBuilder::new()
+            .transform_postgres(|postgres| crate::config::PostgresConfig {
+                roles: crate::config::PostgresRolesConfig {
+                    extra: BTreeMap::from([(
+                        ManagedPostgresRoleKey("superuser".to_string()),
+                        ExtraManagedPostgresRoleConfig {
+                            role: PostgresRoleConfig {
+                                username: PostgresRoleName("analytics".to_string()),
+                                auth: RoleAuthConfig::Password {
+                                    password: inline_password("analytics-secret"),
+                                },
+                            },
+                            privilege: PostgresRolePrivilege::Login,
+                            member_of: Vec::new(),
+                        },
+                    )]),
+                    ..postgres.roles
+                },
+                ..postgres
+            })
+            .build();
+
+        let err = match validate_runtime_config(&cfg) {
+            Ok(()) => {
+                return Err("expected reserved extra managed role key to be rejected".to_string());
+            }
+            Err(err) => err,
+        };
+
+        match err {
+            crate::config::ConfigError::Validation { field, message } => {
+                if field != "postgres.roles.extra" {
+                    return Err(format!("unexpected field `{field}`"));
+                }
+                if !message.contains("reserved") {
+                    return Err(format!("unexpected message `{message}`"));
+                }
+            }
+            other => return Err(format!("unexpected error variant: {other}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_duplicate_managed_role_usernames() -> Result<(), String> {
+        let cfg = RuntimeConfigBuilder::new()
+            .transform_postgres(|postgres| crate::config::PostgresConfig {
+                roles: crate::config::PostgresRolesConfig {
+                    extra: BTreeMap::from([(
+                        ManagedPostgresRoleKey("analytics".to_string()),
+                        ExtraManagedPostgresRoleConfig {
+                            role: PostgresRoleConfig {
+                                username: postgres.roles.mandatory.replicator.username.clone(),
+                                auth: RoleAuthConfig::Password {
+                                    password: inline_password("analytics-secret"),
+                                },
+                            },
+                            privilege: PostgresRolePrivilege::Login,
+                            member_of: Vec::new(),
+                        },
+                    )]),
+                    ..postgres.roles
+                },
+                ..postgres
+            })
+            .build();
+
+        let err = match validate_runtime_config(&cfg) {
+            Ok(()) => {
+                return Err(
+                    "expected duplicate managed postgres usernames to be rejected".to_string()
+                );
+            }
+            Err(err) => err,
+        };
+
+        match err {
+            crate::config::ConfigError::Validation { field, message } => {
+                if field != "postgres.roles" {
+                    return Err(format!("unexpected field `{field}`"));
+                }
+                if !message.contains("declared more than once") {
+                    return Err(format!("unexpected message `{message}`"));
+                }
+            }
+            other => return Err(format!("unexpected error variant: {other}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_empty_extra_managed_role_username() -> Result<(), String> {
+        let cfg = RuntimeConfigBuilder::new()
+            .transform_postgres(|postgres| crate::config::PostgresConfig {
+                roles: crate::config::PostgresRolesConfig {
+                    extra: BTreeMap::from([(
+                        ManagedPostgresRoleKey("analytics".to_string()),
+                        ExtraManagedPostgresRoleConfig {
+                            role: PostgresRoleConfig {
+                                username: PostgresRoleName(" ".to_string()),
+                                auth: RoleAuthConfig::Password {
+                                    password: inline_password("analytics-secret"),
+                                },
+                            },
+                            privilege: PostgresRolePrivilege::Login,
+                            member_of: Vec::new(),
+                        },
+                    )]),
+                    ..postgres.roles
+                },
+                ..postgres
+            })
+            .build();
+
+        let err = match validate_runtime_config(&cfg) {
+            Ok(()) => {
+                return Err(
+                    "expected empty extra managed postgres username to be rejected".to_string()
+                );
+            }
+            Err(err) => err,
+        };
+
+        match err {
+            crate::config::ConfigError::Validation { field, .. } => {
+                if field != "postgres.roles.extra.<key>.username" {
+                    return Err(format!("unexpected field `{field}`"));
+                }
+            }
+            other => return Err(format!("unexpected error variant: {other}")),
+        }
+
+        Ok(())
+    }
 }

@@ -288,8 +288,8 @@ fn materialize_managed_standby_passfile(
     match standby_auth {
         ManagedStandbyAuth::PasswordPassfile { path } => {
             let password = resolve_role_password(
-                "postgres.roles.replicator.auth",
-                &cfg.postgres.roles.replicator.auth,
+                "postgres.roles.mandatory.replicator.auth",
+                &cfg.postgres.roles.mandatory.replicator.auth,
             )?;
             let rendered = render_libpq_passfile_entry(primary_conninfo, password.as_str())?;
             write_atomic(path, rendered.as_bytes(), Some(0o600))?;

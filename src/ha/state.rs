@@ -17,7 +17,7 @@ use super::types::{AuthorityProjectionState, IdleReason, PlannedActions, TargetR
 pub struct HaState {
     pub worker: WorkerStatus,
     pub tick: u64,
-    pub required_roles_ready: bool,
+    pub managed_roles_reconciled: bool,
     pub publication: AuthorityProjectionState,
     pub role: TargetRole,
     pub world: WorldView,
@@ -74,7 +74,7 @@ impl HaState {
         Self {
             worker,
             tick: 0,
-            required_roles_ready: false,
+            managed_roles_reconciled: false,
             publication: AuthorityProjectionState::unknown(),
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
             world: WorldView::initial(),

@@ -417,7 +417,7 @@ access = { hba = { content = "local all all trust" }, ident = { content = "# emp
 local_database = "postgres"
 rewind = { database = "postgres", transport = { ssl_mode = "prefer" } }
 tls = { mode = "disabled" }
-roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
+roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }, extra = {} }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]

@@ -1424,9 +1424,9 @@ fn build_command(
     match kind {
         ProcessExecutionKind::Bootstrap(spec) => {
             validate_non_empty_path("bootstrap.data_dir", &spec.data_dir)?;
-            if spec.superuser_username.trim().is_empty() {
+            if spec.superuser.as_str().trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
-                    "bootstrap.superuser_username must not be empty".to_string(),
+                    "bootstrap.superuser must not be empty".to_string(),
                 ));
             }
             let program = resolve_process_binary(config, PostgresBinaryName::Initdb)?;
@@ -1438,7 +1438,7 @@ fn build_command(
                     "-A".to_string(),
                     "trust".to_string(),
                     "-U".to_string(),
-                    spec.superuser_username.clone(),
+                    spec.superuser.as_str().to_string(),
                 ],
                 env: Vec::new(),
                 capture_output,
@@ -1646,7 +1646,13 @@ fn materialize_execution_request(
             wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
             ProcessExecutionKind::Bootstrap(super::jobs::BootstrapSpec {
                 data_dir: runtime_config.postgres.paths.data_dir.clone(),
-                superuser_username: runtime_config.postgres.roles.superuser.username.clone(),
+                superuser: runtime_config
+                    .postgres
+                    .roles
+                    .mandatory
+                    .superuser
+                    .username
+                    .clone(),
                 timeout_ms: None,
             })
         }

@@ -3,7 +3,7 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::{resolve_secret_string, RoleAuthConfig, SecretSource};
+use crate::config::{resolve_secret_string, PostgresRoleName, RoleAuthConfig, SecretSource};
 use crate::pginfo::state::PgConnInfo;
 use crate::state::{JobId, MemberId, UnixMillis};
 
@@ -47,18 +47,19 @@ pub enum PostgresStartIntent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BootstrapSpec {
     pub(crate) data_dir: PathBuf,
-    pub(crate) superuser_username: String,
+    pub(crate) superuser: PostgresRoleName,
     pub(crate) timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReplicatorSourceConn {
-    pub(crate) conninfo: PgConnInfo,
-    pub(crate) auth: RoleAuthConfig,
+pub(crate) enum MandatorySourceRole {
+    Replicator,
+    Rewinder,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RewinderSourceConn {
+pub(crate) struct MandatoryRoleSourceConn {
+    pub(crate) role: MandatorySourceRole,
     pub(crate) conninfo: PgConnInfo,
     pub(crate) auth: RoleAuthConfig,
 }
@@ -66,14 +67,14 @@ pub(crate) struct RewinderSourceConn {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PgRewindSpec {
     pub(crate) target_data_dir: PathBuf,
-    pub(crate) source: RewinderSourceConn,
+    pub(crate) source: MandatoryRoleSourceConn,
     pub(crate) timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaseBackupSpec {
     pub(crate) data_dir: PathBuf,
-    pub(crate) source: ReplicatorSourceConn,
+    pub(crate) source: MandatoryRoleSourceConn,
     pub(crate) timeout_ms: Option<u64>,
 }
 

@@ -189,7 +189,14 @@ impl PgProbeTarget {
         Self::Local(PgLocalProbeTarget {
             socket_dir: process_plan.postgres.paths.socket_dir.clone(),
             port: process_plan.postgres.port,
-            user: cfg.postgres.roles.superuser.username.clone(),
+            user: cfg
+                .postgres
+                .roles
+                .mandatory
+                .superuser
+                .username
+                .as_str()
+                .to_owned(),
             dbname: cfg.postgres.local_database.clone(),
             application_name: None,
             connect_timeout_s: Some(cfg.postgres.connect_timeout_s),

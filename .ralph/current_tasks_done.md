@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 11:38:20 CET 2026
+Generated: Sat Mar 14 12:27:07 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -197,5 +197,16 @@ Generated: Sat Mar 14 11:38:20 CET 2026
 <priority>medium</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-postgres-role-reconciliation/01-task-make-role-management-config-driven-idempotent-and-reconciling.md`
+
+```
+## Task: Make PostgreSQL Role Management Config-Driven, Idempotent, And Reconciling <status>completed</status> <passes>true</passes>
+
+<priority>low</priority>
+<blocked_by>Full completion of `.ralph/tasks/story-config-simplification/`</blocked_by>
 ```
 

@@ -596,7 +596,7 @@ mod tests {
                 },
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
-                required_roles_ready: false,
+                managed_roles_reconciled: false,
                 publication: PublicationState::Projected(AuthorityProjection::NoPrimary(
                     NoPrimaryProjection::LeaseOpen,
                 )),
@@ -638,7 +638,7 @@ mod tests {
                 postgres: PostgresState::Offline,
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
-                required_roles_ready: false,
+                managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
@@ -670,7 +670,7 @@ mod tests {
                 postgres: PostgresState::Offline,
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
-                required_roles_ready: false,
+                managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
@@ -700,7 +700,7 @@ mod tests {
                 postgres: PostgresState::Primary { committed_lsn: 42 },
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
-                required_roles_ready: false,
+                managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
@@ -761,7 +761,7 @@ mod tests {
                 },
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
-                required_roles_ready: false,
+                managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),

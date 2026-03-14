@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar 14 11:38:20 CET 2026
+Generated: Sat Mar 14 12:27:07 PM CET 2026
 
 # Task `.ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md`
 
@@ -21,16 +21,5 @@ Generated: Sat Mar 14 11:38:20 CET 2026
 <priority>low</priority>
 
 <description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-postgres-role-reconciliation/01-task-make-role-management-config-driven-idempotent-and-reconciling.md`
-
-```
-## Task: Make PostgreSQL Role Management Config-Driven, Idempotent, And Reconciling <status>not_started</status> <passes>false</passes>
-
-<priority>low</priority>
-<blocked_by>Full completion of `.ralph/tasks/story-config-simplification/`</blocked_by>
 ```
 

@@ -121,7 +121,7 @@ ca_cert = { path = "/etc/pgtuskmaster/tls/postgres-ca.pem" }
 | `rewind.transport.ssl_mode` | enum | `disable`, `prefer`, `require`, `verify_ca`, `verify_full` |
 | `rewind.transport.ca_cert` | inline-or-path | optional; required for `verify_ca` or `verify_full` |
 
-The old `local_conn_identity` and `rewind_conn_identity` config blocks were removed. Local connections use the configured superuser role plus `postgres.local_database`, and rewind uses `postgres.roles.rewinder` plus `postgres.rewind`.
+The old `local_conn_identity` and `rewind_conn_identity` config blocks were removed. Local connections use `postgres.roles.mandatory.superuser` plus `postgres.local_database`, and rewind uses `postgres.roles.mandatory.rewinder` plus `postgres.rewind`.
 
 ### PostgreSQL TLS server settings
 
@@ -147,24 +147,32 @@ If `client_auth` is present, it uses:
 ### Roles
 
 ```toml
-[postgres.roles.superuser]
+[postgres.roles.mandatory.superuser]
 username = "postgres"
 auth = { type = "password", password = { path = "/run/secrets/postgres-superuser-password" } }
 
-[postgres.roles.replicator]
+[postgres.roles.mandatory.replicator]
 username = "replicator"
 auth = { type = "password", password = { path = "/run/secrets/replicator-password" } }
 
-[postgres.roles.rewinder]
+[postgres.roles.mandatory.rewinder]
 username = "rewinder"
 auth = { type = "password", password = { path = "/run/secrets/rewinder-password" } }
+
+[postgres.roles.extra.analytics]
+username = "analytics"
+auth = { type = "password", password = { path = "/run/secrets/analytics-password" } }
+privilege = "login"
+member_of = ["readers"]
 ```
 
-All three roles are required:
+The `mandatory` block is always required and always contains:
 
 - `superuser`
 - `replicator`
 - `rewinder`
+
+The optional `extra` block adds operator-managed PostgreSQL roles keyed by logical role name. Extra role keys must not shadow `superuser`, `replicator`, or `rewinder`.
 
 Only password auth is supported:
 
@@ -174,7 +182,7 @@ auth = { type = "password", password = { path = "/run/secrets/password-file" } }
 auth = { type = "password", password = { env = "PASSWORD_ENV_VAR" } }
 ```
 
-Equal usernames are allowed when that is how you want to run the cluster.
+Every managed PostgreSQL role must have a unique username. Validation rejects duplicate usernames across the mandatory and extra role sets.
 
 ### Access files
 

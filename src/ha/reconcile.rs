@@ -60,10 +60,10 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> ReconcilePlan {
                 ReconcilePlan::process(ProcessIntent::Promote)
             }
             (DataDirState::Initialized(_), PostgresState::Primary { .. }) => {
-                if world.local.required_roles_ready {
+                if world.local.managed_roles_reconciled {
                     ReconcilePlan::default()
                 } else {
-                    ReconcilePlan::local(LocalAction::EnsureRequiredRoles)
+                    ReconcilePlan::local(LocalAction::ReconcileManagedRoles)
                 }
             }
         },
@@ -293,7 +293,7 @@ mod tests {
             postgres: PostgresState::Offline,
             process: ProcessState::Idle,
             storage: StorageState::Healthy,
-            required_roles_ready: false,
+            managed_roles_reconciled: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
@@ -322,7 +322,7 @@ mod tests {
                 postgres: PostgresState::Offline,
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
-                required_roles_ready: false,
+                managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(100),
@@ -370,7 +370,7 @@ mod tests {
             postgres: PostgresState::Offline,
             process: ProcessState::Idle,
             storage: StorageState::Healthy,
-            required_roles_ready: false,
+            managed_roles_reconciled: false,
             publication: PublicationState::Projected(AuthorityProjection::NoPrimary(
                 NoPrimaryProjection::LeaseOpen,
             )),
@@ -402,7 +402,7 @@ mod tests {
             postgres: PostgresState::Offline,
             process: ProcessState::Idle,
             storage: StorageState::Healthy,
-            required_roles_ready: false,
+            managed_roles_reconciled: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
@@ -433,7 +433,7 @@ mod tests {
             },
             process: ProcessState::Idle,
             storage: StorageState::Healthy,
-            required_roles_ready: false,
+            managed_roles_reconciled: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
@@ -470,7 +470,7 @@ mod tests {
             },
             process: ProcessState::Idle,
             storage: StorageState::Healthy,
-            required_roles_ready: false,
+            managed_roles_reconciled: false,
             publication: PublicationState::unknown(),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),

@@ -83,7 +83,7 @@ If PostgreSQL itself should verify client certificates, add client auth:
 tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } }, client_auth = { client_certificate = "required", client_ca = { path = "/etc/pgtuskmaster/tls/postgres-client-ca.pem" } } }
 ```
 
-The old `local_conn_identity` and `rewind_conn_identity` blocks no longer exist. Local SQL uses the configured superuser role and `postgres.local_database`; rewind uses `postgres.roles.rewinder` and `postgres.rewind`.
+The old `local_conn_identity` and `rewind_conn_identity` blocks no longer exist. Local SQL uses `postgres.roles.mandatory.superuser` and `postgres.local_database`; rewind uses `postgres.roles.mandatory.rewinder` and `postgres.rewind`.
 
 If you want `pgtm primary --tls` and `pgtm replicas --tls` to print PostgreSQL client certificate paths, configure:
 

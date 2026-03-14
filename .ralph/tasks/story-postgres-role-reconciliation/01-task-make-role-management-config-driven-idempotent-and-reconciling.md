@@ -1,4 +1,4 @@
-## Task: Make PostgreSQL Role Management Config-Driven, Idempotent, And Reconciling <status>not_started</status> <passes>false</passes>
+## Task: Make PostgreSQL Role Management Config-Driven, Idempotent, And Reconciling <status>completed</status> <passes>true</passes>
 
 <priority>low</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-config-simplification/`</blocked_by>
@@ -80,20 +80,53 @@ Important safety rules for the reconciliation design:
 </description>
 
 <acceptance_criteria>
-- [ ] `.ralph/tasks/story-config-simplification/` is fully complete first; this task does not start on top of the old fixed-role schema.
-- [ ] `src/config/schema.rs`, `src/config/parser.rs`, `src/config/defaults.rs`, and any replacement config-validation modules represent PostgreSQL roles as a typed desired set with mandatory `superuser` / `replicator` / `rewinder` plus arbitrary additional managed roles.
-- [ ] Config validation rejects any config that omits one of the mandatory system roles or tries to redefine an extra managed role with one of those reserved logical names.
-- [ ] `src/postgres_roles.rs` no longer hard-codes a three-role-only SQL renderer; it reconciles the full managed desired role set, including create/alter/remove behavior for managed extra roles and mandatory-role protection.
-- [ ] The runtime still derives bootstrap, replication, and rewind behavior from the typed mandatory-role values in `src/runtime/node.rs`, `src/ha/state.rs`, `src/ha/source_conn.rs`, `src/ha/process_dispatch.rs`, and `src/process/jobs.rs`.
-- [ ] HA/runtime triggering re-runs role reconciliation both on startup and after role-set config changes, with idempotent behavior across repeated runs.
-- [ ] startup reconciliation with only the mandatory roles,
-- [ ] startup reconciliation with additional managed roles,
-- [ ] idempotent reapplication with no changes,
-- [ ] updating an existing managed role,
-- [ ] removing a previously configured extra managed role,
-- [ ] protection against removing mandatory system roles.
-- [ ] HA/runtime fixtures and examples under `tests/ha/givens/**`, `tests/cli_binary.rs`, docs examples, and any shipped runtime-config samples are updated to the new role model.
-- [ ] `make check` passes cleanly.
-- [ ] `make test` passes cleanly.
-- [ ] `make lint` passes cleanly.
+- [x] `.ralph/tasks/story-config-simplification/` is fully complete first; this task does not start on top of the old fixed-role schema.
+- [x] `src/config/schema.rs`, `src/config/parser.rs`, `src/config/defaults.rs`, and any replacement config-validation modules represent PostgreSQL roles as a typed desired set with mandatory `superuser` / `replicator` / `rewinder` plus arbitrary additional managed roles.
+- [x] Config validation rejects any config that omits one of the mandatory system roles or tries to redefine an extra managed role with one of those reserved logical names.
+- [x] `src/postgres_roles.rs` no longer hard-codes a three-role-only SQL renderer; it reconciles the full managed desired role set, including create/alter/remove behavior for managed extra roles and mandatory-role protection.
+- [x] The runtime still derives bootstrap, replication, and rewind behavior from the typed mandatory-role values in `src/runtime/node.rs`, `src/ha/state.rs`, `src/ha/source_conn.rs`, `src/ha/process_dispatch.rs`, and `src/process/jobs.rs`.
+- [x] HA/runtime triggering re-runs role reconciliation both on startup and after role-set config changes, with idempotent behavior across repeated runs.
+- [x] startup reconciliation with only the mandatory roles,
+- [x] startup reconciliation with additional managed roles,
+- [x] idempotent reapplication with no changes,
+- [x] updating an existing managed role,
+- [x] removing a previously configured extra managed role,
+- [x] protection against removing mandatory system roles.
+- [x] HA/runtime fixtures and examples under `tests/ha/givens/**`, `tests/cli_binary.rs`, docs examples, and any shipped runtime-config samples are updated to the new role model.
+- [x] `make check` passes cleanly.
+- [x] `make test` passes cleanly.
+- [x] `make lint` passes cleanly.
 </acceptance_criteria>
+
+1. Finish the config ADT around an explicit mandatory-vs-extra split:
+   - `postgres.roles.mandatory.{superuser,replicator,rewinder}` remains the typed system-role struct the runtime depends on
+   - `postgres.roles.extra` becomes the operator-managed map keyed by a logical managed-role key, not by raw username
+   - usernames become a dedicated `PostgresRoleName` newtype and extra-role privilege intent becomes an explicit ADT instead of loose booleans
+2. Keep the config validation boundary strict around those ADTs:
+   - reject empty usernames for every mandatory or extra managed role
+   - reject any extra managed-role key that shadows `superuser`, `replicator`, or `rewinder`
+   - keep the mandatory-role struct explicit so the runtime cannot “forget” one of the system roles
+3. Rework `src/postgres_roles.rs` around a desired managed-role-set ADT:
+   - define protected mandatory roles vs removable extra managed roles explicitly
+   - model reconciliation inputs in typed structs/enums (`DesiredManagedRoleSet`, protected/drop policy, grants) instead of assembling ad hoc trio SQL
+   - rename the HA entry point from “ensure required roles” to “reconcile managed roles”
+4. Push the new role ADTs through the runtime/process boundary:
+   - replace loose role strings and anonymous role profiles with typed mandatory-role credentials
+   - keep bootstrap/replication/rewind consumers wired through the mandatory-role ADT only
+5. Update HA state/action naming so the control loop tracks broader reconciliation:
+   - `required_roles_ready` becomes a managed-role reconciliation state
+   - `EnsureRequiredRoles` becomes `ReconcileManagedRoles`
+6. Execute the compile-fix pass across all affected call sites, fixtures, and tests:
+   - update config samples, HA givens, CLI fixtures, and runtime helpers to the new TOML shape
+   - finish the desired-role derivation and reconciliation implementation for create/alter/remove/protection behavior
+7. Run the required validation gates in repo order only after the design still looks correct:
+   - `make check`
+   - `make lint`
+   - `make test`
+   - `make test-long`
+8. Only after all validation passes, update docs using the `k2-docs-loop` skill, remove stale role-model docs/examples, set `<passes>true</passes>`, run `/bin/bash .ralph/task_switch.sh`, commit, and push.
+
+- If execution shows the current ADTs are still wrong, switch this task back to `TO BE VERIFIED`, explain the type/design gap in the task file, and stop immediately.
+- Do not run `cargo test`; use the required `make` targets, and use `cargo nextest` only for focused local iteration if absolutely needed before the final validation gates.
+
+NOW EXECUTE

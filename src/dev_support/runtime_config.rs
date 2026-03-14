@@ -5,9 +5,10 @@ use crate::{
         ApiAuthConfig, ApiConfig, ApiTransportConfig, BinaryPathOverrides, BinaryResolutionConfig,
         ClusterConfig, DcsClientConfig, DcsConfig, DcsEndpoint, DebugConfig, FileSinkConfig,
         FileSinkMode, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
-        LoggingSinksConfig, PostgresAccessConfig, PostgresClientTransportConfig, PostgresConfig,
-        PostgresLoggingConfig, PostgresNetworkConfig, PostgresPathsConfig, PostgresRewindConfig,
-        PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, ProcessTimeoutsConfig,
+        LoggingSinksConfig, MandatoryPostgresRolesConfig, PostgresAccessConfig,
+        PostgresClientTransportConfig, PostgresConfig, PostgresLoggingConfig,
+        PostgresNetworkConfig, PostgresPathsConfig, PostgresRewindConfig, PostgresRoleConfig,
+        PostgresRoleName, PostgresRolesConfig, ProcessConfig, ProcessTimeoutsConfig,
         RoleAuthConfig, RuntimeConfig, SecretSource, StderrSinkConfig, TlsServerConfig,
     },
     pginfo::conninfo::PgSslMode,
@@ -64,24 +65,27 @@ fn sample_password_secret() -> SecretSource {
 
 fn sample_postgres_roles_config() -> PostgresRolesConfig {
     PostgresRolesConfig {
-        superuser: PostgresRoleConfig {
-            username: "postgres".to_string(),
-            auth: RoleAuthConfig::Password {
-                password: sample_password_secret(),
+        mandatory: MandatoryPostgresRolesConfig {
+            superuser: PostgresRoleConfig {
+                username: PostgresRoleName("postgres".to_string()),
+                auth: RoleAuthConfig::Password {
+                    password: sample_password_secret(),
+                },
+            },
+            replicator: PostgresRoleConfig {
+                username: PostgresRoleName("replicator".to_string()),
+                auth: RoleAuthConfig::Password {
+                    password: sample_password_secret(),
+                },
+            },
+            rewinder: PostgresRoleConfig {
+                username: PostgresRoleName("rewinder".to_string()),
+                auth: RoleAuthConfig::Password {
+                    password: sample_password_secret(),
+                },
             },
         },
-        replicator: PostgresRoleConfig {
-            username: "replicator".to_string(),
-            auth: RoleAuthConfig::Password {
-                password: sample_password_secret(),
-            },
-        },
-        rewinder: PostgresRoleConfig {
-            username: "rewinder".to_string(),
-            auth: RoleAuthConfig::Password {
-                password: sample_password_secret(),
-            },
-        },
+        extra: BTreeMap::new(),
     }
 }
 

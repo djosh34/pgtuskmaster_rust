@@ -101,7 +101,7 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
             &ctx.identity.self_id,
             now,
         ),
-        required_roles_ready: ctx.state_channel.current.required_roles_ready,
+        managed_roles_reconciled: ctx.state_channel.current.managed_roles_reconciled,
         publication: ctx.state_channel.current.publication.clone(),
         observation: ObservationState {
             pg_observed_at: pg.last_refresh_at().unwrap_or(now),
@@ -124,7 +124,7 @@ fn build_next_state(
     HaState {
         worker: WorkerStatus::Running,
         tick: current.tick.saturating_add(1),
-        required_roles_ready: next_required_roles_ready(current, plan),
+        managed_roles_reconciled: next_managed_roles_reconciled(current, plan),
         publication: apply_publication_goal(&current.publication, &desired.publication),
         role: desired.role.clone(),
         world: world.clone(),
@@ -133,7 +133,7 @@ fn build_next_state(
     }
 }
 
-fn next_required_roles_ready(current: &HaState, plan: &ReconcilePlan) -> bool {
+fn next_managed_roles_reconciled(current: &HaState, plan: &ReconcilePlan) -> bool {
     if matches!(
         plan.process,
         Some(ProcessIntent::Bootstrap)
@@ -144,7 +144,7 @@ fn next_required_roles_ready(current: &HaState, plan: &ReconcilePlan) -> bool {
         return false;
     }
 
-    current.required_roles_ready
+    current.managed_roles_reconciled
 }
 
 fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) -> PublicationState {
@@ -218,9 +218,9 @@ async fn execute_local_action(
     action: &LocalAction,
 ) -> Result<(), WorkerError> {
     match action {
-        LocalAction::EnsureRequiredRoles => {
+        LocalAction::ReconcileManagedRoles => {
             let runtime_config = ctx.observed.config.latest();
-            postgres_roles::ensure_required_roles(
+            postgres_roles::reconcile_managed_roles(
                 &runtime_config,
                 runtime_config.postgres_socket_dir().as_path(),
                 runtime_config.postgres.network.listen_port,
@@ -228,10 +228,10 @@ async fn execute_local_action(
             .await
             .map_err(|err| {
                 WorkerError::Message(format!(
-                    "ha ensure required roles failed at tick {ha_tick} index {action_index}: {err}"
+                    "ha reconcile managed roles failed at tick {ha_tick} index {action_index}: {err}"
                 ))
             })?;
-            ctx.state_channel.current.required_roles_ready = true;
+            ctx.state_channel.current.managed_roles_reconciled = true;
             Ok(())
         }
     }

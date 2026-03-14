@@ -259,19 +259,70 @@ pub enum RoleAuthConfig {
     Password { password: SecretSource },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(transparent)]
+pub struct PostgresRoleName(pub String);
+
+impl PostgresRoleName {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(transparent)]
+pub struct ManagedPostgresRoleKey(pub String);
+
+impl ManagedPostgresRoleKey {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresRolePrivilege {
+    Login,
+    Replication,
+    Superuser,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresRoleConfig {
-    pub username: String,
+    pub username: PostgresRoleName,
     pub auth: RoleAuthConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PostgresRolesConfig {
+pub struct MandatoryPostgresRolesConfig {
     pub superuser: PostgresRoleConfig,
     pub replicator: PostgresRoleConfig,
     pub rewinder: PostgresRoleConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtraManagedPostgresRoleConfig {
+    #[serde(flatten)]
+    pub role: PostgresRoleConfig,
+    #[serde(default = "default_extra_managed_postgres_role_privilege")]
+    pub privilege: PostgresRolePrivilege,
+    #[serde(default)]
+    pub member_of: Vec<PostgresRoleName>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresRolesConfig {
+    pub mandatory: MandatoryPostgresRolesConfig,
+    #[serde(default)]
+    pub extra: BTreeMap<ManagedPostgresRoleKey, ExtraManagedPostgresRoleConfig>,
+}
+
+const fn default_extra_managed_postgres_role_privilege() -> PostgresRolePrivilege {
+    PostgresRolePrivilege::Login
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
