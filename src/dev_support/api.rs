@@ -57,9 +57,9 @@ fn build_test_router_with_state(
         .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
     build_router(ApiServerCtx {
         identity: ApiClusterIdentity {
-            cluster_name: cfg.cluster.name.clone(),
-            scope: cfg.cluster.scope.clone(),
-            member_id: cfg.cluster.member_id.clone(),
+            cluster_name: cfg.cluster.name.to_string(),
+            scope: cfg.cluster.scope.to_string(),
+            member_id: cfg.cluster.member_id.to_string(),
         },
         observed,
         control: ApiControlPlane {

@@ -6,7 +6,7 @@ use crate::{
     config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
     logging::{InternalEvent, LogEvent, RuntimeEvent, RuntimeIdentity, SeverityText},
     process::state::ProcessRuntimePlan,
-    state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName},
+    state::{new_state_channel, NodeIdentity},
 };
 
 #[derive(Debug, Error)]
@@ -33,8 +33,8 @@ fn runtime_startup_event(cfg: &RuntimeConfig, startup_run_id: &str) -> LogEvent 
         SeverityText::Info,
         RuntimeEvent::StartupEntered {
             identity: RuntimeIdentity {
-                scope: cfg.cluster.scope.clone(),
-                member_id: cfg.cluster.member_id.clone(),
+                scope: cfg.cluster.scope.to_string(),
+                member_id: cfg.cluster.member_id.to_string(),
             },
             startup_run_id: startup_run_id.to_string(),
             logging_level: cfg.logging.level,
@@ -82,9 +82,9 @@ async fn run_workers(
 ) -> Result<(), RuntimeError> {
     let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone());
     let identity = NodeIdentity {
-        cluster_name: ClusterName(cfg.cluster.name.clone()),
-        scope: ScopeName(cfg.cluster.scope.clone()),
-        member_id: MemberId(cfg.cluster.member_id.clone()),
+        cluster_name: cfg.cluster.name.clone(),
+        scope: cfg.cluster.scope.clone(),
+        member_id: cfg.cluster.member_id.clone(),
     };
     let worker_poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
 

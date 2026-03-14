@@ -1357,7 +1357,7 @@ mod tests {
                     },
                     config: cfg.process.clone(),
                     identity: ProcessNodeIdentity {
-                        self_id: MemberId(cfg.cluster.member_id.clone()),
+                        self_id: cfg.cluster.member_id.clone(),
                     },
                     observed: ProcessObservedState {
                         runtime_config,

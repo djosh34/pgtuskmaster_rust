@@ -50,8 +50,9 @@ impl ClusterMember {
         }
     }
 
-    pub fn member_id(self) -> MemberId {
-        MemberId(self.service_name().to_string())
+    pub fn member_id(self) -> Result<MemberId> {
+        MemberId::try_from(self.service_name())
+            .map_err(|err| HarnessError::message(err.to_string()))
     }
 
     pub fn as_str(self) -> &'static str {

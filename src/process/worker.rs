@@ -1647,7 +1647,7 @@ mod tests {
                 ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
             },
         },
-        state::{new_state_channel, JobId, MemberId, StateSubscriber, WorkerStatus},
+        state::{new_state_channel, JobId, StateSubscriber, WorkerStatus},
     };
 
     use super::start_job;
@@ -1814,7 +1814,7 @@ mod tests {
                 },
                 config: cfg.process.clone(),
                 identity: ProcessNodeIdentity {
-                    self_id: MemberId(cfg.cluster.member_id.clone()),
+                    self_id: cfg.cluster.member_id.clone(),
                 },
                 observed: ProcessObservedState {
                     runtime_config,
