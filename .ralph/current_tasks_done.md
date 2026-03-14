@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 03:29:49 CET 2026
+Generated: Sat Mar 14 03:55:31 AM CET 2026
 
 # Task `.ralph/tasks/story-ctl-operator-experience/01-task-rename-the-operator-cli-to-pgtm-and-flatten-the-command-tree.md`
 
@@ -106,5 +106,16 @@ Generated: Sat Mar 14 03:29:49 CET 2026
 <priority>high</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/01-task-find-general-architecture-privacy-and-deduplication-improvements-and-create-follow-up-tasks.md`
+
+```
+## Task: Find General Architecture, Privacy, And Deduplication Improvements And Create Follow-Up Tasks <status>completed</status> <passes>true</passes>
+
+<priority>medium</priority>
+<blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`</blocked_by>
 ```
 

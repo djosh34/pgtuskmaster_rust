@@ -1,4 +1,4 @@
-## Task: Find General Architecture, Privacy, And Deduplication Improvements And Create Follow-Up Tasks <status>not_started</status> <passes>false</passes>
+## Task: Find General Architecture, Privacy, And Deduplication Improvements And Create Follow-Up Tasks <status>completed</status> <passes>true</passes>
 
 <priority>medium</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`</blocked_by>
@@ -95,17 +95,17 @@
 </description>
 
 <acceptance_criteria>
-- [ ] `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md` is fully complete before this task begins.
-- [ ] The review covers the current post-DCS repo broadly enough to evaluate multiple candidate subsystems/components rather than only one local file cluster.
-- [ ] The review explicitly looks for problems in module privacy, over-wide interfaces, duplicated logic/representations, tangled ownership, and legacy code/tests that keep bad architecture alive.
-- [ ] At least two independently actionable follow-up task files are created under `.ralph/tasks/story-general-architecture-improvement-finding/` using the `add-task-as-agent` skill.
-- [ ] Each created follow-up task includes the original user request text captured in this task so the architectural intent is preserved.
-- [ ] Each created follow-up task is self-contained and includes concrete repo evidence, affected files/modules, higher-order goal, and expected outcome.
-- [ ] Each created follow-up task describes a problem to solve and the end-state properties that must improve, without dictating an exact implementation design.
-- [ ] No implementation refactor code is performed as part of this task beyond creating the task markdown files themselves.
-- [ ] The created follow-up tasks are scoped as focused independent work items rather than one omnibus cleanup task.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md` is fully complete before this task begins.
+- [x] The review covers the current post-DCS repo broadly enough to evaluate multiple candidate subsystems/components rather than only one local file cluster.
+- [x] The review explicitly looks for problems in module privacy, over-wide interfaces, duplicated logic/representations, tangled ownership, and legacy code/tests that keep bad architecture alive.
+- [x] At least two independently actionable follow-up task files are created under `.ralph/tasks/story-general-architecture-improvement-finding/` using the `add-task-as-agent` skill.
+- [x] Each created follow-up task includes the original user request text captured in this task so the architectural intent is preserved.
+- [x] Each created follow-up task is self-contained and includes concrete repo evidence, affected files/modules, higher-order goal, and expected outcome.
+- [x] Each created follow-up task describes a problem to solve and the end-state properties that must improve, without dictating an exact implementation design.
+- [x] No implementation refactor code is performed as part of this task beyond creating the task markdown files themselves.
+- [x] The created follow-up tasks are scoped as focused independent work items rather than one omnibus cleanup task.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>

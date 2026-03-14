@@ -1,6 +1,17 @@
 # Current Tasks Summary
 
-Generated: Sat Mar 14 03:29:49 CET 2026
+Generated: Sat Mar 14 03:55:31 AM CET 2026
+
+# Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
+
+```
+## Bug: HA storage-stall failover scenario can stall with no authoritative primary <status>not_started</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+`make test-long` is currently not reliably green because `ha_primary_storage_stalled_then_new_primary_takes_over` can fail waiting for a replacement primary.
+```
+
+==============
 
 # Task `.ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md`
 
@@ -35,17 +46,6 @@ Generated: Sat Mar 14 03:29:49 CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-general-architecture-improvement-finding/01-task-find-general-architecture-privacy-and-deduplication-improvements-and-create-follow-up-tasks.md`
-
-```
-## Task: Find General Architecture, Privacy, And Deduplication Improvements And Create Follow-Up Tasks <status>not_started</status> <passes>false</passes>
-
-<priority>medium</priority>
-<blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`</blocked_by>
-```
-
-==============
-
 # Task `.ralph/tasks/story-general-architecture-improvement-finding/02-task-shrink-runtime-node-rs-into-a-narrow-composition-root-and-move-startup-logic-into-owning-domains.md`
 
 ```
@@ -53,6 +53,42 @@ Generated: Sat Mar 14 03:29:49 CET 2026
 
 <priority>medium</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/10-task-collapse-dcs-behind-a-single-private-component-and-read-only-dcs-view.md`</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/03-task-refactor-the-ha-process-boundary-around-a-dedicated-process-intent-adapter-and-remove-secret-bearing-process-defaults-from-ha.md`
+
+```
+## Task: Refactor The HA->process Boundary Around A Dedicated Process Intent Adapter And Remove Secret-Bearing Process Defaults From HA <status>not_started</status> <passes>false</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/04-task-remove-public-test-harness-from-the-production-library-surface-and-move-test-support-behind-a-dev-only-boundary.md`
+
+```
+## Task: Remove Public `test_harness` From The Production Library Surface And Move Test Support Behind A Dev-Only Boundary <status>not_started</status> <passes>false</passes>
+
+<priority>medium</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/05-task-collapse-duplicated-ha-givens-into-a-typed-topology-fixture-pipeline.md`
+
+```
+## Task: Collapse Duplicated HA Givens Into A Typed Topology Fixture Pipeline <status>not_started</status> <passes>false</passes>
+
+<priority>medium</priority>
+
+<description>
 ```
 
 ==============
