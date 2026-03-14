@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use serde::{de, Deserialize, Deserializer, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PgSslMode {
     Disable,
     Allow,
@@ -48,6 +48,15 @@ impl<'de> Deserialize<'de> for PgSslMode {
     }
 }
 
+impl Serialize for PgSslMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PgConnInfo {
     pub host: String,
@@ -59,6 +68,43 @@ pub struct PgConnInfo {
     pub ssl_mode: PgSslMode,
     pub ssl_root_cert: Option<PathBuf>,
     pub options: Option<String>,
+}
+
+pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, String> {
+    let entries = parse_conninfo_entries(input)?;
+    let get_required = |key: &str| {
+        entries
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("missing required conninfo key `{key}`"))
+    };
+
+    let port = get_required("port")?
+        .parse::<u16>()
+        .map_err(|err| format!("invalid conninfo port: {err}"))?;
+    let ssl_mode_raw = get_required("sslmode")?;
+    let ssl_mode = PgSslMode::parse(ssl_mode_raw.as_str())
+        .ok_or_else(|| format!("unsupported conninfo sslmode `{ssl_mode_raw}`"))?;
+    let connect_timeout_s = entries
+        .get("connect_timeout")
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|err| format!("invalid conninfo connect_timeout: {err}"))
+        })
+        .transpose()?;
+
+    Ok(PgConnInfo {
+        host: get_required("host")?,
+        port,
+        user: get_required("user")?,
+        dbname: get_required("dbname")?,
+        application_name: entries.get("application_name").cloned(),
+        connect_timeout_s,
+        ssl_mode,
+        ssl_root_cert: entries.get("sslrootcert").map(PathBuf::from),
+        options: entries.get("options").cloned(),
+    })
 }
 
 pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
@@ -110,11 +156,80 @@ fn render_value(value: &str) -> String {
     }
 }
 
+fn parse_conninfo_entries(input: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let chars = input.chars().collect::<Vec<_>>();
+    let mut entries = std::collections::BTreeMap::new();
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        while index < chars.len() && chars[index].is_whitespace() {
+            index = index.saturating_add(1);
+        }
+        if index >= chars.len() {
+            break;
+        }
+
+        let key_start = index;
+        while index < chars.len() && chars[index] != '=' && !chars[index].is_whitespace() {
+            index = index.saturating_add(1);
+        }
+        if index == key_start || index >= chars.len() || chars[index] != '=' {
+            return Err("invalid conninfo key/value pair".to_string());
+        }
+        let key = chars[key_start..index].iter().collect::<String>();
+        index = index.saturating_add(1);
+        if index >= chars.len() {
+            return Err(format!("missing value for conninfo key `{key}`"));
+        }
+
+        let value = if chars[index] == '\'' {
+            index = index.saturating_add(1);
+            let mut value = String::new();
+            let mut closed = false;
+            while index < chars.len() {
+                match chars[index] {
+                    '\'' => {
+                        index = index.saturating_add(1);
+                        closed = true;
+                        break;
+                    }
+                    '\\' => {
+                        index = index.saturating_add(1);
+                        let escaped = chars.get(index).ok_or_else(|| {
+                            format!("unterminated escape sequence for conninfo key `{key}`")
+                        })?;
+                        value.push(*escaped);
+                        index = index.saturating_add(1);
+                    }
+                    value_char => {
+                        value.push(value_char);
+                        index = index.saturating_add(1);
+                    }
+                }
+            }
+            if !closed {
+                return Err(format!("unterminated quoted value for conninfo key `{key}`"));
+            }
+            value
+        } else {
+            let value_start = index;
+            while index < chars.len() && !chars[index].is_whitespace() {
+                index = index.saturating_add(1);
+            }
+            chars[value_start..index].iter().collect::<String>()
+        };
+
+        entries.insert(key, value);
+    }
+
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use super::{render_pg_conninfo, PgConnInfo, PgSslMode};
+    use super::{parse_pg_conninfo, render_pg_conninfo, PgConnInfo, PgSslMode};
 
     fn sample_conninfo() -> PgConnInfo {
         PgConnInfo {
@@ -138,5 +253,15 @@ mod tests {
             "host=127.0.0.1 port=5432 user=postgres dbname='postgres' application_name='ha worker' connect_timeout=5 sslmode=require sslrootcert='/etc/pgtm/ca bundle.pem' options='-c search_path=public'"
                 .replace("dbname='postgres'", "dbname=postgres")
         );
+    }
+
+    #[test]
+    fn parse_accepts_rendered_conninfo_with_extra_keys() {
+        let rendered = format!(
+            "{} passfile='/var/lib/postgresql/data/pgtm.standby.passfile'",
+            render_pg_conninfo(&sample_conninfo())
+        );
+
+        assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(sample_conninfo()));
     }
 }

@@ -706,6 +706,7 @@ mod tests {
                 sql: SqlStatus::Unknown,
                 readiness: Readiness::Unknown,
                 timeline: Some(TimelineId(1)),
+                system_identifier: None,
                 pg_config: PgConfig {
                     port: None,
                     hot_standby: None,
@@ -731,6 +732,7 @@ mod tests {
                     sql: SqlStatus::Healthy,
                     readiness: Readiness::Ready,
                     timeline: Some(TimelineId(1)),
+                    system_identifier: None,
                     pg_config: PgConfig {
                         port: None,
                         hot_standby: None,

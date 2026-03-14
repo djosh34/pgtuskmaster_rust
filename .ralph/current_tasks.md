@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar 14 03:55:31 AM CET 2026
-
-# Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
-
-```
-## Bug: HA storage-stall failover scenario can stall with no authoritative primary <status>not_started</status> <passes>false</passes> <priority>high</priority>
-
-<description>
-`make test-long` is currently not reliably green because `ha_primary_storage_stalled_then_new_primary_takes_over` can fail waiting for a replacement primary.
-```
-
-==============
+Generated: Sat Mar 14 05:15:04 CET 2026
 
 # Task `.ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md`
 

@@ -5,7 +5,10 @@ use crate::{
         DcsHandle, DcsMemberPostgresView, DcsMemberView, DcsSwitchoverTargetView,
         DcsSwitchoverView, DcsTrust, DcsView,
     },
-    ha::{state::HaState, types::AuthorityView},
+    ha::{
+        state::HaState,
+        types::{AuthorityProjection, PublicationState},
+    },
     pginfo::state::{PgInfoState, Readiness},
     process::state::ProcessState,
     state::MemberId,
@@ -81,8 +84,9 @@ fn validate_switchover_request(
         ));
     }
 
-    match &ha.publication.authority {
-        AuthorityView::Primary { member, .. } if member == self_id => {}
+    match &ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch))
+            if epoch.holder == *self_id => {}
         _ => {
             return Err(ApiError::bad_request(
                 "switchover requests must be sent to the authoritative primary".to_string(),

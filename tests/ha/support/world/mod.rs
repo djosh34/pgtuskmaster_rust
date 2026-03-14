@@ -10,7 +10,7 @@ use cucumber::World;
 use pgtuskmaster_rust::{
     api::NodeState,
     dcs::DcsMemberPostgresView,
-    ha::types::AuthorityView,
+    ha::types::{AuthorityProjection, PublicationState},
 };
 
 use crate::support::{
@@ -1198,9 +1198,12 @@ fn format_bootstrap_warnings(status: &NodeState) -> String {
 }
 
 fn operator_visible_primary(status: &NodeState) -> Option<String> {
-    match &status.ha.publication.authority {
-        AuthorityView::Primary { member, .. } => Some(member.0.clone()),
-        AuthorityView::NoPrimary(_) | AuthorityView::Unknown => None,
+    match &status.ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
+            Some(epoch.holder.0.clone())
+        }
+        PublicationState::Unknown
+        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
     }
 }
 

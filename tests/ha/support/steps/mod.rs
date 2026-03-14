@@ -8,7 +8,7 @@ use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
     api::NodeState,
     dcs::{DcsMemberPostgresView, DcsMemberView, DcsTrust},
-    ha::types::{AuthorityView, TargetRole},
+    ha::types::{AuthorityProjection, PublicationState, TargetRole},
     pginfo::state::Readiness,
 };
 
@@ -1521,13 +1521,15 @@ fn require_visible_members(status: &NodeState, expected: usize) -> Result<()> {
 }
 
 fn require_no_authoritative_primary(status: &NodeState) -> Result<()> {
-    match &status.ha.publication.authority {
-        AuthorityView::NoPrimary(_) => Ok(()),
-        AuthorityView::Primary { member, .. } => Err(HarnessError::message(format!(
+    match &status.ha.publication {
+        PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => Ok(()),
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
+            Err(HarnessError::message(format!(
             "expected no authoritative primary, but `{}` was still published",
-            member.0
-        ))),
-        AuthorityView::Unknown => Err(HarnessError::message(
+            epoch.holder.0
+        )))
+        }
+        PublicationState::Unknown => Err(HarnessError::message(
             "expected an explicit no-primary authority result, but authority remained `unknown`",
         )),
     }
@@ -1538,7 +1540,10 @@ fn format_warnings(status: &NodeState) -> String {
     if status.dcs.trust != DcsTrust::FullQuorum {
         warnings.push(format!("dcs_trust={:?}", status.dcs.trust).to_lowercase());
     }
-    if !matches!(status.ha.publication.authority, AuthorityView::Primary { .. }) {
+    if !matches!(
+        status.ha.publication,
+        PublicationState::Projected(AuthorityProjection::Primary(_))
+    ) {
         warnings.push(format!("authority={}", format_authority(status)));
     }
     if status.dcs.members.is_empty() {
@@ -1552,17 +1557,24 @@ fn format_warnings(status: &NodeState) -> String {
 }
 
 fn format_authority(status: &NodeState) -> String {
-    match &status.ha.publication.authority {
-        AuthorityView::Primary { member, .. } => format!("primary({})", member.0),
-        AuthorityView::NoPrimary(reason) => format!("no_primary({reason:?})").to_lowercase(),
-        AuthorityView::Unknown => "unknown".to_string(),
+    match &status.ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
+            format!("primary({})", epoch.holder.0)
+        }
+        PublicationState::Projected(AuthorityProjection::NoPrimary(reason)) => {
+            format!("no_primary({reason:?})").to_lowercase()
+        }
+        PublicationState::Unknown => "unknown".to_string(),
     }
 }
 
 fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
-    match &status.ha.publication.authority {
-        AuthorityView::Primary { member, .. } => ClusterMember::parse(member.0.as_str()).ok(),
-        AuthorityView::NoPrimary(_) | AuthorityView::Unknown => None,
+    match &status.ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
+            ClusterMember::parse(epoch.holder.0.as_str()).ok()
+        }
+        PublicationState::Unknown
+        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
     }
 }
 

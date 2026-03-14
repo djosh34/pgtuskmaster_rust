@@ -7,7 +7,8 @@ use crate::{
     logging::LogHandle,
     pginfo::state::{PgInfoState, Readiness},
     state::{
-        MemberId, StatePublisher, StateSubscriber, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+        MemberId, StatePublisher, StateSubscriber, SystemIdentifier, TimelineId, UnixMillis,
+        WalLsn, WorkerStatus,
     },
 };
 
@@ -61,17 +62,20 @@ pub struct WalVector {
 pub struct DcsUnknownPostgresView {
     pub readiness: Readiness,
     pub timeline: Option<TimelineId>,
+    pub system_identifier: Option<SystemIdentifier>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DcsPrimaryPostgresView {
     pub readiness: Readiness,
+    pub system_identifier: Option<SystemIdentifier>,
     pub committed_wal: WalVector,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DcsReplicaPostgresView {
     pub readiness: Readiness,
+    pub system_identifier: Option<SystemIdentifier>,
     pub upstream: Option<MemberId>,
     pub replay_wal: Option<WalVector>,
     pub follow_wal: Option<WalVector>,
@@ -192,17 +196,20 @@ pub(crate) struct MemberApiRecord {
 pub(crate) struct UnknownPostgresRecord {
     pub(crate) readiness: Readiness,
     pub(crate) timeline: Option<TimelineId>,
+    pub(crate) system_identifier: Option<SystemIdentifier>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PrimaryPostgresRecord {
     pub(crate) readiness: Readiness,
+    pub(crate) system_identifier: Option<SystemIdentifier>,
     pub(crate) committed_wal: WalVector,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ReplicaPostgresRecord {
     pub(crate) readiness: Readiness,
+    pub(crate) system_identifier: Option<SystemIdentifier>,
     pub(crate) upstream: Option<MemberId>,
     pub(crate) replay_wal: Option<WalVector>,
     pub(crate) follow_wal: Option<WalVector>,
@@ -333,17 +340,20 @@ fn build_member_view(record: &MemberRecord) -> DcsMemberView {
                 DcsMemberPostgresView::Unknown(DcsUnknownPostgresView {
                     readiness: observation.readiness.clone(),
                     timeline: observation.timeline,
+                    system_identifier: observation.system_identifier,
                 })
             }
             MemberPostgresRecord::Primary(observation) => {
                 DcsMemberPostgresView::Primary(DcsPrimaryPostgresView {
                     readiness: observation.readiness.clone(),
+                    system_identifier: observation.system_identifier,
                     committed_wal: observation.committed_wal.clone(),
                 })
             }
             MemberPostgresRecord::Replica(observation) => {
                 DcsMemberPostgresView::Replica(DcsReplicaPostgresView {
                     readiness: observation.readiness.clone(),
+                    system_identifier: observation.system_identifier,
                     upstream: observation.upstream.clone(),
                     replay_wal: observation.replay_wal.clone(),
                     follow_wal: observation.follow_wal.clone(),
@@ -382,6 +392,7 @@ pub(crate) fn build_local_member_record(
             postgres: MemberPostgresRecord::Unknown(UnknownPostgresRecord {
                 readiness: common.readiness.clone(),
                 timeline: common.timeline,
+                system_identifier: common.system_identifier,
             }),
         },
         PgInfoState::Primary {
@@ -391,6 +402,7 @@ pub(crate) fn build_local_member_record(
             routing,
             postgres: MemberPostgresRecord::Primary(PrimaryPostgresRecord {
                 readiness: common.readiness.clone(),
+                system_identifier: common.system_identifier,
                 committed_wal: WalVector {
                     timeline: common.timeline,
                     lsn: *wal_lsn,
@@ -407,6 +419,7 @@ pub(crate) fn build_local_member_record(
             routing,
             postgres: MemberPostgresRecord::Replica(ReplicaPostgresRecord {
                 readiness: common.readiness.clone(),
+                system_identifier: common.system_identifier,
                 upstream: upstream.as_ref().map(|value| value.member_id.clone()),
                 replay_wal: Some(WalVector {
                     timeline: common.timeline,

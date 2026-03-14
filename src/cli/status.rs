@@ -8,7 +8,7 @@ use crate::{
         args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError, output,
     },
     dcs::{DcsMemberPostgresView, DcsMemberView, DcsSwitchoverStateView, DcsSwitchoverTargetView, DcsTrust},
-    ha::types::AuthorityView,
+    ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::Readiness,
 };
 
@@ -229,7 +229,7 @@ fn build_node_view(state: &NodeState, member: &DcsMemberView) -> ClusterNodeView
         trust: dcs_trust_label(&state.dcs.trust).to_string(),
         phase: is_self.then(|| state.ha.role.label().to_string()),
         leader: authority_primary_member(state),
-        decision: is_self.then(|| authority_label(&state.ha.publication.authority)),
+        decision: is_self.then(|| authority_label(&state.ha.publication)),
         postgres_host: member.routing.postgres.host.clone(),
         postgres_port: member.routing.postgres.port,
         readiness: member_readiness_label(&member.postgres).to_string(),
@@ -238,9 +238,12 @@ fn build_node_view(state: &NodeState, member: &DcsMemberView) -> ClusterNodeView
 }
 
 pub(crate) fn authority_primary_member(state: &NodeState) -> Option<String> {
-    match &state.ha.publication.authority {
-        AuthorityView::Primary { member, .. } => Some(member.0.clone()),
-        AuthorityView::NoPrimary(_) | AuthorityView::Unknown => None,
+    match &state.ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
+            Some(epoch.holder.0.clone())
+        }
+        PublicationState::Unknown
+        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
     }
 }
 
@@ -272,11 +275,15 @@ pub(crate) fn member_is_ready_replica(member: &DcsMemberView) -> bool {
     )
 }
 
-fn authority_label(authority: &AuthorityView) -> String {
-    match authority {
-        AuthorityView::Primary { member, .. } => format!("primary({})", member.0),
-        AuthorityView::NoPrimary(reason) => format!("no_primary({reason:?})").to_lowercase(),
-        AuthorityView::Unknown => "unknown".to_string(),
+fn authority_label(publication: &PublicationState) -> String {
+    match publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
+            format!("primary({})", epoch.holder.0)
+        }
+        PublicationState::Projected(AuthorityProjection::NoPrimary(reason)) => {
+            format!("no_primary({reason:?})").to_lowercase()
+        }
+        PublicationState::Unknown => "unknown".to_string(),
     }
 }
 

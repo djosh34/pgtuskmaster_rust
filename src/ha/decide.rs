@@ -3,93 +3,44 @@ use std::cmp::Ordering;
 use crate::{dcs::DcsTrust, state::MemberId};
 
 use super::types::{
-    ApiVisibility, AuthorityView, Candidacy, DesiredState, ElectionEligibility, FailSafeGoal,
-    FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeaseEpoch, LeaseState,
-    LocalDataState, NoPrimaryReason, PeerKnowledge, PostgresState, ProcessState, PublicationGoal,
-    RecoveryPlan, StorageState, SwitchoverState, SwitchoverTarget, TargetRole, WalPosition,
-    WorldView,
+    ApiVisibility, AuthorityProjection, Candidacy, DesiredState, ElectionEligibility,
+    FailSafeGoal, FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason,
+    LeadershipView, LeaseEpoch, LocalDataState, NoPrimaryFence, NoPrimaryProjection,
+    PeerKnowledge, PeerLeaderState, PostgresState, ProcessState, PublicationGoal,
+    PublicationState, RecoveryPlan, StorageState,
+    SwitchoverState, SwitchoverTarget, TargetRole, WalPosition, WorldView,
 };
 
 pub(crate) fn decide(world: &WorldView, self_id: &MemberId) -> DesiredState {
-    if !matches!(world.global.dcs_trust, DcsTrust::FullQuorum) {
+    if !matches!(world.global.coordination.trust, DcsTrust::FullQuorum) {
         return decide_degraded(world);
     }
 
     if world.local.storage == StorageState::Stalled {
         if let PostgresState::Primary { committed_lsn } = &world.local.postgres {
-            let cutoff = active_or_observed_epoch(world).map(|epoch| FenceCutoff {
+            let fence = active_or_observed_epoch(world).map(|epoch| FenceCutoff {
                 epoch,
                 committed_lsn: *committed_lsn,
             });
             return DesiredState {
                 role: TargetRole::Fenced(FenceReason::StorageStalled),
-                publication: PublicationGoal::PublishNoPrimary {
-                    reason: NoPrimaryReason::Recovering,
-                    fence_cutoff: cutoff,
-                },
+                publication: no_primary_publication(NoPrimaryProjection::Recovering {
+                    epoch: active_or_observed_epoch(world),
+                    fence: fence
+                        .map(NoPrimaryFence::Cutoff)
+                        .unwrap_or(NoPrimaryFence::None),
+                }),
                 clear_switchover: false,
             };
         }
     }
 
-    match &world.global.lease {
-        LeaseState::HeldByMe(epoch) => decide_as_lease_holder(world, self_id, epoch.clone()),
-        LeaseState::HeldByPeer(epoch) => {
-            let publication = PublicationGoal::PublishPrimary {
-                primary: epoch.holder.clone(),
-                epoch: epoch.clone(),
-            };
-            match &world.local.postgres {
-                PostgresState::Primary { .. } => DesiredState {
-                    role: TargetRole::Fenced(FenceReason::ForeignLeaderDetected),
-                    publication,
-                    clear_switchover: false,
-                },
-                PostgresState::Offline | PostgresState::Replica { .. } => DesiredState {
-                    role: TargetRole::Follower(follow_goal(world, epoch.holder.clone())),
-                    publication,
-                    clear_switchover: false,
-                },
-            }
+    match &world.global.coordination.leadership {
+        LeadershipView::HeldBySelf(epoch) => decide_as_lease_holder(world, self_id, epoch.clone()),
+        LeadershipView::HeldByPeer { epoch, state } => {
+            decide_under_foreign_leadership(world, epoch.clone(), state)
         }
-        LeaseState::Unheld => {
-            if let Some(epoch) = observed_foreign_lease(world, self_id) {
-                let publication = PublicationGoal::PublishPrimary {
-                    primary: epoch.holder.clone(),
-                    epoch: epoch.clone(),
-                };
-                return match &world.local.postgres {
-                    PostgresState::Primary { .. } => DesiredState {
-                        role: TargetRole::Fenced(FenceReason::ForeignLeaderDetected),
-                        publication,
-                        clear_switchover: false,
-                    },
-                    PostgresState::Offline => DesiredState {
-                        role: TargetRole::Idle(IdleReason::AwaitingLeader),
-                        publication,
-                        clear_switchover: false,
-                    },
-                    PostgresState::Replica { .. } => {
-                        if world.global.observed_primary.as_ref() == Some(&epoch.holder) {
-                            DesiredState {
-                                role: TargetRole::Follower(follow_goal(
-                                    world,
-                                    epoch.holder.clone(),
-                                )),
-                                publication,
-                                clear_switchover: false,
-                            }
-                        } else {
-                            DesiredState {
-                                role: TargetRole::Idle(IdleReason::AwaitingLeader),
-                                publication,
-                                clear_switchover: false,
-                            }
-                        }
-                    }
-                };
-            }
-
+        LeadershipView::Open | LeadershipView::StaleObservedLease { .. } => {
             decide_without_lease(world, self_id)
         }
     }
@@ -105,37 +56,69 @@ fn decide_degraded(world: &WorldView) -> DesiredState {
                 };
                 return DesiredState {
                     role: TargetRole::FailSafe(FailSafeGoal::PrimaryMustStop(cutoff.clone())),
-                    publication: PublicationGoal::PublishNoPrimary {
-                        reason: NoPrimaryReason::DcsDegraded,
-                        fence_cutoff: Some(cutoff),
-                    },
+                    publication: no_primary_publication(NoPrimaryProjection::DcsDegraded {
+                        fence: NoPrimaryFence::Cutoff(cutoff),
+                    }),
                     clear_switchover: false,
                 };
             }
 
             DesiredState {
                 role: TargetRole::FailSafe(FailSafeGoal::WaitForQuorum),
-                publication: PublicationGoal::PublishNoPrimary {
-                    reason: NoPrimaryReason::DcsDegraded,
-                    fence_cutoff: None,
-                },
+                publication: no_primary_publication(NoPrimaryProjection::DcsDegraded {
+                    fence: NoPrimaryFence::None,
+                }),
                 clear_switchover: false,
             }
         }
         PostgresState::Replica { upstream, .. } => DesiredState {
             role: TargetRole::FailSafe(FailSafeGoal::ReplicaKeepFollowing(upstream.clone())),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::DcsDegraded,
-                fence_cutoff: None,
-            },
+            publication: no_primary_publication(NoPrimaryProjection::DcsDegraded {
+                fence: NoPrimaryFence::None,
+            }),
             clear_switchover: false,
         },
         PostgresState::Offline => DesiredState {
             role: TargetRole::FailSafe(FailSafeGoal::WaitForQuorum),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::DcsDegraded,
-                fence_cutoff: None,
-            },
+            publication: no_primary_publication(NoPrimaryProjection::DcsDegraded {
+                fence: NoPrimaryFence::None,
+            }),
+            clear_switchover: false,
+        },
+    }
+}
+
+fn decide_under_foreign_leadership(
+    world: &WorldView,
+    epoch: LeaseEpoch,
+    state: &PeerLeaderState,
+) -> DesiredState {
+    let publication = match state {
+        PeerLeaderState::PrimaryReady => primary_publication(epoch.clone()),
+        PeerLeaderState::Recovering | PeerLeaderState::Unreachable => {
+            no_primary_publication(NoPrimaryProjection::Recovering {
+                epoch: Some(epoch.clone()),
+                fence: NoPrimaryFence::None,
+            })
+        }
+    };
+
+    match (&world.local.postgres, state) {
+        (PostgresState::Primary { .. }, _) => DesiredState {
+            role: TargetRole::Fenced(FenceReason::ForeignLeaderDetected),
+            publication,
+            clear_switchover: false,
+        },
+        (PostgresState::Offline | PostgresState::Replica { .. }, PeerLeaderState::PrimaryReady) => {
+            DesiredState {
+                role: TargetRole::Follower(follow_goal(world, epoch.holder)),
+                publication,
+                clear_switchover: false,
+            }
+        }
+        (PostgresState::Offline | PostgresState::Replica { .. }, _) => DesiredState {
+            role: TargetRole::Idle(IdleReason::AwaitingLeader),
+            publication,
             clear_switchover: false,
         },
     }
@@ -197,34 +180,22 @@ fn decide_without_lease(world: &WorldView, self_id: &MemberId) -> DesiredState {
     match resolve_switchover(world, self_id, true) {
         ResolvedSwitchover::Proceed(target) if target == *self_id => DesiredState {
             role: TargetRole::Candidate(Candidacy::TargetedSwitchover(target)),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::LeaseOpen,
-                fence_cutoff: None,
-            },
+            publication: open_or_stale_publication(world),
             clear_switchover: false,
         },
         ResolvedSwitchover::Proceed(target) => DesiredState {
             role: TargetRole::Idle(IdleReason::AwaitingTarget(target)),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::LeaseOpen,
-                fence_cutoff: None,
-            },
+            publication: open_or_stale_publication(world),
             clear_switchover: false,
         },
         ResolvedSwitchover::Pending => DesiredState {
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::LeaseOpen,
-                fence_cutoff: None,
-            },
+            publication: open_or_stale_publication(world),
             clear_switchover: false,
         },
         ResolvedSwitchover::Abandon => DesiredState {
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::LeaseOpen,
-                fence_cutoff: None,
-            },
+            publication: open_or_stale_publication(world),
             clear_switchover: true,
         },
         ResolvedSwitchover::NotRequested
@@ -233,19 +204,13 @@ fn decide_without_lease(world: &WorldView, self_id: &MemberId) -> DesiredState {
         {
             DesiredState {
                 role: TargetRole::Candidate(candidacy_kind(world)),
-                publication: PublicationGoal::PublishNoPrimary {
-                    reason: NoPrimaryReason::LeaseOpen,
-                    fence_cutoff: None,
-                },
+                publication: open_or_stale_publication(world),
                 clear_switchover: false,
             }
         }
         ResolvedSwitchover::NotRequested => DesiredState {
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::LeaseOpen,
-                fence_cutoff: None,
-            },
+            publication: open_or_stale_publication(world),
             clear_switchover: false,
         },
     }
@@ -257,16 +222,16 @@ fn leader_publication(
     epoch: &LeaseEpoch,
 ) -> PublicationGoal {
     match &world.local.postgres {
-        PostgresState::Primary { .. } => PublicationGoal::PublishPrimary {
-            primary: self_id.clone(),
-            epoch: epoch.clone(),
-        },
-        PostgresState::Offline | PostgresState::Replica { .. } => {
-            PublicationGoal::PublishNoPrimary {
-                reason: NoPrimaryReason::Recovering,
-                fence_cutoff: None,
-            }
-        }
+        PostgresState::Primary { .. } => primary_publication(epoch.clone()),
+        PostgresState::Offline | PostgresState::Replica { .. } => no_primary_publication(
+            NoPrimaryProjection::Recovering {
+                epoch: Some(LeaseEpoch {
+                    holder: self_id.clone(),
+                    generation: epoch.generation,
+                }),
+                fence: NoPrimaryFence::None,
+            },
+        ),
     }
 }
 
@@ -325,8 +290,10 @@ fn candidacy_kind(world: &WorldView) -> Candidacy {
         }
         _ => {
             if matches!(
-                world.local.publication.authority,
-                AuthorityView::NoPrimary(NoPrimaryReason::DcsDegraded)
+                world.local.publication,
+                PublicationState::Projected(AuthorityProjection::NoPrimary(
+                    NoPrimaryProjection::DcsDegraded { .. }
+                ))
             ) {
                 Candidacy::ResumeAfterOutage
             } else {
@@ -337,16 +304,37 @@ fn candidacy_kind(world: &WorldView) -> Candidacy {
 }
 
 fn active_or_observed_epoch(world: &WorldView) -> Option<LeaseEpoch> {
-    match &world.global.lease {
-        LeaseState::HeldByMe(epoch) | LeaseState::HeldByPeer(epoch) => Some(epoch.clone()),
-        LeaseState::Unheld => world.global.observed_lease.clone(),
+    match &world.global.coordination.leadership {
+        LeadershipView::Open => None,
+        LeadershipView::HeldBySelf(epoch)
+        | LeadershipView::HeldByPeer { epoch, .. }
+        | LeadershipView::StaleObservedLease { epoch, .. } => Some(epoch.clone()),
     }
 }
 
-fn observed_foreign_lease(world: &WorldView, self_id: &MemberId) -> Option<LeaseEpoch> {
-    match &world.global.lease {
-        LeaseState::HeldByPeer(epoch) if &epoch.holder != self_id => Some(epoch.clone()),
-        _ => None,
+fn primary_publication(epoch: LeaseEpoch) -> PublicationGoal {
+    PublicationGoal::Publish(AuthorityProjection::Primary(epoch))
+}
+
+fn no_primary_publication(projection: NoPrimaryProjection) -> PublicationGoal {
+    PublicationGoal::Publish(AuthorityProjection::NoPrimary(projection))
+}
+
+fn open_or_stale_publication(world: &WorldView) -> PublicationGoal {
+    match &world.global.coordination.leadership {
+        LeadershipView::Open => no_primary_publication(NoPrimaryProjection::LeaseOpen),
+        LeadershipView::StaleObservedLease { epoch, reason } => {
+            no_primary_publication(NoPrimaryProjection::StaleObservedLease {
+                epoch: epoch.clone(),
+                reason: reason.clone(),
+            })
+        }
+        LeadershipView::HeldByPeer { epoch, .. } | LeadershipView::HeldBySelf(epoch) => {
+            no_primary_publication(NoPrimaryProjection::Recovering {
+                epoch: Some(epoch.clone()),
+                fence: NoPrimaryFence::None,
+            })
+        }
     }
 }
 
@@ -535,11 +523,13 @@ mod tests {
     };
 
     use super::super::types::{
-        ApiVisibility, AuthorityView, Candidacy, CoordinationView, DataDirState, DesiredState,
-        ElectionEligibility, GlobalKnowledge, IdleReason, LeaseEpoch, LeaseState, LocalDataState,
-        LocalKnowledge, NoPrimaryReason, ObservationState, PeerKnowledge, PostgresState,
-        ProcessState, PublicationGoal, PublicationState, ReplicationState, StorageState,
-        SwitchoverState, TargetRole, WalPosition, WorldView,
+        ApiVisibility, AuthorityProjection, Candidacy, CoordinationState, DataDirState,
+        DesiredState, ElectionEligibility, GlobalKnowledge, IdleReason, IneligibleReason,
+        LeadershipView, LeaseEpoch, LocalDataState, LocalKnowledge, NoPrimaryFence,
+        NoPrimaryProjection, ObservationState, ObservedPrimary, PeerKnowledge, PostgresState,
+        PrimaryObservation, ProcessState, PublicationGoal, PublicationState, ReplicationState,
+        StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget, TargetRole,
+        WalPosition, WorldView,
     };
 
     fn promote_peer(lsn: u64) -> PeerKnowledge {
@@ -553,14 +543,10 @@ mod tests {
         WorldView {
             local,
             global: GlobalKnowledge {
-                dcs_trust: DcsTrust::FullQuorum,
-                lease: LeaseState::Unheld,
-                observed_lease: None,
-                observed_primary: None,
-                coordination: CoordinationView {
+                coordination: CoordinationState {
                     trust: DcsTrust::FullQuorum,
-                    leader: LeaseState::Unheld,
-                    sampled_primary: None,
+                    leadership: LeadershipView::Open,
+                    primary: PrimaryObservation::Absent,
                 },
                 switchover: SwitchoverState::None,
                 peers: BTreeMap::new(),
@@ -612,10 +598,9 @@ mod tests {
                 process: ProcessState::Idle,
                 storage: StorageState::Healthy,
                 required_roles_ready: false,
-                publication: PublicationState {
-                    authority: AuthorityView::NoPrimary(NoPrimaryReason::LeaseOpen),
-                    fence_cutoff: None,
-                },
+                publication: PublicationState::Projected(AuthorityProjection::NoPrimary(
+                    NoPrimaryProjection::LeaseOpen,
+                )),
                 observation: ObservationState {
                     pg_observed_at: UnixMillis(0),
                     last_start_success_at: None,
@@ -625,16 +610,21 @@ mod tests {
             },
             promote_peer(42),
         );
-        world.global.observed_lease = Some(stale_epoch);
+        world.global.coordination.leadership = LeadershipView::StaleObservedLease {
+            epoch: stale_epoch.clone(),
+            reason: super::super::types::StaleLeaseReason::HolderNotPrimary,
+        };
 
         assert_eq!(
             decide(&world, &self_id),
             DesiredState {
                 role: TargetRole::Candidate(Candidacy::Failover),
-                publication: PublicationGoal::PublishNoPrimary {
-                    reason: NoPrimaryReason::LeaseOpen,
-                    fence_cutoff: None,
-                },
+                publication: PublicationGoal::Publish(AuthorityProjection::NoPrimary(
+                    NoPrimaryProjection::StaleObservedLease {
+                        epoch: stale_epoch,
+                        reason: super::super::types::StaleLeaseReason::HolderNotPrimary,
+                    },
+                )),
                 clear_switchover: false,
             }
         );
@@ -660,8 +650,11 @@ mod tests {
             },
             promote_peer(42),
         );
-        world.global.observed_primary = Some(MemberId("node-b".to_string()));
-        world.global.coordination.sampled_primary = Some(MemberId("node-b".to_string()));
+        world.global.coordination.primary = PrimaryObservation::Observed(ObservedPrimary {
+            member: MemberId("node-b".to_string()),
+            timeline: None,
+            system_identifier: None,
+        });
 
         assert_eq!(
             decide(&world, &self_id).role,
@@ -688,9 +681,7 @@ mod tests {
                 },
             },
             PeerKnowledge {
-                eligibility: ElectionEligibility::Ineligible(
-                    super::super::types::IneligibleReason::StartingUp,
-                ),
+                eligibility: ElectionEligibility::Ineligible(IneligibleReason::StartingUp),
                 api: ApiVisibility::Unreachable,
             },
         );
@@ -723,19 +714,17 @@ mod tests {
             },
             promote_peer(42),
         );
-        world.global.lease = LeaseState::HeldByMe(LeaseEpoch {
+        world.global.coordination.leadership = LeadershipView::HeldBySelf(LeaseEpoch {
             holder: self_id.clone(),
             generation: 7,
         });
-        world.global.switchover = SwitchoverState::Requested(super::super::types::SwitchoverRequest {
-            target: super::super::types::SwitchoverTarget::AnyHealthyReplica,
+        world.global.switchover = SwitchoverState::Requested(SwitchoverRequest {
+            target: SwitchoverTarget::AnyHealthyReplica,
         });
         world.global.peers = BTreeMap::from([(
             MemberId("node-b".to_string()),
             PeerKnowledge {
-                eligibility: ElectionEligibility::Ineligible(
-                    super::super::types::IneligibleReason::NotReady,
-                ),
+                eligibility: ElectionEligibility::Ineligible(IneligibleReason::NotReady),
                 api: ApiVisibility::Reachable,
             },
         )]);
@@ -747,13 +736,12 @@ mod tests {
                     holder: self_id.clone(),
                     generation: 7,
                 }),
-                publication: PublicationGoal::PublishPrimary {
-                    primary: self_id,
-                    epoch: LeaseEpoch {
+                publication: PublicationGoal::Publish(AuthorityProjection::Primary(
+                    LeaseEpoch {
                         holder: MemberId("node-a".to_string()),
                         generation: 7,
                     },
-                },
+                )),
                 clear_switchover: false,
             }
         );
@@ -789,9 +777,9 @@ mod tests {
             },
             promote_peer(50),
         );
-        world.global.lease = LeaseState::HeldByMe(epoch.clone());
-        world.global.switchover = SwitchoverState::Requested(super::super::types::SwitchoverRequest {
-            target: super::super::types::SwitchoverTarget::AnyHealthyReplica,
+        world.global.coordination.leadership = LeadershipView::HeldBySelf(epoch.clone());
+        world.global.switchover = SwitchoverState::Requested(SwitchoverRequest {
+            target: SwitchoverTarget::AnyHealthyReplica,
         });
         world.global.peers = BTreeMap::from([(
             MemberId("node-a".to_string()),
@@ -802,10 +790,12 @@ mod tests {
             decide(&world, &self_id),
             DesiredState {
                 role: TargetRole::Leader(epoch.clone()),
-                publication: PublicationGoal::PublishNoPrimary {
-                    reason: NoPrimaryReason::Recovering,
-                    fence_cutoff: None,
-                },
+                publication: PublicationGoal::Publish(AuthorityProjection::NoPrimary(
+                    NoPrimaryProjection::Recovering {
+                        epoch: Some(epoch),
+                        fence: NoPrimaryFence::None,
+                    },
+                )),
                 clear_switchover: true,
             }
         );

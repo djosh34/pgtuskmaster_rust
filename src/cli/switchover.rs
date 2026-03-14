@@ -8,7 +8,7 @@ use crate::{
         status::{authority_primary_member, fetch_seed_state, member_is_ready_replica},
     },
     dcs::DcsTrust,
-    ha::types::AuthorityView,
+    ha::types::{AuthorityProjection, PublicationState},
     state::MemberId,
 };
 
@@ -42,8 +42,9 @@ fn validate_switchover_request(
         )));
     }
 
-    match &state.ha.publication.authority {
-        AuthorityView::Primary { member, .. } if member.0 == state.self_member_id => {}
+    match &state.ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch))
+            if epoch.holder.0 == state.self_member_id => {}
         _ => {
             return Err(CliError::Resolution(format!(
                 "cannot request switchover via `{}`: seed node is not the authoritative primary",

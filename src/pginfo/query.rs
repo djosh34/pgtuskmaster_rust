@@ -1,6 +1,6 @@
 use crate::{
     pginfo::state::{render_pg_conninfo, PgConnInfo},
-    state::{TimelineId, WalLsn, WorkerError},
+    state::{SystemIdentifier, TimelineId, WalLsn, WorkerError},
 };
 
 pub(crate) const PGINFO_POLL_SQL: &str = r#"
@@ -8,9 +8,12 @@ SELECT
     s.in_recovery,
     s.is_ready,
     s.timeline_id,
+    s.system_identifier,
     s.current_wal_lsn,
     s.replay_lsn,
     s.receive_lsn,
+    s.primary_conninfo,
+    s.primary_slot_name,
     COALESCE(r.slot_names, '{}'::text[]) AS slot_names
 FROM (
     SELECT
@@ -20,12 +23,15 @@ FROM (
             ELSE TRUE
         END AS is_ready,
         (pg_control_checkpoint()).timeline_id::bigint AS timeline_id,
+        (pg_control_system()).system_identifier::text AS system_identifier,
         CASE
             WHEN pg_is_in_recovery() THEN NULL
             ELSE pg_current_wal_lsn()::text
         END AS current_wal_lsn,
         pg_last_wal_replay_lsn()::text AS replay_lsn,
-        pg_last_wal_receive_lsn()::text AS receive_lsn
+        pg_last_wal_receive_lsn()::text AS receive_lsn,
+        NULLIF(current_setting('primary_conninfo', true), '') AS primary_conninfo,
+        NULLIF(current_setting('primary_slot_name', true), '') AS primary_slot_name
 ) AS s
 CROSS JOIN (
     SELECT COALESCE(array_remove(array_agg(slot_name ORDER BY slot_name), NULL), '{}'::text[]) AS slot_names
@@ -38,9 +44,12 @@ pub(crate) struct PgPollData {
     pub(crate) in_recovery: bool,
     pub(crate) is_ready: bool,
     pub(crate) timeline: Option<TimelineId>,
+    pub(crate) system_identifier: Option<SystemIdentifier>,
     pub(crate) current_wal_lsn: Option<WalLsn>,
     pub(crate) replay_lsn: Option<WalLsn>,
     pub(crate) receive_lsn: Option<WalLsn>,
+    pub(crate) primary_conninfo: Option<String>,
+    pub(crate) primary_slot_name: Option<String>,
     pub(crate) slot_names: Vec<String>,
 }
 
@@ -72,6 +81,10 @@ pub(crate) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollDa
         .try_get("timeline_id")
         .map_err(|err| WorkerError::Message(format!("timeline decode failed: {err}")))?;
     let timeline = parse_timeline(timeline_raw)?;
+    let system_identifier = parse_system_identifier(
+        row.try_get("system_identifier")
+            .map_err(|err| WorkerError::Message(format!("system_identifier decode failed: {err}")))?,
+    )?;
 
     let current_wal_lsn =
         parse_optional_lsn(row.try_get("current_wal_lsn").map_err(|err| {
@@ -89,6 +102,12 @@ pub(crate) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollDa
     let slot_names: Vec<String> = row
         .try_get("slot_names")
         .map_err(|err| WorkerError::Message(format!("slot_names decode failed: {err}")))?;
+    let primary_conninfo: Option<String> = row.try_get("primary_conninfo").map_err(|err| {
+        WorkerError::Message(format!("primary_conninfo decode failed: {err}"))
+    })?;
+    let primary_slot_name: Option<String> = row.try_get("primary_slot_name").map_err(|err| {
+        WorkerError::Message(format!("primary_slot_name decode failed: {err}"))
+    })?;
 
     let in_recovery: bool = row
         .try_get("in_recovery")
@@ -101,9 +120,12 @@ pub(crate) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollDa
         in_recovery,
         is_ready,
         timeline,
+        system_identifier,
         current_wal_lsn,
         replay_lsn,
         receive_lsn,
+        primary_conninfo,
+        primary_slot_name,
         slot_names,
     })
 }
@@ -159,6 +181,21 @@ fn parse_timeline(raw: Option<i64>) -> Result<Option<TimelineId>, WorkerError> {
     }
 }
 
+fn parse_system_identifier(raw: Option<String>) -> Result<Option<SystemIdentifier>, WorkerError> {
+    match raw {
+        Some(value) => value
+            .parse::<u64>()
+            .map(SystemIdentifier)
+            .map(Some)
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "system_identifier parse failed for '{value}': {err}"
+                ))
+            }),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_wal_lsn, PGINFO_POLL_SQL};
@@ -183,9 +220,12 @@ mod tests {
     fn poll_sql_selects_expected_fields() {
         assert!(PGINFO_POLL_SQL.contains("in_recovery"));
         assert!(PGINFO_POLL_SQL.contains("timeline_id"));
+        assert!(PGINFO_POLL_SQL.contains("system_identifier"));
         assert!(PGINFO_POLL_SQL.contains("current_wal_lsn"));
         assert!(PGINFO_POLL_SQL.contains("replay_lsn"));
         assert!(PGINFO_POLL_SQL.contains("receive_lsn"));
+        assert!(PGINFO_POLL_SQL.contains("primary_conninfo"));
+        assert!(PGINFO_POLL_SQL.contains("primary_slot_name"));
         assert!(PGINFO_POLL_SQL.contains("slot_names"));
         assert_eq!(PGINFO_POLL_SQL.matches(';').count(), 1);
     }

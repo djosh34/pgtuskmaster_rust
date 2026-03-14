@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use pgtuskmaster_rust::{
     api::NodeState,
     dcs::{DcsMemberPostgresView, DcsTrust},
-    ha::types::AuthorityView,
+    ha::types::{AuthorityProjection, PublicationState},
 };
 use serde::de::DeserializeOwned;
 
@@ -196,8 +196,8 @@ fn status_score(status: &ClusterStatusView) -> (usize, usize, usize, usize) {
         status.dcs.members.len(),
         usize::from(status.dcs.trust == DcsTrust::FullQuorum),
         usize::from(matches!(
-            &status.ha.publication.authority,
-            AuthorityView::Primary { .. }
+            &status.ha.publication,
+            PublicationState::Projected(AuthorityProjection::Primary(_))
         )),
         usize::from(reported_primary_count == 1),
     )

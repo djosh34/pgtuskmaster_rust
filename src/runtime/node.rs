@@ -360,6 +360,7 @@ fn initial_pg_state() -> PgInfoState {
             sql: SqlStatus::Unknown,
             readiness: Readiness::Unknown,
             timeline: None,
+            system_identifier: None,
             pg_config: PgConfig {
                 port: None,
                 hot_standby: None,

@@ -79,6 +79,7 @@ fn sample_pg_state() -> PgInfoState {
             sql: SqlStatus::Healthy,
             readiness: Readiness::Ready,
             timeline: None,
+            system_identifier: None,
             pg_config: PgConfig {
                 port: None,
                 hot_standby: None,

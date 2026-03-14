@@ -1,93 +1,166 @@
-# HA State Semantics
+# HA State Reference
 
-The HA engine is exposed inside the `ha` section of `GET /state`.
+## Overview
 
-The most important fields are:
+The `ha` section of `GET /state` exposes the current high-availability engine state. This reference describes each field, its type, and possible values.
 
-- `ha.publication.authority`
-- `ha.publication.fence_cutoff`
-- `ha.role`
-- `ha.planned_commands`
-- `ha.world`
+## Top-Level Fields
 
-That split is deliberate:
+```text
+ha: {
+  "role": TargetRole,
+  "publication": PublicationState,
+  "planned_commands": [ReconcileAction],
+  "world": WorldView
+}
+```
 
-- `publication.authority` answers who operators should currently treat as primary
-- `role` answers what this node is trying to do locally
-- `planned_commands` answers what concrete work is queued next
-- `world` exposes the raw derived worldview that produced those results
+## ha.role
 
-## `ha.publication.authority`
+`role` describes the node's target local behavior.
 
-`authority` is a tagged enum:
+Variants:
 
-- `primary`
-- `no_primary`
-- `unknown`
+- `leader` - Hold lease and act as primary
+- `candidate` - Attempt to acquire lease
+- `follower` - Replicate from a leader
+- `fail_safe` - Enter safety mode due to degraded trust
+- `demoting_for_switchover` - Release leadership for a specific target
+- `fenced` - Stop unsafe primary behavior
+- `idle` - Wait for conditions before acting
 
-`primary` carries the current primary member plus a lease epoch.
+## ha.publication
 
-`no_primary` carries a reason:
+`publication` conveys the operator-facing authority view.
 
-- `dcs_degraded`
-- `lease_open`
-- `recovering`
-- `switchover_rejected`
+### PublicationState
 
-`unknown` is the cold-start value before HA has produced a stronger publication.
+Enum with two top-level shapes:
 
-## `ha.publication.fence_cutoff`
+- `unknown` - Cold-start value before HA produces a stronger publication
+- `projected` - Wraps an `AuthorityProjection`
 
-Present when the node must retain enough information to stop unsafe primary behavior.
+### AuthorityProjection
 
-It includes:
+Enum with two variants:
 
-- `epoch`
-- `committed_lsn`
+- `primary` - Carries `LeaseEpoch` for the authoritative primary
+- `no_primary` - Carries `NoPrimaryProjection` with a structured reason
 
-Typical cases:
+### NoPrimaryProjection
 
-- trust degraded while this node was primary
-- storage stall while this node was primary
+Variants:
 
-## `ha.role`
+- `lease_open` - No lease currently held
+- `recovering` - Cluster is recovering; may include epoch and fence
+- `dcs_degraded` - DCS trust is not full quorum; may include fence
+- `stale_observed_lease` - Observed lease holder is invalid; carries epoch and reason
+- `switchover_rejected` - Switchover target is invalid; carries blocker reason
 
-`role` is the node's target local role:
+### Fence Information
 
-- `leader`
-- `candidate`
-- `follower`
-- `fail_safe`
-- `demoting_for_switchover`
-- `fenced`
-- `idle`
+Fence data appears only inside `no_primary` projections as `NoPrimaryFence`:
 
-These values describe desired local behavior, not only externally visible status.
+- `none` - No fence required
+- `cutoff` - Contains `FenceCutoff { epoch, committed_lsn }`
 
-## `ha.planned_commands`
+## ha.planned_commands
 
-`planned_commands` is the ordered reconcile plan that the worker will try to execute.
+`planned_commands` is an ordered list of actions the worker will execute.
 
-Possible command kinds include:
+Command kinds:
 
-- `init_db`
-- `base_backup`
-- `pg_rewind`
-- `start_primary`
-- `start_replica`
-- `promote`
-- `demote`
-- `acquire_lease`
-- `release_lease`
-- `ensure_required_roles`
-- `publish`
-- `clear_switchover`
+- `init_db` - Initialize a new data directory
+- `base_backup` - Clone from a leader using pg_basebackup
+- `pg_rewind` - Rewind diverged data directory using pg_rewind
+- `start_primary` - Start PostgreSQL in primary mode
+- `start_replica` - Start PostgreSQL replicating from a leader
+- `promote` - Promote a replica to primary
+- `demote` - Demote primary to replica (fast or immediate shutdown)
+- `acquire_lease` - Attempt to become lease holder
+- `release_lease` - Relinquish lease holder status
+- `ensure_required_roles` - Create required PostgreSQL roles
+- `publish` - Update published authority projection
+- `clear_switchover` - Remove switchover request from DCS
 
-## `ha.world`
+## ha.world
 
-`world` exposes the HA engine's current derived worldview:
+`world` exposes the raw derived worldview that produced the results.
 
-- `local`: what this node knows about its local data directory, postgres state, process state, storage, publication, and observations
-- `global`: what this node currently trusts about DCS, leases, switchover state, and peer eligibility
+### LocalKnowledge Fields
 
-Use `ha.world` when you need the engine's raw interpretation inputs rather than only its operator-facing publication.
+- `data_dir: DataDirState` - Local data directory status
+- `postgres: PostgresState` - Observed PostgreSQL runtime state
+- `process: ProcessState` - Current process worker status
+- `storage: StorageState` - Storage health assessment
+- `required_roles_ready: bool` - Whether required roles exist
+- `publication: PublicationState` - Last published authority
+- `observation: ObservationState` - Timing metadata for PostgreSQL state changes
+
+### GlobalKnowledge Fields
+
+- `coordination: CoordinationState` - DCS lease and trust status
+- `switchover: SwitchoverState` - Active switchover requests
+- `peers: BTreeMap<MemberId, PeerKnowledge>` - Observed peer status
+- `self_peer: PeerKnowledge` - This node's eligibility and visibility
+
+### CoordinationState
+
+- `trust: DcsTrust` - DCS trust level (full_quorum, degraded, not_trusted)
+- `leadership: LeadershipView` - Current lease holder view
+- `primary: PrimaryObservation` - Observed primary member
+
+### LeadershipView
+
+- `open` - No lease currently held
+- `held_by_self` - This node holds the lease
+- `held_by_peer` - Another node holds the lease; includes epoch and leader state
+- `stale_observed_lease` - Observed lease is invalid; includes epoch and reason
+
+### PrimaryObservation
+
+- `absent` - No primary observed
+- `observed` - Wraps `ObservedPrimary` with member, timeline, and system identifier
+
+### DataDirState
+
+- `missing` - Data directory does not exist
+- `initialized` - Wraps `LocalDataState`
+
+### LocalDataState
+
+- `bootstrap_empty` - Data directory exists but is uninitialized
+- `consistent_replica` - Data is consistent with observed primary
+- `diverged` - Data has diverged; wraps `DivergenceState`
+
+### DivergenceState
+
+- `rewind_possible` - Divergence can be repaired with pg_rewind
+- `basebackup_required` - Divergence requires full rebuild
+
+**System Identifier Mismatch Rule**
+
+When both the local and observed primary system identifiers are present and different, the data directory is classified as `diverged(DivergenceState::basebackup_required)`.
+
+### PostgresState
+
+- `offline` - PostgreSQL is not running
+- `primary` - PostgreSQL is running as primary with committed LSN
+- `replica` - PostgreSQL is running as replica with upstream and replication state
+
+### ReplicationState
+
+- `streaming` - Actively receiving WAL with position
+- `catching_up` - Replaying WAL with position
+- `stalled` - Replication is blocked or lagging
+
+### RecoveryPlan
+
+Used by `FollowGoal` to determine recovery actions:
+
+- `none` - No recovery needed; start streaming
+- `start_streaming` - Start PostgreSQL as replica
+- `rewind` - Rewind diverged data before starting
+- `basebackup` - Rebuild data directory from leader
+
+The HA engine selects recovery plans based on `LocalDataState` and divergence assessment.

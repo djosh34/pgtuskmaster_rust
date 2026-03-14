@@ -17,11 +17,13 @@ use super::{
     reconcile::reconcile,
     state::{HaState, HaWorkerCtx},
     types::{
-        last_success_at, wal_position, ApiVisibility, DataDirState, DesiredState, DivergenceState,
-        ElectionEligibility, GlobalKnowledge, IneligibleReason, LeaseEpoch, LeaseState,
-        LocalDataState, LocalKnowledge, ObservationState, PeerKnowledge, PostgresState,
+        last_success_at, wal_position, ApiVisibility, CoordinationState, DataDirState,
+        DesiredState, DivergenceState, ElectionEligibility, GlobalKnowledge, IneligibleReason,
+        LeadershipView, LeaseEpoch, LocalDataState, LocalKnowledge, ObservationState,
+        ObservedPrimary, PeerKnowledge, PeerLeaderState, PostgresState, PrimaryObservation,
         ProcessState, PublicationGoal, PublicationState, ReconcileAction, ReplicationState,
-        StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget, WalPosition, WorldView,
+        StaleLeaseReason, StorageState, SwitchoverRequest, SwitchoverState, SwitchoverTarget,
+        WalPosition, WorldView,
     },
 };
 
@@ -76,14 +78,17 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
     let local_data_timeline = pg_timeline(&pg).or_else(|| {
         dcs.members.get(&ctx.self_id).and_then(member_timeline)
     });
+    let local_system_identifier = pg_system_identifier(&pg)
+        .or_else(|| dcs.members.get(&ctx.self_id).and_then(member_system_identifier));
 
     let local = LocalKnowledge {
         data_dir: build_data_dir_state(
             data_dir_path.as_path(),
             local_data_timeline,
+            local_system_identifier,
             &observed_primary,
         ),
-        postgres: build_postgres_state(&pg),
+        postgres: build_local_postgres_state(&pg, &dcs),
         process: ProcessState::from(&process),
         storage: build_storage_state(&dcs, &pg, config.ha.lease_ttl_ms, &ctx.self_id, now),
         required_roles_ready: ctx.state.required_roles_ready,
@@ -137,20 +142,7 @@ fn next_required_roles_ready(current: &HaState, actions: &[ReconcileAction]) -> 
 fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) -> PublicationState {
     match goal {
         PublicationGoal::KeepCurrent => current.clone(),
-        PublicationGoal::PublishPrimary { primary, epoch } => PublicationState {
-            authority: super::types::AuthorityView::Primary {
-                member: primary.clone(),
-                epoch: epoch.clone(),
-            },
-            fence_cutoff: None,
-        },
-        PublicationGoal::PublishNoPrimary {
-            reason,
-            fence_cutoff,
-        } => PublicationState {
-            authority: super::types::AuthorityView::NoPrimary(reason.clone()),
-            fence_cutoff: fence_cutoff.clone(),
-        },
+        PublicationGoal::Publish(projection) => PublicationState::Projected(projection.clone()),
     }
 }
 
@@ -225,7 +217,8 @@ fn map_process_dispatch_error(
 fn build_data_dir_state(
     data_dir: &Path,
     local_timeline: Option<u64>,
-    observed_primary: &Option<(MemberId, Option<u64>)>,
+    local_system_identifier: Option<u64>,
+    observed_primary: &Option<ObservedPrimary>,
 ) -> DataDirState {
     let pg_version_path = data_dir.join("PG_VERSION");
     if !data_dir.exists() {
@@ -236,10 +229,23 @@ fn build_data_dir_state(
     }
 
     let local_state = match observed_primary {
-        Some((_leader_member_id, leader_timeline)) if leader_timeline == &local_timeline => {
+        Some(ObservedPrimary {
+            system_identifier: Some(primary_system_identifier),
+            ..
+        }) if local_system_identifier.is_some()
+            && local_system_identifier != Some(*primary_system_identifier) =>
+        {
+            LocalDataState::Diverged(DivergenceState::BasebackupRequired)
+        }
+        Some(ObservedPrimary {
+            timeline: leader_timeline,
+            ..
+        }) if leader_timeline == &local_timeline => {
             LocalDataState::ConsistentReplica
         }
-        Some((_leader_member_id, Some(_))) if local_timeline.is_some() => {
+        Some(ObservedPrimary {
+            timeline: Some(_), ..
+        }) if local_timeline.is_some() => {
             LocalDataState::Diverged(DivergenceState::RewindPossible)
         }
         _ => LocalDataState::ConsistentReplica,
@@ -273,6 +279,19 @@ fn build_postgres_state(pg: &PgInfoState) -> PostgresState {
     }
 }
 
+fn build_local_postgres_state(pg: &PgInfoState, dcs: &DcsView) -> PostgresState {
+    match build_postgres_state(pg) {
+        PostgresState::Replica {
+            upstream,
+            replication,
+        } => PostgresState::Replica {
+            upstream: upstream.or_else(|| resolve_replica_upstream(pg, dcs)),
+            replication,
+        },
+        state => state,
+    }
+}
+
 fn build_replication_state(
     timeline: Option<crate::state::TimelineId>,
     replay_lsn: crate::state::WalLsn,
@@ -301,7 +320,10 @@ fn build_storage_state(
     let pg_observation_stale = pg
         .last_refresh_at()
         .is_none_or(|last_refresh_at| now.0.saturating_sub(last_refresh_at.0) > lease_ttl_ms);
-    if matches!(build_postgres_state(pg), PostgresState::Primary { .. })
+    if matches!(
+        pg,
+        PgInfoState::Primary { common, .. } if common.sql == SqlStatus::Healthy
+    )
         && (self_member.is_none() || pg_observation_stale)
     {
         StorageState::Stalled
@@ -316,42 +338,22 @@ fn build_global_knowledge(
     local_data_dir: &DataDirState,
     self_id: &MemberId,
 ) -> GlobalKnowledge {
-    let observed_lease = match &dcs.leader {
-        DcsLeaderStateView::Unheld => None,
-        DcsLeaderStateView::Held(leader) => Some(LeaseEpoch {
-            holder: leader.holder.clone(),
-            generation: leader.generation,
-        }),
-    };
-    let lease = observed_lease
-        .as_ref()
-        .map(|epoch| {
-            if epoch.holder == *self_id {
-                LeaseState::HeldByMe(epoch.clone())
-            } else if leader_is_available(dcs, &epoch.holder) {
-                LeaseState::HeldByPeer(epoch.clone())
-            } else {
-                LeaseState::Unheld
-            }
-        })
-        .unwrap_or(LeaseState::Unheld);
+    let leadership = build_leadership_view(dcs, self_id);
     let peers = dcs
         .members
         .iter()
         .filter(|(member_id, _)| *member_id != self_id)
         .map(|(member_id, member)| (member_id.clone(), build_peer_knowledge_from_member(member)))
         .collect();
+    let primary = observed_primary_member(dcs, self_id)
+        .map(PrimaryObservation::Observed)
+        .unwrap_or(PrimaryObservation::Absent);
 
     GlobalKnowledge {
-        dcs_trust: dcs.trust.clone(),
-        lease: lease.clone(),
-        observed_lease,
-        observed_primary: observed_primary_member(dcs, self_id)
-            .map(|(member_id, _)| member_id.clone()),
-        coordination: super::types::CoordinationView {
+        coordination: CoordinationState {
             trust: dcs.trust.clone(),
-            leader: lease,
-            sampled_primary: observed_primary_member(dcs, self_id).map(|(member_id, _)| member_id),
+            leadership,
+            primary,
         },
         switchover: match &dcs.switchover {
             DcsSwitchoverStateView::None => SwitchoverState::None,
@@ -437,12 +439,9 @@ fn build_self_peer(pg: &PgInfoState, local_data_dir: &DataDirState) -> PeerKnowl
         )
         .map(ElectionEligibility::PromoteEligible)
         .unwrap_or(ElectionEligibility::BootstrapEligible),
-        (_, PostgresState::Replica { replication, .. }) => match replication {
-            ReplicationState::Streaming(position) | ReplicationState::CatchingUp(position) => {
-                ElectionEligibility::PromoteEligible(position)
-            }
-            ReplicationState::Stalled => ElectionEligibility::Ineligible(IneligibleReason::Lagging),
-        },
+        (_, PostgresState::Replica { .. }) => self_replica_position(pg)
+            .map(ElectionEligibility::PromoteEligible)
+            .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging)),
         (_, PostgresState::Offline) => {
             ElectionEligibility::Ineligible(IneligibleReason::StartingUp)
         }
@@ -453,21 +452,88 @@ fn build_self_peer(pg: &PgInfoState, local_data_dir: &DataDirState) -> PeerKnowl
     }
 }
 
-fn leader_is_available(dcs: &DcsView, leader_member_id: &MemberId) -> bool {
-    dcs.members
-        .get(leader_member_id)
-        .is_some_and(|member| {
-            matches!(
-                &member.postgres,
-                DcsMemberPostgresView::Primary(observation) if observation.readiness == Readiness::Ready
-            )
-        })
+fn self_replica_position(pg: &PgInfoState) -> Option<WalPosition> {
+    match pg {
+        PgInfoState::Replica {
+            common,
+            replay_lsn,
+            follow_lsn,
+            ..
+        } => wal_position(common.timeline, Some(*replay_lsn))
+            .or_else(|| follow_lsn.and_then(|lsn| wal_position(common.timeline, Some(lsn)))),
+        _ => None,
+    }
+}
+
+fn resolve_replica_upstream(pg: &PgInfoState, dcs: &DcsView) -> Option<MemberId> {
+    let primary_conninfo = match pg {
+        PgInfoState::Replica { common, .. } => common.pg_config.primary_conninfo.as_ref(),
+        _ => None,
+    }?;
+
+    dcs.members.iter().find_map(|(member_id, member)| {
+        let endpoint = &member.routing.postgres;
+        (endpoint.host == primary_conninfo.host && endpoint.port == primary_conninfo.port)
+            .then_some(member_id.clone())
+    })
+}
+
+fn build_leadership_view(dcs: &DcsView, self_id: &MemberId) -> LeadershipView {
+    match &dcs.leader {
+        DcsLeaderStateView::Unheld => LeadershipView::Open,
+        DcsLeaderStateView::Held(leader) => {
+            let epoch = LeaseEpoch {
+                holder: leader.holder.clone(),
+                generation: leader.generation,
+            };
+            if epoch.holder == *self_id {
+                return LeadershipView::HeldBySelf(epoch);
+            }
+
+            match dcs.members.get(&epoch.holder) {
+                None => LeadershipView::StaleObservedLease {
+                    epoch,
+                    reason: StaleLeaseReason::HolderMissing,
+                },
+                Some(member) => classify_foreign_leader(member, epoch),
+            }
+        }
+    }
+}
+
+fn classify_foreign_leader(member: &DcsMemberView, epoch: LeaseEpoch) -> LeadershipView {
+    match &member.postgres {
+        DcsMemberPostgresView::Primary(observation) if observation.readiness == Readiness::Ready => {
+            LeadershipView::HeldByPeer {
+                epoch,
+                state: PeerLeaderState::PrimaryReady,
+            }
+        }
+        DcsMemberPostgresView::Primary(_) => LeadershipView::HeldByPeer {
+            epoch,
+            state: PeerLeaderState::Recovering,
+        },
+        DcsMemberPostgresView::Unknown(observation) if observation.readiness == Readiness::Ready => {
+            LeadershipView::HeldByPeer {
+                epoch,
+                state: PeerLeaderState::Unreachable,
+            }
+        }
+        DcsMemberPostgresView::Unknown(_) => LeadershipView::StaleObservedLease {
+            epoch,
+            reason: StaleLeaseReason::HolderNotReady,
+        },
+        DcsMemberPostgresView::Replica(_) => LeadershipView::StaleObservedLease {
+            epoch,
+            reason: StaleLeaseReason::HolderNotPrimary,
+        },
+    }
 }
 
 fn observed_primary_member(
     dcs: &DcsView,
     self_id: &MemberId,
-) -> Option<(MemberId, Option<u64>)> {
+) -> Option<ObservedPrimary> {
     dcs.members
         .values()
         .find(|member| {
@@ -477,7 +543,11 @@ fn observed_primary_member(
                     DcsMemberPostgresView::Primary(observation) if observation.readiness == Readiness::Ready
                 )
         })
-        .map(|member| (member.member_id.clone(), member_timeline(member)))
+        .map(|member| ObservedPrimary {
+            member: member.member_id.clone(),
+            timeline: member_timeline(member),
+            system_identifier: member_system_identifier(member),
+        })
 }
 
 fn member_timeline(member: &DcsMemberView) -> Option<u64> {
@@ -502,8 +572,30 @@ fn member_timeline(member: &DcsMemberView) -> Option<u64> {
     }
 }
 
+fn member_system_identifier(member: &DcsMemberView) -> Option<u64> {
+    match &member.postgres {
+        DcsMemberPostgresView::Unknown(observation) => {
+            observation.system_identifier.map(|value| value.0)
+        }
+        DcsMemberPostgresView::Primary(observation) => {
+            observation.system_identifier.map(|value| value.0)
+        }
+        DcsMemberPostgresView::Replica(observation) => {
+            observation.system_identifier.map(|value| value.0)
+        }
+    }
+}
+
 fn pg_timeline(pg: &PgInfoState) -> Option<u64> {
     pg_timeline_id(pg).map(|timeline| u64::from(timeline.0))
+}
+
+fn pg_system_identifier(pg: &PgInfoState) -> Option<u64> {
+    match pg {
+        PgInfoState::Unknown { common }
+        | PgInfoState::Primary { common, .. }
+        | PgInfoState::Replica { common, .. } => common.system_identifier.map(|value| value.0),
+    }
 }
 
 fn pg_timeline_id(pg: &PgInfoState) -> Option<crate::state::TimelineId> {
@@ -511,5 +603,173 @@ fn pg_timeline_id(pg: &PgInfoState) -> Option<crate::state::TimelineId> {
         PgInfoState::Unknown { common }
         | PgInfoState::Primary { common, .. }
         | PgInfoState::Replica { common, .. } => common.timeline,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        dcs::{
+            DcsLeaderStateView, DcsMemberEndpointView, DcsMemberLeaseView, DcsMemberRoutingView,
+            DcsMemberView, DcsSwitchoverStateView, DcsTrust, DcsUnknownPostgresView, DcsView,
+        },
+        pginfo::state::PgConnInfo,
+    };
+    use crate::{
+        pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
+        state::{SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus},
+    };
+
+    use super::*;
+
+    fn replica_pg_state(replay_lsn: u64, follow_lsn: Option<u64>) -> PgInfoState {
+        PgInfoState::Replica {
+            common: PgInfoCommon {
+                worker: WorkerStatus::Running,
+                sql: SqlStatus::Healthy,
+                readiness: Readiness::Ready,
+                timeline: Some(TimelineId(7)),
+                system_identifier: Some(SystemIdentifier(41)),
+                pg_config: PgConfig {
+                    port: None,
+                    hot_standby: None,
+                    primary_conninfo: None,
+                    primary_slot_name: None,
+                    extra: std::collections::BTreeMap::new(),
+                },
+                last_refresh_at: Some(UnixMillis(123)),
+            },
+            replay_lsn: WalLsn(replay_lsn),
+            follow_lsn: follow_lsn.map(WalLsn),
+            upstream: None,
+        }
+    }
+
+    fn replica_pg_state_with_primary_conninfo(host: &str, port: u16) -> PgInfoState {
+        let mut state = replica_pg_state(67_272_104, Some(67_272_104));
+        if let PgInfoState::Replica { common, .. } = &mut state {
+            common.pg_config.primary_conninfo = Some(PgConnInfo {
+                host: host.to_string(),
+                port,
+                user: "replicator".to_string(),
+                dbname: "postgres".to_string(),
+                application_name: Some("node-a".to_string()),
+                connect_timeout_s: Some(5),
+                ssl_mode: crate::pginfo::state::PgSslMode::Require,
+                ssl_root_cert: None,
+                options: None,
+            });
+        }
+        state
+    }
+
+    fn dcs_view_for_member(member_id: &str, host: &str, port: u16) -> DcsView {
+        DcsView {
+            worker: WorkerStatus::Running,
+            trust: DcsTrust::FullQuorum,
+            members: BTreeMap::from([(
+                MemberId(member_id.to_string()),
+                DcsMemberView {
+                    member_id: MemberId(member_id.to_string()),
+                    lease: DcsMemberLeaseView { ttl_ms: 10_000 },
+                    routing: DcsMemberRoutingView {
+                        postgres: DcsMemberEndpointView {
+                            host: host.to_string(),
+                            port,
+                        },
+                        api: None,
+                    },
+                    postgres: DcsMemberPostgresView::Unknown(DcsUnknownPostgresView {
+                        readiness: Readiness::Ready,
+                        timeline: Some(TimelineId(7)),
+                        system_identifier: Some(SystemIdentifier(41)),
+                    }),
+                },
+            )]),
+            leader: DcsLeaderStateView::Unheld,
+            switchover: DcsSwitchoverStateView::None,
+            last_observed_at: Some(UnixMillis(123)),
+        }
+    }
+
+    #[test]
+    fn self_peer_replica_eligibility_prefers_replay_lsn_over_follow_lsn() {
+        let peer = build_self_peer(
+            &replica_pg_state(67_272_104, Some(67_108_864)),
+            &DataDirState::Initialized(LocalDataState::ConsistentReplica),
+        );
+
+        assert_eq!(
+            peer.eligibility,
+            ElectionEligibility::PromoteEligible(WalPosition {
+                timeline: 7,
+                lsn: 67_272_104,
+            })
+        );
+    }
+
+    #[test]
+    fn local_postgres_state_resolves_replica_upstream_from_primary_conninfo() {
+        let state = build_local_postgres_state(
+            &replica_pg_state_with_primary_conninfo("node-b", 5432),
+            &dcs_view_for_member("node-b", "node-b", 5432),
+        );
+
+        assert_eq!(
+            state,
+            PostgresState::Replica {
+                upstream: Some(MemberId("node-b".to_string())),
+                replication: ReplicationState::Streaming(WalPosition {
+                    timeline: 7,
+                    lsn: 67_272_104,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn data_dir_state_requires_basebackup_for_mismatched_system_identifier() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "pgtm-ha-worker-test-{}",
+            std::process::id()
+        ));
+        let pg_version_path = data_dir.join("PG_VERSION");
+        if data_dir.exists() {
+            assert!(
+                std::fs::remove_dir_all(&data_dir).is_ok(),
+                "failed to clean test data dir"
+            );
+        }
+        assert!(
+            std::fs::create_dir_all(&data_dir).is_ok(),
+            "failed to create test data dir"
+        );
+        assert!(
+            std::fs::write(&pg_version_path, "16\n").is_ok(),
+            "failed to create PG_VERSION"
+        );
+        let state = build_data_dir_state(
+            &data_dir,
+            Some(7),
+            Some(41),
+            &Some(ObservedPrimary {
+                member: MemberId("node-c".to_string()),
+                timeline: Some(8),
+                system_identifier: Some(99),
+            }),
+        );
+        assert!(
+            std::fs::remove_dir_all(&data_dir).is_ok(),
+            "failed to remove test data dir"
+        );
+
+        assert_eq!(
+            state,
+            DataDirState::Initialized(LocalDataState::Diverged(
+                DivergenceState::BasebackupRequired
+            ))
+        );
     }
 }

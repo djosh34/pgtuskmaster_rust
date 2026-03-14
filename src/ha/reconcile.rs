@@ -1,7 +1,7 @@
 use super::types::{
-    AuthorityView, DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal, IdleReason,
-    LeaseState, LocalDataState, PostgresState, ProcessState, PublicationGoal, PublicationState,
-    ReconcileAction, RecoveryPlan, ReplicationState, TargetRole, WorldView,
+    DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal, IdleReason,
+    LeadershipView, LocalDataState, PostgresState, ProcessState, PublicationGoal,
+    PublicationState, ReconcileAction, RecoveryPlan, TargetRole, WorldView,
 };
 
 pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> Vec<ReconcileAction> {
@@ -23,31 +23,14 @@ fn reconcile_publication(
     current: &PublicationState,
     desired: &DesiredState,
 ) -> Vec<ReconcileAction> {
-    let publish_action = match (
-        &current.authority,
-        &current.fence_cutoff,
-        &desired.publication,
-    ) {
-        (_, _, PublicationGoal::KeepCurrent) => None,
-        (
-            AuthorityView::Primary {
-                member: current_member,
-                epoch: current_epoch,
-            },
-            current_cutoff,
-            PublicationGoal::PublishPrimary { primary, epoch },
-        ) if current_member == primary && current_epoch == epoch && current_cutoff.is_none() => {
+    let publish_action = match &desired.publication {
+        PublicationGoal::KeepCurrent => None,
+        PublicationGoal::Publish(projection)
+            if current == &PublicationState::Projected(projection.clone()) =>
+        {
             None
         }
-        (
-            AuthorityView::NoPrimary(current_reason),
-            current_cutoff,
-            PublicationGoal::PublishNoPrimary {
-                reason,
-                fence_cutoff,
-            },
-        ) if current_reason == reason && current_cutoff == fence_cutoff => None,
-        (_, _, publication) => Some(ReconcileAction::Publish(publication.clone())),
+        publication => Some(ReconcileAction::Publish(publication.clone())),
     };
 
     publish_action.into_iter().collect()
@@ -93,10 +76,8 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> Option<ReconcileAct
             PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
                 Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast))
             }
-            PostgresState::Offline => match &world.global.lease {
-                LeaseState::HeldByMe(_) => Some(ReconcileAction::ReleaseLease),
-                LeaseState::HeldByPeer(_) | LeaseState::Unheld => None,
-            },
+            PostgresState::Offline => leadership_held_by_self(world)
+                .then_some(ReconcileAction::ReleaseLease),
         },
         TargetRole::Fenced(reason) => reconcile_fenced_role(world, reason),
         TargetRole::Idle(reason) => reconcile_idle_role(world, reason),
@@ -143,19 +124,11 @@ fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> Option<Reconci
                 }
                 PostgresState::Replica {
                     upstream,
-                    replication,
+                    replication: _,
                 } => match upstream {
                     Some(current_upstream) if current_upstream == &goal.leader => None,
                     Some(_) => Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast)),
-                    None
-                        if matches!(
-                            replication,
-                            ReplicationState::CatchingUp(_) | ReplicationState::Stalled
-                        ) =>
-                    {
-                        Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast))
-                    }
-                    None => None,
+                    None => Some(ReconcileAction::Demote(super::types::ShutdownMode::Fast)),
                 },
             }
         }
@@ -193,7 +166,7 @@ fn reconcile_failsafe_role(world: &WorldView, goal: &FailSafeGoal) -> Option<Rec
 
 fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> Option<ReconcileAction> {
     match reason {
-        FenceReason::StorageStalled if matches!(world.global.lease, LeaseState::HeldByMe(_)) => {
+        FenceReason::StorageStalled if leadership_held_by_self(world) => {
             Some(ReconcileAction::ReleaseLease)
         }
         FenceReason::ForeignLeaderDetected | FenceReason::StorageStalled => {
@@ -206,10 +179,8 @@ fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> Option<Reco
                 PostgresState::Primary { .. } | PostgresState::Replica { .. } => Some(
                     ReconcileAction::Demote(super::types::ShutdownMode::Immediate),
                 ),
-                PostgresState::Offline => match &world.global.lease {
-                    LeaseState::HeldByMe(_) => Some(ReconcileAction::ReleaseLease),
-                    LeaseState::HeldByPeer(_) | LeaseState::Unheld => None,
-                },
+                PostgresState::Offline => leadership_held_by_self(world)
+                    .then_some(ReconcileAction::ReleaseLease),
             }
         }
     }
@@ -233,6 +204,13 @@ fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> Option<Reconc
     }
 }
 
+fn leadership_held_by_self(world: &WorldView) -> bool {
+    matches!(
+        world.global.coordination.leadership,
+        LeadershipView::HeldBySelf(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -244,23 +222,20 @@ mod tests {
 
     use super::*;
     use crate::ha::types::{
-        ApiVisibility, GlobalKnowledge, IneligibleReason, LeaseEpoch, LocalKnowledge,
-        ObservationState, PeerKnowledge, PublicationState, ShutdownMode, StorageState,
-        SwitchoverState, WalPosition,
+        ApiVisibility, AuthorityProjection, CoordinationState, GlobalKnowledge, IneligibleReason,
+        LeadershipView, LeaseEpoch, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection,
+        ObservationState, PeerKnowledge, PrimaryObservation, PublicationState, ShutdownMode,
+        StorageState, SwitchoverState, WalPosition,
     };
 
     fn world(local: LocalKnowledge) -> WorldView {
         WorldView {
             local,
             global: GlobalKnowledge {
-                dcs_trust: DcsTrust::FullQuorum,
-                lease: LeaseState::Unheld,
-                observed_lease: None,
-                observed_primary: None,
-                coordination: super::super::types::CoordinationView {
+                coordination: CoordinationState {
                     trust: DcsTrust::FullQuorum,
-                    leader: LeaseState::Unheld,
-                    sampled_primary: None,
+                    leadership: LeadershipView::Open,
+                    primary: PrimaryObservation::Absent,
                 },
                 switchover: SwitchoverState::None,
                 peers: BTreeMap::new(),
@@ -276,10 +251,11 @@ mod tests {
 
     #[test]
     fn degraded_failsafe_keeps_stale_lease_instead_of_releasing_it() {
-        let publication = PublicationGoal::PublishNoPrimary {
-            reason: super::super::types::NoPrimaryReason::DcsDegraded,
-            fence_cutoff: None,
-        };
+        let publication = PublicationGoal::Publish(AuthorityProjection::NoPrimary(
+            NoPrimaryProjection::DcsDegraded {
+                fence: NoPrimaryFence::None,
+            },
+        ));
         let world = world(LocalKnowledge {
             data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
             postgres: PostgresState::Offline,
@@ -324,20 +300,13 @@ mod tests {
                 },
             },
             global: GlobalKnowledge {
-                dcs_trust: DcsTrust::FullQuorum,
-                lease: LeaseState::HeldByMe(LeaseEpoch {
-                    holder: MemberId("node-a".to_string()),
-                    generation: 5,
-                }),
-                observed_lease: None,
-                observed_primary: None,
-                coordination: super::super::types::CoordinationView {
+                coordination: CoordinationState {
                     trust: DcsTrust::FullQuorum,
-                    leader: LeaseState::HeldByMe(LeaseEpoch {
+                    leadership: LeadershipView::HeldBySelf(LeaseEpoch {
                         holder: MemberId("node-a".to_string()),
                         generation: 5,
                     }),
-                    sampled_primary: None,
+                    primary: PrimaryObservation::Absent,
                 },
                 switchover: SwitchoverState::None,
                 peers: BTreeMap::new(),
@@ -370,12 +339,9 @@ mod tests {
             process: ProcessState::Idle,
             storage: StorageState::Healthy,
             required_roles_ready: false,
-            publication: PublicationState {
-                authority: AuthorityView::NoPrimary(
-                    super::super::types::NoPrimaryReason::LeaseOpen,
-                ),
-                fence_cutoff: None,
-            },
+            publication: PublicationState::Projected(AuthorityProjection::NoPrimary(
+                NoPrimaryProjection::LeaseOpen,
+            )),
             observation: ObservationState {
                 pg_observed_at: UnixMillis(100),
                 last_start_success_at: None,
@@ -385,10 +351,9 @@ mod tests {
         });
         let desired = DesiredState {
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: PublicationGoal::PublishNoPrimary {
-                reason: super::super::types::NoPrimaryReason::LeaseOpen,
-                fence_cutoff: None,
-            },
+            publication: PublicationGoal::Publish(AuthorityProjection::NoPrimary(
+                NoPrimaryProjection::LeaseOpen,
+            )),
             clear_switchover: false,
         };
 
@@ -461,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn follower_replica_without_upstream_keeps_streaming_when_receiver_is_healthy() {
+    fn follower_replica_without_upstream_is_restarted_even_when_receiver_is_healthy() {
         let world = world(LocalKnowledge {
             data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
             postgres: PostgresState::Replica {
@@ -491,6 +456,9 @@ mod tests {
             clear_switchover: false,
         };
 
-        assert!(reconcile(&world, &desired).is_empty());
+        assert_eq!(
+            reconcile(&world, &desired),
+            vec![ReconcileAction::Demote(ShutdownMode::Fast)]
+        );
     }
 }

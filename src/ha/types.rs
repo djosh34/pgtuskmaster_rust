@@ -113,42 +113,94 @@ pub enum StorageState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublicationState {
-    pub authority: AuthorityView,
-    pub fence_cutoff: Option<FenceCutoff>,
+pub enum PublicationState {
+    Unknown,
+    Projected(AuthorityProjection),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuthorityView {
-    Primary { member: MemberId, epoch: LeaseEpoch },
-    NoPrimary(NoPrimaryReason),
-    Unknown,
+pub enum AuthorityProjection {
+    Primary(LeaseEpoch),
+    NoPrimary(NoPrimaryProjection),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoPrimaryProjection {
+    LeaseOpen,
+    Recovering {
+        epoch: Option<LeaseEpoch>,
+        fence: NoPrimaryFence,
+    },
+    DcsDegraded {
+        fence: NoPrimaryFence,
+    },
+    StaleObservedLease {
+        epoch: LeaseEpoch,
+        reason: StaleLeaseReason,
+    },
+    SwitchoverRejected(SwitchoverBlocker),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoPrimaryFence {
+    None,
+    Cutoff(FenceCutoff),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalKnowledge {
-    pub dcs_trust: DcsTrust,
-    pub lease: LeaseState,
-    pub observed_lease: Option<LeaseEpoch>,
-    pub observed_primary: Option<MemberId>,
-    pub coordination: CoordinationView,
+    pub coordination: CoordinationState,
     pub switchover: SwitchoverState,
     pub peers: BTreeMap<MemberId, PeerKnowledge>,
     pub self_peer: PeerKnowledge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoordinationView {
+pub struct CoordinationState {
     pub trust: DcsTrust,
-    pub leader: LeaseState,
-    pub sampled_primary: Option<MemberId>,
+    pub leadership: LeadershipView,
+    pub primary: PrimaryObservation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LeaseState {
-    HeldByMe(LeaseEpoch),
-    HeldByPeer(LeaseEpoch),
-    Unheld,
+pub enum LeadershipView {
+    Open,
+    HeldBySelf(LeaseEpoch),
+    HeldByPeer {
+        epoch: LeaseEpoch,
+        state: PeerLeaderState,
+    },
+    StaleObservedLease {
+        epoch: LeaseEpoch,
+        reason: StaleLeaseReason,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PeerLeaderState {
+    PrimaryReady,
+    Recovering,
+    Unreachable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StaleLeaseReason {
+    HolderMissing,
+    HolderNotPrimary,
+    HolderNotReady,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PrimaryObservation {
+    Absent,
+    Observed(ObservedPrimary),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedPrimary {
+    pub member: MemberId,
+    pub timeline: Option<u64>,
+    pub system_identifier: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,14 +310,7 @@ pub enum FenceReason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublicationGoal {
     KeepCurrent,
-    PublishPrimary {
-        primary: MemberId,
-        epoch: LeaseEpoch,
-    },
-    PublishNoPrimary {
-        reason: NoPrimaryReason,
-        fence_cutoff: Option<FenceCutoff>,
-    },
+    Publish(AuthorityProjection),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,14 +387,10 @@ impl WorldView {
                 },
             },
             global: GlobalKnowledge {
-                dcs_trust: DcsTrust::NotTrusted,
-                lease: LeaseState::Unheld,
-                observed_lease: None,
-                observed_primary: None,
-                coordination: CoordinationView {
+                coordination: CoordinationState {
                     trust: DcsTrust::NotTrusted,
-                    leader: LeaseState::Unheld,
-                    sampled_primary: None,
+                    leadership: LeadershipView::Open,
+                    primary: PrimaryObservation::Absent,
                 },
                 switchover: SwitchoverState::None,
                 peers: BTreeMap::new(),
@@ -384,10 +425,7 @@ impl ObservationState {
 
 impl PublicationState {
     pub(crate) fn unknown() -> Self {
-        Self {
-            authority: AuthorityView::Unknown,
-            fence_cutoff: None,
-        }
+        Self::Unknown
     }
 }
 
