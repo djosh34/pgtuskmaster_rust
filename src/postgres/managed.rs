@@ -11,7 +11,7 @@ use crate::{
         resolve_inline_or_path_bytes, resolve_inline_or_path_string, resolve_secret_string,
         RoleAuthConfig, RuntimeConfig, SecretSource, TlsServerConfig,
     },
-    postgres_managed_conf::{
+    postgres::managed_conf::{
         managed_standby_passfile_path, render_managed_postgres_conf, ManagedPostgresConf,
         ManagedPostgresConfError, ManagedPostgresStartIntent, ManagedPostgresTlsConfig,
         ManagedRecoverySignal, ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME,
@@ -618,7 +618,7 @@ mod tests {
             ports::allocate_ports,
         },
         pginfo::{conninfo::PgSslMode, state::PgConnInfo},
-        postgres_managed_conf::{
+        postgres::managed_conf::{
             managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
             ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },

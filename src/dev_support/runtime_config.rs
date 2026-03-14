@@ -477,8 +477,8 @@ mod tests {
             DcsInitConfig, InlineOrPath, TlsServerIdentityConfig,
         },
         dev_support::runtime_config::{sample_runtime_config, RuntimeConfigBuilder},
-        postgres_managed::materialize_managed_postgres_config,
-        postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME},
+        postgres::managed::materialize_managed_postgres_config,
+        postgres::managed_conf::{ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME},
     };
 
     fn sample_override_api_listen_addr() -> std::net::SocketAddr {

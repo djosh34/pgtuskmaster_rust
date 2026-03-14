@@ -6,7 +6,7 @@ use crate::{
         DcsSwitchoverTargetView, DcsView,
     },
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
-    postgres_roles,
+    postgres::roles,
     process::jobs::{ActiveJobKind, PostgresStartIntent, ProcessIntent},
     state::{MemberId, WorkerError, WorkerStatus},
 };
@@ -220,7 +220,7 @@ async fn execute_local_action(
     match action {
         LocalAction::ReconcileManagedRoles => {
             let runtime_config = ctx.observed.config.latest();
-            postgres_roles::reconcile_managed_roles(
+            roles::reconcile_managed_roles(
                 &runtime_config,
                 runtime_config.postgres_socket_dir().as_path(),
                 runtime_config.postgres.network.listen_port,
