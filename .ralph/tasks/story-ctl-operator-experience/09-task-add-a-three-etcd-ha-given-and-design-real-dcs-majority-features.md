@@ -1,4 +1,4 @@
-## Task: Add A Three-ETCD HA Given And Design Real DCS-Majority Features <status>not_started</status> <passes>false</passes> <priority>low</priority>
+## Task: Add A Three-ETCD HA Given And Design Real DCS-Majority Features <status>done</status> <passes>true</passes> <priority>low</priority>
 
 <description>
 **Goal:** Add a new HA compose given that uses a real three-member `etcd` cluster instead of the current single-`etcd` shortcut, and design the HA feature families that are only valid when DCS majority semantics are real. In this new topology, each `pgtuskmaster` node must talk only to its own colocated `etcd` member, not to a shared list of all `etcd` endpoints. The observer configs for node-specific observations must mirror that same locality so that observing `node-a` means observing the DCS view that `node-a` itself has through its own `etcd`.
@@ -219,8 +219,17 @@
 - [ ] For each three-`etcd` feature family, this task or the resulting feature files explicitly state the `NodeState` assertions and the SQL assertions instead of naming only the high-level theme
 - [ ] The task or resulting feature files explicitly explain why those scenarios belong on the three-`etcd` topology and are not honest on `three_node_plain`
 - [ ] The designed assertions are consistent with task 07's `NodeState`-first model and do not reintroduce SQL fallback for cluster role
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<execution_plan>
+- [x] Replace the singular DCS-service typing with explicit DCS-member identity in the HA topology model so `etcd-a` / `etcd-b` / `etcd-c` can be addressed as typed services instead of a hidden `"etcd"` singleton.
+- [x] Lift DCS layout into `ThreeNodeTopologyFixture` and make runtime/observer template descriptors carry typed member-to-DCS bindings rather than inheriting `http://etcd:2379` implicitly.
+- [x] Update compose rendering, bootstrap ordering, DCS fault orchestration, and artifact capture to consume the new topology ADTs end to end.
+- [x] Materialize the `three_node_three_etcd` given with three-member etcd clustering and node-local runtime/observer DCS wiring.
+- [x] Add the three-etcd-only feature files, run `make check`, `make lint`, `make test`, `make test-long`, then update docs with `k2-docs-loop`.
+NOW EXECUTE
+</execution_plan>

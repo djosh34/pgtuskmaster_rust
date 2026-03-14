@@ -25,11 +25,11 @@ use crate::support::{
     givens::{
         resolve_given, ComposeTemplate, FixtureMaterialization, FixtureRenderTarget,
         FixtureTemplate, HaGivenDefinition, HaGivenId, ObserverNetAdmin, ObserverTemplate,
-        RenderedFixtureFile, SharedFixtureEntry,
+        RenderedFixtureFile, SharedFixtureEntry, ThreeNodeDcsLayout,
     },
     observer::{pgtm::PgtmObserver, sql::SqlObserver},
     timeouts::TimeoutModel,
-    topology::{ClusterMember, ComposeService, SupportService},
+    topology::{ClusterMember, ComposeService, DcsMember},
     workload::{SqlWorkloadHandle, WorkloadSummary},
 };
 
@@ -437,7 +437,16 @@ impl HarnessShared {
                 .as_path(),
         )?;
         let ryuk = RyukGuard::start(docker.clone(), compose.project.as_str())?;
-        docker.compose_up_services(compose.file.as_path(), compose.project.as_str(), &["etcd"])?;
+        let dcs_service_names = given
+            .dcs_services()
+            .into_iter()
+            .map(|service| service.service_name())
+            .collect::<Vec<_>>();
+        docker.compose_up_services(
+            compose.file.as_path(),
+            compose.project.as_str(),
+            dcs_service_names.as_slice(),
+        )?;
         docker.compose_up_services(
             compose.file.as_path(),
             compose.project.as_str(),
@@ -717,11 +726,55 @@ impl HarnessShared {
     }
 
     pub fn isolate_member_from_observer_on_api(&self, member: ClusterMember) -> Result<()> {
-        self.block_member_path_to_host(member, TrafficPath::Api, SupportService::Observer.into())
+        self.block_member_path_to_host(member, TrafficPath::Api, ComposeService::Observer)
     }
 
     pub fn cut_member_off_from_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.block_member_path_to_host(member, TrafficPath::Dcs, SupportService::Etcd.into())
+        self.block_member_path_to_host(
+            member,
+            TrafficPath::Dcs,
+            self.workspace.given.local_dcs_service_for(member).into(),
+        )
+    }
+
+    pub fn stop_all_dcs_services(&self) -> Result<()> {
+        self.workspace
+            .given
+            .dcs_services()
+            .into_iter()
+            .try_for_each(|service| self.stop_service(service.into()))
+    }
+
+    pub fn start_all_dcs_services(&self) -> Result<()> {
+        self.workspace
+            .given
+            .dcs_services()
+            .into_iter()
+            .try_for_each(|service| self.start_service(service.into()))
+    }
+
+    pub fn stop_dcs_quorum_majority(&self) -> Result<()> {
+        self.workspace
+            .given
+            .quorum_majority_dcs_services()
+            .into_iter()
+            .try_for_each(|service| self.stop_service(service.into()))
+    }
+
+    pub fn start_dcs_quorum_majority(&self) -> Result<()> {
+        self.workspace
+            .given
+            .quorum_majority_dcs_services()
+            .into_iter()
+            .try_for_each(|service| self.start_service(service.into()))
+    }
+
+    pub fn stop_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
+        self.stop_service(self.workspace.given.local_dcs_service_for(member).into())
+    }
+
+    pub fn start_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
+        self.start_service(self.workspace.given.local_dcs_service_for(member).into())
     }
 
     pub fn set_blocker(
@@ -841,7 +894,7 @@ impl HarnessShared {
         for service in DATABASE_MEMBERS
             .into_iter()
             .map(ComposeService::from)
-            .chain([SupportService::Observer.into()].into_iter())
+            .chain(std::iter::once(ComposeService::Observer))
         {
             self.clear_network_faults(service)?;
         }
@@ -892,8 +945,9 @@ impl HarnessShared {
     }
 
     async fn bootstrap_cluster(&self) -> Result<()> {
-        self.wait_for_service_health(SupportService::Etcd.into())
-            .await?;
+        for service in self.workspace.given.dcs_services() {
+            self.wait_for_service_health(service.into()).await?;
+        }
         self.record_note("bootstrap", "starting seed primary node-b")?;
         self.docker.compose_up_services(
             self.compose_file(),
@@ -1056,13 +1110,7 @@ impl HarnessShared {
             Err(err) => failures.push(format!("observer state capture failed: {err}")),
         }
 
-        for service in [
-            SupportService::Observer.into(),
-            ClusterMember::NodeA.into(),
-            ClusterMember::NodeB.into(),
-            ClusterMember::NodeC.into(),
-            SupportService::Etcd.into(),
-        ] {
+        for service in self.workspace.given.artifact_services() {
             match self.service_container_id(service) {
                 Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
                     Ok(inspect) => {
@@ -1288,36 +1336,11 @@ fn render_compose_template(template: ComposeTemplate) -> String {
         ObserverNetAdmin::Enabled => "    cap_add:\n      - NET_ADMIN\n",
         ObserverNetAdmin::Disabled => "",
     };
+    let dcs_services = render_dcs_services(template.dcs_layout);
+    let dcs_volumes = render_dcs_volumes(template.dcs_layout);
     format!(
         r#"services:
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.21
-    command:
-      - /usr/local/bin/etcd
-      - --name=etcd
-      - --data-dir=/etcd-data
-      - --listen-client-urls=http://0.0.0.0:2379
-      - --advertise-client-urls=http://etcd:2379
-      - --listen-peer-urls=http://0.0.0.0:2380
-      - --initial-advertise-peer-urls=http://etcd:2380
-      - --initial-cluster=etcd=http://etcd:2380
-      - --initial-cluster-state=new
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "/usr/local/bin/etcdctl",
-          "--endpoints=http://127.0.0.1:2379",
-          "endpoint",
-          "health",
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    networks:
-      - ha
-    volumes:
-      - etcd-data:/etcd-data
+{dcs_services}
 
   node-a:
     image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
@@ -1471,8 +1494,7 @@ networks:
     driver: bridge
 
 volumes:
-  etcd-data:
-  node-a-data:
+{dcs_volumes}  node-a-data:
   node-a-logs:
   node-b-data:
   node-b-logs:
@@ -1533,7 +1555,8 @@ secrets:
 fn render_member_runtime_template(
     template: &crate::support::givens::NodeRuntimeTemplate,
 ) -> String {
-    let member = template.member.service_name();
+    let member = template.binding.member.service_name();
+    let dcs_endpoint = template.binding.dcs_service.client_url();
     let replicator = template.postgres_roles.replicator.as_str();
     let rewinder = template.postgres_roles.rewinder.as_str();
     format!(
@@ -1569,7 +1592,7 @@ username = "{rewinder}"
 auth = {{ type = "password", password = {{ path = "/run/secrets/rewinder-password" }} }}
 
 [dcs]
-endpoints = ["http://etcd:2379"]
+endpoints = ["{dcs_endpoint}"]
 scope = "ha-cucumber-cluster"
 
 [ha]
@@ -1626,7 +1649,8 @@ enabled = true
 }
 
 fn render_observer_template(template: &ObserverTemplate) -> String {
-    let member = template.member.service_name();
+    let member = template.binding.member.service_name();
+    let dcs_endpoint = template.binding.dcs_service.client_url();
     let replicator = template.postgres_roles.replicator.as_str();
     let rewinder = template.postgres_roles.rewinder.as_str();
     format!(
@@ -1659,7 +1683,7 @@ username = "{rewinder}"
 auth = {{ type = "password", password = {{ path = "/run/secrets/rewinder-password" }} }}
 
 [dcs]
-endpoints = ["http://etcd:2379"]
+endpoints = ["{dcs_endpoint}"]
 scope = "ha-cucumber-cluster"
 
 [ha]
@@ -1714,6 +1738,99 @@ client_key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }}
 enabled = true
 "#
     )
+}
+
+fn render_dcs_services(layout: ThreeNodeDcsLayout) -> String {
+    match layout {
+        ThreeNodeDcsLayout::SharedSingle => r#"  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-cluster-state=new
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/etcdctl",
+          "--endpoints=http://127.0.0.1:2379",
+          "endpoint",
+          "health",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - ha
+    volumes:
+      - etcd-data:/etcd-data"#
+            .to_string(),
+        ThreeNodeDcsLayout::ColocatedThreeMember => {
+            let initial_cluster = DcsMember::ALL
+                .into_iter()
+                .map(|member| format!("{member}={}", member.peer_url()))
+                .collect::<Vec<_>>()
+                .join(",");
+            DcsMember::ALL
+                .into_iter()
+                .map(|member| render_three_member_dcs_service(member, initial_cluster.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        }
+    }
+}
+
+fn render_three_member_dcs_service(member: DcsMember, initial_cluster: &str) -> String {
+    let service_name = member.service_name();
+    let client_url = member.client_url();
+    let peer_url = member.peer_url();
+    let volume_name = member.volume_name();
+    format!(
+        r#"  {service_name}:
+    image: quay.io/coreos/etcd:v3.5.21
+    command:
+      - /usr/local/bin/etcd
+      - --name={service_name}
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls={client_url}
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls={peer_url}
+      - --initial-cluster={initial_cluster}
+      - --initial-cluster-state=new
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/etcdctl",
+          "--endpoints=http://127.0.0.1:2379",
+          "endpoint",
+          "health",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - ha
+    volumes:
+      - {volume_name}:/etcd-data"#
+    )
+}
+
+fn render_dcs_volumes(layout: ThreeNodeDcsLayout) -> String {
+    match layout {
+        ThreeNodeDcsLayout::SharedSingle => "  etcd-data:\n".to_string(),
+        ThreeNodeDcsLayout::ColocatedThreeMember => DcsMember::ALL
+            .into_iter()
+            .map(|member| format!("  {}:\n", member.volume_name()))
+            .collect(),
+    }
 }
 
 fn create_fault_directories(root: &Path) -> Result<()> {
@@ -1817,7 +1934,7 @@ mod tests {
     #[test]
     fn materializes_plain_fixture_from_shared_assets_and_rendered_outputs() -> Result<()> {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = resolve_given(repo_root.as_path(), HaGivenId::ThreeNodePlain)?;
+        let given = resolve_given(repo_root.as_path(), HaGivenId::Plain)?;
         let output_root = temporary_directory("plain")?;
 
         let result = (|| -> Result<()> {
@@ -1869,7 +1986,7 @@ mod tests {
     #[test]
     fn materializes_custom_roles_without_observer_net_admin() -> Result<()> {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = resolve_given(repo_root.as_path(), HaGivenId::ThreeNodeCustomRoles)?;
+        let given = resolve_given(repo_root.as_path(), HaGivenId::CustomRoles)?;
         let output_root = temporary_directory("custom-roles")?;
 
         let result = (|| -> Result<()> {
@@ -1903,6 +2020,68 @@ mod tests {
             })?;
             assert!(observer.contains(r#"member_id = "observer-node-c""#));
             assert!(observer.contains(r#"username = "mirrorbot""#));
+            Ok(())
+        })();
+
+        let cleanup_result = cleanup_directory(output_root.as_path());
+        match (result, cleanup_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(cleanup)) => Err(cleanup),
+            (Err(err), Err(cleanup)) => Err(HarnessError::message(format!(
+                "{err}\ncleanup also failed: {cleanup}"
+            ))),
+        }
+    }
+
+    #[test]
+    fn materializes_three_etcd_fixture_with_node_local_dcs_bindings() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let given = resolve_given(repo_root.as_path(), HaGivenId::ThreeEtcd)?;
+        let output_root = temporary_directory("three-etcd")?;
+
+        let result = (|| -> Result<()> {
+            materialize_given_fixture(&given, output_root.as_path())?;
+
+            let compose = fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
+                HarnessError::Io {
+                    path: output_root.join("compose.yml"),
+                    source,
+                }
+            })?;
+            assert!(compose.contains("etcd-a:"));
+            assert!(compose.contains("etcd-b:"));
+            assert!(compose.contains("etcd-c:"));
+            assert!(compose.contains("etcd-a=http://etcd-a:2380"));
+            assert!(compose.contains("etcd-b=http://etcd-b:2380"));
+            assert!(compose.contains("etcd-c=http://etcd-c:2380"));
+            assert!(compose.contains("etcd-a-data:/etcd-data"));
+            assert!(compose.contains("etcd-b-data:/etcd-data"));
+            assert!(compose.contains("etcd-c-data:/etcd-data"));
+
+            let node_a_runtime =
+                fs::read_to_string(output_root.join(ClusterMember::NodeA.runtime_config_relative_path()))
+                    .map_err(|source| HarnessError::Io {
+                        path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+                        source,
+                    })?;
+            assert!(node_a_runtime.contains(r#"endpoints = ["http://etcd-a:2379"]"#));
+
+            let node_b_runtime =
+                fs::read_to_string(output_root.join(ClusterMember::NodeB.runtime_config_relative_path()))
+                    .map_err(|source| HarnessError::Io {
+                        path: output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
+                        source,
+                    })?;
+            assert!(node_b_runtime.contains(r#"endpoints = ["http://etcd-b:2379"]"#));
+
+            let node_c_observer =
+                fs::read_to_string(output_root.join(ClusterMember::NodeC.observer_config_relative_path()))
+                    .map_err(|source| HarnessError::Io {
+                        path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+                        source,
+                    })?;
+            assert!(node_c_observer.contains(r#"endpoints = ["http://etcd-c:2379"]"#));
             Ok(())
         })();
 

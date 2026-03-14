@@ -2,20 +2,23 @@ use std::path::{Path, PathBuf};
 
 use crate::support::{
     error::{HarnessError, Result},
-    topology::ClusterMember,
+    faults::DCS_MEMBERS,
+    topology::{ClusterMember, ComposeService, DcsMember, DcsService},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HaGivenId {
-    ThreeNodePlain,
-    ThreeNodeCustomRoles,
+    Plain,
+    CustomRoles,
+    ThreeEtcd,
 }
 
 impl HaGivenId {
     pub fn parse(raw: &str) -> Result<Self> {
         match raw {
-            "three_node_plain" => Ok(Self::ThreeNodePlain),
-            "three_node_custom_roles" => Ok(Self::ThreeNodeCustomRoles),
+            "three_node_plain" => Ok(Self::Plain),
+            "three_node_custom_roles" => Ok(Self::CustomRoles),
+            "three_node_three_etcd" => Ok(Self::ThreeEtcd),
             _ => Err(HarnessError::message(format!(
                 "unsupported HA given `{raw}`"
             ))),
@@ -24,8 +27,9 @@ impl HaGivenId {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::ThreeNodePlain => "three_node_plain",
-            Self::ThreeNodeCustomRoles => "three_node_custom_roles",
+            Self::Plain => "three_node_plain",
+            Self::CustomRoles => "three_node_custom_roles",
+            Self::ThreeEtcd => "three_node_three_etcd",
         }
     }
 }
@@ -37,6 +41,43 @@ pub struct HaGivenDefinition {
     pub materialization: FixtureMaterialization,
 }
 
+impl HaGivenDefinition {
+    pub fn dcs_services(&self) -> Vec<DcsService> {
+        match &self.topology {
+            HaTopologyFixture::ThreeNode(topology) => topology.dcs_layout.dcs_services(),
+        }
+    }
+
+    pub fn support_services(&self) -> Vec<ComposeService> {
+        std::iter::once(ComposeService::Observer)
+            .chain(self.dcs_services().into_iter().map(ComposeService::from))
+            .collect()
+    }
+
+    pub fn artifact_services(&self) -> Vec<ComposeService> {
+        self.support_services()
+            .into_iter()
+            .chain(ClusterMember::ALL.into_iter().map(ComposeService::from))
+            .collect()
+    }
+
+    pub fn member_binding(&self, member: ClusterMember) -> MemberDcsBinding {
+        match &self.topology {
+            HaTopologyFixture::ThreeNode(topology) => topology.member_binding(member),
+        }
+    }
+
+    pub fn local_dcs_service_for(&self, member: ClusterMember) -> DcsService {
+        self.member_binding(member).dcs_service
+    }
+
+    pub fn quorum_majority_dcs_services(&self) -> Vec<DcsService> {
+        match &self.topology {
+            HaTopologyFixture::ThreeNode(topology) => topology.dcs_layout.quorum_majority_services(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HaTopologyFixture {
     ThreeNode(ThreeNodeTopologyFixture),
@@ -46,6 +87,16 @@ pub enum HaTopologyFixture {
 pub struct ThreeNodeTopologyFixture {
     pub postgres_roles: PostgresRoleMapping,
     pub observer_net_admin: ObserverNetAdmin,
+    pub dcs_layout: ThreeNodeDcsLayout,
+}
+
+impl ThreeNodeTopologyFixture {
+    pub fn member_binding(&self, member: ClusterMember) -> MemberDcsBinding {
+        MemberDcsBinding {
+            member,
+            dcs_service: self.dcs_layout.service_for(member),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +122,44 @@ impl RoleName {
 pub enum ObserverNetAdmin {
     Enabled,
     Disabled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreeNodeDcsLayout {
+    SharedSingle,
+    ColocatedThreeMember,
+}
+
+impl ThreeNodeDcsLayout {
+    pub fn dcs_services(self) -> Vec<DcsService> {
+        match self {
+            Self::SharedSingle => vec![DcsService::SharedEtcd],
+            Self::ColocatedThreeMember => DCS_MEMBERS.into_iter().map(DcsService::Member).collect(),
+        }
+    }
+
+    pub fn service_for(self, member: ClusterMember) -> DcsService {
+        match self {
+            Self::SharedSingle => DcsService::SharedEtcd,
+            Self::ColocatedThreeMember => DcsService::Member(member.local_dcs_member()),
+        }
+    }
+
+    pub fn quorum_majority_services(self) -> Vec<DcsService> {
+        match self {
+            Self::SharedSingle => vec![DcsService::SharedEtcd],
+            Self::ColocatedThreeMember => [DcsMember::EtcdA, DcsMember::EtcdB]
+                .into_iter()
+                .map(DcsService::Member)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemberDcsBinding {
+    pub member: ClusterMember,
+    pub dcs_service: DcsService,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,17 +204,18 @@ pub enum FixtureTemplate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComposeTemplate {
     pub observer_net_admin: ObserverNetAdmin,
+    pub dcs_layout: ThreeNodeDcsLayout,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeRuntimeTemplate {
-    pub member: ClusterMember,
+    pub binding: MemberDcsBinding,
     pub postgres_roles: PostgresRoleMapping,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverTemplate {
-    pub member: ClusterMember,
+    pub binding: MemberDcsBinding,
     pub postgres_roles: PostgresRoleMapping,
 }
 
@@ -164,19 +254,29 @@ pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefini
 
 fn three_node_topology(given: HaGivenId) -> ThreeNodeTopologyFixture {
     match given {
-        HaGivenId::ThreeNodePlain => ThreeNodeTopologyFixture {
+        HaGivenId::Plain => ThreeNodeTopologyFixture {
             postgres_roles: PostgresRoleMapping {
                 replicator: RoleName::new("replicator"),
                 rewinder: RoleName::new("rewinder"),
             },
             observer_net_admin: ObserverNetAdmin::Enabled,
+            dcs_layout: ThreeNodeDcsLayout::SharedSingle,
         },
-        HaGivenId::ThreeNodeCustomRoles => ThreeNodeTopologyFixture {
+        HaGivenId::CustomRoles => ThreeNodeTopologyFixture {
             postgres_roles: PostgresRoleMapping {
                 replicator: RoleName::new("mirrorbot"),
                 rewinder: RoleName::new("rewindbot"),
             },
             observer_net_admin: ObserverNetAdmin::Disabled,
+            dcs_layout: ThreeNodeDcsLayout::SharedSingle,
+        },
+        HaGivenId::ThreeEtcd => ThreeNodeTopologyFixture {
+            postgres_roles: PostgresRoleMapping {
+                replicator: RoleName::new("replicator"),
+                rewinder: RoleName::new("rewinder"),
+            },
+            observer_net_admin: ObserverNetAdmin::Enabled,
+            dcs_layout: ThreeNodeDcsLayout::ColocatedThreeMember,
         },
     }
 }
@@ -186,21 +286,23 @@ fn three_node_render_plan(topology: ThreeNodeTopologyFixture) -> Vec<RenderedFix
         target: FixtureRenderTarget::ComposeFile,
         template: FixtureTemplate::Compose(ComposeTemplate {
             observer_net_admin: topology.observer_net_admin,
+            dcs_layout: topology.dcs_layout,
         }),
     })
     .chain(ClusterMember::ALL.into_iter().flat_map(|member| {
+        let binding = topology.member_binding(member);
         [
             RenderedFixtureFile {
                 target: FixtureRenderTarget::MemberRuntimeConfig(member),
                 template: FixtureTemplate::Runtime(NodeRuntimeTemplate {
-                    member,
+                    binding,
                     postgres_roles: topology.postgres_roles.clone(),
                 }),
             },
             RenderedFixtureFile {
                 target: FixtureRenderTarget::ObserverConfig(member),
                 template: FixtureTemplate::Observer(ObserverTemplate {
-                    member,
+                    binding,
                     postgres_roles: topology.postgres_roles.clone(),
                 }),
             },

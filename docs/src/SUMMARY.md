@@ -7,6 +7,7 @@
     - [First HA Cluster](tutorial/first-ha-cluster.md)
     - [Single-Node Setup](tutorial/single-node-setup.md)
     - [Observing a Failover Event](tutorial/observing-failover.md)
+    - [Performing a Planned Switchover](tutorial/performing-switchover.md)
     - [Validating Cluster Behavior](tutorial/validating-cluster-behavior.md)
 
 # How-To

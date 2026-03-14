@@ -153,6 +153,15 @@ async fn the_online_nodes_contain_exactly_the_recorded_proof_rows(
     wait_for_recorded_proof_rows(world, expected_online).await
 }
 
+#[then(regex = r#"^the (\d+) online nodes contain at least the recorded proof rows$"#)]
+async fn the_online_nodes_contain_at_least_the_recorded_proof_rows(
+    world: &mut HaWorld,
+    expected_online: String,
+) -> Result<()> {
+    let expected_online = parse_count(expected_online.as_str())?;
+    wait_for_recorded_proof_rows_included(world, expected_online).await
+}
+
 #[when("the current primary container crashes")]
 async fn the_current_primary_container_crashes(world: &mut HaWorld) -> Result<()> {
     let status = current_status(world)?;
@@ -351,7 +360,14 @@ async fn there_is_no_operator_visible_primary_across_online_nodes(
     expected_online: String,
 ) -> Result<()> {
     let expected_online = parse_count(expected_online.as_str())?;
-    wait_for_no_operator_primary(world, expected_online).await
+    wait_for_no_operator_primary(world, Some(expected_online)).await
+}
+
+#[then("there is no operator-visible primary across running nodes")]
+async fn there_is_no_operator_visible_primary_across_running_nodes(
+    world: &mut HaWorld,
+) -> Result<()> {
+    wait_for_no_operator_primary(world, None).await
 }
 
 #[then("the lone online node is not treated as a writable primary")]
@@ -857,6 +873,67 @@ async fn wait_for_member_rows(
     )))
 }
 
+async fn wait_for_recorded_proof_rows_included(
+    world: &mut HaWorld,
+    expected_online: usize,
+) -> Result<()> {
+    let table_name = world
+        .scenario
+        .workload
+        .proof
+        .table
+        .as_ref()
+        .map(|table| table.as_str().to_string())
+        .ok_or_else(|| HarnessError::message("proof table was not created"))?;
+    let expected_rows = world
+        .scenario
+        .workload
+        .proof
+        .recorded_rows
+        .iter()
+        .map(|row| row.as_str().to_string())
+        .collect::<Vec<_>>();
+    let deadline = {
+        let harness = world.harness()?;
+        Instant::now() + harness.timeouts.recovery_deadline
+    };
+    let poll_interval = {
+        let harness = world.harness()?;
+        harness.timeouts.poll_interval
+    };
+    let mut last_error = None;
+
+    while Instant::now() < deadline {
+        let attempt = {
+            let targets = direct_online_connection_targets(world)?;
+            if targets.len() < expected_online {
+                Err(HarnessError::message(format!(
+                    "expected at least {expected_online} online connection targets, observed {}",
+                    targets.len()
+                )))
+            } else {
+                let harness = world.harness()?;
+                verify_rows_included_on_targets(
+                    harness,
+                    targets.as_slice(),
+                    table_name.as_str(),
+                    &expected_rows,
+                )
+            }
+        };
+        match attempt {
+            Ok(()) => return Ok(()),
+            Err(err) => last_error = Some(err.to_string()),
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    Err(HarnessError::message(format!(
+        "timed out waiting for proof-row inclusion on {expected_online} nodes; last observed error: {}",
+        last_error.unwrap_or_else(|| "no proof-row verification attempt ran".to_string())
+    )))
+}
+
 async fn wait_for_single_primary(
     world: &mut HaWorld,
     phase: &str,
@@ -971,7 +1048,10 @@ async fn wait_for_authoritative_single_primary(
     )))
 }
 
-async fn wait_for_no_operator_primary(world: &mut HaWorld, expected_online: usize) -> Result<()> {
+async fn wait_for_no_operator_primary(
+    world: &mut HaWorld,
+    expected_visible_members: Option<usize>,
+) -> Result<()> {
     let deadline = {
         let harness = world.harness()?;
         Instant::now() + harness.timeouts.failover_deadline
@@ -989,7 +1069,9 @@ async fn wait_for_no_operator_primary(world: &mut HaWorld, expected_online: usiz
                 let status = harness.observer().state_via_member(member_id)?;
                 let snapshot_label = format!("primary.none.{member_id}");
                 harness.record_status_snapshot(snapshot_label.as_str(), &status)?;
-                require_visible_members(&status, expected_online)?;
+                if let Some(expected_visible_members) = expected_visible_members {
+                    require_visible_members(&status, expected_visible_members)?;
+                }
                 require_no_authoritative_primary(&status)?;
             }
             Ok(())
@@ -1381,6 +1463,19 @@ fn verify_rows_on_targets(
     Ok(())
 }
 
+fn verify_rows_included_on_targets(
+    harness: &HarnessShared,
+    targets: &[ConnectionTarget],
+    table_name: &str,
+    expected_rows: &[String],
+) -> Result<()> {
+    for target in targets {
+        let observed_rows = fetch_rows_via_target(harness, table_name, target)?;
+        assert_rows_include(target.member_id.as_str(), &observed_rows, expected_rows)?;
+    }
+    Ok(())
+}
+
 fn fetch_rows_for_member(
     harness: &HarnessShared,
     table_name: &str,
@@ -1421,6 +1516,29 @@ fn assert_exact_rows(
         Err(HarnessError::message(format!(
             "member `{member_label}` rows {:?} did not match expected {:?}",
             canonical_observed, canonical_expected
+        )))
+    }
+}
+
+fn assert_rows_include(
+    member_label: &str,
+    observed_rows: &[String],
+    expected_rows: &[String],
+) -> Result<()> {
+    let observed = observed_rows.iter().cloned().collect::<BTreeSet<_>>();
+    let missing = expected_rows
+        .iter()
+        .filter(|expected_row| !observed.contains(expected_row.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        let mut canonical_observed = observed_rows.to_vec();
+        canonical_observed.sort();
+        Err(HarnessError::message(format!(
+            "member `{member_label}` rows {:?} were missing expected {:?}",
+            canonical_observed, missing
         )))
     }
 }
@@ -1794,6 +1912,20 @@ async fn i_start_a_bounded_concurrent_write_workload_and_record_commit_outcomes(
 async fn i_stop_the_workload_and_verify_it_committed_at_least_one_row(
     world: &mut HaWorld,
 ) -> Result<()> {
+    stop_workload(world, true).await
+}
+
+#[when("I stop the workload and verify it committed at least one row without recording workload proof rows")]
+async fn i_stop_the_workload_and_verify_it_committed_at_least_one_row_without_recording_workload_proof_rows(
+    world: &mut HaWorld,
+) -> Result<()> {
+    stop_workload(world, false).await
+}
+
+async fn stop_workload(
+    world: &mut HaWorld,
+    record_workload_tokens_as_proof_rows: bool,
+) -> Result<()> {
     let workload = world
         .scenario
         .workload
@@ -1807,21 +1939,23 @@ async fn i_stop_the_workload_and_verify_it_committed_at_least_one_row(
         ));
     }
 
-    for token in summary.committed_tokens() {
-        if !world
-            .scenario
-            .workload
-            .proof
-            .recorded_rows
-            .iter()
-            .any(|existing| existing.as_str() == token)
-        {
-            world
+    if record_workload_tokens_as_proof_rows {
+        for token in summary.committed_tokens() {
+            if !world
                 .scenario
                 .workload
                 .proof
                 .recorded_rows
-                .push(token.clone().into());
+                .iter()
+                .any(|existing| existing.as_str() == token)
+            {
+                world
+                    .scenario
+                    .workload
+                    .proof
+                    .recorded_rows
+                    .push(token.clone().into());
+            }
         }
     }
 
@@ -1891,19 +2025,41 @@ async fn i_unwedge_the_node_named(world: &mut HaWorld, member_ref: String) -> Re
 }
 
 #[when("I stop the DCS service")]
-#[when("I stop a DCS quorum majority")]
 async fn i_stop_the_dcs_service(world: &mut HaWorld) -> Result<()> {
-    world
-        .harness()?
-        .stop_service(crate::support::faults::ETCD_SERVICE)
+    world.harness()?.stop_all_dcs_services()
+}
+
+#[when("I stop a DCS quorum majority")]
+async fn i_stop_a_dcs_quorum_majority(world: &mut HaWorld) -> Result<()> {
+    world.harness()?.stop_dcs_quorum_majority()
 }
 
 #[when("I start the DCS service")]
-#[when("I restore DCS quorum")]
 async fn i_start_the_dcs_service(world: &mut HaWorld) -> Result<()> {
-    world
-        .harness()?
-        .start_service(crate::support::faults::ETCD_SERVICE)
+    world.harness()?.start_all_dcs_services()
+}
+
+#[when("I restore DCS quorum")]
+async fn i_restore_dcs_quorum(world: &mut HaWorld) -> Result<()> {
+    world.harness()?.start_dcs_quorum_majority()
+}
+
+#[when(regex = r#"^I stop the local DCS service for node named "([^"]+)"$"#)]
+async fn i_stop_the_local_dcs_service_for_node_named(
+    world: &mut HaWorld,
+    member_ref: String,
+) -> Result<()> {
+    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    world.harness()?.stop_member_local_dcs(member_id)
+}
+
+#[when(regex = r#"^I start the local DCS service for node named "([^"]+)"$"#)]
+async fn i_start_the_local_dcs_service_for_node_named(
+    world: &mut HaWorld,
+    member_ref: String,
+) -> Result<()> {
+    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    world.harness()?.start_member_local_dcs(member_id)
 }
 
 #[given("I start tracking primary history")]

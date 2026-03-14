@@ -638,6 +638,27 @@ fn start_postgres_preflight_is_already_running(
     Ok(false)
 }
 
+fn start_postgres_preflight_details(
+    ctx: &ProcessWorkerCtx,
+    intent: &ProcessIntent,
+) -> Option<(std::path::PathBuf, std::path::PathBuf, u16)> {
+    match intent {
+        ProcessIntent::Start(
+            PostgresStartIntent::Primary
+            | PostgresStartIntent::DetachedStandby
+            | PostgresStartIntent::Replica { .. },
+        ) => {
+            let runtime_config = ctx.observed.runtime_config.latest();
+            Some((
+                runtime_config.postgres.data_dir.clone(),
+                ctx.plan.postgres.paths.socket_dir.clone(),
+                ctx.plan.postgres.port,
+            ))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) async fn start_job(
     ctx: &mut ProcessWorkerCtx,
     request: ProcessIntentRequest,
@@ -673,6 +694,78 @@ pub(crate) async fn start_job(
     }
 
     let now = current_time(ctx)?;
+    if let Some((data_dir, socket_dir, port)) = start_postgres_preflight_details(ctx, &request.intent)
+    {
+        match start_postgres_preflight_is_already_running(
+            data_dir.as_path(),
+            socket_dir.as_path(),
+            port,
+        ) {
+            Ok(true) => {
+                let mut event = process_event(
+                    ProcessEventKind::StartPostgresNoop,
+                    "ok",
+                    SeverityText::Info,
+                    "start postgres preflight: postgres already running",
+                );
+                let fields = event.fields_mut();
+                fields.append_json_map(
+                    process_job_fields(&request.id, "start_postgres").into_attributes(),
+                );
+                fields.insert("data_dir", data_dir.display().to_string());
+                ctx.runtime.log
+                    .emit_app_event("process_worker::start_job", event)
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process start-postgres noop log emit failed: {err}"
+                        ))
+                    })?;
+                transition_to_idle(
+                    ctx,
+                    JobOutcome::Success {
+                        id: request.id,
+                        job_kind: active_kind_from_intent(&request.intent),
+                        finished_at: now,
+                    },
+                    now,
+                )?;
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(error) => {
+                let mut event = process_event(
+                    ProcessEventKind::StartPostgresPreflightFailed,
+                    "failed",
+                    SeverityText::Error,
+                    "start postgres preflight failed",
+                );
+                let fields = event.fields_mut();
+                fields.append_json_map(
+                    process_job_fields(&request.id, "start_postgres").into_attributes(),
+                );
+                fields.insert("error", error.to_string());
+                ctx.runtime.log
+                    .emit_app_event("process_worker::start_job", event)
+                    .map_err(|err| {
+                        WorkerError::Message(format!(
+                            "process start-postgres preflight log emit failed: {err}"
+                        ))
+                    })?;
+                transition_to_idle(
+                    ctx,
+                    JobOutcome::Failure {
+                        id: request.id,
+                        job_kind: active_kind_from_intent(&request.intent),
+                        error,
+                        finished_at: now,
+                    },
+                    now,
+                )?;
+                return Ok(());
+            }
+        }
+    }
+
     let execution_request = match materialize_execution_request(ctx, &request) {
         Ok(materialized) => materialized,
         Err(error) => {
@@ -709,77 +802,6 @@ pub(crate) async fn start_job(
     };
     let timeout_ms = timeout_for_kind(&execution_request.kind, &ctx.config);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
-
-    if let ProcessExecutionKind::StartPostgres(spec) = &execution_request.kind {
-        match start_postgres_preflight_is_already_running(
-            spec.data_dir.as_path(),
-            spec.socket_dir.as_path(),
-            spec.port,
-        ) {
-            Ok(true) => {
-                let mut event = process_event(
-                    ProcessEventKind::StartPostgresNoop,
-                    "ok",
-                    SeverityText::Info,
-                    "start postgres preflight: postgres already running",
-                );
-                let fields = event.fields_mut();
-                fields.append_json_map(
-                    process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
-                );
-                fields.insert("data_dir", spec.data_dir.display().to_string());
-                ctx.runtime.log
-                    .emit_app_event("process_worker::start_job", event)
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "process start-postgres noop log emit failed: {err}"
-                        ))
-                    })?;
-                transition_to_idle(
-                    ctx,
-                    JobOutcome::Success {
-                        id: request.id,
-                        job_kind: active_kind(&execution_request.kind),
-                        finished_at: now,
-                    },
-                    now,
-                )?;
-                return Ok(());
-            }
-            Ok(false) => {}
-            Err(error) => {
-                let mut event = process_event(
-                    ProcessEventKind::StartPostgresPreflightFailed,
-                    "failed",
-                    SeverityText::Error,
-                    "start postgres preflight failed",
-                );
-                let fields = event.fields_mut();
-                fields.append_json_map(
-                    process_job_fields(&request.id, execution_request.kind.label()).into_attributes(),
-                );
-                fields.insert("error", error.to_string());
-                ctx.runtime.log
-                    .emit_app_event("process_worker::start_job", event)
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "process start-postgres preflight log emit failed: {err}"
-                        ))
-                    })?;
-                transition_to_idle(
-                    ctx,
-                    JobOutcome::Failure {
-                        id: request.id,
-                        job_kind: active_kind(&execution_request.kind),
-                        error,
-                        finished_at: now,
-                    },
-                    now,
-                )?;
-                return Ok(());
-            }
-        }
-    }
 
     let command = match build_command(
         &ctx.config,
@@ -1860,4 +1882,273 @@ fn escape_pg_ctl_option_token(token: &str) -> Result<String, ProcessError> {
     }
     out.push('"');
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        process::{Child, Command},
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use crate::{
+        config::HaConfig,
+        dcs::DcsView,
+        dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
+        logging::LogHandle,
+        postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
+        process::{
+            jobs::{PostgresStartIntent, ProcessCommandSpec, ProcessCommandRunner, ProcessIntent},
+            state::{
+                ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
+                ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
+                ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
+            },
+        },
+        state::{new_state_channel, JobId, MemberId, StateSubscriber, WorkerStatus},
+    };
+
+    use super::start_job;
+
+    struct UnexpectedSpawnRunner;
+
+    impl ProcessCommandRunner for UnexpectedSpawnRunner {
+        fn spawn(
+            &mut self,
+            _spec: ProcessCommandSpec,
+        ) -> Result<Box<dyn crate::process::jobs::ProcessHandle>, crate::process::jobs::ProcessError>
+        {
+            Err(crate::process::jobs::ProcessError::SpawnFailure {
+                binary: "unexpected-spawn".to_string(),
+                message: "spawn should not be called for start-postgres noop".to_string(),
+            })
+        }
+    }
+
+    struct ChildGuard(Option<Child>);
+
+    impl ChildGuard {
+        #[cfg(unix)]
+        fn spawn_fake_postgres(root: &std::path::Path, data_dir: &std::path::Path) -> Result<Self, String> {
+            let bin_dir = root.join("bin");
+            fs::create_dir_all(&bin_dir)
+                .map_err(|err| format!("create fake postgres bin dir {} failed: {err}", bin_dir.display()))?;
+            let fake_postgres = bin_dir.join("postgres");
+            std::os::unix::fs::symlink("/bin/sh", &fake_postgres).map_err(|err| {
+                format!(
+                    "create fake postgres symlink {} failed: {err}",
+                    fake_postgres.display()
+                )
+            })?;
+            let child = Command::new(&fake_postgres)
+                .arg("-c")
+                .arg("sleep 30")
+                .arg("--")
+                .arg(data_dir.display().to_string())
+                .spawn()
+                .map_err(|err| {
+                    format!(
+                        "spawn fake postgres process {} failed: {err}",
+                        fake_postgres.display()
+                    )
+                })?;
+            Ok(Self(Some(child)))
+        }
+
+        #[cfg(not(unix))]
+        fn spawn_fake_postgres(
+            _root: &std::path::Path,
+            _data_dir: &std::path::Path,
+        ) -> Result<Self, String> {
+            Err("fake postgres helper is only implemented on unix".to_string())
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("clock error for test dir: {err}"))?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-process-worker-{label}-{}-{millis}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn build_test_ctx(
+        data_dir: PathBuf,
+        socket_dir: PathBuf,
+        log_file: PathBuf,
+    ) -> Result<(ProcessWorkerCtx, StateSubscriber<ProcessState>), String> {
+        let cfg = RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir.clone())
+            .transform_postgres(move |postgres| crate::config::PostgresConfig {
+                socket_dir: socket_dir.clone(),
+                log_file: log_file.clone(),
+                ..postgres
+            })
+            .with_dcs_scope("cluster-a")
+            .with_ha(HaConfig {
+                loop_interval_ms: 500,
+                lease_ttl_ms: 5_000,
+            })
+            .with_process(crate::config::ProcessConfig {
+                pg_rewind_timeout_ms: 30_000,
+                bootstrap_timeout_ms: 30_000,
+                fencing_timeout_ms: 10_000,
+                binaries: sample_binary_paths(),
+            })
+            .build();
+        let initial = ProcessState::starting();
+        let (publisher, subscriber) = new_state_channel(initial.clone());
+        let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
+        let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsView::empty(WorkerStatus::Running));
+        let (_tx, inbox) = unbounded_channel();
+
+        Ok((
+            ProcessWorkerCtx::new(ProcessWorkerBootstrap {
+                cadence: ProcessCadence {
+                    poll_interval: Duration::from_millis(10),
+                    now: Box::new(super::system_now_unix_millis),
+                },
+                config: cfg.process.clone(),
+                identity: ProcessNodeIdentity {
+                    self_id: MemberId(cfg.cluster.member_id.clone()),
+                },
+                observed: ProcessObservedState {
+                    runtime_config,
+                    dcs: dcs_subscriber,
+                },
+                plan: ProcessRuntimePlan::from_config(&cfg),
+                state_channel: ProcessStateChannel {
+                    current: initial,
+                    publisher,
+                    last_rejection: None,
+                },
+                control: ProcessControlPlane {
+                    inbox,
+                    inbox_disconnected_logged: false,
+                    active_runtime: None,
+                },
+                runtime: ProcessRuntime {
+                    log: LogHandle::disabled(),
+                    capture_subprocess_output: true,
+                    command_runner: Box::new(UnexpectedSpawnRunner),
+                },
+            }),
+            subscriber,
+        ))
+    }
+
+    #[tokio::test]
+    async fn start_postgres_noop_preserves_existing_standby_passfile() -> Result<(), String> {
+        let root = unique_test_dir("noop-passfile")?;
+        let data_dir = root.join("data");
+        let socket_dir = root.join("socket");
+        let log_file = root.join("logs/postgres.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        fs::create_dir_all(&socket_dir).map_err(|err| {
+            format!(
+                "create socket dir {} failed: {err}",
+                socket_dir.display()
+            )
+        })?;
+
+        let passfile_path = managed_standby_passfile_path(&data_dir);
+        let original_passfile = "node-b:5432:replication:replicator:secret-password\n";
+        fs::write(&passfile_path, original_passfile).map_err(|err| {
+            format!(
+                "write standby passfile {} failed: {err}",
+                passfile_path.display()
+            )
+        })?;
+
+        let fake_postgres = ChildGuard::spawn_fake_postgres(&root, &data_dir)?;
+        let fake_postgres_pid = fake_postgres
+            .0
+            .as_ref()
+            .map(std::process::Child::id)
+            .ok_or_else(|| "fake postgres process handle missing child pid".to_string())?;
+        let pid_contents = format!("{fake_postgres_pid}\n{}\n", data_dir.display());
+        let pid_file = data_dir.join("postmaster.pid");
+        fs::write(&pid_file, pid_contents).map_err(|err| {
+            format!("write postmaster.pid {} failed: {err}", pid_file.display())
+        })?;
+
+        let _fake_postgres = fake_postgres;
+        let (mut ctx, _state_subscriber) = build_test_ctx(data_dir.clone(), socket_dir, log_file)?;
+        let request = ProcessIntentRequest {
+            id: JobId("job-start-detached-standby-noop".to_string()),
+            intent: ProcessIntent::Start(PostgresStartIntent::DetachedStandby),
+        };
+
+        start_job(&mut ctx, request.clone())
+            .await
+            .map_err(|err| format!("start_job failed: {err}"))?;
+
+        match &ctx.state_channel.current {
+            ProcessState::Idle {
+                last_outcome:
+                    Some(crate::process::state::JobOutcome::Success { id, job_kind, .. }),
+                ..
+            } => {
+                if *id != request.id {
+                    return Err(format!(
+                        "unexpected job id after noop: expected={} actual={}",
+                        request.id.0, id.0
+                    ));
+                }
+                if *job_kind != crate::process::jobs::ActiveJobKind::StartDetachedStandby {
+                    return Err(format!(
+                        "unexpected job kind after noop: expected={:?} actual={job_kind:?}",
+                        crate::process::jobs::ActiveJobKind::StartDetachedStandby
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "expected idle success after start noop, observed {other:?}"
+                ));
+            }
+        }
+
+        let preserved = fs::read_to_string(&passfile_path).map_err(|err| {
+            format!(
+                "read standby passfile {} failed: {err}",
+                passfile_path.display()
+            )
+        })?;
+        if preserved != original_passfile {
+            return Err(format!(
+                "standby passfile changed during noop: expected={original_passfile:?} actual={preserved:?}"
+            ));
+        }
+
+        let managed_conf = data_dir.join(MANAGED_POSTGRESQL_CONF_NAME);
+        if managed_conf.exists() {
+            return Err(format!(
+                "managed postgres conf should not be materialized for noop start at {}",
+                managed_conf.display()
+            ));
+        }
+
+        Ok(())
+    }
 }

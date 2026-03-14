@@ -27,10 +27,13 @@ fail-fast = false
 # take longer. Keep routing them by durable binary name rather than exact test lists.
 # These binaries are expected to be parallel-safe. If a scenario only passes in serial,
 # that scenario is buggy and must be fixed instead of protected by serialization.
+# The HA harness spins up full Docker Compose topologies per scenario, so keep
+# enough parallelism to exercise concurrency without exhausting Docker's address
+# pools during the gate.
 default-filter = '''
 kind(test) & binary(ha) & test(/^ha_/)
 '''
-test-threads = 32
+test-threads = 4
 slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
 
 [[profile.ultra-long.scripts]]

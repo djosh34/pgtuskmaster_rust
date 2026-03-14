@@ -6,10 +6,11 @@ Feature: ha_primary_killed_with_concurrent_writes
     When I start a bounded concurrent write workload and record commit outcomes
     And I kill the node named "old_primary"
     Then exactly one primary exists across 2 running nodes as "new_primary"
-    When I stop the workload and verify it committed at least one row
+    When I stop the workload and verify it committed at least one row without recording workload proof rows
     Then there is no dual-primary evidence and no split-brain write evidence during the transition window
+    And the recorded workload evidence establishes a fencing cutoff with no later commits
     And I insert proof row "post-failover-proof" through "new_primary"
-    Then the 2 online nodes contain exactly the recorded proof rows
+    Then the 2 online nodes contain at least the recorded proof rows
     When I restart the node named "old_primary"
     Then the node named "old_primary" rejoins as a replica
-    And the 3 online nodes contain exactly the recorded proof rows
+    And the 3 online nodes contain at least the recorded proof rows

@@ -4,7 +4,7 @@ use pgtuskmaster_rust::state::MemberId;
 
 use crate::support::{
     error::{HarnessError, Result},
-    faults::{ETCD_SERVICE_NAME, OBSERVER_SERVICE_NAME},
+    faults::OBSERVER_SERVICE_NAME,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -58,6 +58,14 @@ impl ClusterMember {
         self.service_name()
     }
 
+    pub fn local_dcs_member(self) -> DcsMember {
+        match self {
+            Self::NodeA => DcsMember::EtcdA,
+            Self::NodeB => DcsMember::EtcdB,
+            Self::NodeC => DcsMember::EtcdC,
+        }
+    }
+
     pub fn parse(raw: &str) -> Result<Self> {
         match raw {
             "node-a" => Ok(Self::NodeA),
@@ -77,21 +85,77 @@ impl fmt::Display for ClusterMember {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SupportService {
-    Observer,
-    Etcd,
+pub enum DcsMember {
+    EtcdA,
+    EtcdB,
+    EtcdC,
 }
 
-impl SupportService {
+impl DcsMember {
+    pub const ALL: [Self; 3] = [Self::EtcdA, Self::EtcdB, Self::EtcdC];
+
     pub fn service_name(self) -> &'static str {
         match self {
-            Self::Observer => OBSERVER_SERVICE_NAME,
-            Self::Etcd => ETCD_SERVICE_NAME,
+            Self::EtcdA => "etcd-a",
+            Self::EtcdB => "etcd-b",
+            Self::EtcdC => "etcd-c",
+        }
+    }
+
+    pub fn client_url(self) -> &'static str {
+        match self {
+            Self::EtcdA => "http://etcd-a:2379",
+            Self::EtcdB => "http://etcd-b:2379",
+            Self::EtcdC => "http://etcd-c:2379",
+        }
+    }
+
+    pub fn peer_url(self) -> &'static str {
+        match self {
+            Self::EtcdA => "http://etcd-a:2380",
+            Self::EtcdB => "http://etcd-b:2380",
+            Self::EtcdC => "http://etcd-c:2380",
+        }
+    }
+
+    pub fn volume_name(self) -> &'static str {
+        match self {
+            Self::EtcdA => "etcd-a-data",
+            Self::EtcdB => "etcd-b-data",
+            Self::EtcdC => "etcd-c-data",
         }
     }
 }
 
-impl fmt::Display for SupportService {
+impl fmt::Display for DcsMember {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.service_name())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DcsService {
+    SharedEtcd,
+    Member(DcsMember),
+}
+
+impl DcsService {
+    pub fn service_name(self) -> &'static str {
+        match self {
+            Self::SharedEtcd => "etcd",
+            Self::Member(member) => member.service_name(),
+        }
+    }
+
+    pub fn client_url(self) -> &'static str {
+        match self {
+            Self::SharedEtcd => "http://etcd:2379",
+            Self::Member(member) => member.client_url(),
+        }
+    }
+}
+
+impl fmt::Display for DcsService {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.service_name())
     }
@@ -100,14 +164,16 @@ impl fmt::Display for SupportService {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ComposeService {
     Member(ClusterMember),
-    Support(SupportService),
+    Observer,
+    Dcs(DcsService),
 }
 
 impl ComposeService {
     pub fn service_name(self) -> &'static str {
         match self {
             Self::Member(member) => member.service_name(),
-            Self::Support(service) => service.service_name(),
+            Self::Observer => OBSERVER_SERVICE_NAME,
+            Self::Dcs(service) => service.service_name(),
         }
     }
 }
@@ -124,8 +190,8 @@ impl From<ClusterMember> for ComposeService {
     }
 }
 
-impl From<SupportService> for ComposeService {
-    fn from(value: SupportService) -> Self {
-        Self::Support(value)
+impl From<DcsService> for ComposeService {
+    fn from(value: DcsService) -> Self {
+        Self::Dcs(value)
     }
 }
