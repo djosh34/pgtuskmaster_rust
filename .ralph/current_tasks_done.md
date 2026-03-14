@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 05:51:12 CET 2026
+Generated: Sat Mar 14 06:14:31 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -138,6 +138,18 @@ Generated: Sat Mar 14 05:51:12 CET 2026
 ## Task: Refactor The HA->process Boundary Around A Dedicated Process Intent Adapter And Remove Secret-Bearing Process Defaults From HA <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/05-task-collapse-duplicated-ha-givens-into-a-typed-topology-fixture-pipeline.md`
+
+```
+## Task: Collapse Duplicated HA Givens Into A Typed Topology Fixture Pipeline <status>done</status> <passes>true</passes>
+
+<priority>medium</priority>
 
 <description>
 ```

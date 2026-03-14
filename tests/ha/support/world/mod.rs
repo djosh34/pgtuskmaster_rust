@@ -22,11 +22,12 @@ use crate::support::{
         DATABASE_MEMBERS, FAULT_DIR,
     },
     feature_metadata,
-    givens::given_root,
-    observer::{
-        pgtm::PgtmObserver,
-        sql::SqlObserver,
+    givens::{
+        resolve_given, ComposeTemplate, FixtureMaterialization, FixtureRenderTarget,
+        FixtureTemplate, HaGivenDefinition, HaGivenId, ObserverNetAdmin, ObserverTemplate,
+        RenderedFixtureFile, SharedFixtureEntry,
     },
+    observer::{pgtm::PgtmObserver, sql::SqlObserver},
     timeouts::TimeoutModel,
     topology::{ClusterMember, ComposeService, SupportService},
     workload::{SqlWorkloadHandle, WorkloadSummary},
@@ -62,7 +63,6 @@ impl From<String> for MemberAlias {
     }
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MarkerName(String);
 
@@ -77,7 +77,6 @@ impl From<String> for MarkerName {
         Self(value)
     }
 }
-
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProofRow(String);
@@ -226,11 +225,7 @@ impl HaWorld {
             .ok_or_else(|| HarnessError::message(format!("marker `{marker}` was not recorded")))
     }
 
-    pub fn remember_alias(
-        &mut self,
-        alias: impl Into<MemberAlias>,
-        member: ClusterMember,
-    ) {
+    pub fn remember_alias(&mut self, alias: impl Into<MemberAlias>, member: ClusterMember) {
         self.scenario
             .aliases
             .members_by_alias
@@ -307,11 +302,18 @@ impl HaWorld {
     }
 
     pub fn clear_proof_convergence_blockers(&mut self) {
-        self.scenario.workload.proof.convergence_blocked_members.clear();
+        self.scenario
+            .workload
+            .proof
+            .convergence_blocked_members
+            .clear();
     }
 
     pub fn clear_primary_history(&mut self) {
-        self.scenario.invariants.observed_authoritative_primaries.clear();
+        self.scenario
+            .invariants
+            .observed_authoritative_primaries
+            .clear();
     }
 
     pub fn record_primary_observation(&mut self, member: ClusterMember) {
@@ -355,15 +357,30 @@ impl HaWorld {
 }
 
 #[derive(Debug)]
-pub struct HarnessShared {
+pub struct HarnessWorkspace {
     pub run_id: String,
     pub feature_name: String,
-    pub given_name: String,
+    pub given: HaGivenDefinition,
+    pub paths: WorkspacePaths,
+}
+
+#[derive(Debug)]
+pub struct WorkspacePaths {
     pub run_dir: PathBuf,
-    pub source_copy_dir: PathBuf,
+    pub materialized_dir: PathBuf,
     pub artifacts_dir: PathBuf,
-    pub compose_file: PathBuf,
-    pub compose_project: String,
+}
+
+#[derive(Debug)]
+pub struct ComposeStack {
+    pub file: PathBuf,
+    pub project: String,
+}
+
+#[derive(Debug)]
+pub struct HarnessShared {
+    pub workspace: HarnessWorkspace,
+    pub compose: ComposeStack,
     pub cucumber_test_image_run_id: String,
     pub docker: DockerCli,
     pub ryuk: Option<RyukGuard>,
@@ -374,56 +391,72 @@ pub struct HarnessShared {
 }
 
 impl HarnessShared {
-    pub async fn initialize(given_name: &str) -> Result<Self> {
+    pub async fn initialize(given: HaGivenId) -> Result<Self> {
         let feature = feature_metadata()?;
         let docker = DockerCli::discover()?;
         docker.verify_daemon()?;
 
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given_root = given_root(repo_root.as_path(), given_name)?;
+        let given = resolve_given(repo_root.as_path(), given)?;
         let run_id = build_run_id(feature.feature_name.as_str())?;
-        let compose_project = build_compose_project(feature.feature_name.as_str(), run_id.as_str());
+        let compose = ComposeStack {
+            file: PathBuf::new(),
+            project: build_compose_project(feature.feature_name.as_str(), run_id.as_str()),
+        };
         let cucumber_test_image_run_id = required_env("PGTM_CUCUMBER_TEST_RUN_ID")?;
-        let run_dir = repo_root
-            .join("tests/ha/runs")
-            .join(feature.feature_name.as_str())
-            .join(run_id.as_str());
-        let source_copy_dir = run_dir.join("source-copy");
-        let artifacts_dir = run_dir.join("artifacts");
-        create_dir_all(run_dir.as_path())?;
-        create_dir_all(source_copy_dir.as_path())?;
-        create_dir_all(artifacts_dir.as_path())?;
-        copy_directory(given_root.as_path(), source_copy_dir.as_path())?;
-        create_fault_directories(source_copy_dir.as_path())?;
+        let paths = WorkspacePaths {
+            run_dir: repo_root
+                .join("tests/ha/runs")
+                .join(feature.feature_name.as_str())
+                .join(run_id.as_str()),
+            materialized_dir: repo_root
+                .join("tests/ha/runs")
+                .join(feature.feature_name.as_str())
+                .join(run_id.as_str())
+                .join("materialized"),
+            artifacts_dir: repo_root
+                .join("tests/ha/runs")
+                .join(feature.feature_name.as_str())
+                .join(run_id.as_str())
+                .join("artifacts"),
+        };
+        create_dir_all(paths.run_dir.as_path())?;
+        create_dir_all(paths.materialized_dir.as_path())?;
+        create_dir_all(paths.artifacts_dir.as_path())?;
+        materialize_given_fixture(&given, paths.materialized_dir.as_path())?;
+        create_fault_directories(paths.materialized_dir.as_path())?;
 
-        let compose_file = source_copy_dir.join("compose.yml");
+        let compose = ComposeStack {
+            file: paths.materialized_dir.join("compose.yml"),
+            project: compose.project,
+        };
         let timeouts = TimeoutModel::from_runtime_config(
-            source_copy_dir
+            paths
+                .materialized_dir
                 .join(ClusterMember::SEED_PRIMARY.runtime_config_relative_path())
                 .as_path(),
         )?;
-        let ryuk = RyukGuard::start(docker.clone(), compose_project.as_str())?;
-        docker.compose_up_services(compose_file.as_path(), compose_project.as_str(), &["etcd"])?;
+        let ryuk = RyukGuard::start(docker.clone(), compose.project.as_str())?;
+        docker.compose_up_services(compose.file.as_path(), compose.project.as_str(), &["etcd"])?;
         docker.compose_up_services(
-            compose_file.as_path(),
-            compose_project.as_str(),
+            compose.file.as_path(),
+            compose.project.as_str(),
             &["observer"],
         )?;
         let observer_container = docker.compose_container_id(
-            compose_file.as_path(),
-            compose_project.as_str(),
+            compose.file.as_path(),
+            compose.project.as_str(),
             "observer",
         )?;
 
         let mut harness = Self {
-            run_id,
-            feature_name: feature.feature_name.clone(),
-            given_name: given_name.to_string(),
-            run_dir,
-            source_copy_dir,
-            artifacts_dir,
-            compose_file,
-            compose_project,
+            workspace: HarnessWorkspace {
+                run_id,
+                feature_name: feature.feature_name.clone(),
+                given,
+                paths,
+            },
+            compose,
             cucumber_test_image_run_id,
             docker,
             ryuk: Some(ryuk),
@@ -449,6 +482,38 @@ impl HarnessShared {
             };
         }
         Ok(harness)
+    }
+
+    pub fn feature_name(&self) -> &str {
+        self.workspace.feature_name.as_str()
+    }
+
+    pub fn run_id(&self) -> &str {
+        self.workspace.run_id.as_str()
+    }
+
+    pub fn given_name(&self) -> &str {
+        self.workspace.given.id.as_str()
+    }
+
+    pub fn compose_file(&self) -> &Path {
+        self.compose.file.as_path()
+    }
+
+    pub fn compose_project(&self) -> &str {
+        self.compose.project.as_str()
+    }
+
+    pub fn run_dir(&self) -> &Path {
+        self.workspace.paths.run_dir.as_path()
+    }
+
+    pub fn materialized_dir(&self) -> &Path {
+        self.workspace.paths.materialized_dir.as_path()
+    }
+
+    pub fn artifacts_dir(&self) -> &Path {
+        self.workspace.paths.artifacts_dir.as_path()
     }
 
     pub fn observer(&self) -> PgtmObserver {
@@ -491,8 +556,8 @@ impl HarnessShared {
 
     pub fn service_container_id(&self, service: ComposeService) -> Result<String> {
         self.docker.compose_container_id(
-            self.compose_file.as_path(),
-            self.compose_project.as_str(),
+            self.compose_file(),
+            self.compose_project(),
             service.service_name(),
         )
     }
@@ -507,7 +572,7 @@ impl HarnessShared {
         artifact_name: &str,
         value: &serde_json::Value,
     ) -> Result<()> {
-        let path = self.artifacts_dir.join(artifact_name);
+        let path = self.artifacts_dir().join(artifact_name);
         let content = serde_json::to_string_pretty(value).map_err(|source| HarnessError::Json {
             context: format!("serializing artifact `{artifact_name}`"),
             source,
@@ -596,10 +661,7 @@ impl HarnessShared {
         let _ = self.run_shell_as_root(member.into(), script.as_str())?;
         self.record_note(
             "fault.block_path",
-            format!(
-                "member={member} path={} peer={peer_service}",
-                path.label()
-            ),
+            format!("member={member} path={} peer={peer_service}", path.label()),
         )?;
         Ok(())
     }
@@ -628,10 +690,7 @@ impl HarnessShared {
         let _ = self.run_shell_as_root(member.into(), script.as_str())?;
         self.record_note(
             "fault.unblock_path",
-            format!(
-                "member={member} path={} peer={peer_service}",
-                path.label()
-            ),
+            format!("member={member} path={} peer={peer_service}", path.label()),
         )?;
         Ok(())
     }
@@ -658,11 +717,7 @@ impl HarnessShared {
     }
 
     pub fn isolate_member_from_observer_on_api(&self, member: ClusterMember) -> Result<()> {
-        self.block_member_path_to_host(
-            member,
-            TrafficPath::Api,
-            SupportService::Observer.into(),
-        )
+        self.block_member_path_to_host(member, TrafficPath::Api, SupportService::Observer.into())
     }
 
     pub fn cut_member_off_from_dcs(&self, member: ClusterMember) -> Result<()> {
@@ -799,7 +854,9 @@ impl HarnessShared {
     }
 
     fn host_fault_dir(&self, member: ClusterMember) -> PathBuf {
-        self.source_copy_dir.join("faults").join(member.service_name())
+        self.materialized_dir()
+            .join("faults")
+            .join(member.service_name())
     }
 
     fn host_fault_marker_path(&self, member: ClusterMember, marker_path: &str) -> Result<PathBuf> {
@@ -835,18 +892,19 @@ impl HarnessShared {
     }
 
     async fn bootstrap_cluster(&self) -> Result<()> {
-        self.wait_for_service_health(SupportService::Etcd.into()).await?;
+        self.wait_for_service_health(SupportService::Etcd.into())
+            .await?;
         self.record_note("bootstrap", "starting seed primary node-b")?;
         self.docker.compose_up_services(
-            self.compose_file.as_path(),
-            self.compose_project.as_str(),
+            self.compose_file(),
+            self.compose_project(),
             &["node-b"],
         )?;
         self.wait_for_seed_primary().await?;
         self.record_note("bootstrap", "starting remaining nodes node-a and node-c")?;
         self.docker.compose_up_services(
-            self.compose_file.as_path(),
-            self.compose_project.as_str(),
+            self.compose_file(),
+            self.compose_project(),
             &["node-a", "node-c"],
         )
     }
@@ -917,7 +975,7 @@ impl HarnessShared {
         }
         let compose_result = self
             .docker
-            .compose_down(self.compose_file.as_path(), self.compose_project.as_str());
+            .compose_down(self.compose_file(), self.compose_project());
         if let Err(err) = &compose_result {
             failures.push(format!("docker compose down failed: {err}"));
         }
@@ -939,12 +997,11 @@ impl HarnessShared {
     fn capture_artifacts(&self) -> Result<()> {
         let mut failures = Vec::new();
         write_text_file(
-            self.artifacts_dir.join("compose-ps.json").as_path(),
+            self.artifacts_dir().join("compose-ps.json").as_path(),
             serde_json::to_string_pretty(
-                &self.docker.compose_ps_entries(
-                    self.compose_file.as_path(),
-                    self.compose_project.as_str(),
-                )?,
+                &self
+                    .docker
+                    .compose_ps_entries(self.compose_file(), self.compose_project())?,
             )
             .map_err(|source| HarnessError::Json {
                 context: "serializing docker compose ps json".to_string(),
@@ -953,21 +1010,21 @@ impl HarnessShared {
             .as_str(),
         )?;
         write_text_file(
-            self.artifacts_dir.join("compose-logs.txt").as_path(),
+            self.artifacts_dir().join("compose-logs.txt").as_path(),
             self.docker
-                .compose_logs(self.compose_file.as_path(), self.compose_project.as_str())?
+                .compose_logs(self.compose_file(), self.compose_project())?
                 .as_str(),
         )?;
         write_text_file(
-            self.artifacts_dir.join("run-metadata.json").as_path(),
+            self.artifacts_dir().join("run-metadata.json").as_path(),
             serde_json::to_string_pretty(&serde_json::json!({
-                "feature_name": self.feature_name,
-                "given_name": self.given_name,
-                "run_id": self.run_id,
-                "run_dir": self.run_dir,
-                "source_copy_dir": self.source_copy_dir,
-                "artifacts_dir": self.artifacts_dir,
-                "compose_project": self.compose_project,
+                "feature_name": self.feature_name(),
+                "given_name": self.given_name(),
+                "run_id": self.run_id(),
+                "run_dir": self.run_dir(),
+                "materialized_dir": self.materialized_dir(),
+                "artifacts_dir": self.artifacts_dir(),
+                "compose_project": self.compose_project(),
                 "cucumber_test_image_run_id": self.cucumber_test_image_run_id,
             }))
             .map_err(|source| HarnessError::Json {
@@ -978,7 +1035,7 @@ impl HarnessShared {
         )?;
         let timeline = self.timeline_entries()?;
         write_text_file(
-            self.artifacts_dir.join("timeline.json").as_path(),
+            self.artifacts_dir().join("timeline.json").as_path(),
             serde_json::to_string_pretty(&timeline)
                 .map_err(|source| HarnessError::Json {
                     context: "serializing cucumber timeline".to_string(),
@@ -988,7 +1045,7 @@ impl HarnessShared {
         )?;
         match self.observer().state() {
             Ok(state) => write_text_file(
-                self.artifacts_dir.join("observer-state.json").as_path(),
+                self.artifacts_dir().join("observer-state.json").as_path(),
                 serde_json::to_string_pretty(&state)
                     .map_err(|source| HarnessError::Json {
                         context: "serializing observer state payload".to_string(),
@@ -1010,7 +1067,7 @@ impl HarnessShared {
                 Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
                     Ok(inspect) => {
                         let artifact = self
-                            .artifacts_dir
+                            .artifacts_dir()
                             .join(format!("inspect-{}.json", service.service_name()));
                         write_text_file(artifact.as_path(), inspect.as_str())?;
                     }
@@ -1113,11 +1170,55 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
         })
 }
 
+fn materialize_given_fixture(given: &HaGivenDefinition, materialized_root: &Path) -> Result<()> {
+    let FixtureMaterialization {
+        shared_root,
+        copies,
+        renders,
+    } = &given.materialization;
+    for entry in copies {
+        copy_shared_fixture_entry(shared_root.as_path(), materialized_root, entry)?;
+    }
+    for render in renders {
+        render_fixture_file(materialized_root, render)?;
+    }
+    Ok(())
+}
+
 fn write_text_file(path: &Path, content: &str) -> Result<()> {
     fs::write(path, content).map_err(|source| HarnessError::Io {
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn copy_shared_fixture_entry(
+    shared_root: &Path,
+    materialized_root: &Path,
+    entry: &SharedFixtureEntry,
+) -> Result<()> {
+    match entry {
+        SharedFixtureEntry::Directory {
+            source_relative_path,
+            target_relative_path,
+        } => copy_directory(
+            shared_root.join(source_relative_path).as_path(),
+            materialized_root.join(target_relative_path).as_path(),
+        ),
+        SharedFixtureEntry::File {
+            source_relative_path,
+            target_relative_path,
+        } => {
+            let target_path = materialized_root.join(target_relative_path);
+            if let Some(parent) = target_path.parent() {
+                create_dir_all(parent)?;
+            }
+            copy_file(
+                shared_root.join(source_relative_path).as_path(),
+                target_path.as_path(),
+            )
+        }
+    }
 }
 
 fn copy_directory(from: &Path, to: &Path) -> Result<()> {
@@ -1149,6 +1250,470 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn render_fixture_file(materialized_root: &Path, file: &RenderedFixtureFile) -> Result<()> {
+    let target_path = materialized_root.join(render_target_relative_path(&file.target));
+    if let Some(parent) = target_path.parent() {
+        create_dir_all(parent)?;
+    }
+    write_text_file(
+        target_path.as_path(),
+        render_fixture_template(&file.template).as_str(),
+    )
+}
+
+fn render_target_relative_path(target: &FixtureRenderTarget) -> PathBuf {
+    match target {
+        FixtureRenderTarget::ComposeFile => PathBuf::from("compose.yml"),
+        FixtureRenderTarget::MemberRuntimeConfig(member) => {
+            PathBuf::from(member.runtime_config_relative_path())
+        }
+        FixtureRenderTarget::ObserverConfig(member) => {
+            PathBuf::from(member.observer_config_relative_path())
+        }
+    }
+}
+
+fn render_fixture_template(template: &FixtureTemplate) -> String {
+    match template {
+        FixtureTemplate::Compose(template) => render_compose_template(*template),
+        FixtureTemplate::Runtime(template) => render_member_runtime_template(template),
+        FixtureTemplate::Observer(template) => render_observer_template(template),
+    }
+}
+
+fn render_compose_template(template: ComposeTemplate) -> String {
+    let observer_cap_add = match template.observer_net_admin {
+        ObserverNetAdmin::Enabled => "    cap_add:\n      - NET_ADMIN\n",
+        ObserverNetAdmin::Disabled => "",
+    };
+    format!(
+        r#"services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-cluster-state=new
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/etcdctl",
+          "--endpoints=http://127.0.0.1:2379",
+          "endpoint",
+          "health",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - ha
+    volumes:
+      - etcd-data:/etcd-data
+
+  node-a:
+    image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
+    pull_policy: never
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - ha
+    configs:
+      - source: node_a_runtime
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: pg_hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: pg_ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+      - source: tls_ca
+        target: /etc/pgtuskmaster/tls/ca.crt
+      - source: tls_node_a_crt
+        target: /etc/pgtuskmaster/tls/node-a.crt
+      - source: tls_node_a_key
+        target: /etc/pgtuskmaster/tls/node-a.key
+    secrets:
+      - source: postgres_superuser_password
+        target: postgres-superuser-password
+      - source: api_admin_token
+        target: api-admin-token
+      - source: api_read_token
+        target: api-read-token
+      - source: replicator_password
+        target: replicator-password
+      - source: rewinder_password
+        target: rewinder-password
+    volumes:
+      - node-a-data:/var/lib/postgresql
+      - node-a-logs:/var/log/pgtuskmaster
+      - ./faults/node-a:/var/lib/pgtuskmaster/faults
+
+  node-b:
+    image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
+    pull_policy: never
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - ha
+    configs:
+      - source: node_b_runtime
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: pg_hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: pg_ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+      - source: tls_ca
+        target: /etc/pgtuskmaster/tls/ca.crt
+      - source: tls_node_b_crt
+        target: /etc/pgtuskmaster/tls/node-b.crt
+      - source: tls_node_b_key
+        target: /etc/pgtuskmaster/tls/node-b.key
+    secrets:
+      - source: postgres_superuser_password
+        target: postgres-superuser-password
+      - source: api_admin_token
+        target: api-admin-token
+      - source: api_read_token
+        target: api-read-token
+      - source: replicator_password
+        target: replicator-password
+      - source: rewinder_password
+        target: rewinder-password
+    volumes:
+      - node-b-data:/var/lib/postgresql
+      - node-b-logs:/var/log/pgtuskmaster
+      - ./faults/node-b:/var/lib/pgtuskmaster/faults
+
+  node-c:
+    image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
+    pull_policy: never
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - ha
+    configs:
+      - source: node_c_runtime
+        target: /etc/pgtuskmaster/runtime.toml
+      - source: pg_hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: pg_ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+      - source: tls_ca
+        target: /etc/pgtuskmaster/tls/ca.crt
+      - source: tls_node_c_crt
+        target: /etc/pgtuskmaster/tls/node-c.crt
+      - source: tls_node_c_key
+        target: /etc/pgtuskmaster/tls/node-c.key
+    secrets:
+      - source: postgres_superuser_password
+        target: postgres-superuser-password
+      - source: api_admin_token
+        target: api-admin-token
+      - source: api_read_token
+        target: api-read-token
+      - source: replicator_password
+        target: replicator-password
+      - source: rewinder_password
+        target: rewinder-password
+    volumes:
+      - node-c-data:/var/lib/postgresql
+      - node-c-logs:/var/log/pgtuskmaster
+      - ./faults/node-c:/var/lib/pgtuskmaster/faults
+
+  observer:
+    image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
+    pull_policy: never
+    entrypoint:
+      - /usr/bin/tail
+    command:
+      - -f
+      - /dev/null
+{observer_cap_add}    networks:
+      - ha
+    configs:
+      - source: observer_node_a
+        target: /etc/pgtuskmaster/observer/node-a.toml
+      - source: observer_node_b
+        target: /etc/pgtuskmaster/observer/node-b.toml
+      - source: observer_node_c
+        target: /etc/pgtuskmaster/observer/node-c.toml
+      - source: pg_hba
+        target: /etc/pgtuskmaster/pg_hba.conf
+      - source: pg_ident
+        target: /etc/pgtuskmaster/pg_ident.conf
+      - source: tls_ca
+        target: /etc/pgtuskmaster/tls/ca.crt
+      - source: tls_observer_crt
+        target: /etc/pgtuskmaster/tls/observer.crt
+      - source: tls_observer_key
+        target: /etc/pgtuskmaster/tls/observer.key
+    secrets:
+      - source: postgres_superuser_password
+        target: postgres-superuser-password
+      - source: api_admin_token
+        target: api-admin-token
+      - source: api_read_token
+        target: api-read-token
+      - source: replicator_password
+        target: replicator-password
+      - source: rewinder_password
+        target: rewinder-password
+
+networks:
+  ha:
+    driver: bridge
+
+volumes:
+  etcd-data:
+  node-a-data:
+  node-a-logs:
+  node-b-data:
+  node-b-logs:
+  node-c-data:
+  node-c-logs:
+
+configs:
+  node_a_runtime:
+    file: ./configs/node-a/runtime.toml
+  node_b_runtime:
+    file: ./configs/node-b/runtime.toml
+  node_c_runtime:
+    file: ./configs/node-c/runtime.toml
+  observer_node_a:
+    file: ./configs/observer/node-a.toml
+  observer_node_b:
+    file: ./configs/observer/node-b.toml
+  observer_node_c:
+    file: ./configs/observer/node-c.toml
+  pg_hba:
+    file: ./configs/pg_hba.conf
+  pg_ident:
+    file: ./configs/pg_ident.conf
+  tls_ca:
+    file: ./configs/tls/ca.crt
+  tls_node_a_crt:
+    file: ./configs/tls/node-a.crt
+  tls_node_a_key:
+    file: ./configs/tls/node-a.key
+  tls_node_b_crt:
+    file: ./configs/tls/node-b.crt
+  tls_node_b_key:
+    file: ./configs/tls/node-b.key
+  tls_node_c_crt:
+    file: ./configs/tls/node-c.crt
+  tls_node_c_key:
+    file: ./configs/tls/node-c.key
+  tls_observer_crt:
+    file: ./configs/tls/observer.crt
+  tls_observer_key:
+    file: ./configs/tls/observer.key
+
+secrets:
+  postgres_superuser_password:
+    file: ./secrets/postgres-superuser-password
+  api_admin_token:
+    file: ./secrets/api-admin-token
+  api_read_token:
+    file: ./secrets/api-read-token
+  replicator_password:
+    file: ./secrets/replicator-password
+  rewinder_password:
+    file: ./secrets/rewinder-password
+"#
+    )
+}
+
+fn render_member_runtime_template(
+    template: &crate::support::givens::NodeRuntimeTemplate,
+) -> String {
+    let member = template.member.service_name();
+    let replicator = template.postgres_roles.replicator.as_str();
+    let rewinder = template.postgres_roles.rewinder.as_str();
+    format!(
+        r#"[cluster]
+name = "ha-cucumber-cluster"
+member_id = "{member}"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "{member}"
+listen_port = 5432
+socket_dir = "/var/lib/pgtuskmaster/socket"
+log_file = "/var/log/pgtuskmaster/postgres.log"
+local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "disable" }}
+rewind_conn_identity = {{ user = "{rewinder}", dbname = "postgres", ssl_mode = "verify-full", ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }} }}
+tls = {{ mode = "enabled", identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member}.key" }} }}, client_auth = {{ client_ca = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}, client_certificate = "optional" }} }}
+pg_hba = {{ source = {{ path = "/etc/pgtuskmaster/pg_hba.conf" }} }}
+pg_ident = {{ source = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }} }}
+
+[postgres.extra_gucs]
+wal_keep_size = "128MB"
+
+[postgres.roles.superuser]
+username = "postgres"
+auth = {{ type = "password", password = {{ path = "/run/secrets/postgres-superuser-password" }} }}
+
+[postgres.roles.replicator]
+username = "{replicator}"
+auth = {{ type = "password", password = {{ path = "/run/secrets/replicator-password" }} }}
+
+[postgres.roles.rewinder]
+username = "{rewinder}"
+auth = {{ type = "password", password = {{ path = "/run/secrets/rewinder-password" }} }}
+
+[dcs]
+endpoints = ["http://etcd:2379"]
+scope = "ha-cucumber-cluster"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 120000
+bootstrap_timeout_ms = 300000
+fencing_timeout_ms = 30000
+
+[process.binaries]
+postgres = "/usr/local/lib/pgtuskmaster/wrappers/postgres"
+pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
+pg_rewind = "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind"
+initdb = "/usr/lib/postgresql/16/bin/initdb"
+pg_basebackup = "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup"
+psql = "/usr/lib/postgresql/16/bin/psql"
+
+[logging]
+level = "info"
+capture_subprocess_output = true
+
+[logging.postgres]
+enabled = true
+poll_interval_ms = 200
+cleanup = {{ enabled = true, max_files = 20, max_age_seconds = 86400, protect_recent_seconds = 300 }}
+
+[logging.sinks.stderr]
+enabled = true
+
+[logging.sinks.file]
+enabled = true
+path = "/var/log/pgtuskmaster/runtime.jsonl"
+mode = "append"
+
+[api]
+listen_addr = "0.0.0.0:8443"
+security = {{ transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member}.key" }} }} }} }}, auth = {{ type = "role_tokens", read_token = {{ path = "/run/secrets/api-read-token" }}, admin_token = {{ path = "/run/secrets/api-admin-token" }} }} }}
+
+[pgtm]
+api_url = "https://{member}:8443"
+
+[pgtm.api_client]
+ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
+
+[pgtm.postgres_client]
+ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
+
+[debug]
+enabled = true
+"#
+    )
+}
+
+fn render_observer_template(template: &ObserverTemplate) -> String {
+    let member = template.member.service_name();
+    let replicator = template.postgres_roles.replicator.as_str();
+    let rewinder = template.postgres_roles.rewinder.as_str();
+    format!(
+        r#"[cluster]
+name = "ha-cucumber-cluster"
+member_id = "observer-{member}"
+
+[postgres]
+data_dir = "/var/lib/postgresql/data"
+listen_host = "observer"
+listen_port = 5432
+socket_dir = "/var/lib/pgtuskmaster/socket"
+log_file = "/var/log/pgtuskmaster/postgres.log"
+local_conn_identity = {{ user = "postgres", dbname = "postgres", ssl_mode = "disable" }}
+rewind_conn_identity = {{ user = "{rewinder}", dbname = "postgres", ssl_mode = "verify-full", ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }} }}
+tls = {{ mode = "enabled", identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }} }} }}
+pg_hba = {{ source = {{ path = "/etc/pgtuskmaster/pg_hba.conf" }} }}
+pg_ident = {{ source = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }} }}
+
+[postgres.roles.superuser]
+username = "postgres"
+auth = {{ type = "password", password = {{ path = "/run/secrets/postgres-superuser-password" }} }}
+
+[postgres.roles.replicator]
+username = "{replicator}"
+auth = {{ type = "password", password = {{ path = "/run/secrets/replicator-password" }} }}
+
+[postgres.roles.rewinder]
+username = "{rewinder}"
+auth = {{ type = "password", password = {{ path = "/run/secrets/rewinder-password" }} }}
+
+[dcs]
+endpoints = ["http://etcd:2379"]
+scope = "ha-cucumber-cluster"
+
+[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000
+
+[process]
+pg_rewind_timeout_ms = 120000
+bootstrap_timeout_ms = 300000
+fencing_timeout_ms = 30000
+
+[process.binaries]
+postgres = "/usr/lib/postgresql/16/bin/postgres"
+pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
+pg_rewind = "/usr/lib/postgresql/16/bin/pg_rewind"
+initdb = "/usr/lib/postgresql/16/bin/initdb"
+pg_basebackup = "/usr/lib/postgresql/16/bin/pg_basebackup"
+psql = "/usr/lib/postgresql/16/bin/psql"
+
+[logging]
+level = "info"
+capture_subprocess_output = true
+
+[logging.postgres]
+enabled = true
+poll_interval_ms = 200
+cleanup = {{ enabled = true, max_files = 20, max_age_seconds = 86400, protect_recent_seconds = 300 }}
+
+[logging.sinks.stderr]
+enabled = true
+
+[logging.sinks.file]
+enabled = false
+mode = "append"
+
+[api]
+listen_addr = "127.0.0.1:8443"
+security = {{ transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }} }} }} }}, auth = {{ type = "role_tokens", read_token = {{ path = "/run/secrets/api-read-token" }}, admin_token = {{ path = "/run/secrets/api-admin-token" }} }} }}
+
+[pgtm]
+api_url = "https://{member}:8443"
+
+[pgtm.api_client]
+ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
+
+[pgtm.postgres_client]
+ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
+client_cert = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}
+client_key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }}
+
+[debug]
+enabled = true
+"#
+    )
 }
 
 fn create_fault_directories(root: &Path) -> Result<()> {
@@ -1215,4 +1780,140 @@ fn dcs_primary_members(status: &NodeState) -> Vec<String> {
         .filter(|(_member_id, slot)| matches!(slot.postgres, DcsMemberPostgresView::Primary(_)))
         .map(|(member_id, _slot)| member_id.0.clone())
         .collect::<Vec<_>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary_directory(name: &str) -> Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!(
+            "pgtm-ha-world-{name}-{}-{}",
+            std::process::id(),
+            timestamp_millis()?
+        ));
+        match fs::remove_dir_all(root.as_path()) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(HarnessError::Io { path: root, source });
+            }
+        }
+        create_dir_all(root.as_path())?;
+        Ok(root)
+    }
+
+    fn cleanup_directory(path: &Path) -> Result<()> {
+        match fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(HarnessError::Io {
+                path: path.to_path_buf(),
+                source,
+            }),
+        }
+    }
+
+    #[test]
+    fn materializes_plain_fixture_from_shared_assets_and_rendered_outputs() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let given = resolve_given(repo_root.as_path(), HaGivenId::ThreeNodePlain)?;
+        let output_root = temporary_directory("plain")?;
+
+        let result = (|| -> Result<()> {
+            materialize_given_fixture(&given, output_root.as_path())?;
+
+            let compose =
+                fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
+                    HarnessError::Io {
+                        path: output_root.join("compose.yml"),
+                        source,
+                    }
+                })?;
+            assert_eq!(compose.matches("NET_ADMIN").count(), 4);
+
+            let runtime = fs::read_to_string(
+                output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+            )
+            .map_err(|source| HarnessError::Io {
+                path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+                source,
+            })?;
+            assert!(runtime.contains(r#"username = "replicator""#));
+            assert!(runtime.contains(r#"username = "rewinder""#));
+
+            let observer = fs::read_to_string(
+                output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
+            )
+            .map_err(|source| HarnessError::Io {
+                path: output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
+                source,
+            })?;
+            assert!(observer.contains(r#"api_url = "https://node-a:8443""#));
+            assert!(output_root.join("configs/tls/ca.crt").is_file());
+            assert!(output_root.join("secrets/replicator-password").is_file());
+            Ok(())
+        })();
+
+        let cleanup_result = cleanup_directory(output_root.as_path());
+        match (result, cleanup_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(cleanup)) => Err(cleanup),
+            (Err(err), Err(cleanup)) => Err(HarnessError::message(format!(
+                "{err}\ncleanup also failed: {cleanup}"
+            ))),
+        }
+    }
+
+    #[test]
+    fn materializes_custom_roles_without_observer_net_admin() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let given = resolve_given(repo_root.as_path(), HaGivenId::ThreeNodeCustomRoles)?;
+        let output_root = temporary_directory("custom-roles")?;
+
+        let result = (|| -> Result<()> {
+            materialize_given_fixture(&given, output_root.as_path())?;
+
+            let compose =
+                fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
+                    HarnessError::Io {
+                        path: output_root.join("compose.yml"),
+                        source,
+                    }
+                })?;
+            assert_eq!(compose.matches("NET_ADMIN").count(), 3);
+
+            let runtime = fs::read_to_string(
+                output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
+            )
+            .map_err(|source| HarnessError::Io {
+                path: output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
+                source,
+            })?;
+            assert!(runtime.contains(r#"username = "mirrorbot""#));
+            assert!(runtime.contains(r#"username = "rewindbot""#));
+
+            let observer = fs::read_to_string(
+                output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+            )
+            .map_err(|source| HarnessError::Io {
+                path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+                source,
+            })?;
+            assert!(observer.contains(r#"member_id = "observer-node-c""#));
+            assert!(observer.contains(r#"username = "mirrorbot""#));
+            Ok(())
+        })();
+
+        let cleanup_result = cleanup_directory(output_root.as_path());
+        match (result, cleanup_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(cleanup)) => Err(cleanup),
+            (Err(err), Err(cleanup)) => Err(HarnessError::message(format!(
+                "{err}\ncleanup also failed: {cleanup}"
+            ))),
+        }
+    }
 }

@@ -48,7 +48,7 @@ For changes affecting HA behavior:
 make test-long
 ```
 
-The HA harness now prepares per-run copied inputs with per-node `faults/` directories bind-mounted into `/var/lib/pgtuskmaster/faults` for explicit fault control.
+The HA harness now prepares a per-run materialized workspace assembled from shared fixture assets plus rendered topology-specific files, with per-node `faults/` directories bind-mounted into `/var/lib/pgtuskmaster/faults` for explicit fault control.
 
 Run specific HA scenarios:
 

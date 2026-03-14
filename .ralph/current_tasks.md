@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar 14 05:51:12 CET 2026
+Generated: Sat Mar 14 06:14:31 CET 2026
 
 # Task `.ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md`
 
@@ -50,18 +50,6 @@ Generated: Sat Mar 14 05:51:12 CET 2026
 
 ```
 ## Task: Remove Public `test_harness` From The Production Library Surface And Move Test Support Behind A Dev-Only Boundary <status>not_started</status> <passes>false</passes>
-
-<priority>medium</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-general-architecture-improvement-finding/05-task-collapse-duplicated-ha-givens-into-a-typed-topology-fixture-pipeline.md`
-
-```
-## Task: Collapse Duplicated HA Givens Into A Typed Topology Fixture Pipeline <status>not_started</status> <passes>false</passes>
 
 <priority>medium</priority>
 

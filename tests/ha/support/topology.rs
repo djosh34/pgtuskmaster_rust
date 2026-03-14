@@ -34,6 +34,14 @@ impl ClusterMember {
         }
     }
 
+    pub fn observer_config_relative_path(self) -> &'static str {
+        match self {
+            Self::NodeA => "configs/observer/node-a.toml",
+            Self::NodeB => "configs/observer/node-b.toml",
+            Self::NodeC => "configs/observer/node-c.toml",
+        }
+    }
+
     pub fn runtime_config_relative_path(self) -> &'static str {
         match self {
             Self::NodeA => "configs/node-a/runtime.toml",
@@ -81,7 +89,6 @@ impl SupportService {
             Self::Etcd => ETCD_SERVICE_NAME,
         }
     }
-
 }
 
 impl fmt::Display for SupportService {

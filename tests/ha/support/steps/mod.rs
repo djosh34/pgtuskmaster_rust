@@ -15,6 +15,7 @@ use pgtuskmaster_rust::{
 use crate::support::{
     error::{HarnessError, Result},
     faults::{BlockerKind, TrafficPath},
+    givens::HaGivenId,
     observer::pgtm::ConnectionTarget,
     topology::ClusterMember,
     world::{HaWorld, HarnessShared, MemberSet},
@@ -22,7 +23,8 @@ use crate::support::{
 
 #[given(regex = r#"^the "([^"]+)" harness is running$"#)]
 async fn the_harness_is_running(world: &mut HaWorld, given_name: String) -> Result<()> {
-    let harness = HarnessShared::initialize(given_name.as_str()).await?;
+    let given = HaGivenId::parse(given_name.as_str())?;
+    let harness = HarnessShared::initialize(given).await?;
     harness.record_note("scenario", format!("started given `{given_name}`"))?;
     world.set_harness(harness);
     Ok(())
@@ -89,18 +91,8 @@ async fn i_choose_the_two_non_primary_nodes_as(
     .await?;
     match replicas.as_slice() {
         [member_a, member_b] => {
-            record_alias(
-                world,
-                alias_a.as_str(),
-                *member_a,
-                "choose_two_replicas",
-            )?;
-            record_alias(
-                world,
-                alias_b.as_str(),
-                *member_b,
-                "choose_two_replicas",
-            )
+            record_alias(world, alias_a.as_str(), *member_a, "choose_two_replicas")?;
+            record_alias(world, alias_b.as_str(), *member_b, "choose_two_replicas")
         }
         _ => Err(HarnessError::message(format!(
             "expected exactly two non-primary nodes, observed {}",
@@ -391,7 +383,10 @@ async fn exactly_one_primary_exists_across_running_nodes_as(
         |status| {
             require_visible_members(status, expected_online)?;
             let primary = single_primary(status)?;
-            if intended_online.iter().any(|member_id| member_id == &primary) {
+            if intended_online
+                .iter()
+                .any(|member_id| member_id == &primary)
+            {
                 Ok(primary)
             } else {
                 Err(HarnessError::message(format!(
@@ -516,7 +511,10 @@ async fn the_cluster_is_degraded_but_operational_across_two_running_nodes(
         |status| {
             require_visible_members(status, 2)?;
             let primary = single_primary(status)?;
-            if !intended_online.iter().any(|member_id| member_id == &primary) {
+            if !intended_online
+                .iter()
+                .any(|member_id| member_id == &primary)
+            {
                 return Err(HarnessError::message(format!(
                     "expected operator-visible primary within {:?}, observed `{primary}`",
                     intended_online
@@ -533,13 +531,13 @@ async fn the_cluster_is_degraded_but_operational_across_two_running_nodes(
                 Ok(())
             } else {
                 Err(HarnessError::message(format!(
-                "expected exactly one non-primary in degraded two-node state, observed {}",
-                non_primary_members
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )))
+                    "expected exactly one non-primary in degraded two-node state, observed {}",
+                    non_primary_members
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )))
             }
         },
     )
@@ -1065,7 +1063,9 @@ async fn wait_for_members_to_reject_proof_writes(
                     "BEGIN; INSERT INTO {table_name} (token) VALUES ('{}'); ROLLBACK;",
                     sql_quote_literal(probe_value.as_str())
                 );
-                if let Ok(output) = harness.sql().execute(target.dsn.as_str(), probe_sql.as_str())
+                if let Ok(output) = harness
+                    .sql()
+                    .execute(target.dsn.as_str(), probe_sql.as_str())
                 {
                     Err(HarnessError::message(format!(
                         "member `{member}` unexpectedly accepted a write probe while no primary should be writable: {output}"
@@ -1440,7 +1440,9 @@ fn record_alias(
 }
 
 fn resolve_member_reference(world: &HaWorld, member_ref: &str) -> Result<ClusterMember> {
-    world.require_alias(member_ref).or_else(|_| ClusterMember::parse(member_ref))
+    world
+        .require_alias(member_ref)
+        .or_else(|_| ClusterMember::parse(member_ref))
 }
 
 fn single_primary(status: &NodeState) -> Result<ClusterMember> {
@@ -1459,7 +1461,9 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
         .dcs
         .members
         .iter()
-        .filter(|(_member_id, member)| matches!(&member.postgres, DcsMemberPostgresView::Replica(_)))
+        .filter(|(_member_id, member)| {
+            matches!(&member.postgres, DcsMemberPostgresView::Replica(_))
+        })
         .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
 }
@@ -1483,13 +1487,9 @@ fn assert_member_is_replica_via_member(
     harness.record_status_snapshot(snapshot_label.as_str(), &status)?;
     require_visible_members(&status, expected_online)?;
     let primary = single_primary(&status)?;
-    let member_status = status
-        .dcs
-        .members
-        .get(&member.member_id())
-        .ok_or_else(|| {
-            HarnessError::message(format!("member `{member}` is not present in status"))
-        })?;
+    let member_status = status.dcs.members.get(&member.member_id()).ok_or_else(|| {
+        HarnessError::message(format!("member `{member}` is not present in status"))
+    })?;
     if member == primary {
         return Err(HarnessError::message(format!(
             "member `{member}` is still the primary instead of a replica"
@@ -1525,9 +1525,9 @@ fn require_no_authoritative_primary(status: &NodeState) -> Result<()> {
         PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => Ok(()),
         PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
             Err(HarnessError::message(format!(
-            "expected no authoritative primary, but `{}` was still published",
-            epoch.holder.0
-        )))
+                "expected no authoritative primary, but `{}` was still published",
+                epoch.holder.0
+            )))
         }
         PublicationState::Unknown => Err(HarnessError::message(
             "expected an explicit no-primary authority result, but authority remained `unknown`",
@@ -1579,7 +1579,8 @@ fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
 }
 
 fn self_is_fail_safe(status: &NodeState, member: ClusterMember) -> bool {
-    status.self_member_id == member.service_name() && matches!(status.ha.role, TargetRole::FailSafe(_))
+    status.self_member_id == member.service_name()
+        && matches!(status.ha.role, TargetRole::FailSafe(_))
 }
 
 fn terminal_container_failure(
@@ -1630,8 +1631,9 @@ fn proof_table_name(harness: &HarnessShared) -> String {
     const MAX_SQL_IDENTIFIER_BYTES: usize = 63;
     const PROOF_TABLE_PREFIX: &str = "ha_cucumber_proof_";
 
-    let suffix =
-        sanitize_sql_identifier(format!("{}_{}", harness.feature_name, harness.run_id).as_str());
+    let suffix = sanitize_sql_identifier(
+        format!("{}_{}", harness.feature_name(), harness.run_id()).as_str(),
+    );
     let candidate = format!("{PROOF_TABLE_PREFIX}{suffix}");
     if candidate.len() <= MAX_SQL_IDENTIFIER_BYTES {
         return candidate;
@@ -1736,7 +1738,7 @@ impl PollKind {
 async fn i_can_write_a_proof_row_through_the_new_primary(world: &mut HaWorld) -> Result<()> {
     let row_value = {
         let harness = world.harness()?;
-        format!("proof-{}", harness.run_id)
+        format!("proof-{}", harness.run_id())
     };
     insert_proof_row(world, row_value.as_str(), "new_primary").await
 }
@@ -1761,7 +1763,7 @@ async fn i_start_a_bounded_concurrent_write_workload_and_record_commit_outcomes(
         let harness = world.harness()?;
         harness.record_note("sql.workload.start", format!("table={table_name}"))?;
         crate::support::workload::SqlWorkloadHandle::start(
-            harness.feature_name.as_str(),
+            harness.feature_name(),
             table_name.as_str(),
             harness.observer(),
             harness.sql(),
@@ -1883,9 +1885,7 @@ async fn i_wedge_the_node_named(world: &mut HaWorld, member_ref: String) -> Resu
 #[when(regex = r#"^I unwedge the node named "([^"]+)"$"#)]
 async fn i_unwedge_the_node_named(world: &mut HaWorld, member_ref: String) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
-    world
-        .harness()?
-        .unwedge_member_postgres(member_id)?;
+    world.harness()?.unwedge_member_postgres(member_id)?;
     world.remove_wedged_node(member_id);
     Ok(())
 }
@@ -1893,13 +1893,17 @@ async fn i_unwedge_the_node_named(world: &mut HaWorld, member_ref: String) -> Re
 #[when("I stop the DCS service")]
 #[when("I stop a DCS quorum majority")]
 async fn i_stop_the_dcs_service(world: &mut HaWorld) -> Result<()> {
-    world.harness()?.stop_service(crate::support::faults::ETCD_SERVICE)
+    world
+        .harness()?
+        .stop_service(crate::support::faults::ETCD_SERVICE)
 }
 
 #[when("I start the DCS service")]
 #[when("I restore DCS quorum")]
 async fn i_start_the_dcs_service(world: &mut HaWorld) -> Result<()> {
-    world.harness()?.start_service(crate::support::faults::ETCD_SERVICE)
+    world
+        .harness()?
+        .start_service(crate::support::faults::ETCD_SERVICE)
 }
 
 #[given("I start tracking primary history")]
@@ -1939,11 +1943,9 @@ async fn i_isolate_the_nodes_named_and_on_the_path(
     let member_a = resolve_member_reference(world, member_ref_a.as_str())?;
     let member_b = resolve_member_reference(world, member_ref_b.as_str())?;
     let path = parse_traffic_path(path_name.as_str())?;
-    world.harness()?.isolate_member_from_peer_on_path(
-        member_a,
-        member_b,
-        path,
-    )?;
+    world
+        .harness()?
+        .isolate_member_from_peer_on_path(member_a, member_b, path)?;
     if path == TrafficPath::Postgres {
         world.add_proof_convergence_blocker(member_a);
         world.add_proof_convergence_blocker(member_b);
@@ -1992,9 +1994,7 @@ async fn i_heal_network_faults_on_the_node_named(
     member_ref: String,
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
-    world
-        .harness()?
-        .heal_member_network_faults(member_id)?;
+    world.harness()?.heal_member_network_faults(member_id)?;
     world.clear_observer_unreachable(member_id);
     world.remove_proof_convergence_blocker(member_id);
     Ok(())
@@ -2018,9 +2018,7 @@ async fn i_enable_the_blocker_on_the_node_named(
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     let blocker = parse_blocker_kind(blocker_name.as_str())?;
-    world
-        .harness()?
-        .set_blocker(member_id, blocker, true)?;
+    world.harness()?.set_blocker(member_id, blocker, true)?;
     if blocker == BlockerKind::PgBasebackup {
         world.add_proof_convergence_blocker(member_id);
     }
@@ -2037,9 +2035,7 @@ async fn i_disable_the_blocker_on_the_node_named(
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     let blocker = parse_blocker_kind(blocker_name.as_str())?;
-    world
-        .harness()?
-        .set_blocker(member_id, blocker, false)?;
+    world.harness()?.set_blocker(member_id, blocker, false)?;
     if blocker == BlockerKind::PgBasebackup {
         world.remove_proof_convergence_blocker(member_id);
     }
@@ -2225,7 +2221,9 @@ fn planned_switchover_target_rank(member: &DcsMemberView) -> (u8, u64, u64) {
             .unwrap_or((0, 0, 0)),
         DcsMemberPostgresView::Unknown(observation) => (
             0,
-            observation.timeline.map_or(0, |timeline| u64::from(timeline.0)),
+            observation
+                .timeline
+                .map_or(0, |timeline| u64::from(timeline.0)),
             0,
         ),
         DcsMemberPostgresView::Primary(_) => (0, 0, 0),
@@ -2367,8 +2365,8 @@ async fn the_node_named_emitted_blocker_evidence_for(
 
     while Instant::now() < deadline {
         let logs = world.harness()?.docker.compose_logs(
-            world.harness()?.compose_file.as_path(),
-            world.harness()?.compose_project.as_str(),
+            world.harness()?.compose_file(),
+            world.harness()?.compose_project(),
         )?;
         if logs.contains(expected_snippet) {
             return Ok(());
@@ -2400,10 +2398,7 @@ async fn every_running_node_reports_fail_safe_in_debug_output(world: &mut HaWorl
                 if stopped.contains(member_id) {
                     continue;
                 }
-                let status = world
-                    .harness()?
-                    .observer()
-                    .state_via_member(member_id)?;
+                let status = world.harness()?.observer().state_via_member(member_id)?;
                 if !self_is_fail_safe(&status, member_id) {
                     Err(HarnessError::message(format!(
                         "member `{member_id}` did not report fail_safe (self_member_id={} authority={} warnings={})",
@@ -2446,10 +2441,7 @@ async fn the_node_named_enters_fail_safe_or_loses_primary_authority_safely(
 
     while Instant::now() < deadline {
         let attempt: Result<()> = (|| {
-            let member_status = world
-                .harness()?
-                .observer()
-                .state_via_member(member_id)?;
+            let member_status = world.harness()?.observer().state_via_member(member_id)?;
             if self_is_fail_safe(&member_status, member_id) {
                 return Ok(());
             }

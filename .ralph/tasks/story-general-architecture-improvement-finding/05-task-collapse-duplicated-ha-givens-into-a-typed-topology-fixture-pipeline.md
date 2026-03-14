@@ -1,4 +1,4 @@
-## Task: Collapse Duplicated HA Givens Into A Typed Topology Fixture Pipeline <status>not_started</status> <passes>false</passes>
+## Task: Collapse Duplicated HA Givens Into A Typed Topology Fixture Pipeline <status>done</status> <passes>true</passes>
 
 <priority>medium</priority>
 
@@ -64,14 +64,40 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Refactor `tests/ha/support/givens/mod.rs` and related harness loading code so given selection is no longer limited to blindly resolving and copying a near-duplicate directory tree for every variant.
-- [ ] Refactor `tests/ha/support/world/mod.rs` and any related materialization/copy logic so the harness can materialize or assemble topology fixtures from shared assets plus explicit variation points.
-- [ ] Collapse duplicated fixture structure between `tests/ha/givens/three_node_plain/` and `tests/ha/givens/three_node_custom_roles/`, keeping only the meaningful differences as data/overrides/materialized output rather than full copied trees.
-- [ ] Preserve real HA fixture fidelity, including compose startup, runtime config generation/materialization, TLS material references, and secrets wiring.
-- [ ] Ensure the resulting fixture architecture is compatible with additional topology variants such as the multi-etcd given work, without requiring another large copied tree for small variations.
-- [ ] Update any focused tests or harness assertions needed to prove the new fixture/materialization path is correct.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Refactor `tests/ha/support/givens/mod.rs` and related harness loading code so given selection is no longer limited to blindly resolving and copying a near-duplicate directory tree for every variant.
+- [x] Refactor `tests/ha/support/world/mod.rs` and any related materialization/copy logic so the harness can materialize or assemble topology fixtures from shared assets plus explicit variation points.
+- [x] Collapse duplicated fixture structure between `tests/ha/givens/three_node_plain/` and `tests/ha/givens/three_node_custom_roles/`, keeping only the meaningful differences as data/overrides/materialized output rather than full copied trees.
+- [x] Preserve real HA fixture fidelity, including compose startup, runtime config generation/materialization, TLS material references, and secrets wiring.
+- [x] Ensure the resulting fixture architecture is compatible with additional topology variants such as the multi-etcd given work, without requiring another large copied tree for small variations.
+- [x] Update any focused tests or harness assertions needed to prove the new fixture/materialization path is correct.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+### Execution plan
+1. Finish the typed HA given boundary so scenario selection parses into `HaGivenId`, resolves into a `HaGivenDefinition`, and stops leaking raw directory names/paths through the harness API.
+2. Implement the new fixture materialization pipeline around explicit ADTs (`HaTopologyFixture`, `FixtureMaterialization`, `SharedFixtureEntry`, `RenderedFixtureFile`) so the harness assembles a run workspace from shared assets plus rendered variation points instead of copying a full given tree.
+3. Rework `HarnessShared` around typed workspace/compose state (`HarnessWorkspace`, `WorkspacePaths`, `ComposeStack`) and update the world/support helpers to consume that smaller boundary rather than separate loose path fields.
+4. Materialize the shared three-node fixture layout once, then render only the meaningful differences for the current variants:
+   - compose observer capability (`NET_ADMIN` enabled vs disabled)
+   - postgres role naming (`replicator` / `rewinder` vs `mirrorbot` / `rewindbot`)
+   - member runtime and observer config outputs per node
+5. Remove the duplicated `three_node_plain` / `three_node_custom_roles` fixture trees in favor of the shared asset layout plus the typed render/materialization pipeline, while preserving real TLS/secrets/compose fidelity and compatibility with future topology variants.
+6. Add or update focused harness tests around given resolution/materialization so future topology additions prove differences via typed data rather than new copied trees.
+7. After the design is wired end-to-end, run the required validation gates in repo-preferred order:
+   - `make check`
+   - `make lint`
+   - `make test`
+   - `make test-long`
+8. Only after all checks pass, update docs for the new fixture/materialization flow using the `k2-docs-loop` skill, remove stale HA fixture docs if needed, then complete task closeout (`<passes>true</passes>`, task switch, commit, push).
+
+### Constraints for execution
+- Keep the fixture boundary typed. Do not fall back to a raw `given_name -> directory copy` API just to make the implementation easier.
+- Preserve real black-box HA fidelity: shared TLS assets, secrets wiring, runtime configs, and compose startup still need to be materialized into a real runnable workspace.
+- Prefer a narrow generation model for the known variation points over a generic text-templating system.
+- If execution shows the current ADTs are still wrong, switch this task back to `TO BE VERIFIED`, explain the type/design gap in the task file, and stop immediately.
+- Do not run `cargo test`; use the required `make` targets, and use `cargo nextest` only for focused local iteration if absolutely needed before the final validation gates.
+
+NOW EXECUTE
