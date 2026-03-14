@@ -61,20 +61,29 @@ pub(crate) enum ManagedStandbyAuth {
     PasswordPassfile { path: PathBuf },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamingStandbyKind {
+    Replica,
+    /// Currently only constructed in tests, but the variant is matched in
+    /// production code (`recovery_signal`) and will be used once point-in-time
+    /// recovery orchestration is wired into the HA worker.
+    #[allow(dead_code)]
+    Recovery,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StreamingStandbyConfig {
+    pub(crate) kind: StreamingStandbyKind,
+    pub(crate) primary_conninfo: PgConnInfo,
+    pub(crate) standby_auth: ManagedStandbyAuth,
+    pub(crate) primary_slot_name: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ManagedPostgresStartIntent {
     Primary,
     DetachedStandby,
-    Replica {
-        primary_conninfo: PgConnInfo,
-        standby_auth: ManagedStandbyAuth,
-        primary_slot_name: Option<String>,
-    },
-    Recovery {
-        primary_conninfo: PgConnInfo,
-        standby_auth: ManagedStandbyAuth,
-        primary_slot_name: Option<String>,
-    },
+    StreamingStandby(Box<StreamingStandbyConfig>),
 }
 
 impl ManagedPostgresStartIntent {
@@ -91,30 +100,36 @@ impl ManagedPostgresStartIntent {
         standby_auth: ManagedStandbyAuth,
         primary_slot_name: Option<String>,
     ) -> Self {
-        Self::Replica {
+        Self::StreamingStandby(Box::new(StreamingStandbyConfig {
+            kind: StreamingStandbyKind::Replica,
             primary_conninfo,
             standby_auth,
             primary_slot_name,
-        }
+        }))
     }
 
+    #[cfg(test)]
     pub(crate) fn recovery(
         primary_conninfo: PgConnInfo,
         standby_auth: ManagedStandbyAuth,
         primary_slot_name: Option<String>,
     ) -> Self {
-        Self::Recovery {
+        Self::StreamingStandby(Box::new(StreamingStandbyConfig {
+            kind: StreamingStandbyKind::Recovery,
             primary_conninfo,
             standby_auth,
             primary_slot_name,
-        }
+        }))
     }
 
     pub(crate) fn recovery_signal(&self) -> ManagedRecoverySignal {
         match self {
             Self::Primary => ManagedRecoverySignal::None,
-            Self::DetachedStandby | Self::Replica { .. } => ManagedRecoverySignal::Standby,
-            Self::Recovery { .. } => ManagedRecoverySignal::Recovery,
+            Self::DetachedStandby => ManagedRecoverySignal::Standby,
+            Self::StreamingStandby(config) => match config.kind {
+                StreamingStandbyKind::Replica => ManagedRecoverySignal::Standby,
+                StreamingStandbyKind::Recovery => ManagedRecoverySignal::Recovery,
+            },
         }
     }
 }
@@ -197,23 +212,15 @@ pub(crate) fn render_managed_postgres_conf(
         ManagedPostgresStartIntent::DetachedStandby => {
             push_bool_setting(&mut rendered, "hot_standby", true);
         }
-        ManagedPostgresStartIntent::Replica {
-            primary_conninfo,
-            standby_auth,
-            primary_slot_name,
-        }
-        | ManagedPostgresStartIntent::Recovery {
-            primary_conninfo,
-            standby_auth,
-            primary_slot_name,
-        } => {
+        ManagedPostgresStartIntent::StreamingStandby(config) => {
             push_bool_setting(&mut rendered, "hot_standby", true);
             push_string_setting(
                 &mut rendered,
                 "primary_conninfo",
-                render_managed_primary_conninfo(primary_conninfo, standby_auth).as_str(),
+                render_managed_primary_conninfo(&config.primary_conninfo, &config.standby_auth)
+                    .as_str(),
             );
-            if let Some(slot) = primary_slot_name.as_ref() {
+            if let Some(slot) = config.primary_slot_name.as_ref() {
                 validate_primary_slot_name(slot.as_str())?;
                 push_string_setting(&mut rendered, "primary_slot_name", slot.as_str());
             }
