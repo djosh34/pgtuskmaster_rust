@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Sat Mar 14 02:16:56 AM CET 2026
+Generated: Sat Mar 14 03:29:49 CET 2026
 
 # Task `.ralph/tasks/story-ctl-operator-experience/01-task-rename-the-operator-cli-to-pgtm-and-flatten-the-command-tree.md`
 
@@ -78,6 +78,18 @@ Generated: Sat Mar 14 02:16:56 AM CET 2026
 
 ```
 ## Task: Refactor The HA Acceptance Suite Around Typed Invariants And `NodeState`-First Assertions <status>done</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ctl-operator-experience/08-task-replace-hand-rolled-api-server-with-axum-axum-server-and-tower.md`
+
+```
+## Task: Replace The Hand-Rolled API Server With `axum` + `axum-server` + `tower` <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 

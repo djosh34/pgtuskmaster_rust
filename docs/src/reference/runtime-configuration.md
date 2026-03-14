@@ -84,13 +84,11 @@ If any required subfield is missing or empty, normalization fails with a field-s
 
 ```toml
 tls = { mode = "disabled" }
-# or
-tls = { mode = "optional", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } } }
-# or
-tls = { mode = "required", identity = { ... } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } }, client_auth = { client_ca = { path = "/path/to/ca.pem" }, client_certificate = "optional" } }
 ```
 
-`mode` accepts three values: `disabled`, `optional`, `required`. When the mode is `optional` or `required`, `identity` must be present and contain non-empty `cert_chain` and `private_key` entries. `client_auth` is optional; if present it requires a non-empty `client_ca` path and a `require_client_cert` boolean.
+`mode` accepts two values: `disabled` and `enabled`. When the mode is `enabled`, `identity` must be present and contain non-empty `cert_chain` and `private_key` entries. `client_auth` is optional; if present it requires a non-empty `client_ca` path and `client_certificate = "optional"` or `client_certificate = "required"`.
 
 TLS client authentication is not permitted when `mode = "disabled"`.
 
@@ -318,10 +316,7 @@ HTTP control-plane listener and security.
 ```toml
 [api]
 listen_addr = "0.0.0.0:8080"
-
-[api.security]
-tls = { mode = "disabled" }
-auth = { type = "role_tokens", read_token = { env = "PGTM_READ_TOKEN" }, admin_token = { path = "/run/secrets/admin-token" } }
+security = { transport = { transport = "http" }, auth = { type = "role_tokens", read_token = { env = "PGTM_READ_TOKEN" }, admin_token = { path = "/run/secrets/admin-token" } } }
 ```
 
 | Field | Type | Constraints | Default |
@@ -333,8 +328,26 @@ auth = { type = "role_tokens", read_token = { env = "PGTM_READ_TOKEN" }, admin_t
 
 | Subfield | Type | Constraints |
 |----------|------|-------------|
-| `tls` | TLS server block | same rules as `postgres.tls` (required) |
+| `transport` | transport block | see below (required) |
 | `auth` | auth block | `type = "disabled"` or `type = "role_tokens"` (required) |
+
+### Transport Block
+
+```toml
+transport = { transport = "http" }
+transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } } } }
+transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, require_client_cert = true, allowed_common_names = ["operator-a"] } } }
+```
+
+| Subfield | Type | Constraints |
+|----------|------|-------------|
+| `transport` | enum | `http` or `https` |
+| `tls.identity` | TLS identity block | required when `transport = "https"` |
+| `tls.client_auth.client_ca` | inline-or-path | required when `client_auth` is configured |
+| `tls.client_auth.require_client_cert` | boolean | optional; defaults to `false` when omitted |
+| `tls.client_auth.allowed_common_names` | array of strings | optional; allowed only when `require_client_cert = true` |
+
+`transport = "http"` does not allow a `tls` block. `transport = "https"` requires a `tls.identity` block. If `allowed_common_names` is present, the config parser rejects the file unless `require_client_cert = true`.
 
 ### Role Token Authentication
 
@@ -396,7 +409,7 @@ Both `[pgtm.api_client]` and `[pgtm.postgres_client]` accept the same fields:
 | `client_cert` | inline-or-path (optional) | requires `client_key` |
 | `client_key` | secret source (optional) | requires `client_cert` |
 
-`[pgtm.api_client]` is used only for HTTPS API requests. If `api.security.tls.mode = "disabled"`, do not configure API client TLS material. If API client certificates are required by the server, `pgtm.api_client.client_cert` and `pgtm.api_client.client_key` must both be present.
+`[pgtm.api_client]` is used only for HTTPS API requests. If `api.security.transport.transport = "http"`, do not configure API client TLS material. If API client certificates are required by the server, `pgtm.api_client.client_cert` and `pgtm.api_client.client_key` must both be present.
 
 `[pgtm.postgres_client]` is optional. When it is absent, `pgtm primary --tls` and `pgtm replicas --tls` fall back to `[pgtm.api_client]`.
 

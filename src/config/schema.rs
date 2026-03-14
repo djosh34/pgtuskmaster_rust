@@ -46,11 +46,21 @@ impl fmt::Debug for SecretSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ApiTlsMode {
+pub enum ServerTlsMode {
     Disabled,
+    Enabled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientCertificateMode {
     Optional,
     Required,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(transparent)]
+pub struct ClientCommonName(pub String);
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,15 +73,46 @@ pub struct TlsServerIdentityConfig {
 #[serde(deny_unknown_fields)]
 pub struct TlsClientAuthConfig {
     pub client_ca: InlineOrPath,
-    pub require_client_cert: bool,
+    pub client_certificate: ClientCertificateMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum TlsServerConfig {
+    Disabled,
+    Enabled {
+        identity: TlsServerIdentityConfig,
+        client_auth: Option<TlsClientAuthConfig>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "client_certificate", rename_all = "snake_case")]
+pub enum ApiClientAuthConfig {
+    Disabled,
+    Optional {
+        client_ca: InlineOrPath,
+    },
+    Required {
+        client_ca: InlineOrPath,
+        allowed_common_names: Vec<ClientCommonName>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TlsServerConfig {
-    pub mode: ApiTlsMode,
-    pub identity: Option<TlsServerIdentityConfig>,
-    pub client_auth: Option<TlsClientAuthConfig>,
+pub struct ApiTlsConfig {
+    pub identity: TlsServerIdentityConfig,
+    pub client_auth: ApiClientAuthConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum ApiTransportConfig {
+    Http,
+    Https {
+        tls: ApiTlsConfig,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -288,7 +329,7 @@ pub struct ApiConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiSecurityConfig {
-    pub tls: TlsServerConfig,
+    pub transport: ApiTransportConfig,
     pub auth: ApiAuthConfig,
 }
 
@@ -380,8 +421,32 @@ pub struct ApiConfigInput {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiSecurityConfigInput {
-    pub tls: Option<TlsServerConfigInput>,
+    pub transport: Option<ApiTransportConfigInput>,
     pub auth: Option<ApiAuthConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum ApiTransportConfigInput {
+    Http,
+    Https {
+        tls: Option<ApiTlsConfigInput>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiTlsConfigInput {
+    pub identity: Option<TlsServerIdentityConfigInput>,
+    pub client_auth: Option<ApiClientAuthConfigInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiClientAuthConfigInput {
+    pub client_ca: Option<InlineOrPath>,
+    pub require_client_cert: Option<bool>,
+    pub allowed_common_names: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -480,7 +545,14 @@ pub enum RoleAuthConfigInput {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsServerConfigInput {
-    pub mode: Option<ApiTlsMode>,
+    pub mode: Option<ServerTlsMode>,
     pub identity: Option<TlsServerIdentityConfigInput>,
-    pub client_auth: Option<TlsClientAuthConfig>,
+    pub client_auth: Option<TlsClientAuthConfigInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsClientAuthConfigInput {
+    pub client_ca: Option<InlineOrPath>,
+    pub client_certificate: Option<ClientCertificateMode>,
 }

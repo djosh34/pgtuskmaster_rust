@@ -2,8 +2,6 @@
 
 This guide shows how to turn the runtime's TLS knobs into an actual deployment procedure while keeping `pgtm` truthful as the normal operator client.
 
-The shipped Docker cluster configs still keep both `postgres.tls.mode` and `api.security.tls.mode` set to `disabled`. This guide therefore describes how to adapt a deployment for TLS; it is not a claim that the checked-in cluster example already runs with TLS enabled.
-
 ## Goal
 
 Enable TLS for one or both of these server surfaces:
@@ -13,31 +11,38 @@ Enable TLS for one or both of these server surfaces:
 
 ## What the schema supports
 
-The runtime schema defines the same TLS shape for both servers:
+The runtime schema now models the two surfaces differently:
 
 ```toml
+[postgres]
 tls = { mode = "disabled" }
-tls = { mode = "optional", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } } }
-tls = { mode = "required", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } }, client_auth = { client_ca = { path = "/path/to/ca.pem" }, client_certificate = "optional" } }
+
+[api]
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
+security = { transport = { transport = "https", tls = { identity = { cert_chain = { path = "/path/to/chain.pem" }, private_key = { path = "/path/to/key.pem" } } } }, auth = { type = "disabled" } }
 ```
 
-When `mode` is `optional` or `required`, the runtime expects:
+For PostgreSQL `mode = "enabled"`, the runtime expects:
 
 - `identity.cert_chain`
 - `identity.private_key`
 
-If `client_auth` is configured, it also expects:
+If PostgreSQL `client_auth` is configured, it also expects:
 
 - `client_auth.client_ca`
-- `client_auth.require_client_cert`
+- `client_auth.client_certificate`
+
+For the API, `transport = "https"` requires the `tls.identity` block. If API `client_auth` is configured, it expects `client_ca` and the config-file boolean `require_client_cert`.
 
 If those values are missing, the TLS loader rejects the config during startup.
 
 ## Choose the rollout shape
 
-Use `mode = "optional"` when you need a staged rollout and still have clients that connect without TLS.
+There is no mixed plaintext-plus-TLS server mode anymore.
 
-Use `mode = "required"` when all clients are ready to connect with TLS and you want the server surface to reject plaintext traffic.
+Keep the current surface on `transport = "http"` or `postgres.tls.mode = "disabled"` until clients are ready, then cut over to `transport = "https"` or `postgres.tls.mode = "enabled"` during a controlled restart.
 
 ## Enable API TLS
 
@@ -46,7 +51,7 @@ Update the `api.security` block:
 ```toml
 [api]
 listen_addr = "0.0.0.0:8080"
-security = { tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } } }, auth = { type = "disabled" } }
+security = { transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } } } }, auth = { type = "disabled" } }
 ```
 
 If you want client certificate verification, add `client_auth`:
@@ -54,7 +59,7 @@ If you want client certificate verification, add `client_auth`:
 ```toml
 [api]
 listen_addr = "0.0.0.0:8080"
-security = { tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, require_client_cert = true } }, auth = { type = "disabled" } }
+security = { transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, require_client_cert = true } } }, auth = { type = "disabled" } }
 ```
 
 ## Add operator client settings for `pgtm`
@@ -86,7 +91,7 @@ socket_dir = "/var/lib/pgtuskmaster/socket"
 log_file = "/var/log/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { path = "/etc/pgtuskmaster/tls/postgres-ca.pem" } }
-tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } } }
 pg_hba = { source = { path = "/etc/pgtuskmaster/pg_hba.conf" } }
 pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
 ```
@@ -124,10 +129,10 @@ Apply the updated runtime config and TLS files to each node, then restart the ru
 For a staged rollout:
 
 1. Deploy cert/key files to every node.
-2. Change the target surface to `mode = "optional"`.
-3. Restart the node.
-4. Update clients to use TLS.
-5. Once all clients are migrated, change `mode = "required"`.
+2. Update client trust material and TLS settings.
+3. Change the target surface to `transport = "https"` or `mode = "enabled"`.
+4. Restart the node.
+5. Verify clients reconnect with TLS.
 
 For an all-at-once rollout:
 
@@ -164,7 +169,7 @@ psql "$(pgtm -c config.toml primary --tls)"
 
 ### Startup fails immediately after enabling TLS
 
-Check the configured paths first. The TLS loader fails startup if `mode` requires TLS but `identity` is missing or unreadable, or if the PEM files cannot be parsed.
+Check the configured paths first. The TLS loader fails startup if `transport = "https"` or `mode = "enabled"` is set but the required identity files are missing, unreadable, or not valid PEM.
 
 ### `pgtm` cannot reach the API after the change
 
@@ -184,4 +189,4 @@ Confirm that:
 
 ### Mutual TLS rejects clients unexpectedly
 
-Check `client_auth.require_client_cert` and the configured `client_ca` path. The runtime uses the supplied CA bundle to build the client certificate verifier.
+Check `api.security.transport.tls.client_auth.require_client_cert` and the configured `client_ca` path. The runtime uses the supplied CA bundle to build the client certificate verifier.

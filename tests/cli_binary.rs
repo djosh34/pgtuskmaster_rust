@@ -305,7 +305,7 @@ bootstrap_timeout_ms = 300000
 fencing_timeout_ms = 30000
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#,
     )?;
 
@@ -366,7 +366,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#,
     )?;
 
@@ -423,7 +423,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#,
     )?;
 

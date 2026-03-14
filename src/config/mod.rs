@@ -11,12 +11,15 @@ pub use materialize::{
 };
 pub use parser::{load_runtime_config, validate_runtime_config, ConfigError};
 pub use schema::{
-    ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
-    ClusterConfig, DcsConfig, DcsConfigInput, DcsInitConfig, DebugConfig, FileSinkConfig,
-    FileSinkMode, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
-    LoggingSinksConfig, PgHbaConfig, PgIdentConfig, PgtmApiClientConfig, PgtmApiClientConfigInput,
-    PgtmConfig, PgtmConfigInput, PgtmPostgresClientConfig, PgtmPostgresClientConfigInput,
-    PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
-    PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, RuntimeConfigInput,
-    SecretSource, StderrSinkConfig, TlsClientAuthConfig, TlsServerConfig, TlsServerIdentityConfig,
+    ApiAuthConfig, ApiClientAuthConfig, ApiClientAuthConfigInput, ApiConfig, ApiRoleTokensConfig,
+    ApiSecurityConfig, ApiTlsConfig, ApiTlsConfigInput, ApiTransportConfig,
+    ApiTransportConfigInput, BinaryPaths, ClientCertificateMode, ClientCommonName, ClusterConfig,
+    DcsConfig, DcsConfigInput, DcsInitConfig, DebugConfig, FileSinkConfig, FileSinkMode,
+    HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig,
+    PgHbaConfig, PgIdentConfig, PgtmApiClientConfig, PgtmApiClientConfigInput, PgtmConfig,
+    PgtmConfigInput, PgtmPostgresClientConfig, PgtmPostgresClientConfigInput, PostgresConfig,
+    PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig,
+    ProcessConfig, RoleAuthConfig, RuntimeConfig, RuntimeConfigInput, SecretSource,
+    ServerTlsMode, StderrSinkConfig, TlsClientAuthConfig, TlsClientAuthConfigInput,
+    TlsServerConfig, TlsServerConfigInput, TlsServerIdentityConfig,
 };

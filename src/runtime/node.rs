@@ -6,10 +6,13 @@ use std::{
 };
 
 use thiserror::Error;
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::sync::mpsc;
 
 use crate::{
-    api::worker::ApiWorkerCtx,
+    api::worker::{
+        ApiAuthState, ApiBindConfig, ApiCertificateReloadHandle, ApiNodeIdentity, ApiServerCtx,
+        ApiStateSubscribers,
+    },
     config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
     dcs::DcsView,
     ha::state::{HaState, HaWorkerContractStubInputs, HaWorkerCtx, ProcessDispatchDefaults},
@@ -276,29 +279,28 @@ async fn run_workers(
     ha_ctx.process_defaults = process_defaults;
     ha_ctx.log = log.clone();
 
-    let listener = TcpListener::bind(cfg.api.listen_addr)
-        .await
-        .map_err(|err| RuntimeError::ApiBind {
-            listen_addr: cfg.api.listen_addr,
-            message: err.to_string(),
-        })?;
-    let mut api_ctx = ApiWorkerCtx::new(listener, cfg_subscriber, dcs_handle, log.clone());
-    api_ctx.set_live_state_subscribers(
-        pg_subscriber.clone(),
-        process_subscriber.clone(),
-        dcs_subscriber.clone(),
-        ha_subscriber.clone(),
-    );
-    let server_tls = crate::tls::build_rustls_server_config(&cfg.api.security.tls)
+    let api_transport = crate::tls::build_api_server_transport(&cfg.api.security.transport)
         .map_err(|err| RuntimeError::Worker(format!("api tls config build failed: {err}")))?;
-    api_ctx
-        .configure_tls(cfg.api.security.tls.mode, server_tls)
-        .map_err(|err| RuntimeError::Worker(format!("api tls configure failed: {err}")))?;
-    let require_client_cert = match cfg.api.security.tls.client_auth.as_ref() {
-        Some(auth) => auth.require_client_cert,
-        None => false,
+    let api_ctx = ApiServerCtx {
+        bind: ApiBindConfig::listen(cfg.api.listen_addr),
+        identity: ApiNodeIdentity {
+            cluster_name: cfg.cluster.name.clone(),
+            scope: scope.clone(),
+            member_id: cfg.cluster.member_id.clone(),
+        },
+        runtime_config: cfg_subscriber,
+        dcs_handle,
+        state: Some(ApiStateSubscribers {
+            pg: pg_subscriber.clone(),
+            process: process_subscriber.clone(),
+            dcs: dcs_subscriber.clone(),
+            ha: ha_subscriber.clone(),
+        }),
+        auth: ApiAuthState::Disabled,
+        cert_reloader: ApiCertificateReloadHandle::from_transport(&api_transport),
+        transport: api_transport,
+        log: log.clone(),
     };
-    api_ctx.set_require_client_cert(require_client_cert);
 
     tokio::try_join!(
         crate::pginfo::worker::run(pg_ctx),
@@ -325,9 +327,9 @@ fn advertised_operator_api_url(cfg: &RuntimeConfig) -> Option<String> {
         return None;
     }
 
-    let scheme = match cfg.api.security.tls.mode {
-        crate::config::ApiTlsMode::Disabled => "http",
-        crate::config::ApiTlsMode::Optional | crate::config::ApiTlsMode::Required => "https",
+    let scheme = match cfg.api.security.transport {
+        crate::config::ApiTransportConfig::Http => "http",
+        crate::config::ApiTransportConfig::Https { .. } => "https",
     };
     Some(format!("{scheme}://{}", cfg.api.listen_addr))
 }

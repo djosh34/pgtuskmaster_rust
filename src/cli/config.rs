@@ -10,7 +10,7 @@ use crate::{
     },
     config::{
         load_runtime_config, resolve_inline_or_path_bytes, resolve_secret_string, ApiAuthConfig,
-        ApiTlsMode, InlineOrPath, RuntimeConfig, SecretSource,
+        ApiClientAuthConfig, ApiTransportConfig, InlineOrPath, RuntimeConfig, SecretSource,
     },
 };
 
@@ -87,9 +87,9 @@ fn resolve_api_url(
                 .to_string(),
         )),
         _ => {
-            let scheme = match cfg.api.security.tls.mode {
-                ApiTlsMode::Disabled => "http",
-                ApiTlsMode::Optional | ApiTlsMode::Required => "https",
+            let scheme = match cfg.api.security.transport {
+                ApiTransportConfig::Http => "http",
+                ApiTransportConfig::Https { .. } => "https",
             };
             Url::parse(format!("{scheme}://{}", cfg.api.listen_addr).as_str()).map_err(|err| {
                 CliError::Config(format!(
@@ -108,12 +108,12 @@ fn validate_effective_api_url(
         return Ok(());
     };
 
-    match cfg.api.security.tls.mode {
-        ApiTlsMode::Disabled if base_url.scheme() == "https" => Err(CliError::Config(
-            "API URL must not use https when `api.security.tls.mode = \"disabled\"`".to_string(),
+    match (&cfg.api.security.transport, base_url.scheme()) {
+        (ApiTransportConfig::Http, "https") => Err(CliError::Config(
+            "API URL must not use https when `api.security.transport = \"http\"`".to_string(),
         )),
-        ApiTlsMode::Required if base_url.scheme() != "https" => Err(CliError::Config(
-            "API URL must use https when `api.security.tls.mode = \"required\"`".to_string(),
+        (ApiTransportConfig::Https { .. }, "http") => Err(CliError::Config(
+            "API URL must use https when `api.security.transport = \"https\"`".to_string(),
         )),
         _ => Ok(()),
     }
@@ -152,14 +152,7 @@ fn resolve_api_client_tls(
         return Ok(CliTlsConfig::default());
     };
 
-    if cfg
-        .api
-        .security
-        .tls
-        .client_auth
-        .as_ref()
-        .is_some_and(|auth| auth.require_client_cert)
-        && (api_client.client_cert.is_none() || api_client.client_key.is_none())
+    if api_requires_client_cert(cfg) && (api_client.client_cert.is_none() || api_client.client_key.is_none())
     {
         return Err(CliError::Config(
             "`pgtm.api_client.client_cert` and `pgtm.api_client.client_key` are required when API client certificates are mandatory"
@@ -292,6 +285,15 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
     })
 }
 
+fn api_requires_client_cert(cfg: &RuntimeConfig) -> bool {
+    match &cfg.api.security.transport {
+        ApiTransportConfig::Http => false,
+        ApiTransportConfig::Https { tls } => {
+            matches!(tls.client_auth, ApiClientAuthConfig::Required { .. })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -360,7 +362,7 @@ binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewi
 
 [api]
 listen_addr = "0.0.0.0:8080"
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "##,
         )?;
         let cli = Cli {
@@ -420,7 +422,7 @@ binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewi
 
 [api]
 listen_addr = "127.0.0.1:8443"
-security = { tls = { mode = "required", identity = { cert_chain = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }, private_key = { content = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n" } } }, auth = { type = "role_tokens", read_token = { content = "read-token" }, admin_token = { content = "admin-token" } } }
+security = { transport = { transport = "https", tls = { identity = { cert_chain = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }, private_key = { content = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n" } } } }, auth = { type = "role_tokens", read_token = { content = "read-token" }, admin_token = { content = "admin-token" } } }
 
 [pgtm]
 api_url = "https://127.0.0.1:8443"
@@ -520,7 +522,7 @@ binaries = {{ postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rew
 
 [api]
 listen_addr = "127.0.0.1:8080"
-security = {{ tls = {{ mode = "disabled" }}, auth = {{ type = "disabled" }} }}
+security = {{ transport = {{ transport = "http" }}, auth = {{ type = "disabled" }} }}
 
 [pgtm]
 api_url = "http://127.0.0.1:8080"
@@ -614,7 +616,7 @@ binaries = {{ postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rew
 
 [api]
 listen_addr = "127.0.0.1:8443"
-security = {{ tls = {{ mode = "required", identity = {{ cert_chain = {{ content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }}, private_key = {{ content = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n" }} }} }}, auth = {{ type = "disabled" }} }}
+security = {{ transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }}, private_key = {{ content = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n" }} }} }} }}, auth = {{ type = "disabled" }} }}
 
 [pgtm]
 api_url = "https://127.0.0.1:8443"

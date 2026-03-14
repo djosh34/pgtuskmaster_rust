@@ -22,7 +22,7 @@ Harden a node so that:
 
 The runtime exposes two very different surfaces:
 
-- `api.security.tls` protects the HTTP control plane
+- `api.security.transport` protects the HTTP control plane
 - `postgres.tls` protects the PostgreSQL server side
 
 Think about them separately during rollout:
@@ -37,7 +37,7 @@ Start from an API security block that enables TLS and authorization together:
 ```toml
 [api]
 listen_addr = "0.0.0.0:8080"
-security = { tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } } }, auth = { type = "role_tokens", read_token = "read-secret", admin_token = "admin-secret" } }
+security = { transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } } } }, auth = { type = "role_tokens", read_token = { content = "read-secret" }, admin_token = { content = "admin-secret" } } }
 ```
 
 The role split matters operationally:
@@ -68,22 +68,24 @@ Use `client_cert` and `client_key` only when the API requires client certificate
 The TLS schema supports optional client certificate verification:
 
 ```toml
-security = { tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, require_client_cert = true } }, auth = { type = "role_tokens", read_token = "read-secret", admin_token = "admin-secret" } }
+security = { transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, require_client_cert = true, allowed_common_names = ["operator-a"] } } }, auth = { type = "role_tokens", read_token = { content = "read-secret" }, admin_token = { content = "admin-secret" } } }
 ```
 
 Use `require_client_cert = true` only when every intended client has a certificate chain rooted in the configured CA bundle.
 
 Use `require_client_cert = false` if you want the server to validate presented client certificates without making them mandatory for every caller.
 
+If you use `allowed_common_names`, the config parser requires `require_client_cert = true` so the API can enforce the allow-list.
+
 ## Harden PostgreSQL transport
 
-For PostgreSQL, the runtime schema supports the same TLS shape:
+For PostgreSQL, the runtime schema uses `disabled` or `enabled` mode:
 
 ```toml
 [postgres]
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { path = "/etc/pgtuskmaster/tls/postgres-ca.pem" } }
-tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } } }
 ```
 
 Security-sensitive points to verify:
@@ -141,4 +143,4 @@ Check the configured `client_ca` bundle and whether the callers actually present
 
 ### PostgreSQL traffic still appears to be plaintext
 
-Check whether the deployment is still on `mode = "optional"` or whether clients are still connecting with a non-TLS `sslmode`.
+Check whether `postgres.tls.mode` is still `disabled` or whether clients are still connecting with a non-TLS `sslmode`.

@@ -10,7 +10,7 @@ socket_dir = "/var/lib/pgtuskmaster/socket"
 log_file = "/var/log/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
 rewind_conn_identity = { user = "rewindbot", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { path = "/etc/pgtuskmaster/tls/ca.crt" } }
-tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/observer.crt" }, private_key = { path = "/etc/pgtuskmaster/tls/observer.key" } } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/observer.crt" }, private_key = { path = "/etc/pgtuskmaster/tls/observer.key" } } }
 pg_hba = { source = { path = "/etc/pgtuskmaster/pg_hba.conf" } }
 pg_ident = { source = { path = "/etc/pgtuskmaster/pg_ident.conf" } }
 
@@ -65,7 +65,7 @@ mode = "append"
 
 [api]
 listen_addr = "127.0.0.1:8443"
-security = { tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/observer.crt" }, private_key = { path = "/etc/pgtuskmaster/tls/observer.key" } } }, auth = { type = "role_tokens", read_token = { path = "/run/secrets/api-read-token" }, admin_token = { path = "/run/secrets/api-admin-token" } } }
+security = { transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/observer.crt" }, private_key = { path = "/etc/pgtuskmaster/tls/observer.key" } } } }, auth = { type = "role_tokens", read_token = { path = "/run/secrets/api-read-token" }, admin_token = { path = "/run/secrets/api-admin-token" } } }
 
 [pgtm]
 api_url = "https://node-c:8443"

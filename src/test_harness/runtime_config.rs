@@ -2,12 +2,12 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 
 use crate::{
     config::{
-        ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths, ClusterConfig,
-        DcsConfig, DcsEndpoint, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig, InlineOrPath,
-        LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig, PgIdentConfig,
-        PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
-        PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, SecretSource,
-        StderrSinkConfig, TlsServerConfig,
+        ApiAuthConfig, ApiConfig, ApiSecurityConfig, ApiTransportConfig, BinaryPaths,
+        ClusterConfig, DcsConfig, DcsEndpoint, DebugConfig, FileSinkConfig, FileSinkMode,
+        HaConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig,
+        PgHbaConfig, PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig,
+        PostgresLoggingConfig, PostgresRoleConfig, PostgresRolesConfig, ProcessConfig,
+        RoleAuthConfig, RuntimeConfig, SecretSource, StderrSinkConfig, TlsServerConfig,
     },
     pginfo::conninfo::PgSslMode,
 };
@@ -99,33 +99,28 @@ fn sample_postgres_roles_config() -> PostgresRolesConfig {
 }
 
 fn sample_postgres_tls_config_disabled() -> TlsServerConfig {
-    TlsServerConfig {
-        mode: ApiTlsMode::Disabled,
-        identity: None,
-        client_auth: None,
-    }
+    TlsServerConfig::Disabled
 }
 
 #[cfg(test)]
-fn sample_postgres_tls_config_enabled(mode: ApiTlsMode) -> TlsServerConfig {
-    TlsServerConfig {
-        mode,
-        identity: Some(crate::config::TlsServerIdentityConfig {
+fn sample_postgres_tls_config_enabled() -> TlsServerConfig {
+    TlsServerConfig::Enabled {
+        identity: crate::config::TlsServerIdentityConfig {
             cert_chain: InlineOrPath::Inline {
                 content: SAMPLE_TLS_CERT_PEM.to_string(),
             },
             private_key: InlineOrPath::Inline {
                 content: SAMPLE_TLS_KEY_PEM.to_string(),
             },
-        }),
-        client_auth: Some(crate::config::TlsClientAuthConfig {
-            client_ca: InlineOrPath::Inline {
-                content: SAMPLE_TLS_CA_PEM.to_string(),
-            },
-            require_client_cert: false,
-        }),
+        },
+            client_auth: Some(crate::config::TlsClientAuthConfig {
+                client_ca: InlineOrPath::Inline {
+                    content: SAMPLE_TLS_CA_PEM.to_string(),
+                },
+                client_certificate: crate::config::ClientCertificateMode::Optional,
+            }),
+        }
     }
-}
 
 fn sample_pg_hba_config() -> PgHbaConfig {
     PgHbaConfig {
@@ -204,7 +199,7 @@ fn sample_api_auth_disabled() -> ApiAuthConfig {
 
 fn sample_api_security_config() -> ApiSecurityConfig {
     ApiSecurityConfig {
-        tls: sample_postgres_tls_config_disabled(),
+        transport: ApiTransportConfig::Http,
         auth: sample_api_auth_disabled(),
     }
 }
@@ -465,7 +460,7 @@ mod tests {
     use crate::postgres_managed::materialize_managed_postgres_config;
     use crate::postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME};
     use crate::test_harness::runtime_config::{
-        sample_postgres_tls_config_enabled, sample_runtime_config, RuntimeConfigBuilder,
+        sample_runtime_config, RuntimeConfigBuilder,
     };
 
     fn sample_override_api_listen_addr() -> std::net::SocketAddr {
@@ -551,7 +546,19 @@ mod tests {
             })
             .transform_api(|api| crate::config::ApiConfig {
                 security: crate::config::ApiSecurityConfig {
-                    tls: sample_postgres_tls_config_enabled(crate::config::ApiTlsMode::Required),
+                    transport: crate::config::ApiTransportConfig::Https {
+                        tls: crate::config::ApiTlsConfig {
+                            identity: crate::config::TlsServerIdentityConfig {
+                                cert_chain: crate::config::InlineOrPath::Inline {
+                                    content: super::SAMPLE_TLS_CERT_PEM.to_string(),
+                                },
+                                private_key: crate::config::InlineOrPath::Inline {
+                                    content: super::SAMPLE_TLS_KEY_PEM.to_string(),
+                                },
+                            },
+                            client_auth: crate::config::ApiClientAuthConfig::Disabled,
+                        },
+                    },
                     ..api.security
                 },
                 ..api
@@ -636,14 +643,12 @@ mod tests {
         let auth = crate::config::RoleAuthConfig::Password {
             password: super::sample_password_secret(),
         };
-        let tls = super::sample_postgres_tls_config_enabled(crate::config::ApiTlsMode::Optional);
+        let tls = super::sample_postgres_tls_config_enabled();
 
         assert!(matches!(
             auth,
             crate::config::RoleAuthConfig::Password { .. }
         ));
-        assert_eq!(tls.mode, crate::config::ApiTlsMode::Optional);
-        assert!(tls.identity.is_some());
-        assert!(tls.client_auth.is_some());
+        assert!(matches!(tls, crate::config::TlsServerConfig::Enabled { .. }));
     }
 }

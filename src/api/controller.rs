@@ -1,5 +1,3 @@
-use serde::{Deserialize, Serialize};
-
 use crate::{
     api::{AcceptedResponse, ApiError, ApiResult, NodeState},
     config::RuntimeConfig,
@@ -13,11 +11,22 @@ use crate::{
     state::MemberId,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SwitchoverRequestInput {
-    #[serde(default)]
+pub(crate) struct SwitchoverRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) switchover_to: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NodeStateSnapshot {
+    pub(crate) cluster_name: String,
+    pub(crate) scope: String,
+    pub(crate) self_member_id: String,
+    pub(crate) pg: PgInfoState,
+    pub(crate) process: ProcessState,
+    pub(crate) dcs: DcsView,
+    pub(crate) ha: HaState,
 }
 
 pub(crate) async fn post_switchover(
@@ -26,7 +35,7 @@ pub(crate) async fn post_switchover(
     handle: &DcsHandle,
     dcs: &DcsView,
     ha: &HaState,
-    input: SwitchoverRequestInput,
+    input: SwitchoverRequest,
 ) -> ApiResult<AcceptedResponse> {
     let request = validate_switchover_request(self_id, dcs, ha, input)?;
     handle
@@ -48,21 +57,15 @@ pub(crate) async fn delete_switchover(
     Ok(AcceptedResponse { accepted: true })
 }
 
-pub(crate) fn build_node_state(
-    cfg: &RuntimeConfig,
-    pg: &PgInfoState,
-    process: &ProcessState,
-    dcs: &DcsView,
-    ha: &HaState,
-) -> NodeState {
+pub(crate) fn build_node_state(_cfg: &RuntimeConfig, snapshot: NodeStateSnapshot) -> NodeState {
     NodeState {
-        cluster_name: cfg.cluster.name.clone(),
-        scope: cfg.dcs.scope.clone(),
-        self_member_id: cfg.cluster.member_id.clone(),
-        pg: pg.clone(),
-        process: process.clone(),
-        dcs: dcs.clone(),
-        ha: ha.clone(),
+        cluster_name: snapshot.cluster_name,
+        scope: snapshot.scope,
+        self_member_id: snapshot.self_member_id,
+        pg: snapshot.pg,
+        process: snapshot.process,
+        dcs: snapshot.dcs,
+        ha: snapshot.ha,
     }
 }
 
@@ -70,7 +73,7 @@ fn validate_switchover_request(
     self_id: &MemberId,
     dcs: &DcsView,
     ha: &HaState,
-    input: SwitchoverRequestInput,
+    input: SwitchoverRequest,
 ) -> ApiResult<DcsSwitchoverView> {
     if dcs.trust != DcsTrust::FullQuorum {
         return Err(ApiError::bad_request(
@@ -87,13 +90,15 @@ fn validate_switchover_request(
         }
     }
 
-    let Some(raw_target) = input.switchover_to else {
-        return Ok(DcsSwitchoverView {
-            target: DcsSwitchoverTargetView::AnyHealthyReplica,
-        });
+    let target = match input.switchover_to {
+        None => {
+            return Ok(DcsSwitchoverView {
+                target: DcsSwitchoverTargetView::AnyHealthyReplica,
+            });
+        }
+        Some(member_id) => member_id,
     };
-
-    let target = raw_target.trim();
+    let target = target.trim();
     if target.is_empty() {
         return Err(ApiError::bad_request(
             "switchover_to must not be empty".to_string(),

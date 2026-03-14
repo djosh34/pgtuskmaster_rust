@@ -5,6 +5,7 @@ The node API now exposes one read surface and one control noun:
 - `GET /state`
 - `POST /switchover`
 - `DELETE /switchover`
+- `POST /reload/certs`
 
 This is the entire public route surface.
 
@@ -25,6 +26,7 @@ Authorization: Bearer <token>
 ```
 
 Read operations accept a read token or an admin token. Switchover operations require an admin token.
+Certificate reload also requires an admin token.
 
 Authorization outcomes:
 
@@ -130,3 +132,23 @@ Failure statuses:
 - `401 Unauthorized`: missing or invalid token
 - `403 Forbidden`: read token used for an admin route
 - `503 Service Unavailable`: DCS command failed
+
+## `POST /reload/certs`
+
+Reloads the API server TLS identity plus API client-auth CA and common-name allow-list material from the already configured runtime-config sources.
+
+Authorization: admin
+
+Success status: `200 OK`
+
+```text
+{
+  "reloaded": true
+}
+```
+
+Failure statuses:
+
+- `401 Unauthorized`: missing or invalid token
+- `403 Forbidden`: read token used for an admin route
+- `500 Internal Server Error`: API TLS material could not be rebuilt from the configured sources

@@ -8,11 +8,14 @@ use super::defaults::{
 };
 use super::endpoint::DcsEndpoint;
 use super::schema::{
-    ApiConfig, ApiSecurityConfig, DcsConfig, DcsConfigInput, InlineOrPath, PgHbaConfig,
-    PgIdentConfig, PgtmApiClientConfig, PgtmConfig, PgtmConfigInput, PgtmPostgresClientConfig,
-    PostgresConfig, PostgresConnIdentityConfig, PostgresRoleConfig, PostgresRolesConfig,
-    RoleAuthConfig, RoleAuthConfigInput, RuntimeConfig, RuntimeConfigInput, SecretSource,
-    TlsServerConfig, TlsServerIdentityConfig,
+    ApiClientAuthConfig, ApiClientAuthConfigInput, ApiConfig, ApiSecurityConfig, ApiTlsConfig,
+    ApiTlsConfigInput, ApiTransportConfig, ApiTransportConfigInput, ClientCommonName, DcsConfig,
+    DcsConfigInput, InlineOrPath, PgHbaConfig, PgIdentConfig,
+    PgtmApiClientConfig, PgtmConfig, PgtmConfigInput, PgtmPostgresClientConfig, PostgresConfig,
+    PostgresConnIdentityConfig, PostgresRoleConfig, PostgresRolesConfig, RoleAuthConfig,
+    RoleAuthConfigInput, RuntimeConfig, RuntimeConfigInput, SecretSource, ServerTlsMode,
+    TlsClientAuthConfig, TlsClientAuthConfigInput, TlsServerConfig, TlsServerConfigInput,
+    TlsServerIdentityConfig,
 };
 use crate::postgres_managed_conf::{validate_extra_guc_entry, ManagedPostgresConfError};
 
@@ -324,7 +327,8 @@ fn normalize_api_config(input: super::schema::ApiConfigInput) -> Result<ApiConfi
         message: "missing required secure config block".to_string(),
     })?;
 
-    let tls = normalize_tls_server_config("api.security.tls", security.tls)?;
+    let transport =
+        normalize_api_transport_config("api.security.transport", security.transport)?;
     let auth = security.auth.ok_or_else(|| ConfigError::Validation {
         field: "api.security.auth",
         message: "missing required secure field".to_string(),
@@ -332,8 +336,95 @@ fn normalize_api_config(input: super::schema::ApiConfigInput) -> Result<ApiConfi
 
     Ok(ApiConfig {
         listen_addr,
-        security: ApiSecurityConfig { tls, auth },
+        security: ApiSecurityConfig { transport, auth },
     })
+}
+
+fn normalize_api_transport_config(
+    field_prefix: &'static str,
+    input: Option<ApiTransportConfigInput>,
+) -> Result<ApiTransportConfig, ConfigError> {
+    let transport = input.ok_or_else(|| ConfigError::Validation {
+        field: field_prefix,
+        message: "missing required secure config block".to_string(),
+    })?;
+
+    match transport {
+        ApiTransportConfigInput::Http => Ok(ApiTransportConfig::Http),
+        ApiTransportConfigInput::Https { tls } => Ok(ApiTransportConfig::Https {
+            tls: normalize_api_tls_config("api.security.transport.https.tls", tls)?,
+        }),
+    }
+}
+
+fn normalize_api_tls_config(
+    field_prefix: &'static str,
+    input: Option<ApiTlsConfigInput>,
+) -> Result<ApiTlsConfig, ConfigError> {
+    let tls = input.ok_or_else(|| ConfigError::Validation {
+        field: field_prefix,
+        message: "missing required secure config block".to_string(),
+    })?;
+    let identity = normalize_tls_server_identity(
+        "api.security.transport.https.tls.identity",
+        tls.identity.ok_or_else(|| ConfigError::Validation {
+            field: "api.security.transport.https.tls.identity",
+            message: "missing required secure field".to_string(),
+        })?,
+    )?;
+    let client_auth = normalize_api_client_auth_config(
+        "api.security.transport.https.tls.client_auth",
+        tls.client_auth,
+    )?;
+    Ok(ApiTlsConfig {
+        identity,
+        client_auth,
+    })
+}
+
+fn normalize_api_client_auth_config(
+    field_prefix: &'static str,
+    input: Option<ApiClientAuthConfigInput>,
+) -> Result<ApiClientAuthConfig, ConfigError> {
+    let Some(client_auth) = input else {
+        return Ok(ApiClientAuthConfig::Disabled);
+    };
+
+    let client_ca = client_auth.client_ca.ok_or_else(|| ConfigError::Validation {
+        field: "api.security.transport.https.tls.client_auth.client_ca",
+        message: "missing required secure field".to_string(),
+    })?;
+
+    let allowed_common_names = client_auth
+        .allowed_common_names
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| {
+            validate_non_empty(
+                "api.security.transport.https.tls.client_auth.allowed_common_names",
+                value.as_str(),
+            )?;
+            Ok(ClientCommonName(value))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if client_auth.require_client_cert.unwrap_or(false) {
+        return Ok(ApiClientAuthConfig::Required {
+            client_ca,
+            allowed_common_names,
+        });
+    }
+
+    if !allowed_common_names.is_empty() {
+        return Err(ConfigError::Validation {
+            field: field_prefix,
+            message:
+                "allowed_common_names requires require_client_cert = true so the API can enforce the allow-list"
+                    .to_string(),
+        });
+    }
+
+    Ok(ApiClientAuthConfig::Optional { client_ca })
 }
 
 fn normalize_dcs_config(input: DcsConfigInput) -> Result<DcsConfig, ConfigError> {
@@ -418,7 +509,7 @@ fn normalize_dcs_endpoint(field: &'static str, value: &str) -> Result<DcsEndpoin
 
 fn normalize_tls_server_config(
     field_prefix: &'static str,
-    input: Option<super::schema::TlsServerConfigInput>,
+    input: Option<TlsServerConfigInput>,
 ) -> Result<TlsServerConfig, ConfigError> {
     let tls = input.ok_or_else(|| ConfigError::Validation {
         field: field_prefix,
@@ -435,21 +526,63 @@ fn normalize_tls_server_config(
         "api.security.tls" => "api.security.tls.identity",
         _ => field_prefix,
     };
+    let client_auth_field = match field_prefix {
+        "postgres.tls" => "postgres.tls.client_auth",
+        "api.security.tls" => "api.security.tls.client_auth",
+        _ => field_prefix,
+    };
 
     let mode = tls.mode.ok_or_else(|| ConfigError::Validation {
         field: mode_field,
         message: "missing required secure field".to_string(),
     })?;
 
-    let identity = match tls.identity {
-        None => None,
-        Some(identity) => Some(normalize_tls_server_identity(identity_field, identity)?),
-    };
+    match mode {
+        ServerTlsMode::Disabled => {
+            if tls.identity.is_some() {
+                return Err(ConfigError::Validation {
+                    field: identity_field,
+                    message: "must not be configured when tls.mode is disabled".to_string(),
+                });
+            }
+            if tls.client_auth.is_some() {
+                return Err(ConfigError::Validation {
+                    field: client_auth_field,
+                    message: "must not be configured when tls.mode is disabled".to_string(),
+                });
+            }
+            Ok(TlsServerConfig::Disabled)
+        }
+        ServerTlsMode::Enabled => Ok(TlsServerConfig::Enabled {
+            identity: normalize_tls_server_identity(
+                identity_field,
+                tls.identity.ok_or_else(|| ConfigError::Validation {
+                    field: identity_field,
+                    message: "missing required secure field".to_string(),
+                })?,
+            )?,
+            client_auth: tls
+                .client_auth
+                .map(normalize_tls_client_auth_config)
+                .transpose()?,
+        }),
+    }
+}
 
-    Ok(TlsServerConfig {
-        mode,
-        identity,
-        client_auth: tls.client_auth,
+fn normalize_tls_client_auth_config(
+    input: TlsClientAuthConfigInput,
+) -> Result<TlsClientAuthConfig, ConfigError> {
+    let client_ca = input.client_ca.ok_or_else(|| ConfigError::Validation {
+        field: "tls.client_auth.client_ca",
+        message: "missing required secure field".to_string(),
+    })?;
+    let client_certificate = input.client_certificate.ok_or_else(|| ConfigError::Validation {
+        field: "tls.client_auth.client_certificate",
+        message: "missing required secure field".to_string(),
+    })?;
+    Ok(TlsClientAuthConfig {
+        client_ca,
+        client_certificate,
     })
 }
 
@@ -767,17 +900,7 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         }
     }
 
-    validate_tls_server_config(
-        "api.security.tls.identity",
-        "api.security.tls.identity.cert_chain",
-        "api.security.tls.identity.private_key",
-        &cfg.api.security.tls,
-    )?;
-    validate_tls_client_auth_config(
-        "api.security.tls.client_auth",
-        "api.security.tls.client_auth.client_ca",
-        &cfg.api.security.tls,
-    )?;
+    validate_api_transport_config(&cfg.api.security.transport)?;
     validate_pgtm_config(cfg)?;
 
     validate_dcs_init_config(cfg)?;
@@ -1001,12 +1124,12 @@ fn validate_postgres_auth_tls_invariants(cfg: &RuntimeConfig) -> Result<(), Conf
     validate_postgres_conn_identity_ssl_mode_supported(
         "postgres.local_conn_identity.ssl_mode",
         &cfg.postgres.local_conn_identity,
-        cfg.postgres.tls.mode,
+        tls_server_enabled(&cfg.postgres.tls),
     )?;
     validate_postgres_conn_identity_ssl_mode_supported(
         "postgres.rewind_conn_identity.ssl_mode",
         &cfg.postgres.rewind_conn_identity,
-        cfg.postgres.tls.mode,
+        tls_server_enabled(&cfg.postgres.tls),
     )?;
 
     Ok(())
@@ -1030,12 +1153,10 @@ fn validate_postgres_role_auth_supported(
 fn validate_postgres_conn_identity_ssl_mode_supported(
     field: &'static str,
     identity: &PostgresConnIdentityConfig,
-    tls_mode: crate::config::ApiTlsMode,
+    tls_enabled: bool,
 ) -> Result<(), ConfigError> {
     let ssl_mode = identity.ssl_mode;
-    if matches!(tls_mode, crate::config::ApiTlsMode::Disabled)
-        && postgres_ssl_mode_requires_server_tls(ssl_mode)
-    {
+    if !tls_enabled && postgres_ssl_mode_requires_server_tls(ssl_mode) {
         return Err(ConfigError::Validation {
             field,
             message: format!(
@@ -1057,6 +1178,10 @@ fn validate_postgres_conn_identity_ssl_mode_supported(
     }
 
     Ok(())
+}
+
+fn tls_server_enabled(cfg: &TlsServerConfig) -> bool {
+    matches!(cfg, TlsServerConfig::Enabled { .. })
 }
 
 fn postgres_ssl_mode_requires_server_tls(ssl_mode: crate::pginfo::conninfo::PgSslMode) -> bool {
@@ -1082,22 +1207,15 @@ fn validate_tls_server_config(
     private_key_field: &'static str,
     cfg: &TlsServerConfig,
 ) -> Result<(), ConfigError> {
-    if matches!(cfg.mode, crate::config::ApiTlsMode::Disabled) {
-        return Ok(());
+    match cfg {
+        TlsServerConfig::Disabled => Ok(()),
+        TlsServerConfig::Enabled { identity, .. } => {
+            validate_non_empty(identity_field, "configured")?;
+            validate_inline_or_path_non_empty(cert_chain_field, &identity.cert_chain, false)?;
+            validate_inline_or_path_non_empty(private_key_field, &identity.private_key, false)?;
+            Ok(())
+        }
     }
-
-    let identity = cfg
-        .identity
-        .as_ref()
-        .ok_or_else(|| ConfigError::Validation {
-            field: identity_field,
-            message: "tls identity must be configured when tls.mode is optional or required"
-                .to_string(),
-        })?;
-
-    validate_inline_or_path_non_empty(cert_chain_field, &identity.cert_chain, false)?;
-    validate_inline_or_path_non_empty(private_key_field, &identity.private_key, false)?;
-    Ok(())
 }
 
 fn validate_tls_client_auth_config(
@@ -1105,19 +1223,60 @@ fn validate_tls_client_auth_config(
     client_ca_field: &'static str,
     cfg: &TlsServerConfig,
 ) -> Result<(), ConfigError> {
-    let Some(client_auth) = cfg.client_auth.as_ref() else {
-        return Ok(());
-    };
-
-    if matches!(cfg.mode, crate::config::ApiTlsMode::Disabled) {
-        return Err(ConfigError::Validation {
-            field: client_auth_field,
-            message: "must not be configured when tls.mode is disabled".to_string(),
-        });
+    match cfg {
+        TlsServerConfig::Disabled => Ok(()),
+        TlsServerConfig::Enabled { client_auth, .. } => {
+            let Some(client_auth) = client_auth.as_ref() else {
+                return Ok(());
+            };
+            validate_non_empty(client_auth_field, "configured")?;
+            validate_inline_or_path_non_empty(client_ca_field, &client_auth.client_ca, false)?;
+            Ok(())
+        }
     }
+}
 
-    validate_inline_or_path_non_empty(client_ca_field, &client_auth.client_ca, false)?;
-    Ok(())
+fn validate_api_transport_config(cfg: &ApiTransportConfig) -> Result<(), ConfigError> {
+    match cfg {
+        ApiTransportConfig::Http => Ok(()),
+        ApiTransportConfig::Https { tls } => {
+            validate_inline_or_path_non_empty(
+                "api.security.transport.https.tls.identity.cert_chain",
+                &tls.identity.cert_chain,
+                false,
+            )?;
+            validate_inline_or_path_non_empty(
+                "api.security.transport.https.tls.identity.private_key",
+                &tls.identity.private_key,
+                false,
+            )?;
+            match &tls.client_auth {
+                ApiClientAuthConfig::Disabled => Ok(()),
+                ApiClientAuthConfig::Optional { client_ca } => validate_inline_or_path_non_empty(
+                    "api.security.transport.https.tls.client_auth.client_ca",
+                    client_ca,
+                    false,
+                ),
+                ApiClientAuthConfig::Required {
+                    client_ca,
+                    allowed_common_names,
+                } => {
+                    validate_inline_or_path_non_empty(
+                        "api.security.transport.https.tls.client_auth.client_ca",
+                        client_ca,
+                        false,
+                    )?;
+                    for common_name in allowed_common_names {
+                        validate_non_empty(
+                            "api.security.transport.https.tls.client_auth.allowed_common_names",
+                            common_name.0.as_str(),
+                        )?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
 }
 
 fn validate_dcs_init_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
@@ -1150,7 +1309,7 @@ fn validate_pgtm_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
     };
 
     if let Some(api_url) = pgtm.api_url.as_deref() {
-        validate_pgtm_api_url(api_url, cfg.api.security.tls.mode)?;
+        validate_pgtm_api_url(api_url, &cfg.api.security.transport)?;
     }
 
     if let Some(api_client) = pgtm.api_client.as_ref() {
@@ -1167,13 +1326,10 @@ fn validate_pgtm_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
             api_client.client_key.as_ref(),
         )?;
 
-        if matches!(
-            cfg.api.security.tls.mode,
-            crate::config::ApiTlsMode::Disabled
-        ) {
+        if matches!(cfg.api.security.transport, ApiTransportConfig::Http) {
             return Err(ConfigError::Validation {
                 field: "pgtm.api_client",
-                message: "must not be configured when api.security.tls.mode is disabled"
+                message: "must not be configured when api.security.transport is http"
                     .to_string(),
             });
         }
@@ -1194,10 +1350,7 @@ fn validate_pgtm_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
         )?;
     }
 
-    if matches!(
-        cfg.api.security.tls.mode,
-        crate::config::ApiTlsMode::Required
-    ) {
+    if matches!(cfg.api.security.transport, ApiTransportConfig::Https { .. }) {
         if let Some(api_url) = pgtm.api_url.as_deref() {
             let parsed = reqwest::Url::parse(api_url).map_err(|err| ConfigError::Validation {
                 field: "pgtm.api_url",
@@ -1206,18 +1359,11 @@ fn validate_pgtm_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
             if parsed.scheme() != "https" {
                 return Err(ConfigError::Validation {
                     field: "pgtm.api_url",
-                    message: "must use https when api.security.tls.mode is required".to_string(),
+                    message: "must use https when api.security.transport is https".to_string(),
                 });
             }
         }
-        if cfg
-            .api
-            .security
-            .tls
-            .client_auth
-            .as_ref()
-            .is_some_and(|auth| auth.require_client_cert)
-        {
+        if api_client_certificates_required(&cfg.api.security.transport) {
             let has_client_cert = pgtm
                 .api_client
                 .as_ref()
@@ -1232,7 +1378,7 @@ fn validate_pgtm_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
                 return Err(ConfigError::Validation {
                     field: "pgtm.api_client",
                     message:
-                        "must provide client_cert and client_key when api.security.tls.client_auth.require_client_cert is true"
+                        "must provide client_cert and client_key when api client certificates are required"
                             .to_string(),
                 });
             }
@@ -1257,7 +1403,7 @@ fn validate_pgtm_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
 
 fn validate_pgtm_api_url(
     api_url: &str,
-    tls_mode: crate::config::ApiTlsMode,
+    transport: &ApiTransportConfig,
 ) -> Result<(), ConfigError> {
     let parsed = reqwest::Url::parse(api_url).map_err(|err| ConfigError::Validation {
         field: "pgtm.api_url",
@@ -1265,16 +1411,16 @@ fn validate_pgtm_api_url(
     })?;
     match parsed.scheme() {
         "http" => {
-            if matches!(tls_mode, crate::config::ApiTlsMode::Disabled) {
+            if matches!(transport, ApiTransportConfig::Http) {
                 return Ok(());
             }
             Ok(())
         }
         "https" => {
-            if matches!(tls_mode, crate::config::ApiTlsMode::Disabled) {
+            if matches!(transport, ApiTransportConfig::Http) {
                 return Err(ConfigError::Validation {
                     field: "pgtm.api_url",
-                    message: "must not use https when api.security.tls.mode is disabled"
+                    message: "must not use https when api.security.transport is http"
                         .to_string(),
                 });
             }
@@ -1284,6 +1430,16 @@ fn validate_pgtm_api_url(
             field: "pgtm.api_url",
             message: "must use http or https".to_string(),
         }),
+    }
+}
+
+fn api_client_certificates_required(transport: &ApiTransportConfig) -> bool {
+    match transport {
+        ApiTransportConfig::Http => false,
+        ApiTransportConfig::Https { tls } => matches!(
+            tls.client_auth,
+            ApiClientAuthConfig::Required { .. }
+        ),
     }
 }
 
@@ -1370,12 +1526,13 @@ mod tests {
 
     use super::*;
     use crate::config::schema::{
-        ApiAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig, ApiTlsMode, BinaryPaths,
-        ClusterConfig, DcsConfig, DebugConfig, FileSinkConfig, FileSinkMode, HaConfig,
-        InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig, LoggingSinksConfig, PgHbaConfig,
-        PgIdentConfig, PostgresConfig, PostgresConnIdentityConfig, PostgresLoggingConfig,
-        PostgresRoleConfig, PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig,
-        StderrSinkConfig, TlsServerConfig,
+        ApiAuthConfig, ApiClientAuthConfig, ApiConfig, ApiRoleTokensConfig, ApiSecurityConfig,
+        ApiTlsConfig, ApiTransportConfig, BinaryPaths, ClusterConfig, DcsConfig, DebugConfig,
+        FileSinkConfig, FileSinkMode, HaConfig, InlineOrPath, LogCleanupConfig, LogLevel,
+        LoggingConfig, LoggingSinksConfig, PgHbaConfig, PgIdentConfig, PostgresConfig,
+        PostgresConnIdentityConfig, PostgresLoggingConfig, PostgresRoleConfig,
+        PostgresRolesConfig, ProcessConfig, RoleAuthConfig, RuntimeConfig, StderrSinkConfig,
+        TlsServerConfig, TlsServerIdentityConfig,
     };
     use crate::pginfo::conninfo::PgSslMode;
 
@@ -1438,11 +1595,7 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                     ca_cert: None,
                 },
-                tls: TlsServerConfig {
-                    mode: ApiTlsMode::Disabled,
-                    identity: None,
-                    client_auth: None,
-                },
+                tls: TlsServerConfig::Disabled,
                 roles: PostgresRolesConfig {
                     superuser: PostgresRoleConfig {
                         username: "postgres".to_string(),
@@ -1520,11 +1673,7 @@ mod tests {
             api: ApiConfig {
                 listen_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
                 security: ApiSecurityConfig {
-                    tls: TlsServerConfig {
-                        mode: ApiTlsMode::Disabled,
-                        identity: None,
-                        client_auth: None,
-                    },
+                    transport: ApiTransportConfig::Http,
                     auth: ApiAuthConfig::Disabled,
                 },
             },
@@ -1778,17 +1927,28 @@ mod tests {
     #[test]
     fn validate_runtime_config_requires_pgtm_client_key_when_client_cert_present() {
         let mut cfg = base_runtime_config();
-        cfg.api.security.tls.mode = ApiTlsMode::Required;
-        cfg.api.security.tls.identity = Some(crate::config::TlsServerIdentityConfig {
-            cert_chain: InlineOrPath::Inline {
-                content: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-                    .to_string(),
+        cfg.api.security.transport = ApiTransportConfig::Https {
+            tls: ApiTlsConfig {
+                identity: TlsServerIdentityConfig {
+                    cert_chain: InlineOrPath::Inline {
+                        content: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+                            .to_string(),
+                    },
+                    private_key: InlineOrPath::Inline {
+                        content: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n"
+                            .to_string(),
+                    },
+                },
+                client_auth: ApiClientAuthConfig::Required {
+                    client_ca: InlineOrPath::Inline {
+                        content:
+                            "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+                                .to_string(),
+                    },
+                    allowed_common_names: Vec::new(),
+                },
             },
-            private_key: InlineOrPath::Inline {
-                content: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n"
-                    .to_string(),
-            },
-        });
+        };
         cfg.pgtm = Some(crate::config::PgtmConfig {
             api_url: Some("https://cluster.example:8443".to_string()),
             api_client: Some(crate::config::PgtmApiClientConfig {
@@ -1993,7 +2153,7 @@ postgres = { enabled = true, poll_interval_ms = 200, cleanup = { enabled = true,
 sinks = { stderr = { enabled = true }, file = { enabled = false, mode = "append" } }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2043,7 +2203,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2100,7 +2260,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2160,7 +2320,7 @@ bootstrap_timeout_ms = 300000
 fencing_timeout_ms = 30000
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2219,7 +2379,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2275,7 +2435,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2334,7 +2494,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2428,7 +2588,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2487,7 +2647,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2546,7 +2706,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2605,7 +2765,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2647,7 +2807,7 @@ socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
-tls = { mode = "required" }
+tls = { mode = "enabled" }
 roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
@@ -2664,7 +2824,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2706,7 +2866,7 @@ socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "prefer" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "prefer" }
-tls = { mode = "disabled", client_auth = { client_ca = { content = "client-ca" }, require_client_cert = false } }
+tls = { mode = "disabled", client_auth = { client_ca = { content = "client-ca" }, client_certificate = "optional" } }
 roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
@@ -2723,7 +2883,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2781,7 +2941,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2849,7 +3009,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2900,7 +3060,7 @@ socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full" }
-tls = { mode = "required", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
+tls = { mode = "enabled", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
 roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
@@ -2917,7 +3077,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -2968,7 +3128,7 @@ socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { content = "ca-pem" } }
-tls = { mode = "required", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
+tls = { mode = "enabled", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
 roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
@@ -2985,7 +3145,7 @@ lease_ttl_ms = 10000
 binaries = { postgres = "/usr/bin/postgres", pg_ctl = "/usr/bin/pg_ctl", pg_rewind = "/usr/bin/pg_rewind", initdb = "/usr/bin/initdb", pg_basebackup = "/usr/bin/pg_basebackup", psql = "/usr/bin/psql" }
 
 [api]
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 "#;
 
         std::fs::write(&path, toml)?;
@@ -3037,7 +3197,7 @@ socket_dir = "/tmp/pgtuskmaster/socket"
 log_file = "/tmp/pgtuskmaster/postgres.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
 rewind_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "require" }
-tls = { mode = "required", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
+tls = { mode = "enabled", identity = { cert_chain = { content = "cert" }, private_key = { content = "key" } } }
 roles = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } } }
 pg_hba = { source = { content = "local all all trust" } }
 pg_ident = { source = { content = "empty" } }
@@ -3064,7 +3224,7 @@ sinks = { stderr = { enabled = true }, file = { enabled = false, mode = "append"
 
 [api]
 listen_addr = "127.0.0.1:8443"
-security = { tls = { mode = "disabled" }, auth = { type = "disabled" } }
+security = { transport = { transport = "http" }, auth = { type = "disabled" } }
 
 [debug]
 enabled = true

@@ -184,6 +184,7 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
         match ctx.store.delete_path(local_member_path.as_str()) {
             Ok(()) => {
                 ctx.cache.member_records.remove(&ctx.self_id);
+                release_local_leader_lease(ctx, &mut store_healthy)?;
             }
             Err(err) => {
                 let mut event = dcs_event(
@@ -439,6 +440,34 @@ pub(crate) async fn step_once(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError>
     Ok(())
 }
 
+fn release_local_leader_lease(
+    ctx: &mut DcsWorkerCtx,
+    store_healthy: &mut bool,
+) -> Result<(), WorkerError> {
+    match ctx.store.release_leader_lease(&ctx.scope, &ctx.self_id) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let mut event = dcs_event(
+                dcs_io_error_severity(&err),
+                "dcs local leader release failed",
+                "dcs.local_leader.release_failed",
+                "failed",
+            );
+            let fields = event.fields_mut();
+            dcs_append_base_fields(fields, ctx);
+            fields.insert("error", err.to_string());
+            emit_dcs_event(
+                ctx,
+                "dcs_worker::step_once",
+                event,
+                "dcs local leader release log emit failed",
+            )?;
+            *store_healthy = false;
+            Ok(())
+        }
+    }
+}
+
 fn drain_command_inbox(ctx: &mut DcsWorkerCtx) -> Result<(), WorkerError> {
     loop {
         match ctx.command_inbox.try_recv() {
@@ -542,4 +571,279 @@ fn now_unix_millis() -> Result<crate::state::UnixMillis, WorkerError> {
     let millis = u64::try_from(elapsed.as_millis())
         .map_err(|err| WorkerError::Message(format!("unix millis conversion failed: {err}")))?;
     Ok(crate::state::UnixMillis(millis))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::{BTreeMap, VecDeque},
+        sync::{Arc, Mutex},
+    };
+
+    use super::*;
+    use crate::{
+        dcs::{
+            state::{
+                build_local_member_record, DcsLeaderStateView, DcsMemberLeaseView, LeaderLeaseRecord,
+                MemberRecord,
+            },
+            store::{encode_leader_record, leader_path, DcsStore, WatchEvent, WatchOp},
+        },
+        logging::LogHandle,
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        state::{new_state_channel, TimelineId, UnixMillis, WorkerStatus},
+    };
+
+    #[derive(Default)]
+    struct FakeStoreState {
+        leader_release_calls: usize,
+        paths: BTreeMap<String, String>,
+    }
+
+    struct FakeDcsStore {
+        state: Arc<Mutex<FakeStoreState>>,
+    }
+
+    impl FakeDcsStore {
+        fn new(state: Arc<Mutex<FakeStoreState>>) -> Self {
+            Self { state }
+        }
+    }
+
+    impl DcsStore for FakeDcsStore {
+        fn healthy(&self) -> bool {
+            true
+        }
+
+        fn snapshot_prefix(&mut self, path_prefix: &str) -> Result<Vec<WatchEvent>, DcsStoreError> {
+            let state = self
+                .state
+                .lock()
+                .map_err(|err| DcsStoreError::Io(format!("fake store lock failed: {err}")))?;
+            let mut events = vec![WatchEvent {
+                op: WatchOp::Reset,
+                path: path_prefix.to_string(),
+                value: None,
+                revision: 0,
+            }];
+            for (path, value) in &state.paths {
+                if path.starts_with(path_prefix) {
+                    events.push(WatchEvent {
+                        op: WatchOp::Put,
+                        path: path.clone(),
+                        value: Some(value.clone()),
+                        revision: 0,
+                    });
+                }
+            }
+            Ok(events)
+        }
+
+        fn write_path(&mut self, path: &str, value: String) -> Result<(), DcsStoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| DcsStoreError::Io(format!("fake store lock failed: {err}")))?;
+            state.paths.insert(path.to_string(), value);
+            Ok(())
+        }
+
+        fn write_path_with_lease(
+            &mut self,
+            path: &str,
+            value: String,
+            _lease_ttl_ms: u64,
+        ) -> Result<(), DcsStoreError> {
+            self.write_path(path, value)
+        }
+
+        fn delete_path(&mut self, path: &str) -> Result<(), DcsStoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| DcsStoreError::Io(format!("fake store lock failed: {err}")))?;
+            state.paths.remove(path);
+            Ok(())
+        }
+
+        fn drain_watch_events(&mut self) -> Result<Vec<WatchEvent>, DcsStoreError> {
+            Ok(VecDeque::new().into())
+        }
+
+        fn acquire_leader_lease(
+            &mut self,
+            _scope: &str,
+            _member_id: &MemberId,
+        ) -> Result<(), DcsStoreError> {
+            Ok(())
+        }
+
+        fn release_leader_lease(
+            &mut self,
+            scope: &str,
+            member_id: &MemberId,
+        ) -> Result<(), DcsStoreError> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| DcsStoreError::Io(format!("fake store lock failed: {err}")))?;
+            state.leader_release_calls = state.leader_release_calls.saturating_add(1);
+            state.paths.remove(&leader_path(scope));
+            let member_path = format!("/{}/member/{}", scope.trim_matches('/'), member_id.0);
+            state.paths.remove(&member_path);
+            Ok(())
+        }
+
+        fn clear_switchover(&mut self, _scope: &str) -> Result<(), DcsStoreError> {
+            Ok(())
+        }
+    }
+
+    fn stale_pg_state() -> PgInfoState {
+        PgInfoState::Unknown {
+            common: PgInfoCommon {
+                worker: WorkerStatus::Running,
+                sql: SqlStatus::Unknown,
+                readiness: Readiness::Unknown,
+                timeline: Some(TimelineId(1)),
+                pg_config: PgConfig {
+                    port: None,
+                    hot_standby: None,
+                    primary_conninfo: None,
+                    primary_slot_name: None,
+                    extra: BTreeMap::new(),
+                },
+                last_refresh_at: None,
+            },
+        }
+    }
+
+    fn primary_member_record(self_id: &MemberId, lease_ttl_ms: u64) -> MemberRecord {
+        build_local_member_record(
+            self_id,
+            "127.0.0.1",
+            5432,
+            Some("https://127.0.0.1:8443"),
+            lease_ttl_ms,
+            &PgInfoState::Primary {
+                common: PgInfoCommon {
+                    worker: WorkerStatus::Running,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: Some(TimelineId(1)),
+                    pg_config: PgConfig {
+                        port: None,
+                        hot_standby: None,
+                        primary_conninfo: None,
+                        primary_slot_name: None,
+                        extra: BTreeMap::new(),
+                    },
+                    last_refresh_at: Some(UnixMillis(1)),
+                },
+                wal_lsn: crate::state::WalLsn(42),
+                slots: Vec::new(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn stale_local_snapshot_releases_owned_leader_lease() -> Result<(), WorkerError> {
+        let self_id = MemberId("node-a".to_string());
+        let scope = "scope-a".to_string();
+        let lease_ttl_ms = 10_000;
+        let stale_pg = stale_pg_state();
+        let member_record = primary_member_record(&self_id, lease_ttl_ms);
+        let member_path = format!("/{}/member/{}", scope, self_id.0);
+        let member_value = serde_json::to_string(&member_record)
+            .map_err(|err| WorkerError::Message(format!("encode member record failed: {err}")))?;
+        let (leader_path, leader_value) = encode_leader_record(&scope, &self_id, 7)
+            .map_err(|err| WorkerError::Message(err.to_string()))?;
+
+        let shared_state = Arc::new(Mutex::new(FakeStoreState {
+            leader_release_calls: 0,
+            paths: BTreeMap::from([
+                (member_path.clone(), member_value),
+                (leader_path.clone(), leader_value),
+            ]),
+        }));
+
+        let (_pg_publisher, pg_subscriber) = new_state_channel(stale_pg);
+        let (dcs_publisher, dcs_subscriber) =
+            new_state_channel(crate::dcs::DcsView::empty(WorkerStatus::Starting));
+        let (_handle, command_inbox) = crate::dcs::command::dcs_command_channel();
+
+        let mut ctx = DcsWorkerCtx {
+            self_id: self_id.clone(),
+            scope: scope.clone(),
+            poll_interval: std::time::Duration::from_secs(1),
+            local_postgres_host: "127.0.0.1".to_string(),
+            local_postgres_port: 5432,
+            local_api_url: Some("https://127.0.0.1:8443".to_string()),
+            pg_subscriber,
+            publisher: dcs_publisher,
+            command_inbox,
+            store: Box::new(FakeDcsStore::new(Arc::clone(&shared_state))),
+            log: LogHandle::disabled(),
+            cache: DcsCache {
+                member_records: BTreeMap::from([(self_id.clone(), member_record)]),
+                leader_record: Some(LeaderLeaseRecord {
+                    holder: self_id.clone(),
+                    generation: 7,
+                }),
+                switchover_record: None,
+                init_lock: None,
+            },
+            member_ttl_ms: lease_ttl_ms,
+            last_emitted_store_healthy: None,
+            last_emitted_trust: None,
+        };
+
+        step_once(&mut ctx).await?;
+
+        let published = dcs_subscriber.latest();
+        let state = shared_state
+            .lock()
+            .map_err(|err| WorkerError::Message(format!("fake store lock failed: {err}")))?;
+
+        if state.leader_release_calls != 1 {
+            return Err(WorkerError::Message(format!(
+                "expected exactly one leader release, observed {}",
+                state.leader_release_calls
+            )));
+        }
+        if state.paths.contains_key(&leader_path) {
+            return Err(WorkerError::Message(
+                "expected leader path to be removed after stale snapshot".to_string(),
+            ));
+        }
+        if state.paths.contains_key(&member_path) {
+            return Err(WorkerError::Message(
+                "expected member path to be removed after stale snapshot".to_string(),
+            ));
+        }
+        if !matches!(published.leader, DcsLeaderStateView::Unheld) {
+            return Err(WorkerError::Message(format!(
+                "expected published leader to be unheld, observed {:?}",
+                published.leader
+            )));
+        }
+        if !matches!(published.trust, DcsTrust::Degraded) {
+            return Err(WorkerError::Message(format!(
+                "expected published trust to be degraded, observed {:?}",
+                published.trust
+            )));
+        }
+        if published.members.get(&self_id).is_some_and(|member| {
+            matches!(
+                member.lease,
+                DcsMemberLeaseView { ttl_ms, .. } if ttl_ms == lease_ttl_ms
+            )
+        }) {
+            return Err(WorkerError::Message(
+                "expected local member to be absent from published DCS view".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }

@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     config::{
         resolve_inline_or_path_bytes, resolve_inline_or_path_string, resolve_secret_string,
-        ApiTlsMode, RoleAuthConfig, RuntimeConfig, SecretSource,
+        RoleAuthConfig, RuntimeConfig, SecretSource, TlsServerConfig,
     },
     postgres_managed_conf::{
         managed_standby_passfile_path, render_managed_postgres_conf, ManagedPostgresConf,
@@ -150,22 +150,17 @@ struct MaterializedTlsFiles {
 fn materialize_tls_files(
     cfg: &RuntimeConfig,
 ) -> Result<MaterializedTlsFiles, ManagedPostgresError> {
-    match cfg.postgres.tls.mode {
-        ApiTlsMode::Disabled => Ok(MaterializedTlsFiles {
+    match &cfg.postgres.tls {
+        TlsServerConfig::Disabled => Ok(MaterializedTlsFiles {
             managed_tls_config: ManagedPostgresTlsConfig::Disabled,
             cert_path: None,
             key_path: None,
             client_ca_path: None,
         }),
-        ApiTlsMode::Optional | ApiTlsMode::Required => {
-            let identity = cfg.postgres.tls.identity.as_ref().ok_or_else(|| {
-                ManagedPostgresError::InvalidConfig {
-                    message:
-                        "postgres.tls.identity must be configured with user-supplied certificate material when postgres.tls.mode is optional or required"
-                            .to_string(),
-                }
-            })?;
-
+        TlsServerConfig::Enabled {
+            identity,
+            client_auth,
+        } => {
             let cert_pem = load_inline_or_path_bytes(
                 "postgres.tls.identity.cert_chain",
                 &identity.cert_chain,
@@ -183,7 +178,7 @@ fn materialize_tls_files(
             write_atomic(&managed_cert, cert_pem.as_slice(), Some(0o644))?;
             write_atomic(&managed_key, key_pem.as_slice(), Some(0o600))?;
 
-            let client_ca_path = if let Some(client_auth) = cfg.postgres.tls.client_auth.as_ref() {
+            let client_ca_path = if let Some(client_auth) = client_auth.as_ref() {
                 let ca_pem = load_inline_or_path_bytes(
                     "postgres.tls.client_auth.client_ca",
                     &client_auth.client_ca,
@@ -607,7 +602,8 @@ mod tests {
 
     use crate::{
         config::{
-            ApiTlsMode, HaConfig, InlineOrPath, ProcessConfig, RuntimeConfig, TlsServerConfig,
+            ClientCertificateMode, HaConfig, InlineOrPath, ProcessConfig, RuntimeConfig,
+            TlsServerConfig,
         },
         pginfo::{conninfo::PgSslMode, state::PgConnInfo},
         postgres_managed_conf::{
@@ -967,21 +963,20 @@ mod tests {
     ) -> Result<(), String> {
         let data_dir = unique_test_data_dir("tls");
         let mut cfg = sample_runtime_config(data_dir.clone());
-        cfg.postgres.tls = TlsServerConfig {
-            mode: ApiTlsMode::Required,
-            identity: Some(crate::config::TlsServerIdentityConfig {
+        cfg.postgres.tls = TlsServerConfig::Enabled {
+            identity: crate::config::TlsServerIdentityConfig {
                 cert_chain: InlineOrPath::Inline {
                     content: "CERT".to_string(),
                 },
                 private_key: InlineOrPath::Inline {
                     content: "KEY".to_string(),
                 },
-            }),
+            },
             client_auth: Some(crate::config::TlsClientAuthConfig {
                 client_ca: InlineOrPath::Inline {
                     content: "CA".to_string(),
                 },
-                require_client_cert: true,
+                client_certificate: ClientCertificateMode::Required,
             }),
         };
 

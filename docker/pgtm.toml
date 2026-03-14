@@ -10,7 +10,7 @@ socket_dir = "/tmp"
 log_file = "/tmp/pgtm-operator.log"
 local_conn_identity = { user = "postgres", dbname = "postgres", ssl_mode = "disable" }
 rewind_conn_identity = { user = "rewinder", dbname = "postgres", ssl_mode = "verify-full", ca_cert = { path = "docker/certs/ca.crt" } }
-tls = { mode = "required", identity = { cert_chain = { path = "docker/certs/pgtm-client/tls.crt" }, private_key = { path = "docker/certs/pgtm-client/tls.key" } }, client_auth = { client_ca = { path = "docker/certs/ca.crt" }, require_client_cert = false } }
+tls = { mode = "enabled", identity = { cert_chain = { path = "docker/certs/pgtm-client/tls.crt" }, private_key = { path = "docker/certs/pgtm-client/tls.key" } }, client_auth = { client_ca = { path = "docker/certs/ca.crt" }, client_certificate = "optional" } }
 pg_hba = { source = { path = "docker/pg/pg_hba.conf" } }
 pg_ident = { source = { path = "docker/pg/pg_ident.conf" } }
 
@@ -65,7 +65,7 @@ mode = "append"
 
 [api]
 listen_addr = "0.0.0.0:8443"
-security = { tls = { mode = "required", identity = { cert_chain = { path = "docker/certs/pgtm-client/tls.crt" }, private_key = { path = "docker/certs/pgtm-client/tls.key" } }, client_auth = { client_ca = { path = "docker/certs/ca.crt" }, require_client_cert = true } }, auth = { type = "role_tokens", read_token = { path = "docker/secrets/api-read-token" }, admin_token = { path = "docker/secrets/api-admin-token" } } }
+security = { transport = { transport = "https", tls = { identity = { cert_chain = { path = "docker/certs/pgtm-client/tls.crt" }, private_key = { path = "docker/certs/pgtm-client/tls.key" } }, client_auth = { client_ca = { path = "docker/certs/ca.crt" }, require_client_cert = true } } }, auth = { type = "role_tokens", read_token = { path = "docker/secrets/api-read-token" }, admin_token = { path = "docker/secrets/api-admin-token" } } }
 
 [pgtm]
 api_url = "https://127.0.0.1:18081"

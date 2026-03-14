@@ -31,6 +31,12 @@ pub struct AcceptedResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ReloadCertificatesResponse {
+    pub reloaded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeState {
     pub cluster_name: String,
     pub scope: String,

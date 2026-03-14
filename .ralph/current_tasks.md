@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sat Mar 14 02:16:56 AM CET 2026
+Generated: Sat Mar 14 03:29:49 CET 2026
 
 # Task `.ralph/tasks/story-cert-reload-postgres-sighup/01-task-send-postgres-sighup-after-certificate-reload.md`
 
@@ -20,18 +20,6 @@ Generated: Sat Mar 14 02:16:56 AM CET 2026
 
 <priority>medium</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/`</blocked_by>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ctl-operator-experience/08-task-replace-hand-rolled-api-server-with-axum-axum-server-and-tower.md`
-
-```
-## Task: Replace The Hand-Rolled API Server With `axum` + `axum-server` + `tower` <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
 ```
 
 ==============

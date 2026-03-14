@@ -1,175 +1,149 @@
-use std::time::Duration;
-
+use axum::{
+    body::Body,
+    http::{Method, Request, StatusCode},
+};
 use pgtuskmaster_rust::{
-    api::worker::ApiWorkerCtx,
     config::{ApiAuthConfig, ApiRoleTokensConfig, RuntimeConfig, SecretSource},
     dcs::DcsHandle,
-    state::{new_state_channel, WorkerError},
+    test_harness::api::{build_test_router, build_test_router_with_live_state},
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tower::util::ServiceExt;
 
-fn sample_runtime_config(auth_token: Option<String>) -> RuntimeConfig {
-    let auth = match auth_token {
-        Some(token) => ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-            read_token: Some(SecretSource::Inline {
-                content: token.clone(),
+fn sample_runtime_config(read_token: Option<&str>, admin_token: Option<&str>) -> RuntimeConfig {
+    let auth = match (read_token, admin_token) {
+        (None, None) => ApiAuthConfig::Disabled,
+        (read_token, admin_token) => ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+            read_token: read_token.map(|token| SecretSource::Inline {
+                content: token.to_string(),
             }),
-            admin_token: Some(SecretSource::Inline { content: token }),
+            admin_token: admin_token.map(|token| SecretSource::Inline {
+                content: token.to_string(),
+            }),
         }),
-        None => ApiAuthConfig::Disabled,
     };
 
     pgtuskmaster_rust::test_harness::runtime_config::RuntimeConfigBuilder::new()
-        .with_api_listen_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .with_api_auth(auth)
         .build()
 }
 
-const HEADER_LIMIT: usize = 16 * 1024;
-const MAX_BODY_BYTES: usize = 256 * 1024;
-const MAX_RESPONSE_BYTES: usize = HEADER_LIMIT + MAX_BODY_BYTES;
-const IO_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Debug)]
-struct TestHttpResponse {
-    status_code: u16,
-}
-
-fn parse_status_code(response: &[u8]) -> Result<(u16, usize), WorkerError> {
-    let header_end = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| WorkerError::Message("response missing header terminator".to_string()))?
-        + 4;
-    let status_line_end = response
-        .windows(2)
-        .position(|window| window == b"\r\n")
-        .ok_or_else(|| WorkerError::Message("response missing status line".to_string()))?;
-    let status_line = std::str::from_utf8(&response[..status_line_end])
-        .map_err(|err| WorkerError::Message(format!("response status line not utf8: {err}")))?;
-    let status_code = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| WorkerError::Message("response missing status code".to_string()))?
-        .parse::<u16>()
-        .map_err(|err| WorkerError::Message(format!("invalid status code: {err}")))?;
-    Ok((status_code, header_end))
-}
-
-async fn read_http_response_framed<S>(stream: &mut S) -> Result<TestHttpResponse, WorkerError>
-where
-    S: AsyncRead + Unpin,
-{
-    let task = async {
-        let mut buffer = Vec::new();
-        let mut scratch = [0_u8; 1024];
-        loop {
-            let read = stream
-                .read(&mut scratch)
-                .await
-                .map_err(|err| WorkerError::Message(format!("read failed: {err}")))?;
-            if read == 0 {
-                break;
-            }
-            buffer.extend_from_slice(&scratch[..read]);
-            if buffer.len() > MAX_RESPONSE_BYTES {
-                return Err(WorkerError::Message("response exceeded limit".to_string()));
-            }
-            if let Ok((status_code, header_end)) = parse_status_code(&buffer) {
-                let body = buffer[header_end..].to_vec();
-                if body.len() <= MAX_BODY_BYTES {
-                    return Ok(TestHttpResponse { status_code });
-                }
-            }
-        }
-        Err(WorkerError::Message(
-            "connection closed before complete response".to_string(),
-        ))
+fn request(
+    method: Method,
+    uri: &str,
+    bearer_token: Option<&str>,
+) -> Result<Request<Body>, String> {
+    let builder = Request::builder().method(method).uri(uri);
+    let builder = match bearer_token {
+        Some(token) => builder.header("authorization", format!("Bearer {token}")),
+        None => builder,
     };
-
-    tokio::time::timeout(IO_TIMEOUT, task)
-        .await
-        .map_err(|_| WorkerError::Message("timed out reading http response".to_string()))?
-}
-
-async fn request_once(
-    ctx: &mut ApiWorkerCtx,
-    request: &str,
-) -> Result<TestHttpResponse, WorkerError> {
-    let addr = ctx.local_addr()?;
-    let mut client = tokio::net::TcpStream::connect(addr)
-        .await
-        .map_err(|err| WorkerError::Message(format!("connect failed: {err}")))?;
-    client
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|err| WorkerError::Message(format!("write failed: {err}")))?;
-
-    pgtuskmaster_rust::api::worker::step_once(ctx).await?;
-    read_http_response_framed(&mut client).await
+    builder.body(Body::empty()).map_err(|err| err.to_string())
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn bdd_api_state_requires_live_state_subscribers() -> Result<(), WorkerError> {
-    let cfg = sample_runtime_config(None);
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg);
+async fn bdd_api_state_requires_live_state_subscribers() -> Result<(), String> {
+    let app = build_test_router(sample_runtime_config(None, None), DcsHandle::closed())
+        .map_err(|err| err.to_string())?;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    let response = app
+        .oneshot(request(Method::GET, "/state", None)?)
         .await
-        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
+        .map_err(|err| err.to_string())?;
 
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, DcsHandle::closed());
-    let response = request_once(
-        &mut ctx,
-        "GET /state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-    )
-    .await?;
-    assert_eq!(response.status_code, 503);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn bdd_api_old_debug_and_fallback_routes_are_gone() -> Result<(), WorkerError> {
-    let cfg = sample_runtime_config(None);
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg);
+async fn bdd_api_old_debug_and_fallback_routes_are_gone() -> Result<(), String> {
+    let app = build_test_router(sample_runtime_config(None, None), DcsHandle::closed())
+        .map_err(|err| err.to_string())?;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    let debug_response = app
+        .clone()
+        .oneshot(request(Method::GET, "/debug/verbose", None)?)
         .await
-        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
+        .map_err(|err| err.to_string())?;
+    assert_eq!(debug_response.status(), StatusCode::NOT_FOUND);
 
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, DcsHandle::closed());
-
-    let debug_response = request_once(
-        &mut ctx,
-        "GET /debug/verbose HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-    )
-    .await?;
-    assert_eq!(debug_response.status_code, 404);
-
-    let fallback_response = request_once(
-        &mut ctx,
-        "GET /fallback/cluster HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-    )
-    .await?;
-    assert_eq!(fallback_response.status_code, 404);
+    let fallback_response = app
+        .oneshot(request(Method::GET, "/fallback/cluster", None)?)
+        .await
+        .map_err(|err| err.to_string())?;
+    assert_eq!(fallback_response.status(), StatusCode::NOT_FOUND);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn bdd_api_auth_token_denies_missing_header() -> Result<(), WorkerError> {
-    let cfg = sample_runtime_config(Some("secret".to_string()));
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|err| WorkerError::Message(format!("bind failed: {err}")))?;
-
-    let mut ctx = ApiWorkerCtx::contract_stub(listener, cfg_subscriber, DcsHandle::closed());
-    let response = request_once(
-        &mut ctx,
-        "GET /state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+async fn bdd_api_auth_token_denies_missing_header() -> Result<(), String> {
+    let app = build_test_router(
+        sample_runtime_config(Some("reader"), Some("admin")),
+        DcsHandle::closed(),
     )
-    .await?;
-    assert_eq!(response.status_code, 401);
+        .map_err(|err| err.to_string())?;
+
+    let response = app
+        .oneshot(request(Method::GET, "/state", None)?)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_auth_token_denies_invalid_header() -> Result<(), String> {
+    let app = build_test_router(
+        sample_runtime_config(Some("reader"), Some("admin")),
+        DcsHandle::closed(),
+    )
+    .map_err(|err| err.to_string())?;
+
+    let response = app
+        .oneshot(request(Method::GET, "/state", Some("wrong-token"))?)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_state_succeeds_with_live_subscribers() -> Result<(), String> {
+    let app = build_test_router_with_live_state(
+        sample_runtime_config(None, None),
+        DcsHandle::closed(),
+    )
+    .map_err(|err| err.to_string())?;
+
+    let response = app
+        .oneshot(request(Method::GET, "/state", None)?)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bdd_api_read_token_can_read_but_not_call_admin_routes() -> Result<(), String> {
+    let app = build_test_router_with_live_state(
+        sample_runtime_config(Some("reader"), Some("admin")),
+        DcsHandle::closed(),
+    )
+    .map_err(|err| err.to_string())?;
+
+    let read_response = app
+        .clone()
+        .oneshot(request(Method::GET, "/state", Some("reader"))?)
+        .await
+        .map_err(|err| err.to_string())?;
+    assert_eq!(read_response.status(), StatusCode::OK);
+
+    let admin_response = app
+        .oneshot(request(Method::POST, "/reload/certs", Some("reader"))?)
+        .await
+        .map_err(|err| err.to_string())?;
+    assert_eq!(admin_response.status(), StatusCode::FORBIDDEN);
     Ok(())
 }
