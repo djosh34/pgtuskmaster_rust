@@ -1,5 +1,6 @@
 use std::{future::Future, path::PathBuf, pin::Pin};
 
+use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -138,7 +139,8 @@ pub enum ActiveJobKind {
     StartReplica,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, LogValue)]
+#[log_value(rename_all = "snake_case")]
 pub(crate) enum ProcessJobKind {
     Bootstrap,
     BaseBackup,

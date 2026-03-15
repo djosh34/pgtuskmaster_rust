@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -15,8 +16,9 @@ use crate::{
 
 use super::command::DcsCommandInbox;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, LogValue)]
 #[serde(rename_all = "snake_case")]
+#[log_value(rename_all = "snake_case")]
 pub enum DcsMode {
     NotTrusted,
     Degraded,
@@ -238,11 +240,10 @@ impl MemberPostgresView {
             Self::Unknown {
                 readiness: Readiness::Ready,
                 ..
+            } | Self::Replica {
+                readiness: Readiness::Ready,
+                ..
             }
-                | Self::Replica {
-                    readiness: Readiness::Ready,
-                    ..
-                }
         )
     }
 
@@ -469,7 +470,10 @@ pub(crate) fn build_dcs_view(mode: DcsMode, cache: &DcsCache) -> DcsView {
 
     match mode {
         DcsMode::NotTrusted => DcsView::NotTrusted(NotTrustedView {
-            observed_leadership: cache.leader_record.as_ref().map(|record| record.epoch.clone()),
+            observed_leadership: cache
+                .leader_record
+                .as_ref()
+                .map(|record| record.epoch.clone()),
             cluster,
         }),
         DcsMode::Degraded => DcsView::Degraded(cluster),
@@ -629,9 +633,8 @@ mod tests {
 
     use super::{
         build_dcs_view, build_local_member_record, DcsCache, DcsMode, LeadershipObservation,
-        LeadershipRecord,
-        MemberLeaseRecord, MemberPostgresRecord, MemberPostgresView, MemberRecord,
-        ObservedWalPosition,
+        LeadershipRecord, MemberLeaseRecord, MemberPostgresRecord, MemberPostgresView,
+        MemberRecord, ObservedWalPosition,
     };
 
     fn member_record(postgres: MemberPostgresRecord) -> Result<MemberRecord, String> {
@@ -721,7 +724,8 @@ mod tests {
     }
 
     #[test]
-    fn build_local_member_record_preserves_last_known_identity_when_pg_is_unknown() -> Result<(), String> {
+    fn build_local_member_record_preserves_last_known_identity_when_pg_is_unknown(
+    ) -> Result<(), String> {
         let previous = member_record(MemberPostgresRecord::Primary {
             readiness: Readiness::Ready,
             system_identifier: Some(SystemIdentifier(41)),

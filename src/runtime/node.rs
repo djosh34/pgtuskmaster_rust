@@ -8,7 +8,7 @@ use crate::{
     state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName},
 };
 
-use super::log_event::{RuntimeLogEvent, RuntimeLogOrigin, RuntimeNodeIdentity};
+use super::log_event::RuntimeLogEvent;
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -29,15 +29,13 @@ pub enum RuntimeError {
     Time(String),
 }
 
-fn runtime_startup_event(cfg: &RuntimeConfig, startup_run_id: &str) -> RuntimeLogEvent {
+fn runtime_startup_event(
+    startup_run_id: &str,
+    logging_level: crate::config::LogLevel,
+) -> RuntimeLogEvent {
     RuntimeLogEvent::StartupEntered {
-        origin: RuntimeLogOrigin::RunNodeFromConfig,
-        identity: RuntimeNodeIdentity {
-            scope: cfg.cluster.scope.clone(),
-            member_id: cfg.cluster.member_id.clone(),
-        },
         startup_run_id: startup_run_id.to_string(),
-        logging_level: cfg.logging.level,
+        logging_level,
     }
 }
 
@@ -59,7 +57,7 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         cfg.cluster.member_id,
         crate::logging::system_now_unix_millis()
     );
-    log.send(runtime_startup_event(&cfg, startup_run_id.as_str()))
+    log.send(runtime_startup_event(startup_run_id.as_str(), cfg.logging.level))
         .map_err(|err| {
             RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
         })?;
@@ -99,8 +97,9 @@ async fn run_workers(
         client: cfg.dcs.client.clone(),
         poll_interval: worker_poll_interval,
         member_ttl_ms: cfg.ha.lease_ttl_ms,
-        advertised: crate::dcs::startup::DcsAdvertisedEndpoints::from_config(&cfg)
-            .map_err(|err| RuntimeError::Worker(format!("dcs advertisement build failed: {err}")))?,
+        advertised: crate::dcs::startup::DcsAdvertisedEndpoints::from_config(&cfg).map_err(
+            |err| RuntimeError::Worker(format!("dcs advertisement build failed: {err}")),
+        )?,
         pg_subscriber: pginfo.state.clone(),
         log: log.clone(),
     })
@@ -142,15 +141,7 @@ async fn run_workers(
     })
     .map_err(|err| RuntimeError::Worker(err.to_string()))?;
 
-    let (
-        (),
-        pginfo_result,
-        dcs_result,
-        process_result,
-        ingest_result,
-        ha_result,
-        api_result,
-    ) = tokio::join!(
+    let ((), pginfo_result, dcs_result, process_result, ingest_result, ha_result, api_result) = tokio::join!(
         log_worker.run(),
         pginfo.worker.run(),
         dcs.worker.run(),

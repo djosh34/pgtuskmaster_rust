@@ -252,7 +252,6 @@ impl ProcessRuntimePlan {
             },
         }
     }
-
 }
 
 impl ProcessRuntimePlan {

@@ -261,7 +261,11 @@ fn follow_goal(world: &WorldView, leader: MemberId) -> FollowGoal {
             super::types::DivergenceState::RewindPossible => {
                 if rewind_failed_and_requires_basebackup(&world.local.process) {
                     RecoveryPlan::Basebackup
-                } else if world.local.observation.basebackup_completed_awaiting_start() {
+                } else if world
+                    .local
+                    .observation
+                    .basebackup_completed_awaiting_start()
+                {
                     RecoveryPlan::StartStreaming
                 } else {
                     RecoveryPlan::Rewind

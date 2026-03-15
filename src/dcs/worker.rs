@@ -18,11 +18,11 @@ use crate::{
 
 use super::{
     command::{dcs_command_channel, DcsCommand, DcsHandle},
-    log_event::{DcsFailure, DcsLogEvent, DcsLogIdentity, DcsLogOrigin},
+    log_event::DcsLogEvent,
     state::{
         build_dcs_view, build_local_member_record, evaluate_mode, DcsCadence, DcsControlPlane,
-        DcsEtcdConfig, DcsLocalMemberAdvertisement, DcsNodeIdentity, DcsObservedState,
-        DcsRuntime, DcsStateChannel, DcsWorkerCtx, LeadershipRecord, SwitchoverRecord,
+        DcsEtcdConfig, DcsLocalMemberAdvertisement, DcsNodeIdentity, DcsObservedState, DcsRuntime,
+        DcsStateChannel, DcsWorkerCtx, LeadershipRecord, SwitchoverRecord,
     },
 };
 
@@ -170,9 +170,11 @@ pub(crate) async fn run(mut ctx: DcsWorkerCtx) -> Result<(), WorkerError> {
                     .await
                     .map(|_| ())
                 }
-                ConnectedStep::Watch(Ok(Some(response))) => {
-                    apply_watch_response(&ctx.identity.scope, &mut ctx.state_channel.cache, response)
-                }
+                ConnectedStep::Watch(Ok(Some(response))) => apply_watch_response(
+                    &ctx.identity.scope,
+                    &mut ctx.state_channel.cache,
+                    response,
+                ),
                 ConnectedStep::Watch(Ok(None)) => {
                     Err(DcsError::Io("etcd watch stream closed".to_string()))
                 }
@@ -260,7 +262,12 @@ pub(crate) async fn run(mut ctx: DcsWorkerCtx) -> Result<(), WorkerError> {
 async fn connect_session(ctx: &mut DcsWorkerCtx) -> Result<ConnectedSession, DcsError> {
     let scope_prefix = scope_prefix(&ctx.identity.scope);
     let mut client = connect_client(&ctx.etcd).await?;
-    let revision = load_snapshot(&ctx.identity.scope, &mut client, &mut ctx.state_channel.cache).await?;
+    let revision = load_snapshot(
+        &ctx.identity.scope,
+        &mut client,
+        &mut ctx.state_channel.cache,
+    )
+    .await?;
     let start_revision = revision.saturating_add(1);
     let (watcher, watch_stream) = timeout_etcd(
         "etcd watch",
@@ -292,9 +299,9 @@ async fn sync_local_member(
 ) -> Result<(), DcsError> {
     let now = now_unix_millis().map_err(|err| DcsError::Io(err.to_string()))?;
     let local_member_path = member_path(&identity.scope, &identity.self_id);
-    let pg_snapshot_stale = pg_snapshot.last_refresh_at().is_none_or(|last_refresh_at| {
-        now.0.saturating_sub(last_refresh_at.0) > member_ttl_ms
-    });
+    let pg_snapshot_stale = pg_snapshot
+        .last_refresh_at()
+        .is_none_or(|last_refresh_at| now.0.saturating_sub(last_refresh_at.0) > member_ttl_ms);
 
     if pg_snapshot_stale {
         timeout_etcd(
@@ -350,8 +357,7 @@ async fn handle_connected_command(
             acquire_local_leadership(identity, member_ttl_ms, session, cache).await?;
         }
         DcsCommand::ReleaseLeadership => {
-            release_local_leadership(session, &identity.scope, &identity.self_id, cache)
-                .await?;
+            release_local_leadership(session, &identity.scope, &identity.self_id, cache).await?;
         }
         DcsCommand::PublishSwitchoverAny => {
             publish_switchover(
@@ -565,27 +571,30 @@ async fn handle_connected_failure(
     }
     ctx.runtime
         .log
-        .send(DcsLogEvent::ConnectedStepFailed {
-            origin: DcsLogOrigin::ConnectedFailure,
-            identity: dcs_event_identity(ctx),
-            failure: dcs_failure(err),
+        .send(connected_failure_event(err))
+        .map_err(|log_err| {
+            WorkerError::Message(format!("dcs watch failure log emit failed: {log_err}"))
         })
-        .map_err(|log_err| WorkerError::Message(format!("dcs watch failure log emit failed: {log_err}")))
 }
 
-fn handle_initial_connect_failure(ctx: &mut DcsWorkerCtx, err: &DcsError) -> Result<(), WorkerError> {
+fn handle_initial_connect_failure(
+    ctx: &mut DcsWorkerCtx,
+    err: &DcsError,
+) -> Result<(), WorkerError> {
     ctx.runtime
         .log
-        .send(DcsLogEvent::InitialConnectFailed {
-            origin: DcsLogOrigin::InitialConnectFailure,
-            identity: dcs_event_identity(ctx),
-            failure: dcs_failure(err),
+        .send(initial_connect_failure_event(err))
+        .map_err(|log_err| {
+            WorkerError::Message(format!("dcs connect failure log emit failed: {log_err}"))
         })
-        .map_err(|log_err| WorkerError::Message(format!("dcs connect failure log emit failed: {log_err}")))
 }
 
 fn publish_current_view(ctx: &mut DcsWorkerCtx, etcd_reachable: bool) -> Result<(), WorkerError> {
-    let mode = evaluate_mode(etcd_reachable, &ctx.state_channel.cache, &ctx.identity.self_id);
+    let mode = evaluate_mode(
+        etcd_reachable,
+        &ctx.state_channel.cache,
+        &ctx.identity.self_id,
+    );
     let next = if etcd_reachable {
         build_dcs_view(mode, &ctx.state_channel.cache)
     } else {
@@ -598,17 +607,45 @@ fn publish_current_view(ctx: &mut DcsWorkerCtx, etcd_reachable: bool) -> Result<
         ctx.runtime
             .log
             .send(DcsLogEvent::CoordinationModeTransition {
-                origin: DcsLogOrigin::PublishCurrentView,
-                identity: dcs_event_identity(ctx),
                 previous,
                 next: next_mode,
             })
-            .map_err(|err| WorkerError::Message(format!("dcs coordination mode log emit failed: {err}")))?;
+            .map_err(|err| {
+                WorkerError::Message(format!("dcs coordination mode log emit failed: {err}"))
+            })?;
     }
     ctx.state_channel
         .publisher
         .publish(next)
         .map_err(|err| WorkerError::Message(format!("dcs publish failed: {err}")))
+}
+
+fn connected_failure_event(err: &DcsError) -> DcsLogEvent {
+    match err {
+        DcsError::Io(cause) => DcsLogEvent::ConnectedStepStoreIoFailed {
+            cause: cause.clone(),
+        },
+        DcsError::Decode { key, message } => DcsLogEvent::ConnectedStepDecodeFailed {
+            cause: format!("key `{key}` decode failed: {message}"),
+        },
+        DcsError::AlreadyExists(cause) => DcsLogEvent::ConnectedStepAlreadyExists {
+            cause: cause.clone(),
+        },
+    }
+}
+
+fn initial_connect_failure_event(err: &DcsError) -> DcsLogEvent {
+    match err {
+        DcsError::Io(cause) => DcsLogEvent::InitialConnectStoreIoFailed {
+            cause: cause.clone(),
+        },
+        DcsError::Decode { key, message } => DcsLogEvent::InitialConnectDecodeFailed {
+            cause: format!("key `{key}` decode failed: {message}"),
+        },
+        DcsError::AlreadyExists(cause) => DcsLogEvent::InitialConnectAlreadyExists {
+            cause: cause.clone(),
+        },
+    }
 }
 
 async fn load_snapshot(
@@ -765,27 +802,6 @@ fn leader_path(scope: &str) -> String {
 
 fn switchover_path(scope: &str) -> String {
     format!("/{}/switchover", scope.trim_matches('/'))
-}
-
-fn dcs_event_identity(ctx: &DcsWorkerCtx) -> DcsLogIdentity {
-    DcsLogIdentity {
-        scope: ctx.identity.scope.clone(),
-        member_id: ctx.identity.self_id.0.clone(),
-    }
-}
-
-fn dcs_failure(err: &DcsError) -> DcsFailure {
-    match err {
-        DcsError::AlreadyExists(error) => DcsFailure::AlreadyExists {
-            error: error.clone(),
-        },
-        DcsError::Io(error) => DcsFailure::StoreIo {
-            error: error.clone(),
-        },
-        DcsError::Decode { message, .. } => DcsFailure::Decode {
-            error: message.clone(),
-        },
-    }
 }
 
 fn ttl_seconds_from_ms(lease_ttl_ms: u64) -> Result<i64, DcsError> {

@@ -17,20 +17,17 @@ use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::Registry;
 
-mod event;
+pub(crate) mod event;
 mod raw_record;
 
 pub(crate) mod postgres_ingest;
 pub(crate) mod tailer;
 
-pub(crate) use event::{
-    DomainLogEvent, LogEventMetadata, LogEventResult, LogEventSource, LogFieldVisitor,
-    SealedLogEvent,
-};
+pub(crate) use event::LoggableEvent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum SeverityText {
+pub(crate) enum LogSeverity {
     Trace,
     Debug,
     Info,
@@ -39,7 +36,7 @@ pub(crate) enum SeverityText {
     Fatal,
 }
 
-impl SeverityText {
+impl LogSeverity {
     pub(crate) fn number(self) -> u8 {
         // OpenTelemetry severity_number mapping.
         match self {
@@ -53,7 +50,7 @@ impl SeverityText {
     }
 }
 
-impl From<crate::config::LogLevel> for SeverityText {
+impl From<crate::config::LogLevel> for LogSeverity {
     fn from(value: crate::config::LogLevel) -> Self {
         match value {
             crate::config::LogLevel::Trace => Self::Trace,
@@ -64,6 +61,15 @@ impl From<crate::config::LogLevel> for SeverityText {
             crate::config::LogLevel::Fatal => Self::Fatal,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LogEventResult {
+    Ok,
+    Failed,
+    Recovered,
+    Timeout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -93,44 +99,46 @@ pub(crate) enum LogParser {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct LogContext {
+    pub(crate) hostname: String,
+    pub(crate) cluster_name: String,
+    pub(crate) scope: String,
+    pub(crate) member_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LogSource {
     pub(crate) producer: LogProducer,
     pub(crate) transport: LogTransport,
     pub(crate) parser: LogParser,
-    pub(crate) origin: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct LogRecord {
-    pub(crate) timestamp_ms: u64,
+    pub(crate) timestamp_ns: i64,
+    #[serde(rename = "host.name")]
     pub(crate) hostname: String,
-    pub(crate) severity_text: SeverityText,
+    #[serde(rename = "pgtm.cluster_name")]
+    pub(crate) cluster_name: String,
+    #[serde(rename = "pgtm.scope")]
+    pub(crate) scope: String,
+    #[serde(rename = "pgtm.member_id")]
+    pub(crate) member_id: String,
+    pub(crate) severity_text: LogSeverity,
     pub(crate) severity_number: u8,
     pub(crate) message: String,
-    pub(crate) source: LogSource,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(rename = "event.name")]
+    pub(crate) event_name: &'static str,
+    #[serde(rename = "event.result")]
+    pub(crate) event_result: LogEventResult,
+    #[serde(rename = "source.producer")]
+    pub(crate) producer: LogProducer,
+    #[serde(rename = "source.transport")]
+    pub(crate) transport: LogTransport,
+    #[serde(rename = "source.parser")]
+    pub(crate) parser: LogParser,
+    #[serde(flatten)]
     pub(crate) attributes: BTreeMap<String, Value>,
-}
-
-impl LogRecord {
-    #[cfg(test)]
-    pub(crate) fn new(
-        timestamp_ms: u64,
-        hostname: String,
-        severity_text: SeverityText,
-        message: String,
-        source: LogSource,
-    ) -> Self {
-        Self {
-            timestamp_ms,
-            hostname,
-            severity_text,
-            severity_number: severity_text.number(),
-            message,
-            source,
-            attributes: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -143,10 +151,10 @@ pub(crate) enum LogError {
 
 #[derive(Debug, Error)]
 pub(crate) enum LogBootstrapError {
-    #[error("logging misconfigured: {0}")]
-    Misconfigured(String),
-    #[error("sink init failed: {0}")]
-    SinkInit(String),
+    #[error("file sink enabled but no file path was configured")]
+    FileSinkPathMissing,
+    #[error("file sink init failed for `{path}`: {cause}")]
+    FileSinkInit { path: PathBuf, cause: String },
 }
 
 pub(crate) trait LogSink: Send + Sync {
@@ -438,53 +446,58 @@ impl TracingBackend {
 
 fn dispatch_tracing_record_event(record: &LogRecord) {
     match record.severity_text {
-        SeverityText::Trace => tracing::event!(
+        LogSeverity::Trace => tracing::event!(
             target: TRACING_LOG_TARGET,
             tracing::Level::TRACE,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
+            event_name = record.event_name,
+            event_result = ?record.event_result,
+            producer = ?record.producer,
+            transport = ?record.transport,
+            parser = ?record.parser,
             severity_number = record.severity_number,
             message = record.message.as_str()
         ),
-        SeverityText::Debug => tracing::event!(
+        LogSeverity::Debug => tracing::event!(
             target: TRACING_LOG_TARGET,
             tracing::Level::DEBUG,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
+            event_name = record.event_name,
+            event_result = ?record.event_result,
+            producer = ?record.producer,
+            transport = ?record.transport,
+            parser = ?record.parser,
             severity_number = record.severity_number,
             message = record.message.as_str()
         ),
-        SeverityText::Info => tracing::event!(
+        LogSeverity::Info => tracing::event!(
             target: TRACING_LOG_TARGET,
             tracing::Level::INFO,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
+            event_name = record.event_name,
+            event_result = ?record.event_result,
+            producer = ?record.producer,
+            transport = ?record.transport,
+            parser = ?record.parser,
             severity_number = record.severity_number,
             message = record.message.as_str()
         ),
-        SeverityText::Warn => tracing::event!(
+        LogSeverity::Warn => tracing::event!(
             target: TRACING_LOG_TARGET,
             tracing::Level::WARN,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
+            event_name = record.event_name,
+            event_result = ?record.event_result,
+            producer = ?record.producer,
+            transport = ?record.transport,
+            parser = ?record.parser,
             severity_number = record.severity_number,
             message = record.message.as_str()
         ),
-        SeverityText::Error | SeverityText::Fatal => tracing::event!(
+        LogSeverity::Error | LogSeverity::Fatal => tracing::event!(
             target: TRACING_LOG_TARGET,
             tracing::Level::ERROR,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
+            event_name = record.event_name,
+            event_result = ?record.event_result,
+            producer = ?record.producer,
+            transport = ?record.transport,
+            parser = ?record.parser,
             severity_number = record.severity_number,
             message = record.message.as_str()
         ),
@@ -499,7 +512,7 @@ enum LogSenderMode {
 
 #[derive(Clone)]
 pub(crate) struct LogSender {
-    hostname: String,
+    context: LogContext,
     mode: LogSenderMode,
     min_app_severity_number: u8,
 }
@@ -507,7 +520,7 @@ pub(crate) struct LogSender {
 impl std::fmt::Debug for LogSender {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogSender")
-            .field("hostname", &self.hostname)
+            .field("context", &self.context)
             .field("min_app_severity_number", &self.min_app_severity_number)
             .finish()
     }
@@ -535,12 +548,12 @@ impl LogWorker {
 
 impl LogSender {
     pub(crate) fn new(
-        hostname: String,
+        context: LogContext,
         sender: mpsc::UnboundedSender<raw_record::QueuedRecord>,
-        min_app_severity: SeverityText,
+        min_app_severity: LogSeverity,
     ) -> Self {
         Self {
-            hostname,
+            context,
             mode: LogSenderMode::Queue(sender),
             min_app_severity_number: min_app_severity.number(),
         }
@@ -548,27 +561,35 @@ impl LogSender {
 
     pub(crate) fn disabled() -> Self {
         Self {
-            hostname: "unknown".to_string(),
+            context: LogContext {
+                hostname: "unknown".to_string(),
+                cluster_name: "unknown".to_string(),
+                scope: "unknown".to_string(),
+                member_id: "unknown".to_string(),
+            },
             mode: LogSenderMode::Disabled,
-            min_app_severity_number: SeverityText::Trace.number(),
+            min_app_severity_number: LogSeverity::Trace.number(),
         }
     }
 
     pub(crate) fn send<E>(&self, event: E) -> Result<(), LogSendError>
     where
-        E: DomainLogEvent,
+        E: LoggableEvent,
     {
-        if event.metadata().severity.number() < self.min_app_severity_number {
+        let event = event.into_log_event();
+        if event.severity.number() < self.min_app_severity_number {
             return Ok(());
         }
         let record = raw_record::QueuedRecord::from_event(
-            system_now_unix_millis(),
-            self.hostname.clone(),
+            system_now_unix_nanos(),
+            self.context.clone(),
             event,
         );
         match &self.mode {
             LogSenderMode::Disabled => Ok(()),
-            LogSenderMode::Queue(sender) => sender.send(record).map_err(|_| LogSendError::QueueClosed),
+            LogSenderMode::Queue(sender) => {
+                sender.send(record).map_err(|_| LogSendError::QueueClosed)
+            }
         }
     }
 }
@@ -576,6 +597,20 @@ impl LogSender {
 pub(crate) fn system_now_unix_millis() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_millis() as u64,
+        Err(_) => 0,
+    }
+}
+
+pub(crate) fn system_now_unix_nanos() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => {
+            let nanos = duration.as_nanos();
+            if nanos > i64::MAX as u128 {
+                i64::MAX
+            } else {
+                nanos as i64
+            }
+        }
         Err(_) => 0,
     }
 }
@@ -596,6 +631,12 @@ pub(crate) fn bootstrap(
     cfg: &crate::config::RuntimeConfig,
 ) -> Result<LoggingSystem, LogBootstrapError> {
     let hostname = detect_hostname();
+    let context = LogContext {
+        hostname,
+        cluster_name: cfg.cluster.name.clone(),
+        scope: cfg.cluster.scope.clone(),
+        member_id: cfg.cluster.member_id.clone(),
+    };
     let mut sinks: Vec<(String, Arc<dyn LogSink>)> = Vec::new();
 
     if cfg.logging.sinks.stderr.enabled {
@@ -606,25 +647,33 @@ pub(crate) fn bootstrap(
     }
 
     if cfg.logging.sinks.file.enabled {
-        let path = cfg.logging.sinks.file.path.clone().ok_or_else(|| {
-            LogBootstrapError::Misconfigured(
-                "logging.sinks.file.enabled=true but logging.sinks.file.path is not set"
-                    .to_string(),
-            )
-        })?;
+        let path = cfg
+            .logging
+            .sinks
+            .file
+            .path
+            .clone()
+            .ok_or(LogBootstrapError::FileSinkPathMissing)?;
 
         let label = format!("file:{}", path.display());
-        let sink = JsonlFileSink::new(path, cfg.logging.sinks.file.mode)
-            .map_err(|err| LogBootstrapError::SinkInit(err.to_string()))?;
+        let sink =
+            JsonlFileSink::new(path.clone(), cfg.logging.sinks.file.mode).map_err(|err| {
+                LogBootstrapError::FileSinkInit {
+                    path,
+                    cause: err.to_string(),
+                }
+            })?;
         sinks.push((label, Arc::new(sink) as Arc<dyn LogSink>));
     }
 
     let sink: Arc<dyn LogSink> = match sinks.len() {
         0 => Arc::new(NullSink),
-        1 => sinks
-            .pop()
-            .map(|(_label, sink)| sink)
-            .ok_or_else(|| LogBootstrapError::SinkInit("unexpected empty sink list".to_string()))?,
+        1 => sinks.pop().map(|(_label, sink)| sink).ok_or_else(|| {
+            LogBootstrapError::FileSinkInit {
+                path: PathBuf::from("<none>"),
+                cause: "unexpected empty sink list".to_string(),
+            }
+        })?,
         _ => Arc::new(FanoutSink::new(sinks)),
     };
 
@@ -632,7 +681,7 @@ pub(crate) fn bootstrap(
     let (sender, receiver) = mpsc::unbounded_channel();
 
     Ok(LoggingSystem {
-        sender: LogSender::new(hostname, sender, SeverityText::from(cfg.logging.level)),
+        sender: LogSender::new(context, sender, LogSeverity::from(cfg.logging.level)),
         worker: LogWorker { receiver, backend },
     })
 }
@@ -675,11 +724,8 @@ mod tests {
         RuntimeConfig,
     };
     use crate::process::jobs::ProcessJobKind;
-    use crate::process::log_event::{
-        CapturedStream, ProcessExecutionIdentity, ProcessJobIdentity, ProcessLogOrigin,
-        SubprocessLogEvent,
-    };
-    use crate::runtime::log_event::{RuntimeLogEvent, RuntimeLogOrigin, RuntimeNodeIdentity};
+    use crate::process::log_event::{CapturedStream, SubprocessLogEvent};
+    use crate::runtime::log_event::RuntimeLogEvent;
 
     fn unique_temp_root(label: &str) -> PathBuf {
         let pid = std::process::id();
@@ -705,18 +751,22 @@ mod tests {
     }
 
     fn sample_record(message: &str) -> LogRecord {
-        LogRecord::new(
-            1,
-            "host-a".to_string(),
-            SeverityText::Info,
-            message.to_string(),
-            LogSource {
-                producer: LogProducer::App,
-                transport: LogTransport::Internal,
-                parser: LogParser::App,
-                origin: "test".to_string(),
-            },
-        )
+        LogRecord {
+            timestamp_ns: 1,
+            hostname: "host-a".to_string(),
+            cluster_name: "cluster-a".to_string(),
+            scope: "scope-a".to_string(),
+            member_id: "member-a".to_string(),
+            severity_text: LogSeverity::Info,
+            severity_number: LogSeverity::Info.number(),
+            message: message.to_string(),
+            event_name: "test.event",
+            event_result: LogEventResult::Ok,
+            producer: LogProducer::App,
+            transport: LogTransport::Internal,
+            parser: LogParser::App,
+            attributes: BTreeMap::new(),
+        }
     }
 
     fn read_lines(path: &std::path::Path) -> Result<Vec<String>, std::io::Error> {
@@ -750,22 +800,26 @@ mod tests {
 
     fn sample_runtime_event() -> RuntimeLogEvent {
         RuntimeLogEvent::StartupEntered {
-            origin: RuntimeLogOrigin::RunNodeFromConfig,
-            identity: RuntimeNodeIdentity {
-                scope: "scope-a".to_string(),
-                member_id: "member-a".to_string(),
-            },
             startup_run_id: "run-1".to_string(),
             logging_level: crate::config::LogLevel::Info,
         }
     }
 
-    fn test_log_system(min_app_severity: SeverityText) -> (LogSender, LogWorker, TestSink) {
+    fn sample_context() -> LogContext {
+        LogContext {
+            hostname: "host-a".to_string(),
+            cluster_name: "cluster-a".to_string(),
+            scope: "scope-a".to_string(),
+            member_id: "member-a".to_string(),
+        }
+    }
+
+    fn test_log_system(min_app_severity: LogSeverity) -> (LogSender, LogWorker, TestSink) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let sink = TestSink::default();
         let sink_dyn: Arc<dyn LogSink> = Arc::new(sink.clone());
         (
-            LogSender::new("host-a".to_string(), sender, min_app_severity),
+            LogSender::new(sample_context(), sender, min_app_severity),
             LogWorker {
                 receiver,
                 backend: Arc::new(TracingBackend::new(sink_dyn)),
@@ -783,11 +837,11 @@ mod tests {
     }
 
     fn collect_records<E>(
-        min_app_severity: SeverityText,
+        min_app_severity: LogSeverity,
         event: E,
     ) -> Result<Vec<LogRecord>, Box<dyn std::error::Error>>
     where
-        E: DomainLogEvent,
+        E: LoggableEvent,
     {
         let (log, worker, sink) = test_log_system(min_app_severity);
         log.send(event)?;
@@ -797,38 +851,27 @@ mod tests {
     }
 
     #[test]
-    fn typed_runtime_event_encodes_headers_and_fields(
+    fn typed_runtime_event_encodes_flat_headers_and_fields(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let records = collect_records(SeverityText::Trace, sample_runtime_event())?;
+        let records = collect_records(LogSeverity::Trace, sample_runtime_event())?;
         assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.hostname, "host-a");
+        assert_eq!(record.cluster_name, "cluster-a");
+        assert_eq!(record.scope, "scope-a");
+        assert_eq!(record.member_id, "member-a");
+        assert_eq!(record.event_name, "runtime.startup_entered");
+        assert_eq!(record.event_result, LogEventResult::Ok);
+        assert_eq!(record.producer, LogProducer::App);
+        assert_eq!(record.transport, LogTransport::Internal);
+        assert_eq!(record.parser, LogParser::App);
+        assert_eq!(record.message, "runtime starting");
         assert_eq!(
-            records[0].attributes.get("event.name"),
-            Some(&Value::String("runtime.startup.entered".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("event.domain"),
-            Some(&Value::String("runtime".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("event.result"),
-            Some(&Value::String("ok".to_string()))
-        );
-        assert_eq!(records[0].source.origin, "runtime::run_node_from_config");
-        assert_eq!(records[0].message, "runtime starting");
-        assert_eq!(
-            records[0].attributes.get("scope"),
-            Some(&Value::String("scope-a".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("member_id"),
-            Some(&Value::String("member-a".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("startup_run_id"),
+            record.attributes.get("startup_run_id"),
             Some(&Value::String("run-1".to_string()))
         );
         assert_eq!(
-            records[0].attributes.get("logging.level"),
+            record.attributes.get("logging_level"),
             Some(&Value::String("info".to_string()))
         );
         Ok(())
@@ -836,51 +879,38 @@ mod tests {
 
     #[test]
     fn typed_event_respects_min_severity() -> Result<(), Box<dyn std::error::Error>> {
-        let records = collect_records(SeverityText::Warn, sample_runtime_event())?;
+        let records = collect_records(LogSeverity::Warn, sample_runtime_event())?;
         assert!(records.is_empty());
         Ok(())
     }
 
     #[test]
-    fn subprocess_line_event_encodes_stream_metadata(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn subprocess_line_event_encodes_stream_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let records = collect_records(
-            SeverityText::Trace,
-            SubprocessLogEvent {
-            producer: LogProducer::PgTool,
-            origin: ProcessLogOrigin::EmitSubprocessLine,
-            execution: ProcessExecutionIdentity {
-                job: ProcessJobIdentity {
-                    job_id: "job-1".to_string(),
-                    kind: ProcessJobKind::StartPostgres,
-                },
-                binary: "postgres".to_string(),
+            LogSeverity::Trace,
+            SubprocessLogEvent::Line {
+                job_kind: ProcessJobKind::StartPostgres,
+                stream: CapturedStream::Stderr,
+                line: "stderr line".to_string(),
             },
-            stream: CapturedStream::Stderr,
-            bytes: vec![0xff_u8, 0x00, b'a', 0x80],
-        },
         )?;
 
         assert_eq!(records.len(), 1);
         let record = &records[0];
-        assert_eq!(record.source.producer, LogProducer::PgTool);
-        assert_eq!(record.source.transport, LogTransport::ChildStderr);
-        assert_eq!(record.source.parser, LogParser::Raw);
-        assert_eq!(record.source.origin, "process_worker::emit_subprocess_line");
-        assert_eq!(record.severity_text, SeverityText::Warn);
-        assert!(record.message.contains('a'));
+        assert_eq!(record.producer, LogProducer::PgTool);
+        assert_eq!(record.transport, LogTransport::ChildStderr);
+        assert_eq!(record.parser, LogParser::Raw);
+        assert_eq!(record.severity_text, LogSeverity::Warn);
+        assert_eq!(record.message, "stderr line");
         assert_eq!(
-            record.attributes.get("job.id"),
-            Some(&Value::String("job-1".to_string()))
-        );
-        assert_eq!(
-            record.attributes.get("job.kind"),
+            record.attributes.get("job_kind"),
             Some(&Value::String("start_postgres".to_string()))
         );
         assert_eq!(
             record.attributes.get("stream"),
             Some(&Value::String("stderr".to_string()))
         );
+        assert!(!record.attributes.contains_key("line"));
         Ok(())
     }
 
@@ -1016,22 +1046,22 @@ mod tests {
     fn sender_reports_only_queue_closed_to_callers() {
         let (sender, receiver) = mpsc::unbounded_channel();
         drop(receiver);
-        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
+        let log = LogSender::new(sample_context(), sender, LogSeverity::Trace);
 
         let err = log.send(sample_runtime_event());
         assert!(matches!(err, Err(LogSendError::QueueClosed)));
     }
 
     #[test]
-    fn worker_keeps_sink_failures_internal_after_enqueue(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn worker_keeps_sink_failures_internal_after_enqueue() -> Result<(), Box<dyn std::error::Error>>
+    {
         let (sender, receiver) = mpsc::unbounded_channel();
         let sink: Arc<dyn LogSink> = Arc::new(FailSink);
         let worker = LogWorker {
             receiver,
             backend: Arc::new(TracingBackend::new(sink)),
         };
-        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
+        let log = LogSender::new(sample_context(), sender, LogSeverity::Trace);
 
         assert!(log.send(sample_runtime_event()).is_ok());
         drop(log);
@@ -1054,7 +1084,7 @@ mod tests {
             receiver,
             backend: Arc::new(TracingBackend::new(sink)),
         };
-        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
+        let log = LogSender::new(sample_context(), sender, LogSeverity::Trace);
 
         log.send(sample_runtime_event())?;
         drop(log);
@@ -1075,7 +1105,7 @@ mod tests {
         cfg.logging.sinks.file.path = None;
 
         let res = bootstrap(&cfg);
-        assert!(matches!(res, Err(LogBootstrapError::Misconfigured(_))));
+        assert!(matches!(res, Err(LogBootstrapError::FileSinkPathMissing)));
     }
 
     #[test]
@@ -1101,6 +1131,8 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
         assert_eq!(v["message"], "runtime starting");
         assert_eq!(v["severity_text"], "info");
+        assert_eq!(v["event.name"], "runtime.startup_entered");
+        assert_eq!(v["pgtm.cluster_name"], cfg.cluster.name);
 
         remove_dir_all_if_exists(&root)?;
         Ok(())

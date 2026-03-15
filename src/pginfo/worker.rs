@@ -1,11 +1,6 @@
-use crate::state::{UnixMillis, WorkerStatus};
-use crate::{
-    state::WorkerError,
-};
+use crate::state::{UnixMillis, WorkerError, WorkerStatus};
 
-use super::log_event::{
-    PgInfoLogEvent, PgInfoLogOrigin, PgInfoMemberIdentity, PgInfoSqlTransition,
-};
+use super::log_event::PgInfoLogEvent;
 use super::query::poll_once;
 use super::state::{to_member_status, PgInfoState, PgInfoWorkerCtx, SqlStatus};
 
@@ -27,13 +22,11 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
             ctx.runtime
                 .log
                 .send(PgInfoLogEvent::PollFailed {
-                    origin: PgInfoLogOrigin::StepOnce,
-                    member: PgInfoMemberIdentity {
-                        member_id: ctx.identity.self_id.0.clone(),
-                    },
-                    error: err.to_string(),
+                    cause: err.to_string(),
                 })
-                .map_err(|err| WorkerError::Message(format!("pginfo poll failure log emit failed: {err}")))?;
+                .map_err(|err| {
+                    WorkerError::Message(format!("pginfo poll failure log emit failed: {err}"))
+                })?;
             to_member_status(WorkerStatus::Running, SqlStatus::Unreachable, now, None)?
         }
     };
@@ -42,23 +35,18 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
     let prev_sql = ctx
         .state_channel
         .last_emitted_sql_status
-        .clone()
         .unwrap_or(SqlStatus::Unknown);
     if prev_sql != next_sql {
         ctx.runtime
             .log
             .send(PgInfoLogEvent::SqlTransition {
-                origin: PgInfoLogOrigin::StepOnce,
-                member: PgInfoMemberIdentity {
-                    member_id: ctx.identity.self_id.0.clone(),
-                },
-                transition: PgInfoSqlTransition {
-                    previous: prev_sql.clone(),
-                    next: next_sql.clone(),
-                },
+                previous: Some(prev_sql),
+                next: next_sql,
             })
-            .map_err(|err| WorkerError::Message(format!("pginfo sql transition log emit failed: {err}")))?;
-        ctx.state_channel.last_emitted_sql_status = Some(next_sql.clone());
+            .map_err(|err| {
+                WorkerError::Message(format!("pginfo sql transition log emit failed: {err}"))
+            })?;
+        ctx.state_channel.last_emitted_sql_status = Some(next_sql);
     }
 
     ctx.state_channel
@@ -75,9 +63,9 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
 
 fn pginfo_sql_status(state: &PgInfoState) -> SqlStatus {
     match state {
-        PgInfoState::Unknown { common } => common.sql.clone(),
-        PgInfoState::Primary { common, .. } => common.sql.clone(),
-        PgInfoState::Replica { common, .. } => common.sql.clone(),
+        PgInfoState::Unknown { common } => common.sql,
+        PgInfoState::Primary { common, .. } => common.sql,
+        PgInfoState::Replica { common, .. } => common.sql,
     }
 }
 

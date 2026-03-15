@@ -1595,6 +1595,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgtm_log_derive"
+version = "0.1.0"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "pgtuskmaster_rust"
 version = "0.1.0"
 dependencies = [
@@ -1605,6 +1615,7 @@ dependencies = [
  "etcd-client",
  "futures",
  "libc",
+ "pgtm_log_derive",
  "pgtuskmaster_test_support",
  "rcgen",
  "reqwest",

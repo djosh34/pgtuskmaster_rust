@@ -81,8 +81,7 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
     let (fallback_local_timeline, fallback_local_system_identifier) =
         local_member_identity_fallback(&dcs, &ctx.identity.self_id, &observation);
     let local_data_timeline = pg_timeline(&pg).or(fallback_local_timeline);
-    let local_system_identifier =
-        pg_system_identifier(&pg).or(fallback_local_system_identifier);
+    let local_system_identifier = pg_system_identifier(&pg).or(fallback_local_system_identifier);
 
     let local = LocalKnowledge {
         data_dir: build_data_dir_state(
@@ -188,33 +187,27 @@ async fn execute_coordination_action(
     action: &CoordinationAction,
 ) -> Result<(), WorkerError> {
     match action {
-        CoordinationAction::AcquireLease(_kind) => ctx
-            .control
-            .dcs_handle
-            .acquire_leadership()
-            .map_err(|err| {
+        CoordinationAction::AcquireLease(_kind) => {
+            ctx.control.dcs_handle.acquire_leadership().map_err(|err| {
                 WorkerError::Message(format!(
                     "ha acquire lease failed at tick {ha_tick} index {action_index}: {err}"
                 ))
-            }),
-        CoordinationAction::ReleaseLease => ctx
-            .control
-            .dcs_handle
-            .release_leadership()
-            .map_err(|err| {
+            })
+        }
+        CoordinationAction::ReleaseLease => {
+            ctx.control.dcs_handle.release_leadership().map_err(|err| {
                 WorkerError::Message(format!(
                     "ha release lease failed at tick {ha_tick} index {action_index}: {err}"
                 ))
-            }),
-        CoordinationAction::ClearSwitchover => ctx
-            .control
-            .dcs_handle
-            .clear_switchover()
-            .map_err(|err| {
+            })
+        }
+        CoordinationAction::ClearSwitchover => {
+            ctx.control.dcs_handle.clear_switchover().map_err(|err| {
                 WorkerError::Message(format!(
                     "ha clear switchover failed at tick {ha_tick} index {action_index}: {err}"
                 ))
-            }),
+            })
+        }
     }
 }
 
@@ -533,7 +526,10 @@ fn build_leadership_view(dcs: &DcsView, self_id: &MemberId) -> LeadershipView {
         return LeadershipView::HeldBySelf(epoch);
     }
 
-    match dcs.cluster().and_then(|cluster| cluster.member(&epoch.holder)) {
+    match dcs
+        .cluster()
+        .and_then(|cluster| cluster.member(&epoch.holder))
+    {
         None => LeadershipView::StaleObservedLease {
             epoch,
             reason: StaleLeaseReason::HolderMissing,
@@ -663,7 +659,10 @@ mod tests {
         }
     }
 
-    fn replica_pg_state_with_primary_conninfo(host: &str, port: u16) -> Result<PgInfoState, String> {
+    fn replica_pg_state_with_primary_conninfo(
+        host: &str,
+        port: u16,
+    ) -> Result<PgInfoState, String> {
         let mut state = replica_pg_state(67_272_104, Some(67_272_104));
         if let PgInfoState::Replica { common, .. } = &mut state {
             common.pg_config.primary_conninfo = Some(PgConnInfo {
@@ -716,7 +715,8 @@ mod tests {
     }
 
     #[test]
-    fn local_postgres_state_resolves_replica_upstream_from_primary_conninfo() -> Result<(), String> {
+    fn local_postgres_state_resolves_replica_upstream_from_primary_conninfo() -> Result<(), String>
+    {
         let state = build_local_postgres_state(
             &replica_pg_state_with_primary_conninfo("node-b", 5432)?,
             &dcs_view_for_member("node-b", "node-b", 5432)?,

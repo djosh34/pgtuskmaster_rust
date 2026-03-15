@@ -1,6 +1,7 @@
 use std::fs;
 
 const NEXTTEST_CONFIG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/.config/nextest.toml");
+const HA_FEATURES_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ha/features");
 const PARALLEL_POLICY_COMMENT_START: &str = "If a scenario only passes in serial,";
 const PARALLEL_POLICY_COMMENT_END: &str = "must be fixed instead of protected by serialization.";
 const GREENFIELD_HA_BINARY_RULE: &str = "binary(ha)";
@@ -33,6 +34,7 @@ fn nextest_profiles_route_greenfield_ha_binaries_without_serial_cap() {
     let ultra_long_threads = profile_test_threads(&parsed, "ultra-long");
     let ultra_long_setup_scripts = profile_setup_scripts(&parsed, "ultra-long");
     let experimental_features = experimental_features(&parsed);
+    let ha_feature_count = count_ha_feature_files();
 
     assert!(
         default_filter.contains(GREENFIELD_HA_BINARY_RULE),
@@ -62,10 +64,15 @@ fn nextest_profiles_route_greenfield_ha_binaries_without_serial_cap() {
         !ultra_long_filter.contains("test(="),
         "ultra-long profile must not use exact test-name filters: {ultra_long_filter}"
     );
-    assert_ne!(
-        ultra_long_threads,
-        Some(1),
-        "ultra-long profile must not reintroduce suite-wide serial execution"
+    assert!(
+        ultra_long_threads.is_some(),
+        "ultra-long profile must set test-threads high enough to fan out every HA feature"
+    );
+    assert!(
+        ultra_long_threads
+            .and_then(|value| usize::try_from(value).ok())
+            .is_some_and(|threads| threads >= ha_feature_count),
+        "ultra-long profile must allow at least one worker per HA feature: threads={ultra_long_threads:?} features={ha_feature_count}"
     );
     assert!(
         experimental_features
@@ -134,6 +141,34 @@ fn profile_test_threads(config: &toml::Value, profile_name: &str) -> Option<i64>
         .and_then(|profiles| profiles.get(profile_name))
         .and_then(|profile| profile.get("test-threads"))
         .and_then(toml::Value::as_integer)
+}
+
+fn count_ha_feature_files() -> usize {
+    let read_dir_result = fs::read_dir(HA_FEATURES_ROOT);
+    assert!(
+        read_dir_result.is_ok(),
+        "failed to read HA features root {}: {:?}",
+        HA_FEATURES_ROOT,
+        read_dir_result.as_ref().err()
+    );
+    let read_dir = match read_dir_result {
+        Ok(value) => value,
+        Err(_) => return 0,
+    };
+    read_dir
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| {
+            path.join(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| format!("{name}.feature"))
+                    .unwrap_or_default(),
+            )
+            .is_file()
+        })
+        .count()
 }
 
 fn experimental_features(config: &toml::Value) -> Vec<String> {

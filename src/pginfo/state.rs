@@ -1,5 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
+use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 
 pub(crate) use super::conninfo::render_pg_conninfo;
@@ -12,7 +13,8 @@ use crate::state::{
 };
 use crate::{config::RuntimeConfig, logging::LogSender, process::state::ProcessRuntimePlan};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, LogValue)]
+#[log_value(rename_all = "snake_case")]
 pub enum SqlStatus {
     Unknown,
     Healthy,
@@ -255,7 +257,7 @@ pub(crate) fn to_member_status(
         .map_err(|err| WorkerError::Message(format!("primary_conninfo parse failed: {err}")))?;
     let common = PgInfoCommon {
         worker: worker_status,
-        sql: sql_status.clone(),
+        sql: sql_status,
         readiness: derive_readiness(&sql_status, readiness_signal),
         timeline,
         system_identifier,

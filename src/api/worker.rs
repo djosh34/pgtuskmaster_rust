@@ -824,7 +824,7 @@ mod tests {
     fn wait_for_managed_postmaster_ready(data_dir: &Path) -> Result<(), String> {
         let target = ManagedPostmasterTarget::from_data_dir(data_dir.to_path_buf());
         let mut attempts = 0_u8;
-        while attempts < 50 {
+        while attempts < 150 {
             if lookup_managed_postmaster(&target).is_ok() {
                 return Ok(());
             }

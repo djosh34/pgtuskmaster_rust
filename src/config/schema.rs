@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use pgtm_log_derive::LogValue;
 use serde::Deserialize;
 
 use super::{defaults, endpoint::DcsEndpoint};
@@ -635,8 +636,9 @@ impl Default for LoggingConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, LogValue)]
 #[serde(rename_all = "lowercase")]
+#[log_value(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
     Debug,

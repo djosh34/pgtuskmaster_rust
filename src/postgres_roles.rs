@@ -179,8 +179,9 @@ pub(crate) async fn reconcile_managed_roles(
     config.dbname(cfg.postgres.local_database.as_str());
     config.connect_timeout(Duration::from_secs(cfg.postgres.connect_timeout_s.into()));
     let RoleAuthConfig::Password { password } = &cfg.postgres.roles.mandatory.superuser.auth;
-    let resolved = resolve_secret_string("postgres.roles.mandatory.superuser.auth.password", password)
-        .map_err(|err| RoleProvisionError::ResolveSuperuserPassword(err.to_string()))?;
+    let resolved =
+        resolve_secret_string("postgres.roles.mandatory.superuser.auth.password", password)
+            .map_err(|err| RoleProvisionError::ResolveSuperuserPassword(err.to_string()))?;
     config.password(resolved);
 
     let (client, connection) = config
@@ -313,12 +314,11 @@ fn render_rewinder_grants_sql(username: &str) -> String {
 
 fn render_membership_reconciliation_block(spec: &ManagedRoleSpec) -> String {
     let username_literal = sql_literal(spec.username.as_str());
-    let desired_memberships = render_text_array_literal(
-        spec.grants.iter().filter_map(|grant| match grant {
+    let desired_memberships =
+        render_text_array_literal(spec.grants.iter().filter_map(|grant| match grant {
             ManagedRoleGrant::Membership(role_name) => Some(role_name.as_str()),
             ManagedRoleGrant::RewindFunctionExecute => None,
-        }),
-    );
+        }));
     format!(
         "DO $$\nDECLARE\n  desired_memberships text[] := {desired_memberships};\n  existing_parent text;\nBEGIN\n  FOREACH existing_parent IN ARRAY desired_memberships\n  LOOP\n    EXECUTE format('GRANT %I TO %I', existing_parent, {username_literal});\n  END LOOP;\n\n  FOR existing_parent IN\n    SELECT parent.rolname\n      FROM pg_roles AS parent\n      JOIN pg_auth_members AS membership ON membership.roleid = parent.oid\n      JOIN pg_roles AS child ON child.oid = membership.member\n     WHERE child.rolname = {username_literal}\n  LOOP\n    IF NOT (existing_parent = ANY(desired_memberships)) THEN\n      EXECUTE format('REVOKE %I FROM %I', existing_parent, {username_literal});\n    END IF;\n  END LOOP;\nEND\n$$;"
     )
@@ -343,10 +343,16 @@ fn render_drop_stale_extra_roles_block(desired: &DesiredManagedRoleSet) -> Strin
 fn resolve_role_password_literal(spec: &ManagedRoleSpec) -> Result<String, RoleProvisionError> {
     let field = match &spec.identity {
         ManagedRoleIdentity::Mandatory(kind) => {
-            format!("postgres.roles.mandatory.{}.auth.password", kind.config_key())
+            format!(
+                "postgres.roles.mandatory.{}.auth.password",
+                kind.config_key()
+            )
         }
         ManagedRoleIdentity::Extra(logical_key) => {
-            format!("postgres.roles.extra.{}.auth.password", logical_key.as_str())
+            format!(
+                "postgres.roles.extra.{}.auth.password",
+                logical_key.as_str()
+            )
         }
     };
     match &spec.auth {
@@ -374,7 +380,10 @@ fn render_text_array_literal<'a>(values: impl Iterator<Item = &'a str>) -> Strin
 }
 
 fn managed_extra_role_marker(logical_key: &ManagedPostgresRoleKey) -> String {
-    format!("{MANAGED_EXTRA_ROLE_COMMENT_PREFIX}{}", logical_key.as_str())
+    format!(
+        "{MANAGED_EXTRA_ROLE_COMMENT_PREFIX}{}",
+        logical_key.as_str()
+    )
 }
 
 #[cfg(test)]
@@ -456,7 +465,9 @@ mod tests {
         let sql = render_managed_role_reconciliation_sql(&RuntimeConfigBuilder::new().build())
             .map_err(|err| format!("render sql failed: {err}"))?;
 
-        assert!(sql.contains("shobj_description(oid, 'pg_authid') LIKE 'pgtuskmaster:managed-extra:%'"));
+        assert!(
+            sql.contains("shobj_description(oid, 'pg_authid') LIKE 'pgtuskmaster:managed-extra:%'")
+        );
         assert!(!sql.contains("DROP ROLE \"postgres\""));
         assert!(!sql.contains("DROP ROLE \"replicator\""));
         assert!(!sql.contains("DROP ROLE \"rewinder\""));

@@ -67,7 +67,7 @@ test-long: ensure-nextest
 	exit "$$status"
 
 test-long.nextest: ensure-nextest
-	cargo nextest run --workspace --profile ultra-long --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" $(TEST_LONG_SELECTION_ARGS)
+	NEXTEST_DOUBLE_SPAWN=0 cargo nextest run --workspace --profile ultra-long --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" $(TEST_LONG_SELECTION_ARGS)
 
 test-long.convert-logs:
 	python3 ./tools/export-nextest-junit-logs.py ./target/nextest/ultra-long/junit.xml ./target/nextest/ultra-long/logs

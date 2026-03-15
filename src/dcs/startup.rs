@@ -9,8 +9,8 @@ use crate::{
 
 use super::{
     state::{
-        DcsCadence, DcsEtcdConfig, DcsLocalMemberAdvertisement, DcsNodeIdentity,
-        DcsObservedState, DcsRuntime as DcsWorkerRuntime, DcsStateChannel, DcsView,
+        DcsCadence, DcsEtcdConfig, DcsLocalMemberAdvertisement, DcsNodeIdentity, DcsObservedState,
+        DcsRuntime as DcsWorkerRuntime, DcsStateChannel, DcsView,
     },
     worker::{DcsError, DcsWorkerBootstrap},
     DcsHandle,

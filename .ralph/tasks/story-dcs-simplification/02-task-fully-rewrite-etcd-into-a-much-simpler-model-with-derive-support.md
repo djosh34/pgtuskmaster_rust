@@ -1757,14 +1757,29 @@ syn = { version = "2.0", features = ["full", "extra-traits"] }
 
 ### Derive-branch file: `crates/pgtm_etcd_derive/src/lib.rs`
 
-This is the maximum acceptable scope. If the macro grows beyond this, stop and keep the handwritten schema.
+This is where derive support now makes real sense.
+
+With the `diff(...)` design, the repetitive parts are now obvious:
+
+- field path rendering
+- `apply_put(...)` routing
+- `apply_delete(...)` routing
+- `diff(...)` emission of `SchemaWrite`
+- lease attachment metadata
+
+That is exactly the kind of repetition a proc macro can remove cleanly.
+
+So the answer is:
+
+- before the redesign, macro-first looked wrong because it was trying to hide a confused model
+- after the redesign, macro support looks reasonable because the handwritten model is now explicit and the remaining duplication is mostly schema glue
+
+The macro is still only good if it generates obvious code from a very small attribute language. It becomes bad again if it starts generating runtime logic or turning the schema into a hidden DSL.
 
 ```rust
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use syn::{
-    parse_macro_input, Data, DeriveInput, Fields, LitStr, Meta, Type,
-};
+use quote::quote;
+use syn::{parse_macro_input, spanned::Spanned, Data, DeriveInput, Fields, LitStr, Type};
 
 #[proc_macro_derive(EtcdSchema, attributes(etcd))]
 pub fn derive_etcd_schema(input: TokenStream) -> TokenStream {
@@ -1774,8 +1789,8 @@ pub fn derive_etcd_schema(input: TokenStream) -> TokenStream {
 }
 
 fn derive_etcd_schema_impl(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
-    let struct_ident = input.ident.clone();
-    let data = match input.data {
+    let state_ident = input.ident.clone();
+    let data = match &input.data {
         Data::Struct(data) => data,
         _ => {
             return Err(syn::Error::new(
@@ -1786,123 +1801,126 @@ fn derive_etcd_schema_impl(input: DeriveInput) -> syn::Result<proc_macro2::Token
     };
 
     let prefix = parse_container_prefix(&input.attrs)?;
-    let fields = match data.fields {
-        Fields::Named(fields) => fields.named,
+    let fields = match &data.fields {
+        Fields::Named(fields) => fields.named.iter().cloned().collect::<Vec<_>>(),
         _ => {
             return Err(syn::Error::new(
-                struct_ident.span(),
+                state_ident.span(),
                 "EtcdSchema requires named fields",
             ));
         }
     };
 
-    let mut empty_fields = Vec::new();
+    let mut put_arms = Vec::new();
+    let mut delete_arms = Vec::new();
     let mut apply_put_arms = Vec::new();
     let mut apply_delete_arms = Vec::new();
-    let mut helper_items = Vec::new();
+    let mut diff_arms = Vec::new();
 
     for field in fields {
-        let field_ident = field.ident.clone().ok_or_else(|| {
-            syn::Error::new(struct_ident.span(), "missing field ident")
-        })?;
+        let field_ident = field
+            .ident
+            .clone()
+            .ok_or_else(|| syn::Error::new(state_ident.span(), "missing field ident"))?;
         let meta = parse_field_meta(&field.attrs)?;
-
-        empty_fields.push(quote! { #field_ident: Default::default() });
 
         match meta {
             FieldMeta::Singleton { path, lease } => {
-                let helper_ident = format_ident!("{}", to_pascal(&field_ident.to_string()));
-                let lease_tokens = lease_tokens_singleton(&lease);
-                helper_items.push(quote! {
-                    pub(super) struct #helper_ident;
-
-                    impl crate::dcs::store::SingletonField<#struct_ident> for #helper_ident {
-                        type Value = extract_option_inner::<#field.ty>();
-
-                        fn path(scope: &str) -> String {
-                            let rendered = render_prefix(#prefix, scope);
-                            format!("{}/{}", rendered, #path)
-                        }
-
-                        fn slot(state: &#struct_ident) -> Option<&Self::Value> {
-                            state.#field_ident.as_ref()
-                        }
-
-                        fn slot_mut(state: &mut #struct_ident) -> &mut Option<Self::Value> {
-                            &mut state.#field_ident
-                        }
-
-                        fn lease_attachment(value: &Self::Value) -> crate::dcs::store::LeaseAttachment {
-                            #lease_tokens
-                        }
-                    }
-                });
+                let value_ty = option_inner_type(&field.ty)?;
+                let lease_expr = singleton_lease_expr(&lease, &field_ident);
+                let key_expr = quote! {
+                    format!("{}/{}", render_prefix(#prefix, scope), #path)
+                };
 
                 apply_put_arms.push(quote! {
-                    if key == #helper_ident::path(scope) {
-                        state.#field_ident =
-                            Some(serde_json::from_slice(value).map_err(crate::dcs::store::EtcdDecodeError::json)?);
+                    if key == #key_expr {
+                        state.#field_ident = Some(
+                            serde_json::from_slice::<#value_ty>(value)
+                                .map_err(crate::dcs::schema::EtcdDecodeError::json)?
+                        );
                         return Ok(());
                     }
                 });
 
                 apply_delete_arms.push(quote! {
-                    if key == #helper_ident::path(scope) {
+                    if key == #key_expr {
                         state.#field_ident = None;
                         return Ok(());
                     }
                 });
-            }
-            FieldMeta::Map { prefix_path, key_ty, lease } => {
-                let helper_ident = format_ident!("{}", to_pascal(&field_ident.to_string()));
-                let lease_tokens = lease_tokens_map(&lease);
-                helper_items.push(quote! {
-                    pub(super) struct #helper_ident;
 
-                    impl crate::dcs::store::MapField<#struct_ident> for #helper_ident {
-                        type Key = #key_ty;
-                        type Value = extract_btreemap_value::<#field.ty>();
-
-                        fn prefix(scope: &str) -> String {
-                            let rendered = render_prefix(#prefix, scope);
-                            format!("{}/{}/", rendered, #prefix_path)
-                        }
-
-                        fn map(
-                            state: &#struct_ident,
-                        ) -> &std::collections::BTreeMap<Self::Key, Self::Value> {
-                            &state.#field_ident
-                        }
-
-                        fn map_mut(
-                            state: &mut #struct_ident,
-                        ) -> &mut std::collections::BTreeMap<Self::Key, Self::Value> {
-                            &mut state.#field_ident
-                        }
-
-                        fn lease_attachment(
-                            value: &Self::Value,
-                        ) -> crate::dcs::store::LeaseAttachment {
-                            #lease_tokens
+                diff_arms.push(quote! {
+                    if before.#field_ident != after.#field_ident {
+                        match (&before.#field_ident, &after.#field_ident) {
+                            (None, Some(value)) => writes.push(crate::dcs::schema::SchemaWrite::Put {
+                                key: #key_expr,
+                                json: serde_json::to_string(value).map_err(|err| err.to_string())?,
+                                lease: #lease_expr,
+                            }),
+                            (Some(_), None) => writes.push(crate::dcs::schema::SchemaWrite::Delete {
+                                key: #key_expr,
+                            }),
+                            (Some(_), Some(value)) => writes.push(crate::dcs::schema::SchemaWrite::Put {
+                                key: #key_expr,
+                                json: serde_json::to_string(value).map_err(|err| err.to_string())?,
+                                lease: #lease_expr,
+                            }),
+                            (None, None) => {}
                         }
                     }
                 });
+            }
+            FieldMeta::Map {
+                prefix_path,
+                key_ty,
+                lease,
+            } => {
+                let value_ty = btreemap_value_type(&field.ty)?;
+                let lease_expr = map_lease_expr(&lease);
+                let map_prefix_expr = quote! {
+                    format!("{}/{}/", render_prefix(#prefix, scope), #prefix_path)
+                };
 
                 apply_put_arms.push(quote! {
-                    if let Some(encoded_key) = key.strip_prefix(#helper_ident::prefix(scope).as_str()) {
-                        let decoded_key = <#key_ty as crate::dcs::store::EtcdKeyCodec>::decode_key(encoded_key)?;
-                        let decoded_value =
-                            serde_json::from_slice(value).map_err(crate::dcs::store::EtcdDecodeError::json)?;
+                    if let Some(encoded_key) = key.strip_prefix(#map_prefix_expr.as_str()) {
+                        let decoded_key = <#key_ty as crate::dcs::schema::EtcdKeyCodec>::decode_key(encoded_key)?;
+                        let decoded_value = serde_json::from_slice::<#value_ty>(value)
+                            .map_err(crate::dcs::schema::EtcdDecodeError::json)?;
                         state.#field_ident.insert(decoded_key, decoded_value);
                         return Ok(());
                     }
                 });
 
                 apply_delete_arms.push(quote! {
-                    if let Some(encoded_key) = key.strip_prefix(#helper_ident::prefix(scope).as_str()) {
-                        let decoded_key = <#key_ty as crate::dcs::store::EtcdKeyCodec>::decode_key(encoded_key)?;
+                    if let Some(encoded_key) = key.strip_prefix(#map_prefix_expr.as_str()) {
+                        let decoded_key = <#key_ty as crate::dcs::schema::EtcdKeyCodec>::decode_key(encoded_key)?;
                         state.#field_ident.remove(&decoded_key);
                         return Ok(());
+                    }
+                });
+
+                diff_arms.push(quote! {
+                    for key in before
+                        .#field_ident
+                        .keys()
+                        .chain(after.#field_ident.keys())
+                        .collect::<std::collections::BTreeSet<_>>()
+                    {
+                        match (before.#field_ident.get(key), after.#field_ident.get(key)) {
+                            (Some(_), None) => writes.push(crate::dcs::schema::SchemaWrite::Delete {
+                                key: format!("{}{}", #map_prefix_expr, key.encode_key()),
+                            }),
+                            (None, Some(value)) | (Some(_), Some(value))
+                                if before.#field_ident.get(key) != Some(value) =>
+                            {
+                                writes.push(crate::dcs::schema::SchemaWrite::Put {
+                                    key: format!("{}{}", #map_prefix_expr, key.encode_key()),
+                                    json: serde_json::to_string(value).map_err(|err| err.to_string())?,
+                                    lease: #lease_expr(value),
+                                });
+                            }
+                            _ => {}
+                        }
                     }
                 });
             }
@@ -1912,40 +1930,40 @@ fn derive_etcd_schema_impl(input: DeriveInput) -> syn::Result<proc_macro2::Token
     Ok(quote! {
         pub(super) struct DcsKvSchema;
 
-        impl crate::dcs::store::EtcdSchema for DcsKvSchema {
-            type State = #struct_ident;
-
-            fn empty_state() -> Self::State {
-                #struct_ident {
-                    #(#empty_fields),*
-                }
-            }
-
-            fn prefix(scope: &str) -> String {
+        impl DcsKvSchema {
+            pub(super) fn prefix(scope: &str) -> String {
                 render_prefix(#prefix, scope)
             }
 
-            fn apply_put(
-                state: &mut Self::State,
+            pub(super) fn apply_put(
+                state: &mut #state_ident,
                 scope: &str,
                 key: &str,
                 value: &[u8],
-            ) -> Result<(), crate::dcs::store::EtcdDecodeError> {
+            ) -> Result<(), crate::dcs::schema::EtcdDecodeError> {
                 #(#apply_put_arms)*
-                Err(crate::dcs::store::EtcdDecodeError::unknown_key(key))
+                Err(crate::dcs::schema::EtcdDecodeError::unknown_key(key))
             }
 
-            fn apply_delete(
-                state: &mut Self::State,
+            pub(super) fn apply_delete(
+                state: &mut #state_ident,
                 scope: &str,
                 key: &str,
-            ) -> Result<(), crate::dcs::store::EtcdDecodeError> {
+            ) -> Result<(), crate::dcs::schema::EtcdDecodeError> {
                 #(#apply_delete_arms)*
-                Err(crate::dcs::store::EtcdDecodeError::unknown_key(key))
+                Err(crate::dcs::schema::EtcdDecodeError::unknown_key(key))
+            }
+
+            pub(super) fn diff(
+                scope: &str,
+                before: &#state_ident,
+                after: &#state_ident,
+            ) -> Result<Vec<crate::dcs::schema::SchemaWrite>, String> {
+                let mut writes = Vec::new();
+                #(#diff_arms)*
+                Ok(writes)
             }
         }
-
-        #(#helper_items)*
     })
 }
 
@@ -2040,53 +2058,102 @@ fn parse_field_meta(attrs: &[syn::Attribute]) -> syn::Result<FieldMeta> {
         (Some(path), None) => Ok(FieldMeta::Singleton { path, lease }),
         (None, Some(prefix_path)) => Ok(FieldMeta::Map {
             prefix_path,
-            key_ty: key_ty.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "map field requires key = ..."))?,
+            key_ty: key_ty.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "map field requires key = ...")
+            })?,
             lease,
         }),
-        _ => Err(syn::Error::new(proc_macro2::Span::call_site(), "field requires exactly one of singleton/map")),
+        _ => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "field requires exactly one of singleton/map",
+        )),
     }
 }
 
-fn lease_tokens_singleton(lease: &LeaseMeta) -> proc_macro2::TokenStream {
+fn singleton_lease_expr(
+    lease: &LeaseMeta,
+    _field_ident: &syn::Ident,
+) -> proc_macro2::TokenStream {
     match lease {
-        LeaseMeta::None => quote! { crate::dcs::store::LeaseAttachment::None },
-        LeaseMeta::SessionEphemeral => quote! { crate::dcs::store::LeaseAttachment::SessionEphemeral },
-        LeaseMeta::TtlUntilField(field) => quote! { crate::dcs::store::LeaseAttachment::TtlUntil(value.#field) },
+        LeaseMeta::None => quote! { crate::dcs::schema::LeaseAttachment::None },
+        LeaseMeta::SessionEphemeral => {
+            quote! { crate::dcs::schema::LeaseAttachment::SessionEphemeral }
+        }
+        LeaseMeta::TtlUntilField(field) => {
+            quote! { crate::dcs::schema::LeaseAttachment::TtlUntil(value.#field) }
+        }
     }
 }
 
-fn lease_tokens_map(lease: &LeaseMeta) -> proc_macro2::TokenStream {
+fn map_lease_expr(lease: &LeaseMeta) -> proc_macro2::TokenStream {
     match lease {
-        LeaseMeta::None => quote! { crate::dcs::store::LeaseAttachment::None },
-        LeaseMeta::SessionEphemeral => quote! { crate::dcs::store::LeaseAttachment::SessionEphemeral },
-        LeaseMeta::TtlUntilField(field) => quote! { crate::dcs::store::LeaseAttachment::TtlUntil(value.#field) },
+        LeaseMeta::None => quote! { |_| crate::dcs::schema::LeaseAttachment::None },
+        LeaseMeta::SessionEphemeral => {
+            quote! { |_| crate::dcs::schema::LeaseAttachment::SessionEphemeral }
+        }
+        LeaseMeta::TtlUntilField(field) => {
+            quote! { |value| crate::dcs::schema::LeaseAttachment::TtlUntil(value.#field) }
+        }
     }
 }
 
-fn render_prefix(template: String, scope: &str) -> String {
+fn render_prefix(template: &str, scope: &str) -> String {
     template.replace("{scope}", scope)
 }
 
-fn to_pascal(value: &str) -> String {
-    let mut out = String::new();
-    let mut upper = true;
-    for ch in value.chars() {
-        if ch == '_' {
-            upper = true;
-            continue;
-        }
-        if upper {
-            out.extend(ch.to_uppercase());
-            upper = false;
-        } else {
-            out.push(ch);
-        }
+fn option_inner_type(ty: &Type) -> syn::Result<Type> {
+    extract_generic_type(ty, "Option")
+}
+
+fn btreemap_value_type(ty: &Type) -> syn::Result<Type> {
+    let syn::Type::Path(path) = ty else {
+        return Err(syn::Error::new(ty.span(), "expected BTreeMap type"));
+    };
+    let segment = path
+        .path
+        .segments
+        .last()
+        .ok_or_else(|| syn::Error::new(ty.span(), "missing path segment"))?;
+    if segment.ident != "BTreeMap" {
+        return Err(syn::Error::new(ty.span(), "expected BTreeMap type"));
     }
-    out
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return Err(syn::Error::new(ty.span(), "expected generic BTreeMap type"));
+    };
+    let mut iter = args.args.iter();
+    let _key = iter.next();
+    let Some(syn::GenericArgument::Type(value_ty)) = iter.next() else {
+        return Err(syn::Error::new(ty.span(), "missing BTreeMap value type"));
+    };
+    Ok(value_ty.clone())
+}
+
+fn extract_generic_type(ty: &Type, expected: &str) -> syn::Result<Type> {
+    let syn::Type::Path(path) = ty else {
+        return Err(syn::Error::new(ty.span(), "expected generic type"));
+    };
+    let segment = path
+        .path
+        .segments
+        .last()
+        .ok_or_else(|| syn::Error::new(ty.span(), "missing path segment"))?;
+    if segment.ident != expected {
+        return Err(syn::Error::new(
+            ty.span(),
+            format!("expected {expected}<...>"),
+        ));
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return Err(syn::Error::new(ty.span(), "expected generic args"));
+    };
+    let Some(syn::GenericArgument::Type(inner)) = args.args.first() else {
+        return Err(syn::Error::new(ty.span(), "missing inner type"));
+    };
+    Ok(inner.clone())
 }
 ```
 
-That appendix is allowed. It is not required for task completion. The task is still successful if the handwritten schema/store split is completed cleanly and the macro is not added.
+This appendix now represents a legitimate branch of the design, not a bad smell by default. It is still not mandatory. The task is still successful if the handwritten schema/store split is completed cleanly and the macro is not added.
 
 ## Files that must be changed or explicitly audited
 

@@ -1580,7 +1580,9 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
         .cluster()
         .into_iter()
         .flat_map(|cluster| cluster.members())
-        .filter(|(_member_id, member)| matches!(member.postgres(), MemberPostgresView::Replica { .. }))
+        .filter(|(_member_id, member)| {
+            matches!(member.postgres(), MemberPostgresView::Replica { .. })
+        })
         .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
 }
@@ -1609,7 +1611,9 @@ fn assert_member_is_replica_via_member(
         .dcs
         .cluster()
         .and_then(|cluster| cluster.member(&member.member_id()))
-        .ok_or_else(|| HarnessError::message(format!("member `{member}` is not present in status")))?;
+        .ok_or_else(|| {
+            HarnessError::message(format!("member `{member}` is not present in status"))
+        })?;
     if member == primary {
         return Err(HarnessError::message(format!(
             "member `{member}` is still the primary instead of a replica"

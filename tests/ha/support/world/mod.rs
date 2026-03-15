@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env,
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -7,6 +8,7 @@ use std::{
 };
 
 use cucumber::World;
+use serde::Deserialize;
 use pgtuskmaster_rust::{
     api::NodeState,
     dcs::MemberPostgresView,
@@ -423,7 +425,11 @@ impl HarnessShared {
         create_dir_all(paths.run_dir.as_path())?;
         create_dir_all(paths.materialized_dir.as_path())?;
         create_dir_all(paths.artifacts_dir.as_path())?;
-        materialize_given_fixture(&given, paths.materialized_dir.as_path())?;
+        materialize_given_fixture(
+            &given,
+            paths.materialized_dir.as_path(),
+            feature.feature_name.as_str(),
+        )?;
         create_fault_directories(paths.materialized_dir.as_path())?;
 
         let compose = ComposeStack {
@@ -1183,6 +1189,58 @@ fn required_env(key: &str) -> Result<String> {
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct HaSubnetManifest {
+    feature_subnets: BTreeMap<String, String>,
+}
+
+fn feature_network_subnet(feature_name: &str) -> Result<String> {
+    match env::var("PGTM_HA_SUBNET_MANIFEST") {
+        Ok(path) => feature_network_subnet_from_manifest(Path::new(path.as_str()), feature_name),
+        Err(_) => Ok(fallback_feature_network_subnet(feature_name)),
+    }
+}
+
+fn feature_network_subnet_from_manifest(
+    manifest_path: &Path,
+    feature_name: &str,
+) -> Result<String> {
+    let content = fs::read_to_string(manifest_path).map_err(|source| HarnessError::Io {
+        path: manifest_path.to_path_buf(),
+        source,
+    })?;
+    let manifest =
+        serde_json::from_str::<HaSubnetManifest>(content.as_str()).map_err(|source| {
+            HarnessError::Json {
+                context: format!("parsing HA subnet manifest `{}`", manifest_path.display()),
+                source,
+            }
+        })?;
+    manifest
+        .feature_subnets
+        .get(feature_name)
+        .cloned()
+        .ok_or_else(|| {
+            HarnessError::message(format!(
+                "HA subnet manifest `{}` has no subnet for feature `{feature_name}`",
+                manifest_path.display()
+            ))
+        })
+}
+
+fn fallback_feature_network_subnet(feature_name: &str) -> String {
+    let hash = feature_name
+        .as_bytes()
+        .iter()
+        .fold(1_469_598_103_934_665_603_u64, |state, byte| {
+            (state ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211_u64)
+        });
+    let subnet_index = (hash % 4_096) as u16;
+    let third_octet = subnet_index / 16;
+    let fourth_octet = (subnet_index % 16) * 16;
+    format!("10.250.{third_octet}.{fourth_octet}/28")
+}
+
 fn build_compose_project(feature_name: &str, run_id: &str) -> String {
     let feature = sanitize(feature_name);
     let run = sanitize(run_id);
@@ -1218,7 +1276,11 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
         })
 }
 
-fn materialize_given_fixture(given: &HaGivenDefinition, materialized_root: &Path) -> Result<()> {
+fn materialize_given_fixture(
+    given: &HaGivenDefinition,
+    materialized_root: &Path,
+    feature_name: &str,
+) -> Result<()> {
     let FixtureMaterialization {
         shared_root,
         copies,
@@ -1228,7 +1290,7 @@ fn materialize_given_fixture(given: &HaGivenDefinition, materialized_root: &Path
         copy_shared_fixture_entry(shared_root.as_path(), materialized_root, entry)?;
     }
     for render in renders {
-        render_fixture_file(materialized_root, render)?;
+        render_fixture_file(materialized_root, render, feature_name)?;
     }
     Ok(())
 }
@@ -1300,15 +1362,17 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-fn render_fixture_file(materialized_root: &Path, file: &RenderedFixtureFile) -> Result<()> {
+fn render_fixture_file(
+    materialized_root: &Path,
+    file: &RenderedFixtureFile,
+    feature_name: &str,
+) -> Result<()> {
     let target_path = materialized_root.join(render_target_relative_path(&file.target));
     if let Some(parent) = target_path.parent() {
         create_dir_all(parent)?;
     }
-    write_text_file(
-        target_path.as_path(),
-        render_fixture_template(&file.template).as_str(),
-    )
+    let rendered = render_fixture_template(&file.template, feature_name)?;
+    write_text_file(target_path.as_path(), rendered.as_str())
 }
 
 fn render_target_relative_path(target: &FixtureRenderTarget) -> PathBuf {
@@ -1323,22 +1387,23 @@ fn render_target_relative_path(target: &FixtureRenderTarget) -> PathBuf {
     }
 }
 
-fn render_fixture_template(template: &FixtureTemplate) -> String {
+fn render_fixture_template(template: &FixtureTemplate, feature_name: &str) -> Result<String> {
     match template {
-        FixtureTemplate::Compose(template) => render_compose_template(*template),
-        FixtureTemplate::Runtime(template) => render_member_runtime_template(template),
-        FixtureTemplate::Observer(template) => render_observer_template(template),
+        FixtureTemplate::Compose(template) => render_compose_template(*template, feature_name),
+        FixtureTemplate::Runtime(template) => Ok(render_member_runtime_template(template)),
+        FixtureTemplate::Observer(template) => Ok(render_observer_template(template)),
     }
 }
 
-fn render_compose_template(template: ComposeTemplate) -> String {
+fn render_compose_template(template: ComposeTemplate, feature_name: &str) -> Result<String> {
     let observer_cap_add = match template.observer_net_admin {
         ObserverNetAdmin::Enabled => "    cap_add:\n      - NET_ADMIN\n",
         ObserverNetAdmin::Disabled => "",
     };
     let dcs_services = render_dcs_services(template.dcs_layout);
     let dcs_volumes = render_dcs_volumes(template.dcs_layout);
-    format!(
+    let network_subnet = feature_network_subnet(feature_name)?;
+    Ok(format!(
         r#"services:
 {dcs_services}
 
@@ -1492,6 +1557,9 @@ fn render_compose_template(template: ComposeTemplate) -> String {
 networks:
   ha:
     driver: bridge
+    ipam:
+      config:
+        - subnet: "{network_subnet}"
 
 volumes:
 {dcs_volumes}  node-a-data:
@@ -1549,7 +1617,7 @@ secrets:
   rewinder_password:
     file: ./secrets/rewinder-password
 "#
-    )
+    ))
 }
 
 fn render_member_runtime_template(
@@ -1887,7 +1955,7 @@ mod tests {
 
         let result =
             (|| -> Result<()> {
-                materialize_given_fixture(&given, output_root.as_path())?;
+                materialize_given_fixture(&given, output_root.as_path(), "materializes_plain")?;
 
                 let compose =
                     fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -1897,6 +1965,8 @@ mod tests {
                         }
                     })?;
                 assert_eq!(compose.matches("NET_ADMIN").count(), 4);
+                assert!(compose.contains("ipam:"));
+                assert!(compose.contains("subnet:"));
 
                 let runtime = fs::read_to_string(
                     output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
@@ -1951,7 +2021,7 @@ mod tests {
         let output_root = temporary_directory("custom-roles")?;
 
         let result = (|| -> Result<()> {
-            materialize_given_fixture(&given, output_root.as_path())?;
+            materialize_given_fixture(&given, output_root.as_path(), "materializes_custom_roles")?;
 
             let compose =
                 fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -1961,6 +2031,8 @@ mod tests {
                     }
                 })?;
             assert_eq!(compose.matches("NET_ADMIN").count(), 3);
+            assert!(compose.contains("ipam:"));
+            assert!(compose.contains("subnet:"));
 
             let runtime = fs::read_to_string(
                 output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
@@ -2008,7 +2080,7 @@ mod tests {
         let output_root = temporary_directory("three-etcd")?;
 
         let result = (|| -> Result<()> {
-            materialize_given_fixture(&given, output_root.as_path())?;
+            materialize_given_fixture(&given, output_root.as_path(), "materializes_three_etcd")?;
 
             let compose =
                 fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -2020,6 +2092,8 @@ mod tests {
             assert!(compose.contains("etcd-a:"));
             assert!(compose.contains("etcd-b:"));
             assert!(compose.contains("etcd-c:"));
+            assert!(compose.contains("ipam:"));
+            assert!(compose.contains("subnet:"));
             assert!(compose.contains("etcd-a=http://etcd-a:2380"));
             assert!(compose.contains("etcd-b=http://etcd-b:2380"));
             assert!(compose.contains("etcd-c=http://etcd-c:2380"));

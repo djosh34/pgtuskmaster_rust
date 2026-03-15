@@ -108,7 +108,10 @@ pub fn validate_runtime_config(cfg: &RuntimeConfig) -> Result<(), ConfigError> {
             });
         }
 
-        validate_non_empty("postgres.roles.extra.<key>.username", role.role.username.as_str())?;
+        validate_non_empty(
+            "postgres.roles.extra.<key>.username",
+            role.role.username.as_str(),
+        )?;
     }
 
     validate_unique_managed_role_usernames(cfg)?;
@@ -331,7 +334,7 @@ mod tests {
         let err = match validate_runtime_config(&cfg) {
             Ok(()) => {
                 return Err(
-                    "expected duplicate managed postgres usernames to be rejected".to_string()
+                    "expected duplicate managed postgres usernames to be rejected".to_string(),
                 );
             }
             Err(err) => err,
@@ -379,7 +382,7 @@ mod tests {
         let err = match validate_runtime_config(&cfg) {
             Ok(()) => {
                 return Err(
-                    "expected empty extra managed postgres username to be rejected".to_string()
+                    "expected empty extra managed postgres username to be rejected".to_string(),
                 );
             }
             Err(err) => err,

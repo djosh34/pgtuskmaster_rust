@@ -106,6 +106,12 @@ impl DockerCli {
         project: &str,
         services: &[&str],
     ) -> Result<()> {
+        let compose_dir = compose_file.parent().ok_or_else(|| {
+            HarnessError::message(format!(
+                "compose file `{}` has no parent directory",
+                compose_file.display()
+            ))
+        })?;
         let mut args = vec![
             "compose".to_string(),
             "--project-name".to_string(),
@@ -116,21 +122,24 @@ impl DockerCli {
             "--detach".to_string(),
         ];
         args.extend(services.iter().map(|service| (*service).to_string()));
-        let _ = self.run_in_dir(
-            compose_file.parent().ok_or_else(|| {
-                HarnessError::message(format!(
-                    "compose file `{}` has no parent directory",
-                    compose_file.display()
-                ))
-            })?,
-            args,
-            if services.is_empty() {
-                "starting docker compose stack".to_string()
-            } else {
-                format!("starting docker compose services `{}`", services.join(", "))
-            },
-        )?;
-        Ok(())
+        let context = if services.is_empty() {
+            "starting docker compose stack".to_string()
+        } else {
+            format!("starting docker compose services `{}`", services.join(", "))
+        };
+        let mut attempts = 0_u8;
+        loop {
+            match self.run_in_dir(compose_dir, args.clone(), context.clone()) {
+                Ok(_) => return Ok(()),
+                Err(HarnessError::CommandFailed { stderr, .. })
+                    if attempts < 2 && is_retryable_compose_network_race(stderr.as_str()) =>
+                {
+                    attempts = attempts.saturating_add(1);
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     pub fn compose_down(&self, compose_file: &Path, project: &str) -> Result<()> {
@@ -498,6 +507,7 @@ fn forwarded_environment() -> Vec<(String, String)> {
         "HOME",
         "PGTM_CUCUMBER_TEST_IMAGE",
         "PGTM_CUCUMBER_TEST_RUN_ID",
+        "PGTM_HA_SUBNET_MANIFEST",
         "XDG_CONFIG_HOME",
         "XDG_RUNTIME_DIR",
     ]
@@ -508,6 +518,12 @@ fn forwarded_environment() -> Vec<(String, String)> {
             .map(|value| (key.to_string(), value))
     })
     .collect::<Vec<_>>()
+}
+
+fn is_retryable_compose_network_race(stderr: &str) -> bool {
+    stderr.contains("failed to set up container networking")
+        && stderr.contains("network ")
+        && stderr.contains(" not found")
 }
 
 fn parse_json_sequence(input: &str, context: String) -> Result<Vec<ComposePsEntry>> {

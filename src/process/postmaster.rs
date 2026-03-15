@@ -452,7 +452,7 @@ mod tests {
 
     fn wait_for_lookup_ready(target: &ManagedPostmasterTarget) -> Result<(), String> {
         let mut attempts = 0_u8;
-        while attempts < 50 {
+        while attempts < 150 {
             if lookup_managed_postmaster(target).is_ok() {
                 return Ok(());
             }

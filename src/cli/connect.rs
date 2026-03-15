@@ -107,7 +107,11 @@ fn resolve_replicas_view(
         .dcs
         .cluster()
         .into_iter()
-        .flat_map(|cluster| cluster.member_ids().filter_map(|member_id| cluster.member(member_id)))
+        .flat_map(|cluster| {
+            cluster
+                .member_ids()
+                .filter_map(|member_id| cluster.member(member_id))
+        })
         .filter(|member| member_is_ready_replica(member))
         .map(|member| build_connection_target(member, tls, emit_tls))
         .collect::<Result<Vec<_>, _>>()?;
