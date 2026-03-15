@@ -111,7 +111,7 @@ fn validate_switchover_request(
 
     let target_member = dcs
         .cluster()
-        .and_then(|cluster| cluster.member(&target_member_id))
+        .member(&target_member_id)
         .ok_or_else(|| ApiError::bad_request(format!("unknown switchover_to member `{target}`")))?;
     if !member_slot_is_eligible_target(target_member) {
         return Err(ApiError::bad_request(format!(

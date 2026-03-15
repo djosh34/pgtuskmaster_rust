@@ -155,11 +155,13 @@ fn assemble_cluster_view(
     let mut nodes = state
         .dcs
         .cluster()
-        .into_iter()
-        .flat_map(|cluster| {
-            cluster
-                .member_ids()
-                .filter_map(|member_id| cluster.member(member_id).map(|member| (member_id, member)))
+        .member_ids()
+        .filter_map(|member_id| {
+            state
+                .dcs
+                .cluster()
+                .member(member_id)
+                .map(|member| (member_id, member))
         })
         .map(|(member_id, member)| build_node_view(state, member_id, member))
         .collect::<Vec<_>>();
@@ -178,7 +180,7 @@ fn assemble_cluster_view(
         discovered_member_count: nodes.len(),
         health,
         warnings,
-        switchover: state.dcs.cluster().and_then(cluster_switchover_view),
+        switchover: cluster_switchover_view(state.dcs.cluster()),
         nodes,
     }
 }
@@ -200,13 +202,7 @@ fn collect_warnings(state: &NodeState) -> Vec<ClusterWarning> {
             message: "seed node does not currently project an authoritative primary".to_string(),
         });
     }
-    if state
-        .dcs
-        .cluster()
-        .map(|cluster| cluster.member_count())
-        .unwrap_or(0)
-        == 0
-    {
+    if state.dcs.cluster().member_count() == 0 {
         warnings.push(ClusterWarning {
             code: "no_members".to_string(),
             message: "seed node does not currently expose any DCS member slots".to_string(),
@@ -257,8 +253,7 @@ fn member_role_label(member: &MemberPostgresView) -> &'static str {
 }
 
 fn member_readiness_label(member: &MemberPostgresView) -> &'static str {
-    let readiness = member.readiness();
-    readiness_label(&readiness)
+    readiness_label(member.readiness())
 }
 
 fn readiness_label(readiness: &Readiness) -> &'static str {

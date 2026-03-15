@@ -1578,8 +1578,7 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
     status
         .dcs
         .cluster()
-        .into_iter()
-        .flat_map(|cluster| cluster.members())
+        .members()
         .filter(|(_member_id, member)| matches!(member.postgres(), MemberPostgresView::Replica { .. }))
         .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
@@ -1589,8 +1588,7 @@ fn operator_visible_member_ids(status: &NodeState) -> Vec<ClusterMember> {
     status
         .dcs
         .cluster()
-        .into_iter()
-        .flat_map(|cluster| cluster.member_ids())
+        .member_ids()
         .filter_map(|member_id| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
 }
@@ -1608,7 +1606,7 @@ fn assert_member_is_replica_via_member(
     let member_status = status
         .dcs
         .cluster()
-        .and_then(|cluster| cluster.member(&member.member_id()))
+        .member(&member.member_id())
         .ok_or_else(|| HarnessError::message(format!("member `{member}` is not present in status")))?;
     if member == primary {
         return Err(HarnessError::message(format!(
@@ -1629,11 +1627,7 @@ fn assert_member_is_replica_via_member(
 }
 
 fn require_visible_members(status: &NodeState, expected: usize) -> Result<()> {
-    let visible = status
-        .dcs
-        .cluster()
-        .map(|cluster| cluster.member_count())
-        .unwrap_or_default();
+    let visible = status.dcs.cluster().member_count();
     if visible >= expected {
         return Ok(());
     }
@@ -1673,8 +1667,7 @@ fn format_warnings(status: &NodeState) -> String {
     if status
         .dcs
         .cluster()
-        .map(|cluster| cluster.member_count())
-        .unwrap_or_default()
+        .member_count()
         == 0
     {
         warnings.push("no_members".to_string());
@@ -2292,7 +2285,7 @@ async fn wait_for_targeted_switchover_rejection_precondition(
             let maybe_target = status
                 .dcs
                 .cluster()
-                .and_then(|cluster| cluster.member(&target_member.member_id()));
+                .member(&target_member.member_id());
             match maybe_target {
                 None => Ok(()),
                 Some(member) if !member_slot_is_api_switchover_eligible(member) => Ok(()),
@@ -2360,8 +2353,7 @@ fn select_planned_switchover_target(
     status
         .dcs
         .cluster()
-        .into_iter()
-        .flat_map(|cluster| cluster.members())
+        .members()
         .filter_map(|(member_id, member_view)| {
             ClusterMember::parse(member_id.0.as_str())
                 .ok()

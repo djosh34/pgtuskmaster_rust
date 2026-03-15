@@ -1525,18 +1525,15 @@ fn resolve_source_member<'a>(
     dcs: &'a DcsView,
     leader: &'a MemberId,
 ) -> Result<(&'a MemberId, &'a ClusterMemberView), ProcessError> {
-    let cluster = dcs.cluster().ok_or_else(|| {
-        ProcessError::InvalidSpec(
-            "source member resolution requires a DCS cluster view, but DCS is currently not trusted"
-                .to_string(),
-        )
-    })?;
-    cluster.member(leader).map(|member| (leader, member)).ok_or_else(|| {
-        ProcessError::InvalidSpec(format!(
-            "target member `{}` not present in DCS view",
-            leader.0
-        ))
-    })
+    dcs.cluster()
+        .member(leader)
+        .map(|member| (leader, member))
+        .ok_or_else(|| {
+            ProcessError::InvalidSpec(format!(
+                "target member `{}` not present in DCS view",
+                leader.0
+            ))
+        })
 }
 
 fn source_materialization_error(error: super::source::SourceMaterializationError) -> ProcessError {

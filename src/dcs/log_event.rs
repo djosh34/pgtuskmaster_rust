@@ -8,7 +8,7 @@ use crate::logging::{
 use super::DcsMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DcsLogOrigin {
+pub(super) enum DcsLogOrigin {
     ConnectedFailure,
     InitialConnectFailure,
     PublishCurrentView,
@@ -25,13 +25,13 @@ impl DcsLogOrigin {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DcsLogIdentity {
-    pub(crate) scope: String,
-    pub(crate) member_id: String,
+pub(super) struct DcsLogIdentity {
+    pub(super) scope: String,
+    pub(super) member_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DcsFailure {
+pub(super) enum DcsFailure {
     StoreIo { error: String },
     Decode { error: String },
     AlreadyExists { error: String },
@@ -55,7 +55,7 @@ impl DcsFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DcsLogEvent {
+pub(super) enum DcsLogEvent {
     ConnectedStepFailed {
         origin: DcsLogOrigin,
         identity: DcsLogIdentity,
