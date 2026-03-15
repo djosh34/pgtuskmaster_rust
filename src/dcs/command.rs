@@ -1,22 +1,14 @@
 use tokio::sync::mpsc;
 
-use crate::state::{MemberId, SwitchoverTarget};
+use crate::state::SwitchoverTarget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DcsCommand {
+pub(super) enum DcsCommand {
     AcquireLeadership,
     ReleaseLeadership,
-    PublishSwitchoverAny,
-    PublishSwitchoverTo(MemberId),
+    PublishSwitchover(SwitchoverTarget),
     ClearSwitchover,
 }
-
-#[derive(Clone)]
-pub(crate) struct DcsHandle {
-    sender: mpsc::UnboundedSender<DcsCommand>,
-}
-
-pub(crate) type DcsCommandInbox = mpsc::UnboundedReceiver<DcsCommand>;
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum DcsHandleError {
@@ -24,7 +16,12 @@ pub(crate) enum DcsHandleError {
     ChannelClosed,
 }
 
-pub(crate) fn dcs_command_channel() -> (DcsHandle, DcsCommandInbox) {
+#[derive(Clone)]
+pub(crate) struct DcsHandle {
+    sender: mpsc::UnboundedSender<DcsCommand>,
+}
+
+pub(super) fn dcs_command_channel() -> (DcsHandle, mpsc::UnboundedReceiver<DcsCommand>) {
     let (sender, receiver) = mpsc::unbounded_channel();
     (DcsHandle { sender }, receiver)
 }
@@ -45,22 +42,11 @@ impl DcsHandle {
         self.send(DcsCommand::ReleaseLeadership)
     }
 
-    pub(crate) fn publish_switchover_any(&self) -> Result<(), DcsHandleError> {
-        self.send(DcsCommand::PublishSwitchoverAny)
-    }
-
-    pub(crate) fn publish_switchover_to(&self, target: MemberId) -> Result<(), DcsHandleError> {
-        self.send(DcsCommand::PublishSwitchoverTo(target))
-    }
-
     pub(crate) fn publish_switchover(
         &self,
         target: SwitchoverTarget,
     ) -> Result<(), DcsHandleError> {
-        match target {
-            SwitchoverTarget::AnyHealthyReplica => self.publish_switchover_any(),
-            SwitchoverTarget::Specific(member_id) => self.publish_switchover_to(member_id),
-        }
+        self.send(DcsCommand::PublishSwitchover(target))
     }
 
     pub(crate) fn clear_switchover(&self) -> Result<(), DcsHandleError> {

@@ -78,7 +78,7 @@ fn resolve_primary_view(
     let member = state
         .dcs
         .cluster()
-        .and_then(|cluster| cluster.member(&crate::state::MemberId(primary_id.clone())))
+        .member(&crate::state::MemberId(primary_id.clone()))
         .ok_or_else(|| {
             CliError::Resolution(format!(
                 "authoritative primary `{primary_id}` is not present in the DCS member slots"
@@ -103,11 +103,10 @@ fn resolve_replicas_view(
     tls: &CliTlsConfig,
     emit_tls: bool,
 ) -> Result<ConnectionView, CliError> {
-    let targets = state
-        .dcs
-        .cluster()
-        .into_iter()
-        .flat_map(|cluster| cluster.member_ids().filter_map(|member_id| cluster.member(member_id)))
+    let cluster = state.dcs.cluster();
+    let targets = cluster
+        .member_ids()
+        .filter_map(|member_id| cluster.member(member_id))
         .filter(|member| member_is_ready_replica(member))
         .map(|member| build_connection_target(member, tls, emit_tls))
         .collect::<Result<Vec<_>, _>>()?;
@@ -137,11 +136,7 @@ fn build_connection_view(
         scope: state.scope.clone(),
         kind,
         tls: emit_tls,
-        discovered_member_count: state
-            .dcs
-            .cluster()
-            .map(|cluster| cluster.member_count())
-            .unwrap_or(0),
+        discovered_member_count: state.dcs.cluster().member_count(),
         warnings: Vec::new(),
         targets,
     }

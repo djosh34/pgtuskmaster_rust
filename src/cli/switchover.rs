@@ -66,7 +66,7 @@ fn validate_switchover_request(
     let target_member = state
         .dcs
         .cluster()
-        .and_then(|cluster| cluster.member(&MemberId(target_member_id.to_string())))
+        .member(&MemberId(target_member_id.to_string()))
         .ok_or_else(|| {
             CliError::Resolution(format!(
                 "cannot target member `{target_member_id}` for switchover: it is not present in the seed node DCS member slots"

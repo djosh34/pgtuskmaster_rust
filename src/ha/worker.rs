@@ -118,7 +118,7 @@ fn local_member_identity_fallback(
         return (None, None);
     }
 
-    let member = dcs.cluster().and_then(|cluster| cluster.member(self_id));
+    let member = dcs.cluster().member(self_id);
     (
         member.and_then(member_timeline),
         member.and_then(member_system_identifier),
@@ -364,7 +364,7 @@ fn build_storage_state(
     self_id: &MemberId,
     now: crate::state::UnixMillis,
 ) -> StorageState {
-    let self_member = dcs.cluster().and_then(|cluster| cluster.member(self_id));
+    let self_member = dcs.cluster().member(self_id);
     let pg_observation_stale = pg
         .last_refresh_at()
         .is_none_or(|last_refresh_at| now.0.saturating_sub(last_refresh_at.0) > lease_ttl_ms);
@@ -388,16 +388,12 @@ fn build_global_knowledge(
     let leadership = build_leadership_view(dcs, self_id);
     let peers = dcs
         .cluster()
-        .map(|cluster| {
-            cluster
-                .members()
-                .filter(|(member_id, _)| *member_id != self_id)
-                .map(|(member_id, member)| {
-                    (member_id.clone(), build_peer_knowledge_from_member(member))
-                })
-                .collect()
+        .members()
+        .filter(|(member_id, _)| *member_id != self_id)
+        .map(|(member_id, member)| {
+            (member_id.clone(), build_peer_knowledge_from_member(member))
         })
-        .unwrap_or_default();
+        .collect();
     let primary = observed_primary_member(dcs, self_id)
         .map(PrimaryObservation::Observed)
         .unwrap_or(PrimaryObservation::Absent);
@@ -408,17 +404,14 @@ fn build_global_knowledge(
             leadership,
             primary,
         },
-        switchover: dcs
-            .cluster()
-            .map(|cluster| match cluster.switchover() {
-                SwitchoverView::None => SwitchoverState::None,
-                SwitchoverView::Requested(target) => {
-                    SwitchoverState::Requested(SwitchoverRequest {
-                        target: target.clone(),
-                    })
-                }
-            })
-            .unwrap_or(SwitchoverState::None),
+        switchover: match dcs.cluster().switchover() {
+            SwitchoverView::None => SwitchoverState::None,
+            SwitchoverView::Requested(target) => {
+                SwitchoverState::Requested(SwitchoverRequest {
+                    target: target.clone(),
+                })
+            }
+        },
         peers,
         self_peer: build_self_peer(pg, local_data_dir),
     }
@@ -516,12 +509,10 @@ fn resolve_replica_upstream(pg: &PgInfoState, dcs: &DcsView) -> Option<MemberId>
         return None;
     };
 
-    dcs.cluster().and_then(|cluster| {
-        cluster.members().find_map(|(member_id, member)| {
-            (member.postgres_target().host() == primary_target.host()
-                && member.postgres_target().port() == primary_target.port())
-            .then_some(member_id.clone())
-        })
+    dcs.cluster().members().find_map(|(member_id, member)| {
+        (member.postgres_target().host() == primary_target.host()
+            && member.postgres_target().port() == primary_target.port())
+        .then_some(member_id.clone())
     })
 }
 
@@ -533,7 +524,7 @@ fn build_leadership_view(dcs: &DcsView, self_id: &MemberId) -> LeadershipView {
         return LeadershipView::HeldBySelf(epoch);
     }
 
-    match dcs.cluster().and_then(|cluster| cluster.member(&epoch.holder)) {
+    match dcs.cluster().member(&epoch.holder) {
         None => LeadershipView::StaleObservedLease {
             epoch,
             reason: StaleLeaseReason::HolderMissing,
@@ -572,18 +563,16 @@ fn classify_foreign_leader(member: &ClusterMemberView, epoch: LeaseEpoch) -> Lea
 }
 
 fn observed_primary_member(dcs: &DcsView, self_id: &MemberId) -> Option<ObservedPrimary> {
-    dcs.cluster().and_then(|cluster| {
-        cluster.members().find_map(|(member_id, member)| {
-            ((*member_id != *self_id)
-                && matches!(
-                    member.postgres(),
-                    MemberPostgresView::Primary { readiness, .. } if readiness == &Readiness::Ready
-                ))
-            .then(|| ObservedPrimary {
-                member: member_id.clone(),
-                timeline: member_timeline(member),
-                system_identifier: member_system_identifier(member),
-            })
+    dcs.cluster().members().find_map(|(member_id, member)| {
+        ((*member_id != *self_id)
+            && matches!(
+                member.postgres(),
+                MemberPostgresView::Primary { readiness, .. } if readiness == &Readiness::Ready
+            ))
+        .then(|| ObservedPrimary {
+            member: member_id.clone(),
+            timeline: member_timeline(member),
+            system_identifier: member_system_identifier(member),
         })
     })
 }

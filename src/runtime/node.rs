@@ -93,13 +93,13 @@ async fn run_workers(
         log: log.clone(),
     });
 
-    let dcs = crate::dcs::startup::bootstrap(crate::dcs::startup::DcsRuntimeRequest {
+    let dcs = crate::dcs::bootstrap(crate::dcs::DcsRuntimeRequest {
         identity: identity.clone(),
         endpoints: cfg.dcs.endpoints.clone(),
         client: cfg.dcs.client.clone(),
         poll_interval: worker_poll_interval,
         member_ttl_ms: cfg.ha.lease_ttl_ms,
-        advertised: crate::dcs::startup::DcsAdvertisedEndpoints::from_config(&cfg)
+        advertised: crate::dcs::DcsAdvertisedEndpoints::from_config(&cfg)
             .map_err(|err| RuntimeError::Worker(format!("dcs advertisement build failed: {err}")))?,
         pg_subscriber: pginfo.state.clone(),
         log: log.clone(),

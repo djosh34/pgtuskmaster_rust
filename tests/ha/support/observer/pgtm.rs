@@ -189,15 +189,10 @@ fn status_score(status: &ClusterStatusView) -> (usize, usize, usize, usize) {
     let reported_primary_count = status
         .dcs
         .cluster()
-        .into_iter()
-        .flat_map(|cluster| cluster.members())
+        .members()
         .filter(|(_member_id, member)| matches!(member.postgres(), MemberPostgresView::Primary { .. }))
         .count();
-    let discovered_member_count = status
-        .dcs
-        .cluster()
-        .map(|cluster| cluster.member_count())
-        .unwrap_or_default();
+    let discovered_member_count = status.dcs.cluster().member_count();
     (
         discovered_member_count,
         usize::from(status.dcs.mode() == DcsMode::Coordinated),
