@@ -70,6 +70,38 @@ This split is required because the transport state is genuinely stateful:
 
 So yes, `repo` and `session` are needed in this project. The exact names could change. The lifecycle split cannot.
 
+**Why one prefix watch is the right model**
+
+The intended model here is not "watch each field one by one". The intended model is:
+
+- one snapshot load of the schema prefix
+- one watch on that same schema prefix
+- one schema-owned apply layer that updates typed state from those events
+
+For DCS that means watching one prefix such as `/{scope}` or `/{scope}/...`, not separate watches for leader, switchover, and members.
+
+That makes sense because:
+
+- the DCS schema is one keyspace
+- the runtime wants one coherent typed cache
+- reconnect/reload logic becomes much simpler if there is one scope watch
+- one watch avoids field-by-field watch bookkeeping noise
+
+Watching all keys in the entire etcd cluster usually does **not** make sense for this task because:
+
+- DCS should only care about its own schema prefix
+- watching the entire keyspace would force DCS schema code to ignore unrelated keys
+- it would couple DCS to data it does not own
+- it weakens the whole point of explicit keyspace separation
+
+The etcd API itself is range/prefix oriented. That is why the client surface is built around key, range, prefix, and all-keys modes instead of "watch this arbitrary set of disjoint keys as one typed object". If the schema keys are meant to belong together, the right fix is to put them under one prefix and watch that prefix.
+
+So the answer is:
+
+- no, the design should not watch each key one by one
+- yes, one prefix watch is the correct approach
+- yes, watching all keys exists, but it is usually the wrong boundary for DCS
+
 **Macro caveat, clearly**
 
 The macro exists only to compress already-correct schema declarations into less handwritten metadata.
@@ -173,19 +205,45 @@ No other file is allowed to manually rebuild DCS paths.
 
 ```rust
 mod command;
-pub(crate) mod log_event;
+mod log_event;
 mod runtime;
 mod schema;
 mod store;
-pub(crate) mod startup;
+mod startup;
 
 pub(crate) use command::DcsHandle;
-pub(crate) use runtime::DcsWorker;
+pub(crate) use startup::{bootstrap, BootstrapRequest, DcsAdvertisedEndpoints, DcsRuntime};
 pub use schema::{
     ClusterMemberView, ClusterView, DcsMode, DcsView, LeadershipObservation, MemberPostgresView,
     NotTrustedView, SwitchoverView,
 };
 ```
+
+### Visibility rule for the whole task
+
+`pub(crate)` must **not** be sprayed across internal DCS types.
+
+The default rule is:
+
+- private first
+- `pub(super)` only when one sibling DCS module must use it
+- `pub(crate)` only at the root DCS boundary when non-DCS crate code must use it
+- `pub` only for the intentionally public read-only `DcsView` surface
+
+The only acceptable `pub(crate)` exceptions in the final design are:
+
+- `dcs::DcsHandle`
+  - needed by HA and API so they can send typed DCS commands
+- `dcs::bootstrap`
+  - needed by `src/runtime/node.rs` as the crate composition root
+- `dcs::BootstrapRequest`
+  - needed by `src/runtime/node.rs` to construct DCS bootstrap input
+- `dcs::DcsAdvertisedEndpoints`
+  - needed by `src/runtime/node.rs` when deriving advertised endpoints from config
+- `dcs::DcsRuntime`
+  - needed by `src/runtime/node.rs` because bootstrap returns the DCS state/handle/worker bundle
+
+Everything else in the DCS implementation should stay private or `pub(super)`.
 
 ### 2. `src/dcs/schema.rs`
 
@@ -246,7 +304,7 @@ impl DcsView {
         }
     }
 
-    pub(crate) fn starting() -> Self {
+    pub(super) fn starting() -> Self {
         Self::NotTrusted(NotTrustedView {
             observed_leadership: None,
             cluster: ClusterView {
@@ -360,14 +418,14 @@ pub enum SwitchoverView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DcsState {
-    pub(crate) leader: Option<LeaseEpoch>,
-    pub(crate) switchover: Option<SwitchoverTarget>,
-    pub(crate) members: BTreeMap<MemberId, MemberRecord>,
+pub(super) struct DcsState {
+    pub(super) leader: Option<LeaseEpoch>,
+    pub(super) switchover: Option<SwitchoverTarget>,
+    pub(super) members: BTreeMap<MemberId, MemberRecord>,
 }
 
 impl DcsState {
-    pub(crate) fn empty() -> Self {
+    pub(super) fn empty() -> Self {
         Self {
             leader: None,
             switchover: None,
@@ -377,15 +435,15 @@ impl DcsState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemberRecord {
-    pub(crate) expires_at: UnixMillis,
-    pub(crate) postgres_target: PgTcpTarget,
-    pub(crate) postgres: MemberPostgresRecord,
+pub(super) struct MemberRecord {
+    pub(super) expires_at: UnixMillis,
+    pub(super) postgres_target: PgTcpTarget,
+    pub(super) postgres: MemberPostgresRecord,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum MemberPostgresRecord {
+pub(super) enum MemberPostgresRecord {
     Unknown {
         readiness: Readiness,
         timeline: Option<TimelineId>,
@@ -405,33 +463,33 @@ pub(crate) enum MemberPostgresRecord {
     },
 }
 
-pub(crate) struct DcsKvSchema;
-pub(crate) struct LeaderField;
-pub(crate) struct SwitchoverField;
-pub(crate) struct MembersField;
+pub(super) struct DcsKvSchema;
+pub(super) struct LeaderField;
+pub(super) struct SwitchoverField;
+pub(super) struct MembersField;
 
 impl DcsKvSchema {
-    pub(crate) fn prefix(scope: &str) -> String {
+    pub(super) fn prefix(scope: &str) -> String {
         format!("/{scope}")
     }
 
-    pub(crate) fn leader_key(scope: &str) -> String {
+    pub(super) fn leader_key(scope: &str) -> String {
         format!("{}/leader", Self::prefix(scope))
     }
 
-    pub(crate) fn switchover_key(scope: &str) -> String {
+    pub(super) fn switchover_key(scope: &str) -> String {
         format!("{}/switchover", Self::prefix(scope))
     }
 
-    pub(crate) fn member_prefix(scope: &str) -> String {
+    pub(super) fn member_prefix(scope: &str) -> String {
         format!("{}/members/", Self::prefix(scope))
     }
 
-    pub(crate) fn member_key(scope: &str, member_id: &MemberId) -> String {
+    pub(super) fn member_key(scope: &str, member_id: &MemberId) -> String {
         format!("{}{member_id}", Self::member_prefix(scope))
     }
 
-    pub(crate) fn parse_member_id(scope: &str, key: &str) -> Option<MemberId> {
+    pub(super) fn parse_member_id(scope: &str, key: &str) -> Option<MemberId> {
         let prefix = Self::member_prefix(scope);
         key.strip_prefix(prefix.as_str())
             .map(|value| MemberId(value.to_string()))
@@ -574,7 +632,7 @@ impl MapField<DcsState> for MembersField {
     }
 }
 
-pub(crate) fn evaluate_mode(
+pub(super) fn evaluate_mode(
     etcd_reachable: bool,
     state: &DcsState,
     self_id: &MemberId,
@@ -605,7 +663,7 @@ pub(crate) fn evaluate_mode(
     DcsMode::Coordinated
 }
 
-pub(crate) fn build_dcs_view(mode: DcsMode, state: &DcsState, now: UnixMillis) -> DcsView {
+pub(super) fn build_dcs_view(mode: DcsMode, state: &DcsState, now: UnixMillis) -> DcsView {
     let authoritative_leader = state.leader.as_ref().map(|epoch| epoch.holder.clone());
     let cluster = ClusterView {
         members: state
@@ -695,7 +753,7 @@ fn build_member_view(
     }
 }
 
-pub(crate) fn build_local_member_record(
+pub(super) fn build_local_member_record(
     now: UnixMillis,
     postgres_target: &PgTcpTarget,
     ttl_ms: u64,
@@ -802,7 +860,7 @@ const KEEPALIVE_LEAD_TIME: Duration = Duration::from_millis(250);
 const MIN_TTL_SECONDS: i64 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub(crate) enum EtcdStoreError {
+pub(super) enum EtcdStoreError {
     #[error("etcd io failed: {0}")]
     Io(String),
     #[error("etcd decode failed for key `{key}`: {message}")]
@@ -816,41 +874,41 @@ pub(crate) enum EtcdStoreError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct EtcdDecodeError {
+pub(super) struct EtcdDecodeError {
     message: String,
 }
 
 impl EtcdDecodeError {
-    pub(crate) fn json(err: serde_json::Error) -> Self {
+    pub(super) fn json(err: serde_json::Error) -> Self {
         Self {
             message: err.to_string(),
         }
     }
 
-    pub(crate) fn message(message: String) -> Self {
+    pub(super) fn message(message: String) -> Self {
         Self { message }
     }
 
-    pub(crate) fn unknown_key(key: &str) -> Self {
+    pub(super) fn unknown_key(key: &str) -> Self {
         Self {
             message: format!("unknown schema key `{key}`"),
         }
     }
 }
 
-pub(crate) trait EtcdKeyCodec: Clone + Ord + Send + Sync + 'static {
+pub(super) trait EtcdKeyCodec: Clone + Ord + Send + Sync + 'static {
     fn encode_key(&self) -> String;
     fn decode_key(value: &str) -> Result<Self, EtcdDecodeError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LeaseAttachment {
+pub(super) enum LeaseAttachment {
     None,
     SessionEphemeral,
     TtlUntil(UnixMillis),
 }
 
-pub(crate) trait EtcdSchema: Send + Sync + 'static {
+pub(super) trait EtcdSchema: Send + Sync + 'static {
     type State: Clone + Send + Sync + 'static;
 
     fn empty_state() -> Self::State;
@@ -868,7 +926,7 @@ pub(crate) trait EtcdSchema: Send + Sync + 'static {
     ) -> Result<(), EtcdDecodeError>;
 }
 
-pub(crate) trait SingletonField<S>: Send + Sync + 'static {
+pub(super) trait SingletonField<S>: Send + Sync + 'static {
     type Value: Clone + Serialize + DeserializeOwned + Send + Sync + 'static;
 
     fn path(scope: &str) -> String;
@@ -877,7 +935,7 @@ pub(crate) trait SingletonField<S>: Send + Sync + 'static {
     fn lease_attachment(value: &Self::Value) -> LeaseAttachment;
 }
 
-pub(crate) trait MapField<S>: Send + Sync + 'static {
+pub(super) trait MapField<S>: Send + Sync + 'static {
     type Key: EtcdKeyCodec;
     type Value: Clone + Serialize + DeserializeOwned + Send + Sync + 'static;
 
@@ -891,12 +949,12 @@ pub(crate) trait MapField<S>: Send + Sync + 'static {
     }
 }
 
-pub(crate) struct TypedEtcdRepo<T: EtcdSchema> {
+pub(super) struct TypedEtcdRepo<T: EtcdSchema> {
     client: Client,
     _schema: PhantomData<T>,
 }
 
-pub(crate) struct TypedEtcdSession<T: EtcdSchema> {
+pub(super) struct TypedEtcdSession<T: EtcdSchema> {
     client: Client,
     scope: String,
     cache: T::State,
@@ -913,18 +971,18 @@ struct SessionLease {
     next_keepalive_at: Instant,
 }
 
-pub(crate) struct SingletonHandle<'a, T: EtcdSchema, F: SingletonField<T::State>> {
+pub(super) struct SingletonHandle<'a, T: EtcdSchema, F: SingletonField<T::State>> {
     session: &'a mut TypedEtcdSession<T>,
     _field: PhantomData<F>,
 }
 
-pub(crate) struct MapHandle<'a, T: EtcdSchema, F: MapField<T::State>> {
+pub(super) struct MapHandle<'a, T: EtcdSchema, F: MapField<T::State>> {
     session: &'a mut TypedEtcdSession<T>,
     _field: PhantomData<F>,
 }
 
 impl<T: EtcdSchema> TypedEtcdRepo<T> {
-    pub(crate) async fn connect(
+    pub(super) async fn connect(
         endpoints: Vec<DcsEndpoint>,
         client_cfg: DcsClientConfig,
     ) -> Result<Self, EtcdStoreError> {
@@ -944,7 +1002,7 @@ impl<T: EtcdSchema> TypedEtcdRepo<T> {
         })
     }
 
-    pub(crate) async fn session(&self, scope: String) -> Result<TypedEtcdSession<T>, EtcdStoreError> {
+    pub(super) async fn session(&self, scope: String) -> Result<TypedEtcdSession<T>, EtcdStoreError> {
         let prefix = T::prefix(scope.as_str());
         let (watcher, watch_stream) = timeout_etcd(
             self.client
@@ -967,7 +1025,7 @@ impl<T: EtcdSchema> TypedEtcdRepo<T> {
 }
 
 impl<T: EtcdSchema> TypedEtcdSession<T> {
-    pub(crate) async fn load(&mut self) -> Result<T::State, EtcdStoreError> {
+    pub(super) async fn load(&mut self) -> Result<T::State, EtcdStoreError> {
         let prefix = T::prefix(self.scope.as_str());
         let response = timeout_etcd(
             self.client
@@ -992,7 +1050,7 @@ impl<T: EtcdSchema> TypedEtcdSession<T> {
         Ok(next)
     }
 
-    pub(crate) async fn next(&mut self) -> Result<Option<T::State>, EtcdStoreError> {
+    pub(super) async fn next(&mut self) -> Result<Option<T::State>, EtcdStoreError> {
         self.keepalive_if_needed().await?;
         let response = self
             .watch_stream
@@ -1006,14 +1064,14 @@ impl<T: EtcdSchema> TypedEtcdSession<T> {
         Ok(Some(self.cache.clone()))
     }
 
-    pub(crate) fn singleton<F: SingletonField<T::State>>(&mut self) -> SingletonHandle<'_, T, F> {
+    pub(super) fn singleton<F: SingletonField<T::State>>(&mut self) -> SingletonHandle<'_, T, F> {
         SingletonHandle {
             session: self,
             _field: PhantomData,
         }
     }
 
-    pub(crate) fn map<F: MapField<T::State>>(&mut self) -> MapHandle<'_, T, F> {
+    pub(super) fn map<F: MapField<T::State>>(&mut self) -> MapHandle<'_, T, F> {
         MapHandle {
             session: self,
             _field: PhantomData,
@@ -1146,7 +1204,7 @@ where
     T: EtcdSchema,
     F: SingletonField<T::State>,
 {
-    pub(crate) async fn set(
+    pub(super) async fn set(
         self,
         value: Option<F::Value>,
     ) -> Result<(), EtcdStoreError> {
@@ -1168,7 +1226,7 @@ where
         Ok(())
     }
 
-    pub(crate) async fn claim_if_empty(
+    pub(super) async fn claim_if_empty(
         self,
         value: F::Value,
     ) -> Result<bool, EtcdStoreError> {
@@ -1185,7 +1243,7 @@ where
         Ok(claimed)
     }
 
-    pub(crate) async fn delete_if(
+    pub(super) async fn delete_if(
         self,
         predicate: impl FnOnce(&F::Value) -> bool,
     ) -> Result<(), EtcdStoreError> {
@@ -1205,7 +1263,7 @@ where
     T: EtcdSchema,
     F: MapField<T::State>,
 {
-    pub(crate) async fn put(
+    pub(super) async fn put(
         self,
         key: F::Key,
         value: F::Value,
@@ -1220,7 +1278,7 @@ where
         Ok(())
     }
 
-    pub(crate) async fn delete(self, key: &F::Key) -> Result<(), EtcdStoreError> {
+    pub(super) async fn delete(self, key: &F::Key) -> Result<(), EtcdStoreError> {
         let path = F::path(self.session.scope.as_str(), key);
         self.session.delete_key(path.as_str()).await?;
         F::map_mut(&mut self.session.cache).remove(key);
@@ -1319,13 +1377,13 @@ use super::{
     DcsHandle,
 };
 
-pub(crate) struct DcsRuntime {
-    pub(crate) state: StateSubscriber<DcsView>,
-    pub(crate) handle: DcsHandle,
-    pub(crate) worker: DcsWorker,
+pub(super) struct DcsRuntime {
+    pub(super) state: StateSubscriber<DcsView>,
+    pub(super) handle: DcsHandle,
+    pub(super) worker: DcsWorker,
 }
 
-pub(crate) struct DcsWorker {
+pub(super) struct DcsWorker {
     ctx: DcsWorkerCtx,
 }
 
@@ -1340,15 +1398,15 @@ struct DcsWorkerCtx {
     _log: LogSender,
 }
 
-pub(crate) struct DcsRuntimeRequest {
-    pub(crate) identity: NodeIdentity,
-    pub(crate) advertised_postgres: PgTcpTarget,
-    pub(crate) member_ttl_ms: u64,
-    pub(crate) repo: TypedEtcdRepo<DcsKvSchema>,
-    pub(crate) log: LogSender,
+pub(super) struct DcsRuntimeRequest {
+    pub(super) identity: NodeIdentity,
+    pub(super) advertised_postgres: PgTcpTarget,
+    pub(super) member_ttl_ms: u64,
+    pub(super) repo: TypedEtcdRepo<DcsKvSchema>,
+    pub(super) log: LogSender,
 }
 
-pub(crate) fn bootstrap_runtime(request: DcsRuntimeRequest) -> DcsRuntime {
+pub(super) fn bootstrap_runtime(request: DcsRuntimeRequest) -> DcsRuntime {
     let (state_tx, state) = new_state_channel(DcsView::starting());
     let (handle, rx) = super::command::dcs_command_channel();
 
@@ -1371,7 +1429,7 @@ pub(crate) fn bootstrap_runtime(request: DcsRuntimeRequest) -> DcsRuntime {
 }
 
 impl DcsWorker {
-    pub(crate) async fn run(mut self) -> Result<(), WorkerError> {
+    pub(super) async fn run(mut self) -> Result<(), WorkerError> {
         let scope = self.ctx.identity.scope.0.clone();
         let mut session = self
             .ctx
@@ -1516,7 +1574,7 @@ use tokio::sync::mpsc;
 use crate::{pginfo::state::PgInfoState, state::SwitchoverTarget};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DcsCommand {
+pub(super) enum DcsCommand {
     RefreshLocalMember(PgInfoState),
     RemoveLocalMember,
     AcquireLeadership,
@@ -1526,48 +1584,48 @@ pub(crate) enum DcsCommand {
 }
 
 #[derive(Clone)]
-pub(crate) struct DcsHandle {
+pub(super) struct DcsHandle {
     sender: mpsc::UnboundedSender<DcsCommand>,
 }
 
-pub(crate) type DcsCommandInbox = mpsc::UnboundedReceiver<DcsCommand>;
+pub(super) type DcsCommandInbox = mpsc::UnboundedReceiver<DcsCommand>;
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
-pub(crate) enum DcsHandleError {
+pub(super) enum DcsHandleError {
     #[error("dcs command channel closed")]
     ChannelClosed,
 }
 
-pub(crate) fn dcs_command_channel() -> (DcsHandle, DcsCommandInbox) {
+pub(super) fn dcs_command_channel() -> (DcsHandle, DcsCommandInbox) {
     let (sender, receiver) = mpsc::unbounded_channel();
     (DcsHandle { sender }, receiver)
 }
 
 impl DcsHandle {
-    pub(crate) fn refresh_local_member(&self, pg_state: PgInfoState) -> Result<(), DcsHandleError> {
+    pub(super) fn refresh_local_member(&self, pg_state: PgInfoState) -> Result<(), DcsHandleError> {
         self.send(DcsCommand::RefreshLocalMember(pg_state))
     }
 
-    pub(crate) fn remove_local_member(&self) -> Result<(), DcsHandleError> {
+    pub(super) fn remove_local_member(&self) -> Result<(), DcsHandleError> {
         self.send(DcsCommand::RemoveLocalMember)
     }
 
-    pub(crate) fn acquire_leadership(&self) -> Result<(), DcsHandleError> {
+    pub(super) fn acquire_leadership(&self) -> Result<(), DcsHandleError> {
         self.send(DcsCommand::AcquireLeadership)
     }
 
-    pub(crate) fn release_leadership(&self) -> Result<(), DcsHandleError> {
+    pub(super) fn release_leadership(&self) -> Result<(), DcsHandleError> {
         self.send(DcsCommand::ReleaseLeadership)
     }
 
-    pub(crate) fn publish_switchover(
+    pub(super) fn publish_switchover(
         &self,
         target: SwitchoverTarget,
     ) -> Result<(), DcsHandleError> {
         self.send(DcsCommand::PublishSwitchover(target))
     }
 
-    pub(crate) fn clear_switchover(&self) -> Result<(), DcsHandleError> {
+    pub(super) fn clear_switchover(&self) -> Result<(), DcsHandleError> {
         self.send(DcsCommand::ClearSwitchover)
     }
 
@@ -1594,21 +1652,21 @@ use super::{
     store::TypedEtcdRepo,
 };
 
-pub(crate) struct DcsAdvertisedEndpoints {
-    pub(crate) postgres: PgTcpTarget,
+pub(super) struct DcsAdvertisedEndpoints {
+    pub(super) postgres: PgTcpTarget,
 }
 
-pub(crate) struct BootstrapRequest {
-    pub(crate) identity: NodeIdentity,
-    pub(crate) endpoints: Vec<DcsEndpoint>,
-    pub(crate) client: DcsClientConfig,
-    pub(crate) member_ttl_ms: u64,
-    pub(crate) advertised: DcsAdvertisedEndpoints,
-    pub(crate) log: LogSender,
+pub(super) struct BootstrapRequest {
+    pub(super) identity: NodeIdentity,
+    pub(super) endpoints: Vec<DcsEndpoint>,
+    pub(super) client: DcsClientConfig,
+    pub(super) member_ttl_ms: u64,
+    pub(super) advertised: DcsAdvertisedEndpoints,
+    pub(super) log: LogSender,
 }
 
 impl DcsAdvertisedEndpoints {
-    pub(crate) fn from_config(cfg: &RuntimeConfig) -> Result<Self, String> {
+    pub(super) fn from_config(cfg: &RuntimeConfig) -> Result<Self, String> {
         let advertise_port = cfg
             .postgres
             .network
@@ -1620,7 +1678,7 @@ impl DcsAdvertisedEndpoints {
     }
 }
 
-pub(crate) async fn bootstrap(request: BootstrapRequest) -> Result<DcsRuntime, String> {
+pub(super) async fn bootstrap(request: BootstrapRequest) -> Result<DcsRuntime, String> {
     let repo = TypedEtcdRepo::<DcsKvSchema>::connect(request.endpoints, request.client)
         .await
         .map_err(|err| err.to_string())?;
@@ -1727,7 +1785,7 @@ fn derive_etcd_schema_impl(input: DeriveInput) -> syn::Result<proc_macro2::Token
                 let helper_ident = format_ident!("{}", to_pascal(&field_ident.to_string()));
                 let lease_tokens = lease_tokens_singleton(&lease);
                 helper_items.push(quote! {
-                    pub(crate) struct #helper_ident;
+                    pub(super) struct #helper_ident;
 
                     impl crate::dcs::store::SingletonField<#struct_ident> for #helper_ident {
                         type Value = extract_option_inner::<#field.ty>();
@@ -1770,7 +1828,7 @@ fn derive_etcd_schema_impl(input: DeriveInput) -> syn::Result<proc_macro2::Token
                 let helper_ident = format_ident!("{}", to_pascal(&field_ident.to_string()));
                 let lease_tokens = lease_tokens_map(&lease);
                 helper_items.push(quote! {
-                    pub(crate) struct #helper_ident;
+                    pub(super) struct #helper_ident;
 
                     impl crate::dcs::store::MapField<#struct_ident> for #helper_ident {
                         type Key = #key_ty;
@@ -1823,7 +1881,7 @@ fn derive_etcd_schema_impl(input: DeriveInput) -> syn::Result<proc_macro2::Token
     }
 
     Ok(quote! {
-        pub(crate) struct DcsKvSchema;
+        pub(super) struct DcsKvSchema;
 
         impl crate::dcs::store::EtcdSchema for DcsKvSchema {
             type State = #struct_ident;
@@ -2053,6 +2111,7 @@ The implementer must explicitly grep these and either delete them or move them b
 - `cfg.dcs.init`
 - `DcsInitConfig`
 - `dcs.init`
+- `pub(crate)`
 - `src/dcs/worker.rs`
 - `src/dcs/state.rs`
 
@@ -2070,8 +2129,10 @@ If those grep terms still appear scattered across unrelated DCS files after the 
 - [ ] The final DCS layout is split into explicit `schema.rs`, `store.rs`, `runtime.rs`, and `startup.rs` responsibilities, with `command.rs` remaining the typed mutation entry point.
 - [ ] No DCS path layout or key parsing remains hidden inside ad hoc command handlers or watch loops outside the schema module.
 - [ ] No DCS JSON encode/decode remains hidden inside runtime/business logic outside the schema/store boundary.
+- [ ] `pub(crate)` is not sprayed across internal DCS implementation types; the final code uses private-by-default visibility, `pub(super)` for sibling DCS sharing, and only the explicitly justified root DCS crate-boundary exceptions remain `pub(crate)`.
 - [ ] A small etcd framework is allowed and used only if it directly serves this split; the implementation does not build generic infra that is larger than the DCS problem it is fixing.
 - [ ] `TypedEtcdRepo` and `TypedEtcdSession` or equivalent lifecycle-separated types exist and clearly isolate transport/bootstrap ownership from live scope/watch/lease ownership.
+- [ ] The live watch model is one schema-prefix watch plus snapshot reloads, not a pile of field-by-field watches.
 - [ ] The DCS runtime uses the schema/store layer and does not manually build keys, parse watch paths, or directly manipulate raw etcd transactions for DCS fields.
 - [ ] The implementation explicitly audits and cleans adjacent config/test/consumer files that still depend on dead DCS shape or dead `dcs.init` support.
 - [ ] If derive support is implemented, it is added only as a small follow-up over an already-clear handwritten schema split, and it does not hide business logic.
