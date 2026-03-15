@@ -152,17 +152,10 @@ fn assemble_cluster_view(
         ClusterHealth::Degraded
     };
 
-    let mut nodes = state
-        .dcs
-        .cluster()
+    let cluster = state.dcs.cluster();
+    let mut nodes = cluster
         .member_ids()
-        .filter_map(|member_id| {
-            state
-                .dcs
-                .cluster()
-                .member(member_id)
-                .map(|member| (member_id, member))
-        })
+        .filter_map(|member_id| cluster.member(member_id).map(|member| (member_id, member)))
         .map(|(member_id, member)| build_node_view(state, member_id, member))
         .collect::<Vec<_>>();
     nodes.sort_by(|left, right| {
