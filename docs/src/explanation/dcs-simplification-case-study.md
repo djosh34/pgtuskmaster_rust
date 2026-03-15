@@ -196,14 +196,14 @@ impl DcsClient {
     }
 }
 
+/// Same logic as current load_snapshot(), but returns owned data
+/// without writing to a persistent cache.
 fn parse_response_into_cache(scope: &str, response: &GetResponse) -> ParsedSnapshot {
-    // Same logic as current load_snapshot(), but returns owned data
-    // without writing to a persistent cache
     let mut members = BTreeMap::new();
     let mut leader = None;
     let mut switchover = None;
     for kv in response.kvs() {
-        // parse_key + deserialize, same as apply_key_value()
+        // parse_key + deserialize — reuses apply_key_value() logic
     }
     ParsedSnapshot { members, leader, switchover }
 }
@@ -214,11 +214,16 @@ fn parse_response_into_cache(scope: &str, response: &GetResponse) -> ParsedSnaps
 The handle would hold a cloneable `Arc<DcsClient>` and call etcd directly:
 
 ```rust
+/// Note: etcd_client::Client is Clone and internally manages connection
+/// pooling, so Arc wrapper alone suffices for shared reads.
+/// The Mutex is only needed for leader_lease state, not the client itself.
 #[derive(Clone)]
 pub struct DcsHandle {
-    client: Arc<tokio::sync::Mutex<etcd_client::Client>>,
+    client: etcd_client::Client,
     identity: DcsNodeIdentity,
     cadence: DcsCadence,
+    /// Reuses the existing OwnedLeaderLease struct from worker.rs
+    /// (holds lease_id, keeper, stream, next_keepalive_at).
     leader_lease: Arc<tokio::sync::Mutex<Option<OwnedLeaderLease>>>,
 }
 
