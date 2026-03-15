@@ -1,3 +1,4 @@
+// Stub implementation – see DESIGN.md for the planned interface.
 #![allow(clippy::unimplemented)]
 
 pub(crate) mod startup;

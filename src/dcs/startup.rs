@@ -1,3 +1,4 @@
+// Stub implementation – see DESIGN.md for the planned interface.
 #![allow(clippy::unimplemented, dead_code)]
 
 use std::time::Duration;
