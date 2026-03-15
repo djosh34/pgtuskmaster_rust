@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Sun Mar 15 11:18:01 PM CET 2026
+Generated: Sun Mar 15 11:48:09 PM CET 2026
 
 # Task `.ralph/tasks/story-dcs-simplification/02-task-fully-rewrite-etcd-into-a-much-simpler-model-with-derive-support.md`
 
@@ -8,7 +8,7 @@ Generated: Sun Mar 15 11:18:01 PM CET 2026
 ## Task: Fully Rewrite Etcd Into A Much Simpler Model With `#[]` Derive Support <status>not_started</status> <passes>false</passes>
 
 <description>
-</description>
+**Goal**
 ```
 
 ==============
