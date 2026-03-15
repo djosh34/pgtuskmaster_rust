@@ -50,11 +50,11 @@ That is exactly backwards. The end state required by this task is:
 
 These are not pattern-for-pattern's-sake names. They solve two real lifecycle splits that already exist whether we name them or not.
 
-- `TypedEtcdRepo` is the long-lived transport/bootstrap owner.
+- `EtcdRepo` is the long-lived transport/bootstrap owner.
   - It owns endpoints, auth, TLS, and the raw etcd client.
   - It knows how to establish a scope-bound session.
   - It does not know DCS business rules.
-- `TypedEtcdSession` is the live scope/watch/lease owner.
+- `EtcdSession` is the live scope/watch/lease owner.
   - It owns one scope prefix.
   - It owns one watch stream.
   - It owns any active ephemeral lease bookkeeping tied to that scope.
@@ -128,6 +128,96 @@ Conclusion for this repo:
 - derive support is optional and should come only after the handwritten version is explicit and clean
 
 If the handwritten schema layer is already small and clear, there is no obligation to add the macro at all.
+
+**Stringly timeout helper is rejected**
+
+The task must **not** reintroduce helpers like:
+
+```rust
+timeout_etcd(future, "put key")
+timeout_etcd(future, "snapshot load")
+timeout_etcd(future, "watch start")
+```
+
+That is ugly, stringly, and weakly typed.
+
+If timeout/context wrapping is needed, it must use a typed operation enum instead:
+
+```rust
+enum EtcdOp {
+    Connect,
+    StartPrefixWatch,
+    LoadSnapshot,
+    PutKey,
+    DeleteKey,
+    CompareAndSwapAbsent,
+    GrantLease,
+    KeepLeaseAlive,
+}
+```
+
+and errors should carry that typed operation:
+
+```rust
+enum EtcdStoreError {
+    Timeout { op: EtcdOp },
+    Io { op: EtcdOp, message: String },
+    Decode { key: String, message: String },
+    Mutation(String),
+}
+```
+
+The point is:
+
+- no random strings
+- no ad hoc timeout labels
+- no "framework feeling" helper that hides weak typing
+
+**Preferred mutation model**
+
+Yes, the model can be much simpler than per-field imperative helpers.
+
+The preferred model for this task is:
+
+- runtime mutates typed state
+- schema diff logic infers which etcd keys changed
+- store applies the minimal required etcd operations
+
+Example:
+
+```rust
+session
+    .mutate(|state| {
+        state.switchover = Some(target);
+        Ok(())
+    })
+    .await?;
+```
+
+and:
+
+```rust
+session
+    .mutate(|state| {
+        state.switchover = None;
+        Ok(())
+    })
+    .await?;
+```
+
+The schema/store layer should infer from the before/after typed state whether that means:
+
+- `put /{scope}/switchover`
+- `delete /{scope}/switchover`
+
+That is not impossible. It is a valid and preferred simplification.
+
+The same applies to:
+
+- member upsert/delete
+- leader acquire/release
+
+The only caveat is that leader acquisition is not just "set value"; it also needs a guard such as "only create if absent" plus lease attachment. But that still fits the same model if the schema diff produces a guarded write plan instead of raw per-field API calls.
 
 **Will this plan work in the current project**
 
@@ -260,10 +350,6 @@ use crate::{
         LeaseEpoch, MemberId, ObservedWalPosition, PgTcpTarget, SwitchoverTarget,
         SystemIdentifier, TimelineId, UnixMillis,
     },
-};
-
-use super::store::{
-    EtcdDecodeError, EtcdKeyCodec, EtcdSchema, LeaseAttachment, MapField, SingletonField,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,10 +549,50 @@ pub(super) enum MemberPostgresRecord {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LeaseAttachment {
+    None,
+    SessionEphemeral,
+    TtlUntil(UnixMillis),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SchemaWrite {
+    Put {
+        key: String,
+        json: String,
+        lease: LeaseAttachment,
+    },
+    Delete {
+        key: String,
+    },
+    ClaimIfAbsent {
+        key: String,
+        json: String,
+        lease: LeaseAttachment,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct EtcdDecodeError(String);
+
+impl EtcdDecodeError {
+    fn json(err: serde_json::Error) -> Self {
+        Self(err.to_string())
+    }
+
+    fn unknown_key(key: &str) -> Self {
+        Self(format!("unknown schema key `{key}`"))
+    }
+}
+
+impl std::fmt::Display for EtcdDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.as_str())
+    }
+}
+
 pub(super) struct DcsKvSchema;
-pub(super) struct LeaderField;
-pub(super) struct SwitchoverField;
-pub(super) struct MembersField;
 
 impl DcsKvSchema {
     pub(super) fn prefix(scope: &str) -> String {
@@ -495,21 +621,9 @@ impl DcsKvSchema {
             .map(|value| MemberId(value.to_string()))
             .filter(|member_id| !member_id.0.is_empty())
     }
-}
 
-impl EtcdSchema for DcsKvSchema {
-    type State = DcsState;
-
-    fn empty_state() -> Self::State {
-        DcsState::empty()
-    }
-
-    fn prefix(scope: &str) -> String {
-        Self::prefix(scope)
-    }
-
-    fn apply_put(
-        state: &mut Self::State,
+    pub(super) fn apply_put(
+        state: &mut DcsState,
         scope: &str,
         key: &str,
         value: &[u8],
@@ -534,8 +648,8 @@ impl EtcdSchema for DcsKvSchema {
         Err(EtcdDecodeError::unknown_key(key))
     }
 
-    fn apply_delete(
-        state: &mut Self::State,
+    pub(super) fn apply_delete(
+        state: &mut DcsState,
         scope: &str,
         key: &str,
     ) -> Result<(), EtcdDecodeError> {
@@ -556,79 +670,70 @@ impl EtcdSchema for DcsKvSchema {
 
         Err(EtcdDecodeError::unknown_key(key))
     }
-}
 
-impl SingletonField<DcsState> for LeaderField {
-    type Value = LeaseEpoch;
+    pub(super) fn diff(
+        scope: &str,
+        before: &DcsState,
+        after: &DcsState,
+    ) -> Result<Vec<SchemaWrite>, String> {
+        let mut writes = Vec::new();
 
-    fn path(scope: &str) -> String {
-        DcsKvSchema::leader_key(scope)
-    }
-
-    fn slot(state: &DcsState) -> Option<&Self::Value> {
-        state.leader.as_ref()
-    }
-
-    fn slot_mut(state: &mut DcsState) -> &mut Option<Self::Value> {
-        &mut state.leader
-    }
-
-    fn lease_attachment(_value: &Self::Value) -> LeaseAttachment {
-        LeaseAttachment::SessionEphemeral
-    }
-}
-
-impl SingletonField<DcsState> for SwitchoverField {
-    type Value = SwitchoverTarget;
-
-    fn path(scope: &str) -> String {
-        DcsKvSchema::switchover_key(scope)
-    }
-
-    fn slot(state: &DcsState) -> Option<&Self::Value> {
-        state.switchover.as_ref()
-    }
-
-    fn slot_mut(state: &mut DcsState) -> &mut Option<Self::Value> {
-        &mut state.switchover
-    }
-
-    fn lease_attachment(_value: &Self::Value) -> LeaseAttachment {
-        LeaseAttachment::None
-    }
-}
-
-impl EtcdKeyCodec for MemberId {
-    fn encode_key(&self) -> String {
-        self.0.clone()
-    }
-
-    fn decode_key(value: &str) -> Result<Self, EtcdDecodeError> {
-        if value.is_empty() {
-            return Err(EtcdDecodeError::message("empty member id key".to_string()));
+        if before.switchover != after.switchover {
+            match &after.switchover {
+                Some(target) => writes.push(SchemaWrite::Put {
+                    key: Self::switchover_key(scope),
+                    json: serde_json::to_string(target).map_err(|err| err.to_string())?,
+                    lease: LeaseAttachment::None,
+                }),
+                None => writes.push(SchemaWrite::Delete {
+                    key: Self::switchover_key(scope),
+                }),
+            }
         }
-        Ok(MemberId(value.to_string()))
-    }
-}
 
-impl MapField<DcsState> for MembersField {
-    type Key = MemberId;
-    type Value = MemberRecord;
+        if before.leader != after.leader {
+            match (&before.leader, &after.leader) {
+                (None, Some(epoch)) => writes.push(SchemaWrite::ClaimIfAbsent {
+                    key: Self::leader_key(scope),
+                    json: serde_json::to_string(epoch).map_err(|err| err.to_string())?,
+                    lease: LeaseAttachment::SessionEphemeral,
+                }),
+                (Some(_), None) => writes.push(SchemaWrite::Delete {
+                    key: Self::leader_key(scope),
+                }),
+                (Some(_), Some(epoch)) => writes.push(SchemaWrite::Put {
+                    key: Self::leader_key(scope),
+                    json: serde_json::to_string(epoch).map_err(|err| err.to_string())?,
+                    lease: LeaseAttachment::SessionEphemeral,
+                }),
+                (None, None) => {}
+            }
+        }
 
-    fn prefix(scope: &str) -> String {
-        DcsKvSchema::member_prefix(scope)
-    }
+        for member_id in before
+            .members
+            .keys()
+            .chain(after.members.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            match (before.members.get(member_id), after.members.get(member_id)) {
+                (Some(_), None) => writes.push(SchemaWrite::Delete {
+                    key: Self::member_key(scope, member_id),
+                }),
+                (None, Some(record)) | (Some(_), Some(record))
+                    if before.members.get(member_id) != Some(record) =>
+                {
+                    writes.push(SchemaWrite::Put {
+                        key: Self::member_key(scope, member_id),
+                        json: serde_json::to_string(record).map_err(|err| err.to_string())?,
+                        lease: LeaseAttachment::TtlUntil(record.expires_at),
+                    });
+                }
+                _ => {}
+            }
+        }
 
-    fn map(state: &DcsState) -> &BTreeMap<Self::Key, Self::Value> {
-        &state.members
-    }
-
-    fn map_mut(state: &mut DcsState) -> &mut BTreeMap<Self::Key, Self::Value> {
-        &mut state.members
-    }
-
-    fn lease_attachment(value: &Self::Value) -> LeaseAttachment {
-        LeaseAttachment::TtlUntil(value.expires_at)
+        Ok(writes)
     }
 }
 
@@ -836,132 +941,79 @@ fn record_system_identifier(record: &MemberRecord) -> Option<SystemIdentifier> {
 
 ### 3. `src/dcs/store.rs`
 
-This is the allowed small etcd framework. It is allowed because it directly serves the extraction of schema/key layout from transport code. It is not "infra bullshit" if it stays this small and this explicit.
+This layer must stay thin. The earlier handle-heavy sketch with `SingletonHandle`, `MapHandle`, `TypedEtcdRepo`, and `TypedEtcdSession` is **not** the preferred end state anymore.
+
+For this task, the simpler preferred shape is:
+
+- `EtcdRepo`
+- `EtcdSession`
+- `EtcdSession::load()`
+- `EtcdSession::next()`
+- `EtcdSession::mutate(...)`
+
+No field-handle boilerplate.
+
+No stringly timeout helper.
+
+No generic-looking framework unless the handwritten version proves too repetitive.
 
 ```rust
-use std::{collections::BTreeMap, marker::PhantomData, str, time::Duration};
+use std::{str, time::Duration};
 
 use etcd_client::{
     Certificate, Client, Compare, CompareOp, ConnectOptions, EventType, GetOptions, Identity,
     LeaseKeepAliveStream, LeaseKeeper, PutOptions, TlsOptions, Txn, TxnOp, WatchOptions,
-    WatchResponse, WatchStream, Watcher,
+    WatchResponse, WatchStream,
 };
-use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use tokio::time::Instant;
 
 use crate::{
     config::{resolve_inline_or_path_bytes, resolve_secret_string, DcsClientConfig, DcsEndpoint},
-    state::UnixMillis,
 };
+
+use super::schema::{DcsKvSchema, DcsState, SchemaWrite};
 
 const ETCD_TIMEOUT: Duration = Duration::from_secs(2);
 const KEEPALIVE_LEAD_TIME: Duration = Duration::from_millis(250);
 const MIN_TTL_SECONDS: i64 = 1;
 
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EtcdOp {
+    Connect,
+    StartPrefixWatch,
+    LoadSnapshot,
+    PutKey,
+    DeleteKey,
+    CompareAndSwapAbsent,
+    GrantLease,
+    KeepLeaseAlive,
+}
+
+#[derive(Debug, Error)]
 pub(super) enum EtcdStoreError {
-    #[error("etcd io failed: {0}")]
-    Io(String),
+    #[error("etcd timeout during {op:?}")]
+    Timeout { op: EtcdOp },
+    #[error("etcd io during {op:?}: {message}")]
+    Io { op: EtcdOp, message: String },
     #[error("etcd decode failed for key `{key}`: {message}")]
     Decode { key: String, message: String },
-    #[error("invalid etcd event key `{0}`")]
-    InvalidKey(String),
-    #[error("missing lease while keepalive required")]
-    MissingLease,
-    #[error("optimistic claim failed")]
-    ClaimFailed,
+    #[error("mutation rejected: {0}")]
+    Mutation(String),
+    #[error("missing session lease")]
+    MissingSessionLease,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct EtcdDecodeError {
-    message: String,
-}
-
-impl EtcdDecodeError {
-    pub(super) fn json(err: serde_json::Error) -> Self {
-        Self {
-            message: err.to_string(),
-        }
-    }
-
-    pub(super) fn message(message: String) -> Self {
-        Self { message }
-    }
-
-    pub(super) fn unknown_key(key: &str) -> Self {
-        Self {
-            message: format!("unknown schema key `{key}`"),
-        }
-    }
-}
-
-pub(super) trait EtcdKeyCodec: Clone + Ord + Send + Sync + 'static {
-    fn encode_key(&self) -> String;
-    fn decode_key(value: &str) -> Result<Self, EtcdDecodeError>;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum LeaseAttachment {
-    None,
-    SessionEphemeral,
-    TtlUntil(UnixMillis),
-}
-
-pub(super) trait EtcdSchema: Send + Sync + 'static {
-    type State: Clone + Send + Sync + 'static;
-
-    fn empty_state() -> Self::State;
-    fn prefix(scope: &str) -> String;
-    fn apply_put(
-        state: &mut Self::State,
-        scope: &str,
-        key: &str,
-        value: &[u8],
-    ) -> Result<(), EtcdDecodeError>;
-    fn apply_delete(
-        state: &mut Self::State,
-        scope: &str,
-        key: &str,
-    ) -> Result<(), EtcdDecodeError>;
-}
-
-pub(super) trait SingletonField<S>: Send + Sync + 'static {
-    type Value: Clone + Serialize + DeserializeOwned + Send + Sync + 'static;
-
-    fn path(scope: &str) -> String;
-    fn slot(state: &S) -> Option<&Self::Value>;
-    fn slot_mut(state: &mut S) -> &mut Option<Self::Value>;
-    fn lease_attachment(value: &Self::Value) -> LeaseAttachment;
-}
-
-pub(super) trait MapField<S>: Send + Sync + 'static {
-    type Key: EtcdKeyCodec;
-    type Value: Clone + Serialize + DeserializeOwned + Send + Sync + 'static;
-
-    fn prefix(scope: &str) -> String;
-    fn map(state: &S) -> &BTreeMap<Self::Key, Self::Value>;
-    fn map_mut(state: &mut S) -> &mut BTreeMap<Self::Key, Self::Value>;
-    fn lease_attachment(value: &Self::Value) -> LeaseAttachment;
-
-    fn path(scope: &str, key: &Self::Key) -> String {
-        format!("{}{}", Self::prefix(scope), key.encode_key())
-    }
-}
-
-pub(super) struct TypedEtcdRepo<T: EtcdSchema> {
+pub(super) struct EtcdRepo {
     client: Client,
-    _schema: PhantomData<T>,
 }
 
-pub(super) struct TypedEtcdSession<T: EtcdSchema> {
+pub(super) struct EtcdSession {
     client: Client,
     scope: String,
-    cache: T::State,
-    watcher: Watcher,
+    cache: DcsState,
     watch_stream: WatchStream,
     session_lease: Option<SessionLease>,
-    _schema: PhantomData<T>,
 }
 
 struct SessionLease {
@@ -971,17 +1023,7 @@ struct SessionLease {
     next_keepalive_at: Instant,
 }
 
-pub(super) struct SingletonHandle<'a, T: EtcdSchema, F: SingletonField<T::State>> {
-    session: &'a mut TypedEtcdSession<T>,
-    _field: PhantomData<F>,
-}
-
-pub(super) struct MapHandle<'a, T: EtcdSchema, F: MapField<T::State>> {
-    session: &'a mut TypedEtcdSession<T>,
-    _field: PhantomData<F>,
-}
-
-impl<T: EtcdSchema> TypedEtcdRepo<T> {
+impl EtcdRepo {
     pub(super) async fn connect(
         endpoints: Vec<DcsEndpoint>,
         client_cfg: DcsClientConfig,
@@ -991,72 +1033,72 @@ impl<T: EtcdSchema> TypedEtcdRepo<T> {
             .map(|endpoint| endpoint.to_url())
             .collect::<Vec<_>>();
         let options = build_connect_options(client_cfg).await?;
-        let client = timeout_etcd(
+        let client = run_with_timeout(
+            EtcdOp::Connect,
             Client::connect(endpoint_urls, Some(options)),
-            "client connect",
         )
         .await?;
-        Ok(Self {
-            client,
-            _schema: PhantomData,
-        })
+        Ok(Self { client })
     }
 
-    pub(super) async fn session(&self, scope: String) -> Result<TypedEtcdSession<T>, EtcdStoreError> {
-        let prefix = T::prefix(scope.as_str());
-        let (watcher, watch_stream) = timeout_etcd(
+    pub(super) async fn session(&self, scope: String) -> Result<EtcdSession, EtcdStoreError> {
+        let prefix = DcsKvSchema::prefix(scope.as_str());
+        let watch_stream = run_with_timeout(
+            EtcdOp::StartPrefixWatch,
             self.client
                 .clone()
                 .watch(prefix.as_str(), Some(WatchOptions::new().with_prefix())),
-            "watch start",
         )
         .await?;
 
-        Ok(TypedEtcdSession {
+        Ok(EtcdSession {
             client: self.client.clone(),
             scope,
-            cache: T::empty_state(),
-            watcher,
+            cache: DcsState::empty(),
             watch_stream,
             session_lease: None,
-            _schema: PhantomData,
         })
     }
 }
 
-impl<T: EtcdSchema> TypedEtcdSession<T> {
-    pub(super) async fn load(&mut self) -> Result<T::State, EtcdStoreError> {
-        let prefix = T::prefix(self.scope.as_str());
-        let response = timeout_etcd(
+impl EtcdSession {
+    pub(super) async fn load(&mut self) -> Result<DcsState, EtcdStoreError> {
+        let prefix = DcsKvSchema::prefix(self.scope.as_str());
+        let response = run_with_timeout(
+            EtcdOp::LoadSnapshot,
             self.client
                 .get(prefix.as_str(), Some(GetOptions::new().with_prefix())),
-            "snapshot load",
         )
         .await?;
 
-        let mut next = T::empty_state();
+        let mut next = DcsState::empty();
         for kv in response.kvs() {
             let key = str::from_utf8(kv.key())
-                .map_err(|err| EtcdStoreError::Io(format!("utf8 key decode failed: {err}")))?;
-            T::apply_put(&mut next, self.scope.as_str(), key, kv.value()).map_err(|err| {
-                EtcdStoreError::Decode {
+                .map_err(|err| EtcdStoreError::Io {
+                    op: EtcdOp::LoadSnapshot,
+                    message: format!("utf8 key decode failed: {err}"),
+                })?;
+            DcsKvSchema::apply_put(&mut next, self.scope.as_str(), key, kv.value())
+                .map_err(|err| EtcdStoreError::Decode {
                     key: key.to_string(),
-                    message: err.message,
-                }
-            })?;
+                    message: err.to_string(),
+                })?;
         }
 
         self.cache = next.clone();
         Ok(next)
     }
 
-    pub(super) async fn next(&mut self) -> Result<Option<T::State>, EtcdStoreError> {
+    pub(super) async fn next(&mut self) -> Result<Option<DcsState>, EtcdStoreError> {
         self.keepalive_if_needed().await?;
         let response = self
             .watch_stream
             .message()
             .await
-            .map_err(|err| EtcdStoreError::Io(format!("watch receive failed: {err}")))?;
+            .map_err(|err| EtcdStoreError::Io {
+                op: EtcdOp::StartPrefixWatch,
+                message: format!("watch receive failed: {err}"),
+            })?;
         let Some(response) = response else {
             return Ok(None);
         };
@@ -1064,82 +1106,92 @@ impl<T: EtcdSchema> TypedEtcdSession<T> {
         Ok(Some(self.cache.clone()))
     }
 
-    pub(super) fn singleton<F: SingletonField<T::State>>(&mut self) -> SingletonHandle<'_, T, F> {
-        SingletonHandle {
-            session: self,
-            _field: PhantomData,
-        }
-    }
-
-    pub(super) fn map<F: MapField<T::State>>(&mut self) -> MapHandle<'_, T, F> {
-        MapHandle {
-            session: self,
-            _field: PhantomData,
-        }
+    pub(super) async fn mutate(
+        &mut self,
+        mutate: impl FnOnce(&mut DcsState) -> Result<(), String>,
+    ) -> Result<(), EtcdStoreError> {
+        let before = self.cache.clone();
+        let mut after = before.clone();
+        mutate(&mut after).map_err(EtcdStoreError::Mutation)?;
+        let plan = DcsKvSchema::diff(self.scope.as_str(), &before, &after)
+            .map_err(EtcdStoreError::Mutation)?;
+        self.apply_plan(plan).await?;
+        self.cache = after;
+        Ok(())
     }
 
     fn apply_watch_response(&mut self, response: WatchResponse) -> Result<(), EtcdStoreError> {
         for event in response.events() {
             let kv = event
                 .kv()
-                .ok_or_else(|| EtcdStoreError::Io("watch event missing kv".to_string()))?;
+                .ok_or_else(|| EtcdStoreError::Io {
+                    op: EtcdOp::StartPrefixWatch,
+                    message: "watch event missing kv".to_string(),
+                })?;
             let key = str::from_utf8(kv.key())
-                .map_err(|err| EtcdStoreError::Io(format!("utf8 key decode failed: {err}")))?;
+                .map_err(|err| EtcdStoreError::Io {
+                    op: EtcdOp::StartPrefixWatch,
+                    message: format!("utf8 key decode failed: {err}"),
+                })?;
 
             match event.event_type() {
                 EventType::Put => {
-                    T::apply_put(&mut self.cache, self.scope.as_str(), key, kv.value()).map_err(
-                        |err| EtcdStoreError::Decode {
+                    DcsKvSchema::apply_put(&mut self.cache, self.scope.as_str(), key, kv.value())
+                        .map_err(|err| EtcdStoreError::Decode {
                             key: key.to_string(),
-                            message: err.message,
-                        },
-                    )?;
+                            message: err.to_string(),
+                        })?;
                 }
                 EventType::Delete => {
-                    T::apply_delete(&mut self.cache, self.scope.as_str(), key).map_err(|err| {
-                        EtcdStoreError::Decode {
+                    DcsKvSchema::apply_delete(&mut self.cache, self.scope.as_str(), key)
+                        .map_err(|err| EtcdStoreError::Decode {
                             key: key.to_string(),
-                            message: err.message,
-                        }
-                    })?;
+                            message: err.to_string(),
+                        })?;
                 }
             }
         }
         Ok(())
     }
 
-    async fn write_json(
-        &mut self,
-        path: &str,
-        encoded: String,
-        lease: LeaseAttachment,
-    ) -> Result<(), EtcdStoreError> {
-        let options = self.put_options_for_lease(lease).await?;
-        timeout_etcd(
-            self.client.put(path, encoded, options),
-            "put key",
-        )
-        .await?;
+    async fn apply_plan(&mut self, plan: Vec<SchemaWrite>) -> Result<(), EtcdStoreError> {
+        for write in plan {
+            match write {
+                SchemaWrite::Put {
+                    key,
+                    json,
+                    lease,
+                } => {
+                    let options = self.put_options_for_lease(lease).await?;
+                    run_with_timeout(
+                        EtcdOp::PutKey,
+                        self.client.put(key, json, options),
+                    )
+                    .await?;
+                }
+                SchemaWrite::Delete { key } => {
+                    run_with_timeout(EtcdOp::DeleteKey, self.client.delete(key, None)).await?;
+                }
+                SchemaWrite::ClaimIfAbsent {
+                    key,
+                    json,
+                    lease,
+                } => {
+                    let options = self.put_options_for_lease(lease).await?;
+                    let txn = Txn::new()
+                        .when(vec![Compare::version(key.as_str(), CompareOp::Equal, 0)])
+                        .and_then(vec![TxnOp::put(key.as_str(), json, options)]);
+                    let response =
+                        run_with_timeout(EtcdOp::CompareAndSwapAbsent, self.client.txn(txn)).await?;
+                    if !response.succeeded() {
+                        return Err(EtcdStoreError::Mutation(
+                            "claim-if-absent guard failed".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
         Ok(())
-    }
-
-    async fn delete_key(&mut self, path: &str) -> Result<(), EtcdStoreError> {
-        timeout_etcd(self.client.delete(path, None), "delete key").await?;
-        Ok(())
-    }
-
-    async fn claim_if_empty_json(
-        &mut self,
-        path: &str,
-        encoded: String,
-        lease: LeaseAttachment,
-    ) -> Result<bool, EtcdStoreError> {
-        let options = self.put_options_for_lease(lease).await?;
-        let txn = Txn::new()
-            .when(vec![Compare::version(path, CompareOp::Equal, 0)])
-            .and_then(vec![TxnOp::put(path, encoded, options)]);
-        let response = timeout_etcd(self.client.txn(txn), "claim key").await?;
-        Ok(response.succeeded())
     }
 
     async fn keepalive_if_needed(&mut self) -> Result<(), EtcdStoreError> {
@@ -1154,14 +1206,20 @@ impl<T: EtcdSchema> TypedEtcdSession<T> {
             .keeper
             .keep_alive()
             .await
-            .map_err(|err| EtcdStoreError::Io(format!("lease keepalive send failed: {err}")))?;
+            .map_err(|err| EtcdStoreError::Io {
+                op: EtcdOp::KeepLeaseAlive,
+                message: format!("lease keepalive send failed: {err}"),
+            })?;
         let response = lease
             .stream
             .message()
             .await
-            .map_err(|err| EtcdStoreError::Io(format!("lease keepalive receive failed: {err}")))?;
+            .map_err(|err| EtcdStoreError::Io {
+                op: EtcdOp::KeepLeaseAlive,
+                message: format!("lease keepalive receive failed: {err}"),
+            })?;
         let granted_ttl = response
-            .ok_or(EtcdStoreError::MissingLease)?
+            .ok_or(EtcdStoreError::MissingSessionLease)?
             .ttl();
         let ttl = granted_ttl.max(MIN_TTL_SECONDS);
         lease.next_keepalive_at =
@@ -1171,11 +1229,11 @@ impl<T: EtcdSchema> TypedEtcdSession<T> {
 
     async fn put_options_for_lease(
         &mut self,
-        lease: LeaseAttachment,
+        lease: super::schema::LeaseAttachment,
     ) -> Result<Option<PutOptions>, EtcdStoreError> {
         match lease {
-            LeaseAttachment::None => Ok(None),
-            LeaseAttachment::SessionEphemeral => {
+            super::schema::LeaseAttachment::None => Ok(None),
+            super::schema::LeaseAttachment::SessionEphemeral => {
                 if self.session_lease.is_none() {
                     self.session_lease = Some(create_session_lease(&mut self.client).await?);
                 }
@@ -1183,106 +1241,25 @@ impl<T: EtcdSchema> TypedEtcdSession<T> {
                     .session_lease
                     .as_ref()
                     .map(|lease_state| lease_state.lease_id)
-                    .ok_or(EtcdStoreError::MissingLease)?;
+                    .ok_or(EtcdStoreError::MissingSessionLease)?;
                 Ok(Some(PutOptions::new().with_lease(lease_id)))
             }
-            LeaseAttachment::TtlUntil(deadline) => {
+            super::schema::LeaseAttachment::TtlUntil(deadline) => {
                 let now = crate::logging::system_now_unix_millis();
                 let ttl_ms = deadline.0.saturating_sub(now);
                 let ttl_seconds =
-                    i64::try_from((ttl_ms / 1000).max(1)).map_err(|err| EtcdStoreError::Io(err.to_string()))?;
-                let lease = timeout_etcd(self.client.lease_grant(ttl_seconds, None), "ttl lease grant")
-                    .await?;
+                    i64::try_from((ttl_ms / 1000).max(1)).map_err(|err| EtcdStoreError::Io {
+                        op: EtcdOp::GrantLease,
+                        message: err.to_string(),
+                    })?;
+                let lease = run_with_timeout(
+                    EtcdOp::GrantLease,
+                    self.client.lease_grant(ttl_seconds, None),
+                )
+                .await?;
                 Ok(Some(PutOptions::new().with_lease(lease.id())))
             }
         }
-    }
-}
-
-impl<'a, T, F> SingletonHandle<'a, T, F>
-where
-    T: EtcdSchema,
-    F: SingletonField<T::State>,
-{
-    pub(super) async fn set(
-        self,
-        value: Option<F::Value>,
-    ) -> Result<(), EtcdStoreError> {
-        let path = F::path(self.session.scope.as_str());
-        match value {
-            Some(value) => {
-                let encoded = serde_json::to_string(&value)
-                    .map_err(|err| EtcdStoreError::Io(format!("json encode failed: {err}")))?;
-                self.session
-                    .write_json(path.as_str(), encoded, F::lease_attachment(&value))
-                    .await?;
-                *F::slot_mut(&mut self.session.cache) = Some(value);
-            }
-            None => {
-                self.session.delete_key(path.as_str()).await?;
-                *F::slot_mut(&mut self.session.cache) = None;
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) async fn claim_if_empty(
-        self,
-        value: F::Value,
-    ) -> Result<bool, EtcdStoreError> {
-        let path = F::path(self.session.scope.as_str());
-        let encoded = serde_json::to_string(&value)
-            .map_err(|err| EtcdStoreError::Io(format!("json encode failed: {err}")))?;
-        let claimed = self
-            .session
-            .claim_if_empty_json(path.as_str(), encoded, F::lease_attachment(&value))
-            .await?;
-        if claimed {
-            *F::slot_mut(&mut self.session.cache) = Some(value);
-        }
-        Ok(claimed)
-    }
-
-    pub(super) async fn delete_if(
-        self,
-        predicate: impl FnOnce(&F::Value) -> bool,
-    ) -> Result<(), EtcdStoreError> {
-        let should_delete = F::slot(&self.session.cache).is_some_and(predicate);
-        if !should_delete {
-            return Ok(());
-        }
-        let path = F::path(self.session.scope.as_str());
-        self.session.delete_key(path.as_str()).await?;
-        *F::slot_mut(&mut self.session.cache) = None;
-        Ok(())
-    }
-}
-
-impl<'a, T, F> MapHandle<'a, T, F>
-where
-    T: EtcdSchema,
-    F: MapField<T::State>,
-{
-    pub(super) async fn put(
-        self,
-        key: F::Key,
-        value: F::Value,
-    ) -> Result<(), EtcdStoreError> {
-        let path = F::path(self.session.scope.as_str(), &key);
-        let encoded = serde_json::to_string(&value)
-            .map_err(|err| EtcdStoreError::Io(format!("json encode failed: {err}")))?;
-        self.session
-            .write_json(path.as_str(), encoded, F::lease_attachment(&value))
-            .await?;
-        F::map_mut(&mut self.session.cache).insert(key, value);
-        Ok(())
-    }
-
-    pub(super) async fn delete(self, key: &F::Key) -> Result<(), EtcdStoreError> {
-        let path = F::path(self.session.scope.as_str(), key);
-        self.session.delete_key(path.as_str()).await?;
-        F::map_mut(&mut self.session.cache).remove(key);
-        Ok(())
     }
 }
 
@@ -1292,8 +1269,10 @@ async fn build_connect_options(
     let mut options = ConnectOptions::new().with_timeout(ETCD_TIMEOUT);
 
     if let crate::config::DcsAuthConfig::Basic { username, password } = client_cfg.auth {
-        let password = resolve_secret_string(&password)
-            .map_err(|err| EtcdStoreError::Io(format!("dcs password resolve failed: {err}")))?;
+        let password = resolve_secret_string(&password).map_err(|err| EtcdStoreError::Io {
+            op: EtcdOp::Connect,
+            message: format!("dcs password resolve failed: {err}"),
+        })?;
         options = options.with_user(username, password);
     }
 
@@ -1305,15 +1284,21 @@ async fn build_connect_options(
     {
         let mut tls = TlsOptions::new();
         if let Some(ca_cert) = ca_cert {
-            let bytes = resolve_inline_or_path_bytes(&ca_cert)
-                .map_err(|err| EtcdStoreError::Io(format!("dcs ca resolve failed: {err}")))?;
+            let bytes = resolve_inline_or_path_bytes(&ca_cert).map_err(|err| EtcdStoreError::Io {
+                op: EtcdOp::Connect,
+                message: format!("dcs ca resolve failed: {err}"),
+            })?;
             tls = tls.ca_certificate(Certificate::from_pem(bytes));
         }
         if let Some(identity_cfg) = identity {
-            let cert = resolve_inline_or_path_bytes(&identity_cfg.cert)
-                .map_err(|err| EtcdStoreError::Io(format!("dcs client cert resolve failed: {err}")))?;
-            let key = resolve_inline_or_path_bytes(&identity_cfg.key)
-                .map_err(|err| EtcdStoreError::Io(format!("dcs client key resolve failed: {err}")))?;
+            let cert = resolve_inline_or_path_bytes(&identity_cfg.cert).map_err(|err| EtcdStoreError::Io {
+                op: EtcdOp::Connect,
+                message: format!("dcs client cert resolve failed: {err}"),
+            })?;
+            let key = resolve_inline_or_path_bytes(&identity_cfg.key).map_err(|err| EtcdStoreError::Io {
+                op: EtcdOp::Connect,
+                message: format!("dcs client key resolve failed: {err}"),
+            })?;
             tls = tls.identity(Identity::from_pem(cert, key));
         }
         if let Some(server_name) = server_name {
@@ -1326,12 +1311,15 @@ async fn build_connect_options(
 }
 
 async fn create_session_lease(client: &mut Client) -> Result<SessionLease, EtcdStoreError> {
-    let granted = timeout_etcd(client.lease_grant(2, None), "session lease grant").await?;
+    let granted = run_with_timeout(EtcdOp::GrantLease, client.lease_grant(2, None)).await?;
     let lease_id = granted.id();
     let (keeper, stream) = client
         .lease_keep_alive(lease_id)
         .await
-        .map_err(|err| EtcdStoreError::Io(format!("lease keepalive open failed: {err}")))?;
+        .map_err(|err| EtcdStoreError::Io {
+            op: EtcdOp::KeepLeaseAlive,
+            message: format!("lease keepalive open failed: {err}"),
+        })?;
     Ok(SessionLease {
         lease_id,
         keeper,
@@ -1340,14 +1328,17 @@ async fn create_session_lease(client: &mut Client) -> Result<SessionLease, EtcdS
     })
 }
 
-async fn timeout_etcd<T>(
+async fn run_with_timeout<T>(
+    op: EtcdOp,
     future: impl std::future::Future<Output = Result<T, etcd_client::Error>>,
-    label: &str,
 ) -> Result<T, EtcdStoreError> {
     tokio::time::timeout(ETCD_TIMEOUT, future)
         .await
-        .map_err(|_| EtcdStoreError::Io(format!("etcd timeout while {label}")))?
-        .map_err(|err| EtcdStoreError::Io(format!("{label}: {err}")))
+        .map_err(|_| EtcdStoreError::Timeout { op })?
+        .map_err(|err| EtcdStoreError::Io {
+            op,
+            message: err.to_string(),
+        })
 }
 ```
 
@@ -1369,11 +1360,8 @@ use crate::{
 
 use super::{
     command::DcsCommand,
-    schema::{
-        build_dcs_view, build_local_member_record, evaluate_mode, DcsKvSchema, DcsState,
-        DcsView, LeaderField, MembersField, SwitchoverField,
-    },
-    store::{TypedEtcdRepo, TypedEtcdSession},
+    schema::{build_dcs_view, build_local_member_record, evaluate_mode, DcsState, DcsView},
+    store::{EtcdRepo, EtcdSession},
     DcsHandle,
 };
 
@@ -1391,7 +1379,7 @@ struct DcsWorkerCtx {
     identity: NodeIdentity,
     advertised_postgres: PgTcpTarget,
     member_ttl_ms: u64,
-    repo: TypedEtcdRepo<DcsKvSchema>,
+    repo: EtcdRepo,
     cache: DcsState,
     state_tx: StatePublisher<DcsView>,
     rx: tokio::sync::mpsc::UnboundedReceiver<DcsCommand>,
@@ -1402,7 +1390,7 @@ pub(super) struct DcsRuntimeRequest {
     pub(super) identity: NodeIdentity,
     pub(super) advertised_postgres: PgTcpTarget,
     pub(super) member_ttl_ms: u64,
-    pub(super) repo: TypedEtcdRepo<DcsKvSchema>,
+    pub(super) repo: EtcdRepo,
     pub(super) log: LogSender,
 }
 
@@ -1475,7 +1463,7 @@ impl DcsWorker {
 
 async fn apply_command(
     ctx: &mut DcsWorkerCtx,
-    session: &mut TypedEtcdSession<DcsKvSchema>,
+    session: &mut EtcdSession,
     command: DcsCommand,
 ) -> Result<(), WorkerError> {
     match command {
@@ -1484,30 +1472,54 @@ async fn apply_command(
                 holder: ctx.identity.member_id.clone(),
                 generation: now_unix_millis()?.0,
             };
-            let _ = session
-                .singleton::<LeaderField>()
-                .claim_if_empty(epoch)
+            let self_id = ctx.identity.member_id.clone();
+            session
+                .mutate(|state| {
+                    if state.leader.is_none() {
+                        state.leader = Some(epoch);
+                    }
+                    if state
+                        .leader
+                        .as_ref()
+                        .is_some_and(|leader| leader.holder == self_id)
+                    {
+                        return Ok(());
+                    }
+                    Ok(())
+                })
                 .await
                 .map_err(to_worker_error)?;
         }
         DcsCommand::ReleaseLeadership => {
             session
-                .singleton::<LeaderField>()
-                .delete_if(|epoch| epoch.holder == ctx.identity.member_id)
+                .mutate(|state| {
+                    if state
+                        .leader
+                        .as_ref()
+                        .is_some_and(|epoch| epoch.holder == ctx.identity.member_id)
+                    {
+                        state.leader = None;
+                    }
+                    Ok(())
+                })
                 .await
                 .map_err(to_worker_error)?;
         }
         DcsCommand::PublishSwitchover(target) => {
             session
-                .singleton::<SwitchoverField>()
-                .set(Some(target))
+                .mutate(|state| {
+                    state.switchover = Some(target);
+                    Ok(())
+                })
                 .await
                 .map_err(to_worker_error)?;
         }
         DcsCommand::ClearSwitchover => {
             session
-                .singleton::<SwitchoverField>()
-                .set(None)
+                .mutate(|state| {
+                    state.switchover = None;
+                    Ok(())
+                })
                 .await
                 .map_err(to_worker_error)?;
         }
@@ -1519,21 +1531,28 @@ async fn apply_command(
                 &pg_state,
                 ctx.cache.members.get(&ctx.identity.member_id),
             );
+            let member_id = ctx.identity.member_id.clone();
             session
-                .map::<MembersField>()
-                .put(ctx.identity.member_id.clone(), record)
+                .mutate(|state| {
+                    state.members.insert(member_id, record);
+                    Ok(())
+                })
                 .await
                 .map_err(to_worker_error)?;
         }
         DcsCommand::RemoveLocalMember => {
             session
-                .map::<MembersField>()
-                .delete(&ctx.identity.member_id)
-                .await
-                .map_err(to_worker_error)?;
-            session
-                .singleton::<LeaderField>()
-                .delete_if(|epoch| epoch.holder == ctx.identity.member_id)
+                .mutate(|state| {
+                    state.members.remove(&ctx.identity.member_id);
+                    if state
+                        .leader
+                        .as_ref()
+                        .is_some_and(|epoch| epoch.holder == ctx.identity.member_id)
+                    {
+                        state.leader = None;
+                    }
+                    Ok(())
+                })
                 .await
                 .map_err(to_worker_error)?;
         }
@@ -1648,8 +1667,7 @@ use crate::{
 
 use super::{
     runtime::{bootstrap_runtime, DcsRuntime, DcsRuntimeRequest},
-    schema::DcsKvSchema,
-    store::TypedEtcdRepo,
+    store::EtcdRepo,
 };
 
 pub(super) struct DcsAdvertisedEndpoints {
@@ -1679,7 +1697,7 @@ impl DcsAdvertisedEndpoints {
 }
 
 pub(super) async fn bootstrap(request: BootstrapRequest) -> Result<DcsRuntime, String> {
-    let repo = TypedEtcdRepo::<DcsKvSchema>::connect(request.endpoints, request.client)
+    let repo = EtcdRepo::connect(request.endpoints, request.client)
         .await
         .map_err(|err| err.to_string())?;
 
@@ -1693,23 +1711,34 @@ pub(super) async fn bootstrap(request: BootstrapRequest) -> Result<DcsRuntime, S
 }
 ```
 
-## Optional appendix: derive support
+## Alternative derive branch
 
-This section must remain in the task because the question was asked explicitly. It is optional. It is not the main implementation requirement.
+Calling this "optional files" was the wrong framing.
 
-If, after the handwritten schema split is complete, the schema descriptors above still feel repetitive, then an internal proc-macro crate may be added. That macro is allowed only to generate the explicit schema metadata that is already understandable by hand.
+The correct framing is:
+
+- the default branch of this task is the handwritten schema/store split above
+- there is a second deliberate branch where the team chooses to add derive support
+
+If the derive branch is chosen, the files below are required for that branch.
+
+If the derive branch is not chosen, they should not exist at all.
+
+The derive branch is allowed only after the handwritten schema split is already explicit and understandable.
+
+Because the main design was simplified away from field handles toward `diff(...)` plus `SchemaWrite`, the derive branch must follow that same simpler direction. It must not drag the task back toward the older handle-heavy store design.
 
 The macro must generate:
 
 - `DcsKvSchema`
-- `LeaderField`
-- `SwitchoverField`
-- `MembersField`
-- `impl EtcdSchema for ...`
+- `DcsKvSchema::apply_put(...)`
+- `DcsKvSchema::apply_delete(...)`
+- `DcsKvSchema::diff(...)`
+- `SchemaWrite` emission metadata
 
 It must not generate runtime logic.
 
-### Optional file: `crates/pgtm_etcd_derive/Cargo.toml`
+### Derive-branch file: `crates/pgtm_etcd_derive/Cargo.toml`
 
 ```toml
 [package]
@@ -1726,7 +1755,7 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 ```
 
-### Optional file: `crates/pgtm_etcd_derive/src/lib.rs`
+### Derive-branch file: `crates/pgtm_etcd_derive/src/lib.rs`
 
 This is the maximum acceptable scope. If the macro grows beyond this, stop and keep the handwritten schema.
 
@@ -2131,7 +2160,7 @@ If those grep terms still appear scattered across unrelated DCS files after the 
 - [ ] No DCS JSON encode/decode remains hidden inside runtime/business logic outside the schema/store boundary.
 - [ ] `pub(crate)` is not sprayed across internal DCS implementation types; the final code uses private-by-default visibility, `pub(super)` for sibling DCS sharing, and only the explicitly justified root DCS crate-boundary exceptions remain `pub(crate)`.
 - [ ] A small etcd framework is allowed and used only if it directly serves this split; the implementation does not build generic infra that is larger than the DCS problem it is fixing.
-- [ ] `TypedEtcdRepo` and `TypedEtcdSession` or equivalent lifecycle-separated types exist and clearly isolate transport/bootstrap ownership from live scope/watch/lease ownership.
+- [ ] `EtcdRepo` and `EtcdSession` or equivalent lifecycle-separated types exist and clearly isolate transport/bootstrap ownership from live scope/watch/lease ownership.
 - [ ] The live watch model is one schema-prefix watch plus snapshot reloads, not a pile of field-by-field watches.
 - [ ] The DCS runtime uses the schema/store layer and does not manually build keys, parse watch paths, or directly manipulate raw etcd transactions for DCS fields.
 - [ ] The implementation explicitly audits and cleans adjacent config/test/consumer files that still depend on dead DCS shape or dead `dcs.init` support.
