@@ -1,0 +1,1 @@
+.ralph/tasks/story-logging-simplification/03-task-rewrite-logging-around-one-owned-logdto-global-context-and-an-exhaustive-event-set.md
