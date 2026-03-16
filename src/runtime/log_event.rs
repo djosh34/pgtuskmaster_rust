@@ -10,7 +10,9 @@ pub(crate) enum RuntimeLogEvent {
         message = "runtime starting"
     )]
     StartupEntered {
+        #[log(key = "runtime.startup_run_id")]
         startup_run_id: String,
+        #[log(key = "logging.level")]
         logging_level: crate::config::LogLevel,
     },
 }

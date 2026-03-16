@@ -1,4 +1,4 @@
-## Task: Rewrite Logging Around A Custom `LoggableEvent` Derive, Logger-Owned Global Context, Flat OTel-Friendly Attributes, And An Exhaustive Event Set <status>not_started</status> <passes>false</passes>
+## Task: Rewrite Logging Around A Custom `LoggableEvent` Derive, Logger-Owned Global Context, Flat OTel-Friendly Attributes, And An Exhaustive Event Set <status>completed</status> <passes>true</passes>
 
 <description>
 **Goal:** Replace the current logging trait-and-visitor design with a much simpler and stricter model:
@@ -977,30 +977,30 @@ The following log-specific types must be deleted and must not survive under othe
 </description>
 
 <acceptance_criteria>
-- [ ] An internal proc-macro derive crate exists in the repo and provides `#[derive(LoggableEvent)]` plus `#[derive(LogValue)]` with the attribute surface defined in this task.
-- [ ] `src/logging/event.rs` defines exactly the `LoggableEvent`, `LogValue`, `LogEventDto`, `LogField`, and `LogFieldValue` types described in this task, with no `metadata()`/`write_fields()` split and no field visitor.
-- [ ] Every log event enum in the exhaustive inventory derives `LoggableEvent`; emitters do not handwrite ordinary `into_log_event()` implementations.
-- [ ] Every enum used as a stable string field value derives `LogValue` or otherwise implements the exact `LogValue` contract from this task.
-- [ ] The proc-macro validates metadata tokens strictly, and the only events allowed to use `computed` metadata are the explicit whitelist in this task.
-- [ ] `src/logging/mod.rs` injects logger-owned `LogContext` automatically and exposes only `LogSender::send(event)`.
-- [ ] `LogRecord` matches the flat shape defined in this task, with no nested `context`, `fields`, or `source` objects in the final sink-facing JSON.
-- [ ] `LogBootstrapError` is rewritten as typed variants and no longer uses stringly `Misconfigured(String)` / `SinkInit(String)` variants.
-- [ ] `src/runtime/log_event.rs` contains exactly the `RuntimeLogEvent` enum defined in this task and derives `LoggableEvent`.
-- [ ] `src/pginfo/log_event.rs` contains exactly the `PgInfoLogEvent` enum defined in this task and derives `LoggableEvent`.
-- [ ] `src/dcs/log_event.rs` contains exactly the `DcsLogEvent` enum defined in this task and derives `LoggableEvent`.
-- [ ] `src/process/log_event.rs` contains exactly `CapturedStream`, `ProcessLogEvent`, and `SubprocessLogEvent` as defined in this task, derives `LogValue` / `LoggableEvent` as appropriate, and does not log `bytes_len`.
-- [ ] `src/logging/postgres_ingest.rs` contains exactly `PostgresIngestLogEvent`, `PostgresLineSource`, and `PostgresLineLogEvent` as defined in this task and derives `LoggableEvent`.
-- [ ] No other file under `src/` defines or implements any additional log event enum or any additional log-event trait.
-- [ ] All function-origin enums and all log-only identity wrapper structs listed in the deletion list are removed.
-- [ ] All emitters in `src/runtime/node.rs`, `src/pginfo/worker.rs`, `src/dcs/worker.rs`, `src/process/worker.rs`, and `src/logging/postgres_ingest.rs` stop passing `scope`, `member_id`, `hostname`, `cluster_name`, `job_id`, `binary`, and `bytes_len` as log-event payload data.
-- [ ] All failure detail fields emitted by the new event set use `cause`, never `error`.
-- [ ] All event names match the authoritative mapping in this task exactly.
-- [ ] Postgres JSON payload attributes are flattened into prefixed flat attributes rather than emitted as one nested payload object.
-- [ ] Logging tests are rewritten so they assert the new flat record shape, the derive-generated event conversion behavior, and the new exhaustive event inventory instead of the old metadata/visitor design.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] An internal proc-macro derive crate exists in the repo and provides `#[derive(LoggableEvent)]` plus `#[derive(LogValue)]` with the attribute surface defined in this task.
+- [x] `src/logging/event.rs` defines exactly the `LoggableEvent`, `LogValue`, `LogEventDto`, `LogField`, and `LogFieldValue` types described in this task, with no `metadata()`/`write_fields()` split and no field visitor.
+- [x] Every log event enum in the exhaustive inventory derives `LoggableEvent`; emitters do not handwrite ordinary `into_log_event()` implementations.
+- [x] Every enum used as a stable string field value derives `LogValue` or otherwise implements the exact `LogValue` contract from this task.
+- [x] The proc-macro validates metadata tokens strictly, and the only events allowed to use `computed` metadata are the explicit whitelist in this task.
+- [x] `src/logging/mod.rs` injects logger-owned `LogContext` automatically and exposes only `LogSender::send(event)`.
+- [x] `LogRecord` matches the flat shape defined in this task, with no nested `context`, `fields`, or `source` objects in the final sink-facing JSON.
+- [x] `LogBootstrapError` is rewritten as typed variants and no longer uses stringly `Misconfigured(String)` / `SinkInit(String)` variants.
+- [x] `src/runtime/log_event.rs` contains exactly the `RuntimeLogEvent` enum defined in this task and derives `LoggableEvent`.
+- [x] `src/pginfo/log_event.rs` contains exactly the `PgInfoLogEvent` enum defined in this task and derives `LoggableEvent`.
+- [x] `src/dcs/log_event.rs` contains exactly the `DcsLogEvent` enum defined in this task and derives `LoggableEvent`.
+- [x] `src/process/log_event.rs` contains exactly `CapturedStream`, `ProcessLogEvent`, and `SubprocessLogEvent` as defined in this task, derives `LogValue` / `LoggableEvent` as appropriate, and does not log `bytes_len`.
+- [x] `src/logging/postgres_ingest.rs` contains exactly `PostgresIngestLogEvent`, `PostgresLineSource`, and `PostgresLineLogEvent` as defined in this task and derives `LoggableEvent`.
+- [x] No other file under `src/` defines or implements any additional log event enum or any additional log-event trait.
+- [x] All function-origin enums and all log-only identity wrapper structs listed in the deletion list are removed.
+- [x] All emitters in `src/runtime/node.rs`, `src/pginfo/worker.rs`, `src/dcs/worker.rs`, `src/process/worker.rs`, and `src/logging/postgres_ingest.rs` stop passing `scope`, `member_id`, `hostname`, `cluster_name`, `job_id`, `binary`, and `bytes_len` as log-event payload data.
+- [x] All failure detail fields emitted by the new event set use `cause`, never `error`.
+- [x] All event names match the authoritative mapping in this task exactly.
+- [x] Postgres JSON payload attributes are flattened into prefixed flat attributes rather than emitted as one nested payload object.
+- [x] Logging tests are rewritten so they assert the new flat record shape, the derive-generated event conversion behavior, and the new exhaustive event inventory instead of the old metadata/visitor design.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 NOW EXECUTE

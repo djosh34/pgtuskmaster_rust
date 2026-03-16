@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar 16 04:59:39 AM CET 2026
+Generated: Mon Mar 16 05:36:14 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -266,6 +266,18 @@ Generated: Mon Mar 16 04:59:39 AM CET 2026
 
 <description>
 **Goal:** Refactor the logging subsystem so that the only outward-facing logging API is an opaque `LogSender` with a single `send(event)` style method, where `event` is a typed enum owned by the emitting domain and accepted through a trait bound. The higher-order goal is to make logging impossible to misuse and impossible to couple to business logic: non-logging code must not know about field maps, records, severities, sinks, tracing APIs, or serialization details, and logging failures must no longer alter worker or runtime control flow except when the send operation itself cannot enqueue because the channel is broken.
+```
+
+==============
+
+# Task `.ralph/tasks/story-logging-simplification/03-task-rewrite-logging-around-one-owned-logdto-global-context-and-an-exhaustive-event-set.md`
+
+```
+## Task: Rewrite Logging Around A Custom `LoggableEvent` Derive, Logger-Owned Global Context, Flat OTel-Friendly Attributes, And An Exhaustive Event Set <status>completed</status> <passes>true</passes>
+
+<description>
+**Goal:** Replace the current logging trait-and-visitor design with a much simpler and stricter model:
+- events become loggable through a custom derive and `#[]` tags
 ```
 
 ==============

@@ -2,10 +2,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Number, Value};
 
-use super::{
-    event::{LogEventDto, LogFieldValue},
-    LogContext, LogRecord,
-};
+use crate::logging::event::{LogEventDto, LogFieldValue};
+
+use super::runtime::{LogContext, LogRecord};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct QueuedRecord {

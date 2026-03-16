@@ -15,7 +15,7 @@ use crate::{
 
 use super::jobs::{
     ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, PgRewindSpec,
-    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessLogIdentity,
+    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind,
     PromoteSpec, StartPostgresSpec,
 };
 
@@ -84,7 +84,7 @@ pub(crate) struct ActiveRuntime {
     pub(crate) request: ProcessExecutionRequest,
     pub(crate) deadline_at: UnixMillis,
     pub(crate) handle: Box<dyn ProcessHandle>,
-    pub(crate) log_identity: ProcessLogIdentity,
+    pub(crate) job_kind: ProcessJobKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

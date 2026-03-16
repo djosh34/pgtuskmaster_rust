@@ -167,7 +167,7 @@ pub(crate) struct ProcessCommandSpec {
     pub(crate) args: Vec<String>,
     pub(crate) env: Vec<ProcessEnvVar>,
     pub(crate) capture_output: bool,
-    pub(crate) log_identity: ProcessLogIdentity,
+    pub(crate) job_kind: ProcessJobKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -187,13 +187,6 @@ impl ProcessEnvValue {
             Self::Secret(secret) => resolve_secret_source_string(key, secret),
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProcessLogIdentity {
-    pub(crate) job_id: JobId,
-    pub(crate) job_kind: ProcessJobKind,
-    pub(crate) binary: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

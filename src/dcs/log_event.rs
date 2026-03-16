@@ -58,7 +58,9 @@ pub(crate) enum DcsLogEvent {
         message = "dcs coordination mode transition"
     )]
     CoordinationModeTransition {
+        #[log(key = "dcs.mode.previous")]
         previous: Option<crate::dcs::DcsMode>,
+        #[log(key = "dcs.mode.next")]
         next: crate::dcs::DcsMode,
     },
 }

@@ -40,6 +40,7 @@
 # Reference
 
 - [Reference](reference/overview.md)
+    - [Code Organization Reference](reference/code-organization.md)
     - [HTTP API](reference/http-api.md)
     - [HA Decisions](reference/ha-decisions.md)
     - [DCS State Model](reference/dcs-state-model.md)

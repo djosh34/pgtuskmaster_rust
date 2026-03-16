@@ -26,7 +26,9 @@ pub(crate) enum PostgresIngestLogEvent {
         message = "postgres ingest step once failed"
     )]
     StepOnceFailed {
+        #[log(key = "postgres_ingest.attempts")]
         attempts: u32,
+        #[log(key = "postgres_ingest.suppressed")]
         suppressed: u64,
         cause: String,
     },
@@ -37,7 +39,10 @@ pub(crate) enum PostgresIngestLogEvent {
         result = "recovered",
         message = "postgres ingest recovered"
     )]
-    Recovered { attempts: u32 },
+    Recovered {
+        #[log(key = "postgres_ingest.attempts")]
+        attempts: u32,
+    },
 
     #[log_event(
         name = "postgres_ingest.iteration_summary",
@@ -46,9 +51,13 @@ pub(crate) enum PostgresIngestLogEvent {
         message = "postgres ingest iteration summary"
     )]
     IterationSummary {
+        #[log(key = "postgres_ingest.pg_ctl_lines_emitted")]
         pg_ctl_lines_emitted: u64,
+        #[log(key = "postgres_ingest.log_dir_files_tailed")]
         log_dir_files_tailed: u64,
+        #[log(key = "postgres_ingest.log_dir_lines_emitted")]
         log_dir_lines_emitted: u64,
+        #[log(key = "postgres_ingest.dir_tailers")]
         dir_tailers: usize,
     },
 }
@@ -72,6 +81,7 @@ pub(crate) enum PostgresLineLogEvent {
         message: String,
         #[log(flatten, prefix = "postgres")]
         payload: BTreeMap<String, Value>,
+        #[log(key = "postgres.path")]
         path: String,
     },
 
@@ -83,7 +93,9 @@ pub(crate) enum PostgresLineLogEvent {
         severity: LogSeverity,
         #[log(skip)]
         message: String,
+        #[log(key = "postgres.level_raw")]
         level_raw: String,
+        #[log(key = "postgres.path")]
         path: String,
     },
 
@@ -91,7 +103,9 @@ pub(crate) enum PostgresLineLogEvent {
     Unparsed {
         #[log(skip)]
         source: PostgresLineSource,
+        #[log(key = "postgres.raw_line")]
         raw_line: String,
+        #[log(key = "postgres.path")]
         path: String,
     },
 }
@@ -873,7 +887,8 @@ mod tests {
         PostgresLoggingConfig, RuntimeConfig,
     };
     use crate::logging::{
-        LogContext, LogParser, LogProducer, LogSender, LogSeverity, LogTransport, TestSink,
+        LogContext, LogParser, LogProducer, LogSender, LogSeverity, LogSink, LogTransport,
+        TestSink,
     };
 
     use crate::state::WorkerError;
@@ -928,11 +943,8 @@ mod tests {
         fn start() -> Self {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
             let sink = Arc::new(TestSink::default());
-            let sink_dyn: Arc<dyn super::super::LogSink> = sink.clone();
-            let worker = super::super::LogWorker {
-                receiver,
-                backend: Arc::new(super::super::TracingBackend::new(sink_dyn)),
-            };
+            let sink_dyn: Arc<dyn LogSink> = sink.clone();
+            let worker = super::super::LogWorker::from_sink(receiver, sink_dyn);
             Self {
                 sender: LogSender::new(sample_context(), sender, LogSeverity::Trace),
                 sink,
@@ -960,7 +972,7 @@ mod tests {
     where
         E: crate::logging::LoggableEvent,
     {
-        super::super::raw_record::QueuedRecord::from_event(
+        crate::logging::core::QueuedRecord::from_event(
             1,
             sample_context(),
             event.into_log_event(),
@@ -1069,11 +1081,11 @@ mod tests {
         assert_eq!(record.event_name, "postgres_ingest.step_once_failed");
         assert_eq!(record.event_result, crate::logging::LogEventResult::Failed);
         assert_eq!(
-            record.attributes.get("attempts"),
+            record.attributes.get("postgres_ingest.attempts"),
             Some(&Value::Number(serde_json::Number::from(2_u64)))
         );
         assert_eq!(
-            record.attributes.get("suppressed"),
+            record.attributes.get("postgres_ingest.suppressed"),
             Some(&Value::Number(serde_json::Number::from(7_u64)))
         );
     }
@@ -1112,7 +1124,7 @@ mod tests {
         assert_eq!(record.parser, LogParser::Raw);
         assert_eq!(record.message, raw);
         assert_eq!(
-            record.attributes.get("raw_line"),
+            record.attributes.get("postgres.raw_line"),
             Some(&serde_json::Value::String(raw.to_string()))
         );
     }
@@ -1131,7 +1143,7 @@ mod tests {
         assert_eq!(record.parser, LogParser::Raw);
         assert_eq!(record.message, raw);
         assert_eq!(
-            record.attributes.get("raw_line"),
+            record.attributes.get("postgres.raw_line"),
             Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
         );
     }
@@ -1141,7 +1153,7 @@ mod tests {
         let path = PathBuf::from("/tmp/pg.log");
         let record = materialize_record(sample_non_utf8_postgres_line_event(path.as_path()));
         assert_eq!(
-            record.attributes.get("raw_line"),
+            record.attributes.get("postgres.raw_line"),
             Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
         );
     }
@@ -1612,7 +1624,7 @@ mod tests {
                     .any(|r| r.parser == crate::logging::LogParser::PostgresJson);
                 let saw_stderr = collected.iter().any(|r| {
                     r.attributes
-                        .get("path")
+                        .get("postgres.path")
                         .and_then(|value| value.as_str())
                         .is_some_and(|path| path.contains("postgres.stderr.log"))
                 });
@@ -1741,7 +1753,7 @@ mod tests {
                                 }
                                 let job_kind = record
                                     .attributes
-                                    .get("job_kind")
+                                    .get("job.kind")
                                     .and_then(|v| v.as_str())
                                     .map_or("<none>", |value| value);
                                 if job_kind != "start_postgres" {
@@ -1752,7 +1764,7 @@ mod tests {
                                     record.transport,
                                     record
                                         .attributes
-                                        .get("path")
+                                        .get("postgres.path")
                                         .and_then(|value| value.as_str())
                                         .map_or("<none>", |value| value),
                                     record.message
@@ -1827,7 +1839,7 @@ mod tests {
                 let saw_pg_ctl_log = collected.iter().any(|r| {
                     r.producer == crate::logging::LogProducer::Postgres
                         && r.attributes
-                            .get("path")
+                            .get("postgres.path")
                             .and_then(|value| value.as_str())
                             .is_some_and(|path| path.contains("pg_ctl.log"))
                 });
@@ -1864,14 +1876,14 @@ mod tests {
             let saw_pg_ctl_log = all_records.iter().any(|r| {
                 r.producer == crate::logging::LogProducer::Postgres
                     && r.attributes
-                        .get("path")
+                        .get("postgres.path")
                         .and_then(|value| value.as_str())
                         .is_some_and(|path| path.contains("pg_ctl.log"))
             });
             let saw_pg_tool = all_records.iter().any(|r| {
                 r.producer == crate::logging::LogProducer::PgTool
                     && r.attributes
-                        .get("job_kind")
+                        .get("job.kind")
                         .and_then(|v| v.as_str())
                         .is_some()
             });
@@ -1956,7 +1968,7 @@ mod tests {
                 let saw_stderr = collected.iter().any(|r| {
                     r.producer == crate::logging::LogProducer::PgTool
                         && r.transport == crate::logging::LogTransport::ChildStderr
-                        && r.attributes.get("job_kind").and_then(|v| v.as_str())
+                        && r.attributes.get("job.kind").and_then(|v| v.as_str())
                             == Some("base_backup")
                 });
                 if saw_stderr {

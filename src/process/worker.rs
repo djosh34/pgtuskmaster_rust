@@ -15,15 +15,15 @@ use crate::{
     process::postmaster::{
         lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget,
     },
-    state::{JobId, MemberId, UnixMillis, WorkerError, WorkerStatus},
+    state::{MemberId, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::{
     jobs::{
         ActiveJob, ActiveJobKind, DemoteSpec, PostgresStartIntent, PostgresStartMode,
         ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, ProcessExit,
-        ProcessHandle, ProcessIntent, ProcessJobKind, ProcessLogIdentity, ProcessOutputLine,
-        ProcessOutputStream, PromoteSpec, ReplicaProvisionIntent,
+        ProcessHandle, ProcessIntent, ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
+        PromoteSpec, ReplicaProvisionIntent,
     },
     log_event::{CapturedStream, ProcessLogEvent, SubprocessLogEvent},
     source::{basebackup_source_from_member, rewind_source_from_member},
@@ -173,7 +173,7 @@ impl super::jobs::ProcessCommandRunner for TokioCommandRunner {
             args,
             env,
             capture_output,
-            log_identity: _,
+            job_kind: _,
         } = spec;
         let binary = program.display().to_string();
         if !program.is_absolute() {
@@ -605,7 +605,6 @@ pub(crate) async fn start_job(
 
     let command = match build_command(
         &ctx.config,
-        &request.id,
         &execution_request.kind,
         ctx.runtime.capture_subprocess_output,
     ) {
@@ -634,7 +633,7 @@ pub(crate) async fn start_job(
         }
     };
 
-    let log_identity = command.log_identity.clone();
+    let job_kind = command.job_kind;
     let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
@@ -667,13 +666,11 @@ pub(crate) async fn start_job(
         started_at: now,
         deadline_at,
     };
-    let started_job_kind = log_identity.job_kind;
-
     ctx.control.active_runtime = Some(ActiveRuntime {
         request: execution_request,
         deadline_at,
         handle,
-        log_identity,
+        job_kind,
     });
     ctx.state_channel.current = ProcessState::Running {
         worker: WorkerStatus::Running,
@@ -682,7 +679,7 @@ pub(crate) async fn start_job(
     ctx.runtime
         .log
         .send(ProcessLogEvent::Started {
-            job_kind: started_job_kind,
+            job_kind,
         })
         .map_err(|err| {
             WorkerError::Message(format!("process job started log send failed: {err}"))
@@ -707,12 +704,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 if let Err(err) = ctx
                     .runtime
                     .log
-                    .send(subprocess_log_event(&runtime.log_identity, line.clone()))
+                    .send(subprocess_log_event(runtime.job_kind, line.clone()))
                 {
                     ctx.runtime
                         .log
                         .send(ProcessLogEvent::OutputEmitFailed {
-                            job_kind: runtime.log_identity.job_kind,
+                            job_kind: runtime.job_kind,
                             stream: captured_stream(line.stream),
                             cause: err.to_string(),
                         })
@@ -728,7 +725,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             .runtime
             .log
             .send(ProcessLogEvent::OutputDrainFailed {
-                job_kind: runtime.log_identity.job_kind,
+                job_kind: runtime.job_kind,
                 cause: err.to_string(),
             })
             .map_err(|send_err| {
@@ -739,7 +736,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
         ctx.runtime
             .log
             .send(ProcessLogEvent::Timeout {
-                job_kind: runtime.log_identity.job_kind,
+                job_kind: runtime.job_kind,
             })
             .map_err(|err| {
                 WorkerError::Message(format!("process timeout log send failed: {err}"))
@@ -755,12 +752,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     if let Err(err) = ctx
                         .runtime
                         .log
-                        .send(subprocess_log_event(&runtime.log_identity, line.clone()))
+                        .send(subprocess_log_event(runtime.job_kind, line.clone()))
                     {
                         ctx.runtime
                             .log
                             .send(ProcessLogEvent::OutputEmitFailed {
-                                job_kind: runtime.log_identity.job_kind,
+                                job_kind: runtime.job_kind,
                                 stream: captured_stream(line.stream),
                                 cause: err.to_string(),
                             })
@@ -776,7 +773,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 .runtime
                 .log
                 .send(ProcessLogEvent::OutputDrainFailed {
-                    job_kind: runtime.log_identity.job_kind,
+                    job_kind: runtime.job_kind,
                     cause: err.to_string(),
                 })
                 .map_err(|send_err| {
@@ -819,12 +816,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         if let Err(err) = ctx
                             .runtime
                             .log
-                            .send(subprocess_log_event(&runtime.log_identity, line.clone()))
+                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
                         {
                             ctx.runtime
                                 .log
                                 .send(ProcessLogEvent::OutputEmitFailed {
-                                    job_kind: runtime.log_identity.job_kind,
+                                    job_kind: runtime.job_kind,
                                     stream: captured_stream(line.stream),
                                     cause: err.to_string(),
                                 })
@@ -840,7 +837,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     .runtime
                     .log
                     .send(ProcessLogEvent::OutputDrainFailed {
-                        job_kind: runtime.log_identity.job_kind,
+                        job_kind: runtime.job_kind,
                         cause: err.to_string(),
                     })
                     .map_err(|send_err| {
@@ -858,7 +855,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::ExitedSuccessfully {
-                    job_kind: runtime.log_identity.job_kind,
+                    job_kind: runtime.job_kind,
                 })
                 .map_err(|err| {
                     WorkerError::Message(format!("process exit log send failed: {err}"))
@@ -876,12 +873,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         if let Err(err) = ctx
                             .runtime
                             .log
-                            .send(subprocess_log_event(&runtime.log_identity, line.clone()))
+                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
                         {
                             ctx.runtime
                                 .log
                                 .send(ProcessLogEvent::OutputEmitFailed {
-                                    job_kind: runtime.log_identity.job_kind,
+                                    job_kind: runtime.job_kind,
                                     stream: captured_stream(line.stream),
                                     cause: err.to_string(),
                                 })
@@ -897,7 +894,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     .runtime
                     .log
                     .send(ProcessLogEvent::OutputDrainFailed {
-                        job_kind: runtime.log_identity.job_kind,
+                        job_kind: runtime.job_kind,
                         cause: err.to_string(),
                     })
                     .map_err(|send_err| {
@@ -916,7 +913,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::ExitedUnsuccessfully {
-                    job_kind: runtime.log_identity.job_kind,
+                    job_kind: runtime.job_kind,
                     cause: exit_error.to_string(),
                 })
                 .map_err(|err| {
@@ -935,12 +932,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         if let Err(err) = ctx
                             .runtime
                             .log
-                            .send(subprocess_log_event(&runtime.log_identity, line.clone()))
+                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
                         {
                             ctx.runtime
                                 .log
                                 .send(ProcessLogEvent::OutputEmitFailed {
-                                    job_kind: runtime.log_identity.job_kind,
+                                    job_kind: runtime.job_kind,
                                     stream: captured_stream(line.stream),
                                     cause: err.to_string(),
                                 })
@@ -956,7 +953,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     .runtime
                     .log
                     .send(ProcessLogEvent::OutputDrainFailed {
-                        job_kind: runtime.log_identity.job_kind,
+                        job_kind: runtime.job_kind,
                         cause: err.to_string(),
                     })
                     .map_err(|send_err| {
@@ -974,7 +971,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::PollFailed {
-                    job_kind: runtime.log_identity.job_kind,
+                    job_kind: runtime.job_kind,
                     cause: outcome_error_string(&outcome),
                 })
                 .map_err(|err| {
@@ -1000,12 +997,9 @@ fn captured_stream(stream: ProcessOutputStream) -> CapturedStream {
     }
 }
 
-fn subprocess_log_event(
-    identity: &ProcessLogIdentity,
-    line: ProcessOutputLine,
-) -> SubprocessLogEvent {
+fn subprocess_log_event(job_kind: ProcessJobKind, line: ProcessOutputLine) -> SubprocessLogEvent {
     SubprocessLogEvent::Line {
-        job_kind: identity.job_kind,
+        job_kind,
         stream: captured_stream(line.stream),
         line: decode_process_output_line(line.bytes),
     }
@@ -1108,7 +1102,6 @@ fn active_kind_from_intent(intent: &ProcessIntent) -> ActiveJobKind {
 
 fn build_command(
     config: &ProcessConfig,
-    job_id: &JobId,
     kind: &ProcessExecutionKind,
     capture_output: bool,
 ) -> Result<ProcessCommandSpec, ProcessError> {
@@ -1133,11 +1126,7 @@ fn build_command(
                 ],
                 env: Vec::new(),
                 capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
+                job_kind: process_job_kind_from_execution(kind),
             })
         }
         ProcessExecutionKind::BaseBackup(spec) => {
@@ -1169,11 +1158,7 @@ fn build_command(
                 ],
                 env: role_auth_env(&spec.source.auth),
                 capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
+                job_kind: process_job_kind_from_execution(kind),
             })
         }
         ProcessExecutionKind::PgRewind(spec) => {
@@ -1203,11 +1188,7 @@ fn build_command(
                 ],
                 env: role_auth_env(&spec.source.auth),
                 capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
+                job_kind: process_job_kind_from_execution(kind),
             })
         }
         ProcessExecutionKind::Promote(spec) => {
@@ -1228,11 +1209,7 @@ fn build_command(
                 args,
                 env: Vec::new(),
                 capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
+                job_kind: process_job_kind_from_execution(kind),
             })
         }
         ProcessExecutionKind::Demote(spec) => {
@@ -1250,11 +1227,7 @@ fn build_command(
                 ],
                 env: Vec::new(),
                 capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
+                job_kind: process_job_kind_from_execution(kind),
             })
         }
         ProcessExecutionKind::StartPostgres(spec) => {
@@ -1284,11 +1257,7 @@ fn build_command(
                 ],
                 env: Vec::new(),
                 capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
+                job_kind: process_job_kind_from_execution(kind),
             })
         }
     }
@@ -1563,13 +1532,6 @@ fn set_postgres_data_dir_permissions(data_dir: &Path) -> Result<(), ProcessError
     }
 
     Ok(())
-}
-
-fn binary_label(path: &std::path::Path) -> String {
-    match path.file_name().and_then(|s| s.to_str()) {
-        Some(name) if !name.trim().is_empty() => name.to_string(),
-        _ => path.display().to_string(),
-    }
 }
 
 fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), ProcessError> {

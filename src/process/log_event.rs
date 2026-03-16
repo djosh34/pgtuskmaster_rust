@@ -16,7 +16,10 @@ pub(crate) enum ProcessLogEvent {
         result = "ok",
         message = "process worker run started"
     )]
-    WorkerRunStarted { capture_subprocess_output: bool },
+    WorkerRunStarted {
+        #[log(key = "process.capture_subprocess_output")]
+        capture_subprocess_output: bool,
+    },
 
     #[log_event(
         name = "process.request_received",
@@ -25,6 +28,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process job request received"
     )]
     RequestReceived {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
     },
 
@@ -43,6 +47,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process worker busy; rejecting job"
     )]
     BusyRejected {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
     },
 
@@ -52,7 +57,10 @@ pub(crate) enum ProcessLogEvent {
         result = "ok",
         message = "start postgres preflight: postgres already running"
     )]
-    StartPostgresAlreadyRunning { data_dir: String },
+    StartPostgresAlreadyRunning {
+        #[log(key = "postgres.data_dir")]
+        data_dir: String,
+    },
 
     #[log_event(
         name = "process.start_postgres_preflight_failed",
@@ -69,6 +77,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process intent materialization failed"
     )]
     IntentMaterializationFailed {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
         cause: String,
     },
@@ -80,6 +89,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process build command failed"
     )]
     BuildCommandFailed {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
         cause: String,
     },
@@ -91,6 +101,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process spawn failed"
     )]
     SpawnFailed {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
         cause: String,
     },
@@ -102,6 +113,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process job started"
     )]
     Started {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
     },
 
@@ -112,6 +124,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process output drain failed"
     )]
     OutputDrainFailed {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
         cause: String,
     },
@@ -123,6 +136,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process job timed out; cancelling"
     )]
     Timeout {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
     },
 
@@ -133,6 +147,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process job exited successfully"
     )]
     ExitedSuccessfully {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
     },
 
@@ -143,6 +158,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process job exited unsuccessfully"
     )]
     ExitedUnsuccessfully {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
         cause: String,
     },
@@ -154,6 +170,7 @@ pub(crate) enum ProcessLogEvent {
         message = "process job poll failed"
     )]
     PollFailed {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
         cause: String,
     },
@@ -165,7 +182,9 @@ pub(crate) enum ProcessLogEvent {
         message = "process subprocess output emit failed"
     )]
     OutputEmitFailed {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
+        #[log(key = "process.stream")]
         stream: CapturedStream,
         cause: String,
     },
@@ -175,7 +194,9 @@ pub(crate) enum ProcessLogEvent {
 pub(crate) enum SubprocessLogEvent {
     #[log_event(name = "process.subprocess_line", meta = "computed")]
     Line {
+        #[log(key = "job.kind")]
         job_kind: crate::process::jobs::ProcessJobKind,
+        #[log(key = "process.stream")]
         stream: CapturedStream,
         #[log(skip)]
         line: String,
