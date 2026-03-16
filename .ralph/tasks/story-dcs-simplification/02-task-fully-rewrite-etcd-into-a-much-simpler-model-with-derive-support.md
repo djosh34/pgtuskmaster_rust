@@ -251,7 +251,7 @@ This section documents a verified code audit of the current DCS implementation a
 
 The proposed schema/store/runtime split is fully viable against the current codebase. Evidence:
 
-1. **Clean consumer boundary.** All external consumers (ha, process, api, cli, runtime, dev_support) depend only on `DcsView`, `DcsHandle`, `DcsMode`, `ClusterView`, `ClusterMemberView`, `MemberPostgresView`, `LeadershipObservation`, `SwitchoverView`, and `NotTrustedView`. No external module imports etcd types, etcd client, or raw DCS key paths. (Verified: `src/ha/`, `src/process/`, `src/api/`, `src/cli/`, `src/runtime/node.rs`)
+1. **Clean consumer boundary.** All external consumers (ha, process, api, cli, runtime, dev_support) depend only on `DcsView`, `DcsHandle`, `DcsMode`, `ClusterView`, `ClusterMemberView`, `MemberPostgresView`, `LeadershipObservation`, `SwitchoverView`, and `NotTrustedView`. No external module imports etcd types, etcd client, or raw DCS key paths. (Verified: `src/ha/`, `src/process/`, `src/api/`, `src/cli/`, `src/runtime/node.rs`, `src/dev_support/`)
 
 2. **Isolated etcd dependency.** All `etcd_client::` imports are confined to `src/dcs/worker.rs`. No other file in the crate imports etcd types. The split into store.rs (etcd transport) is a clean extraction. (Verified: `grep -r 'etcd_client' src/`)
 
@@ -269,7 +269,7 @@ The following simplifications reduce code further and improve type safety. They 
 
 **Current state:** `MemberPostgresRecord` (internal, stored in etcd) and `MemberPostgresView` (public) are structurally identical enums with identical serde attributes (`#[serde(tag = "kind", rename_all = "snake_case")]`). The `build_member_view` function manually maps every field between them, with one special case: downgrading non-leader Primary members to Unknown.
 
-**Fix:** Use `MemberPostgresView` as the single canonical type for both etcd storage and public display. The "downgrade non-leader Primary" transformation becomes a simple `sanitize_for_view()` method during view building, not a full parallel type hierarchy.
+**Fix:** Use `MemberPostgresView` as the single canonical type for both etcd storage and public display. The "downgrade non-leader Primary" transformation — which protects consumers from split-brain confusion by marking members that claim Primary without holding the authoritative leader record — becomes a simple `sanitize_for_view()` method during view building, not a full parallel type hierarchy.
 
 This eliminates:
 - The entire `MemberPostgresRecord` enum definition (~20 lines)
@@ -299,7 +299,7 @@ And `evaluate_mode` stays clock-free:
 fn evaluate_mode(etcd_reachable: bool, state: &DcsState, self_id: &MemberId) -> DcsMode {
     if !etcd_reachable { return DcsMode::NotTrusted; }
     if !state.members.contains_key(self_id) { return DcsMode::Degraded; }
-    if state.members.len() < 2 && state.members.len() != 1 { return DcsMode::Degraded; }
+    if state.members.is_empty() { return DcsMode::Degraded; }
     DcsMode::Coordinated
 }
 ```
