@@ -38,16 +38,21 @@
 - `src/api/worker.rs`
 - `src/cli/args.rs`
 - `src/cli/client.rs`
+- `src/cli/config.rs`
 - `src/cli/connect.rs`
 - `src/cli/status.rs`
 - `src/config/schema.rs`
+- `src/config/materialize.rs`
+- `src/config/parser.rs`
 - `src/dcs/mod.rs`
 - `src/dcs/startup.rs`
 - `src/dcs/state.rs`
 - `src/dcs/worker.rs`
 - `src/dev_support/auth.rs`
+- `src/ha/decide.rs`
 - `src/ha/state.rs`
 - `src/ha/types.rs`
+- `src/ha/worker.rs`
 - `src/pginfo/conninfo.rs`
 - `src/pginfo/state.rs`
 - `src/postgres_roles.rs`
@@ -64,28 +69,34 @@
 **Context from research:**
 - There is a pure duplicate node-state DTO split between `NodeStateSnapshot` in `src/api/controller.rs` and `NodeState` in `src/api/mod.rs`.
 - `NodeIdentity` already exists in `src/state/ids.rs`, but API, DCS, HA, pginfo, and process still carry smaller module-local identity fragments (`ApiClusterIdentity`, `DcsNodeIdentity`, `HaNodeIdentity`, `PgNodeIdentity`, `ProcessNodeIdentity`) that repeat the same concept.
-- Switchover state is split across API, CLI args, CLI client, HA, DCS, and CLI status (`SwitchoverRequest`, `SwitchoverRequestArgs`, `SwitchoverRequestInput`, `ClusterSwitchoverView`, `SwitchoverRecord`) and still relies on the older `SwitchoverTarget` split in `src/state/coordination.rs`.
-- Role-token carriers are duplicated across config, API runtime, CLI client, and dev support (`ResolvedApiRoleTokens`, `CliAuthConfig`, `ApiRoleTokensConfig`, `ApiRoleTokens`).
+- Switchover state is split across API, CLI args, CLI client, HA, DCS, and CLI status (`SwitchoverRequest`, `SwitchoverRequestArgs`, `SwitchoverRequestInput`, `SwitchoverState`, `SwitchoverTarget`, `SwitchoverView`, `ClusterSwitchoverView`, `SwitchoverRecord`) instead of being one canonical enum.
+- Role-token carriers are duplicated across config, API runtime, CLI client, and dev support (`ResolvedApiRoleTokens`, `CliAuthConfig`, `ApiRoleTokensConfig`, `ApiRoleTokens`), and the surrounding auth envelope is duplicated too (`ApiAuthConfig`, `PgtmApiAuthConfig`, `ApiAuthState`).
 - The mandatory Postgres role triplet is duplicated across config, role reconciliation, and process runtime (`MandatoryPostgresRolesConfig`, `MandatoryManagedRoleSet`, `MandatoryPostgresRuntimeRoles`).
 - PostgreSQL connection and endpoint modeling is split across pginfo, CLI, and shared state (`PgConnInfo`, `PgLocalProbeTarget`, `ConnectionTarget`, `PgTcpTarget`, `PgUnixTarget`, `PgConnectTarget`), and at least one current type stores rendered DSN data alongside structured fields.
-- DCS currently keeps a parallel record/view/cache tree (`ClusterMemberView`, `MemberLeaseRecord`, `MemberRecord`, `ClusterView`, `NotTrustedView`, `LeadershipRecord`, `SwitchoverRecord`, `DcsCache`) plus duplicate member-postgres shapes (`MemberPostgresView` and `MemberPostgresRecord`) to describe nearly the same cluster picture.
-- API runtime wiring currently repacks the same fields through `ApiRuntimeRequest`, `ApiServerCtx`, `ApiControlPlane`, `ApiServingPlan`, and `ApiAppState`.
+- DCS currently keeps a parallel record/view/cache tree (`DcsView`, `NotTrustedView`, `ClusterView`, `ClusterMemberView`, `LeadershipObservation`, `SwitchoverView`, `MemberLeaseRecord`, `MemberRecord`, `LeadershipRecord`, `SwitchoverRecord`, `DcsCache`) plus duplicate member-postgres shapes (`MemberPostgresView` and `MemberPostgresRecord`) to describe nearly the same cluster picture.
+- API runtime wiring currently repacks the same fields through `ApiRuntimeRequest`, `ApiRuntime`, `ApiServer`, `ApiServerCtx`, `ApiControlPlane`, `ApiServingPlan`, and `ApiAppState`.
 - DCS runtime wiring currently repacks the same fields through `DcsAdvertisedEndpoints`, `DcsRuntimeRequest`, `DcsEtcdConfig`, `DcsCadence`, `DcsLocalMemberAdvertisement`, `DcsObservedState`, `DcsStateChannel`, `DcsControlPlane`, `DcsRuntime` (`src/dcs/state.rs`), `DcsRuntime` (`src/dcs/startup.rs`), `DcsWorkerCtx`, and `DcsWorkerBootstrap`.
 - There are three duplicate local `ChildGuard` structs in `src/api/worker.rs`, `src/process/postmaster.rs`, and `src/process/worker.rs`.
 - There are duplicate test runner seed carriers in `tests/ha/support/observer/pgtm.rs` and `tests/ha/support/runner/mod.rs`.
 - There is also a high-value naming collision that must be resolved while touching the same area: `ha::types::ProcessState` and `process::state::ProcessState` should not both survive under the same name. Even if both remain semantically necessary, the HA one must be renamed to something meaningfully different such as `ProcessAssessment` or `ProcessProjection`.
+- Most of the new internal canonical carriers do not need `pub(crate)`. Default to private, then `pub(super)` if a parent module needs access, and only use wider visibility when the code genuinely crosses a larger boundary.
+- The DCS redesign in the previous draft was still too wrapper-heavy and too tolerant of stale data. This task must remove `DcsMode` entirely and refactor HA first so it does not depend on `DcsMode` or on stale DCS state at all. If etcd is unavailable or quorum is lost, DCS must publish `NotTrusted` with no cluster data. There is no exception to this rule.
+- Hanging runtime/config scalars such as `member_ttl_ms`, `poll_interval`, bind settings, and similar cadence/setting fields should not be threaded as loose fields through every runtime carrier. Reuse the existing config structs where they already model the setting, or introduce one dedicated settings/config ADT per domain if the existing config boundary is wrong.
 
 **Required end-state properties:**
 - One canonical `NodeIdentity`.
 - One canonical node snapshot/read-model type.
 - One canonical switchover ADT.
 - One canonical role-token carrier.
+- One canonical auth envelope ADT.
 - One canonical fixed-role-slot carrier.
 - One canonical PostgreSQL endpoint/connection ADT.
 - One canonical DCS snapshot/read-model tree.
 - One canonical API runtime context instead of multiple field-shuffle carriers.
 - One canonical DCS runtime context instead of multiple field-shuffle carriers.
 - One shared internal `ChildGuard`.
+- Better names where the current ones encode layering instead of meaning.
+- No stale DCS data is ever exposed or consumed outside quorum.
 - The duplicate-type count goes down in a measurable, proven way.
 
 **Important implementation rule about aliases:**
@@ -101,6 +112,10 @@
 - The task is not complete until that before/after reduction is written down in the task notes or other committed evidence.
 
 **Canonical shapes to land in this task:**
+
+**Delete checklist for `NodeSnapshot`:**
+- `NodeStateSnapshot` in `src/api/controller.rs`
+- `NodeState` in `src/api/mod.rs`
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -126,47 +141,89 @@ pub struct NodeIdentity {
 }
 ```
 
-For switchover, prefer a single explicit enum over encoding intent through `Option<MemberId>` plus a second target enum:
+**Delete checklist for switchover unification:**
+- `SwitchoverRequest` in `src/api/controller.rs`
+- `SwitchoverRequestArgs` in `src/cli/args.rs`
+- `SwitchoverRequestInput` in `src/cli/client.rs`
+- `SwitchoverRequest` in `src/ha/types.rs`
+- `SwitchoverState` in `src/ha/types.rs`
+- `SwitchoverTarget` in `src/state/coordination.rs`
+- `SwitchoverView` in `src/dcs/state.rs`
+- `ClusterSwitchoverView` in `src/cli/status.rs`
+- `SwitchoverRecord` in `src/dcs/state.rs`
+
+For switchover, use one canonical enum that represents both "no pending switchover" and the requested target. Do not keep a state enum wrapping a request struct wrapping a target enum:
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SwitchoverSpec {
+pub enum SwitchoverState {
+    None,
     AnyHealthyReplica,
     Specific(MemberId),
 }
 ```
 
-Presence or absence of a pending switchover should be represented with `Option<SwitchoverSpec>` at the storage/state level, not by inventing a second request/view/record tree.
+This should replace all of `SwitchoverRequest`, `SwitchoverTarget`, `SwitchoverView`, and the current wrapper-style `SwitchoverState`.
 
-```rust
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RoleTokens<T> {
-    pub read_token: T,
-    pub admin_token: T,
-}
-```
+**Delete checklist for auth/token unification:**
+- `ResolvedApiRoleTokens` in `src/api/worker.rs`
+- `CliAuthConfig` in `src/cli/client.rs`
+- `ApiRoleTokensConfig` in `src/config/schema.rs`
+- `ApiRoleTokens` in `src/dev_support/auth.rs`
+- `ApiAuthConfig` in `src/config/schema.rs`
+- `PgtmApiAuthConfig` in `src/config/schema.rs`
+- `ApiAuthState` in `src/api/worker.rs`
 
-Do not keep layering `Option<SecretSource>` everywhere without evaluating a clearer ADT. If the config/runtime/client semantics are meaningfully more than "maybe present", prefer a small explicit enum over a naked `Option`:
+Keep the token pair concrete, not generic. Do not introduce a generic optional-secret wrapper here.
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OptionalSecret<T> {
-    Missing,
-    Configured(T),
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum SecretSource {
+    None,
+    Env { env: String },
+    File { path: std::path::PathBuf },
+    String { value: String },
 }
 ```
 
-One acceptable end-state is:
-- `RoleTokens<OptionalSecret<SecretSource>>` for config
-- `RoleTokens<OptionalSecret<String>>` for resolved runtime or CLI auth
-- `RoleTokens<String>` for dev/test fixtures
+The existing `SecretSource` enum in `src/config/schema.rs` should be rewritten to this simpler canonical shape. Do not keep `Path`, `PathConfig`, and `Inline` plus separate optional wrappers.
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FixedPostgresRoles<T> {
+pub struct RoleTokens {
+    pub read_token: SecretSource,
+    pub admin_token: SecretSource,
+}
+```
+
+Unify the auth envelope too, not just the inner pair of tokens:
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "tokens")]
+pub enum TokenAuth {
+    Disabled,
+    RoleTokens(RoleTokens),
+}
+```
+
+One acceptable end-state is:
+- config/runtime/CLI all model token sources as `TokenAuth`
+- resolved token materialization happens only at the last possible use site
+- dev/test fixtures use `SecretSource::String`
+
+**Delete checklist for mandatory-role-slot unification:**
+- `MandatoryPostgresRolesConfig` in `src/config/schema.rs`
+- `MandatoryManagedRoleSet` in `src/postgres_roles.rs`
+- `MandatoryPostgresRuntimeRoles` in `src/process/state.rs`
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresRoleSlots<T> {
     pub superuser: T,
     pub replicator: T,
     pub rewinder: T,
@@ -176,131 +233,179 @@ pub struct FixedPostgresRoles<T> {
 The most direct use is:
 
 ```rust
-pub type MandatoryPostgresRolesConfig = FixedPostgresRoles<PostgresRoleConfig>;
-pub type MandatoryManagedRoleSet = FixedPostgresRoles<ManagedRoleSpec>;
+pub type MandatoryPostgresRolesConfig = PostgresRoleSlots<PostgresRoleConfig>;
+pub type MandatoryManagedRoleSet = PostgresRoleSlots<ManagedRoleSpec>;
 pub type MandatoryPostgresRuntimeRoles =
-    FixedPostgresRoles<MandatoryPostgresRoleCredential>;
+    PostgresRoleSlots<MandatoryPostgresRoleCredential>;
 ```
 
 If alias ergonomics or serde bounds make that exact spelling awkward, another dedicated generic slot ADT is acceptable. What is not acceptable is keeping three same-shape structs.
+
+**Delete checklist for PostgreSQL endpoint/access unification:**
+- `PgConnInfo` in `src/pginfo/conninfo.rs`
+- `PgLocalProbeTarget` in `src/pginfo/state.rs`
+- `ConnectionTarget` in `src/cli/connect.rs`
+- `PgTcpTarget` in `src/state/net.rs`
+- `PgUnixTarget` in `src/state/net.rs`
+- `PgConnectTarget` in `src/state/net.rs`
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PgEndpoint {
     Tcp { host: String, port: u16 },
-    Unix { socket_dir: std::path::PathBuf, port: u16 },
+    UnixSocket {
+        socket_dir: std::path::PathBuf,
+        port: u16,
+    },
 }
 ```
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PgConnectionSpec {
-    pub member_id: Option<MemberId>,
-    pub endpoint: PgEndpoint,
-    pub user: String,
-    pub dbname: String,
-    pub application_name: Option<String>,
-    pub connect_timeout_s: Option<u32>,
-    pub ssl_mode: PgSslMode,
-    pub ssl_root_cert: Option<std::path::PathBuf>,
-    pub options: Option<String>,
+pub struct PgClientTls {
+    pub mode: PgSslMode,
+    pub root_cert: Option<std::path::PathBuf>,
+    pub client_cert: Option<std::path::PathBuf>,
+    pub client_key: Option<SecretSource>,
 }
 ```
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PgAccessSpec {
+    pub endpoint: PgEndpoint,
+    pub user: String,
+    pub tls: PgClientTls,
+}
+```
+
+Do not keep `member_id`, `dbname`, `application_name`, `connect_timeout_s`, or opaque `options` inside the canonical access spec unless current repo usage proves they are actually required. In the current codebase, those look like derived policy/settings concerns, not core connection identity.
+
+Hard requirement: fields removed from the canonical access spec must not disappear. They must move into the owning config structs or one dedicated PostgreSQL client-settings/config ADT, whichever gives the smallest truthful boundary.
 
 Rendered DSNs should be methods or helper functions, not stored parallel data.
 
-Collapse the DCS member-postgres duplicate view/record shapes into one canonical enum:
+**Delete checklist for DCS snapshot unification:**
+- `DcsMode` in `src/dcs/state.rs`
+- `DcsView` in `src/dcs/state.rs`
+- `NotTrustedView` in `src/dcs/state.rs`
+- `ClusterView` in `src/dcs/state.rs`
+- `ClusterMemberView` in `src/dcs/state.rs`
+- `LeadershipObservation` in `src/dcs/state.rs`
+- `SwitchoverView` in `src/dcs/state.rs`
+- `MemberLeaseRecord` in `src/dcs/state.rs`
+- `MemberRecord` in `src/dcs/state.rs`
+- `LeadershipRecord` in `src/dcs/state.rs`
+- `SwitchoverRecord` in `src/dcs/state.rs`
+- `DcsCache` in `src/dcs/state.rs`
+- `MemberPostgresView` in `src/dcs/state.rs`
+- `MemberPostgresRecord` in `src/dcs/state.rs`
+
+Do not invent a second DCS-specific Postgres enum if `PgInfoState` already carries the meaning. Prefer using `PgInfoState` directly.
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DcsMemberPostgres {
-    Unknown {
-        readiness: Readiness,
-        timeline: Option<TimelineId>,
-        system_identifier: Option<SystemIdentifier>,
-    },
-    Primary {
-        readiness: Readiness,
-        system_identifier: Option<SystemIdentifier>,
-        committed_wal: ObservedWalPosition,
-    },
-    Replica {
-        readiness: Readiness,
-        system_identifier: Option<SystemIdentifier>,
-        upstream: Option<MemberId>,
-        replay_wal: Option<ObservedWalPosition>,
-        follow_wal: Option<ObservedWalPosition>,
-    },
-}
-```
-
-```rust
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DcsMemberState {
-    pub lease_ttl_ms: Option<u64>,
     pub postgres_endpoint: PgEndpoint,
-    pub postgres: DcsMemberPostgres,
+    pub postgres: PgInfoState,
 }
 ```
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DcsSnapshot {
-    pub mode: DcsMode,
-    pub observed_leadership: Option<LeaseEpoch>,
-    pub leadership: Option<LeaseEpoch>,
-    pub switchover: Option<SwitchoverSpec>,
-    pub members: std::collections::BTreeMap<MemberId, DcsMemberState>,
+pub enum DcsSnapshot {
+    NotTrusted,
+    Quorum {
+        leadership: Option<LeaseEpoch>,
+        switchover: SwitchoverState,
+        members: std::collections::BTreeMap<MemberId, DcsMemberState>,
+    },
 }
 ```
 
-If `DcsView` survives, it must collapse to a thin alias/newtype over the canonical snapshot rather than preserving a second record/view/cache tree.
+Hard requirement: `DcsSnapshot::Quorum { .. }` is always fresh quorum-backed data. `DcsSnapshot::NotTrusted` carries no stale members, no stale leadership, and no stale switchover. Refactor the HA loop first so it never consumes DCS data unless it received `Quorum { .. }`. There is no exception to this rule.
+
+**Delete checklist for API runtime-carrier unification:**
+- `ApiRuntimeRequest` in `src/api/startup.rs`
+- `ApiRuntime` in `src/api/startup.rs`
+- `ApiServer` in `src/api/startup.rs`
+- `ApiServerCtx` in `src/api/worker.rs`
+- `ApiControlPlane` in `src/api/worker.rs`
+- `ApiServingPlan` in `src/api/worker.rs`
+- `ApiAppState` in `src/api/worker.rs`
 
 ```rust
 #[derive(Clone)]
-pub(crate) struct ApiRuntimeCtx {
-    pub(crate) identity: NodeIdentity,
-    pub(crate) observed: ApiObservedState,
-    pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
-    pub(crate) dcs_handle: DcsHandle,
-    pub(crate) bind: ApiBindConfig,
-    pub(crate) auth: ApiAuthState,
-    pub(crate) transport: ApiServerTransport,
-    pub(crate) reload_certificates: ApiTlsCertificateReloadHandle,
-    pub(crate) log: LogSender,
+pub(super) struct ApiRuntimeCtx {
+    pub(super) identity: NodeIdentity,
+    pub(super) observed: ApiObservedState,
+    pub(super) runtime_config: StateSubscriber<RuntimeConfig>,
+    pub(super) dcs_handle: DcsHandle,
+    pub(super) transport: ApiServerTransport,
+    pub(super) reload_certificates: ApiTlsCertificateReloadHandle,
+    pub(super) log: LogSender,
 }
 ```
 
+Do not carry loose bind/auth settings separately through the runtime if they are already available in the existing config structs.
+
+Hard requirement: if a field is removed from the runtime carrier because it is really configuration, it must move into the owning config struct or one dedicated settings ADT. It must not silently vanish.
+
+**Delete checklist for DCS runtime-carrier unification:**
+- `DcsAdvertisedEndpoints` in `src/dcs/startup.rs`
+- `DcsRuntimeRequest` in `src/dcs/startup.rs`
+- `DcsEtcdConfig` in `src/dcs/state.rs`
+- `DcsCadence` in `src/dcs/state.rs`
+- `DcsLocalMemberAdvertisement` in `src/dcs/state.rs`
+- `DcsObservedState` in `src/dcs/state.rs`
+- `DcsStateChannel` in `src/dcs/state.rs`
+- `DcsControlPlane` in `src/dcs/state.rs`
+- `DcsRuntime` in `src/dcs/state.rs`
+- `DcsRuntime` in `src/dcs/startup.rs`
+- `DcsWorkerCtx` in `src/dcs/state.rs`
+- `DcsWorkerBootstrap` in `src/dcs/worker.rs`
+
 ```rust
-pub(crate) struct DcsRuntimeCtx {
-    pub(crate) identity: NodeIdentity,
-    pub(crate) endpoints: Vec<DcsEndpoint>,
-    pub(crate) client: DcsClientConfig,
-    pub(crate) poll_interval: std::time::Duration,
-    pub(crate) member_ttl_ms: u64,
-    pub(crate) advertised_postgres: PgEndpoint,
-    pub(crate) pg: StateSubscriber<PgInfoState>,
-    pub(crate) publisher: StatePublisher<DcsSnapshot>,
-    pub(crate) cache: DcsSnapshot,
-    pub(crate) command_inbox: tokio::sync::mpsc::UnboundedReceiver<DcsCommand>,
-    pub(crate) log: LogSender,
+pub(super) struct DcsRuntimeCtx {
+    pub(super) identity: NodeIdentity,
+    pub(super) config: crate::config::DcsConfig,
+    pub(super) advertised_postgres: PgEndpoint,
+    pub(super) pg: StateSubscriber<PgInfoState>,
+    pub(super) publisher: StatePublisher<DcsSnapshot>,
+    pub(super) command_inbox: tokio::sync::mpsc::UnboundedReceiver<DcsCommand>,
+    pub(super) log: LogSender,
 }
 ```
+
+Do not keep loose cadence/config fields such as `member_ttl_ms` and `poll_interval` hanging off the runtime context. Keep settings in existing config structs or one dedicated settings ADT.
+
+Hard requirement: these removed loose fields must end up in the owning config/settings layer, not be deleted as behavior. The refactor must preserve the behavior while relocating the configuration to the correct owner.
+
+**Delete checklist for child-process guard unification:**
+- `ChildGuard` in `src/api/worker.rs`
+- `ChildGuard` in `src/process/postmaster.rs`
+- `ChildGuard` in `src/process/worker.rs`
 
 Use one shared internal child-guard type instead of three copies:
 
 ```rust
-pub(crate) struct ChildGuard(pub Option<tokio::process::Child>);
+pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 ```
 
+**Delete checklist for runner-seed unification:**
+- `RunnerApiSeed` in `tests/ha/support/observer/pgtm.rs`
+- duplicate seed carrier split between `RunnerApiSeed` and `RunnerSeed`
+
 **Alternatives and design questions that must be explicitly resolved during execution, not ignored:**
-- `MandatoryPostgresRolesConfig`: the default preferred answer is the generic `FixedPostgresRoles<T>` ADT above, but the implementer should explicitly compare it against any more type-driven alternative they believe is better. A keyed map is not preferred because it loses exhaustiveness unless you wrap it in another ADT.
-- `Option<SecretSource>`: `SecretSource` is already an enum today in `src/config/schema.rs`. The open design question is whether token presence should remain a naked `Option` or become a clearer enum such as `OptionalSecret<T>`. The final code must intentionally choose one and eliminate the current spread of slightly different optional token carriers.
-- `SwitchoverSpec`: prefer the single enum above over a struct with `Option<MemberId>`, because it makes the intent explicit and removes "meaning encoded in None". If the implementer disagrees, they must document why and still converge the whole repo onto one canonical switchover ADT.
+- `MandatoryPostgresRolesConfig`: the default preferred answer is the generic `PostgresRoleSlots<T>` ADT above, but the implementer should explicitly compare it against any more type-driven alternative they believe is better. A keyed map is not preferred because it loses exhaustiveness unless you wrap it in another ADT.
+- `SecretSource`: this task should not introduce an `OptionalSecret<T>` wrapper. The intended direction is one concrete Rust enum for secret sourcing, including absence, file, env, and string.
+- Switchover modeling: prefer the single enum above over keeping both a state enum and a target enum, because it makes the intent explicit and removes wrapper churn. If the implementer disagrees, they must document why and still converge the whole repo onto one canonical switchover ADT.
+- PostgreSQL access modeling: keep the canonical access shape small. Settings such as timeout, default database name, application name, and arbitrary libpq options belong in config/policy or in a truly separate ADT if current usage proves they are needed.
+- Removed fields are not optional deletions. If a field is taken out of a canonical domain ADT because it is really configuration, the task requires moving it into the owning config structs or a dedicated settings ADT and updating all call sites accordingly.
+- DCS semantics: remove `DcsMode` entirely and require HA and every other consumer to branch on `DcsSnapshot::Quorum { .. }` versus `DcsSnapshot::NotTrusted`. Never keep or expose stale DCS data under `NotTrusted`.
+- Visibility: for the new internal types, prefer private, then `pub(super)`. Do not default new internal ADTs to `pub(crate)`.
 
 **Out of scope:**
 - Do not preserve duplicate structs just because they sit in different modules.
@@ -312,7 +417,7 @@ pub(crate) struct ChildGuard(pub Option<tokio::process::Child>);
 - The listed duplicate types are unified onto a small set of canonical domain ADTs.
 - The repo carries fewer struct declarations than before, and that reduction is proven with committed evidence.
 - API, CLI, DCS, HA, process, pginfo, config, and test support all depend on the same domain types instead of converting between near-identical twins.
-- Naming collisions such as the two different `ProcessState` types are resolved so the domain boundaries read clearly.
+- Naming collisions such as the two different `ProcessState` types are resolved so the domain boundaries read clearly, and the surviving canonical names read like owned domain concepts rather than transport wrappers.
 </description>
 
 <acceptance_criteria>
@@ -329,20 +434,28 @@ pub(crate) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] `src/api/controller.rs`: delete the local `SwitchoverRequest` struct declaration and move API input shaping to the canonical switchover ADT.
 - [ ] `src/cli/args.rs`: delete the separate `SwitchoverRequestArgs` struct declaration and parse CLI input directly into the canonical switchover ADT.
 - [ ] `src/cli/client.rs`: delete the separate `SwitchoverRequestInput` struct declaration and serialize the canonical switchover ADT instead.
+- [ ] `src/ha/types.rs`: delete the current wrapper-style `SwitchoverState` enum declaration and replace it with the canonical single-enum switchover ADT.
 - [ ] `src/ha/types.rs`: delete the separate `SwitchoverRequest` struct declaration and store the canonical switchover ADT instead.
+- [ ] `src/state/coordination.rs`: delete the separate `SwitchoverTarget` enum declaration and fold that meaning into the canonical single-enum switchover ADT.
+- [ ] `src/dcs/state.rs`: delete the separate `SwitchoverView` enum declaration and replace it with the canonical single-enum switchover ADT.
 - [ ] `src/cli/status.rs`: delete the separate `ClusterSwitchoverView` struct declaration and derive status output from the canonical switchover ADT.
 - [ ] `src/dcs/state.rs`: delete the separate `SwitchoverRecord` struct declaration and persist/use the canonical switchover ADT instead.
-- [ ] Create the canonical `SwitchoverSpec` ADT and use it repo-wide for pending switchover state, API input, CLI parsing, and DCS persistence.
+- [ ] Create the canonical single-enum `SwitchoverState` ADT and use it repo-wide for pending switchover state, API input, CLI parsing, CLI status, DCS persistence, and DCS command publication.
+- [ ] `src/config/schema.rs`: delete the separate `ApiAuthConfig` enum declaration and replace it with the canonical auth-envelope ADT.
+- [ ] `src/config/schema.rs`: delete the separate `PgtmApiAuthConfig` enum declaration and replace it with the canonical auth-envelope ADT.
+- [ ] `src/config/schema.rs`: rewrite the existing `SecretSource` enum to the canonical `None | Env | File | String` shape and remove the older `Path`, `PathConfig`, and `Inline` variants.
+- [ ] `src/api/worker.rs`: delete the separate `ApiAuthState` enum declaration and replace it with the canonical auth-envelope ADT.
 - [ ] `src/api/worker.rs`: delete the separate `ResolvedApiRoleTokens` struct declaration and replace it with the canonical role-token carrier.
 - [ ] `src/cli/client.rs`: delete the separate `CliAuthConfig` struct declaration and replace it with the canonical role-token carrier or a type alias onto it.
 - [ ] `src/config/schema.rs`: delete the separate `ApiRoleTokensConfig` struct declaration and replace it with the canonical role-token carrier or a type alias onto it.
 - [ ] `src/dev_support/auth.rs`: delete the separate `ApiRoleTokens` struct declaration and replace it with the canonical role-token carrier or a type alias onto it.
-- [ ] Create the canonical `RoleTokens<T>` ADT and make it the single role-token carrier.
-- [ ] Resolve the current `Option<SecretSource>` duplication question explicitly: either create and use a clearer enum such as `OptionalSecret<T>` or document why a naked `Option` remains the canonical choice. Do not leave mixed optional-token shapes behind.
+- [ ] Create the canonical concrete `RoleTokens` ADT and make it the single role-token carrier.
+- [ ] Create the canonical concrete `TokenAuth` ADT and make it the single auth envelope for config, runtime, CLI, and dev-support auth modeling.
+- [ ] Remove the current optional-token wrapper churn; do not introduce or keep a generic `OptionalSecret<T>` style ADT in this task.
 - [ ] `src/config/schema.rs`: delete the separate `MandatoryPostgresRolesConfig` struct declaration and replace it with the canonical fixed-role-slot ADT or a type alias onto it.
 - [ ] `src/postgres_roles.rs`: delete the separate `MandatoryManagedRoleSet` struct declaration and replace it with the canonical fixed-role-slot ADT or a type alias onto it.
 - [ ] `src/process/state.rs`: delete the separate `MandatoryPostgresRuntimeRoles` struct declaration and replace it with the canonical fixed-role-slot ADT or a type alias onto it.
-- [ ] Create the canonical `FixedPostgresRoles<T>` ADT and make it the single mandatory-role-slot carrier.
+- [ ] Create the canonical `PostgresRoleSlots<T>` ADT and make it the single mandatory-role-slot carrier.
 - [ ] `src/pginfo/conninfo.rs`: delete the separate `PgConnInfo` struct declaration and replace it with the canonical connection ADT.
 - [ ] `src/pginfo/state.rs`: delete the separate `PgLocalProbeTarget` struct declaration and replace it with the canonical connection or endpoint ADT.
 - [ ] `src/cli/connect.rs`: delete the separate `ConnectionTarget` struct declaration and replace it with the canonical connection or endpoint ADT.
@@ -350,20 +463,31 @@ pub(crate) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] `src/state/net.rs`: delete the separate `PgUnixTarget` struct declaration and replace it with the canonical endpoint ADT.
 - [ ] `src/state/net.rs`: delete the separate `PgConnectTarget` enum declaration and replace it with the canonical endpoint or connection ADT.
 - [ ] Create the canonical `PgEndpoint` ADT and make it the single endpoint model.
-- [ ] Create the canonical `PgConnectionSpec` ADT and make it the single structured connection model.
+- [ ] Create the canonical `PgClientTls` ADT and make it the single TLS bundle for PostgreSQL client connections that require root certs and optional client cert/key material.
+- [ ] Create the canonical `PgAccessSpec` ADT and make it the single structured PostgreSQL access model.
+- [ ] Keep timeout/default-database/application-name/libpq-options style settings out of the canonical access spec unless current repo usage proves they are required; if they are required, place them in a separate config/policy ADT rather than the endpoint identity ADT.
+- [ ] Any fields removed from the canonical PostgreSQL access ADT must be relocated into the owning config structs or one dedicated PostgreSQL client-settings ADT; they must not be dropped or reintroduced as loose hanging parameters.
+- [ ] `src/dcs/state.rs`: delete the separate `DcsMode` enum declaration completely.
+- [ ] `src/dcs/state.rs`: delete the separate `DcsView` enum declaration and replace it with the canonical DCS snapshot ADT or a thin alias/newtype onto it.
 - [ ] `src/dcs/state.rs`: delete the separate `ClusterMemberView` struct declaration and replace it with the canonical DCS snapshot/member ADTs.
 - [ ] `src/dcs/state.rs`: delete the separate `MemberLeaseRecord` struct declaration and fold that data into the canonical DCS snapshot/member ADTs.
 - [ ] `src/dcs/state.rs`: delete the separate `MemberRecord` struct declaration and replace it with the canonical DCS snapshot/member ADTs.
 - [ ] `src/dcs/state.rs`: delete the separate `ClusterView` struct declaration and replace it with the canonical DCS snapshot ADT.
 - [ ] `src/dcs/state.rs`: delete the separate `NotTrustedView` struct declaration and replace it with the canonical DCS snapshot ADT.
+- [ ] `src/dcs/state.rs`: delete the separate `LeadershipObservation` enum declaration and fold that meaning into the canonical DCS snapshot ADT.
 - [ ] `src/dcs/state.rs`: delete the separate `LeadershipRecord` struct declaration and fold that data into the canonical DCS snapshot ADT.
 - [ ] `src/dcs/state.rs`: delete the separate `DcsCache` struct declaration and replace it with the canonical DCS snapshot ADT.
-- [ ] `src/dcs/state.rs`: delete the separate `MemberPostgresView` enum declaration and converge on one canonical DCS member-postgres ADT.
-- [ ] `src/dcs/state.rs`: delete the separate `MemberPostgresRecord` enum declaration and converge on one canonical DCS member-postgres ADT.
-- [ ] Create the canonical `DcsMemberPostgres` ADT and use it as the single DCS member-postgres model.
+- [ ] `src/dcs/state.rs`: delete the separate `MemberPostgresView` enum declaration and replace it by using `PgInfoState` directly in the canonical DCS member state.
+- [ ] `src/dcs/state.rs`: delete the separate `MemberPostgresRecord` enum declaration and replace it by using `PgInfoState` directly in the canonical DCS member state.
 - [ ] Create the canonical `DcsMemberState` ADT and use it as the single per-member DCS snapshot model.
 - [ ] Create the canonical `DcsSnapshot` ADT and use it as the single cluster-level DCS read/persisted/cache model.
+- [ ] The canonical `DcsSnapshot` must be an enum with `NotTrusted` and `Quorum { leadership, switchover, members }`; do not keep `mode`, `observed_leadership`, or stale-cluster payloads in the snapshot shape.
+- [ ] `src/ha/worker.rs` and `src/ha/decide.rs`: refactor the HA loop first so it does not depend on `DcsMode` and never consumes DCS data unless it has `DcsSnapshot::Quorum { .. }`.
+- [ ] `src/dcs/worker.rs`: when etcd is unavailable or quorum is lost, publish `DcsSnapshot::NotTrusted` with no stale members, no stale leadership, and no stale switchover data. This is a hard requirement with no exceptions.
+- [ ] Add or update focused tests proving that stale DCS data is never exposed under `NotTrusted` and that HA does not act on non-quorum data.
 - [ ] `src/api/startup.rs`: delete the separate `ApiRuntimeRequest` struct declaration and replace it with the canonical API runtime context.
+- [ ] `src/api/startup.rs`: delete the separate `ApiRuntime` struct declaration and replace it with the canonical API runtime context or direct worker runtime.
+- [ ] `src/api/startup.rs`: delete the separate `ApiServer` tuple-struct declaration and replace it with the canonical API runtime context or direct worker runtime.
 - [ ] `src/api/worker.rs`: delete the separate `ApiServerCtx` struct declaration and replace it with the canonical API runtime context.
 - [ ] `src/api/worker.rs`: delete the separate `ApiControlPlane` struct declaration and fold it into the canonical API runtime context.
 - [ ] `src/api/worker.rs`: delete the separate `ApiServingPlan` struct declaration and fold it into the canonical API runtime context.
@@ -382,6 +506,8 @@ pub(crate) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] `src/dcs/state.rs`: delete the separate `DcsWorkerCtx` struct declaration and replace it with the canonical DCS runtime context.
 - [ ] `src/dcs/worker.rs`: delete the separate `DcsWorkerBootstrap` struct declaration and replace it with the canonical DCS runtime context.
 - [ ] Create the canonical `DcsRuntimeCtx` ADT and use it as the single DCS runtime carrier.
+- [ ] Fold loose cadence/settings fields such as `member_ttl_ms` and `poll_interval` into the existing config structs or one dedicated settings ADT; do not keep them as hanging runtime-context scalars.
+- [ ] Any fields removed from API/DCS/runtime carrier ADTs because they are really configuration must be relocated into the owning config structs or one dedicated settings ADT; they must not disappear during the refactor.
 - [ ] `src/api/worker.rs`: delete the local `ChildGuard` struct declaration and replace it with the shared internal child-guard type.
 - [ ] `src/process/postmaster.rs`: delete the local `ChildGuard` struct declaration and replace it with the shared internal child-guard type.
 - [ ] `src/process/worker.rs`: delete the local `ChildGuard` struct declaration and replace it with the shared internal child-guard type.
@@ -390,6 +516,7 @@ pub(crate) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] `tests/ha/support/runner/mod.rs`: keep only one canonical runner seed ADT and remove the duplicate seed carrier split.
 - [ ] Resolve the `ha::types::ProcessState` versus `process::state::ProcessState` name collision so the HA-side type no longer survives under the same name.
 - [ ] Audit module re-exports such as `src/dcs/mod.rs`, `src/api/mod.rs`, `src/config/mod.rs`, and any CLI/test support surfaces so they expose only the canonical ADTs and do not keep old duplicate names alive accidentally.
+- [ ] New internal canonical helper/runtime ADTs default to private or `pub(super)`; do not leave them as `pub(crate)` unless a wider boundary is explicitly justified by the module structure.
 - [ ] Update all affected tests and fixtures so they build through the canonical types rather than reconstructing parallel duplicate DTOs.
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
